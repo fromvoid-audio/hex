@@ -9,11 +9,11 @@ struct Endpoint {
     slot: usize,
     binding: Binding,
     callback: Option<NativeEffectEntry>,
-    signal: Arc<AtomicBool>,
+    signal: Arc<EndpointSignal>,
 }
 impl NativeEndpointEnvelope {
     pub(super) fn loan_data_bytes() -> Option<usize> {
-        std::mem::size_of::<Endpoint>().checked_add(std::mem::size_of::<AtomicBool>())
+        std::mem::size_of::<Endpoint>().checked_add(std::mem::size_of::<EndpointSignal>())
     }
     fn index_for(&self, root: u64) -> Option<usize> {
         (self.0.binding.root == root && self.0.slot < MAX_SOURCES && self.0.callback.is_some())
@@ -31,8 +31,101 @@ pub(crate) struct NativeEndpointBank {
     routing: [usize; MAX_SOURCES],
     routing_len: usize,
     cycle: NativeEffectCycle,
+    // An exact stopped-runtime return or the last actual requested endpoint
+    // return establishes the empty frontier. Consumed only by the first fresh
+    // live constructor-paired endpoint after every old endpoint has returned.
+    epoch_returned: bool,
+    ordinary_requirements: bool,
 }
 impl NativeEndpointBank {
+    /// Headless control-side progress only. Compare each original installed
+    /// endpoint's committed request prefix with its matching actual worker;
+    /// source swaps, idle sources and new epochs have independent prefixes.
+    /// None includes control contention or a source no longer queryable.
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn workers_idle_on_control(&self, root: &CandidateRoot) -> Option<bool> {
+        for endpoint in self.entries.iter().flatten() {
+            let callback = endpoint.0.callback.as_ref()?;
+            let quantum = u64::try_from(callback.quantum_frames()).ok()?;
+            let requested = callback.committed_frames_for_test().checked_div(quantum)?;
+            if root.native_source_completed_blocks(endpoint.0.binding)? < requested {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+    pub(crate) fn runtime_transports_are_live(
+        &self,
+        playback: &hex_engine::playback::Playback,
+    ) -> bool {
+        if self.cycle.revoked() {
+            return false;
+        }
+        let mut live = true;
+        playback.visit_foreign_runtime_bindings(&mut |binding| {
+            let Some(binding) = binding else {
+                live = false;
+                return;
+            };
+            match self.routing[..self.routing_len].binary_search_by_key(&Some(binding), |slot| {
+                self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+            }) {
+                Ok(position) => {
+                    live &= self.entries[self.routing[position]]
+                        .as_ref()
+                        .and_then(|entry| entry.0.callback.as_ref())
+                        .is_some_and(NativeEffectEntry::transport_is_live);
+                }
+                Err(_) => live = false,
+            }
+        });
+        live
+    }
+    pub(crate) fn ordinary_runtime_requires_sources(&self) -> bool {
+        self.ordinary_requirements
+            && self
+                .entries
+                .iter()
+                .flatten()
+                .any(|entry| entry.0.signal.runtime_required.load(Ordering::Acquire))
+    }
+    pub(crate) fn refresh_runtime_requirements(
+        &mut self,
+        playback: Option<&hex_engine::playback::Playback>,
+    ) {
+        if self.routing_len == 0 || (playback.is_none() && !self.ordinary_requirements) {
+            return;
+        }
+        self.ordinary_requirements = playback.is_some();
+        let mut required = [false; MAX_SOURCES];
+        let mut matched = true;
+        if let Some(playback) = playback {
+            playback.visit_foreign_runtime_bindings(&mut |binding| {
+                let Some(binding) = binding else {
+                    matched = false;
+                    return;
+                };
+                match self.routing[..self.routing_len]
+                    .binary_search_by_key(&Some(binding), |slot| {
+                        self.entries[*slot].as_ref().map(|entry| entry.0.binding)
+                    }) {
+                    Ok(position) => required[self.routing[position]] = true,
+                    Err(_) => matched = false,
+                }
+            });
+        }
+        // Unknown runtime facts fail closed. Never release an original source
+        // because an unmatched node could not be mapped to its actual endpoint.
+        for (index, endpoint) in self.entries.iter().enumerate() {
+            if let Some(endpoint) = endpoint {
+                endpoint
+                    .0
+                    .signal
+                    .runtime_required
+                    .store(required[index] || !matched, Ordering::Release);
+            }
+        }
+    }
     pub(crate) fn new() -> Result<Self, &'static str> {
         let mut entries = Vec::new();
         entries
@@ -47,6 +140,8 @@ impl NativeEndpointBank {
             routing: [0; MAX_SOURCES],
             routing_len: 0,
             cycle: NativeEffectCycle::default(),
+            epoch_returned: false,
+            ordinary_requirements: false,
         })
     }
     pub(crate) fn data_quote() -> Option<usize> {
@@ -66,6 +161,12 @@ impl NativeEndpointBank {
             return Err(endpoint);
         };
         if self.cycle.active()
+            || !endpoint
+                .0
+                .callback
+                .as_ref()
+                .is_some_and(NativeEffectEntry::has_live_epoch)
+            || (self.cycle.revoked() && (!self.epoch_returned || self.routing_len != 0))
             || self.entries.get(index).is_none_or(Option::is_some)
             || self.routing_len == MAX_SOURCES
         {
@@ -82,7 +183,16 @@ impl NativeEndpointBank {
             .copy_within(position..self.routing_len, position + 1);
         self.routing[position] = index;
         self.routing_len += 1;
+        if self.cycle.revoked() {
+            // This is a new cohort built from actual returned predecessors and
+            // a live constructor pair, never reuse of a revoked old transport.
+            self.cycle = NativeEffectCycle::default();
+        }
+        self.epoch_returned = false;
         self.entries[index] = Some(endpoint);
+        if let Some(endpoint) = self.entries[index].as_ref() {
+            endpoint.0.signal.installed.store(true, Ordering::Release);
+        }
         Ok(())
     }
     pub(crate) fn take_requested(&mut self, index: usize) -> Option<NativeEndpointEnvelope> {
@@ -100,13 +210,32 @@ impl NativeEndpointBank {
             self.routing
                 .copy_within(position + 1..self.routing_len, position);
             self.routing_len -= 1;
-            entry.take()
+            if let Some(endpoint) = entry.as_ref() {
+                endpoint.0.signal.installed.store(false, Ordering::Release);
+            }
+            let returned = entry.take();
+            if self.routing_len == 0 && self.cycle.revoked() {
+                // Stop can win after endpoint installation but before any
+                // graph uses the cohort. Requests come from the exact stopped
+                // runtime return or Root's unreferenced-source retirement.
+                // Their last unique callback return is the empty frontier;
+                // installation still requires a fresh live original pair.
+                self.epoch_returned = true;
+            }
+            returned
         } else {
             None
         }
     }
     pub(crate) fn has_endpoints(&self) -> bool {
         self.routing_len != 0
+    }
+    pub(crate) fn request_epoch_return(&mut self) {
+        self.reject_rendering();
+        for endpoint in self.entries.iter().flatten() {
+            endpoint.0.signal.store(true, Ordering::Release);
+        }
+        self.epoch_returned = true;
     }
     pub(crate) fn extract(
         &mut self,
@@ -128,6 +257,9 @@ impl NativeEndpointBank {
             self.reject_rendering();
         }
         for (source, target) in self.entries.iter_mut().zip(destination) {
+            if let Some(endpoint) = source.as_ref() {
+                endpoint.0.signal.installed.store(false, Ordering::Release);
+            }
             *target = source.take();
         }
         self.routing_len = 0;
@@ -172,7 +304,7 @@ impl Custody {
                 .and_then(|s| s.data_bytes())
                 .and_then(|n| {
                     n.checked_add(std::mem::size_of::<Endpoint>())?
-                        .checked_add(std::mem::size_of::<AtomicBool>())
+                        .checked_add(std::mem::size_of::<EndpointSignal>())
                 })
                 .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES))
                 .ok_or("native endpoint data overflow")?;
@@ -189,7 +321,7 @@ impl Custody {
         cell.pending = true;
         // Allocate before extracting the unique pair. No ordinary bank barrier
         // spans allocation, construction or later endpoint destruction.
-        let signal = Arc::new(AtomicBool::new(false));
+        let signal = Arc::new(EndpointSignal::new());
         let mut envelope = NativeEndpointEnvelope(Box::new(Endpoint {
             slot: index,
             binding,
@@ -261,7 +393,7 @@ impl Custody {
             .storage()
             .data_bytes()
             .and_then(|n| n.checked_add(std::mem::size_of::<Endpoint>()))
-            .and_then(|n| n.checked_add(std::mem::size_of::<AtomicBool>()))
+            .and_then(|n| n.checked_add(std::mem::size_of::<EndpointSignal>()))
             .and_then(|n| n.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES));
         if slot.binding != Some(endpoint.0.binding)
             || slot.processor != Some(control.prepared())
@@ -347,6 +479,143 @@ mod tests {
     }
     #[test]
     #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+    fn actual_root_edit_receipts_follow_original_loan_and_terminal() {
+        use hex_lattice::{ForeignProcessorNode, ForeignProcessors};
+        use hex_plugin_host::protocol::ParameterEditKind;
+        use std::time::{Duration, Instant};
+        if std::env::var_os("HEX_ROOT_EDIT_CHILD").is_none() {
+            let dir = std::env::temp_dir().join(format!("hex-root-edits-{}", std::process::id()));
+            std::fs::create_dir(&dir).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    std::thread::current().name().unwrap(),
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("HEX_ROOT_EDIT_CHILD", "1")
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "85")
+                .env("HEX_ORIGINAL_INSTANCE_TRACE", dir.join("trace"))
+                .env("HEX_ORIGINAL_INSTANCE_RELEASE", dir.join("release"))
+                .output()
+                .unwrap();
+            std::fs::remove_dir_all(dir).unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        let root = root();
+        let binding = ready(&root);
+        let confirmed = root.native_source_prepared_state(binding).unwrap();
+        let (identity, prepared, configuration) = {
+            let work = lock(&root.work);
+            let Some(Owner::Effect(owner)) = work.sources.cells[0].owner.as_ref() else {
+                panic!("actual effect")
+            };
+            (
+                owner.identity(),
+                owner.prepared(),
+                owner.configuration().clone(),
+            )
+        };
+        let loan = root.loan_native_endpoint(binding).unwrap();
+        let mut bank = NativeEndpointBank::new().unwrap();
+        assert!(bank.install(binding.root, loan).is_ok());
+        assert!(
+            root.native_parameter_edits(Binding {
+                epoch: binding.epoch + 1,
+                ..binding
+            })
+            .is_err()
+        );
+        {
+            let _work = lock(&root.work);
+            assert!(matches!(
+                root.native_parameter_edits(binding),
+                Err("native preparation is busy")
+            ));
+        }
+        std::fs::write(
+            std::env::var_os("HEX_ORIGINAL_INSTANCE_RELEASE").unwrap(),
+            b"release",
+        )
+        .unwrap();
+        let mut edits = Vec::new();
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            match root.native_parameter_edits(binding) {
+                Ok(Some(batch)) => {
+                    edits.extend_from_slice(batch.as_slice());
+                    if batch.ready > 0 && edits.len() == 1 {
+                        break;
+                    }
+                }
+                Ok(None) | Err("native edit observation is busy") => {}
+                Err(error) => panic!("original edit observation: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        assert_eq!(edits.len(), 1);
+        let node = ForeignProcessorNode {
+            owner: identity.owner(),
+            device_id: identity.device_id(),
+            device_type: configuration.type_id(),
+            sample_rate: 48_000,
+            configuration: &configuration,
+            prepared,
+            bypassed: false,
+            input_gain: 1.0,
+        };
+        let mut frames = [[0.5, -0.25]; 8];
+        bank.begin_rendering(8).unwrap();
+        bank.process_segment(node, 0, &mut frames, None).unwrap();
+        bank.finish_rendering(true).unwrap();
+        assert_eq!(frames, [[0.0; 2]; 8]); // declared pipeline warmup
+        let until = Instant::now() + Duration::from_secs(3);
+        while edits.len() < 3 {
+            match root.native_parameter_edits(binding) {
+                Ok(Some(batch)) => edits.extend_from_slice(batch.as_slice()),
+                Ok(None) | Err("native edit observation is busy") => {}
+                Err(error) => panic!("original applied observation: {error}"),
+            }
+            assert!(Instant::now() < until);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            edits
+                .iter()
+                .map(|edit| (edit.sequence, edit.gesture, edit.id, edit.kind))
+                .collect::<Vec<_>>(),
+            [
+                (1, 1, 7, ParameterEditKind::Begin),
+                (2, 1, 7, ParameterEditKind::Perform),
+                (3, 1, 7, ParameterEditKind::End)
+            ]
+        );
+        assert_eq!((edits[1].normalized, edits[1].first_frame), (0.75, 0));
+        assert_eq!(root.native_source_prepared_state(binding), Some(confirmed));
+        bank.request_epoch_return();
+        assert!(
+            root.ingest_native_endpoint(bank.take_requested(0).unwrap())
+                .is_ok()
+        );
+        root.close();
+        assert!(root.native_parameter_edits(binding).is_err());
+        dispose(&root, binding);
+        let returned = root.recover_native_source(binding).unwrap();
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        assert!(
+            matches!(returned.disposal, PreparationDisposal::Reaped(retired) if retired.status.success() && retired.terminal.is_some_and(|terminal| terminal.blocks == 1 && terminal.frames == 8))
+        );
+    }
+    #[test]
+    #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
     fn equal_binding_and_state_cannot_return_another_original_endpoint() {
         let first = root();
         let second = root();
@@ -360,13 +629,20 @@ mod tests {
             first.native_source_prepared_state(a),
             second.native_source_prepared_state(b)
         );
+        let copied = first.native_source_metadata(a).unwrap();
         let endpoint_a = first.loan_native_endpoint(a).unwrap();
         let endpoint_b = second.loan_native_endpoint(b).unwrap();
+        assert_eq!(
+            copied,
+            first.native_source_metadata(a).unwrap(),
+            "metadata stays with original control custody while its actual endpoint is loaned"
+        );
         let endpoint_a = second
             .ingest_native_endpoint(endpoint_a)
             .expect_err("different original source");
         assert!(second.ingest_native_endpoint(endpoint_b).is_ok());
         assert!(first.ingest_native_endpoint(endpoint_a).is_ok());
+        assert_eq!(copied, first.native_source_metadata(a).unwrap());
         for owner in [&first, &second] {
             assert!(owner.retire_native_source(a));
             dispose(owner, a);
@@ -374,5 +650,197 @@ mod tests {
             assert!(matches!(returned.disposal, PreparationDisposal::Reaped(_)));
             assert!(returned.error.is_none() && returned.cleanup_error.is_none());
         }
+    }
+    #[test]
+    #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+    fn actual_root_parameter_segments_and_feedback_keep_original_loan_and_final_acceptance() {
+        use hex_lattice::{ForeignProcessorNode, ForeignProcessors};
+        use hex_lattice_contract::ForeignParameterPoint;
+        use std::time::{Duration, Instant};
+        if std::env::var_os("HEX_ROOT_GRAPH_PARAMETERS").is_none() {
+            let name = std::thread::current().name().unwrap().to_owned();
+            for variant in ["37", "80"] {
+                let result = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        &name,
+                        "--ignored",
+                        "--test-threads=1",
+                        "--nocapture",
+                    ])
+                    .env("HEX_ROOT_GRAPH_PARAMETERS", variant)
+                    .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+            }
+            return;
+        }
+        let parameter_id = if std::env::var("HEX_ROOT_GRAPH_PARAMETERS").unwrap() == "80" {
+            0
+        } else {
+            7
+        };
+        let root = root();
+        let binding = ready(&root);
+        let (identity, prepared, configuration) = {
+            let work = lock(&root.work);
+            let Some(Owner::Effect(owner)) = work.sources.cells[0].owner.as_ref() else {
+                panic!("actual effect")
+            };
+            (
+                owner.identity(),
+                owner.prepared(),
+                owner.configuration().clone(),
+            )
+        };
+        assert!(
+            root.native_parameter_values(binding)
+                .unwrap()
+                .as_slice()
+                .is_empty()
+        );
+        let loan = root.loan_native_endpoint(binding).unwrap();
+        assert!(
+            root.native_parameter_values(binding)
+                .unwrap()
+                .as_slice()
+                .is_empty()
+        );
+        let mut bank = NativeEndpointBank::new().unwrap();
+        assert!(bank.install(binding.root, loan).is_ok());
+        let node = ForeignProcessorNode {
+            owner: identity.owner(),
+            device_id: identity.device_id(),
+            device_type: configuration.type_id(),
+            sample_rate: 48_000,
+            configuration: &configuration,
+            prepared,
+            bypassed: false,
+            input_gain: 1.0,
+        };
+        for block in 0..4_u64 {
+            let mut frames = [[0.5, -0.25]; 8];
+            let points = [ForeignParameterPoint {
+                frame: 2,
+                id: parameter_id,
+                normalized: (block + 1) as f64 / 8.0,
+            }];
+            let render = || {
+                bank.begin_rendering(8).unwrap();
+                bank.process_segment_with_parameters(node, 0, &mut frames[..3], &points, None)
+                    .unwrap();
+                bank.process_segment_with_parameters(node, 3, &mut frames[3..], &[], None)
+                    .unwrap();
+                bank.finish_rendering(true).unwrap();
+            };
+            #[cfg(feature = "allocation-probe")]
+            {
+                let measured = allocation_counter::measure(render);
+                assert_eq!(
+                    (
+                        measured.count_total,
+                        measured.bytes_total,
+                        measured.count_current,
+                        measured.bytes_current
+                    ),
+                    (0, 0, 0, 0)
+                );
+            }
+            #[cfg(not(feature = "allocation-probe"))]
+            {
+                let mut render = render;
+                render();
+            }
+            for (frame, actual) in frames.iter().enumerate() {
+                let normalized = if block < 2 {
+                    0.0
+                } else {
+                    let source = block - 2;
+                    let end = (source + 1) as f64 / 8.0;
+                    let before = if source == 0 {
+                        0.25
+                    } else {
+                        source as f64 / 8.0
+                    };
+                    before + (end - before) * (frame + 1).min(3) as f64 / 3.0
+                };
+                let gain = normalized * 4.0 * (0.5 + block.saturating_sub(2) as f64 * 0.125);
+                for (channel, sample) in actual.iter().enumerate() {
+                    let input = if channel == 0 { 0.5 } else { -0.25 };
+                    assert!(
+                        (f64::from(*sample) - input * gain).abs() < 1e-6,
+                        "block{block}/frame{frame}/channel{channel}"
+                    );
+                }
+            }
+            let until = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Ok(values) = root.native_parameter_values(binding)
+                    && values.completed_blocks() == block + 1
+                {
+                    assert_eq!(
+                        values.as_slice(),
+                        &[crate::plugin_worker::NativeParameterValue {
+                            id: parameter_id,
+                            normalized: (block + 1) as f64 / 8.0
+                        }]
+                    );
+                    break;
+                }
+                assert!(Instant::now() < until, "actual original worker feedback");
+                std::thread::yield_now();
+            }
+        }
+        assert!(
+            root.native_parameter_values(Binding {
+                epoch: binding.epoch + 1,
+                ..binding
+            })
+            .is_err()
+        );
+        {
+            let _work = lock(&root.work);
+            assert!(matches!(
+                root.native_parameter_values(binding),
+                Err("native preparation is busy")
+            ));
+        }
+        bank.begin_rendering(8).unwrap();
+        let mut refused = [[0.5, -0.25]; 8];
+        bank.process_segment_with_parameters(
+            node,
+            0,
+            &mut refused,
+            &[ForeignParameterPoint {
+                frame: 0,
+                id: parameter_id,
+                normalized: 0.875,
+            }],
+            None,
+        )
+        .unwrap();
+        assert!(bank.finish_rendering(false).is_err());
+        assert!(
+            root.native_parameter_values(binding).is_err(),
+            "rejected epoch cannot provide live observations"
+        );
+        bank.request_epoch_return();
+        let returned = bank.take_requested(0).unwrap();
+        assert!(root.ingest_native_endpoint(returned).is_ok());
+        assert!(root.native_parameter_values(binding).is_err());
+        assert!(root.retire_native_source(binding));
+        dispose(&root, binding);
+        let returned = root.recover_native_source(binding).unwrap();
+        assert!(returned.error.is_none() && returned.cleanup_error.is_none());
+        assert!(
+            matches!(returned.disposal,PreparationDisposal::Reaped(retired) if retired.status.success() && retired.terminal.is_some_and(|terminal| terminal.blocks==4 && terminal.frames==32))
+        );
     }
 }

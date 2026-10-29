@@ -94,7 +94,7 @@ fn pair_with_hooks(
 fn stamp(owner: &AudioCandidateOwner, epoch: u64) -> ReadinessStamp {
     ReadinessStamp {
         request_epoch: epoch,
-        artifact: owner.identity(),
+        artifact: owner.identity().into(),
         project_generation: 0,
         editor_revision: 7,
         device_epoch: 5,
@@ -119,11 +119,19 @@ fn finish(domain: &mut ConstructorStreamDomain) -> PagePoolReport {
 }
 #[test]
 fn real_decode_needs_installed_protection_receipt_and_exact_loan_return_before_join() {
+    exact_decode_receipts(false);
+}
+#[test]
+fn ordinary_identity_needs_the_same_actual_installed_protection_and_loan_return() {
+    exact_decode_receipts(true);
+}
+fn exact_decode_receipts(ordinary: bool) {
     let Some(mut owner) = artifact() else { return };
     let (entered_tx, entered_rx) = mpsc::sync_channel(1);
     let (release_tx, release_rx) = mpsc::sync_channel(1);
     let (publication_tx, publication_rx) = mpsc::sync_channel(2);
     let (_wav, control, pages, key) = pair_with_hooks(Some(crate::worker::TestWorkerHooks {
+        scalar_steps: None,
         entered: entered_tx,
         release: release_rx,
         publications: publication_tx,
@@ -166,7 +174,22 @@ fn real_decode_needs_installed_protection_receipt_and_exact_loan_return_before_j
             end: 6,
         },
     ];
-    let first = stamp(&owner, 1);
+    let make_stamp = |epoch| {
+        let mut value = stamp(&owner, epoch);
+        if ordinary {
+            value.artifact = ReadinessArtifact::Ordinary { publication: 11 };
+        }
+        value
+    };
+    let first = make_stamp(1);
+    if ordinary {
+        let mut invalid = first;
+        invalid.artifact = ReadinessArtifact::Ordinary { publication: 0 };
+        assert_eq!(
+            loan.submit(ProtectionRole::Active, invalid, &extents),
+            Err(ReadinessRefusal::InvalidExtents)
+        );
+    }
     loan.submit(ProtectionRole::Active, first, &extents)
         .unwrap();
     assert!(
@@ -230,9 +253,19 @@ fn real_decode_needs_installed_protection_receipt_and_exact_loan_return_before_j
             .is_none()
     ); // unread receipt
     assert_eq!(
-        loan.submit(ProtectionRole::Active, stamp(&owner, 2), &extents),
+        loan.submit(ProtectionRole::Active, make_stamp(2), &extents),
         Err(ReadinessRefusal::ReceiptPending)
     );
+    let mut foreign = first;
+    foreign.artifact = if ordinary {
+        owner.identity().into()
+    } else {
+        ReadinessArtifact::Ordinary { publication: 11 }
+    };
+    assert!(!loan.acknowledge(ProtectionRole::Active, foreign, &extents));
+    foreign = first;
+    foreign.device_epoch += 1;
+    assert!(!loan.acknowledge(ProtectionRole::Active, foreign, &extents));
     let mut wrong = first;
     wrong.admitted_command_prefix += 1;
     assert!(!loan.acknowledge(ProtectionRole::Active, wrong, &extents));
@@ -253,7 +286,7 @@ fn real_decode_needs_installed_protection_receipt_and_exact_loan_return_before_j
         protected.request_page(key, 2);
     }
     assert_eq!(loan.pages.stats().queued_requests, requests);
-    let second = stamp(&owner, 2);
+    let second = make_stamp(2);
     let over_pool = [
         StreamPageExtent {
             source: key,

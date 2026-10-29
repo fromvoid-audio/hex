@@ -9,15 +9,21 @@
 //! Does not schedule projects, access devices/files, retain host resource ownership or host
 //! foreign plugins. Preparation is control work; processing borrows validated inputs and must
 //! remain bounded and allocation-free.
+mod parameter_binding;
+
 pub mod auto_pan;
 pub mod compressor;
+pub mod delay;
 pub mod eq8;
 pub use eq8::flexible as eq;
 pub mod fm4;
 pub mod gate;
+pub mod limiter;
 pub mod operator_envelope;
 pub mod operator_state;
 pub mod operator_waveform;
+pub mod overdrive;
+pub mod reverb;
 pub mod sampler;
 pub mod saturator;
 pub mod tuning_audition;
@@ -40,14 +46,18 @@ use hex_lattice_contract::{
 };
 use std::sync::OnceLock;
 
-static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 7] = [
+static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 11] = [
     &utility::UTILITY_DEFINITION,
     &eq8::EQ8_DEFINITION,
     &eq::EQ_DEFINITION,
     &saturator::SATURATOR_DEFINITION,
     &compressor::COMPRESSOR_DEFINITION,
     &gate::GATE_DEFINITION,
+    &limiter::DEFINITION,
     &auto_pan::AUTO_PAN_DEFINITION,
+    &reverb::REVERB_DEFINITION,
+    &overdrive::OVERDRIVE_DEFINITION,
+    &delay::DEFINITION,
 ];
 static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 4] = [
     &SINE_INSTRUMENT,

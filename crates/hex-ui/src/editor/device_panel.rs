@@ -25,6 +25,8 @@ use std::{
 
 mod auto_pan_panel;
 mod bindings;
+mod delay_panel;
+mod overdrive_panel;
 pub(super) use bindings::effective_parameter_value;
 use bindings::{
     ControlPresentation, ControlText, ParameterControl, cancel_control,
@@ -41,12 +43,14 @@ pub(super) use effect_bus::{EffectBusOwner, select_main, selected_owner};
 mod compressor_panel;
 mod eq8_panel;
 mod eq_panel;
+mod limiter_panel;
 pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod gain_meters;
 mod gate_panel;
 mod keyboard;
 mod navigation;
+mod reverb_panel;
 pub(super) use keyboard::{bind_keys as bind_keyboard_keys, key_up as selection_key_up};
 mod numeric_display;
 pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
@@ -113,6 +117,9 @@ pub(super) struct DevicePanelState {
     pub(super) navigation: navigation::Navigation,
     generation: u64,
     pub(super) selected_device: Option<DeviceId>,
+    selected_others: HashSet<DeviceId>,
+    selection_anchor: Option<DeviceId>,
+    pub(super) drag_copy: Option<DeviceDragCopy>,
     controls: HashMap<ParameterKey, ParameterControl>,
     meter_states: HashMap<DeviceId, gain_meters::MeterState>,
     send_controls: HashMap<SendControlKey, SendControl>,
@@ -141,6 +148,7 @@ pub(super) struct DevicePanelState {
     operator_envelope_gestures:
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphGesture>,
     eq_panels: HashMap<DeviceId, eq_panel::Panel>,
+    delay_panels: HashMap<DeviceId, delay_panel::Panel>,
     eq_spectrum: eq_panel::SpectrumSelection,
     sampler_cursor: sampler_overview::CursorState,
     eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
@@ -149,6 +157,8 @@ pub(super) struct DevicePanelState {
     saturator_previews: HashMap<DeviceId, saturator_panel::PreviewCache>,
     compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
     auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
+    reverb_previews: HashMap<DeviceId, reverb_panel::PreviewCache>,
+    overdrive_previews: HashMap<DeviceId, overdrive_panel::PreviewCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
     pub(super) spectrum_results: HashMap<
@@ -165,6 +175,15 @@ struct OperatorPreviewInventory {
     devices: Arc<HashSet<DeviceId>>,
 }
 
+#[derive(Clone)]
+pub(super) struct DeviceDragCopy {
+    generation: u64,
+    revision: u64,
+    owner: DevicePanelOwner,
+    device: DeviceId,
+    selected: hex_project::DeviceSelectionIds,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DevicePanelOwner {
     Main,
@@ -173,6 +192,87 @@ pub(super) enum DevicePanelOwner {
 }
 
 impl DevicePanelState {
+    pub(super) fn select_only(&mut self, device: Option<DeviceId>) {
+        self.selected_device = device;
+        self.selected_others.clear();
+        self.selection_anchor = device;
+    }
+
+    fn is_selected(&self, device: DeviceId) -> bool {
+        self.selected_device == Some(device) || self.selected_others.contains(&device)
+    }
+
+    fn reconcile_selection(&mut self, alive: &HashSet<DeviceId>) {
+        self.selected_device = self.selected_device.filter(|id| alive.contains(id));
+        self.selected_others.retain(|id| alive.contains(id));
+        self.selection_anchor = self.selection_anchor.filter(|id| alive.contains(id));
+        if self.selected_device.is_none() {
+            self.selected_device = self
+                .selected_others
+                .iter()
+                .copied()
+                .min_by_key(|id| id.value());
+            if let Some(primary) = self.selected_device {
+                self.selected_others.remove(&primary);
+            }
+        }
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = self.selected_device;
+        }
+    }
+
+    fn select_click(&mut self, device: DeviceId, order: &[DeviceId], modifiers: gpui::Modifiers) {
+        if !order.contains(&device) {
+            return;
+        }
+        if modifiers.shift {
+            let anchor = self
+                .selection_anchor
+                .or(self.selected_device)
+                .unwrap_or(device);
+            let Some(a) = order.iter().position(|id| *id == anchor) else {
+                self.select_only(Some(device));
+                return;
+            };
+            let Some(b) = order.iter().position(|id| *id == device) else {
+                return;
+            };
+            if modifiers.platform {
+                if let Some(previous) = self.selected_device {
+                    self.selected_others.insert(previous);
+                }
+            } else {
+                self.selected_others.clear();
+            }
+            self.selected_others
+                .extend(order[a.min(b)..=a.max(b)].iter().copied());
+            self.selected_others.remove(&device);
+            self.selected_device = Some(device);
+            self.selection_anchor = Some(anchor);
+        } else if modifiers.platform {
+            if self.is_selected(device) {
+                self.selected_others.remove(&device);
+                if self.selected_device == Some(device) {
+                    self.selected_device = order
+                        .iter()
+                        .copied()
+                        .find(|id| self.selected_others.contains(id));
+                    if let Some(primary) = self.selected_device {
+                        self.selected_others.remove(&primary);
+                    }
+                }
+                self.selection_anchor = self.selected_device;
+            } else {
+                if let Some(previous) = self.selected_device {
+                    self.selected_others.insert(previous);
+                }
+                self.selected_device = Some(device);
+                self.selection_anchor = Some(device);
+            }
+        } else {
+            self.select_only(Some(device));
+        }
+    }
     pub(super) fn add_menu_is_open(&self, state: Option<&ViewState>) -> bool {
         self.add_menu_open
             && self
@@ -469,12 +569,15 @@ pub(super) fn view(
         operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq_panels.clear();
+        view.device_panel.delay_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
         view.device_panel.saturator_previews.clear();
         view.device_panel.compressor_previews.clear();
         view.device_panel.auto_pan_previews.clear();
+        view.device_panel.reverb_previews.clear();
+        view.device_panel.overdrive_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_results.clear();
         if let Some(audio) = view.audio.as_mut() {
@@ -484,7 +587,8 @@ pub(super) fn view(
         view.device_panel.chain_window = Default::default();
         view.device_panel.parameter_rows.clear();
         view.device_panel.owner = None;
-        view.device_panel.selected_device = None;
+        view.device_panel.drag_copy = None;
+        view.device_panel.select_only(None);
         view.device_panel.generation = view.project_generation;
     }
     reconcile_eq_spectrum(view);
@@ -575,18 +679,22 @@ pub(super) fn view(
         operator_panel::harmonics::retire(view, cx, |_| false);
         view.device_panel.eq8_panels.clear();
         view.device_panel.eq_panels.clear();
+        view.device_panel.delay_panels.clear();
         view.device_panel.eq8_audition_toggles.clear();
         view.device_panel.eq8_graphs.clear();
         view.device_panel.eq8_responses.clear();
         view.device_panel.saturator_previews.clear();
         view.device_panel.compressor_previews.clear();
         view.device_panel.auto_pan_previews.clear();
+        view.device_panel.reverb_previews.clear();
+        view.device_panel.overdrive_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_results.clear();
         view.device_panel.chain_window = Default::default();
         view.device_panel.parameter_rows.clear();
         view.device_panel.owner = desired_owner;
-        view.device_panel.selected_device = None;
+        view.device_panel.drag_copy = None;
+        view.device_panel.select_only(None);
         view.device_panel.message = None;
     }
     match view.device_panel.owner {
@@ -749,10 +857,7 @@ fn render_track(
         })
         .collect();
     let alive: HashSet<_> = identities.keys().copied().collect();
-    view.device_panel.selected_device = view
-        .device_panel
-        .selected_device
-        .filter(|id| alive.contains(id));
+    view.device_panel.reconcile_selection(&alive);
 
     clear_removed_processor_audition_target(
         view,
@@ -1130,14 +1235,23 @@ fn retire_transfer_previews(
     panel: &mut DevicePanelState,
     type_of: impl Fn(DeviceId) -> Option<hex_lattice_contract::DeviceTypeId>,
 ) {
+    panel.delay_panels.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.delay"))
+    });
     panel.saturator_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.saturator"))
     });
     panel.compressor_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.compressor"))
     });
+    panel.overdrive_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.overdrive"))
+    });
     panel.auto_pan_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.auto-pan"))
+    });
+    panel.reverb_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.reverb"))
     });
 }
 
@@ -1152,9 +1266,13 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Effect, Some("hex.utility")) => UTILITY_FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.eq8" | "hex.eq")) => eq8_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.saturator")) => saturator_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.limiter")) => limiter_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.compressor")) => compressor_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.gate")) => gate_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.reverb")) => reverb_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.delay")) => delay_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.auto-pan")) => auto_pan_panel::FRAME_WIDTH,
+        (NativeDeviceClass::Effect, Some("hex.overdrive")) => overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     frame_width + gain_meters::WIDTH
@@ -1349,6 +1467,17 @@ fn render_device_end_target(
         .min_w(px(40.0))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex_shrink_0()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|view, _, window, cx| {
+                view.device_panel.select_only(None);
+                view.device_panel
+                    .chain_window
+                    .selection_focus(cx)
+                    .focus(window);
+                cx.notify();
+            }),
+        )
         .bg(rgb(if active {
             theme::color(theme::PaletteRole::Hover)
         } else {
@@ -1463,7 +1592,14 @@ fn device_drag_title(
             }),
         )
         .on_drag(payload, move |payload, _, window, cx| {
-            cx.set_active_drag_cursor_style(gpui::CursorStyle::ClosedHand, window);
+            cx.set_active_drag_cursor_style(
+                if window.modifiers().alt {
+                    gpui::CursorStyle::DragCopy
+                } else {
+                    gpui::CursorStyle::ClosedHand
+                },
+                window,
+            );
             entity.update(cx, |view, cx| {
                 view.begin_native_device_drag(payload);
                 cx.notify();
@@ -1472,18 +1608,139 @@ fn device_drag_title(
         })
 }
 
+fn chain_ids(project: &hex_project::Project, owner: DevicePanelOwner) -> Vec<DeviceId> {
+    match owner {
+        DevicePanelOwner::Track(id) => project
+            .track(id)
+            .map(|track| {
+                track
+                    .ordered_device_chain()
+                    .map(|node| match node {
+                        hex_project::TrackDeviceRef::Instrument(item)
+                        | hex_project::TrackDeviceRef::Effect(item) => item.id(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        DevicePanelOwner::Main => project
+            .main_devices()
+            .iter()
+            .map(hex_project::Device::id)
+            .collect(),
+        DevicePanelOwner::Return(id) => project
+            .return_tracks()
+            .iter()
+            .find(|track| track.id() == id)
+            .map(|track| {
+                track
+                    .devices()
+                    .iter()
+                    .map(hex_project::Device::id)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+fn project_owner(owner: DevicePanelOwner) -> hex_project::DeviceChainOwner {
+    match owner {
+        DevicePanelOwner::Track(id) => hex_project::DeviceChainOwner::Track(id),
+        DevicePanelOwner::Main => hex_project::DeviceChainOwner::Main,
+        DevicePanelOwner::Return(id) => hex_project::DeviceChainOwner::Return(id),
+    }
+}
+
 // Capture selection before nested controls consume their pointer event. Selection
 // is local view state and never finalizes or dispatches a parameter edit.
 fn device_selection_listener(
     device: DeviceId,
+    generation: u64,
+    owner: Option<DevicePanelOwner>,
     cx: &Context<EditorView>,
 ) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static {
     cx.listener(move |view, event: &gpui::MouseDownEvent, _, cx| {
-        if event.button == MouseButton::Left && view.device_panel.selected_device != Some(device) {
-            view.device_panel.selected_device = Some(device);
-            cx.notify();
+        if event.button != MouseButton::Left
+            || view.project_generation != generation
+            || view.device_panel.owner != owner
+        {
+            return;
         }
+        let Some(state) = view.state.as_ref() else {
+            return;
+        };
+        let Some(owner) = owner else {
+            return;
+        };
+        let order = chain_ids(&state.project, owner);
+        let members: Vec<_> = if view.device_panel.is_selected(device) {
+            order
+                .iter()
+                .copied()
+                .filter(|id| view.device_panel.is_selected(*id))
+                .collect()
+        } else {
+            vec![device]
+        };
+        view.device_panel.drag_copy =
+            hex_project::DeviceSelectionIds::new(&members)
+                .ok()
+                .map(|selected| DeviceDragCopy {
+                    generation,
+                    revision: state.revision,
+                    owner,
+                    device,
+                    selected,
+                });
+        if event.modifiers.alt && view.device_panel.is_selected(device) {
+            if let Some(previous) = view.device_panel.selected_device {
+                view.device_panel.selected_others.insert(previous);
+            }
+            view.device_panel.selected_others.remove(&device);
+            view.device_panel.selected_device = Some(device);
+        } else {
+            view.device_panel
+                .select_click(device, &order, event.modifiers);
+        }
+        cx.notify();
     })
+}
+
+fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful<Div> {
+    let device_id = device.id();
+    let foreign = view
+        .audible_playback
+        .as_ref()
+        .filter(|audible| audible.project_generation == view.project_generation)
+        .filter(|audible| {
+            audible
+                .state
+                .project
+                .device(device_id)
+                .is_some_and(|current| current.state().processing_eq(device.state()))
+        })
+        .and_then(|audible| audible.observation.as_ref())
+        .and_then(|observation| {
+            observation.foreign_processor(device_id.value(), device.state().type_id())
+        });
+    let (message, status) = match foreign {
+        Some(true) => (
+            theme::text("vst3 effect · parameter controls unavailable"),
+            "active",
+        ),
+        Some(false) => (
+            theme::text("vst3 unavailable · saved state preserved"),
+            "unavailable",
+        ),
+        None => (theme::text("vst3 · awaiting audio status"), "pending"),
+    };
+    let content = crate::device_composition::unsupported_body(message)
+        .debug_selector(move || format!("device-vst3-{status}-{}", device_id.value()));
+    div()
+        .child(content)
+        .id(ElementId::Name(
+            format!("device-body-{}", device_id.value()).into(),
+        ))
+        .debug_selector(move || format!("device-body-{}", device_id.value()))
 }
 
 fn render_effect(
@@ -1494,7 +1751,7 @@ fn render_effect(
     device: &hex_project::Device,
 ) -> Stateful<Div> {
     let device_id = device.id();
-    let selected = view.device_panel.selected_device == Some(device_id);
+    let selected = view.device_panel.is_selected(device_id);
     let device_view = view
         .device_panel
         .views
@@ -1510,13 +1767,37 @@ fn render_effect(
     let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
+        _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
+            let body = vst3_status_body(view, device);
+            device_frame(
+                device_drag_title(
+                    view,
+                    cx,
+                    device,
+                    NativeDeviceClass::Effect,
+                    theme::text("vst3"),
+                ),
+                theme::device_frame_style(selected),
+                leading,
+                header_actions,
+                body,
+            )
+        }
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 utility_panel::render_body(view, cx, device_id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.limiter") {
+                limiter_panel::render_body(view, cx, device, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.compressor") {
                 compressor_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
                 saturator_panel::render_body(view, cx, device_id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.reverb") {
+                reverb_panel::render_body(view, cx, device_id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.delay") {
+                delay_panel::render_body(view, cx, device_id, device.state(), device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.overdrive") {
+                overdrive_panel::render_body(view, cx, device_id, device.state(), device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 gate_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
@@ -1614,9 +1895,13 @@ fn render_effect(
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
         Ok("hex.eq8" | "hex.eq") => eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => saturator_panel::FRAME_WIDTH,
+        Ok("hex.limiter") => limiter_panel::FRAME_WIDTH,
         Ok("hex.compressor") => compressor_panel::FRAME_WIDTH,
         Ok("hex.gate") => gate_panel::FRAME_WIDTH,
+        Ok("hex.reverb") => reverb_panel::FRAME_WIDTH,
+        Ok("hex.delay") => delay_panel::FRAME_WIDTH,
         Ok("hex.auto-pan") => auto_pan_panel::FRAME_WIDTH,
+        Ok("hex.overdrive") => overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
     let rendered = div().w(px(frame_width)).flex_shrink_0().child(rendered);
@@ -1627,7 +1912,12 @@ fn render_effect(
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
-        .capture_any_mouse_down(device_selection_listener(device_id, cx))
+        .capture_any_mouse_down(device_selection_listener(
+            device_id,
+            view.project_generation,
+            view.device_panel.owner,
+            cx,
+        ))
         .child(rendered)
         .child(gain_meters::render(
             view,
@@ -1638,6 +1928,60 @@ fn render_effect(
 }
 
 impl EditorView {
+    pub(super) fn duplicate_device_drag_request(
+        &self,
+        drag: &drag::NativeDeviceDrag,
+        destination: hex_project::DeviceChainOwner,
+        before: Option<DeviceId>,
+    ) -> Result<Request, &'static str> {
+        let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source else {
+            return Err("device copy canceled · selection changed");
+        };
+        let snapshot = self
+            .device_panel
+            .drag_copy
+            .as_ref()
+            .ok_or("device copy canceled · selection changed")?;
+        if snapshot.device != device
+            || snapshot.generation != drag.project_generation
+            || snapshot.revision != drag.revision
+        {
+            return Err("device copy canceled · selection changed");
+        }
+        let project = &self
+            .state
+            .as_ref()
+            .ok_or("device copy canceled · project changed")?
+            .project;
+        let copies_instrument = match snapshot.owner {
+            DevicePanelOwner::Track(id) => project
+                .track(id)
+                .and_then(|track| track.instrument())
+                .is_some_and(|device| snapshot.selected.ids().contains(&device.id())),
+            _ => false,
+        };
+        if copies_instrument {
+            match destination {
+                hex_project::DeviceChainOwner::Track(id)
+                    if project
+                        .track(id)
+                        .is_some_and(|track| !track.is_group() && track.instrument().is_none()) => {
+                }
+                _ => return Err("destination cannot accept another instrument"),
+            }
+        }
+        Ok(Request::DeviceClipboard {
+            project_generation: drag.project_generation,
+            revision: drag.revision,
+            action: hex_session::service::DeviceClipboardAction::Duplicate {
+                source: project_owner(snapshot.owner),
+                selected: snapshot.selected.clone(),
+                destination,
+                before,
+            },
+        })
+    }
+
     fn drop_native_device_to_effect_bus(
         &mut self,
         drag: &drag::NativeDeviceDrag,
@@ -1681,6 +2025,27 @@ impl EditorView {
         }
         if !finalize_controls(self, cx) {
             self.clear_native_device_drag(drag);
+            cx.notify();
+            return;
+        }
+        if window.modifiers().alt
+            && matches!(drag.source, drag::NativeDeviceDragSource::Existing { .. })
+        {
+            let destination = match owner {
+                EffectBusOwner::Main => hex_project::DeviceChainOwner::Main,
+                EffectBusOwner::Return(id) => hex_project::DeviceChainOwner::Return(id),
+            };
+            let request = self.duplicate_device_drag_request(drag, destination, before);
+            self.clear_native_device_drag(drag);
+            match request {
+                Ok(request) => {
+                    if self.enqueue_device_barrier(request) {
+                        self.error = None;
+                        self.status = "copying devices".into();
+                    }
+                }
+                Err(reason) => self.error = Some(reason.into()),
+            }
             cx.notify();
             return;
         }
@@ -1882,6 +2247,27 @@ impl EditorView {
                 return;
             }
         }
+        if window.modifiers().alt
+            && matches!(drag.source, drag::NativeDeviceDragSource::Existing { .. })
+        {
+            let request = self.duplicate_device_drag_request(
+                drag,
+                hex_project::DeviceChainOwner::Track(track),
+                before,
+            );
+            self.clear_native_device_drag(drag);
+            match request {
+                Ok(request) => {
+                    if self.enqueue_device_barrier(request) {
+                        self.error = None;
+                        self.status = "copying devices".into();
+                    }
+                }
+                Err(reason) => self.error = Some(reason.into()),
+            }
+            cx.notify();
+            return;
+        }
         if let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source
             && device_move_would_be_noop(&state.project, device, track, before)
         {
@@ -1976,7 +2362,7 @@ fn render_instrument(
     device: &hex_project::Device,
 ) -> Stateful<Div> {
     let device_id = device.id();
-    let selected = view.device_panel.selected_device == Some(device_id);
+    let selected = view.device_panel.is_selected(device_id);
     let cached = view
         .device_panel
         .views
@@ -2219,7 +2605,12 @@ fn render_instrument(
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
-        .capture_any_mouse_down(device_selection_listener(device_id, cx))
+        .capture_any_mouse_down(device_selection_listener(
+            device_id,
+            view.project_generation,
+            view.device_panel.owner,
+            cx,
+        ))
         .child(rendered)
         .child(gain_meters::render(
             view,
@@ -2301,12 +2692,17 @@ fn render_add_menu(
         .debug_selector(|| "device-add-menu".into())
         .absolute()
         .top(px(DEVICE_PANEL_HEADER_HEIGHT))
+        .left(px(4.0))
         .right(px(4.0))
-        .h(px(23.0))
+        .max_h(px(crate::device_composition::BODY_HEIGHT))
+        .overflow_y_scroll()
+        .occlude()
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(px(3.0))
         .px(px(4.0))
+        .py(px(2.0))
         .bg(rgb(theme::color(theme::PaletteRole::Raised)));
     let mut any_entry = false;
     for (class, entries) in [
@@ -2334,6 +2730,8 @@ fn render_add_menu(
                             .id(ElementId::Name(action_id.clone().into()))
                             .debug_selector(move || action_id.clone())
                             .h(px(18.0))
+                            .flex_shrink_0()
+                            .whitespace_nowrap()
                             .px(px(5.0))
                             .flex()
                             .items_center()
@@ -2596,7 +2994,7 @@ fn parameter_control_with_presentation(
     display: ControlText,
 ) -> Div {
     let compact_toggle_width = match display.label {
-        Some("bass mono" | "mono") => 64.0,
+        Some("bass mono" | "mono" | "maximize" | "auto") => 64.0,
         Some("bass mono audition" | "r" | "q") => 14.0,
         Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "on" | "fix" | "") => 18.0,
         Some("ø l" | "ø r" | "mute" | "dc") => 31.0,

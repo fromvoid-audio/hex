@@ -1227,6 +1227,9 @@ impl EditorView {
 
 impl Drop for EditorView {
     fn drop(&mut self) {
+        // Request cancellation before Service shutdown; native custody remains
+        // with its worker even when publication admission has already won.
+        self.cancel_plugin_effect();
         if let Some(control) = &self.bounce_control {
             control.cancel();
         }
@@ -1261,7 +1264,6 @@ impl Drop for EditorView {
 pub(super) enum ToggleAction {
     Pause,
     PlayFrom(u64),
-    PreparedPlayFrom(u64),
     Unavailable,
 }
 
@@ -1276,8 +1278,10 @@ fn toggle_action(
         ToggleAction::Pause
     } else {
         match requires_preroll {
-            Some(true) => ToggleAction::PreparedPlayFrom(start_frame),
-            Some(false) => ToggleAction::PlayFrom(start_frame),
+            // Interactive starts reset effect history and chase held notes in
+            // the already prepared runtime. Exact-history seeks retain their
+            // separate worker path; Play must never replay the song prefix.
+            Some(_) => ToggleAction::PlayFrom(start_frame),
             None => ToggleAction::Unavailable,
         }
     }

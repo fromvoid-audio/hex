@@ -4,6 +4,7 @@
 //! # Dependencies
 //! Uses pinned GPUI, unicode-segmentation and the standard library; the caller supplies display text, style, typography
 //! and canonical bindings.
+//! Tests use pinned Lyon as the legacy waveform tessellation oracle only.
 //!
 //! # Does not own
 //! Does not construct devices, edit projects, perform DSP, own audio queues or access files. Local
@@ -86,8 +87,8 @@ pub use response_graph::{
     ResponseGraphScrollEvent, ResponseGraphScrollPhase, bind_response_graph_keys,
 };
 pub use style::{
-    ActionStyle, CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceFrameStyle,
-    TOGGLE_CORNER_RADIUS,
+    ActionStyle, CONTROL_CORNER_RADIUS, ControlAvailability, ControlStyle, DEVICE_CORNER_RADIUS,
+    DeviceFrameStyle, TOGGLE_CORNER_RADIUS,
 };
 
 #[cfg(test)]
@@ -107,7 +108,7 @@ mod level_meter;
 mod meter_clip;
 pub use level_meter::{
     LevelMeterStyle, METER_NEAR_PEAK_AMPLITUDE, METER_NEAR_PEAK_DBFS, MeterColors, MeterLevel,
-    level_meter,
+    level_meter, reduction_meter,
 };
 
 mod meter_indicator;
@@ -121,8 +122,8 @@ mod rectangle;
 pub use range_selection::{RANGE_HANDLE_FRACTION, RangeSelectionTarget, RangeSelectionZones};
 pub use rectangle::{
     RectangleCapture, RectangleEdges, RectangleIntent, RectanglePart, RectanglePhase,
-    RectangleSelection, RectangleSelectionPolicy, rectangle_body, rectangle_edge,
-    rectangle_pointer, rectangle_surface, rectangle_surface_pixels,
+    RectangleSelection, RectangleSelectionPolicy, rectangle_body, rectangle_border_width,
+    rectangle_edge, rectangle_pointer, rectangle_surface, rectangle_surface_pixels,
 };
 #[cfg(test)]
 mod rectangle_tests;
@@ -133,3 +134,12 @@ pub use waveform_plot::{
     WaveformEmphasis, WaveformEnvelope, WaveformEnvelopeMode, WaveformGeometry, WaveformRange,
     WaveformStroke, WaveformViewport, waveform_plot,
 };
+
+#[cfg(test)]
+mod pointer_hover_tests;
+
+#[cfg(test)]
+mod pointer_capture_tests;
+
+#[cfg(test)]
+mod surface_capture_tests;

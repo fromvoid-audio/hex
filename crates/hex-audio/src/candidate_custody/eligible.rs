@@ -18,6 +18,8 @@ pub use native_sources::{
     NativeSourceDataReservation, NativeSourcePreparationProgress, NativeSourcePreparationReturn,
 };
 pub(crate) use pages::DomainEnvelope;
+pub(super) use publication::OrdinaryReservation;
+pub(crate) use publication::{ActiveView, OrdinaryStreams};
 pub use publication::{
     AudioCandidateCancellationResult, AudioCandidateEligibleStageRefusal,
     AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
@@ -99,6 +101,7 @@ struct NativeBank {
     domains: [DomainSlot; 2],
     metadata_bytes: usize,
     closing: bool,
+    ordinary: Option<OrdinaryReservation>,
     publication: publication::Bank,
     native: Option<crate::native_callback_owner::NativeCandidateBoundary>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -115,6 +118,7 @@ impl Default for NativeBank {
             domains: std::array::from_fn(|_| DomainSlot::vacant()),
             metadata_bytes: 0,
             closing: false,
+            ordinary: None,
             publication: publication::Bank::default(),
             native: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -241,6 +245,7 @@ impl Custody {
             domains: std::array::from_fn(|_| DomainSlot::vacant()),
             metadata_bytes: base_bytes,
             closing: false,
+            ordinary: None,
             publication: publication::Bank::default(),
             native,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -319,6 +324,9 @@ impl Custody {
             slot.phase = Phase::Reserved;
             slot.starting = true;
             slot.signal.return_requested.store(false, Ordering::Relaxed);
+            slot.signal
+                .endpoint_installed
+                .store(false, Ordering::Relaxed);
             Ok((
                 AudioCandidateDomainToken {
                     root: bank.root,
@@ -394,6 +402,17 @@ impl Custody {
             slot.loan_outstanding = envelope.is_some();
         }
         Ok((token, envelope))
+    }
+    pub(super) fn domain_has_no_graph_users(&self, token: AudioCandidateDomainToken) -> bool {
+        let bank = lock(&self.bank);
+        !bank.closing
+            && bank.root == token.root
+            && bank.domains.get(token.slot).is_some_and(|slot| {
+                slot.matches(token)
+                    && !slot.retiring
+                    && slot.phase == Phase::Accepted
+                    && slot.uses == 0
+            })
     }
     pub(super) fn domain_is_sealed(&self, token: AudioCandidateDomainToken) -> bool {
         let bank = lock(&self.bank);
@@ -603,6 +622,21 @@ impl Custody {
             slot.ready = Some(report);
             slot.phase = Phase::Complete;
         }
+    }
+    pub(super) fn cleanup_failed(&self) -> bool {
+        let bank = lock(&self.bank);
+        bank.domains.iter().any(|s| s.phase == Phase::Failed)
+            || bank.publication.cleanup_failed()
+            || {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                {
+                    bank.sources.cleanup_failed()
+                }
+                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                {
+                    false
+                }
+            }
     }
     fn fail(&self, index: usize) {
         let mut guard = lock(&self.bank);

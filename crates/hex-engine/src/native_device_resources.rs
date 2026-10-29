@@ -21,6 +21,9 @@ use hex_project::AssetId;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+const HASH_BLOCK_FRAMES: usize = 256;
+const HASH_STEREO_FRAME_BYTES: usize = 8;
+
 mod admission;
 pub(crate) mod current_sampler;
 mod ingress;
@@ -216,6 +219,9 @@ impl DeviceResourceCatalog {
             return Err(ResourcePreparationError::MetadataCapacity);
         }
         let mut work = reservation.hash_frames;
+        // Fixed control-stack staging, outside resource DATA/owner accounting.
+        // Preserve the v1 little-endian bit protocol and existing poll interval.
+        let mut encoded = [0_u8; HASH_BLOCK_FRAMES * HASH_STEREO_FRAME_BYTES];
         for expected in expected() {
             cancellation(cancel)?;
             let token = bank.source_token(expected.asset)?;
@@ -237,13 +243,23 @@ impl DeviceResourceCatalog {
             hash.update(b"hex.device-resource.original-stereo.v1\0");
             hash.update(expected.sample_rate.to_le_bytes());
             hash.update(expected.frames.to_le_bytes());
-            for chunk in pcm.chunks(256) {
+            for chunk in pcm.chunks(HASH_BLOCK_FRAMES) {
                 cancellation(cancel)?;
-                for frame in chunk {
-                    for sample in frame {
-                        hash.update(sample.to_bits().to_le_bytes());
-                    }
+                for (frame, bytes) in chunk
+                    .iter()
+                    .zip(encoded.chunks_exact_mut(HASH_STEREO_FRAME_BYTES))
+                {
+                    bytes[..4].copy_from_slice(&frame[0].to_bits().to_le_bytes());
+                    bytes[4..].copy_from_slice(&frame[1].to_bits().to_le_bytes());
                 }
+                let used = chunk
+                    .len()
+                    .checked_mul(HASH_STEREO_FRAME_BYTES)
+                    .ok_or(ResourcePreparationError::InvalidSource)?;
+                let bytes = encoded
+                    .get(..used)
+                    .ok_or(ResourcePreparationError::InvalidSource)?;
+                hash.update(bytes);
             }
             let identity = DeviceResourceIdentity {
                 asset: DeviceAssetKey::new(expected.asset.value())
@@ -395,11 +411,18 @@ mod tests;
 
 /// Metadata classification for containment/refusal only; type identity alone
 /// never grants source preparation, native admission or a musical runtime.
+/// Conservative control-side dispatch hint for an incoming retained source.
+/// This grants no resource/admission authority; the existing constructor still
+/// validates state, original-bank identity and all work/storage reservations.
+pub fn requires_private_sampler_state(state: &hex_lattice_contract::NativeDeviceState) -> bool {
+    hex_devices::sampler::state::requires_source(state)
+}
 pub fn requires_private_sampler_sources(project: &hex_project::Project) -> bool {
     project.tracks().iter().any(|track| {
-        track
-            .instrument()
-            .is_some_and(|device| hex_devices::sampler::state::requires_source(device.state()))
+        track.receives_source_audio()
+            && track
+                .instrument()
+                .is_some_and(|device| requires_private_sampler_state(device.state()))
     })
 }
 #[cfg(feature = "instrument-test-support")]

@@ -2,6 +2,8 @@
 // plug-in stdio is disconnected before loading. No native pointer is serialized.
 #pragma once
 #include "macos_state_stream.hpp"
+#include "macos_parameters.hpp"
+#include "macos_parameter_page.hpp"
 #include <array>
 #include <cerrno>
 #include <cmath>
@@ -171,20 +173,34 @@ inline void sample(uint8_t* p,float value) {
     uint32_t bits=0;std::memcpy(&bits,&value,4);for(size_t n=0;n<4;++n) p[n]=static_cast<uint8_t>(bits>>(n*8));
 }
 struct Packet {
-    std::array<uint8_t,header_size+max_frames*8> bytes{};
+    std::array<uint8_t,header_size+max_frames*8+hex_instance::PARAMETER_POINT_COUNT*16> bytes{};
+    std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> parameters{};
+    size_t parameter_count=0;
     uint16_t frames=0;bool stop=false;
     uint64_t next_graph=0,next_epoch=0;
+    uint64_t capture_operation=0;
+    hex_instance::ControllerQuery parameter_query{};
     std::optional<Presentation> resumed_presentation;
-    // 0 EOF/cancellation, 1 PCM, 2 terminal, 3 quiesce, 4 resume, -1 malformed.
+    // 0 EOF/cancellation, 1 PCM, 2 terminal, 3 quiesce, 4 resume,
+    // 5 quiescent capture, 6 live capture start, 7 live capture poll, 8 stopped flush,
+    // 9 edit receipts, 10 controller page start, 11 controller page poll, -1 malformed.
     // Only the serialized processing lane reads these requests. Resume changes
     // no source/format facts, and is legal only in an acknowledged quiescence.
     int read(int fd,const Config& config,uint64_t sequence,uint64_t frame) {
         auto* p=bytes.data();const auto received=read_exact(fd,p,header_size);
         if(received!=1) return received;
         stop=!std::memcmp(p,"HXVE",4);
-        const bool quiesce=!std::memcmp(p,"HXVQ",4),resume=!std::memcmp(p,"HXVR",4);
-        if((!stop && !quiesce && !resume && std::memcmp(p,"HXVB",4)) || number(p+4,2)!=1 || number(p+8,2)) return -1;
-        for(size_t n=resume?11:10;n<16;++n) if(p[n]) return -1;
+        const bool quiesce=!std::memcmp(p,"HXVQ",4),resume=!std::memcmp(p,"HXVR",4),capture=!std::memcmp(p,"HXVC",4);
+        const bool edit_query=!std::memcmp(p,"HXVG",4);
+        const bool page_start=!std::memcmp(p,"HXVM",4),page_poll=!std::memcmp(p,"HXVN",4);
+        const bool live_start=!std::memcmp(p,"HXVL",4),live_poll=!std::memcmp(p,"HXVP",4);
+        const bool pcm=!std::memcmp(p,"HXVB",4),flush=!std::memcmp(p,"HXVF",4);
+        const auto version=number(p+4,2);
+        if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && !pcm && !flush && !edit_query && !page_start && !page_poll) ||
+            ((pcm || flush)?(version!=1 && version!=2):version!=1) || number(p+8,2)) return -1;
+        parameter_count=(pcm || flush) && version==2?static_cast<size_t>(number(p+10,2)):0;
+        if(parameter_count>parameters.size()) return -1;
+        for(size_t n=resume?11:((pcm || flush) && version==2?12:10);n<16;++n) if(p[n]) return -1;
         for(size_t n=0;n<4;++n) if(number(p+16+n*8,8)!=config.binding[n]) return -1;
         frames=static_cast<uint16_t>(number(p+6,2));
         if(resume) {
@@ -200,11 +216,58 @@ struct Packet {
         if(number(p+48,8)!=sequence || number(p+56,8)!=frame) return -1;
         if(stop) return frames? -1:2;
         if(quiesce) return frames? -1:3;
+        if(page_start || page_poll) {
+            if(frames || read_exact(fd,p+header_size,287)!=1) return -1;
+            capture_operation=number(p+header_size,8);
+            parameter_query.first=static_cast<uint16_t>(number(p+header_size+8,2));
+            parameter_query.revision=number(p+header_size+10,8);
+            parameter_query.kind=p[header_size+18];
+            parameter_query.id=static_cast<uint32_t>(number(p+header_size+19,4));
+            parameter_query.bits=number(p+header_size+23,8);
+            for(size_t n=0;n<128;++n) parameter_query.text[n]=static_cast<Steinberg::Vst::TChar>(number(p+header_size+31+n*2,2));
+            if(!capture_operation || !hex_instance::valid_controller_query(parameter_query)) return -1;
+            return page_start?10:11;
+        }
+        if(flush) {
+            if(version!=2 || frames || read_exact(fd,p+header_size,8+parameter_count*16)!=1) return -1;
+            capture_operation=number(p+header_size,8);
+            return capture_operation && parse_parameters(p+header_size+8,1)?8:-1;
+        }
+        if(capture || live_start || live_poll || edit_query) {
+            if(frames || read_exact(fd,p+header_size,8)!=1) return -1;
+            capture_operation=number(p+header_size,8);return capture_operation?(edit_query?9:(live_start?6:(live_poll?7:5))):-1;
+        }
         if(!frames || frames>config.maximum || frame>std::numeric_limits<uint64_t>::max()-frames || sequence==std::numeric_limits<uint64_t>::max()) return -1;
-        if(read_exact(fd,p+header_size,frames*8)!=1) return -1;
+        if(read_exact(fd,p+header_size,frames*8+parameter_count*16)!=1) return -1;
         for(size_t n=0;n<frames*2u;++n) if(!std::isfinite(sample(p+header_size+n*4))) return -1;
-        return 1;
+        return parse_parameters(p+header_size+frames*8,frames)?1:-1;
     }
-    bool write(int fd) const { return write_exact(fd,bytes.data(),header_size+frames*8); }
+    bool parse_parameters(const uint8_t* start,int32_t limit) {
+        for(size_t n=0;n<parameter_count;++n) {
+            const auto* point=start+n*16;
+            auto& value=parameters[n];value.offset=static_cast<int32_t>(number(point,2));
+            value.id=static_cast<uint32_t>(number(point+4,4));
+            const auto bits=number(point+8,8);std::memcpy(&value.normalized,&bits,8);
+            if(number(point+2,2) || value.offset>=limit || value.id>0x7FFFFFFFu ||
+                !std::isfinite(value.normalized) || value.normalized<0 || value.normalized>1 ||
+                (n && parameters[n-1].offset>value.offset)) return false;
+        }
+        return true;
+    }
+    bool write(int fd,const hex_instance::ParameterChanges& output) {
+        if(output.size()>parameters.size()) return false;
+        bytes[4]=output.size()?2:1;bytes[5]=0;
+        bytes[10]=static_cast<uint8_t>(output.size());bytes[11]=0;
+        for(size_t n=0;n<output.size();++n) {
+            hex_instance::ParameterPoint value{};if(!output.point(n,value)) return false;
+            auto* point=bytes.data()+header_size+frames*8+n*16;
+            point[0]=static_cast<uint8_t>(value.offset);point[1]=static_cast<uint8_t>(value.offset>>8);
+            point[2]=point[3]=0;
+            for(size_t byte=0;byte<4;++byte) point[4+byte]=static_cast<uint8_t>(value.id>>(byte*8));
+            uint64_t bits=0;std::memcpy(&bits,&value.normalized,8);
+            for(size_t byte=0;byte<8;++byte) point[8+byte]=static_cast<uint8_t>(bits>>(byte*8));
+        }
+        return write_exact(fd,bytes.data(),header_size+frames*8+output.size()*16);
+    }
 };
 } // namespace hex_instance_wire

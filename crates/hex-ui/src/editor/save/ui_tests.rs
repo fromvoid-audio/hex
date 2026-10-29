@@ -109,6 +109,48 @@ fn fixture(
         old.as_object_mut().unwrap().remove("grouped_audio"),
         Some(serde_json::json!([]))
     );
+    // Schema44 adds required hierarchy rows; this fixture has no tracks.
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("track_hierarchy"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("native_sources"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("track_source_bindings"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("session_audio_cycles"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("device_automation"),
+        Some(serde_json::json!([]))
+    );
+    for key in [
+        "alias_sources",
+        "alias_members",
+        "inactive_midi_notes",
+        "inactive_audio_events",
+        "nested_audio",
+        "audio_event_gains",
+        "midi_clip_gains",
+    ] {
+        assert_eq!(
+            old.as_object_mut().unwrap().remove(key),
+            Some(serde_json::json!([]))
+        );
+    }
+    // Schema53 host automation must be empty before comparing this old envelope.
+    assert_eq!(
+        old.get("host_automation"),
+        Some(&serde_json::json!([])),
+        "historical fixture cannot discard host automation"
+    );
+    old.as_object_mut().unwrap().remove("host_automation");
     old["version"] = 36.into();
     old.as_object_mut().unwrap().remove("arrangement_sections");
     let original = serde_json::to_vec(&old).unwrap();
@@ -224,7 +266,7 @@ fn older_format_explicit_overwrite_warns_once_and_save_as_keeps_original(cx: &mu
         settled(view) && view.document_format_upgrade_required
     });
     save(&editor, &mut visual);
-    visual.simulate_prompt_answer("overwrite older format");
+    visual.simulate_prompt_answer("overwrite original");
     pump(&editor, &mut visual, |view| {
         settled(view) && !view.document_format_upgrade_required
     });
@@ -272,5 +314,67 @@ fn older_format_cancel_during_save_before_open_clears_the_open_intent(cx: &mut T
             .clone()),
         Some(path)
     );
+    visual.update(|window, _| window.remove_window());
+}
+
+#[gpui::test]
+fn worker_discovered_reader_warning_opens_prompt_and_can_cancel_or_overwrite(
+    cx: &mut TestAppContext,
+) {
+    let (_files, path, original, mut visual, editor) = fixture(cx);
+    // The UI can have an older displayed compatibility flag, for example when
+    // current-schema metadata grows beyond a legacy reader's byte ceiling.
+    // Exercise the real backend refusal with this small older-schema fixture;
+    // the Service test separately crosses the actual size threshold.
+    for answer in ["cancel", "save as…", "overwrite original"] {
+        editor.update(&mut visual, |view, cx| {
+            view.document_format_upgrade_required = false;
+            view.save_project(cx);
+        });
+        pump(&editor, &mut visual, |view| {
+            settled(view) && view.save_dialog_open
+        });
+        assert!(visual.has_pending_prompt());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        visual.simulate_prompt_answer(answer);
+        visual.run_until_parked();
+        if answer == "save as…" {
+            wait_for_picker(&editor, &mut visual);
+            visual.simulate_new_path_selection(|_| None);
+            visual.run_until_parked();
+        }
+        pump(&editor, &mut visual, settled);
+        assert!(!editor.read_with(&visual, |view, _| view.save_dialog_open));
+    }
+    assert_ne!(fs::read(&path).unwrap(), original);
+    assert!(!visual.has_pending_prompt());
+    visual.update(|window, _| window.remove_window());
+}
+
+#[gpui::test]
+fn worker_discovered_warning_cannot_overwrite_a_replaced_document(cx: &mut TestAppContext) {
+    let (files, path, original, mut visual, editor) = fixture(cx);
+    editor.update(&mut visual, |view, cx| {
+        view.document_format_upgrade_required = false;
+        view.save_project(cx);
+    });
+    pump(&editor, &mut visual, |view| {
+        settled(view) && view.save_dialog_open
+    });
+    assert!(visual.has_pending_prompt());
+    let other = files.0.join("other.hex");
+    fs::write(&other, &original).unwrap();
+    editor.update(&mut visual, |view, _| {
+        view.service.submit(Request::Open(other.clone())).unwrap();
+    });
+    pump(&editor, &mut visual, |view| {
+        settled(view) && view.project_generation == 2
+    });
+    visual.simulate_prompt_answer("overwrite original");
+    visual.run_until_parked();
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(fs::read(&other).unwrap(), original);
+    assert!(!editor.read_with(&visual, |view, _| view.saving_project
+        || view.save_dialog_open));
     visual.update(|window, _| window.remove_window());
 }

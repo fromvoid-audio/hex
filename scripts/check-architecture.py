@@ -24,10 +24,11 @@ ALLOWED = {
     'hex-devices': {'hex-lattice', 'hex-lattice-contract', 'hex-dsp'},
     'hex-media': {'hex-engine', 'hex-project'},
     'hex-storage': {'hex-project', 'hex-lattice-contract', 'hex-tuning'},
-    'hex-session': {'hex-tuning', 'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract'},
+    # Pure captured-save envelope validation; no native runtime/ABI ownership.
+    'hex-session': {'hex-tuning', 'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract', 'hex-plugin-state'},
     'hex-warp': set(),
     'hex-engine': {'hex-warp', 'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
-    'hex-stream': {'hex-engine', 'hex-media', 'hex-project'},
+    'hex-stream': {'hex-engine', 'hex-media', 'hex-project', 'hex-storage'},
     'hex-export': {'hex-engine'},
     'hex-library': set(),
     'hex-preferences': set(),
@@ -37,7 +38,7 @@ ALLOWED = {
     'hex-ui': {'hex-plugin-catalog', 'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
     # Desktop injects the Session sink and binds neutral source facts to actual
     # audio/stream constructor custody; Session has no device/stream edge.
-    'hex-desktop': {'hex-mts', 'hex-midi', 'hex-diagnostics', 'hex-ui', 'hex-audio', 'hex-engine', 'hex-session', 'hex-stream', 'hex-media', 'hex-export'},
+    'hex-desktop': {'hex-mts', 'hex-midi', 'hex-diagnostics', 'hex-ui', 'hex-audio', 'hex-engine', 'hex-session', 'hex-stream', 'hex-media', 'hex-export', 'hex-plugin-catalog', 'hex-preferences'},
     'hex-cli': {'hex-engine', 'hex-project', 'hex-media', 'hex-storage', 'hex-export'},
 }
 # These narrow test-only edges exercise canonical publication and prepared
@@ -53,9 +54,9 @@ DEV_ALLOWED = {
     'hex-engine': {'hex-tuning'},
     'hex-session': {'hex-tuning'},
     # Actual Session -> native adapter fixtures, never a production editor model.
-    'hex-desktop': {'hex-project', 'hex-tuning', 'hex-storage'},
+    'hex-desktop': {'hex-project', 'hex-tuning', 'hex-storage', 'hex-plugin-state'},
     # Actual provider/pair callback allocation probes; never a production edge.
-    'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning', 'hex-devices', 'hex-plugin-scan', 'hex-plugin-state'},
+    'hex-audio': {'hex-project', 'hex-storage', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning', 'hex-devices', 'hex-plugin-scan', 'hex-plugin-state'},
     'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning'},
 }
 BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
@@ -63,15 +64,17 @@ BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'corem
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream', 'hex-plugin-host'},
               # Safe macOS joining-transport scheduling, never callback calls.
               'qos-threads': {'hex-audio'},
-              # Source/scanner identities and bounded control-side hashes of
-              # the engine's actual retained PCM bank; never callback DSP.
-              'sha2': {'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan'},
+              # Source/scanner identities, automation draft integrity and bounded
+              # control-side hashes of retained PCM and selected desktop update receipts; never callback DSP.
+              'sha2': {'hex-storage', 'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan', 'hex-desktop'},
               # Child disposition belongs only to the standalone scanners.
               'signal-hook': {'hex-plugin-scan', 'hex-clap-scan'},
+              # Signal only the owned local-update helper group on desktop control workers.
+              'nix': {'hex-desktop'},
               # Safe publication/standalone child ownership; host event-only socket readiness.
               'rustix': {'hex-export', 'hex-plugin-scan', 'hex-clap-scan', 'hex-plugin-host'},
-              # Advisory document/catalog locks stay on their storage/control boundaries.
-              'fs2': {'hex-storage', 'hex-plugin-catalog'}}
+              # Advisory document/catalog and desktop update-lifetime locks stay on control boundaries.
+              'fs2': {'hex-storage', 'hex-plugin-catalog', 'hex-desktop'}}
 # Build-only hash checks of observed pinned rtrb constructor files. This does
 # not permit cryptography or a new dependency on the stream runtime path.
 BUILD_BOUNDARIES = {'coremidi': {'hex-midi'}, 'sha2': {'hex-stream'}}

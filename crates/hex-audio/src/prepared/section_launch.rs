@@ -99,7 +99,7 @@ impl Callback {
         // Revalidate immediately before the swap, including a cancellation or
         // priority Stop racing the old prefix. Retired owners keep ordinary
         // fixed return-ring custody, including under backpressure.
-        self.advance_legacy_publication();
+        self.advance_legacy_publication(Some(after.len()));
         self.render_project(after)?;
         Ok(true)
     }

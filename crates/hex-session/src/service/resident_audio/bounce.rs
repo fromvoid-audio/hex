@@ -16,8 +16,8 @@ pub(in crate::service) fn bounce_clip(
         clip,
         directory,
         |session, project| {
-            let sink = sink
-                .try_borrow()
+            let mut sink = sink
+                .try_borrow_mut()
                 .map_err(|_| "bounce sink already borrowed")?;
             let inputs = session
                 .resident_seek_inputs(admission, current.as_ref(), None)
@@ -25,11 +25,12 @@ pub(in crate::service) fn bounce_clip(
             let mut isolated = inputs
                 .prepare(
                     project,
-                    &**sink,
+                    &mut **sink,
                     &session.media_bank(),
                     session.sine_table(),
                     &session.audio_transforms,
                     &session.audio_clip_waveforms,
+                    context,
                 )
                 .map_err(|e| e.to_string())?;
             // Offline conversion is authored synthesis only. No monitor selection is attached.
@@ -126,7 +127,8 @@ pub(in crate::service) fn bounce_arrangement(
     admission: sampler_export::Admission<'_>,
     current: &mut Option<Snapshot>,
 ) -> Result<(Created, Arc<PreparedRevision>), String> {
-    if in_place
+    let replaces_devices = target.bakes_devices(in_place);
+    if replaces_devices
         && current.as_ref().is_some_and(|s| {
             s.inputs.keyboard.is_some()
                 || s.inputs.audition.is_some()
@@ -137,7 +139,7 @@ pub(in crate::service) fn bounce_arrangement(
     }
     // Reuse the native stopped fence, never inherit outgoing voices that are
     // now represented by the baked PCM. Command-B retains original ownership.
-    let stopped = if in_place {
+    let stopped = if replaces_devices {
         Some(
             crate::service::stopped_arrangement::acquire(
                 sink,
@@ -161,8 +163,8 @@ pub(in crate::service) fn bounce_arrangement(
         directory,
         control,
         |session, project, allowance_frames| {
-            let sink = sink
-                .try_borrow()
+            let mut sink = sink
+                .try_borrow_mut()
                 .map_err(|_| "bounce sink already borrowed")?;
             let inputs = session
                 .resident_seek_inputs(admission, current.as_ref(), None)
@@ -172,11 +174,12 @@ pub(in crate::service) fn bounce_arrangement(
             let mut isolated = inputs
                 .prepare(
                     project,
-                    &**sink,
+                    &mut **sink,
                     &session.media_bank(),
                     session.sine_table(),
                     &session.audio_transforms,
                     &waveforms,
+                    context,
                 )
                 .map_err(|e| e.to_string())?;
             isolated.inputs = RuntimeInputs::default();

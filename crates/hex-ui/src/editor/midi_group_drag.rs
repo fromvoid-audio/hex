@@ -6,6 +6,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct GroupNote {
     pub(super) id: NoteId,
+    pub(super) active: bool,
     pub(super) start: u64,
     pub(super) duration: u64,
     pub(super) pitch: u8,
@@ -410,6 +411,7 @@ impl GroupGesture {
             .map_err(|_| "could not reserve midi copy preview")?;
         originals.push(GroupNote {
             id: note.note,
+            active: note.active,
             start: note.original.start,
             duration: note.original.duration,
             pitch: note.original.pitch,
@@ -455,6 +457,7 @@ impl GroupGesture {
                 .preview(original.id)
                 .ok_or("midi copy target changed")?;
             result.push(hex_project::MidiNoteInsert {
+                active: original.active,
                 start: BeatTime::from_raw(note.start),
                 duration: BeatTime::from_raw(note.duration),
                 pitch: note.pitch,
@@ -463,6 +466,23 @@ impl GroupGesture {
             });
         }
         Ok(result)
+    }
+
+    /// Immutable admission context; borrowed input identity does not own notes.
+    pub(super) fn captured_context(&self) -> GroupContext {
+        GroupContext {
+            generation: self.generation,
+            revision: self.revision,
+            clip: Some(self.clip),
+            selection_epoch: self.selection_epoch,
+            beat_start: self.beat_start,
+            beat_span: self.beat_span,
+            pitch_low: self.pitch_low,
+            pitch_rows: self.pitch_rows,
+            grid: self.grid,
+            bounds: self.bounds,
+            pending: false,
+        }
     }
 
     pub(super) fn kind(&self) -> HitKind {
@@ -707,6 +727,7 @@ mod tests {
                 };
                 GroupNote {
                     id,
+                    active: true,
                     start,
                     duration,
                     pitch,

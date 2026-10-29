@@ -289,7 +289,8 @@ fn first_load_worker_commits_one_source_and_binding_and_exports_original_pcm() {
             })
             .unwrap();
         assert!(event(&service).error.is_none());
-        assert!(export_event(&service).result.is_ok());
+        let complete = export_event(&service);
+        assert!(complete.result.is_ok(), "{:?}", complete.result);
         let bytes = fs::read(&files.output).unwrap();
         let pcm = bytes[44..]
             .chunks_exact(4)

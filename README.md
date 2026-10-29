@@ -11,7 +11,8 @@ Install the native Rust/macOS build toolchain and use locked dependencies.
 Save and quit hex before replacing the development app.
 
 ```sh
-./launch          # update clean main, build/install optimized hex, then open
+./launch          # verify/open the installed app without updating or building
+./launch --update # update clean main, build/install optimized hex, then open
 ./launch --test   # also run full local CI
 ./launch --open   # verify/open the installed app without updating or building
 ```
@@ -19,7 +20,7 @@ Save and quit hex before replacing the development app.
 The default app is `artifacts/hex.app`, identity `org.portalsurfer.hex.dev`.
 Normal launch refuses running installed or raw desktop processes. Use
 `./launch --help` for explicit restart and recovery options; never infer permission
-to discard an unsaved project. Launch without `--test` records tests as not run.
+to discard an unsaved project. An explicit `--update` build records tests as not run.
 See [native builds](docs/test-builds.md) for qualified user-test delivery.
 Use [`./release beta`](docs/releases.md) for immutable signed/notarized beta,
 nightly and stable distribution packages.
@@ -30,6 +31,60 @@ To run the optimized desktop directly from source:
 cargo run -r --locked
 cargo run -r --locked -- --demo
 ```
+
+Current development builds enable action and audio failure diagnostics by default,
+including optimized builds. The recommended preset records semantic actions,
+requests/outcomes, pointer/key intent and observed view changes together with
+audio publication/readiness and transport. Raw callback timing remains off.
+
+Use `./launch --open --diagnostics=off` to turn detailed tracing off for the next
+launch, or `./launch --open --diagnostics` to select the recommended preset
+explicitly. Save and quit an existing process before changing launch options.
+`./launch --test --diagnostics=off` also preserves the opt-out after building.
+`--diagnostics=all` additionally records every callback timing sample and can
+overflow sooner. Explicit modes require a verified installed build advertising
+diagnostic support; older bundles need rebuilding. Raw source runs accept the
+same options after `--`.
+
+When a failure occurs, note what you heard and the approximate time. Keep the
+session's current log and its `.1.log` through `.3.log` siblings together; the
+header repeats source/build/flags and segment metadata. The log button opens the
+current file. Check loss counters before interpreting a missing event. New action
+records redact typed names/search contents and paths, with counts, IDs and numeric
+values retained. Existing status/error messages may contain paths or source text;
+review a capture before sharing it. Input tracing is not complete replay: rapid
+intermediate view changes, pointer movements, OS dialogs and text contents are
+excluded. Native listening and device stress still require testing.
+
+Detailed audio diagnostics are written to the existing session log
+(**open session log** in the app):
+
+```sh
+cargo run -r --locked -- --audio-diagnostics
+cargo run -r --locked -- --audio-diagnostics=publication,readiness,transport
+```
+
+Categories are `publication`, `readiness`, `transport` and `timing`; `all` enables
+all four. Use `--audio-diagnostics=off` to disable audio tracing on the next launch
+while leaving action diagnostics enabled, or `--diagnostics=off` to disable both.
+Save and quit an existing process before starting a diagnostic run.
+Records correlate worker submission, ordinary and eligible callback
+preflight/application, command dequeue, priority stop and applied/rejected status
+using output/revision/context identities. Dequeue is distinct from application. Timing
+records use the native adapter's whole-callback measurement; they exclude the
+trace push itself. Log timestamps are control receipt times, while frame fields
+are audio observations. The callback retains at most 256 resource-free records;
+control drains at most 64 per poll. Overflow loses diagnostics only and reports
+sequence gaps/loss counters. A log does not establish physical audio deadlines.
+
+Session log rows carry producer wall time, monotonic elapsed time and sequence
+numbers. Messages are quoted/escaped; loss and truncation are explicit. The
+active `.log` path stays stable as it rolls; `.1.log` through `.3.log` retain the
+preceding segments, newest first. Include those sibling files when capturing a
+failure. New sessions retain at most four 8 MiB segments plus one bounded
+rollover header, with ten sessions retained; older logs expire normally.
+A logging startup/shutdown timeout or file error reports incomplete logging.
+
 
 The desktop is the default workspace member. Plain `cargo build` and `cargo test`
 also select it; use `--workspace` to select all members or `-p` for a specific crate.

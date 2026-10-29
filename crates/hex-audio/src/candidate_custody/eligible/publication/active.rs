@@ -38,6 +38,13 @@ impl Queued {
             .as_mut()?
             .test_set_owned_runtime_reservation(bytes)
     }
+    /// Resource-free observations only; these never grant publication authority.
+    pub(crate) fn diagnostic_context(&self) -> Option<hex_engine::AudioSourceContext> {
+        self.state.runtime.as_ref()?.source_context()
+    }
+    pub(crate) fn take_handoff_diagnostic(&mut self) -> Option<hex_engine::PlaybackHandoffError> {
+        self.state.streaming.as_mut()?.take_handoff_diagnostic()
+    }
     pub(crate) fn revision(&self) -> u64 {
         self.state.revision
     }
@@ -95,10 +102,16 @@ impl Queued {
                     return InstallDecision::Retry;
                 }
                 Err(_) => {
+                    let source_changed = next
+                        .streaming
+                        .as_mut()
+                        .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
                     next.cancel_stream_pending(request.domains);
-                    return InstallDecision::Refused(
-                        hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady,
-                    );
+                    return InstallDecision::Refused(if source_changed {
+                        hex_engine::PlaybackHandoffRejection::StreamSourceChanged
+                    } else {
+                        hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady
+                    });
                 }
             }
         }
@@ -265,6 +278,13 @@ impl Queued {
     }
 }
 impl Active {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn matches_native_epoch_target(
+        &self,
+        target: &crate::candidate_custody::NativeEpochTarget,
+    ) -> bool {
+        self.state.stamp == target.0
+    }
     pub(crate) fn applied_audio_source(&self) -> Option<crate::prepared::AppliedAudioSource> {
         Some(crate::prepared::AppliedAudioSource {
             context: self.state.runtime.as_ref()?.source_context()?,
@@ -283,6 +303,17 @@ impl Active {
     }
     pub(crate) fn runtime_mut(&mut self) -> Option<&mut ClaimedAudioCandidateRuntime> {
         self.state.runtime.as_mut()
+    }
+    /// Caller has matched this exact current source and stopped fence. Unlike
+    /// replacement, no successor exists yet; original runtime disposal closes
+    /// its own origin book on control before a new native epoch can be admitted.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn return_stopped_native_epoch(self) -> Returned {
+        Returned {
+            stamp: self.state.stamp,
+            state: Some(self.state),
+            kind: AudioCandidateReturnKind::StoppedForNativeEpoch,
+        }
     }
     pub(crate) fn return_replaced(self) -> Returned {
         Returned {

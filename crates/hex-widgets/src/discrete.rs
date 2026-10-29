@@ -29,6 +29,8 @@ pub enum SelectorAppearance {
     Standard,
     CompactSelector,
     CompactSegments,
+    /// A stepped dial; pointer release commits one supported choice.
+    CompactDial,
 }
 
 /// Validated toggle construction data for an infallible GPUI entity factory.
@@ -77,7 +79,7 @@ pub struct Toggle {
     id: SharedString,
     label: SharedString,
     checked: bool,
-    enabled: bool,
+    availability: crate::ControlAvailability,
     style: ControlStyle,
     appearance: ToggleAppearance,
     tab_navigation: bool,
@@ -125,7 +127,7 @@ impl Toggle {
             id: config.id,
             label: config.label,
             checked: config.checked,
-            enabled: true,
+            availability: crate::ControlAvailability::Available,
             style: config.style,
             appearance: config.appearance,
             tab_navigation: false,
@@ -162,7 +164,7 @@ impl Toggle {
     /// Owners choose participation without changing pointer or edit semantics.
     pub fn set_tab_navigation(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.tab_navigation = enabled;
-        let tab_stop = self.tab_navigation && self.enabled;
+        let tab_stop = self.tab_navigation && self.availability.interactive();
         if self.focus.tab_stop != tab_stop {
             self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
             cx.notify();
@@ -170,14 +172,24 @@ impl Toggle {
     }
 
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        if self.enabled != enabled {
-            self.enabled = enabled;
-            let tab_stop = self.tab_navigation && self.enabled;
-            if self.focus.tab_stop != tab_stop {
-                self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
-            }
-            cx.notify();
+        self.set_availability(crate::ControlAvailability::for_edit(enabled, false), cx);
+    }
+
+    /// Busy blocks pointer, keyboard and accessibility edits without dimming.
+    pub fn set_availability(
+        &mut self,
+        availability: crate::ControlAvailability,
+        cx: &mut Context<Self>,
+    ) {
+        if self.availability == availability {
+            return;
         }
+        self.availability = availability;
+        let tab_stop = self.tab_navigation && self.availability.interactive();
+        if self.focus.tab_stop != tab_stop {
+            self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
+        }
+        cx.notify();
     }
 
     fn foreground(&self) -> u32 {
@@ -188,7 +200,7 @@ impl Toggle {
             )
         {
             self.style.accent_text
-        } else if self.enabled {
+        } else if self.availability.painted_enabled() {
             self.style.text
         } else {
             self.style.muted
@@ -196,7 +208,7 @@ impl Toggle {
     }
 
     fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.enabled {
+        if self.availability.interactive() {
             self.checked = !self.checked;
             self.focus.focus(window);
             cx.emit(ToggleChanged {
@@ -238,7 +250,7 @@ impl gpui::Render for Toggle {
         } else {
             self.style.rail
         };
-        let text_color = if self.enabled {
+        let text_color = if self.availability.painted_enabled() {
             self.style.text
         } else {
             self.style.muted
@@ -292,10 +304,12 @@ impl gpui::Render for Toggle {
                 self.style.surface
             }))
             .track_focus(&self.focus)
-            .when(self.enabled, |root| root.hover(|hover| hover.opacity(0.8)))
+            .when(self.availability.painted_enabled(), |root| {
+                root.hover(|hover| hover.opacity(0.8))
+            })
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_key_down(cx.listener(Self::key_down))
-            .cursor(if self.enabled {
+            .cursor(if self.availability.interactive() {
                 gpui::CursorStyle::PointingHand
             } else {
                 gpui::CursorStyle::Arrow
@@ -319,14 +333,15 @@ impl gpui::Render for Toggle {
                     .as_ref()
                     .map(|binding| binding.value.clone())
                     .unwrap_or(gpui::AccessibilityValue::Toggle(self.checked)),
-                enabled: self.enabled
+                enabled: self.availability.interactive()
                     && !self.accessibility_pending
                     && self
                         .accessibility_binding
                         .as_ref()
                         .is_none_or(|binding| !binding.pending && (binding.guard)(cx)),
                 focused: self.focus.is_focused(window),
-                status: if self.accessibility_pending
+                status: if self.availability == crate::ControlAvailability::Busy
+                    || self.accessibility_pending
                     || self
                         .accessibility_binding
                         .as_ref()
@@ -344,7 +359,7 @@ impl gpui::Render for Toggle {
                             .accessibility_binding
                             .as_ref()
                             .is_some_and(|binding| binding.revision != request.revision)
-                            || !control.enabled
+                            || !control.availability.interactive()
                             || control.accessibility_pending
                             || control
                                 .accessibility_binding
@@ -507,6 +522,7 @@ pub struct SelectorConfig {
     selected: usize,
     style: ControlStyle,
     appearance: SelectorAppearance,
+    segment_columns: Option<usize>,
 }
 
 impl SelectorConfig {
@@ -530,6 +546,7 @@ impl SelectorConfig {
             selected,
             style: style.validate()?,
             appearance: SelectorAppearance::Standard,
+            segment_columns: None,
         })
     }
 
@@ -539,13 +556,30 @@ impl SelectorConfig {
         self
     }
 
+    /// Arrange the same compact choice segments in a bounded keyboard grid.
+    pub fn with_segment_columns(mut self, columns: usize) -> Result<Self, &'static str> {
+        if !(1..=128).contains(&columns) {
+            return Err("selector grid requires 1..128 columns");
+        }
+        self.appearance = SelectorAppearance::CompactSegments;
+        self.segment_columns = Some(columns);
+        Ok(self)
+    }
+
     pub fn with_appearance(mut self, appearance: SelectorAppearance) -> Self {
         self.appearance = appearance;
         self
     }
 }
 
-/// Compact choice field with a bounded foreground popup.
+#[derive(Clone, Copy)]
+struct DialPress {
+    origin_y: f32,
+    start: usize,
+    preview: usize,
+}
+
+/// Choice control with popup, segmented or stepped-dial presentation.
 pub struct Selector {
     accessibility_binding: Option<gpui::AccessibilityBinding>,
     accessibility_pending: bool,
@@ -558,10 +592,12 @@ pub struct Selector {
     enabled: bool,
     style: ControlStyle,
     appearance: SelectorAppearance,
+    segment_columns: Option<usize>,
     tab_navigation: bool,
     focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
     measured_bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
+    dial_press: Option<DialPress>,
 }
 
 impl Selector {
@@ -610,10 +646,12 @@ impl Selector {
             enabled: true,
             style: config.style,
             appearance: config.appearance,
+            segment_columns: config.segment_columns,
             tab_navigation: false,
             focus: cx.focus_handle(),
             focus_blur: None,
             measured_bounds: Default::default(),
+            dial_press: None,
         }
     }
 
@@ -648,6 +686,8 @@ impl Selector {
             return Err("selector index is outside its options");
         }
         if selected != self.selected {
+            // An external acknowledged choice invalidates a captured local dial draft.
+            self.dial_press = None;
             self.selected = selected;
             cx.notify();
         }
@@ -669,6 +709,7 @@ impl Selector {
         if self.enabled != enabled {
             self.enabled = enabled;
             self.open = false;
+            self.dial_press = None;
             let tab_stop = self.tab_navigation && self.enabled;
             if self.focus.tab_stop != tab_stop {
                 self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
@@ -696,6 +737,57 @@ impl Selector {
             });
             cx.notify();
         }
+    }
+
+    fn dial_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.enabled {
+            return;
+        }
+        cx.stop_propagation();
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        if !window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Left,
+            gpui::CursorStyle::ResizeUpDown,
+            move |event, window, cx| {
+                let _ = owner.update(cx, |selector, cx| {
+                    if let Some(event) = event.downcast_ref::<gpui::MouseMoveEvent>() {
+                        if let Some(press) = selector.dial_press.as_mut() {
+                            let steps = ((press.origin_y - f32::from(event.position.y)) / 24.0)
+                                .round() as isize;
+                            press.preview = (press.start as isize + steps)
+                                .clamp(0, selector.choices.len() as isize - 1)
+                                as usize;
+                            cx.notify();
+                        }
+                    } else if event.downcast_ref::<gpui::MouseUpEvent>().is_some()
+                        && let Some(press) = selector.dial_press.take()
+                    {
+                        if press.preview != press.start {
+                            selector.choose(press.preview, window, cx);
+                        }
+                        cx.notify();
+                    }
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |selector, cx| {
+                    selector.dial_press = None;
+                    cx.notify();
+                });
+            },
+            cx,
+        ) {
+            return;
+        }
+        self.dial_press = Some(DialPress {
+            origin_y: event.position.y.into(),
+            start: self.selected,
+            preview: self.selected,
+        });
+        self.focus.focus(window);
+        cx.notify();
     }
 
     fn accessible_root(
@@ -727,6 +819,7 @@ impl Selector {
                         options: self.choices.clone(),
                     }),
                 enabled: self.enabled
+                    && self.dial_press.is_none()
                     && !self.accessibility_pending
                     && self
                         .accessibility_binding
@@ -751,6 +844,7 @@ impl Selector {
                             .accessibility_binding
                             .as_ref()
                             .is_some_and(|binding| binding.revision != request.revision)
+                            || control.dial_press.is_some()
                             || !control.enabled
                             || control.accessibility_pending
                             || control
@@ -794,10 +888,38 @@ impl Selector {
         if !self.enabled {
             return;
         }
+        if self.appearance == SelectorAppearance::CompactDial && event.keystroke.key == "escape" {
+            self.dial_press = None;
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        if self.appearance == SelectorAppearance::CompactDial {
+            if self.dial_press.is_some() {
+                cx.stop_propagation();
+                return;
+            }
+            let next = match event.keystroke.key.as_str() {
+                "right" | "up" | "space" => (self.selected + 1).min(self.choices.len() - 1),
+                "left" | "down" => self.selected.saturating_sub(1),
+                _ => return,
+            };
+            cx.stop_propagation();
+            if next != self.selected {
+                self.choose(next, window, cx);
+            }
+            return;
+        }
         if self.appearance == SelectorAppearance::CompactSegments {
             let next = match event.keystroke.key.as_str() {
-                "right" | "down" | "space" => (self.selected + 1) % self.choices.len(),
-                "left" | "up" => (self.selected + self.choices.len() - 1) % self.choices.len(),
+                "right" | "space" => (self.selected + 1) % self.choices.len(),
+                "left" => (self.selected + self.choices.len() - 1) % self.choices.len(),
+                "down" => (self.selected + self.segment_columns.unwrap_or(1)) % self.choices.len(),
+                "up" => {
+                    (self.selected + self.choices.len()
+                        - self.segment_columns.unwrap_or(1) % self.choices.len())
+                        % self.choices.len()
+                }
                 _ => return,
             };
             cx.stop_propagation();
@@ -844,19 +966,97 @@ impl gpui::Render for Selector {
         if self.focus_blur.is_none() {
             let focus = self.focus.clone();
             self.focus_blur = Some(cx.on_blur(&focus, window, |selector, _, cx| {
-                if selector.open {
+                if selector.open || selector.dial_press.is_some() {
                     selector.open = false;
+                    selector.dial_press = None;
                     cx.notify();
                 }
             }));
         }
+        if self.appearance == SelectorAppearance::CompactDial {
+            let selected = self.dial_press.map_or(self.selected, |press| press.preview);
+            let position = selected as f32 / self.choices.len().saturating_sub(1).max(1) as f32;
+            let style = self.style;
+            let enabled = self.enabled;
+            let knob_id = format!("{}-knob", self.id);
+            let held = self.dial_press.is_some();
+            let owner = cx.entity_id();
+            let row = div()
+                .id(self.id.clone())
+                .relative()
+                .debug_selector(|| self.id.to_string())
+                .w(px(64.0))
+                .h(px(52.0))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(1.0))
+                .when(self.focus.is_focused(window), |row| {
+                    row.child(crate::focus_marker::corner_markers(
+                        &self.id,
+                        style.focus_marker,
+                    ))
+                })
+                .track_focus(&self.focus)
+                .on_key_down(cx.listener(Self::key_down))
+                .child(
+                    div()
+                        .h(px(10.0))
+                        .text_size(px(9.0))
+                        .text_color(rgb(style.muted))
+                        .child(self.accessibility_name.clone()),
+                )
+                .child(
+                    div()
+                        .debug_selector(move || knob_id.clone())
+                        .size(px(26.0))
+                        .cursor(gpui::CursorStyle::ResizeUpDown)
+                        .on_mouse_down(MouseButton::Left, cx.listener(Self::dial_down))
+                        .child(
+                            canvas(
+                                |_, _, _| (),
+                                move |bounds, _, window, _| {
+                                    if held {
+                                        window.renew_pointer_capture(
+                                            owner,
+                                            gpui::CursorStyle::ResizeUpDown,
+                                        );
+                                    }
+                                    crate::dial::paint_dial(
+                                        bounds,
+                                        26.0,
+                                        crate::dial::DialValue::new(
+                                            position,
+                                            crate::NumericScale::Linear,
+                                            crate::DialLayout::BottomGap,
+                                        ),
+                                        enabled,
+                                        style,
+                                        window,
+                                    );
+                                },
+                            )
+                            .size_full(),
+                        ),
+                )
+                .child(
+                    div()
+                        .h(px(14.0))
+                        .text_size(px(9.0))
+                        .child(self.choices[selected].clone()),
+                );
+            return self.accessible_root(row, window, cx);
+        }
         if self.appearance == SelectorAppearance::CompactSegments {
+            let columns = self.segment_columns.unwrap_or(self.choices.len());
+            let height = self.choices.len().div_ceil(columns) as f32 * 16.0 - 2.0;
             let mut row = div()
                 .id(self.id.clone())
                 .debug_selector(|| self.id.to_string())
                 .w_full()
-                .h(px(14.0))
-                .flex()
+                .h(px(height))
+                .grid()
+                .grid_cols(columns as u16)
                 .gap(px(2.0))
                 .track_focus(&self.focus)
                 .on_key_down(cx.listener(Self::key_down));
@@ -868,7 +1068,7 @@ impl gpui::Render for Selector {
                         .flex_1()
                         .min_w_0()
                         .overflow_hidden()
-                        .h_full()
+                        .h(px(14.0))
                         .flex()
                         .items_center()
                         .justify_center()

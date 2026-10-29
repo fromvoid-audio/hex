@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 #[path = "tests/group.rs"]
 mod group;
 
+#[path = "tests/aliases.rs"]
+mod aliases;
 #[path = "tests/content_reverse.rs"]
 mod content_reverse;
 #[path = "tests/view_placement.rs"]
@@ -898,6 +900,137 @@ fn derived_and_raw_audio_never_gain_private_constructor_provenance() {
     assert_eq!(budget.used(), 64);
     drop(source);
     assert_eq!(budget.used(), 0);
+}
+
+#[test]
+fn event_gain_scales_only_its_audio_and_undo_restores_render() {
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::Split { at: 4000 },
+        })
+        .unwrap();
+    let context = AudioTransformPreparation::default();
+    let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 257);
+    let gain = hex_project::ClipGain::new(-6000).unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::SetGain { event: 1, gain },
+        })
+        .unwrap();
+    let scaled = render(&prepare(&editor, &media, &context), 0, 8000, 127);
+    for (actual, original) in scaled[..4000].iter().zip(&baseline[..4000]) {
+        for channel in 0..2 {
+            assert!((actual[channel] - original[channel] * gain.linear()).abs() < 1e-6);
+        }
+    }
+    assert_eq!(&scaled[4000..], &baseline[4000..]);
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 64),
+        baseline
+    );
+    assert!(editor.redo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8000, 17),
+        scaled
+    );
+}
+
+#[test]
+fn event_gain_preserves_fades_and_inactive_state_in_frame_and_musical_clocks() {
+    for musical in [false, true] {
+        let (mut editor, clip, media) = fixture(false);
+        if musical {
+            editor
+                .execute(Command::SetAudioClipMusical {
+                    clip,
+                    enabled: true,
+                })
+                .unwrap();
+        }
+        let context = AudioTransformPreparation::default();
+        let baseline = render(&prepare(&editor, &media, &context), 0, 8000, 257);
+        let gain = hex_project::ClipGain::new(-6000).unwrap();
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: hex_project::AudioEventEdit::SetGain { event: 1, gain },
+            })
+            .unwrap();
+        let gained = render(&prepare(&editor, &media, &context), 0, 8000, 127);
+        for (actual, original) in gained.iter().zip(&baseline) {
+            for channel in 0..2 {
+                assert!((actual[channel] - original[channel] * gain.linear()).abs() < 1e-6);
+            }
+        }
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: hex_project::AudioEventEdit::SetActive {
+                    events: vec![1],
+                    active: false,
+                },
+            })
+            .unwrap();
+        assert!(
+            render(&prepare(&editor, &media, &context), 0, 8000, 64)
+                .iter()
+                .all(|frame| *frame == [0.0; 2])
+        );
+        assert!(editor.undo());
+        assert_eq!(
+            render(&prepare(&editor, &media, &context), 0, 8000, 17),
+            gained
+        );
+    }
+}
+
+#[test]
+fn event_gain_survives_reverse_split_crop_and_move() {
+    let (mut gained, clip, media) = fixture(false);
+    let mut baseline = Editor::new(gained.project().clone(), 32).unwrap();
+    let gain = hex_project::ClipGain::new(-6000).unwrap();
+    gained
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: hex_project::AudioEventEdit::SetGain { event: 1, gain },
+        })
+        .unwrap();
+    for editor in [&mut baseline, &mut gained] {
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        let Created::Clip(second) = editor
+            .execute(Command::SplitClip { clip, frame: 4000 })
+            .unwrap()
+        else {
+            panic!("split")
+        };
+        let track = editor.project().tracks()[0].id();
+        editor
+            .execute(Command::MoveClip {
+                clip: second,
+                track,
+                start: 9000,
+            })
+            .unwrap();
+    }
+    let context = AudioTransformPreparation::default();
+    let expected = render(&prepare(&baseline, &media, &context), 0, 13000, 257);
+    let actual = render(&prepare(&gained, &media, &context), 0, 13000, 127);
+    for (actual, original) in actual.iter().zip(&expected) {
+        for channel in 0..2 {
+            assert!((actual[channel] - original[channel] * gain.linear()).abs() < 1e-6);
+        }
+    }
 }
 
 #[test]
@@ -3071,4 +3204,81 @@ fn per_event_frame_fades_reproject_through_warp_and_a_tempo_seam() {
         );
     }
     assert_eq!(render(&with_fade, 3993, 2007, 31), actual[3993..]);
+}
+
+#[test]
+fn selection_crossfade_pcm_is_the_two_source_mix_with_unchanged_outside_audio() {
+    let (mut editor, left, media) = fixture(true);
+    let track = editor.project().tracks()[0].id();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip: left,
+            edge: hex_project::TrimEdge::Right,
+            frame: 4_000,
+        })
+        .unwrap();
+    let Created::Clip(right) = editor
+        .execute(Command::CopyClipTo {
+            clip: left,
+            track,
+            start: 4_000,
+        })
+        .unwrap()
+    else {
+        panic!("fixture copy")
+    };
+    editor
+        .execute(Command::SetClipSourcePhase {
+            clip: right,
+            phase: 997,
+        })
+        .unwrap();
+    for (clip, incoming, outgoing) in [(left, 33, 0), (right, 0, 47)] {
+        editor
+            .execute(Command::SetClipFades {
+                clip,
+                fade_in: incoming,
+                fade_out: outgoing,
+            })
+            .unwrap();
+    }
+    let context = AudioTransformPreparation::default();
+    let original = render(&prepare(&editor, &media, &context), 0, 8_000, 257);
+    let before = editor.project().snapshot();
+    editor
+        .execute(Command::CreateArrangementFades {
+            range: hex_project::TimeRange::new(vec![track], 3_500, 4_500).unwrap(),
+        })
+        .unwrap();
+    let prepared = prepare(&editor, &media, &context);
+    let actual = render(&prepared, 0, 8_000, 257);
+    assert_eq!(&actual[..3_500], &original[..3_500]);
+    assert_eq!(&actual[4_500..], &original[4_500..]);
+    let pcm = media.values().next().unwrap().frames();
+    for frame in 3_500..4_500 {
+        let progress = (frame - 3_500) as f64 / 999.0;
+        let outgoing = pcm[(137 + frame) % 8_000];
+        let incoming = pcm[(997_i64 + frame as i64 - 4_000).rem_euclid(8_000) as usize];
+        for channel in 0..2 {
+            let expected =
+                outgoing[channel] * (1.0 - progress) as f32 + incoming[channel] * progress as f32;
+            assert!(
+                (actual[frame][channel] - expected).abs() < 1e-7,
+                "frame={frame} channel={channel}"
+            );
+        }
+    }
+    assert_eq!(render(&prepared, 0, 8_000, 1), actual);
+    assert_eq!(render(&prepared, 3_701, 701, 31), actual[3_701..4_402]);
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8_000, 17),
+        original
+    );
+    assert!(editor.redo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 8_000, 17),
+        actual
+    );
 }

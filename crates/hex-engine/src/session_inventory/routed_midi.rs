@@ -110,12 +110,8 @@ pub(super) fn prepare_clip(
     cached: Option<&PreparedSessionMidiClip>,
 ) -> Result<PreparedSessionMidiClip, crate::Invalid> {
     let source_identity = clip.source_identity();
-    let mutable_limits = config
-        .mutable_runtime
-        .as_deref()
-        .map(crate::midi_compile::MutableInstrumentLimits::from_factory)
-        .transpose()?;
-    if !clip.volume().points().is_empty()
+    let mutable_limits = config.mutable_limits;
+    if !clip.volume().is_unity()
         && mutable_limits.is_some_and(|limits| !limits.supports_clip_volume)
     {
         return Err(crate::Invalid(
@@ -126,7 +122,7 @@ pub(super) fn prepare_clip(
         && mutable_limits.is_some()
         && let Some(instrument) = config.config.as_deref()
     {
-        for note in clip.source().notes() {
+        for note in clip.source().notes().iter().filter(|note| note.active()) {
             instrument
                 .validate_event_note(note.pitch(), note.velocity())
                 .map_err(|_| crate::Invalid("mutable Session instrument note is unsupported"))?;

@@ -11,7 +11,7 @@ pub(super) enum ActionResolution {
     Ready(Option<(u64, PlaybackActionRejection)>),
     Pending,
 }
-impl Active {
+impl ActiveView<'_> {
     pub(crate) fn has_stream_action(&self) -> bool {
         self.state
             .streaming
@@ -140,9 +140,19 @@ impl Active {
             Ok(Some(_)) => {}
             Ok(None) => return ActionResolution::Pending,
             Err(_) => {
+                let source_changed = self
+                    .state
+                    .streaming
+                    .as_mut()
+                    .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
+                let reason = if source_changed {
+                    PlaybackActionRejection::StreamSourceChanged
+                } else {
+                    PlaybackActionRejection::StreamPagesNotReady
+                };
                 return ActionResolution::Ready(
                     self.cancel_stream_action(request.domains)
-                        .map(|ticket| (ticket, PlaybackActionRejection::StreamPagesNotReady)),
+                        .map(|ticket| (ticket, reason)),
                 );
             }
         }

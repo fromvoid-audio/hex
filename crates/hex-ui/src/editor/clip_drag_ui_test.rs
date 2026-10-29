@@ -105,6 +105,9 @@ pub(super) fn editor_window(
             });
             install_close_guard(window, cx, editor.downgrade());
             editor.update(cx, |view, cx| {
+                // Geometry fixtures use a fixed frame span, independent of the
+                // application's default trailing navigation allowance.
+                view.viewport = Some(super::viewport::Viewport::fit(TIMELINE_FRAMES));
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
                     comparison_audio: None,
@@ -274,7 +277,7 @@ fn drag_source_to_inserted_track(
     assert_eq!(source_lane.origin.x, body.origin.x);
     assert_eq!(
         source_lane.size.width,
-        body.size.width - px(super::tracks::TRACK_HEADER_WIDTH)
+        body.size.width - editor.read_with(cx, |view, _| px(view.track_header_width()))
     );
 
     let down = point(
@@ -785,7 +788,7 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
         let viewport = view.visible_viewport(state.timeline_frames);
         let width = view
             .arrangement_bounds
-            .map(|bounds| bounds.width - super::tracks::TRACK_HEADER_WIDTH)
+            .map(|bounds| bounds.width - view.track_header_width())
             .unwrap_or(400.0);
         super::musical_time::grid_lines(&state.project, viewport, width, view.snap_grid)
             .into_iter()
@@ -1033,6 +1036,10 @@ pub(super) fn upper_rail_owned_fixture(
             install_close_guard(window, cx, editor.downgrade());
             editor.update(cx, |view, cx| {
                 view.receive(event);
+                // Rail/detail geometry uses an explicit fixture time span.
+                view.viewport = Some(super::viewport::Viewport::fit(
+                    view.state.as_ref().unwrap().timeline_frames,
+                ));
                 view.focus.focus(window);
                 cx.notify();
             });
@@ -1195,7 +1202,7 @@ fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worke
         assert!(view.last_enqueued_edit.is_none());
         (preview.command_frame_for_test(), preview.clip.clone())
     });
-    assert!(visual.debug_bounds("trim-live-preview").is_some());
+    let preview_bounds = visual.debug_bounds("trim-live-preview").unwrap();
     visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -1210,7 +1217,20 @@ fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worke
         assert_eq!(view.worker_requests_pending, 1);
     });
     assert!(!cx.update(|app| app.has_active_drag()));
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("trim-live-preview"),
+            Some(preview_bounds)
+        );
+    }
     pump(&editor, &mut visual);
+    assert_eq!(
+        visual.debug_bounds(self::selector(format!("clip-visual-{}", clip.value()))),
+        Some(preview_bounds),
+        "one-frame trim keeps identical endpoints through its actual ACK"
+    );
     let committed = editor.read_with(cx, |view, _| {
         let state = view.state.as_ref().unwrap();
         assert_eq!(state.project.clip(clip), Some(&expected_clip));

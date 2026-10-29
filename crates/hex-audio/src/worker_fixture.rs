@@ -15,6 +15,16 @@ impl HeadlessBackend {
             errors: Some(errors),
         }
     }
+    /// Invoke the actual native error owner without opening a physical device.
+    pub fn report_device_error(&mut self) -> Result<(), hex_engine::Invalid> {
+        let owner = self
+            .errors
+            .as_mut()
+            .and_then(Guard::owner_mut)
+            .ok_or(hex_engine::Invalid("headless error callback is closed"))?;
+        owner.report();
+        Ok(())
+    }
     /// Actual callback entry with bounded caller-owned output; no owner escape.
     pub fn render(&mut self, output: &mut [hex_engine::Frame]) -> Result<(), hex_engine::Invalid> {
         let owner = self
@@ -84,6 +94,88 @@ impl HeadlessBackend {
             .as_ref()
             .and_then(Guard::owner_ref)
             .map(NativeCallbackOwner::borrowed_status)
+    }
+
+    /// Observe the real publication queue on headless control, outside render
+    /// probes. This never consumes an entry or acknowledges installation.
+    pub fn publication_queue_empty_on_control(&mut self) -> Option<bool> {
+        let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
+        let mut empty = None;
+        owner.run(|callback, _| empty = Some(callback.publication_queue_empty_on_control()));
+        empty
+    }
+    pub fn ordinary_publication_idle_on_control(&mut self) -> Option<bool> {
+        let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
+        let mut idle = None;
+        owner.run(|callback, _| idle = Some(callback.ordinary_publication_idle_on_control()));
+        idle
+    }
+    /// Observe actual completion of all committed copied requests while the
+    /// headless callback is quiescent on the test control thread. Never use a
+    /// Session worker's polling cadence as the native worker's clock. None is
+    /// closed/unsupported/contended; true is diagnostic, not native admission.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn native_workers_idle_on_control(&mut self) -> Option<bool> {
+        let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
+        let mut result = None;
+        owner.run(|callback, _| result = callback.native_workers_idle_on_control());
+        result
+    }
+    /// Hold original native Work on a separate test control thread. The
+    /// callback entry ends before taking that exclusion; native state and its
+    /// actual owners remain in Root. Never call from a measured render scope.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub fn with_native_source_work_held_on_control<R>(
+        &mut self,
+        run: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let owner = self.data.as_mut().and_then(Guard::owner_mut)?;
+        let mut root = None;
+        owner.run(|callback, _| root = Some(callback.native_root_for_control_fixture()));
+        root?.with_native_source_work_held_on_control(run)
+    }
+    /// One caller-supplied physical callback through actual foreign processing
+    /// and final stereo host acceptance. No device/physical-latency claim. The
+    /// existing callback validates the real extent against its bound quantum.
+    pub fn render_native_direct(
+        &mut self,
+        frames: &mut [hex_engine::Frame],
+        host: &mut [f32],
+    ) -> Result<(), hex_engine::Invalid> {
+        if frames.len().checked_mul(2) != Some(host.len()) {
+            return Err(hex_engine::Invalid(
+                "headless stereo host extent is invalid",
+            ));
+        }
+        let owner = self
+            .data
+            .as_mut()
+            .and_then(Guard::owner_mut)
+            .ok_or(hex_engine::Invalid("headless backend is closed"))?;
+        let mut result = Ok(());
+        owner.run(|callback, status| {
+            callback.begin_block();
+            if let Err(error) = callback.begin_native_effect_callback(frames.len()) {
+                result = Err(error);
+                return;
+            }
+            let start = status.position.load(std::sync::atomic::Ordering::Relaxed);
+            let rendered = callback.render(frames);
+            if !crate::device::finish_host_chunk(
+                callback,
+                host,
+                frames,
+                2,
+                &rendered,
+                start,
+                std::time::Instant::now(),
+            ) {
+                result = Err(rendered
+                    .err()
+                    .unwrap_or(hex_engine::Invalid("headless native sink refused output")));
+            }
+        });
+        result
     }
     /// Test-backend stop request only, never a stop/dispose or retirement ACK.
     /// The fixture must actually close both carriers and await the real output

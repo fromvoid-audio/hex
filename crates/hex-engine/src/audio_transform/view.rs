@@ -105,7 +105,10 @@ impl AudioTransformPreparation {
         sources
             .try_reserve_exact(events.sources.len())
             .map_err(|_| Invalid("grouped audio preview dependency allocation failed"))?;
-        for root in &events.sources {
+        for root in canonical.retained_audio_roots() {
+            sources
+                .try_reserve(1)
+                .map_err(|_| Invalid("grouped audio preview dependency allocation failed"))?;
             let asset = project
                 .asset(root.clip.asset())
                 .ok_or(Invalid("audio preview asset is missing"))?;
@@ -155,9 +158,7 @@ impl AudioTransformPreparation {
         };
         let tempo = self.shared_tempo(tempo_map)?;
         if let Some(audio) = self.lookup_key(source, asset, |key| {
-            matches!(key, EntryKey::View { edit: retained, tempo, start, duration }
-                if retained == edit && tempo.as_ref() == tempo_map
-                    && *start == clip.start() && *duration == clip.duration())
+            key.matches_view(edit, tempo_map, clip.start(), clip.duration())
         })? {
             return placed_clip(audio, clip);
         }

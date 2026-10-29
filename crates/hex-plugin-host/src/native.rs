@@ -1,6 +1,9 @@
 //! Actual Mac child control/worker custody. No process-global signal changes or
 //! numeric PID signalling. The helper's pre-SDK guardian owns self-cancellation.
+mod edits;
 mod epoch;
+mod live_capture;
+mod parameter_page;
 pub use epoch::Quiescent;
 mod preparation_failure;
 pub use preparation_failure::{PreparationDisposal, PreparationFailure};
@@ -183,6 +186,13 @@ pub struct Prepared {
     packet: Packet,
     retired: Option<Retirement>,
     faulted: bool,
+    live_capture: Option<live_capture::PendingCapture>,
+    live_capture_sequence: u64,
+    edit_query_sequence: u64,
+    last_edit_sequence: u64,
+    last_edit_frame: u64,
+    parameter_page: Option<parameter_page::PendingPage>,
+    parameter_page_sequence: u64,
 }
 /// Source-bound configured component awaiting actual graph presentation facts.
 /// No processing/state capture or canonical/audio acceptance has occurred. Keep
@@ -550,6 +560,13 @@ impl Pending {
             packet: self.packet,
             retired: None,
             faulted: false,
+            live_capture: None,
+            live_capture_sequence: 0,
+            edit_query_sequence: 0,
+            last_edit_sequence: 0,
+            last_edit_frame: 0,
+            parameter_page: None,
+            parameter_page_sequence: 0,
         })
     }
 }
@@ -615,6 +632,8 @@ impl Prepared {
         result
     }
     fn exchange(&mut self, block: Block) -> Result<Block> {
+        self.check_live_capture_deadline()?;
+        self.check_parameter_page_deadline()?;
         self.config.validate_block(&block, self.sequence)?;
         let next = self
             .sequence
@@ -644,6 +663,12 @@ impl Prepared {
         Ok(output)
     }
     pub fn stop_and_reap_on_control(&mut self) -> Result<Retirement> {
+        if self.parameter_page.is_some() {
+            return Err(Error::Protocol("controller page is still pending"));
+        }
+        if self.live_capture.is_some() {
+            return Err(Error::Protocol("native capture is still pending"));
+        }
         if self.faulted {
             return Err(Error::Protocol("faulted instance requires cancellation"));
         }

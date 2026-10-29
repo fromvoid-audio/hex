@@ -394,6 +394,7 @@ impl EditorView {
             if selected.binary_search(&note.id()).is_ok() {
                 originals.push(super::midi_group_drag::GroupNote {
                     id: note.id(),
+                    active: note.active(),
                     start: note.start().raw(),
                     duration: note.duration().raw(),
                     pitch: note.pitch(),
@@ -476,6 +477,7 @@ impl EditorView {
                 .iter()
                 .map(|note| super::midi_group_drag::GroupNote {
                     id: note.id(),
+                    active: note.active(),
                     start: note.start().raw(),
                     duration: note.duration().raw(),
                     pitch: note.pitch(),
@@ -540,6 +542,7 @@ impl EditorView {
 
     pub(super) fn edit_pending(&self) -> bool {
         (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
+            || self.automation_view.devices.pointer_active()
             || self.sampler_parameter_pending()
             || self.opening_project
             || self.close_prompt_open

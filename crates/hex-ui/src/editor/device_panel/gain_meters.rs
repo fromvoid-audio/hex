@@ -8,6 +8,9 @@ pub(super) struct MeterState {
     levels: [f32; 2],
     held: [f32; 2],
     updated: Instant,
+    dynamics: hex_engine::DynamicsMeter,
+    dynamics_routing: Option<u32>,
+    dynamics_updated: Instant,
 }
 impl Default for MeterState {
     fn default() -> Self {
@@ -16,6 +19,9 @@ impl Default for MeterState {
             levels: [0.0; 2],
             held: [0.0; 2],
             updated: Instant::now(),
+            dynamics: Default::default(),
+            dynamics_routing: None,
+            dynamics_updated: Instant::now(),
         }
     }
 }
@@ -25,21 +31,59 @@ impl MeterState {
         if self.device_type != Some(device_type) || !has_source {
             self.levels = [0.0; 2];
             self.held = [0.0; 2];
+            self.dynamics = Default::default();
+            self.dynamics_routing = None;
         }
         self.device_type = Some(device_type);
     }
+
+    fn update_dynamics(
+        &mut self,
+        routing: Option<u32>,
+        reading: Option<hex_engine::DynamicsMeter>,
+        playing: bool,
+        elapsed_seconds: f32,
+    ) -> Option<hex_engine::DynamicsMeter> {
+        if self.dynamics_routing != routing {
+            self.dynamics.reduction_db = [0.0; 2];
+            self.dynamics.clipped = false;
+            self.dynamics.post_input_peak = 0.0;
+            self.dynamics_routing = routing;
+        }
+        let decay = 24.0 * elapsed_seconds.max(0.0);
+        let peak = reading.unwrap_or_default().post_input_peak;
+        self.dynamics.post_input_peak = if playing {
+            peak.max(
+                self.dynamics.post_input_peak
+                    * 10.0_f32.powf(-12.0 * elapsed_seconds.max(0.0) / 20.0),
+            )
+        } else {
+            0.0
+        };
+        for (held, peak) in self
+            .dynamics
+            .reduction_db
+            .iter_mut()
+            .zip(reading.unwrap_or_default().reduction_db)
+        {
+            *held = if playing {
+                peak.max((*held - decay).max(0.0))
+            } else {
+                0.0
+            };
+        }
+        self.dynamics.clipped = reading.is_some_and(|value| value.clipped);
+        routing.map(|_| self.dynamics)
+    }
 }
 
-pub(super) fn render(
-    view: &mut EditorView,
-    cx: &mut Context<EditorView>,
+/// Borrow the endpoint only from the currently audible, generation-matched owner.
+fn audible_meter<'a>(
+    view: &'a EditorView,
     device: &hex_project::Device,
-    class: NativeDeviceClass,
-) -> Div {
+) -> Option<&'a hex_engine::DeviceMeter> {
     let id = device.id();
-    // Follow the audible device through pending edits; never read a candidate or export.
-    let source = view
-        .audible_playback
+    view.audible_playback
         .as_ref()
         .filter(|candidate| candidate.project_generation == view.project_generation)
         .filter(|candidate| {
@@ -61,7 +105,40 @@ pub(super) fn render(
                         .and_then(|revision| revision.arrangement().device_meter(id.value()))
                         .map(Arc::as_ref)
                 })
-        });
+        })
+}
+
+pub(super) fn dynamics(
+    view: &mut EditorView,
+    device: &hex_project::Device,
+    audible_routing: Option<u32>,
+) -> Option<hex_engine::DynamicsMeter> {
+    let source = audible_meter(view, device);
+    let has_source = source.is_some();
+    let reading = source.map(|meter| meter.take_dynamics());
+    let playing = view.audio_status().is_some_and(|status| {
+        status.playing.load(std::sync::atomic::Ordering::Relaxed)
+            && !status
+                .render_fault
+                .load(std::sync::atomic::Ordering::Relaxed)
+    });
+    let state = view
+        .device_panel
+        .meter_states
+        .entry(device.id())
+        .or_default();
+    state.attach(device.state().type_id(), has_source);
+    let now = Instant::now();
+    let elapsed = now.duration_since(state.dynamics_updated).as_secs_f32();
+    state.dynamics_updated = now;
+    let routing = has_source.then_some(audible_routing).flatten();
+    state.update_dynamics(routing, reading, playing, elapsed)
+}
+
+fn sample_levels(view: &mut EditorView, device: &hex_project::Device) -> ([f32; 2], [f32; 2]) {
+    let id = device.id();
+    // Follow the audible device through pending edits; never read a candidate or export.
+    let source = audible_meter(view, device);
     let healthy = view.audio_status().is_some_and(|status| {
         !status
             .render_fault
@@ -94,8 +171,17 @@ pub(super) fn render(
             state.held[index] = state.held[index].max(peak);
         }
     }
-    let levels = state.levels;
-    let held = state.held;
+    (state.levels, state.held)
+}
+
+pub(super) fn render(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: &hex_project::Device,
+    class: NativeDeviceClass,
+) -> Div {
+    let id = device.id();
+    let (levels, held) = sample_levels(view, device);
     let mut strip = div().flex().w(px(WIDTH)).px(px(1.0)).gap(px(3.0));
     for (index, descriptor, value) in [
         (
@@ -193,5 +279,39 @@ mod tests {
         state.attach(replacement, false);
         assert_eq!(state.levels, [0.0; 2]);
         assert_eq!(state.held, [0.0; 2]);
+    }
+
+    #[test]
+    fn dynamics_clear_and_reseed_when_audible_routing_changes_or_disappears() {
+        let mut state = MeterState::default();
+        let left_right = hex_engine::DynamicsMeter {
+            reduction_db: [12.0, 8.0],
+            clipped: true,
+            post_input_peak: 0.75,
+        };
+        assert_eq!(
+            state.update_dynamics(Some(0), Some(left_right), true, 0.0),
+            Some(left_right)
+        );
+
+        assert_eq!(
+            state.update_dynamics(Some(1), None, true, 0.0),
+            Some(Default::default())
+        );
+        let mid_side = hex_engine::DynamicsMeter {
+            reduction_db: [3.0, 5.0],
+            clipped: false,
+            post_input_peak: 0.0,
+        };
+        assert_eq!(
+            state.update_dynamics(Some(1), Some(mid_side), true, 0.0),
+            Some(mid_side)
+        );
+
+        assert_eq!(state.update_dynamics(None, None, true, 0.0), None);
+        assert_eq!(
+            state.update_dynamics(Some(0), None, true, 0.0),
+            Some(Default::default())
+        );
     }
 }

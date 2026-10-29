@@ -192,6 +192,8 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
                         .events
                         .into_iter()
                         .map(|e| AudioEvent {
+                            active: true,
+                            gain: hex_project::ClipGain::UNITY,
                             source: 0,
                             id: e.id,
                             start: e.start,
@@ -215,7 +217,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     if !by_clip.is_empty() {
         return Err(StorageError::Invalid("audio event owner does not exist"));
     }
-    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+    Project::from_legacy_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }
 
 // Value's normal map decoder discards duplicate fields. Validate the original

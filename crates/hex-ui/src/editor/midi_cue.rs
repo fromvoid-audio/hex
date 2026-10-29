@@ -143,8 +143,6 @@ impl EditorView {
             state.revision,
             self.project_generation,
         )?;
-        // Restrict per-frame lookup to the selected owner; never walk every
-        // track/clip to paint one piano-roll cursor.
         let track = state.project.track(self.selected_track?)?;
         let placement = track.midi_clips().iter().find(|item| item.id() == clip);
         let (source, offset) = if let Some(placement) = placement {

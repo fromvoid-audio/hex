@@ -251,7 +251,9 @@ pub(crate) fn apply(
     candidate.length = next.length;
     candidate.playback_offset = next.playback_offset;
     let source = std::sync::Arc::make_mut(&mut candidate.source);
-    source.source_length = next.source_length;
+    if source.source_length != next.source_length {
+        source.source_length = next.source_length;
+    }
     source.source_start = next.source_start;
     source.loop_start = next.loop_start;
     source.loop_end = next.loop_end;

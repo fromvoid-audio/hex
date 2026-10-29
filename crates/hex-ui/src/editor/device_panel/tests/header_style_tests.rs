@@ -161,6 +161,11 @@ fn assert_outline(visual: &mut VisualTestContext, device: DeviceId) -> Bounds<Pi
     let layers = visual.rendered_quad_paint_layers(selector, true);
     let pane = visual.debug_bounds("device-panel");
     let rail = visual.debug_bounds("device-chain-scroll");
+    assert_eq!(
+        visual.rendered_background("device-chain-scroll"),
+        Some(rgb(theme::color(theme::PaletteRole::Border)).into()),
+        "the shared rail stays recessed behind the neutral device shell"
+    );
     assert!(
         layers
             .iter()

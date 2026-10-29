@@ -1,5 +1,5 @@
-//! Complete ordinary-only authored absence evidence. Playable-span indexes omit notes outside
-//! source markers and therefore cannot prove that a stable authored note did not previously exist.
+//! Authored note identity and activation evidence for safe playback handoffs. Playable-span
+//! indexes omit notes outside source markers and cannot prove a stable note was absent or inactive.
 use super::*;
 use hex_project::{BeatTime, ClipId, MidiSource, NoteId, SceneId, SessionCellContent};
 
@@ -12,7 +12,13 @@ pub(super) struct Source {
     length: BeatTime,
     markers: [BeatTime; 4],
     looping: bool,
-    notes: Vec<NoteId>,
+    notes: Vec<NoteState>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct NoteState {
+    id: NoteId,
+    active: bool,
 }
 
 type Input<'a> = (
@@ -55,6 +61,10 @@ fn sources(project: &Project) -> impl Iterator<Item = Input<'_>> {
         }))
 }
 
+pub(super) fn has_inactive(project: &Project) -> bool {
+    sources(project).any(|(_, _, _, _, _, source)| source.notes().iter().any(|note| !note.active()))
+}
+
 /// One control scan over all canonical source/notes, bounded by existing authoring laws.
 /// Sorting the copied IDs is control-only; callback membership is two binary searches.
 fn counts(project: &Project) -> Result<(usize, usize), Invalid> {
@@ -80,7 +90,7 @@ pub(super) fn construction_bytes(project: &Project) -> Result<usize, Invalid> {
         .checked_mul(std::mem::size_of::<Source>())
         .and_then(|bytes| {
             notes
-                .checked_mul(std::mem::size_of::<NoteId>())
+                .checked_mul(std::mem::size_of::<NoteState>())
                 .and_then(|n| bytes.checked_add(n))
         })
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Vec<Source>>()))
@@ -108,9 +118,12 @@ pub(super) fn prepare(project: &Project) -> Result<Vec<Source>, Invalid> {
                 "authored MIDI identity capacity exceeds note limit",
             ));
         }
-        notes.extend(source.notes().iter().map(|note| note.id()));
-        notes.sort_unstable();
-        if notes.windows(2).any(|ids| ids[0] == ids[1]) {
+        notes.extend(source.notes().iter().map(|note| NoteState {
+            id: note.id(),
+            active: note.active(),
+        }));
+        notes.sort_unstable_by_key(|note| note.id);
+        if notes.windows(2).any(|ids| ids[0].id == ids[1].id) {
             return Err(Invalid("duplicate authored MIDI note identity"));
         }
         evidence.push(Source {
@@ -147,7 +160,7 @@ pub(super) fn retained_bytes(sources: &Vec<Source>) -> Option<usize> {
                 source
                     .notes
                     .capacity()
-                    .checked_mul(std::mem::size_of::<NoteId>())?,
+                    .checked_mul(std::mem::size_of::<NoteState>())?,
             )
         },
     )
@@ -167,7 +180,12 @@ pub(super) fn newly_authored(
     };
     if candidate.track != source_track
         || candidate.scene.is_some() != session
-        || candidate.notes.binary_search(&note).is_err()
+        || !candidate
+            .notes
+            .binary_search_by_key(&note, |entry| entry.id)
+            .ok()
+            .and_then(|index| candidate.notes.get(index))
+            .is_some_and(|entry| entry.active)
     {
         return false;
     }
@@ -181,5 +199,27 @@ pub(super) fn newly_authored(
         && previous.length == candidate.length
         && previous.markers == candidate.markers
         && previous.looping == candidate.looping
-        && previous.notes.binary_search(&note).is_err()
+        && previous
+            .notes
+            .binary_search_by_key(&note, |entry| entry.id)
+            .ok()
+            .and_then(|index| previous.notes.get(index))
+            .is_none_or(|entry| !entry.active)
+}
+
+/// Exact inactivity evidence for one authored clip/note identity. Missing
+/// evidence is not treated as inactivity; it follows the existing handoff path.
+pub(super) fn inactive_note(sources: &[Source], clip: ClipId, note: NoteId) -> bool {
+    sources
+        .binary_search_by_key(&clip, |source| source.id)
+        .ok()
+        .and_then(|index| sources.get(index))
+        .and_then(|source| {
+            source
+                .notes
+                .binary_search_by_key(&note, |entry| entry.id)
+                .ok()
+                .and_then(|index| source.notes.get(index))
+        })
+        .is_some_and(|entry| !entry.active)
 }

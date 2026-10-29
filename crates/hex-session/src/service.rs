@@ -21,6 +21,8 @@ mod arrangement_sections;
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
+pub mod automation_draft;
+pub mod automation_take;
 mod canonical_audio_source;
 mod comparison_audio;
 #[cfg(test)]
@@ -38,19 +40,39 @@ mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     ArrangementEditPosition, NativeSamplerInput, NativeSamplerReservationHold,
-    NativeSamplerRetryFacts, ResidentFreshRuntimeFence, ResidentPublicationAcceptance,
-    ResidentPublicationMetadata, ResidentPublicationPolicy, ResidentPublicationRefusal,
-    ResidentRuntimeLoop, WorkerAudioSink,
+    NativeSamplerRetryFacts, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
+    ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
+    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
+    ResidentPublicationPolicy, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
 pub use sampler_parameter::SamplerEdit;
+mod device_automation_control;
+pub use device_automation_control::DeviceAutomationControlEdit;
 mod device_comparison;
 mod effect_bus;
+mod plugin_effect;
+mod plugin_state_save;
+pub use plugin_state_save::{PluginStateCapture, PluginStateSaveInput};
+pub mod diagnostics;
+mod request_cancellation;
+pub use plugin_effect::{
+    NativeDeviceState, PluginEffectCompletion, PluginEffectControl, PluginEffectDestination,
+    PluginEffectInsertion, PluginEffectPreparation, PluginEffectPreparationState,
+    PluginEffectSelection,
+};
+use request_cancellation::QueuedRequest;
+pub use request_cancellation::RequestCancellation;
+#[cfg(test)]
+mod correlated_save_tests;
 #[cfg(test)]
 mod effect_bus_tests;
 #[cfg(test)]
 mod format_upgrade_tests;
+#[cfg(test)]
+#[path = "service/limiter_tests.rs"]
+mod limiter_tests;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -59,10 +81,10 @@ pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 #[cfg(test)]
 mod stopped_playback_tests;
 use hex_storage::FileToken;
+use recovery::absolute_document_path;
 pub use recovery::{
     ProjectSource, RecoveryFailure, RecoveryRestart, missing_assets, untitled_recovery_path,
 };
-use recovery::{absolute_document_path, project_for_save};
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -196,6 +218,16 @@ pub struct SamplerHistoryEdit {
     pub redo: bool,
     pub cancel: Arc<AtomicBool>,
 }
+/// Identifies one requested save against the exact canonical document revision.
+/// The caller supplies a unique nonzero request ID for its in-flight saves.
+/// The worker returns this identity for both successful and refused saves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SaveCorrelation {
+    pub request_id: u64,
+    pub project_generation: u64,
+    pub revision: u64,
+}
+
 /// A worker response. `playback` is present only when a new graph was compiled.
 pub struct Event {
     pub state: Arc<ViewState>,
@@ -210,6 +242,8 @@ pub struct Event {
     /// Metadata-only completion of one first-load action, on success or refusal.
     pub sampler_load_complete: Option<SamplerLoadCompletion>,
     pub sampler_edit_complete: Option<u64>,
+    /// At most two exact terminals: a refused new request and an invalidated pending one.
+    pub plugin_effect_complete: Vec<PluginEffectCompletion>,
     pub computer_keyboard_complete: Option<u64>,
     /// Exact terminal for a retained MIDI take commit, including refusal.
     pub midi_take_complete: Option<MidiTakeCompletion>,
@@ -221,8 +255,13 @@ pub struct Event {
     pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
     /// True for each processed Save As or Save Current request, including refusal.
     pub save_complete: bool,
+    /// Exact identity of a correlated save terminal, including refusal.
+    pub save_correlation: Option<SaveCorrelation>,
     /// Replacing the current file changes its reader compatibility. Opening never writes.
     pub document_format_upgrade_required: bool,
+    /// This save was refused pending reader-compatibility consent. The UI may
+    /// present its existing Save As/cancel/overwrite flow for this document.
+    pub save_confirmation_required: bool,
     pub open_complete: bool,
     pub project_replaced: bool,
     /// Completion of explicit Stop recovery, including refusal. A returned graph
@@ -249,6 +288,9 @@ pub struct Event {
     pub active_tuning_gesture: Option<TuningGestureSnapshot>,
     pub tuning_library: Option<TuningLibraryResult>,
 }
+
+mod verified_gain;
+pub use verified_gain::VerifiedTrackGainSource;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DevicePreviewIdentity {
@@ -400,11 +442,39 @@ pub enum TrackClipboardAction {
     },
 }
 
+/// Device clipboard intents are revision-bound; the worker retains copied state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeviceClipboardAction {
+    Copy {
+        owner: hex_project::DeviceChainOwner,
+        selected: hex_project::DeviceSelectionIds,
+    },
+    Cut {
+        owner: hex_project::DeviceChainOwner,
+        selected: hex_project::DeviceSelectionIds,
+    },
+    Paste {
+        owner: hex_project::DeviceChainOwner,
+        before: Option<hex_project::DeviceId>,
+    },
+    Duplicate {
+        source: hex_project::DeviceChainOwner,
+        selected: hex_project::DeviceSelectionIds,
+        destination: hex_project::DeviceChainOwner,
+        before: Option<hex_project::DeviceId>,
+    },
+}
+
 /// Bounded requests accepted by the control worker.
 #[derive(Debug)]
 // Fixed request storage is bounded by the 32-slot control FIFO.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    DeviceClipboard {
+        project_generation: u64,
+        revision: u64,
+        action: DeviceClipboardAction,
+    },
     TrackClipboard {
         project_generation: u64,
         revision: u64,
@@ -420,6 +490,14 @@ pub enum Request {
         revision: u64,
         tracks: hex_project::TrackSelectionIds,
         before: Option<hex_project::TrackId>,
+    },
+    /// Captured complete-subtree move to an explicit canonical parent/boundary.
+    /// Uses the same bounded selection and source revision as `ReorderTracks`.
+    ReparentTracks {
+        project_generation: u64,
+        revision: u64,
+        tracks: hex_project::TrackSelectionIds,
+        destination: hex_project::TrackDestination,
     },
     /// Captured Main-lane intent. Never retarget to a newer document/revision.
     EditArrangementSection {
@@ -441,12 +519,30 @@ pub enum Request {
         revision: u64,
         clips: Vec<hex_project::ClipId>,
     },
+    DuplicateAliasClips {
+        project_generation: u64,
+        revision: u64,
+        clips: Vec<hex_project::ClipId>,
+    },
+    DuplicateSessionCell {
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        scene: hex_project::SceneId,
+        alias: bool,
+    },
     /// Captured Arrangement selection to consolidate as one clip. The project
     /// command validates track and media-kind representability atomically.
     GroupClips {
         project_generation: u64,
         revision: u64,
         clips: Vec<hex_project::ClipId>,
+    },
+    /// Captured Arrangement time span; split and grouping share one transaction.
+    GroupTimeRange {
+        project_generation: u64,
+        revision: u64,
+        range: hex_project::TimeRange,
     },
     /// Captured range in the focused lower audio-event editor.
     GroupAudioEvents {
@@ -498,6 +594,12 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
     },
+    /// Captured VST3 catalog choice; native preparation remains on the canonical worker.
+    InsertPluginEffect(PluginEffectInsertion),
+    /// Worker-internal wakeup; never a FIFO request completion.
+    ContinuePluginEffect,
+    /// Internal fresh-output state restoration; no authored edit or revision.
+    ContinuePluginStateRestore,
     /// Catalog effect insertion; defaults and target admission belong to the worker.
     InsertEffectBusDevice {
         project_generation: u64,
@@ -544,6 +646,20 @@ pub enum Request {
         revision: u64,
         track: hex_project::TrackId,
         edit: GainLaneEdit,
+    },
+    /// Resolve source stamps before any gesture barrier or canonical edit.
+    DeviceAutomation {
+        project_generation: u64,
+        revision: u64,
+        device: hex_project::DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+        points: Vec<hex_project::AutomationPoint>,
+    },
+    /// The same bounded source-stamped Edit seam for manual values/read selection.
+    DeviceAutomationControl {
+        project_generation: u64,
+        revision: u64,
+        edit: DeviceAutomationControlEdit,
     },
     DeviceGesture(GestureRequest),
     TuningGesture(TuningGestureRequest),
@@ -689,8 +805,9 @@ pub enum Request {
     Redo,
     SaveNew(PathBuf),
     SaveCurrent,
-    /// Explicit user consent to replace an older saved format. Bound to the
-    /// selected document and project generation; normal token checks still apply.
+    /// Explicit user consent to lose older-reader compatibility through a schema
+    /// upgrade or document growth. Bound to the selected document and project
+    /// generation; normal exact-byte file-token checks still apply.
     SaveCurrentWithFormatUpgrade {
         project_generation: u64,
         path: PathBuf,
@@ -700,6 +817,8 @@ pub enum Request {
     },
     /// Reprepare the current canonical sound after the caller explicitly stops.
     RestoreStoppedPlayback,
+    /// Worker-local continuation of the existing stopped restoration request.
+    ContinueStoppedPlaybackRestore,
     Export(PathBuf),
     /// Explicit half-open Arrangement range; worker captures the current revision.
     ExportRange {
@@ -722,6 +841,7 @@ impl Request {
             Request::CommitMidiTake { .. }
                 | Request::Undo
                 | Request::ReorderTracks { .. }
+                | Request::ReparentTracks { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::EditArrangementSection { .. }
                 | Request::SamplerEdit(SamplerEdit::History(_))
@@ -831,8 +951,9 @@ type ExportTestHook = Arc<std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 pub struct Service {
     #[cfg(test)]
     export_test_hook: ExportTestHook,
-    requests: SyncSender<Request>,
-    events: Receiver<Event>,
+    requests: request_cancellation::Sender,
+    events: diagnostics::EventReceiver,
+    diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
     export_busy: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
@@ -1089,6 +1210,10 @@ impl Service {
             (Some(arrangement_seek), None)
         };
         let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
+        let diagnostics = Arc::new(diagnostics::Hooks::default());
+        let worker_diagnostics = Arc::clone(&diagnostics);
+        let document_intent = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let worker_document_intent = Arc::clone(&document_intent);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
@@ -1121,7 +1246,12 @@ impl Service {
             // Structural stopped publications reuse the bounded preroll constructor.
             .stack_size(crate::arrangement_seek::SEEK_WORKER_STACK_BYTES)
             .spawn(move || {
-                let mut events = WorkerEvents::new(event_tx, Arc::clone(&worker_shutdown), audio);
+                let mut events = WorkerEvents::new_with_diagnostics(
+                    event_tx,
+                    Arc::clone(&worker_shutdown),
+                    audio,
+                    worker_diagnostics,
+                );
                 let session = match session {
                     Some(session) => session,
                     None => {
@@ -1129,10 +1259,12 @@ impl Service {
                             Ok(rate) => (rate, None),
                             Err(error) => (48_000, Some(error)),
                         };
-                        let Ok(session) = Session::new_with_overview_budget(
+                        let Ok(session) = Session::new_with_audio_mode_in_overview_domain(
                             rate,
                             history_capacity,
                             max_resident_frames,
+                            DocumentAudioMode::Resident,
+                            events.ordinary_source_reservation(),
                             overview_budget.clone(),
                         ) else {
                             return;
@@ -1147,12 +1279,16 @@ impl Service {
                                     events.startup_failed(format!(
                                         "native resident reservation unavailable: {reason}"
                                     ));
-                                    let Ok(session) = Session::new_with_overview_budget(
-                                        rate,
-                                        history_capacity,
-                                        max_resident_frames,
-                                        overview_budget.clone(),
-                                    ) else {
+                                    let Ok(session) =
+                                        Session::new_with_audio_mode_in_overview_domain(
+                                            rate,
+                                            history_capacity,
+                                            max_resident_frames,
+                                            DocumentAudioMode::Resident,
+                                            events.ordinary_source_reservation(),
+                                            overview_budget.clone(),
+                                        )
+                                    else {
                                         return;
                                     };
                                     session
@@ -1167,6 +1303,7 @@ impl Service {
                     session,
                     history_capacity,
                     request_rx,
+                    worker_document_intent,
                     events,
                     ExportLane::new(export_work_tx, finished_rx, export_worker),
                     actor_export_events,
@@ -1178,8 +1315,9 @@ impl Service {
         Ok(Self {
             #[cfg(test)]
             export_test_hook,
-            requests: request_tx,
-            events: event_rx,
+            requests: request_cancellation::Sender::new(request_tx, document_intent),
+            diagnostics: Arc::clone(&diagnostics),
+            events: diagnostics::EventReceiver::new(event_rx, diagnostics),
             export_events: export_event_rx,
             export_busy,
             shutdown,
@@ -1193,8 +1331,58 @@ impl Service {
     /// Submit without waiting for worker capacity.
     #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
+        let diagnostic = self.diagnostics.begin(&request);
+        let result = self.submit_traced(request, diagnostic);
+        self.diagnostics.returned(diagnostic, &result);
+        result
+    }
+
+    /// Submit one save bound to the current document generation and revision.
+    /// Rejection returns the original request; a delivered terminal echoes the
+    /// identity, including validation or persistence failure. A stopped worker
+    /// remains a separate disconnection, never a successful save terminal.
+    #[allow(clippy::result_large_err)]
+    pub fn submit_correlated_save(
+        &self,
+        request: Request,
+        correlation: SaveCorrelation,
+    ) -> Result<(), SubmitError> {
+        if !matches!(
+            request,
+            Request::SaveNew(_)
+                | Request::SaveCurrent
+                | Request::SaveCurrentWithFormatUpgrade { .. }
+        ) || correlation.request_id == 0
+        {
+            return Err(SubmitError::Busy(request));
+        }
+        let diagnostic = self.diagnostics.begin(&request);
+        let result = self
+            .requests
+            .submit_traced_save(request, diagnostic, Some(correlation));
+        self.diagnostics.returned(diagnostic, &result);
+        result
+    }
+
+    /// Install one read-only control observer. Logging has no effect on request
+    /// admission, canonical state, cancellation or publication authority.
+    pub fn set_diagnostic_observer(
+        &self,
+        observer: Arc<diagnostics::DiagnosticObserver>,
+    ) -> Result<(), &'static str> {
+        self.diagnostics.install(observer)
+    }
+
+    #[allow(clippy::result_large_err)] // Original bounded request returned for caller retry.
+    fn submit_traced(
+        &self,
+        request: Request,
+        diagnostic: Option<diagnostics::DiagnosticRequest>,
+    ) -> Result<(), SubmitError> {
         if let Request::BounceArrangement {
-            target: hex_project::BounceTarget::Clips(ids),
+            target:
+                hex_project::BounceTarget::Clips(ids)
+                | hex_project::BounceTarget::AudioGroup { clips: ids, .. },
             ..
         } = &request
         {
@@ -1216,7 +1404,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            return match try_submit(&self.requests, request) {
+            return match try_submit_traced(&self.requests, request, diagnostic) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.resident_seek_count.fetch_sub(1, Ordering::AcqRel);
@@ -1232,7 +1420,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            match try_submit(&self.requests, request) {
+            match try_submit_traced(&self.requests, request, diagnostic) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.export_busy.store(false, Ordering::Release);
@@ -1240,7 +1428,7 @@ impl Service {
                 }
             }
         } else {
-            try_submit(&self.requests, request)
+            try_submit_traced(&self.requests, request, diagnostic)
         }
     }
 
@@ -1334,12 +1522,17 @@ impl Service {
 }
 
 #[allow(clippy::result_large_err)] // Preserve the exact bounded request on queue refusal.
-fn try_submit(sender: &SyncSender<Request>, request: Request) -> Result<(), SubmitError> {
-    match sender.try_send(request) {
-        Ok(()) => Ok(()),
-        Err(TrySendError::Full(request)) => Err(SubmitError::Full(request)),
-        Err(TrySendError::Disconnected(request)) => Err(SubmitError::Closed(request)),
-    }
+#[cfg(test)]
+fn try_submit(sender: &request_cancellation::Sender, request: Request) -> Result<(), SubmitError> {
+    sender.submit(request)
+}
+#[allow(clippy::result_large_err)]
+fn try_submit_traced(
+    sender: &request_cancellation::Sender,
+    request: Request,
+    diagnostic: Option<diagnostics::DiagnosticRequest>,
+) -> Result<(), SubmitError> {
+    sender.submit_traced(request, diagnostic)
 }
 
 fn view_state(
@@ -1701,7 +1894,8 @@ fn run_tuning_library_operation_in_using(
 fn run_worker(
     mut session: Session,
     history_capacity: usize,
-    requests: Receiver<Request>,
+    requests: Receiver<QueuedRequest>,
+    document_intent: Arc<std::sync::atomic::AtomicU64>,
     mut events: WorkerEvents,
     mut export_lane: ExportLane,
     export_events: SyncSender<ExportEvent>,
@@ -1717,6 +1911,7 @@ fn run_worker(
     let mut range_clipboard: Option<ArrangementClipboard> = None;
     // Typed clipboard contexts are independent; both expire with the document.
     let mut track_clipboard: Option<Arc<hex_project::TrackClipboard>> = None;
+    let mut device_clipboard: Option<Arc<hex_project::DeviceClipboard>> = None;
     // Media paths remain relative to the directory from which the current
     // project was opened. Save As changes the document handle, not this base.
     let mut media_base: Option<PathBuf> = None;
@@ -1812,6 +2007,7 @@ fn run_worker(
                 request_complete: false,
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
+                plugin_effect_complete: Vec::new(),
                 computer_keyboard_complete: None,
                 midi_take_complete: None,
                 tuning_audition_complete: None,
@@ -1819,7 +2015,9 @@ fn run_worker(
                 bounce_complete: None,
                 audio_batch_complete: None,
                 save_complete: false,
+                save_correlation: None,
                 document_format_upgrade_required: false,
+                save_confirmation_required: false,
                 open_complete: false,
                 project_replaced: false,
                 stopped_playback_restore_complete: false,
@@ -1848,6 +2046,7 @@ fn run_worker(
             request_complete: false,
             sampler_load_complete: None,
             sampler_edit_complete: None,
+            plugin_effect_complete: Vec::new(),
             computer_keyboard_complete: None,
             midi_take_complete: None,
             tuning_audition_complete: None,
@@ -1855,7 +2054,9 @@ fn run_worker(
             bounce_complete: None,
             audio_batch_complete: None,
             save_complete: false,
+            save_correlation: None,
             document_format_upgrade_required: false,
+            save_confirmation_required: false,
             open_complete: false,
             project_replaced: false,
             stopped_playback_restore_complete: false,
@@ -1940,9 +2141,20 @@ fn run_worker(
     }
 
     let mut pending_sampler_parameter: Option<SamplerEdit> = None;
-    while let Some(request) = events.next_request_with_control_poll(
+    let mut pending_plugin_effect: Option<plugin_effect::Pending> = None;
+    let mut pending_stopped_restore = None;
+    while let Some(queued) = events.next_request_with_control_poll(
         &requests,
+        &document_intent,
         session.native_reservation.is_some(),
+        pending_plugin_effect
+            .as_ref()
+            .map(|pending| &pending.insertion),
+        pending_stopped_restore,
+        hex_engine::AudioSourceContext {
+            project_generation,
+            editor_revision: revision,
+        },
         |mut audio| {
             if let Some(seek) = resident_seek.as_mut() {
                 seek.drive(
@@ -2002,12 +2214,23 @@ fn run_worker(
             )
         },
     ) {
+        events.begin_diagnostics(&queued, project_generation, revision);
+        events.begin_request(&document_intent, queued.document_intent);
+        let save_correlation = queued.save_correlation;
+        let request = queued.request;
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
             _ => None,
         };
         let mut seek_submitted = false;
-        let request_complete = !matches!(&request, Request::ContinueSamplerEdit);
+        let request_complete = !matches!(
+            &request,
+            Request::ContinueSamplerEdit
+                | Request::ContinuePluginEffect
+                | Request::ContinuePluginStateRestore
+                | Request::ContinueStoppedPlaybackRestore
+        );
+        let mut plugin_effect_complete = Vec::new();
         let mut sampler_edit_complete = None;
         if matches!(
             &request,
@@ -2044,6 +2267,7 @@ fn run_worker(
         let mut audio_batch_failure = None;
         let mut open_complete = false;
         let mut save_complete = false;
+        let mut save_confirmation_required = false;
         let mut project_replaced = false;
         let mut replacement_revision = None;
         let mut replacement_sources: Option<
@@ -2073,7 +2297,120 @@ fn run_worker(
         // A valid request then uses the exact generic Edit publication path below,
         // including Created selection and keyboard/tuning preparation.
         let mut cut_clipboard = None;
+        let mut cut_device_clipboard = None;
+        let automation_source_error = match &request {
+            Request::DeviceAutomation {
+                project_generation: generation,
+                revision: source_revision,
+                ..
+            }
+            | Request::DeviceAutomationControl {
+                project_generation: generation,
+                revision: source_revision,
+                ..
+            } => {
+                if *generation != project_generation || *source_revision != revision {
+                    Some(
+                        "automation edit refused · project changed · retry from the current parameter",
+                    )
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some("finish or cancel the active parameter gesture before editing automation")
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
         let resolved_edit = match &request {
+            Request::DeviceAutomation {
+                project_generation: _,
+                revision: _,
+                device,
+                target,
+                points,
+            } => Some(if let Some(reason) = automation_source_error {
+                Err(reason.into())
+            } else if !hex_engine::project_device_automation_target_supported(
+                session.project(),
+                *device,
+                *target,
+            ) {
+                Err("automation edit refused · target no longer available".into())
+            } else {
+                Ok(Command::ReplaceDeviceAutomationTarget {
+                    device: *device,
+                    target: *target,
+                    points: points.clone(),
+                })
+            }),
+            Request::DeviceAutomationControl { edit, .. } => Some(match automation_source_error {
+                Some(reason) => Err(reason.into()),
+                None => device_automation_control::command(&session, edit),
+            }),
+            Request::DeviceClipboard {
+                project_generation: generation,
+                revision: source_revision,
+                action,
+            } => {
+                if *generation != project_generation || *source_revision != revision {
+                    Some(Err("device clipboard canceled · project changed".into()))
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some(Err(
+                        "finish or cancel the active gesture before copying devices".into(),
+                    ))
+                } else {
+                    match action {
+                        DeviceClipboardAction::Copy { .. } => None,
+                        DeviceClipboardAction::Cut { owner, selected } => Some(
+                            session
+                                .project()
+                                .capture_devices(*owner, selected)
+                                .map(|captured| {
+                                    cut_device_clipboard = Some(Arc::new(captured));
+                                    Command::RemoveDevices {
+                                        owner: *owner,
+                                        selected: selected.clone(),
+                                    }
+                                })
+                                .map_err(|e| e.to_string()),
+                        ),
+                        DeviceClipboardAction::Paste { owner, before } => Some(
+                            device_clipboard
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    "device clipboard is empty · copy devices first".to_owned()
+                                })
+                                .map(|clipboard| Command::PasteDevices {
+                                    clipboard: Arc::clone(clipboard),
+                                    owner: *owner,
+                                    before: *before,
+                                }),
+                        ),
+                        DeviceClipboardAction::Duplicate {
+                            source,
+                            selected,
+                            destination,
+                            before,
+                        } => Some(
+                            session
+                                .project()
+                                .capture_devices(*source, selected)
+                                .map(|clipboard| Command::PasteDevices {
+                                    clipboard: Arc::new(clipboard),
+                                    owner: *destination,
+                                    before: *before,
+                                })
+                                .map_err(|e| e.to_string()),
+                        ),
+                    }
+                }
+            }
             Request::TrackClipboard {
                 project_generation: generation,
                 revision: source_revision,
@@ -2104,12 +2441,18 @@ fn run_worker(
                         TrackClipboardAction::Paste { before } => Some(
                             track_clipboard
                                 .as_ref()
-                                .map(|clipboard| Command::PasteTracks {
-                                    clipboard: Arc::clone(clipboard),
-                                    before: *before,
-                                })
                                 .ok_or_else(|| {
-                                    "track clipboard is empty · copy tracks first".into()
+                                    "track clipboard is empty · copy tracks first".to_owned()
+                                })
+                                .and_then(|clipboard| {
+                                    session
+                                        .project()
+                                        .track_destination_before(*before)
+                                        .map(|destination| Command::PasteTracks {
+                                            clipboard: Arc::clone(clipboard),
+                                            destination,
+                                        })
+                                        .map_err(|error| error.to_string())
                                 }),
                         ),
                         TrackClipboardAction::Duplicate {
@@ -2119,21 +2462,16 @@ fn run_worker(
                             session
                                 .project()
                                 .capture_tracks(tracks, *without_clips)
-                                .map(|clipboard| {
-                                    let after = session
+                                .and_then(|clipboard| {
+                                    session
                                         .project()
-                                        .tracks()
-                                        .iter()
-                                        .rposition(|t| tracks.ids().contains(&t.id()));
-                                    let before = after
-                                        .and_then(|i| session.project().tracks().get(i + 1))
-                                        .map(|t| t.id());
-                                    Command::PasteTracks {
-                                        clipboard: Arc::new(clipboard),
-                                        before,
-                                    }
+                                        .track_destination_after_selection(tracks)
+                                        .map(|destination| Command::PasteTracks {
+                                            clipboard: Arc::new(clipboard),
+                                            destination,
+                                        })
                                 })
-                                .map_err(|e| e.to_string()),
+                                .map_err(|error| error.to_string()),
                         ),
                     }
                 }
@@ -2163,6 +2501,38 @@ fn run_worker(
                     Ok(Command::MoveTracksBefore {
                         tracks: tracks.clone(),
                         before: *before,
+                    })
+                },
+            ),
+            Request::ReparentTracks {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                tracks,
+                destination,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("track reparent canceled · project changed".to_owned())
+                } else if tracks
+                    .ids()
+                    .iter()
+                    .any(|id| session.project().track(*id).is_none())
+                    || destination
+                        .before
+                        .is_some_and(|id| session.project().track(id).is_none())
+                    || destination
+                        .parent_group
+                        .is_some_and(|id| session.project().track(id).is_none())
+                {
+                    Err("track reparent target no longer exists".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before reparenting tracks".into())
+                } else {
+                    Ok(Command::ReparentTracks {
+                        tracks: tracks.clone(),
+                        destination: *destination,
                     })
                 },
             ),
@@ -2280,6 +2650,11 @@ fn run_worker(
                 project_generation: captured_generation,
                 revision: captured_revision,
                 clips,
+            }
+            | Request::DuplicateAliasClips {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                clips,
             } => Some(
                 if *captured_generation != project_generation || *captured_revision != revision {
                     Err("clip duplication canceled · project changed".to_owned())
@@ -2291,7 +2666,33 @@ fn run_worker(
                 {
                     Err("finish or cancel the active gesture before duplicating clips".into())
                 } else {
-                    Ok(Command::DuplicateClips(clips.clone()))
+                    Ok(if matches!(&request, Request::DuplicateAliasClips { .. }) {
+                        Command::DuplicateAliasClips(clips.clone())
+                    } else {
+                        Command::DuplicateClips(clips.clone())
+                    })
+                },
+            ),
+            Request::DuplicateSessionCell {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                track,
+                scene,
+                alias,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("console duplication canceled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before duplicating clips".into())
+                } else {
+                    Ok(Command::DuplicateSessionCell {
+                        track: *track,
+                        scene: *scene,
+                        alias: *alias,
+                    })
                 },
             ),
             Request::GroupClips {
@@ -2310,6 +2711,22 @@ fn run_worker(
                     Err("finish or cancel the active gesture before grouping clips".into())
                 } else {
                     Ok(Command::GroupClips(clips.clone()))
+                },
+            ),
+            Request::GroupTimeRange {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                range,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("clip grouping canceled · project changed".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before grouping clips".into())
+                } else {
+                    Ok(Command::GroupTimeRange(range.clone()))
                 },
             ),
             Request::GroupAudioEvents {
@@ -2436,6 +2853,11 @@ fn run_worker(
             .err(),
             _ => None,
         });
+        if save_correlation.is_some_and(|identity| {
+            identity.project_generation != project_generation || identity.revision != revision
+        }) {
+            barrier_failure = Some("save target changed · save cancelled".to_owned());
+        }
         if barrier && barrier_failure.is_none() {
             let device_finished = if events.resident_publication_enabled()
                 && session.audio_mode() == DocumentAudioMode::Resident
@@ -2637,6 +3059,12 @@ fn run_worker(
                     | Request::Edit(_)
                     | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
+                    | Request::DeviceClipboard {
+                        action: DeviceClipboardAction::Cut { .. }
+                            | DeviceClipboardAction::Paste { .. }
+                            | DeviceClipboardAction::Duplicate { .. },
+                        ..
+                    }
                     | Request::TrackClipboard {
                         action: TrackClipboardAction::Cut(_)
                             | TrackClipboardAction::Duplicate { .. }
@@ -2644,6 +3072,7 @@ fn run_worker(
                         ..
                     }
                     | Request::ReorderTracks { .. }
+                    | Request::ReparentTracks { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
             );
@@ -2655,6 +3084,9 @@ fn run_worker(
                     | Request::RestartRecovery(_)
                     | Request::SamplerEdit(_)
                     | Request::ContinueSamplerEdit
+                    | Request::InsertPluginEffect(_)
+                    | Request::ContinuePluginEffect
+                    | Request::ContinuePluginStateRestore
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
@@ -2662,7 +3094,9 @@ fn run_worker(
                     | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
                     | Request::TrackClipboard { .. }
+                    | Request::DeviceClipboard { .. }
                     | Request::ReorderTracks { .. }
+                    | Request::ReparentTracks { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
@@ -2675,7 +3109,13 @@ fn run_worker(
                     | Request::OpenWith { .. }
                     | Request::OpenWithAudioMode { .. }
             );
-        if matches!(&request, Request::Edit(command) if arrangement_sections::is_command(command)) {
+        if save_correlation.is_some_and(|identity| {
+            identity.project_generation != project_generation || identity.revision != revision
+        }) {
+            save_complete = true;
+            error = Some("save target changed · save cancelled".into());
+        } else if matches!(&request, Request::Edit(command) if arrangement_sections::is_command(command))
+        {
             error = Some("section edits require a revision-bound section request".into());
         } else if native_edit_refusal {
             error = Some("sampler native playback requires a fresh output; close or open a project before changing its sources or configuration".into());
@@ -3074,13 +3514,110 @@ fn run_worker(
                         replacement_revision = Some(prepared);
                     }
                 }
-                Request::ReorderTracks { .. } => {
+                Request::ReorderTracks { .. } | Request::ReparentTracks { .. } => {
                     error = Some("track reorder target was not resolved".into());
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {
                     error = Some(
                         "instrument insertion request was not prepared; select it again".into(),
                     );
+                }
+                request @ (Request::InsertPluginEffect(_) | Request::ContinuePluginEffect) => {
+                    if let Request::InsertPluginEffect(insertion) = request {
+                        match plugin_effect::Pending::new(insertion, session.project()) {
+                            Err(reason) => error = Some(reason),
+                            Ok(pending) if pending_plugin_effect.is_some() => {
+                                plugin_effect_complete
+                                    .push(pending.finish(events.sampler_edit_audio(), false));
+                                error = Some("another vst3 effect is still preparing".into());
+                            }
+                            Ok(pending)
+                                if pending_sampler_parameter.is_some()
+                                    || device_gesture.snapshot().is_some()
+                                    || tuning_gesture.snapshot().is_some() =>
+                            {
+                                plugin_effect_complete
+                                    .push(pending.finish(events.sampler_edit_audio(), false));
+                                error = Some("finish or cancel the active gesture before inserting a vst3 effect".into());
+                            }
+                            Ok(pending) => pending_plugin_effect = Some(pending),
+                        }
+                    }
+                    // A refused second request must not drive or retire the first one.
+                    if error.is_none()
+                        && let Some(pending) = pending_plugin_effect.as_mut()
+                    {
+                        let context = hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        };
+                        let result = events
+                            .sampler_edit_audio()
+                            .ok_or_else(|| "vst3 hosting unavailable for this output".to_string())
+                            .and_then(|sink| {
+                                pending.prepare(
+                                    &session,
+                                    context,
+                                    compiled.as_ref().map(|(_, p)| p.as_ref()),
+                                    sink,
+                                )
+                            });
+                        match result {
+                            Ok(PluginEffectPreparationState::Preparing) => {
+                                status = Some("preparing vst3 effect".into())
+                            }
+                            result => {
+                                if let Some(pending) = pending_plugin_effect.take() {
+                                    let admission = export_lane.admission_with_resident_owners(
+                                        compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }),
+                                        resident_seek.as_ref(), resident_preview.as_ref(),
+                                    );
+                                    let committed = result.and_then(|state| {
+                                        let PluginEffectPreparationState::Ready(state) = state
+                                        else {
+                                            return Err("vst3 preparation did not finish".into());
+                                        };
+                                        // Recheck the captured target before preparing the canonical transaction.
+                                        pending.insertion.validate(context, session.project())?;
+                                        let command = pending.insertion.command(state)?;
+                                        let sink = events
+                                            .resident_audio()
+                                            .ok_or("native worker unavailable")?;
+                                        session
+                                            .plugin_effect_resident_snapshot(
+                                                command,
+                                                Arc::clone(&pending.insertion.control),
+                                                hex_engine::AudioSourceContext {
+                                                    editor_revision: revision.saturating_add(1),
+                                                    ..context
+                                                },
+                                                sink,
+                                                admission,
+                                                resident_snapshot.as_ref(),
+                                            )
+                                            .map_err(|e| e.to_string())
+                                    });
+                                    let accepted = committed.is_ok();
+                                    match committed {
+                                        Ok((new, snapshot)) => {
+                                            created = Some(new);
+                                            unsaved = true;
+                                            replacement_revision =
+                                                Some(Arc::clone(&snapshot.prepared));
+                                            resident_snapshot = Some(snapshot);
+                                            status = Some(
+                                                "vst3 effect inserted · waiting for audio".into(),
+                                            );
+                                        }
+                                        Err(reason) => error = Some(reason),
+                                    }
+                                    plugin_effect_complete.push(
+                                        pending.finish(events.sampler_edit_audio(), accepted),
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
                 Request::InsertEffectBusDevice { .. } => {
                     error =
@@ -3092,11 +3629,16 @@ fn run_worker(
                 Request::CopyArrangementClipToConsoleTrack { .. } => {
                     error = Some("console clip target was not resolved".into());
                 }
-                Request::DuplicateClips { .. } => {
+                Request::DuplicateClips { .. }
+                | Request::DuplicateAliasClips { .. }
+                | Request::DuplicateSessionCell { .. } => {
                     error = Some("clip duplication target was not resolved".into());
                 }
-                Request::GroupClips { .. } => {
+                Request::GroupClips { .. } | Request::GroupTimeRange { .. } => {
                     error = Some("clip grouping target was not resolved".into());
+                }
+                Request::DeviceAutomation { .. } | Request::DeviceAutomationControl { .. } => {
+                    error = Some("automation target was not resolved".into());
                 }
                 Request::GroupAudioEvents { .. } => {
                     error = Some("audio event grouping target was not resolved".into());
@@ -3329,6 +3871,9 @@ fn run_worker(
                                 && let Some(sink) = events.resident_audio()
                             {
                                 let admission = export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }), resident_seek.as_ref(), resident_preview.as_ref());
+                                let allowance = resident_audio::import_frame_allowance(
+                                    &session, sink, admission, resident_snapshot.as_ref())?;
+                                let job = job.with_pcm_frame_allowance(allowance);
                                 return job.run_with_storage_admission_using(
                                     &mut session, compiled.as_ref().map(|(_, prepared)| prepared.as_ref()), || actual,
                                     |session, prepared| admission.check_legacy_stage(session, prepared),
@@ -3631,7 +4176,13 @@ fn run_worker(
                         Err(reason) => error = Some(reason.to_string()),
                     }
                 }
-                Request::Edit(command) if private_sampler => {
+                Request::Edit(command)
+                    if private_sampler
+                        || matches!(&command,
+                        Command::BindTrackSource { source: Some(source), .. }
+                        if session.project().native_source(*source).is_some_and(|definition|
+                            hex_engine::native_device_resources::requires_private_sampler_state(definition.instrument().state()))) =>
+                {
                     let current = compiled.as_ref().map(|(_, p)| {
                         hex_engine::native_device_resources::ControlSamplerSelection {
                             sources: current_sources.as_ref(),
@@ -3964,7 +4515,11 @@ fn run_worker(
                         history_capacity,
                         session.max_resident_frames(),
                         mode,
-                        reservation,
+                        reservation.or_else(|| {
+                            (mode == DocumentAudioMode::Resident)
+                                .then(|| events.ordinary_source_reservation())
+                                .flatten()
+                        }),
                         session.overview_budget.clone(),
                     )
                     .and_then(|candidate| match session.native_reservation {
@@ -4103,6 +4658,19 @@ fn run_worker(
                         }
                         Err(reason) => error = Some(reason),
                     }
+                }
+                Request::DeviceClipboard {
+                    action: DeviceClipboardAction::Copy { owner, selected },
+                    ..
+                } => match session.project().capture_devices(owner, &selected) {
+                    Ok(captured) => {
+                        device_clipboard = Some(Arc::new(captured));
+                        status = Some("devices copied".into());
+                    }
+                    Err(reason) => error = Some(reason.to_string()),
+                },
+                Request::DeviceClipboard { .. } => {
+                    error = Some("device clipboard request was not resolved".into())
                 }
                 Request::TrackClipboard {
                     action: TrackClipboardAction::Copy(tracks),
@@ -4606,9 +5174,16 @@ fn run_worker(
                     match patched {
                         Ok(state) => {
                             let before_project = session.project().clone();
+                            let command = crate::device_gesture::manual_device_edit(
+                                &session,
+                                device,
+                                state,
+                                [parameter],
+                                true,
+                            );
                             match resident_audio::execute_command(
                                 &mut session,
-                                Command::ReplaceDeviceState { device, state },
+                                command,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                                 hex_engine::AudioSourceContext {
                                     project_generation,
@@ -4831,10 +5406,17 @@ fn run_worker(
                     in_place,
                     control,
                 } => {
+                    let grouping = target.is_audio_group();
                     let result = if captured_generation != project_generation
                         || captured_revision != revision
                     {
                         Err("bounce cancelled · project changed".into())
+                    } else if grouping
+                        && (pending_sampler_parameter.is_some()
+                            || device_gesture.snapshot().is_some()
+                            || tuning_gesture.snapshot().is_some())
+                    {
+                        Err("finish or cancel the active gesture before grouping clips".into())
                     } else if control.is_cancelled() {
                         Err("bounce cancelled".into())
                     } else {
@@ -4890,7 +5472,14 @@ fn run_worker(
                             unsaved = true;
                             replacement_revision = Some(prepared);
                             created = Some(result);
-                            status = Some("arrangement bounced to audio".into());
+                            status = Some(
+                                if grouping {
+                                    "audio grouped into one clip"
+                                } else {
+                                    "arrangement bounced to audio"
+                                }
+                                .into(),
+                            );
                         }
                         Err(reason) => error = Some(reason),
                     }
@@ -5221,7 +5810,24 @@ fn run_worker(
                 },
                 Request::SaveNew(path) => {
                     save_complete = true;
-                    match project_for_save(&session, media_base.as_deref()) {
+                    // Earlier source intent may cancel the edit ahead of Save,
+                    // but FIFO still saves its resulting canonical project.
+                    // Only a new intent during this capture cancels this Save.
+                    let save_cancellation = RequestCancellation::new(
+                        Arc::clone(&session.shutdown),
+                        Arc::clone(&document_intent),
+                        document_intent.load(Ordering::Acquire),
+                    );
+                    match plugin_state_save::project_for_save_with_capture(
+                        &session,
+                        media_base.as_deref(),
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        },
+                        &save_cancellation,
+                        events.sampler_edit_audio(),
+                    ) {
                         Ok(project) => match absolute_document_path(&path) {
                             Ok(path) => match hex_storage::save_new_with_token(&path, &project) {
                                 Ok(token) => {
@@ -5249,6 +5855,14 @@ fn run_worker(
                 }
                 request @ (Request::SaveCurrent | Request::SaveCurrentWithFormatUpgrade { .. }) => {
                     save_complete = true;
+                    // Earlier source intent may cancel the edit ahead of Save,
+                    // but FIFO still saves its resulting canonical project.
+                    // Only a new intent during this capture cancels this Save.
+                    let save_cancellation = RequestCancellation::new(
+                        Arc::clone(&session.shutdown),
+                        Arc::clone(&document_intent),
+                        document_intent.load(Ordering::Acquire),
+                    );
                     let consent = match &request {
                         Request::SaveCurrentWithFormatUpgrade {
                             project_generation: expected,
@@ -5261,10 +5875,23 @@ fn run_worker(
                     };
                     let stale_consent =
                         matches!(request, Request::SaveCurrentWithFormatUpgrade { .. }) && !consent;
-                    match (
-                        document.as_mut(),
-                        project_for_save(&session, media_base.as_deref()),
-                    ) {
+                    let save_project = if stale_consent {
+                        Err("project changed · format upgrade cancelled".to_owned())
+                    } else if document.is_none() {
+                        Err("cannot save current project before it has a file path".to_owned())
+                    } else {
+                        plugin_state_save::project_for_save_with_capture(
+                            &session,
+                            media_base.as_deref(),
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            &save_cancellation,
+                            events.sampler_edit_audio(),
+                        )
+                    };
+                    match (document.as_mut(), save_project) {
                         (None, _) => {
                             error =
                                 Some("cannot save current project before it has a file path".into())
@@ -5273,35 +5900,43 @@ fn run_worker(
                         (Some(_), Ok(_)) if stale_consent => {
                             error = Some("project changed · format upgrade cancelled".into());
                         }
-                        (Some(handle), Ok(_))
-                            if handle.token.requires_format_upgrade() && !consent =>
-                        {
-                            error = Some("saving replaces this project's older format; use save as to preserve it, or explicitly confirm format overwrite".into());
-                        }
                         (Some(handle), Ok(project)) => {
-                            match hex_storage::replace_existing(
-                                &handle.path,
-                                &handle.token,
-                                &project,
-                            ) {
-                                Ok(outcome) => {
-                                    let commit = apply_current_save_outcome(handle, outcome);
-                                    unsaved = commit.dirty;
-                                    status = Some(commit.status.into());
-                                    error = commit.error;
-                                    state = view_state_bound(
-                                        &session,
-                                        Arc::clone(&midi_preview),
-                                        revision,
-                                        project_generation,
-                                        unsaved,
-                                        document.as_ref().map(|current| current.path.as_path()),
-                                        state.canonical_audio_source.as_ref().map(|source| {
-                                            (Arc::clone(source), state.comparison_audio.clone())
-                                        }),
-                                    );
+                            if !consent {
+                                match handle.token.requires_save_confirmation(&project) {
+                                    Ok(true) => {
+                                        save_confirmation_required = true;
+                                        error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
+                                    }
+                                    Ok(false) => {}
+                                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
                                 }
-                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                            }
+                            // Preflight has not touched the original, recovery or token.
+                            if error.is_none() {
+                                match hex_storage::replace_existing(
+                                    &handle.path,
+                                    &handle.token,
+                                    &project,
+                                ) {
+                                    Ok(outcome) => {
+                                        let commit = apply_current_save_outcome(handle, outcome);
+                                        unsaved = commit.dirty;
+                                        status = Some(commit.status.into());
+                                        error = commit.error;
+                                        state = view_state_bound(
+                                            &session,
+                                            Arc::clone(&midi_preview),
+                                            revision,
+                                            project_generation,
+                                            unsaved,
+                                            document.as_ref().map(|current| current.path.as_path()),
+                                            state.canonical_audio_source.as_ref().map(|source| {
+                                                (Arc::clone(source), state.comparison_audio.clone())
+                                            }),
+                                        );
+                                    }
+                                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                }
                             }
                         }
                     }
@@ -5332,7 +5967,9 @@ fn run_worker(
                         _ => Err("latest project revision has not compiled".to_owned()),
                     }
                     .and_then(|mut job| {
-                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                            || job.prepared.arrangement().contains_streamed_sources()
+                        {
                             job.streamed = Some(streamed_export::StreamedExportJob::capture(
                                 &session,
                                 &state.project,
@@ -5386,7 +6023,9 @@ fn run_worker(
                         _ => Err("latest project revision has not compiled".to_owned()),
                     }
                     .and_then(|mut job| {
-                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                            || job.prepared.arrangement().contains_streamed_sources()
+                        {
                             job.streamed = Some(streamed_export::StreamedExportJob::capture(
                                 &session,
                                 &state.project,
@@ -5411,7 +6050,44 @@ fn run_worker(
                         }
                     }
                 }
-                Request::RestoreStoppedPlayback => {
+                Request::ContinuePluginStateRestore => {
+                    if let Some(sink) = events.resident_audio()
+                        && let Some(context) = sink.plugin_state_restore_ready()
+                    {
+                        // Metadata-only A/B edits retain this exact preparation source through
+                        // the sealed comparison binding. Keep its original native correlation;
+                        // a literal authored-revision match would discard a valid restore.
+                        let result = if context.project_generation != project_generation
+                            || state.audio_authoring_revision(context) != Some(revision)
+                        {
+                            Err(SessionError::Invalid(
+                                "vst3 state restoration source changed",
+                            ))
+                        } else if device_gesture.snapshot().is_some()
+                            || tuning_gesture.snapshot().is_some()
+                        {
+                            Err(SessionError::Invalid(
+                                "finish the active gesture before restoring vst3 state",
+                            ))
+                        } else {
+                            session.restore_plugin_state_snapshot(
+                                context, sink,
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), None),
+                                resident_snapshot.as_ref(),
+                            )
+                        };
+                        sink.finish_plugin_state_restore(context, result.is_ok());
+                        match result {
+                            Ok(snapshot) => {
+                                compiled = Some((revision, Arc::clone(&snapshot.prepared)));
+                                resident_snapshot = Some(snapshot);
+                                status = Some("vst3 playback prepared".into());
+                            }
+                            Err(reason) => error = Some(reason.to_string()),
+                        }
+                    }
+                }
+                Request::RestoreStoppedPlayback | Request::ContinueStoppedPlaybackRestore => {
                     stopped_playback_restore_complete = true;
                     if device_gesture.snapshot().is_some() {
                         error = Some(
@@ -5421,12 +6097,44 @@ fn run_worker(
                         && session.audio_mode() == DocumentAudioMode::Resident
                     {
                         let result = (|| {
-                            let snapshot = resident_snapshot.as_mut().ok_or(
-                                SessionError::Invalid("current playback revision is unavailable"),
-                            )?;
+                            let context = hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            };
+                            if pending_stopped_restore.is_some_and(|old| old != context) {
+                                return Err(SessionError::Invalid(
+                                    "stopped restore source changed",
+                                ));
+                            }
                             let sink = events.resident_audio().ok_or(SessionError::Invalid(
                                 "native restore output unavailable",
                             ))?;
+                            match sink
+                                .prepare_stopped_playback_restore(context)
+                                .map_err(SessionError::NativeAudio)?
+                            {
+                                Some(false) => {
+                                    pending_stopped_restore = Some(context);
+                                    stopped_playback_restore_complete = false;
+                                    return Ok(());
+                                }
+                                Some(true) => {
+                                    let snapshot = session.restore_resident_snapshot(
+                                        context, sink,
+                                        export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), None),
+                                        resident_snapshot.as_ref(),
+                                    )?;
+                                    compiled = Some((revision, Arc::clone(&snapshot.prepared)));
+                                    resident_snapshot = Some(snapshot);
+                                    resident_preview = None;
+                                    pending_stopped_restore = None;
+                                    return Ok(());
+                                }
+                                None => {}
+                            }
+                            let snapshot = resident_snapshot.as_mut().ok_or(
+                                SessionError::Invalid("current playback revision is unavailable"),
+                            )?;
                             let selected = snapshot.inputs.clone();
                             let metadata = ResidentPublicationMetadata {
                                 context: hex_engine::AudioSourceContext {
@@ -5443,11 +6151,18 @@ fn run_worker(
                                     .prepared
                                     .arrangement_seek_requires_preroll(),
                             };
-                            resident_preview::publish_inputs(&session, &mut resident_snapshot, &mut resident_preview, sink, export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), None), metadata, ResidentPublicationPolicy::InstallFreshRuntime, selected, None)
+                            resident_preview::publish_inputs(&session, &mut resident_snapshot, &mut resident_preview, sink, export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), None), metadata, ResidentPublicationPolicy::InstallFreshRuntime, selected, None)?;
+                            Ok(())
                         })();
                         match result {
                             Ok(_) => status = Some("restoring stopped playback".into()),
-                            Err(reason) => error = Some(reason.to_string()),
+                            Err(reason) => {
+                                pending_stopped_restore = None;
+                                if let Some(sink) = events.resident_audio() {
+                                    sink.cancel_stopped_playback_restore();
+                                }
+                                error = Some(reason.to_string());
+                            }
                         }
                     } else if let Some((compiled_revision, prepared)) = compiled.as_ref()
                         && *compiled_revision == revision
@@ -5932,7 +6647,13 @@ fn run_worker(
         {
             track_clipboard = Some(captured);
         }
+        if created.is_some()
+            && let Some(captured) = cut_device_clipboard
+        {
+            device_clipboard = Some(captured);
+        }
         if project_replaced {
+            device_clipboard = None;
             track_clipboard = None;
             if let Some(input) = audition_activation.take() {
                 input.cancel();
@@ -6306,11 +7027,12 @@ fn run_worker(
         }
         if let Some(job) = export_job.as_mut() {
             let streamed = job.streamed.is_some();
+            let verified_only = session.audio_mode() == DocumentAudioMode::VerifiedStreaming;
             if let Err(reason) = export_lane.prepare_job(
                 job,
                 &session,
                 current_sources.as_ref().filter(|_| !streamed),
-                resident_snapshot.as_ref().filter(|_| !streamed).zip(
+                resident_snapshot.as_ref().filter(|_| !verified_only).zip(
                     events
                         .resident_audio()
                         .map(|sink| &*sink as &dyn WorkerAudioSink),
@@ -6328,6 +7050,35 @@ fn run_worker(
                 }
             }
         }
+        if pending_plugin_effect.as_ref().is_some_and(|pending| {
+            pending.insertion.context
+                != hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                }
+                || pending.insertion.control.is_cancelled()
+                || pending_sampler_parameter.is_some()
+                || device_gesture.snapshot().is_some()
+                || tuning_gesture.snapshot().is_some()
+        }) && let Some(pending) = pending_plugin_effect.take()
+        {
+            plugin_effect_complete.push(pending.finish(events.sampler_edit_audio(), false));
+        }
+        if pending_stopped_restore.is_some_and(|captured| {
+            captured
+                != hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                }
+                || device_gesture.snapshot().is_some()
+                || tuning_gesture.snapshot().is_some()
+        }) {
+            pending_stopped_restore = None;
+            if let Some(sink) = events.resident_audio() {
+                sink.cancel_stopped_playback_restore();
+            }
+            stopped_playback_restore_complete = true;
+        }
         if !events.send_with_control_poll(
             Event {
                 state: Arc::clone(&state),
@@ -6338,6 +7089,7 @@ fn run_worker(
                 request_complete,
                 sampler_load_complete,
                 sampler_edit_complete,
+                plugin_effect_complete,
                 computer_keyboard_complete,
                 midi_take_complete,
                 tuning_audition_complete,
@@ -6346,6 +7098,12 @@ fn run_worker(
                 audio_batch_complete,
                 audio_batch_failure,
                 save_complete,
+                save_correlation: if save_complete {
+                    save_correlation
+                } else {
+                    None
+                },
+                save_confirmation_required,
                 document_format_upgrade_required: document
                     .as_ref()
                     .is_some_and(|handle| handle.token.requires_format_upgrade()),
@@ -6484,8 +7242,8 @@ fn run_export_worker(
         let (id, mut event) = {
             let ExportWork::Render(mut job) = work;
             let result = if let Some(streamed) = job.streamed.take() {
-                if job.sources.is_some() || job.resources.is_some() {
-                    Err("export cannot combine streamed and resident source scopes".into())
+                if job.sources.is_some() {
+                    Err("export cannot combine streamed pages with private constructor source scopes".into())
                 } else {
                     let (start, signal, control, overwrite) =
                         job.controlled.take().unwrap_or_else(|| {
@@ -6505,6 +7263,7 @@ fn run_export_worker(
                         Ok(publication) => (streamed.render)(&StreamedExportRequest {
                             source: &streamed.source,
                             prepared: &job.prepared,
+                            resources: job.resources.as_ref(),
                             path: &job.path,
                             start,
                             frames: job.frames,
@@ -6638,9 +7397,8 @@ fn import(
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
-    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-        let path = absolute_document_path(&path)?;
-        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+    let path = absolute_document_path(&path)?;
+    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
         return session
             .import_verified_revision(
                 source,
@@ -6662,13 +7420,6 @@ fn import(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string().to_lowercase())?
-            .join(path)
-    };
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
         .map_err(|error| error.to_string().to_lowercase())?;
     let prepared = PreparedImport::at_rate(
@@ -6698,9 +7449,8 @@ fn import_to_track(
     overwrite: bool,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
-    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-        let path = absolute_document_path(&path)?;
-        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+    let path = absolute_document_path(&path)?;
+    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
         return session
             .import_verified_revision(
                 source,
@@ -6723,13 +7473,6 @@ fn import_to_track(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string().to_lowercase())?
-            .join(path)
-    };
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
         .map_err(|error| error.to_string().to_lowercase())?;
     let prepared = PreparedImport::at_rate(
@@ -6762,9 +7505,8 @@ fn import_to_new_track(
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
-    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-        let path = absolute_document_path(&path)?;
-        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+    let path = absolute_document_path(&path)?;
+    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
         return session
             .import_verified_revision(
                 source,
@@ -6796,13 +7538,6 @@ fn import_to_new_track(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string().to_lowercase())?
-            .join(path)
-    };
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
         .map_err(|error| error.to_string().to_lowercase())?;
     let prepared = PreparedImport::at_rate(
@@ -6831,9 +7566,8 @@ fn import_to_session(
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
-    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
-        let path = absolute_document_path(&path)?;
-        let source = session.verify_import(path).map_err(|e| e.to_string())?;
+    let path = absolute_document_path(&path)?;
+    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
         return session
             .import_verified_revision(
                 source,
@@ -6852,13 +7586,6 @@ fn import_to_session(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let path = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map_err(|error| error.to_string().to_lowercase())?
-            .join(path)
-    };
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
         .map_err(|error| error.to_string().to_lowercase())?;
     let prepared = PreparedImport::at_rate(
@@ -6932,6 +7659,9 @@ mod clip_move_tests;
 #[path = "service/track_reorder_tests.rs"]
 mod track_reorder_tests;
 
+#[cfg(test)]
+#[path = "service/device_clipboard_tests.rs"]
+mod device_clipboard_tests;
 #[cfg(test)]
 #[path = "service/track_clipboard_tests.rs"]
 mod track_clipboard_tests;
@@ -8632,6 +9362,7 @@ mod service_tests {
 
         service
             .submit(Request::DeviceGesture(GestureRequest::Commit {
+                manual_edit: false,
                 key,
                 sequence: 2,
                 value: ParameterValue::Float(3.5),
@@ -8886,6 +9617,7 @@ mod service_tests {
 
         service
             .submit(Request::DeviceGesture(GestureRequest::Commit {
+                manual_edit: false,
                 key,
                 sequence: 2,
                 value: ParameterValue::Float(0.6),
@@ -9194,6 +9926,22 @@ mod service_tests {
             }))
             .expect("preview parameter edit");
         next_event(&service);
+        let prior_file = std::fs::read(&path).unwrap();
+        let stale = SaveCorrelation {
+            request_id: 1,
+            project_generation: 0,
+            revision: saved.state.revision + 1,
+        };
+        service
+            .submit_correlated_save(Request::SaveCurrent, stale)
+            .expect("admit stale correlated save");
+        let refused = next_event(&service);
+        assert!(refused.save_complete && refused.error.is_some());
+        assert_eq!(refused.save_correlation, Some(stale));
+        assert!(!refused.gesture_protocol_ack);
+        assert!(refused.active_device_gesture.is_some());
+        assert_eq!(refused.state.revision, saved.state.revision);
+        assert_eq!(std::fs::read(&path).unwrap(), prior_file);
         service.submit(Request::SaveCurrent).expect("save barrier");
         let saved_gesture = next_event(&service);
         assert!(saved_gesture.error.is_none());
@@ -9953,68 +10701,75 @@ mod service_tests {
     }
 
     #[test]
-    fn selected_clip_group_refuses_stale_generation_or_revision_without_history_changes() {
-        let service = Service::new(48_000, 32, 8_000_000).expect("service");
-        next_event(&service);
-        service
-            .submit(Request::Edit(Command::AddTrack {
-                name: "midi".into(),
-            }))
-            .unwrap();
-        let track = next_event(&service).state.project.tracks()[0].id();
-        service
-            .submit(Request::Edit(Command::PlaceMidiClip {
-                track,
-                start: hex_project::BeatTime::ZERO,
-                length: hex_project::BeatTime::ONE,
-            }))
-            .unwrap();
-        next_event(&service);
-        service
-            .submit(Request::Edit(Command::PlaceMidiClip {
-                track,
-                start: hex_project::BeatTime::from_quarters(2).unwrap(),
-                length: hex_project::BeatTime::ONE,
-            }))
-            .unwrap();
-        let before = next_event(&service);
-        let clips = before.state.project.tracks()[0]
-            .midi_clips()
-            .iter()
-            .map(|clip| clip.id())
-            .collect::<Vec<_>>();
-        service
-            .submit(Request::GroupClips {
-                project_generation: 0,
-                revision: before.state.revision,
-                clips: clips.clone(),
-            })
-            .unwrap();
-        let grouped = next_event(&service);
-        assert!(grouped.request_complete);
-        assert!(grouped.error.is_none(), "{:?}", grouped.error);
-        assert!(matches!(grouped.created, Some(Created::Clip(_))));
-        assert_eq!(grouped.state.revision, before.state.revision + 1);
-
-        for (project_generation, revision) in
-            [(1, grouped.state.revision), (0, before.state.revision)]
-        {
+    fn grouping_requests_refuse_stale_generation_or_revision_without_history_changes() {
+        for time_range in [false, true] {
+            let service = Service::new(48_000, 32, 8_000_000).expect("service");
+            next_event(&service);
             service
-                .submit(Request::GroupClips {
-                    project_generation,
-                    revision,
-                    clips: clips.clone(),
-                })
+                .submit(Request::Edit(Command::AddTrack {
+                    name: "midi".into(),
+                }))
                 .unwrap();
-            let refused = next_event(&service);
-            assert!(refused.request_complete);
-            assert!(refused.error.is_some());
-            assert!(refused.created.is_none());
-            assert!(refused.playback.is_none());
-            assert_eq!(refused.state.revision, grouped.state.revision);
-            assert_eq!(refused.state.project, grouped.state.project);
-            assert_eq!(refused.state.can_undo, grouped.state.can_undo);
-            assert_eq!(refused.state.can_redo, grouped.state.can_redo);
+            let track = next_event(&service).state.project.tracks()[0].id();
+            service
+                .submit(Request::Edit(Command::PlaceMidiClip {
+                    track,
+                    start: hex_project::BeatTime::ZERO,
+                    length: hex_project::BeatTime::ONE,
+                }))
+                .unwrap();
+            next_event(&service);
+            service
+                .submit(Request::Edit(Command::PlaceMidiClip {
+                    track,
+                    start: hex_project::BeatTime::from_quarters(2).unwrap(),
+                    length: hex_project::BeatTime::ONE,
+                }))
+                .unwrap();
+            let before = next_event(&service);
+            let clips = before.state.project.tracks()[0]
+                .midi_clips()
+                .iter()
+                .map(|clip| clip.id())
+                .collect::<Vec<_>>();
+            let request = |project_generation, revision| {
+                if time_range {
+                    Request::GroupTimeRange {
+                        project_generation,
+                        revision,
+                        range: hex_project::TimeRange::new(vec![track], 12_000, 60_000).unwrap(),
+                    }
+                } else {
+                    Request::GroupClips {
+                        project_generation,
+                        revision,
+                        clips: clips.clone(),
+                    }
+                }
+            };
+            service.submit(request(0, before.state.revision)).unwrap();
+            let grouped = next_event(&service);
+            assert!(grouped.request_complete);
+            assert!(grouped.error.is_none(), "{:?}", grouped.error);
+            assert!(matches!(grouped.created, Some(Created::Clip(_))));
+            assert_eq!(grouped.state.revision, before.state.revision + 1);
+
+            for (project_generation, revision) in
+                [(1, grouped.state.revision), (0, before.state.revision)]
+            {
+                service
+                    .submit(request(project_generation, revision))
+                    .unwrap();
+                let refused = next_event(&service);
+                assert!(refused.request_complete);
+                assert!(refused.error.is_some());
+                assert!(refused.created.is_none());
+                assert!(refused.playback.is_none());
+                assert_eq!(refused.state.revision, grouped.state.revision);
+                assert_eq!(refused.state.project, grouped.state.project);
+                assert_eq!(refused.state.can_undo, grouped.state.can_undo);
+                assert_eq!(refused.state.can_redo, grouped.state.can_redo);
+            }
         }
     }
 
@@ -10331,9 +11086,16 @@ mod service_tests {
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
         let service = Service {
+            diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
-            requests,
-            events,
+            requests: request_cancellation::Sender::new(
+                requests,
+                Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            ),
+            events: diagnostics::EventReceiver::new(
+                events,
+                Arc::new(diagnostics::Hooks::default()),
+            ),
             export_events,
             export_busy: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -10896,6 +11658,7 @@ mod service_tests {
         };
         let notes = (0..64_u8)
             .map(|pitch| hex_project::MidiNoteInsert {
+                active: true,
                 start: hex_project::BeatTime::ZERO,
                 duration: hex_project::BeatTime::from_quarters(1).expect("gate"),
                 pitch,

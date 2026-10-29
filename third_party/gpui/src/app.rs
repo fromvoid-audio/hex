@@ -592,6 +592,14 @@ pub struct App {
 }
 
 impl App {
+    /// Install the application asset source in deterministic test contexts.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn use_test_assets(&mut self, assets: impl AssetSource) {
+        let assets = Arc::new(assets);
+        self.asset_source = assets.clone();
+        self.svg_renderer = SvgRenderer::new(assets);
+    }
+
     #[allow(clippy::new_ret_no_self)]
     pub(crate) fn new_app(
         platform: Rc<dyn Platform>,
@@ -1382,6 +1390,7 @@ impl App {
             cx.window_update_stack.pop();
 
             if window.removed {
+                window.cancel_pointer_capture(cx);
                 cx.window_handles.remove(&id);
                 cx.windows.remove(id);
 

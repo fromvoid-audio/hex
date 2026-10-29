@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[gpui::test]
-fn clicked_audio_cursor_is_visible_and_command_e_uses_it_offline(cx: &mut TestAppContext) {
+fn clicked_audio_cursor_is_visible_and_e_uses_it_offline(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (project, source, target, clip) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
@@ -88,13 +88,15 @@ fn clicked_audio_cursor_is_visible_and_command_e_uses_it_offline(cx: &mut TestAp
             < 0.002
     );
     visual.simulate_keystrokes("cmd-e");
+    editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert!(matches!(view.last_enqueued_edit, Some(Command::SplitClip { clip: id, frame: position }) if id == clip && position == frame));
     });
 }
 
 #[gpui::test]
-fn command_click_is_free_and_command_e_routes_midi_split(cx: &mut TestAppContext) {
+fn command_click_is_free_and_e_routes_midi_split(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (project, source, _, clip) = midi_project();
     let (_, preview) =
@@ -142,16 +144,14 @@ fn command_click_is_free_and_command_e_routes_midi_split(cx: &mut TestAppContext
             .frame_to_beat(frame)
             .expect("beat")
     });
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert!(matches!(view.last_enqueued_edit, Some(Command::SplitMidiClip { clip: id, beat: position }) if id == clip && position == beat));
     });
 }
 
 #[gpui::test]
-fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
-    cx: &mut TestAppContext,
-) {
+fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_e(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let (base, audio_track, midi_track, _) = audio_project();
     let mut project_editor = Editor::new(base, 8).expect("project editor");
@@ -228,7 +228,7 @@ fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_command_e(
     visual.simulate_mouse_up(header, MouseButton::Left, unsnapped);
     visual.run_until_parked();
     assert!(visual.debug_bounds("section-edit-cursor").is_some());
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert!(
             view.last_enqueued_edit.is_none(),
@@ -250,7 +250,7 @@ fn empty_position_and_missing_cursor_do_not_dispatch_a_split(cx: &mut TestAppCon
     let (handle, editor) = editor_window(cx, project, Arc::default());
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
     let lane = visual
         .debug_bounds(Box::leak(
@@ -264,7 +264,7 @@ fn empty_position_and_missing_cursor_do_not_dispatch_a_split(cx: &mut TestAppCon
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-e");
+    visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.edit_cursor.expect("cursor on empty track").track,
@@ -326,6 +326,23 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
     })
     .expect("range drag restores arrangement focus");
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert_eq!(view.selected_track_ids(), ids));
+    for id in &ids {
+        let selector = Box::leak(format!("selected-track-lane-{}", id.value()).into_boxed_str());
+        assert!(
+            visual.rendered_background(selector).is_some(),
+            "crossed lane highlights before release"
+        );
+    }
+    let second = lane(&mut visual, ids[1]);
+    let shrink = point(end.x, second.center().y);
+    visual.simulate_mouse_move(shrink, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.selected_track_ids(), ids[..2])
+    });
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -335,8 +352,8 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         assert_eq!(view.selected_track, Some(ids[3]));
         assert_eq!(
             view.selected_track_ids(),
-            [ids[3]],
-            "lane highlight follows the active endpoint, independent of the time range"
+            ids,
+            "painted time span selects every crossed track"
         );
         assert!(view.selected_clip.is_none());
         assert_eq!(
@@ -387,6 +404,13 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         );
     });
     visual.simulate_mouse_move(reselect_end, MouseButton::Left, Modifiers::default());
+    let across_anchor = point(reselect_end.x, first_lane.center().y);
+    visual.simulate_mouse_move(across_anchor, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.selected_track_ids(), ids[..3])
+    });
+    visual.simulate_mouse_move(reselect_end, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(reselect_end, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -395,8 +419,8 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         assert_eq!(view.selected_track, Some(ids[3]));
         assert_eq!(
             view.selected_track_ids(),
-            [ids[3]],
-            "lane highlight follows the active endpoint, independent of the time range"
+            ids[2..],
+            "repainting shrinks explicit track membership"
         );
         assert!(
             view.last_enqueued_edit.is_none(),
@@ -421,10 +445,29 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
         assert_eq!(selection.tracks(), ids);
         assert!(selection.start() < selection.end());
         assert_eq!(view.selected_track, Some(ids[0]));
+        assert_eq!(view.selected_track_ids(), ids);
         assert_eq!(
             view.time_selection_paste_target(),
             Some((ids[0], selection.start()))
         );
+    });
+    editor.update(cx, |view, cx| {
+        assert!(view.cancel_time_selection_gesture());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(view.normalized_time_selection().is_none());
+        assert_eq!(
+            view.selected_track_ids(),
+            ids,
+            "clearing time does not discard explicit track selection"
+        );
+        assert_eq!(
+            view.state.as_ref().unwrap().project.as_ref(),
+            model.project()
+        );
+        assert!(view.last_enqueued_edit.is_none());
     });
 }
 
@@ -918,7 +961,7 @@ fn captured_selection_edge_scrolls_while_pointer_is_stationary(cx: &mut TestAppC
     });
     editor.update(cx, |view, _| {
         view.viewport = Some(super::viewport::Viewport {
-            start: 284_000,
+            start: view.viewport_horizon(384_000) - 100_000,
             length: 100_000,
         });
         let _ = view.update_time_selection_gesture(
@@ -1345,6 +1388,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         request_complete: true,
         sampler_load_complete: None,
         sampler_edit_complete: None,
+        plugin_effect_complete: Vec::new(),
         computer_keyboard_complete: None,
         midi_take_complete: None,
         tuning_audition_complete: None,
@@ -1353,7 +1397,9 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         audio_batch_complete: None,
         audio_batch_failure: None,
         save_complete: false,
+        save_correlation: None,
         document_format_upgrade_required: false,
+        save_confirmation_required: false,
         open_complete: false,
         project_replaced: false,
         stopped_playback_restore_complete: false,
@@ -1496,6 +1542,12 @@ fn ripple_shortcuts_route_to_insert_and_respect_editor_focus(cx: &mut TestAppCon
 
 #[gpui::test]
 fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut TestAppContext) {
+    for enabled in [false, true] {
+        assert_space_restart_policy(&mut cx.new_app(), enabled);
+    }
+}
+
+fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
     cx.update(super::bind_editor_keys);
     let (project, source, target, _) = audio_project();
     let mut model = Editor::new(project, 8).unwrap();
@@ -1503,7 +1555,7 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
         .execute(Command::SetLoopRegion {
             start: 32_000,
             end: 64_000,
-            enabled: true,
+            enabled,
         })
         .unwrap();
     let project = model.project().clone();
@@ -1534,8 +1586,10 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(28_000)),
-            "reverse time selections restart from their normalized start"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 28_000 }
+            )),
+            "active loop wins; otherwise reverse time selection supplies its normalized start"
         );
     });
 
@@ -1555,8 +1609,10 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
-            "a point selection falls back to the edit cursor"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 73_000 }
+            )),
+            "active loop wins; otherwise a point selection falls back to the edit cursor"
         );
     });
 
@@ -1572,8 +1628,10 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(0)),
-            "no selection or edit cursor starts at project beginning"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 0 }
+            )),
+            "active loop wins; otherwise no selection or cursor starts at project beginning"
         );
     });
 
@@ -1616,12 +1674,14 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
-            "Space after Pause restarts from the edit cursor, not the paused playhead"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 73_000 }
+            )),
+            "Space after Pause uses active loop or edit cursor rather than the paused playhead"
         );
         assert_eq!(
             view.state.as_ref().unwrap().project.loop_region(),
-            Some(hex_project::LoopRegion::new(32_000, 64_000, true).unwrap())
+            Some(hex_project::LoopRegion::new(32_000, 64_000, enabled).unwrap())
         );
     });
 
@@ -1633,10 +1693,75 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
     });
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
-        assert!(
-            view.last_transport_command.is_none(),
-            "midi focus keeps Space"
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                if enabled { 32_000 } else { 73_000 }
+            )),
+            "Space reaches transport even if a retained focus is no longer mounted"
         );
+    });
+}
+
+#[gpui::test]
+fn space_starts_from_the_focused_piano_roll_without_repeating(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _) = super::midi_canvas::creation_tests::fixture(cx);
+    assert!(visual.debug_bounds("midi-note-roll").is_some());
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("space").unwrap(),
+        is_held: true,
+    });
+    editor.read_with(cx, |view, _| assert!(view.last_transport_command.is_none()));
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::PlaybackCommand::PlayFrom(0))
+        );
+    });
+}
+
+#[gpui::test]
+fn stateful_space_queues_play_from_without_a_seek_worker(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    let (project, source, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            window.focus(&view.focus);
+            // Native resident metadata deliberately carries no graph handle.
+            // Its stateful flag formerly forced Space through the seek worker.
+            view.audible_playback = Some(super::PlaybackCandidate {
+                worker_requires_preroll: Some(true),
+                observation: None,
+                audio_revision: 1,
+                project_generation: view.project_generation,
+                state: Arc::clone(view.state.as_ref().unwrap()),
+                prepared_revision: None,
+                seek_request_id: None,
+                device_preview_identity: None,
+                tuning_preview_identity: None,
+            });
+            view.time_selection = None;
+            view.edit_cursor = Some(super::edit_cursor::EditCursor {
+                track: source,
+                frame: 48_000_000,
+                generation: view.project_generation,
+                pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
+                pulse_started: Instant::now(),
+            });
+        });
+    });
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::PlaybackCommand::PlayFrom(48_000_000))
+        );
+        assert!(view.prepared_seek.is_none());
+        assert!(view.latched_seek_intent.is_none());
     });
 }
 
@@ -1997,5 +2122,294 @@ fn time_selection_markers_split_live_above_loop_and_follow_visible_endpoints(
     assert!(visual.debug_bounds("time-marker-top-end").is_none());
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original)
+    });
+}
+
+#[gpui::test]
+fn e_splits_both_time_selection_edges_in_scope_with_one_undo(cx: &mut TestAppContext) {
+    use super::{
+        loop_selection_ui_test::{fixture, pump},
+        musical_time::SnapGrid,
+        viewport::Viewport,
+    };
+    use hex_session::service::Request;
+    for reversed in [false, true] {
+        let cx = &mut cx.new_app();
+        let (handle, editor, _audio, midi, _files) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let (audio_track, midi_track) = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            (p.tracks()[0].id(), p.tracks()[1].id())
+        });
+        for command in [
+            Command::MoveMidiClip {
+                clip: midi,
+                track: midi_track,
+                start: BeatTime::ZERO,
+            },
+            Command::AddMidiTrack {
+                name: "outside split scope".into(),
+            },
+        ] {
+            editor.update(&mut visual, |v, _| {
+                assert!(v.enqueue(Request::Edit(command)))
+            });
+            pump(&editor, &mut visual);
+        }
+        editor.update(&mut visual, |v, _| {
+            let track = v.state.as_ref().unwrap().project.tracks()[2].id();
+            assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_raw(2 << 32),
+            })));
+        });
+        pump(&editor, &mut visual);
+        let (before, outside) = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            (p.snapshot(), p.tracks()[2].clone())
+        });
+        editor.update(&mut visual, |v, cx| {
+            v.viewport = Some(Viewport {
+                start: 0,
+                length: 96_000,
+            });
+            v.snap_grid = SnapGrid::Off;
+            v.last_enqueued_edit = None;
+            cx.notify();
+        });
+        visual.update(|window, cx| {
+            window.activate_window();
+            editor.read(cx).focus.focus(window);
+        });
+        visual.run_until_parked();
+        let lane = |visual: &mut VisualTestContext, track: hex_project::TrackId| {
+            visual
+                .debug_bounds(Box::leak(
+                    format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+                ))
+                .unwrap()
+        };
+        let a = lane(&mut visual, audio_track);
+        let b = lane(&mut visual, midi_track);
+        let start = point(
+            a.left() + a.size.width * 0.125,
+            a.top() + a.size.height * 0.6,
+        );
+        let end = point(
+            b.left() + b.size.width * 0.375,
+            b.top() + b.size.height * 0.6,
+        );
+        let (down, up) = if reversed { (end, start) } else { (start, end) };
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("e");
+        editor.read_with(&visual, |v, _| {
+            assert!(
+                v.last_enqueued_edit.is_none(),
+                "held range keeps input custody"
+            )
+        });
+        visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let (selection, range) = editor.read_with(&visual, |v, _| {
+            let range = v
+                .normalized_time_selection()
+                .expect("actual completed range");
+            assert_eq!(range.tracks(), [audio_track, midi_track]);
+            assert!(range.start() > 0 && range.end() < 48_000);
+            assert!(!v.time_selection_project_scope);
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+            (v.time_selection, range)
+        });
+        visual.update(|window, cx| {
+            editor.read_with(cx, |v, _| v.browser.search.read(cx).focus(window))
+        });
+        visual.simulate_keystrokes("e");
+        visual.simulate_input("e");
+        editor.read_with(&visual, |v, cx| {
+            assert!(v.last_enqueued_edit.is_none());
+            assert!(v.browser.search.read(cx).text().contains('e'));
+        });
+        visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+        editor.update(&mut visual, |v, cx| {
+            v.computer_keyboard.enabled = true;
+            cx.notify();
+        });
+        visual.simulate_keystrokes("e");
+        editor.read_with(&visual, |v, _| {
+            assert!(v.last_enqueued_edit.is_none(), "computer midi owns e")
+        });
+        editor.update(&mut visual, |v, cx| {
+            v.computer_keyboard.enabled = false;
+            v.theme_settings.open = true;
+            cx.notify();
+        });
+        visual.simulate_keystrokes("e");
+        editor.read_with(&visual, |v, _| {
+            assert!(v.last_enqueued_edit.is_none(), "modal owns input")
+        });
+        editor.update(&mut visual, |v, cx| {
+            v.theme_settings.open = false;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
+        if reversed {
+            visual.update(|window, cx| {
+                editor.update(cx, |v, cx| {
+                    v.track_header_focus(audio_track, cx).focus(window);
+                })
+            });
+            visual.run_until_parked();
+        }
+        visual.simulate_keystrokes("cmd-e");
+        editor.read_with(&visual, |v, _| {
+            assert!(
+                v.last_enqueued_edit.is_none(),
+                "existing cmd-e remains unbound"
+            )
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |v, cx| {
+                assert!(
+                    v.focus.is_focused(window) || v.track_header_focused(window),
+                    "arranger focus restored"
+                );
+                assert!(
+                    v.arrangement_view_change_available(cx),
+                    "split admission restored"
+                );
+                assert!(
+                    v.normalized_time_selection().is_some(),
+                    "range preserved through guards"
+                );
+            })
+        });
+        visual.simulate_keystrokes("e");
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            let expected = vec![
+                (0, range.start()),
+                (range.start(), range.end()),
+                (range.end(), 48_000),
+            ];
+            let audio: Vec<_> = p.tracks()[0]
+                .clips()
+                .iter()
+                .map(|c| (c.start(), c.start() + c.duration()))
+                .collect();
+            assert_eq!(
+                audio, expected,
+                "e must split both edges of every scoped clip; reversed={reversed}"
+            );
+            let midi: Vec<_> = p.tracks()[1]
+                .midi_clips()
+                .iter()
+                .map(|c| {
+                    (
+                        p.tempo_map().beat_to_frame(c.start()).unwrap(),
+                        p.tempo_map()
+                            .beat_to_frame(BeatTime::from_raw(c.start().raw() + c.length().raw()))
+                            .unwrap(),
+                    )
+                })
+                .collect();
+            assert_eq!(midi, expected);
+            assert_eq!(p.tracks()[2], outside, "unselected track remains intact");
+            assert_eq!(v.time_selection, selection);
+            p.snapshot()
+        });
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("edit-time-selection-{}", audio_track.value()).into_boxed_str()
+                ))
+                .is_some()
+        );
+        let mut restored = before.clone();
+        restored.next_id = after.next_id; // Undo retains the canonical ID high-water mark.
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot(),
+                restored,
+                "one undo restores every cut"
+            );
+            assert_eq!(v.time_selection, selection);
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after);
+            assert_eq!(v.time_selection, selection);
+        });
+    }
+}
+
+#[gpui::test]
+fn split_does_not_escape_a_held_tempo_control(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    let (project, track, _, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let a = point(
+        lane.left() + lane.size.width * 0.0625,
+        lane.top() + lane.size.height * 0.6,
+    );
+    let b = point(lane.left() + lane.size.width * 0.1875, a.y);
+    visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(b, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(b, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let tempo = visual.debug_bounds("project-tempo-value").unwrap();
+    visual.simulate_mouse_down(tempo.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("e");
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.last_enqueued_edit.is_none(),
+            "held tempo must retain input custody"
+        )
+    });
+    visual.simulate_mouse_up(tempo.center(), MouseButton::Left, Modifiers::default());
+}
+
+#[gpui::test]
+fn transport_split_vector_dispatches_the_edit_cursor_command(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    let (project, source, _, clip) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selector = Box::leak(format!("arrangement-lane-{}", source.value()).into_boxed_str());
+    let lane = visual.debug_bounds(selector).unwrap();
+    visual.simulate_click(
+        point(
+            lane.origin.x + lane.size.width * 0.125,
+            lane.origin.y + px(22.0),
+        ),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let frame = editor.read_with(cx, |view, _| view.edit_cursor.unwrap().frame);
+    let split = visual
+        .debug_bounds("split selection edges or edit cursor · e")
+        .unwrap();
+    assert!(
+        !visual
+            .rendered_monochrome_colors("transport-split-icon")
+            .is_empty()
+    );
+    visual.simulate_click(split.center(), Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(view.last_enqueued_edit, Some(Command::SplitClip { clip: id, frame: position }) if id == clip && position == frame));
     });
 }

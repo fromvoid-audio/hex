@@ -364,3 +364,273 @@ fn block_caret_reserves_a_character_cell_at_empty_and_scrolled_end_positions(
         }
     }
 }
+
+struct CaptureSlot(Entity<TextInput>);
+impl gpui::Render for CaptureSlot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().flex().flex_col().child(self.0.clone())
+    }
+}
+struct CaptureRoot {
+    input: Entity<TextInput>,
+    slot: Entity<CaptureSlot>,
+    actions: std::rc::Rc<std::cell::Cell<usize>>,
+}
+impl gpui::Render for CaptureRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let down = self.actions.clone();
+        let up = self.actions.clone();
+        let wheel = self.actions.clone();
+        let mut slot = div().w(px(160.)).h(px(24.));
+        div()
+            .size_full()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .w(px(160.))
+                    .h(px(24.))
+                    .child(gpui::AnyView::from(self.slot.clone()).cached(slot.style().clone())),
+            )
+            .child(
+                div()
+                    .id("outside")
+                    .absolute()
+                    .left(px(240.))
+                    .top_0()
+                    .w(px(80.))
+                    .h(px(80.))
+                    .cursor(CursorStyle::Crosshair)
+                    .on_mouse_down(MouseButton::Right, move |_, _, _| down.set(down.get() + 1))
+                    .on_mouse_up(MouseButton::Left, move |_, _, _| up.set(up.get() + 1))
+                    .on_scroll_wheel(move |_, _, _| wheel.set(wheel.get() + 1)),
+            )
+    }
+}
+fn capture_fixture(
+    cx: &mut TestAppContext,
+    kind: TextInputKind,
+) -> (
+    gpui::AnyWindowHandle,
+    Entity<TextInput>,
+    std::rc::Rc<std::cell::Cell<usize>>,
+) {
+    cx.update(super::bind_text_input_keys);
+    let actions = std::rc::Rc::new(std::cell::Cell::new(0));
+    let handle = cx.add_window(|_, cx| {
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new(cx, TextInputConfig { kind, ..config() });
+            input.set_text("İA🎛 /Samples/Kick.WAV", cx);
+            input
+        });
+        let slot = cx.new(|_| CaptureSlot(input.clone()));
+        CaptureRoot {
+            input,
+            slot,
+            actions: actions.clone(),
+        }
+    });
+    let input = handle.read_with(cx, |r, _| r.input.clone()).unwrap();
+    (*handle, input, actions)
+}
+
+#[gpui::test]
+fn text_selection_owns_buttons_wheel_cursor_and_release_without_breaking_clear(
+    cx: &mut TestAppContext,
+) {
+    for kind in [TextInputKind::Search, TextInputKind::Value] {
+        let (handle, input, actions) = capture_fixture(cx, kind);
+        let mut v = VisualTestContext::from_window(handle, cx);
+        v.simulate_resize(gpui::size(px(400.), px(100.)));
+        v.run_until_parked();
+        let start = v.debug_bounds("clip-name-input").unwrap().center();
+        let outside = point(px(260.), px(10.));
+        v.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::default());
+        assert!(
+            input.read_with(cx, |i, _| i.mouse_selection.is_some()),
+            "selection start kind={kind:?} root={:?} clear={:?}",
+            v.debug_bounds("clip-name-input"),
+            v.debug_bounds("clip-name-input-clear")
+        );
+        v.simulate_mouse_down(outside, MouseButton::Right, gpui::Modifiers::default());
+        v.simulate_event(gpui::ScrollWheelEvent {
+            position: outside,
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(20.))),
+            ..Default::default()
+        });
+        assert_eq!(
+            actions.get(),
+            0,
+            "held text selection must isolate other mouse actions"
+        );
+        v.simulate_mouse_move(outside, Some(MouseButton::Left), gpui::Modifiers::default());
+        v.run_until_parked();
+        assert_eq!(v.rendered_cursor_style(), Some(CursorStyle::IBeam));
+        v.update(|window, cx| {
+            window
+                .root::<CaptureRoot>()
+                .unwrap()
+                .unwrap()
+                .update(cx, |_, cx| cx.notify())
+        });
+        v.run_until_parked();
+        v.simulate_mouse_up(outside, MouseButton::Left, gpui::Modifiers::default());
+        v.simulate_mouse_up(outside, MouseButton::Right, gpui::Modifiers::default());
+        v.run_until_parked();
+        assert_eq!(
+            actions.get(),
+            0,
+            "release cannot activate the element underneath"
+        );
+        input.read_with(cx, |input, _| {
+            assert!(input.mouse_selection.is_none());
+            assert_eq!(input.text(), "İA🎛 /Samples/Kick.WAV");
+            assert!(
+                input.content.is_char_boundary(input.selected.start)
+                    && input.content.is_char_boundary(input.selected.end)
+            );
+        });
+        assert_eq!(v.rendered_cursor_style(), Some(CursorStyle::Crosshair));
+        v.simulate_mouse_down(outside, MouseButton::Right, gpui::Modifiers::default());
+        assert_eq!(
+            actions.get(),
+            1,
+            "ordinary input must resume after selection"
+        );
+        v.simulate_mouse_up(outside, MouseButton::Right, gpui::Modifiers::default());
+        if kind == TextInputKind::Search {
+            let clear = v.debug_bounds("clip-name-input-clear").unwrap().center();
+            v.simulate_click(clear, gpui::Modifiers::default());
+            v.run_until_parked();
+            assert!(
+                input.read_with(cx, |i, _| i.text().is_empty()),
+                "clear must keep its own mouse-down action"
+            );
+        }
+    }
+}
+
+#[gpui::test]
+fn text_selection_retires_on_replacement_composition_and_focus_loss(cx: &mut TestAppContext) {
+    for terminal in 0..3 {
+        let (handle, input, actions) = capture_fixture(cx, TextInputKind::Value);
+        let mut v = VisualTestContext::from_window(handle, cx);
+        v.simulate_resize(gpui::size(px(400.), px(100.)));
+        v.run_until_parked();
+        let start = v.debug_bounds("clip-name-input").unwrap().center();
+        v.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::default());
+        v.run_until_parked();
+        match terminal {
+            0 => input.update(cx, |i, cx| i.set_text("Replacement 🎹", cx)),
+            1 => v.update(|window, cx| {
+                input.update(cx, |i, cx| {
+                    i.replace_and_mark_text_in_range(
+                        Some(0..i.content.encode_utf16().count()),
+                        "İA🎛",
+                        Some(1..1),
+                        window,
+                        cx,
+                    )
+                })
+            }),
+            _ => v.update(|window, _| window.blur()),
+        }
+        v.run_until_parked();
+        let retained = input.read_with(cx, |i, _| {
+            assert!(
+                i.mouse_selection.is_none(),
+                "terminal {terminal} must retire input without waiting for release"
+            );
+            (i.content.clone(), i.selected.clone(), i.marked.clone())
+        });
+        let outside = point(px(260.), px(10.));
+        v.simulate_mouse_move(outside, Some(MouseButton::Left), gpui::Modifiers::default());
+        v.simulate_mouse_up(outside, MouseButton::Left, gpui::Modifiers::default());
+        v.run_until_parked();
+        assert_eq!(
+            actions.get(),
+            0,
+            "terminal {terminal} leaked its old release"
+        );
+        input.read_with(cx, |i, _| {
+            assert_eq!(
+                (i.content.clone(), i.selected.clone(), i.marked.clone()),
+                retained,
+                "old pointer must preserve newer text/caret/composition"
+            )
+        });
+        if terminal == 1 {
+            v.update(|window, cx| {
+                input.update(cx, |i, cx| {
+                    assert_eq!(i.marked_text_range(window, cx), Some(0..4));
+                    assert_eq!(
+                        i.selected_text_range(false, window, cx).unwrap().range,
+                        1..1
+                    );
+                })
+            });
+        }
+    }
+}
+
+/// Manual CPU-only selection comparison through complete model/repaint turns.
+/// Native text shaping/IME, canonical consumers, GPU and setup/release are excluded.
+#[gpui::test]
+#[ignore = "manual optimized text selection/CPU-scene profile; no native acceptance"]
+fn profile_text_selection(cx: &mut TestAppContext) {
+    let smoke = std::env::var_os("HEX_TEXT_SELECTION_PROFILE_SMOKE").is_some_and(|v| v == "1");
+    assert!(
+        !cfg!(debug_assertions) || smoke,
+        "timing requires --release; debug smoke must be explicit"
+    );
+    let warmup = if smoke { 1 } else { 16 };
+    let samples = if smoke { 4 } else { 128 };
+    for (kind, mode) in [(0, TextInputKind::Search), (1, TextInputKind::Value)] {
+        let (handle, input, _) = capture_fixture(cx, mode);
+        let mut v = VisualTestContext::from_window(handle, cx);
+        v.simulate_resize(gpui::size(px(400.), px(100.)));
+        v.run_until_parked();
+        let bounds = v.debug_bounds("clip-name-input").unwrap();
+        assert!(
+            bounds.size.width >= px(150.),
+            "profile needs a laid-out text field, not the clear slot"
+        );
+        let mut timings = Vec::with_capacity(samples);
+        for round in 0..warmup + samples {
+            v.simulate_mouse_down(
+                bounds.center(),
+                MouseButton::Left,
+                gpui::Modifiers::default(),
+            );
+            v.run_until_parked();
+            assert!(input.read_with(cx, |i, _| i.mouse_selection.is_some()));
+            let start = std::time::Instant::now();
+            let mut at = bounds.center();
+            for step in 0..8 {
+                at = bounds.origin
+                    + point(
+                        bounds.size.width * (0.1 + ((round + step) % 7) as f32 * 0.1),
+                        bounds.size.height / 2.,
+                    );
+                v.simulate_mouse_move(at, Some(MouseButton::Left), gpui::Modifiers::default());
+                v.run_until_parked();
+            }
+            let elapsed = start.elapsed().as_secs_f64() * 1_000_000.;
+            v.simulate_mouse_up(at, MouseButton::Left, gpui::Modifiers::default());
+            v.run_until_parked();
+            if round >= warmup {
+                timings.push(elapsed);
+            }
+        }
+        timings.sort_by(f64::total_cmp);
+        let percentile = |p: usize| timings[(timings.len() - 1) * p / 100];
+        let scale = v.update(|w, _| w.scale_factor());
+        println!(
+            "TEXT_SELECTION_PROFILE kind={kind} size=400x100 scale={scale} warmup={warmup} samples={samples} debug_smoke={smoke} completed_updates_per_sample=8 headless_cpu_only=true p50_us={:.3} p95_us={:.3} p99_us={:.3} max_us={:.3}",
+            percentile(50),
+            percentile(95),
+            percentile(99),
+            percentile(100)
+        );
+    }
+}

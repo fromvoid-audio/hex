@@ -30,7 +30,8 @@ impl Project {
         selection: &TrackSelectionIds,
         without_clips: bool,
     ) -> Result<TrackClipboard, Invalid> {
-        let ids = selection.ids();
+        let expanded = self.expand_track_selection(selection)?;
+        let ids = expanded.ids();
         if ids.iter().any(|id| self.track(*id).is_none()) {
             return Err(Invalid("selected track no longer exists"));
         }
@@ -114,19 +115,12 @@ impl Project {
 pub(crate) fn paste(
     project: &mut Project,
     clipboard: &TrackClipboard,
-    before: Option<TrackId>,
+    destination: crate::TrackDestination,
 ) -> Result<Created, Invalid> {
     if clipboard.tempo.sample_rate() != project.sample_rate() {
         return Err(Invalid("track clipboard belongs to another sample rate"));
     }
-    let index = match before {
-        Some(id) => project
-            .tracks
-            .iter()
-            .position(|t| t.id() == id)
-            .ok_or(Invalid("track paste anchor no longer exists"))?,
-        None => project.tracks.len(),
-    };
+    let index = project.track_hierarchy()?.insertion(destination)?;
     if project
         .tracks
         .len()
@@ -168,9 +162,19 @@ pub(crate) fn paste(
     let tempo = project.tempo_map().clone();
     for track in &mut copies {
         track.id = mapped(track.id);
-        for device in track.devices.iter_mut().chain(track.instrument.iter_mut()) {
+        track.parent_group = track
+            .parent_group
+            .and_then(|parent| remap.get(&parent).copied())
+            .or(destination.parent_group);
+        for device in &mut track.devices {
             device.id = DeviceId(project.allocate_id()?);
         }
+        if let Some(binding) = &track.instrument {
+            // Duplicating a track is an explicit independent-copy operation;
+            // it receives a new source and device identity, unlike linking.
+            track.instrument = Some(project.copy_source_binding(binding, track.id)?);
+        }
+
         for clip in &mut track.content.audio_clips {
             clip.id = ClipId(project.allocate_id()?);
         }

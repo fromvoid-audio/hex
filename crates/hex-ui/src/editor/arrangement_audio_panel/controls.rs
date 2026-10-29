@@ -1,6 +1,7 @@
 //! Shared numeric/toggle bindings. Drafts are local; one commit uses canonical
 //! commands. Released values remain with their exact ordinary-edit receipt until
-//! its terminal and canonical state are installed together by receive.
+//! its terminal and canonical state are installed together by receive. Pitch
+//! uses the same receipt with a signed-cent dial and the musical action owner.
 use super::*;
 use crate::editor::pending_edit::{Disposition, Receipt};
 use gpui::{Entity, FocusHandle, Focusable, Subscription, Window};
@@ -152,6 +153,10 @@ fn same_command(a: &Command, b: &Command) -> bool {
             Command::SetClipSourcePhase { clip: b, phase: bp },
         ) => (a, ap) == (b, bp),
         (
+            Command::SetAudioClipPitch { clip: a, cents: av },
+            Command::SetAudioClipPitch { clip: b, cents: bv },
+        ) => (a, av) == (b, bv),
+        (
             Command::SetAudioClipGain {
                 clip: a,
                 millidb: av,
@@ -247,7 +252,7 @@ fn value(window: ClipWindow, field: Field) -> u64 {
         Field::SourceStart => window.source_start,
         Field::SourceEnd => window.source_end,
         Field::PlayStart => window.source_start.saturating_add(window.source_phase),
-        Field::Gain | Field::Looping => 0,
+        Field::Gain | Field::Looping | Field::Pitch => 0,
     }
 }
 fn absolute_command(window: ClipWindow, field: Field, v: f64, multiple: bool) -> Option<Command> {
@@ -292,6 +297,20 @@ fn absolute_command(window: ClipWindow, field: Field, v: f64, multiple: bool) ->
     )
 }
 fn spec(window: ClipWindow, field: Field, horizon: u64) -> Option<NumericSpec> {
+    if field == Field::Pitch {
+        return NumericSpec::new(-4800., 4800., 0., NumericScale::Linear, 0, Some("ct"))
+            .ok()?
+            .with_integer_values()
+            .ok()?
+            .with_keyboard_steps(100., 1.)
+            .ok()
+            .map(|spec| {
+                spec.with_codec(
+                    |v| format!("{v:+.0} ct"),
+                    |s| s.trim().trim_end_matches("ct").trim().parse::<f64>().ok(),
+                )
+            });
+    }
     if field == Field::Gain {
         return NumericSpec::new(-60.0, 24.0, 0.0, NumericScale::Linear, 1, Some("db"))
             .ok()?
@@ -356,19 +375,25 @@ pub(super) fn number(
             .state
             .as_ref()
             .map_or(window.asset_frames, |s| s.timeline_frames);
-        let initial = if field == Field::Gain {
-            f64::from(window.gain.millidb()) / 1000.0
-        } else {
-            value(window, field) as f64
+        let initial = match field {
+            Field::Gain => f64::from(window.gain.millidb()) / 1000.,
+            Field::Pitch => f64::from(window.pitch_cents),
+            _ => value(window, field) as f64,
         };
         let Some(spec) = spec(window, field, horizon) else {
-            return div().child(theme::text(format!("{label} · value outside slider range")));
+            return div().child(theme::text(format!(
+                "{label} · value outside control range"
+            )));
         };
         let id = format!("audio-clip-{field:?}").to_lowercase();
         let Ok(config) = NumericControlConfig::new(
             id,
             theme::text(label),
-            NumericControlKind::HorizontalSlider,
+            if field == Field::Pitch {
+                NumericControlKind::Knob
+            } else {
+                NumericControlKind::HorizontalSlider
+            },
             spec,
             initial,
             theme::control_style(),
@@ -379,7 +404,11 @@ pub(super) fn number(
             NumericControl::from_config(
                 cx,
                 config
-                    .with_presentation(NumericControlPresentation::FilledSlider)
+                    .with_presentation(if field == Field::Pitch {
+                        NumericControlPresentation::CompactDial
+                    } else {
+                        NumericControlPresentation::FilledSlider
+                    })
                     .with_command_fine_steps(),
             )
         });
@@ -387,9 +416,30 @@ pub(super) fn number(
         let sub = cx.subscribe(&entity, move |view, _, e: &NumericControlEvent, cx| {
             if e.phase == NumericEventPhase::Commit {
                 if !view.edit_pending() && clip_window_is_current(view, window) {
-                    if let Some(command) =
-                        absolute_command(window, field, e.value, view.selected_clip_ids().len() > 1)
-                    {
+                    let multiple = view.selected_clip_ids().len() > 1;
+                    let command = if field == Field::Pitch {
+                        if e.value == f64::from(window.pitch_cents) {
+                            None
+                        } else if let Some(state) = view.state.as_ref() {
+                            match super::super::musical_audio_controls::pitch_command(
+                                &state.project,
+                                window.clip,
+                                e.value,
+                                multiple,
+                            ) {
+                                Ok(command) => Some(command),
+                                Err(error) => {
+                                    view.error = Some(error.0.into());
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        absolute_command(window, field, e.value, multiple)
+                    };
+                    if let Some(command) = command {
                         submit(view, window, command);
                     } else {
                         view.retire_clip_detail();
@@ -412,17 +462,40 @@ pub(super) fn number(
     let Some(binding) = view.audio_clip_controls.numbers.get(&field) else {
         return div();
     };
-    let enabled = !view.edit_pending()
-        && match field {
-            Field::SourceStart => window.source_end > 1,
-            Field::SourceEnd => window.asset_frames.saturating_sub(window.source_start) > 1,
-            Field::PlayStart => window.source_length > 1,
-            _ => true,
-        };
+    let available = match field {
+        Field::SourceStart => window.source_end > 1,
+        Field::SourceEnd => window.asset_frames.saturating_sub(window.source_start) > 1,
+        Field::PlayStart => window.source_length > 1,
+        Field::Pitch => !view
+            .state
+            .as_ref()
+            .and_then(|s| s.project.clip(window.clip))
+            .and_then(|c| c.audio_edit())
+            .is_some_and(|e| {
+                e.domain.warp_enabled
+                    && e.domain
+                        .warp
+                        .as_ref()
+                        .is_some_and(|w| w.mode == hex_project::WarpMode::RePitch)
+            }),
+        _ => true,
+    };
     binding.entity.update(cx, |n, cx| {
-        n.set_enabled(enabled, cx);
+        n.set_availability(
+            hex_widgets::ControlAvailability::for_edit(available, view.edit_pending()),
+            cx,
+        );
         let _ = n.set_external_style(theme::control_style(), cx);
     });
+    if field == Field::Pitch {
+        return div()
+            .w(px(hex_widgets::COMPACT_DIAL_WIDTH))
+            .h(px(hex_widgets::COMPACT_DIAL_HEIGHT))
+            .flex_shrink_0()
+            .flex()
+            .justify_center()
+            .child(binding.entity.clone());
+    }
     div()
         .h(px(22.0))
         .flex_shrink_0()
@@ -515,9 +588,11 @@ pub(super) fn toggle(
     let Some(binding) = view.audio_clip_controls.toggles.get(&warp) else {
         return div();
     };
-    let enabled = !view.edit_pending();
     binding.entity.update(cx, |t, cx| {
-        t.set_enabled(enabled, cx);
+        t.set_availability(
+            hex_widgets::ControlAvailability::for_edit(true, view.edit_pending()),
+            cx,
+        );
         let _ = t.set_external_style(theme::control_style(), cx);
     });
     let tooltip = if warp {
@@ -626,6 +701,20 @@ impl EditorView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pitch_dial_spec_preserves_signed_cents_bounds_and_steps() {
+        let spec = spec(super::super::tests::window(), Field::Pitch, 96_000).unwrap();
+        assert_eq!(spec.format(137.).unwrap(), "+137 ct");
+        assert_eq!(spec.parse("-137 ct").unwrap(), -137.);
+        assert_eq!(spec.step(137., 1., false).unwrap(), 237.);
+        assert_eq!(spec.step(137., 1., true).unwrap(), 138.);
+        for text in ["nan", "inf", "4801 ct", "-4801", "0.5 ct"] {
+            assert!(spec.parse(text).is_err());
+        }
+        for value in [-4800., 0., 4800.] {
+            assert_eq!(spec.parse(&spec.format(value).unwrap()).unwrap(), value);
+        }
+    }
     #[test]
     fn clip_slider_units_and_conversion_preserve_exact_frames_and_bounds() {
         let window = super::super::tests::window();
@@ -777,3 +866,7 @@ mod ui_tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "pitch_ui_tests.rs"]
+mod pitch_ui_tests;

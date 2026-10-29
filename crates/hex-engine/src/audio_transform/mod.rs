@@ -114,7 +114,6 @@ enum EntryKey {
     Group {
         root_only: bool,
         edit: AudioClipEdit,
-        start: u64,
         duration: u64,
         sources: Vec<(Audio, u32, u32)>,
     },
@@ -124,6 +123,23 @@ enum EntryKey {
         start: u64,
         duration: u64,
     },
+}
+impl EntryKey {
+    /// Frame-clock output is defined by its source program and finite view,
+    /// independent of destination onset or the current project tempo. Musical
+    /// views retain both because their sample projection can differ there.
+    fn matches_view(
+        &self,
+        edit: &AudioClipEdit,
+        tempo_map: &hex_project::TempoMap,
+        start: u64,
+        duration: u64,
+    ) -> bool {
+        matches!(self, Self::View { edit: retained, tempo, start: at, duration: length }
+            if retained == edit && *length == duration
+                && (matches!(edit.domain.clock, hex_project::AudioDomainClock::Frames(_))
+                    || (*at == start && tempo.as_ref() == tempo_map)))
+    }
 }
 struct Cache {
     entries: VecDeque<Entry>,
@@ -649,6 +665,21 @@ impl AudioTransformPreparation {
     ) -> Result<Option<Clip>, Invalid> {
         self.compile_clip_at_tempo(project.tempo_map(), clip, asset, source)
     }
+    /// Current streamed clip eligibility, shared by compilation and recovery
+    /// planning. Processing roots that materialize PCM keep their original
+    /// resident boundary; this pure query grants no decoding/admission custody.
+    pub fn clip_requires_resident_source(clip: &hex_project::Clip) -> bool {
+        clip.audio_edit().is_some_and(|edit| {
+            edit.content_view.is_some()
+                || edit.placement.is_some()
+                || edit.domain.events.is_some()
+                || edit.domain.pitch_cents != 0
+                || edit.domain.warp_enabled
+                || !edit.domain.source_gain.is_empty()
+                || !edit.domain.fade.is_neutral()
+        })
+    }
+
     fn compile_clip_at_tempo(
         &self,
         tempo_map: &hex_project::TempoMap,
@@ -672,11 +703,7 @@ impl AudioTransformPreparation {
         }
         let (_, _, view_start, view_end) = edit.projected_domain(tempo_map)?;
         let domain = &edit.domain;
-        let direct = domain.events.is_none()
-            && domain.pitch_cents == 0
-            && !domain.warp_enabled
-            && domain.source_gain.is_empty()
-            && domain.fade.is_neutral();
+        let direct = !Self::clip_requires_resident_source(clip);
         if direct && matches!(source, PreparedAudioSourceRef::Streamed(_)) {
             if !domain.looping && view_start >= domain.source_length {
                 return Ok(None);

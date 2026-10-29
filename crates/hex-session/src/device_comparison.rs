@@ -86,6 +86,12 @@ pub(crate) fn metadata_pair(
                     .flat_map(|track| track.devices.iter_mut()),
             )
             .chain(snapshot.main_devices.iter_mut())
+            .chain(
+                snapshot
+                    .native_sources
+                    .iter_mut()
+                    .flat_map(|source| source.devices.iter_mut()),
+            )
             .for_each(|device| device.comparison = None);
     };
     devices(&mut left);
@@ -98,13 +104,18 @@ pub(crate) fn metadata_pair(
         for device in from
             .tracks()
             .iter()
-            .flat_map(|track| track.instrument().into_iter().chain(track.devices().iter()))
+            .flat_map(|track| track.devices().iter())
             .chain(
                 from.return_tracks()
                     .iter()
                     .flat_map(|track| track.devices().iter()),
             )
             .chain(from.main_devices())
+            .chain(
+                from.native_sources()
+                    .iter()
+                    .flat_map(|source| source.devices()),
+            )
         {
             if to
                 .device(device.id())

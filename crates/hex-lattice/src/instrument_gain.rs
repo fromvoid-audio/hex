@@ -4,7 +4,9 @@
 use crate::NativeInstrumentRuntimeError;
 
 pub const INSTRUMENT_GAIN_UNITY: f64 = 1.0;
-pub const MAX_INSTRUMENT_OCCURRENCE_GAIN: f64 = 4.0;
+/// Covers the product of a 0..4 source-beat curve and the validated
+/// -60..+24 dB clip scalar (less than 16), with a fixed finite boundary.
+pub const MAX_INSTRUMENT_OCCURRENCE_GAIN: f64 = 64.0;
 
 /// One frame-linear ramp on a stable runtime occurrence. Endpoints are unsigned
 /// linear gain; `span_frames` ends at the exclusive ramp boundary. Prepared
