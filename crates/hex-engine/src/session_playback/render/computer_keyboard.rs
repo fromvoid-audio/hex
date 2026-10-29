@@ -150,6 +150,7 @@ impl SessionPlayback {
                     sources,
                     foreign,
                     None,
+                    None,
                 )?;
                 if drain_edit_tails {
                     self.return_effect_tails

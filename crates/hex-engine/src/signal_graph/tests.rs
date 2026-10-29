@@ -2,7 +2,8 @@
 use super::*;
 use crate::routed_midi_fixture;
 use crate::{
-    Audio, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand, SineTable,
+    Audio, Clip, MediaPages, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand,
+    SineTable, Track,
 };
 use hex_lattice::{
     NativeDeviceDefinition, NativeDeviceRegistry, NativeProcessorRuntime, OutputTail,
@@ -298,6 +299,178 @@ fn actual_dry_and_seven_frame_paths_align_capture_and_both_renderers_across_part
         };
         assert_eq!(capture.output(0).unwrap()[index], source);
         assert_eq!(capture.output(1).unwrap()[index], source);
+    }
+}
+
+#[test]
+fn resident_raw_source_windows_preserve_overlapping_clip_sum_order() {
+    let first = Audio::new(48_000, vec![[0.125, -0.25]; 8]).unwrap();
+    let second = Audio::new(48_000, vec![[0.25, 0.0625]; 4]).unwrap();
+    let track = Track::new(
+        vec![
+            Clip::new(first, 0, 8, false).unwrap(),
+            Clip::new(second, 2, 4, false).unwrap(),
+        ],
+        1.0,
+        false,
+    )
+    .unwrap();
+    let expected = [
+        [0.125, -0.25],
+        [0.125, -0.25],
+        [0.375, -0.1875],
+        [0.375, -0.1875],
+        [0.375, -0.1875],
+        [0.375, -0.1875],
+        [0.125, -0.25],
+        [0.125, -0.25],
+    ];
+    let mut window = [[0.0; 2]; 8];
+    track
+        .render_raw_audio::<dyn MediaPages>(0, &mut window, None)
+        .unwrap();
+    assert_eq!(window, expected);
+    let mut single = [[0.0; 2]; 8];
+    for (index, frame) in single.iter_mut().enumerate() {
+        track
+            .render_raw_audio::<dyn MediaPages>(index as u64, std::slice::from_mut(frame), None)
+            .unwrap();
+    }
+    assert_eq!(single, expected);
+}
+
+#[test]
+fn resident_compensated_windows_match_independent_loop_pcm() {
+    let mut f = fixture(&[&[7]], 32);
+    let asset = *f.media.keys().next().unwrap();
+    let source: Vec<_> = (0..32)
+        .map(|frame| [frame as f32 / 128.0, -(frame as f32) / 256.0])
+        .collect();
+    f.media
+        .insert(asset, Audio::new(48_000, source.clone()).unwrap());
+    f.editor
+        .execute(Command::PlaceClip {
+            track: f.tracks[0],
+            asset,
+            start: 3,
+            duration: 16,
+            source_offset: 2,
+            source_length: 16,
+            looping: false,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::SetLoopRegion {
+            start: 4,
+            end: 24,
+            enabled: true,
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    assert!(
+        revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .unwrap()
+            .needs_upstream_frame_routing()
+    );
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = [[0.0; 2]; 85];
+    runtime.render(&mut actual).unwrap();
+    let mut expected = [[0.0; 2]; 85];
+    for (frame, output) in expected.iter_mut().enumerate().skip(7) {
+        let elapsed = frame - 7;
+        let timeline = if elapsed < 24 {
+            elapsed
+        } else {
+            4 + (elapsed - 24) % 20
+        };
+        *output = if (3..19).contains(&timeline) {
+            source[timeline - 3 + 2]
+        } else {
+            source[timeline]
+        };
+    }
+    assert_eq!(actual, expected);
+    for partition in [1, 17, 64, 256] {
+        assert_eq!(
+            session(Arc::clone(&revision), expected.len(), partition),
+            expected
+        );
+    }
+}
+
+#[test]
+fn resident_batch_yields_to_quantized_session_audio_at_exact_boundary() {
+    let mut f = fixture(&[&[7]], 32);
+    let asset = *f.media.keys().next().unwrap();
+    let source: Vec<_> = (0..32)
+        .map(|frame| [frame as f32 / 128.0, -(frame as f32) / 256.0])
+        .collect();
+    f.media
+        .insert(asset, Audio::new(48_000, source.clone()).unwrap());
+    f.editor
+        .execute(Command::PlaceClip {
+            track: f.tracks[0],
+            asset,
+            start: 95_990,
+            duration: 32,
+            source_offset: 0,
+            source_length: 32,
+            looping: false,
+        })
+        .unwrap();
+    let Created::Scene(scene) = f
+        .editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("created scene");
+    };
+    let Created::SessionClip(clip) = f
+        .editor
+        .execute(Command::CreateSessionAudioClip {
+            track: f.tracks[0],
+            scene,
+            name: "session".into(),
+            asset,
+            source_start: 0,
+            source_end: 32,
+        })
+        .unwrap()
+    else {
+        panic!("created session clip")
+    };
+    let revision = prepare(&f).unwrap();
+    let mut expected = [[0.0; 2]; 49];
+    for (frame, output) in expected.iter_mut().enumerate().skip(7) {
+        let elapsed = frame - 7;
+        let source_frame = if elapsed < 10 { elapsed } else { elapsed - 10 };
+        *output = source[source_frame];
+    }
+    for partition in [1, 9, 10, 17, 49] {
+        let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Seek(95_990)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: crate::LaunchQuantization::FourQuarter,
+            })
+            .unwrap();
+        let mut actual = [[0.0; 2]; 49];
+        for block in actual.chunks_mut(partition) {
+            runtime.render(block).unwrap();
+        }
+        assert_eq!(actual, expected, "partition {partition}");
+        assert_eq!(
+            runtime.owner(f.tracks[0]),
+            Some(crate::SessionPlaybackOwner::Session { clip })
+        );
     }
 }
 
