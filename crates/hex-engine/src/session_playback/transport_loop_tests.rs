@@ -503,6 +503,22 @@ fn combined_loop_expanded_oracle_project() -> Project {
 }
 
 #[test]
+fn transport_wrap_matches_authored_pcm_at_fixed_callback_sizes() {
+    let mut source_loop = arrangement_loop_project().snapshot();
+    source_loop.loop_region = Some(LoopRegion::new(30_000, 78_000, true).unwrap());
+    let source_loop = legacy_project_from_snapshot(source_loop).unwrap();
+    let expanded = combined_loop_expanded_oracle_project();
+    // Include the first wrap and its freshly chased gate, with the reference
+    // generated from independently authored linear occurrences.
+    let expected = render_transport_project(&expanded, 80_000, &[256]);
+    assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
+    for block in [1, 17, 64, 128, 256, 512] {
+        let actual = render_transport_project(&source_loop, expected.len(), &[block]);
+        assert_eq!(actual, expected, "block size {block}");
+    }
+}
+
+#[test]
 fn mutable_source_and_transport_loops_match_authored_linear_occurrences_across_wraps() {
     let mut source_loop = arrangement_loop_project().snapshot();
     source_loop.loop_region =
@@ -750,6 +766,51 @@ fn mutable_transport_wrap_chases_as_fresh_attack_without_first_entry_duplicate()
     let expanded = render_transport_project(&transport_loop_project(true), 200_000, &[200_000]);
     assert_eq!(whole, partitioned);
     assert_eq!(partitioned, expanded);
+}
+
+#[test]
+fn interactive_start_one_frame_before_wrap_matches_authored_attack_and_note_off() {
+    let looped = transport_loop_project(false);
+    let revision = prepare_mutable(&looped);
+    let mut snapshot = transport_loop_project(true).snapshot();
+    let (TrackContentSnapshot::Hybrid { midi_clips, .. }
+    | TrackContentSnapshot::Instrument(midi_clips)) = &mut snapshot.tracks[0].content
+    else {
+        panic!("fixture Arrangement MIDI clip")
+    };
+    let note = &mut midi_clips[0].notes[0];
+    note.start_raw = beat_raw_for_frames(1);
+    note.duration_raw = Q;
+    midi_clips[0].notes.truncate(1);
+    let oracle = legacy_project_from_snapshot(snapshot).expect("valid linear oracle");
+    let expected = render_transport_project(&oracle, 24_065, &[256]);
+    assert_eq!(expected[0], [0.0; 2]);
+    assert!(
+        expected[1..24_001]
+            .iter()
+            .flatten()
+            .any(|sample| *sample != 0.0)
+    );
+    assert!(
+        expected[24_041..]
+            .iter()
+            .flatten()
+            .all(|sample| *sample == 0.0)
+    );
+
+    for block in [1, 17, 64, 128, 256, 512] {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        playback.play_from(95_999).unwrap();
+        playback.render(&mut []).unwrap();
+        assert_eq!(playback.arrangement_frame(), 95_999);
+        let mut actual = vec![[0.0; 2]; expected.len()];
+        for chunk in actual.chunks_mut(block) {
+            playback.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "block size {block}");
+        assert_eq!(playback.arrangement_frame(), 72_064);
+        assert_eq!(playback.performance_frame(), 120_064);
+    }
 }
 
 #[test]

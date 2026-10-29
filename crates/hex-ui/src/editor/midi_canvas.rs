@@ -132,9 +132,6 @@ impl EditorView {
             self.piano_beat_span =
                 BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
         }
-        if self.midi_volume.enabled {
-            return self.midi_volume_editor(cx);
-        }
         let state = std::sync::Arc::clone(self.state.as_ref()?);
         let clip_id = self.detail_clip_id()?;
         let source = state.project.midi_source(clip_id)?;
@@ -1426,7 +1423,6 @@ impl EditorView {
                     "toggle source looping · disabled loop markers are retained",
                     "toggle source looping · disabled loop markers are retained",
                 ))]);
-        let mode_control = self.volume_mode_button(cx);
         let toolbar = div()
             .h(px(28.0))
             .flex_shrink_0()
@@ -1434,7 +1430,6 @@ impl EditorView {
             .items_center()
             .gap_1()
             .px_1()
-            .child(mode_control)
             .child(theme::text("piano roll"))
             .children([self.midi_button(
                 grid.label(),
@@ -1938,7 +1933,6 @@ impl EditorView {
     }
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
-        let volume = self.cancel_midi_volume_input();
         let ruler = self.midi_ruler.cancel() | self.midi_time_selection.cancel();
         let pan = self.midi_pan.gesture.take().is_some();
         let marquee = self.cancel_all_midi_marquees();
@@ -1949,8 +1943,7 @@ impl EditorView {
         let note = self.midi_note_gesture.take().is_some();
         let group = self.midi_group_gesture.take().is_some();
         let stroke = self.cancel_midi_stroke();
-        volume
-            || ruler
+        ruler
             || pan
             || velocity
             || pending_selection

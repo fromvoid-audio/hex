@@ -40,6 +40,7 @@ impl Event {
     fn decode(self) -> Result<AudioEvent, StorageError> {
         Ok(AudioEvent {
             active: self.active,
+            gain: hex_project::ClipGain::UNITY,
             source: self.source,
             id: self.id,
             start: self.start,

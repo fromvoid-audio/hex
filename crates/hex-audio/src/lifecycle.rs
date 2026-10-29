@@ -16,7 +16,7 @@ use std::{
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{
-            AtomicBool, AtomicU64,
+            AtomicBool, AtomicU8, AtomicU64,
             Ordering::{AcqRel, Acquire, Release},
         },
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
@@ -24,6 +24,64 @@ use std::{
     thread,
     time::Duration,
 };
+
+/// Confirmed terminal failure on the exclusive lifecycle lane. This is an
+/// observation only: custody remains retained until process exit. Ordinary
+/// shutdown, device-open errors and queue pressure are not terminal failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AudioLifecycleFailure {
+    /// Stream/native retirement failed or entered permanent quarantine.
+    Retirement = 1,
+    /// A retained candidate/domain cleanup owner failed or unwound.
+    Cleanup = 2,
+    /// The lane received a root different from its retained cleanup root.
+    MismatchedOwner = 3,
+}
+
+pub(crate) struct LifecycleStatus(AtomicU8);
+impl LifecycleStatus {
+    pub(crate) const fn new() -> Self {
+        Self(AtomicU8::new(0))
+    }
+    fn fail(&self, failure: AudioLifecycleFailure) {
+        // Preserve the first failing owner; there is no reset/retry operation.
+        let _ = self.0.compare_exchange(0, failure as u8, AcqRel, Acquire);
+    }
+    pub(crate) fn failure(&self) -> Option<AudioLifecycleFailure> {
+        match self.0.load(Acquire) {
+            1 => Some(AudioLifecycleFailure::Retirement),
+            2 => Some(AudioLifecycleFailure::Cleanup),
+            3 => Some(AudioLifecycleFailure::MismatchedOwner),
+            _ => None,
+        }
+    }
+}
+static LIFECYCLE_STATUS: LifecycleStatus = LifecycleStatus::new();
+
+pub(crate) fn finish_retirement_cleanup(root: &crate::candidate_custody::CandidateRoot) -> bool {
+    finish_cleanup_observed(root, &LIFECYCLE_STATUS)
+}
+
+pub(crate) fn finish_cleanup_observed(
+    root: &crate::candidate_custody::CandidateRoot,
+    status: &LifecycleStatus,
+) -> bool {
+    let complete = root.finish_on_control();
+    if root.cleanup_failed() {
+        status.fail(AudioLifecycleFailure::Cleanup);
+        return false;
+    }
+    complete
+}
+
+/// Read the first confirmed retained failure without starting a worker, locking,
+/// allocating or releasing the output lease. `None` does not imply readiness:
+/// opening and ordinary cleanup may still be pending. Control-side diagnostics
+/// may read this even when no recovery request could be queued (Busy/QueueFull).
+pub fn audio_lifecycle_failure() -> Option<AudioLifecycleFailure> {
+    LIFECYCLE_STATUS.failure()
+}
 
 static OCCUPIED: AtomicBool = AtomicBool::new(false);
 static OPEN_STATE: OnceLock<Arc<OpenState>> = OnceLock::new();
@@ -75,8 +133,6 @@ struct Retirement {
     backend_exposed: bool,
     stream_drop_pending: bool,
     stream_disposed: bool,
-    failed: bool,
-    first_panic: Option<Box<dyn std::any::Any + Send>>,
 }
 
 pub(crate) struct StreamOwner {
@@ -105,8 +161,6 @@ impl StreamOwner {
                 backend_exposed: true,
                 stream_drop_pending: false,
                 stream_disposed: false,
-                failed: false,
-                first_panic: None,
             }),
         }
     }
@@ -142,8 +196,6 @@ impl StreamOwner {
                 backend_exposed: false,
                 stream_drop_pending: false,
                 stream_disposed: false,
-                failed: false,
-                first_panic: None,
             }),
         }
     }
@@ -212,6 +264,7 @@ impl Drop for StreamOwner {
         };
         // The exclusive lease ensures no prior retirement can occupy this slot.
         *quarantine = Some(retirement);
+        LIFECYCLE_STATUS.fail(AudioLifecycleFailure::Retirement);
     }
 }
 
@@ -499,11 +552,28 @@ fn run_lifecycle<T: Send + 'static, R: Send + 'static>(
     run_lifecycle_selected(receiver, is_occupied, |rate, _| try_open(rate), retire)
 }
 
+#[cfg(test)]
 fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
+    receiver: Receiver<LifecycleMessage<T, R>>,
+    is_occupied: impl Fn() -> bool,
+    try_open: impl FnMut(Option<u32>, PreparedOutputKind) -> Option<Result<T, String>>,
+    retire: impl FnMut(R),
+) {
+    run_lifecycle_observed(
+        receiver,
+        is_occupied,
+        try_open,
+        retire,
+        &LifecycleStatus::new(),
+    )
+}
+
+fn run_lifecycle_observed<T: Send + 'static, R: Send + 'static>(
     receiver: Receiver<LifecycleMessage<T, R>>,
     is_occupied: impl Fn() -> bool,
     mut try_open: impl FnMut(Option<u32>, PreparedOutputKind) -> Option<Result<T, String>>,
     mut retire: impl FnMut(R),
+    status: &LifecycleStatus,
 ) {
     enum Phase {
         Queued,
@@ -526,6 +596,9 @@ fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
         }
         if let Some(root) = cleanup.as_ref() {
             root.advance_on_control();
+            if root.cleanup_failed() {
+                status.fail(AudioLifecycleFailure::Cleanup);
+            }
             if root.job_idle() {
                 cleanup = None;
             }
@@ -574,10 +647,7 @@ fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
         match receiver.recv_timeout(Duration::from_millis(5)) {
             Ok(LifecycleMessage::Retire(value, root)) => {
                 if let Some(root) = root {
-                    if cleanup
-                        .as_ref()
-                        .is_some_and(|pending| !pending.same_root(&root))
-                    {
+                    if mismatched_cleanup(cleanup.as_ref(), &root, status) {
                         failed_retirement = Some(value);
                         failed_cleanup = Some(root);
                         continue;
@@ -590,10 +660,7 @@ fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
                 retire(value);
             }
             Ok(LifecycleMessage::Cleanup(root)) => {
-                if cleanup
-                    .as_ref()
-                    .is_some_and(|pending| !pending.same_root(&root))
-                {
+                if mismatched_cleanup(cleanup.as_ref(), &root, status) {
                     failed_cleanup = Some(root);
                     continue;
                 }
@@ -621,6 +688,18 @@ fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
     }
 }
 
+fn mismatched_cleanup(
+    pending: Option<&crate::candidate_custody::CandidateRoot>,
+    incoming: &crate::candidate_custody::CandidateRoot,
+    status: &LifecycleStatus,
+) -> bool {
+    let mismatched = pending.is_some_and(|pending| !pending.same_root(incoming));
+    if mismatched {
+        status.fail(AudioLifecycleFailure::MismatchedOwner);
+    }
+    mismatched
+}
+
 fn service() -> Result<&'static SyncSender<LifecycleMessage<Opened, Retirement>>, String> {
     SERVICE
         .get_or_init(|| {
@@ -628,7 +707,7 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<Opened, Retirement>>
             thread::Builder::new()
                 .name("hex-audio-lifecycle".into())
                 .spawn(move || {
-                    run_lifecycle_selected(
+                    run_lifecycle_observed(
                         receiver,
                         || OCCUPIED.load(Acquire),
                         |expected_rate, kind| {
@@ -636,6 +715,7 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<Opened, Retirement>>
                             Some(crate::device::open_prepared(expected_rate, lease, kind))
                         },
                         retire_prepared_output,
+                        &LIFECYCLE_STATUS,
                     );
                 })
                 .map_err(|error| format!("could not start audio lifecycle worker: {error}"))?;
@@ -660,32 +740,46 @@ pub(crate) fn request_candidate_cleanup(root: &crate::candidate_custody::Candida
     root.schedule(|root| sender.try_send(LifecycleMessage::Cleanup(root)).is_ok());
 }
 
+/// Persistent execution state retains the first unwind payload, and never
+/// invokes a destructor again after a terminal failure.
+#[derive(Default)]
+struct RetirementProgress {
+    failed: bool,
+    first_panic: Option<Box<dyn std::any::Any + Send>>,
+}
+impl RetirementProgress {
+    fn advance(
+        &mut self,
+        status: &LifecycleStatus,
+        tick: impl FnOnce() -> Result<bool, ()>,
+    ) -> bool {
+        if self.failed {
+            return false;
+        }
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(tick)) {
+            Ok(Ok(complete)) => return complete,
+            Ok(Err(())) => {}
+            Err(payload) => self.first_panic = Some(payload),
+        }
+        self.failed = true;
+        status.fail(AudioLifecycleFailure::Retirement);
+        false
+    }
+}
 fn retire_prepared_output(mut retirement: Retirement) {
-    // Existing single leased lifecycle lane is also the persistent execution
-    // slot. It stops consuming additional messages while uncertain ownership is
-    // retained; no new thread/registry or destructor retry is introduced.
+    // The existing execution slot retains all owners and the first panic. No
+    // new worker, registry or destructor retry is introduced by observation.
+    let mut progress = RetirementProgress::default();
     loop {
-        if !retirement.failed {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                retirement_tick(&mut retirement)
-            }));
-            match result {
-                Ok(Ok(true)) => return,
-                Ok(Ok(false)) => {}
-                Ok(Err(())) => {
-                    if let Some(native) = retirement.native.as_ref() {
-                        native.fail_scalar_receipts();
-                    }
-                    retirement.failed = true;
-                }
-                Err(payload) => {
-                    if let Some(native) = retirement.native.as_ref() {
-                        native.fail_scalar_receipts();
-                    }
-                    retirement.first_panic = Some(payload);
-                    retirement.failed = true;
-                }
-            }
+        let was_failed = progress.failed;
+        if progress.advance(&LIFECYCLE_STATUS, || retirement_tick(&mut retirement)) {
+            return;
+        }
+        if !was_failed
+            && progress.failed
+            && let Some(native) = retirement.native.as_ref()
+        {
+            native.fail_scalar_receipts();
         }
         thread::sleep(Duration::from_millis(250));
     }
@@ -797,6 +891,90 @@ mod candidate_retirement_tests {
         }
     }
     #[test]
+    fn confirmed_retirement_failure_preserves_payload_and_never_retries_destructor() {
+        struct Backend(Arc<AtomicU64>);
+        impl Drop for Backend {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, AcqRel);
+                std::panic::panic_any("injected backend destructor");
+            }
+        }
+        let status = LifecycleStatus::new();
+        let mut progress = RetirementProgress::default();
+        let calls = Arc::new(AtomicU64::new(0));
+        let mut stream = Some(Backend(calls.clone()));
+        let (mut pending, mut disposed) = (false, false);
+        // A real stop refusal remains pending, with the backend retained.
+        assert!(!progress.advance(&status, || {
+            dispose_stream_on_control(&mut stream, true, &mut pending, &mut disposed, |_| Err(()))
+        }));
+        assert_eq!(status.failure(), None);
+        assert!(stream.is_some());
+        assert!(!progress.advance(&status, || {
+            dispose_stream_on_control(&mut stream, true, &mut pending, &mut disposed, |_| Ok(()))
+        }));
+        assert_eq!(status.failure(), Some(AudioLifecycleFailure::Retirement));
+        assert!(pending && !disposed && stream.is_none());
+        let first = progress.first_panic.as_ref().unwrap().as_ref() as *const dyn std::any::Any;
+        for _ in 0..3 {
+            assert!(!progress.advance(&status, || panic!("must never retry")));
+        }
+        assert!(std::ptr::addr_eq(
+            first,
+            progress.first_panic.as_ref().unwrap().as_ref()
+        ));
+        assert_eq!(calls.load(Acquire), 1);
+        // Later observations cannot overwrite the original failure.
+        status.fail(AudioLifecycleFailure::MismatchedOwner);
+        assert_eq!(status.failure(), Some(AudioLifecycleFailure::Retirement));
+    }
+
+    #[test]
+    fn successful_retirement_and_confirmed_error_have_distinct_status() {
+        for fail in [false, true] {
+            let status = LifecycleStatus::new();
+            let mut progress = RetirementProgress::default();
+            let mut stream = if fail { None } else { Some(()) };
+            let (mut pending, mut disposed) = (false, false);
+            assert_eq!(
+                progress.advance(&status, || {
+                    dispose_stream_on_control(
+                        &mut stream,
+                        true,
+                        &mut pending,
+                        &mut disposed,
+                        |_| Ok(()),
+                    )
+                }),
+                !fail
+            );
+            assert_eq!(
+                status.failure(),
+                fail.then_some(AudioLifecycleFailure::Retirement)
+            );
+            assert_eq!(disposed, !fail);
+        }
+    }
+
+    #[test]
+    fn only_a_different_retained_root_confirms_owner_mismatch() {
+        let status = LifecycleStatus::new();
+        let first = crate::candidate_custody::CandidateRoot::new(2).unwrap();
+        let same = first.clone();
+        let other = crate::candidate_custody::CandidateRoot::new(2).unwrap();
+        assert!(!mismatched_cleanup(None, &first, &status));
+        assert!(!mismatched_cleanup(Some(&first), &same, &status));
+        assert_eq!(status.failure(), None);
+        assert!(mismatched_cleanup(Some(&first), &other, &status));
+        assert_eq!(
+            status.failure(),
+            Some(AudioLifecycleFailure::MismatchedOwner)
+        );
+        assert!(first.same_root(&same));
+        assert!(!first.same_root(&other));
+    }
+
+    #[test]
     fn worker_open_uses_same_lane_and_preserves_negotiated_completion_and_abandonment() {
         for profile in [
             WorkerOutputProfile::DeviceDefault,
@@ -811,8 +989,11 @@ mod candidate_retirement_tests {
                 enqueue_open(&sender, &state, None),
                 Err(RecoveryOpenError::Busy)
             ));
+            let status = Arc::new(LifecycleStatus::new());
+            let worker_status = status.clone();
+            assert_eq!(status.failure(), None); // Busy did not confirm a failure.
             let worker = std::thread::spawn(move || {
-                run_lifecycle_selected(
+                run_lifecycle_observed(
                     receiver,
                     || false,
                     |rate, worker| {
@@ -821,6 +1002,7 @@ mod candidate_retirement_tests {
                         Some(Ok(44100))
                     },
                     |_| {},
+                    &worker_status,
                 )
             });
             let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -842,6 +1024,7 @@ mod candidate_retirement_tests {
             drop(sender);
             worker.join().unwrap();
             assert_eq!(state.reserved.load(Acquire), 0);
+            assert_eq!(status.failure(), None);
         }
     }
 

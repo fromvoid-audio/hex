@@ -691,7 +691,7 @@ impl NativeRetirement {
         // Graph/domain work progresses even while the UI client remains live.
         // Only complete normal endpoint destruction can release the whole
         // native resource extent and its exclusive device lease.
-        let graphs_complete = self.root.finish_on_control();
+        let graphs_complete = crate::lifecycle::finish_retirement_cleanup(&self.root);
         let endpoints_complete = self.endpoint_states == [Disposal::Complete; 2];
         if endpoints_complete {
             self.terminals = None;

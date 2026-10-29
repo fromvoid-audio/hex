@@ -207,6 +207,17 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
                                    'contour)', 'early)', 'diffusion)', 'chorus)',
                                    'top)', 'bottom)', 'smooth)', 'density)', 'freeze)', 'high)', 'low)'))
         )
+        # Browser place icons are text-free SVG components; their accessible
+        # labels are checked separately at the existing theme::text boundary.
+        browser_vector_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/browser/layout.rs'
+            and suffix.startswith(('gpui::svg()', 'browser_vector_icon('))
+        )
+        # Playback vector controls and their SVG child contain no text.
+        transport_vector_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/transport.rs'
+            and suffix.startswith(('self.vector_icon(', 'gpui::svg()'))
+        )
         # Limiter slots are bound controls or a shared text-free meter widget.
         # Every caption remains independently checked at theme::text.
         limiter_component = (
@@ -215,7 +226,7 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
                                    'maximize_control)', 'threshold)', 'display)', 'mode)',
                                    'lookahead)', 'routing)', 'release)', 'auto)'))
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not limiter_component:
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not transport_vector_component and not limiter_component:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

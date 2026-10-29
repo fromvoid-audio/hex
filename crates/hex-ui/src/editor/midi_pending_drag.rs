@@ -15,7 +15,6 @@ use std::sync::Arc;
 pub(super) enum Frozen {
     Single(NoteGesture),
     Group(GroupGesture),
-    Volume(hex_project::MidiClipVolume),
     Creation(MidiNoteInsert),
     Velocity(super::midi_velocity::Gesture),
     Stroke(Arc<super::midi_stroke::StrokePreview>),
@@ -111,10 +110,6 @@ impl Pending {
                     insert: i,
                 }),
             ) => (clip, remove, insert) == (c, r, i),
-            (
-                Command::ReplaceMidiClipVolume { clip, volume },
-                Request::Edit(Command::ReplaceMidiClipVolume { clip: c, volume: v }),
-            ) => (clip, volume) == (c, v),
             _ => false,
         }
     }
@@ -180,14 +175,6 @@ impl EditorView {
             };
             pending.displayed(self).then_some(group)
         })
-    }
-
-    pub(super) fn pending_midi_volume(&self, clip: ClipId) -> Option<hex_project::MidiClipVolume> {
-        let pending = self.pending_midi_drag.as_ref()?;
-        let Frozen::Volume(volume) = &pending.preview else {
-            return None;
-        };
-        (pending.clip == clip && pending.displayed(self)).then(|| volume.clone())
     }
 
     /// Held input and accepted display custody are distinct. Only the existing

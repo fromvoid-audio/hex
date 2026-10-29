@@ -355,9 +355,11 @@ impl Plan {
                     },
                 }
             }
-            Command::ReplaceMidiClipVolume { clip, .. } => Kind::Volume {
-                location: location(*clip)?,
-            },
+            Command::ReplaceMidiClipVolume { clip, .. } | Command::SetMidiClipGain { clip, .. } => {
+                Kind::Volume {
+                    location: location(*clip)?,
+                }
+            }
             Command::SetMidiClipSource { clip, .. }
             | Command::SetSessionMidiClipSource { clip, .. } => Kind::Source {
                 location: location(*clip)?,
@@ -688,7 +690,7 @@ impl MidiHistoryEffect {
 fn birth_volume(source: &Project, copied: Option<ClipId>, volume: &crate::MidiClipVolume) -> bool {
     match copied {
         Some(clip) => source.midi_clip_volume(clip) == Some(volume),
-        None => volume.points().is_empty(),
+        None => volume.is_unity(),
     }
 }
 fn source_shell_with_extent(a: &MidiSource, b: &MidiSource, length: Option<BeatTime>) -> bool {

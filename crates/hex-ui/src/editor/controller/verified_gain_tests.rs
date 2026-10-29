@@ -27,6 +27,8 @@ fn next(service: &Service) -> Event {
 fn verified_preview_submission_waits_for_exact_view_without_canonical_promotion(
     cx: &mut TestAppContext,
 ) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     let service = Service::new(48_000, 16, 0).unwrap();
     next(&service);
     request(

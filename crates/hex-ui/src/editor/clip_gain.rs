@@ -1,7 +1,8 @@
 //! Arrangement audio gain input. The Window lease owns held input only; the
 //! ordinary FIFO receipt retains the released value until canonical installation.
 //! Release freezes the ordinary clip-property scope: selected audio clips retain
-//! their relative gains in one EditClips command; other clips use SetAudioClipGain.
+//! their relative gains in one EditClips command; a single audio clip
+//! uses its typed gain command.
 //! No pointer update prepares audio.
 use super::{
     EditorView, ViewState,
@@ -26,7 +27,7 @@ pub(super) struct State {
 struct Drag {
     generation: u64,
     revision: u64,
-    clip: Rc<Clip>,
+    clip: GainTarget,
     track: TrackId,
     viewport: Viewport,
     lane: LaneBounds,
@@ -35,6 +36,19 @@ struct Drag {
     moved: bool,
     value: f64,
     preview: ClipGain,
+}
+#[derive(Clone)]
+struct GainTarget(Rc<Clip>);
+impl GainTarget {
+    fn id(&self) -> ClipId {
+        self.0.id()
+    }
+    fn gain(&self) -> ClipGain {
+        self.0.gain()
+    }
+    fn matches(&self, project: &hex_project::Project) -> bool {
+        project.clip(self.0.id()) == Some(self.0.as_ref())
+    }
 }
 struct Pending {
     command: Command,
@@ -47,7 +61,7 @@ impl Drag {
             && view
                 .state
                 .as_ref()
-                .is_some_and(|s| s.project.clip(self.clip.id()) == Some(self.clip.as_ref()))
+                .is_some_and(|s| self.clip.matches(&s.project))
     }
     fn current(&self, view: &EditorView) -> bool {
         self.source_current(view)
@@ -211,6 +225,24 @@ impl EditorView {
         viewport: Viewport,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        self.gain_handle(
+            state,
+            track,
+            GainTarget(Rc::new(clip.clone())),
+            width,
+            viewport,
+            cx,
+        )
+    }
+    fn gain_handle(
+        &self,
+        state: &ViewState,
+        track: TrackId,
+        clip: GainTarget,
+        width: f32,
+        viewport: Viewport,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let clip_id = clip.id();
         let held = self
             .clip_gain
@@ -227,10 +259,10 @@ impl EditorView {
         let lane = *self.drag_lanes.get(&track)?;
         let generation = self.project_generation;
         let revision = state.revision;
-        let original = Rc::new(clip.clone());
+        let original = clip;
         let owner = cx.entity_id();
         let displayed = self.displayed_clip_gain(clip_id);
-        let value = displayed.unwrap_or(clip.gain()).millidb();
+        let value = displayed.unwrap_or(original.gain()).millidb();
         Some(
             div()
                 .id(("clip-gain-handle", clip_id.value()))
@@ -281,7 +313,7 @@ impl EditorView {
                         let drag = Drag {
                             generation,
                             revision,
-                            clip: Rc::clone(&original),
+                            clip: original.clone(),
                             track,
                             viewport,
                             lane,

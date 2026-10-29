@@ -495,6 +495,7 @@ impl OwnedProcessorRuntime for Runtime {
         }
         let config = &self.config;
         let history = &mut self.scratch;
+        let mut post_input_peak = 0.0_f64;
         for frame in frames {
             // Compatible edits ramp input/output gain over 5 ms. A falling ceiling
             // is immediate, preserving its safety invariant on the first sample.
@@ -509,6 +510,7 @@ impl OwnedProcessorRuntime for Runtime {
                     0.0
                 }
             });
+            post_input_peak = post_input_peak.max(signal[0].abs()).max(signal[1].abs());
             if config.mid_side {
                 signal = [(signal[0] + signal[1]) * 0.5, (signal[0] - signal[1]) * 0.5];
             }
@@ -559,6 +561,7 @@ impl OwnedProcessorRuntime for Runtime {
                     history.meter.reduction_db[lane].max(sample.reduction[lane]);
             }
         }
+        history.meter.post_input_peak = history.meter.post_input_peak.max(post_input_peak as f32);
     }
     fn commit_block(&mut self) {
         if self.open {

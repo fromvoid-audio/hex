@@ -59,7 +59,6 @@ mod workspace_view_ui_test;
 mod group_copy;
 mod group_selection;
 mod midi_pending_drag;
-mod midi_volume;
 mod pending_clip_move;
 mod pending_edit;
 #[cfg(test)]
@@ -211,6 +210,7 @@ mod tracks;
 mod transport;
 mod trim;
 mod tuning;
+mod update_flow;
 mod viewport;
 mod waveform;
 mod waveform_geometry;
@@ -377,6 +377,9 @@ actions!(
         CancelTuningName,
         SaveProject,
         SaveAsProject,
+        InstallUpdateOnQuit,
+        SaveAndRestartForUpdate,
+        CancelUpdate,
         ExportProject,
         Undo,
         Redo,
@@ -722,6 +725,7 @@ pub(super) struct EditorView {
     document_audio_mode: hex_session::DocumentAudioMode,
     recovery: RecoveryState,
     stopped_playback_restore: Option<audio_admission::StoppedPlaybackRestore>,
+    latency_rebuild: Option<audio_admission::LatencyRebuild>,
     offline_cursor: u64,
     pub(in crate::editor) state: Option<Arc<ViewState>>,
     selected_track: Option<TrackId>,
@@ -753,7 +757,6 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_note_gesture: Option<midi_drag::NoteGesture>,
     pub(in crate::editor) midi_group_gesture: Option<midi_group_drag::GroupGesture>,
     pending_midi_drag: Option<midi_pending_drag::Pending>,
-    midi_volume: midi_volume::State,
     pub(in crate::editor) midi_creation: Option<midi_creation::Creation>,
     pub(in crate::editor) midi_stroke: Option<midi_stroke::MidiStroke>,
     pub(in crate::editor) midi_draw_mode: bool,
@@ -844,6 +847,7 @@ pub(super) struct EditorView {
     export_window: Option<gpui::AnyWindowHandle>,
     export_dialog_open: bool,
     saving_project: bool,
+    update_flow: update_flow::State,
     save_dialog_open: bool,
     document_format_upgrade_required: bool,
     format_upgrade_prompt: Option<save::FormatUpgradeIntent>,
@@ -1197,6 +1201,8 @@ impl EditorView {
         #[cfg(feature = "ui-test-support")] fixture_paths: Option<sampler_load::FixturePaths>,
         #[cfg(test)] test_paths: test_environment::Inputs,
     ) -> Self {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        cx.use_test_assets(crate::assets::HexAssets);
         crate::diagnostics::attach_service(cx, &service);
         #[cfg(test)]
         let test_environment = test_paths.existing_environment.unwrap_or_else(|| {
@@ -1247,6 +1253,13 @@ impl EditorView {
                 return;
             }
             crate::diagnostics::record_key(cx, event);
+            // A key during the potentially slow helper handshake cancels the
+            // pending quit before the key can alter a project or local draft.
+            if let Some(entity) = keyboard_entity.upgrade()
+                && entity.read(cx).update_preparing()
+            {
+                entity.update(cx, |view, cx| view.cancel_requested_update(cx));
+            }
             // A completed drag can leave this window with no mounted editor
             // focus. Restore it and deliver the first Space press here;
             // subsequent keys, including repeats, take the normal raw-key path.
@@ -1433,6 +1446,7 @@ impl EditorView {
             state: None,
             recovery: RecoveryState::default(),
             stopped_playback_restore: None,
+            latency_rebuild: None,
             offline_cursor: 0,
             selected_track: None,
             track_selection: selection::TrackSelection::default(),
@@ -1463,7 +1477,6 @@ impl EditorView {
             midi_note_gesture: None,
             midi_group_gesture: None,
             pending_midi_drag: None,
-            midi_volume: midi_volume::State::default(),
             midi_creation: None,
             midi_stroke: None,
             midi_draw_mode: false,
@@ -1549,6 +1562,7 @@ impl EditorView {
             export_window: None,
             export_dialog_open: false,
             saving_project: false,
+            update_flow: update_flow::State::default(),
             save_dialog_open: false,
             document_format_upgrade_required: false,
             format_upgrade_prompt: None,
