@@ -603,6 +603,7 @@ impl Status {
         !self.constructor_mode.load(Acquire)
             && !self.closing.load(Acquire)
             && !self.device_fault.load(Acquire)
+            && !self.render_fault.load(Acquire)
     }
     pub(crate) fn mark_preview_used(&self) {
         self.preview_used.store(true, Release);
@@ -3679,6 +3680,7 @@ impl Callback {
     pub fn stop_after_fault(&mut self) {
         self.recovery_position_frozen = true;
         self.recovery_seek_pending = None;
+        self.sample_preview.invalidate_on_fault();
         self.invalidate_midi_recording(crate::midi_recording::AbortReason::OutputFailed);
         self.revoke_output_transport();
         self.status.sampler_keyboard.revoke_on_callback();
