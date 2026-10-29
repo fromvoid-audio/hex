@@ -953,6 +953,106 @@ fn study_feasible_output_gain_plan() {
         knot_gain.iter().flatten().sum::<f64>() / (2 * KNOTS) as f64
     );
     assert!(constrained_peak <= ceiling + 1e-7);
+
+    // Preserve the entire incumbent, including its first 64 already emitted
+    // frames, while adding a zero-ended plan for the next 64 source frames.
+    // This is two finite horizons, not a reusable streaming implementation.
+    const NEXT: usize = 64;
+    const NEXT_KNOTS: usize = NEXT / STRIDE - 1;
+    let mut extended = vec![[0.0_f32; 2]; COUNT + NEXT + 126];
+    extended[63..63 + COUNT].copy_from_slice(&planned[63..63 + COUNT]);
+    let committed = extended[63..63 + 64].to_vec();
+    let pending = extended[63 + 64..63 + COUNT].to_vec();
+    let next_source = &output[64 + COUNT..64 + COUNT + NEXT];
+    let window_count = extended.len() - 63;
+    let mut added_gains = [[0.0_f64; NEXT_KNOTS]; 2];
+    for lane in 0..2 {
+        let mut constraints = vec![0.0_f64; window_count * 16];
+        for (start, window) in extended.windows(64).enumerate() {
+            for (phase, kernel) in wider.iter().step_by(2).enumerate() {
+                constraints[start * 16 + phase] = kernel
+                    .iter()
+                    .zip(window)
+                    .map(|(c, frame)| c * f64::from(frame[lane]))
+                    .sum();
+            }
+        }
+        let mut effects = vec![vec![0.0_f64; window_count * 16]; NEXT_KNOTS];
+        for (knot, effect) in effects.iter_mut().enumerate() {
+            let center = (knot + 1) * STRIDE;
+            for start in 0..window_count {
+                for (phase, kernel) in wider.iter().step_by(2).enumerate() {
+                    effect[start * 16 + phase] = kernel
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(tap, coefficient)| {
+                            let index = (start + tap).checked_sub(63 + COUNT)?;
+                            let sample = next_source.get(index)?;
+                            let weight =
+                                (1.0 - index.abs_diff(center) as f64 / STRIDE as f64).max(0.0);
+                            Some(coefficient * f64::from(sample[lane]) * weight)
+                        })
+                        .sum();
+                }
+            }
+        }
+        for _ in 0..3 {
+            for knot in 0..NEXT_KNOTS {
+                let mut step = 1.0 - added_gains[lane][knot];
+                for (&value, &slope) in constraints.iter().zip(&effects[knot]) {
+                    if slope > 0.0 {
+                        step = step.min((limit - value) / slope);
+                    }
+                    if slope < 0.0 {
+                        step = step.min((-limit - value) / slope);
+                    }
+                }
+                let step = step.max(0.0);
+                added_gains[lane][knot] += step;
+                for (value, slope) in constraints.iter_mut().zip(&effects[knot]) {
+                    *value += step * slope;
+                }
+            }
+        }
+        for (index, frame) in extended[63 + COUNT..63 + COUNT + NEXT]
+            .iter_mut()
+            .enumerate()
+        {
+            let gain: f64 = added_gains[lane]
+                .iter()
+                .enumerate()
+                .map(|(knot, gain)| {
+                    gain * (1.0 - index.abs_diff((knot + 1) * STRIDE) as f64 / STRIDE as f64)
+                        .max(0.0)
+                })
+                .sum();
+            frame[lane] = (f64::from(next_source[index][lane]) * gain) as f32;
+        }
+    }
+    assert_eq!(&extended[63..63 + 64], &committed);
+    assert_eq!(&extended[63 + 64..63 + COUNT], &pending);
+    let mut extension_model_peak = 0.0_f64;
+    let mut extension_dense_peak = 0.0_f64;
+    for window in extended.windows(64) {
+        for (phase, kernel) in wider.iter().enumerate() {
+            for lane in 0..2 {
+                let value: f64 = kernel
+                    .iter()
+                    .zip(window)
+                    .map(|(c, frame)| c * f64::from(frame[lane]))
+                    .sum();
+                extension_dense_peak = extension_dense_peak.max(value.abs());
+                if phase % 2 == 0 {
+                    extension_model_peak = extension_model_peak.max(value.abs());
+                }
+            }
+        }
+    }
+    println!(
+        "extended incumbent: model peak {extension_model_peak:.9}, dense peak {extension_dense_peak:.9}, new mean knot gain {:.6}",
+        added_gains.iter().flatten().sum::<f64>() / (2 * NEXT_KNOTS) as f64
+    );
+    assert!(extension_model_peak <= ceiling + 1e-7);
 }
 #[test]
 fn invalid_rates_and_nonfinite_pcm_are_contained() {
