@@ -301,23 +301,36 @@ impl EditorView {
                 status.applied_revision.load(Acquire),
                 status.gain_recording_ready.load(Acquire),
                 status.device_fault.load(Acquire),
+                status.render_fault.load(Acquire),
                 status.gain_recording_fault.load(Acquire),
             )
         });
         if self.gain_recorder.mode == Mode::Arming
-            && status_values.is_some_and(|(revision, ready, _, _)| {
-                self.gain_recorder.audio_revision == Some(revision) && ready
-            })
+            && status_values.is_some_and(
+                |(revision, ready, device_fault, render_fault, recording_fault)| {
+                    self.gain_recorder.audio_revision == Some(revision)
+                        && ready
+                        && !device_fault
+                        && !render_fault
+                        && !recording_fault
+                },
+            )
         {
             self.gain_recorder.mode = Mode::Ready;
             self.status = "gain recording ready · drag touch gain; release returns to read".into();
             changed = true;
         }
-        let audio_failed = status_values
-            .is_none_or(|(_, _, device_fault, recording_fault)| device_fault || recording_fault);
+        let output_failed = status_values
+            .is_none_or(|(_, _, device_fault, render_fault, _)| device_fault || render_fault);
+        let audio_failed = output_failed
+            || status_values.is_some_and(|(_, _, _, _, recording_fault)| recording_fault);
         if audio_failed {
             let _ = audio.control.gain_cancel();
-            audio.control.stop();
+            // The output's fault fence already stops playback. A priority Stop
+            // here would falsely turn automatic recovery into the user's rewind.
+            if !output_failed {
+                audio.control.stop();
+            }
             // Process already-delivered Finished below before retiring capture.
             // Device loss cannot erase a completed take awaiting control polling.
         }
@@ -346,10 +359,16 @@ impl EditorView {
             // A late sink Finished may still be delivered after this status read.
             self.gain_recorder.pending_gain = None;
             self.gain_recorder.binding = None;
-            self.error = Some(
-                "audio failed · gain take retained · recover audio to finish receipt handoff"
-                    .into(),
-            );
+            if self.gain_recorder.target.is_none() && !self.gain_recorder.has_retained_take() {
+                self.gain_recorder.audio_lost();
+                self.error =
+                    Some("audio failed · gain recording stopped · restart audio to retry".into());
+            } else {
+                self.error = Some(
+                    "audio failed · gain take retained · recover audio to finish receipt handoff"
+                        .into(),
+                );
+            }
             return true;
         }
         changed
