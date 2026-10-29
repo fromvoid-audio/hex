@@ -86,6 +86,8 @@ mod close;
 mod computer_keyboard;
 mod console_columns;
 mod console_drop;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod console_selection_ui_test;
 mod console_track_page;
 mod context_menu;
 mod controller;
