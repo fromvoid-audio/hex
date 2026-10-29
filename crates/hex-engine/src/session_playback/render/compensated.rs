@@ -7,7 +7,7 @@ use super::*;
 #[derive(Clone, Copy)]
 pub(super) struct BatchedSources<'a> {
     pub(super) index: usize,
-    pub(super) session_audio: Option<&'a [bool; MAX_TRACKS]>,
+    pub(super) audio: &'a [bool; MAX_TRACKS],
     pub(super) analytic: &'a [bool; MAX_TRACKS],
 }
 
@@ -24,7 +24,7 @@ impl SessionPlayback {
         frames: usize,
         eligible: &mut [bool; MAX_TRACKS],
         analytic: &mut [bool; MAX_TRACKS],
-    ) -> Result<bool, SessionPlaybackError> {
+    ) -> Result<(), SessionPlaybackError> {
         if frames > 256 || self.resident_source_scratch.len() != self.route_scratch.len() {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
@@ -37,9 +37,7 @@ impl SessionPlayback {
             .take(4)
             .count()
             == 4;
-        if batch_session {
-            eligible.fill(false);
-        }
+        eligible.fill(false);
         analytic.fill(false);
         let batch_analytic = self.suppression_scratch.is_empty()
             && self.analytic_continuations.iter().all(Option::is_none);
@@ -144,10 +142,15 @@ impl SessionPlayback {
                         *analytic
                             .get_mut(index)
                             .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
-                    } else if track.audio_content_enabled() {
-                        track
-                            .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
-                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    } else if track.clips.iter().all(|clip| !clip.is_streamed()) {
+                        if track.audio_content_enabled() {
+                            track
+                                .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
+                                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                        }
+                        *eligible
+                            .get_mut(index)
+                            .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
                     }
                 }
                 RouteOwner::Session { clip, .. } if batch_analytic => {
@@ -249,7 +252,7 @@ impl SessionPlayback {
                 _ => {}
             }
         }
-        Ok(batch_session)
+        Ok(())
     }
     /// Publish one transport origin immediately before processing its Main
     /// sample. Pre-pushing a whole block could overwrite the bounded stamp ring.
@@ -357,12 +360,7 @@ impl SessionPlayback {
                             // This route has no audio source; its scratch window
                             // holds the instrument side of the ordered graph.
                         } else if let Some(sample_index) = resident_source
-                            .filter(|batch| {
-                                matches!(route.owner, RouteOwner::Arrangement)
-                                    || batch.session_audio.is_some_and(|eligible| {
-                                        eligible.get(index).copied().unwrap_or(false)
-                                    })
-                            })
+                            .filter(|batch| batch.audio.get(index).copied().unwrap_or(false))
                             .map(|batch| batch.index)
                         {
                             audio[0] = *self

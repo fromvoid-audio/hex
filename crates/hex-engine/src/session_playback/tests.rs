@@ -13185,3 +13185,132 @@ fn console_audio_loop_intro_repeats_across_partitions_handoff_and_stop() {
         }
     }
 }
+
+#[test]
+fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_storage() {
+    #[derive(Default)]
+    struct ChangingPages {
+        frames: [[f32; 2]; 32],
+        reads: Vec<(StreamSourceKey, u64)>,
+        requests: Vec<(StreamSourceKey, u64)>,
+    }
+    impl MediaPages for ChangingPages {
+        fn page(&mut self, key: StreamSourceKey, page_index: u64) -> Option<BorrowedMediaPage<'_>> {
+            self.reads.push((key, page_index));
+            (self.reads.len() > 1).then_some(BorrowedMediaPage {
+                page_index,
+                frames: &self.frames,
+            })
+        }
+        fn request_page(&mut self, key: StreamSourceKey, page_index: u64) {
+            self.requests.push((key, page_index));
+        }
+    }
+    let source_project = session_audio_midi_arrangement_mix_project();
+    let mut editor = Editor::new(source_project, 16).unwrap();
+    let track = editor.project().tracks().last().unwrap().id();
+    editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "resident".into(),
+            path: "resident.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 32,
+            playback_frames: 32,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap();
+    let limiter = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 24,
+            enabled: true,
+        })
+        .unwrap();
+    let project = editor.project();
+    let media: BTreeMap<_, _> = project
+        .assets()
+        .map(|asset| {
+            let source = if asset.id().value() == 4 {
+                PreparedAudioSource::Streamed(Arc::new(
+                    StreamedSourceMetadata::new(
+                        StreamSourceKey::new(82, asset.id()),
+                        asset.source_sample_rate(),
+                        project.sample_rate(),
+                        asset.source_frames(),
+                        asset.playback_frames(),
+                        asset.conversion_version(),
+                        [0x82; 32],
+                    )
+                    .unwrap(),
+                ))
+            } else {
+                PreparedAudioSource::Resident(
+                    crate::Audio::new(48_000, vec![[0.05, -0.03]; 32]).unwrap(),
+                )
+            };
+            (asset.id(), source)
+        })
+        .collect();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_prepared_audio_sources(
+            project,
+            &media,
+            82,
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let preflight = super::preroll::arrangement_runtime_storage_preflight_bytes(&revision).unwrap();
+    let render = |partition| {
+        let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let actual = runtime.accounted_runtime_storage_bytes().unwrap()
+            + super::preroll::PREROLL_SCRATCH_BYTES;
+        assert!(actual <= preflight, "actual={actual} preflight={preflight}");
+        assert_eq!(
+            runtime.resident_source_scratch.len(),
+            project.tracks().len()
+        );
+        let clip = revision.session().midi_clips()[0].id;
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut pages = ChangingPages {
+            frames: [[0.1, -0.2]; 32],
+            ..Default::default()
+        };
+        let mut output = [[0.0; 2]; 512];
+        for chunk in output.chunks_mut(partition) {
+            runtime.render_with_pages(chunk, &mut pages).unwrap();
+        }
+        (
+            output,
+            pages.reads,
+            pages.requests,
+            runtime.performance_frame(),
+            runtime.arrangement_frame(),
+        )
+    };
+    let expected = render(1);
+    let actual = render(17);
+    assert_eq!(actual, expected);
+    assert!(actual.0.iter().flatten().any(|sample| *sample != 0.0));
+    assert!(actual.1.len() > 1);
+    assert_eq!(actual.2.len(), 1);
+}
