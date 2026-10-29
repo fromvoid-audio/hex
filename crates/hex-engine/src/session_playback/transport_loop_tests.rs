@@ -1124,6 +1124,62 @@ fn mutable_transport_handoff_ignores_pre_loop_release_only_candidate() {
 }
 
 #[test]
+fn resident_batch_loop_overflow_rolls_back_before_retry() {
+    let mut fixture = crate::signal_graph::tests::fixture(&[&[7]], 32);
+    fixture
+        .editor
+        .execute(Command::SetLoopRegion {
+            start: 4,
+            end: 24,
+            enabled: true,
+        })
+        .unwrap();
+    let revision = crate::signal_graph::tests::prepare(&fixture).unwrap();
+    let mut failed = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut reference = SessionPlayback::new(revision).unwrap();
+    for runtime in [&mut failed, &mut reference] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        assert_eq!(runtime.resident_source_scratch.len(), 1);
+        runtime.arrangement_frame = 23;
+        runtime.performance_frame = 23;
+        runtime.arrangement_loop_pass = u64::MAX;
+    }
+    let mut rejected = [[7.0; 2]; 2];
+    assert_eq!(
+        failed.render(&mut rejected),
+        Err(SessionPlaybackError::ArithmeticOverflow)
+    );
+    assert_eq!(rejected, [[0.0; 2]; 2]);
+    assert_eq!(
+        (
+            failed.performance_frame,
+            failed.arrangement_frame,
+            failed.arrangement_loop_pass
+        ),
+        (23, 23, u64::MAX)
+    );
+    failed.arrangement_loop_pass = 0;
+    reference.arrangement_loop_pass = 0;
+    let mut actual = [[0.0; 2]; 16];
+    let mut expected = [[0.0; 2]; 16];
+    failed.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(
+        (
+            failed.performance_frame,
+            failed.arrangement_frame,
+            failed.arrangement_loop_pass
+        ),
+        (
+            reference.performance_frame,
+            reference.arrangement_frame,
+            reference.arrangement_loop_pass
+        )
+    );
+}
+
+#[test]
 fn mutable_transport_pass_overflow_rolls_back_block_and_clock_for_retry() {
     let revision = prepare_mutable(&transport_loop_project(false));
     let mut failed = SessionPlayback::new(Arc::clone(&revision)).expect("admitted transport loop");

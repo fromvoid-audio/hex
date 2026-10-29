@@ -5,6 +5,41 @@
 use super::*;
 
 impl SessionPlayback {
+    /// Prepare only resident Arrangement sources; no page provider is read and
+    /// the per-frame DSP/routing order is unchanged. The caller bounds the
+    /// window before every transport or route discontinuity.
+    pub(super) fn prepare_resident_sources(
+        &mut self,
+        arrangement_frame: u64,
+        frames: usize,
+    ) -> Result<(), SessionPlaybackError> {
+        if frames > 256 || self.resident_source_scratch.len() != self.route_scratch.len() {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        for (index, (route, scratch)) in self
+            .route_scratch
+            .iter()
+            .zip(self.resident_source_scratch.iter_mut())
+            .enumerate()
+        {
+            let output = &mut scratch[..frames];
+            output.fill([0.0; 2]);
+            if matches!(route.owner, RouteOwner::Arrangement) {
+                let track = self
+                    .revision
+                    .arrangement()
+                    .tracks()
+                    .get(index)
+                    .ok_or(SessionPlaybackError::UnknownTrack)?;
+                if track.audio_content_enabled() {
+                    track
+                        .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
+                        .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                }
+            }
+        }
+        Ok(())
+    }
     /// Publish one transport origin immediately before processing its Main
     /// sample. Pre-pushing a whole block could overwrite the bounded stamp ring.
     pub(super) fn push_compensated_stamp(
@@ -54,6 +89,7 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+        resident_source_index: Option<usize>,
     ) -> Result<(), SessionPlaybackError> {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -103,32 +139,42 @@ impl SessionPlayback {
                     let mut audio = [[0.0; 2]];
                     let mut generator = [[0.0; 2]];
                     if self.playing {
-                        render_route_source_chunk(
-                            RouteSourceContext {
-                                revision: &self.revision,
-                                midi: crate::session_inventory::EffectiveSessionMidi::new(
-                                    self.revision.session(),
-                                    self.midi_admission.as_ref(),
-                                ),
-                                route,
-                                historical_floor: self.historical_floor_for(index),
-                                suppressions: &self.suppression_scratch,
-                                continuations: &self.analytic_continuations,
-                                index,
-                                // Retained Main history can keep this path active
-                                // after the current graph returns to a fused mix.
-                                // The content-origin fader below owns that mix.
-                                raw: true,
-                                timing: &timing,
-                                table: self.revision.session().sine_table(),
-                            },
-                            &mut self.spans,
-                            performance_frame,
-                            arrangement_frame,
-                            &mut audio,
-                            pages.as_deref_mut(),
-                            SourceStage::Audio,
-                        )?;
+                        if let Some(sample_index) = resident_source_index
+                            .filter(|_| matches!(route.owner, RouteOwner::Arrangement))
+                        {
+                            audio[0] = *self
+                                .resident_source_scratch
+                                .get(index)
+                                .and_then(|samples| samples.get(sample_index))
+                                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                        } else {
+                            render_route_source_chunk(
+                                RouteSourceContext {
+                                    revision: &self.revision,
+                                    midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                        self.revision.session(),
+                                        self.midi_admission.as_ref(),
+                                    ),
+                                    route,
+                                    historical_floor: self.historical_floor_for(index),
+                                    suppressions: &self.suppression_scratch,
+                                    continuations: &self.analytic_continuations,
+                                    index,
+                                    // Retained Main history can keep this path active
+                                    // after the current graph returns to a fused mix.
+                                    // The content-origin fader below owns that mix.
+                                    raw: true,
+                                    timing: &timing,
+                                    table: self.revision.session().sine_table(),
+                                },
+                                &mut self.spans,
+                                performance_frame,
+                                arrangement_frame,
+                                &mut audio,
+                                pages.as_deref_mut(),
+                                SourceStage::Audio,
+                            )?;
+                        }
                         // An ordinary arrangement audio track without a MIDI
                         // source cannot contribute instrument samples. Shared
                         // sources and session routes must still use the normal
