@@ -366,42 +366,61 @@ fn standard_attack_rollback_and_compatible_handoff_preserve_envelope() {
     );
 }
 
-#[test]
-fn sample_ceiling_and_partition_independence_with_extreme_stereo_transients() {
-    for mode in 0..3 {
-        for routing in 0..2 {
-            let f = factory(
-                48000,
-                &[
-                    (MODE, ParameterValue::Choice(mode)),
-                    (ROUTING, ParameterValue::Choice(routing)),
-                    (CEILING, ParameterValue::Float(-6.0)),
-                    (LINK, ParameterValue::Float(0.0)),
-                    (RELEASE, ParameterValue::Float(0.01)),
-                ],
-            );
-            let input: Vec<_> = (0..16000)
-                .map(|i| {
-                    [
-                        (i as f32 * 0.713).sin() * if i % 997 == 0 { 100.0 } else { 2.0 },
-                        (i as f32 * 2.7).sin() * 3.0,
-                    ]
-                })
-                .collect();
-            let mut a = f.create_runtime().unwrap();
-            let mut b = f.create_runtime().unwrap();
-            let output = render(a.as_mut(), &input, &[input.len()]);
-            assert_eq!(output, render(b.as_mut(), &input, &[1, 63, 257, 17]));
-            assert!(
-                output
-                    .iter()
-                    .flatten()
-                    .all(|v| v.is_finite() && v.abs() <= 10.0f32.powf(-6.0 / 20.0) + 1e-6),
-                "mode={mode} routing={routing}"
-            );
-        }
-    }
+fn check_sample_ceiling_and_partition_independence(mode: u32, routing: u32) {
+    let f = factory(
+        48000,
+        &[
+            (MODE, ParameterValue::Choice(mode)),
+            (ROUTING, ParameterValue::Choice(routing)),
+            (CEILING, ParameterValue::Float(-6.0)),
+            (LINK, ParameterValue::Float(0.0)),
+            (RELEASE, ParameterValue::Float(0.01)),
+        ],
+    );
+    let input: Vec<_> = (0..16000)
+        .map(|i| {
+            [
+                (i as f32 * 0.713).sin() * if i % 997 == 0 { 100.0 } else { 2.0 },
+                (i as f32 * 2.7).sin() * 3.0,
+            ]
+        })
+        .collect();
+    let mut a = f.create_runtime().unwrap();
+    let mut b = f.create_runtime().unwrap();
+    // Both isolated runtimes consume the same immutable full signal. Running
+    // them concurrently preserves the complete partition oracle while keeping
+    // this relatively expensive 48 kHz fixture within a short feedback loop.
+    let (output, partitioned) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| render(a.as_mut(), &input, &[input.len()]));
+        let second = render(b.as_mut(), &input, &[1, 63, 257, 17]);
+        (first.join().unwrap(), second)
+    });
+    assert_eq!(output, partitioned);
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .all(|v| v.is_finite() && v.abs() <= 10.0f32.powf(-6.0 / 20.0) + 1e-6),
+        "mode={mode} routing={routing}"
+    );
 }
+
+macro_rules! sample_ceiling_case {
+    ($name:ident, $mode:expr, $routing:expr) => {
+        #[test]
+        fn $name() {
+            check_sample_ceiling_and_partition_independence($mode, $routing);
+        }
+    };
+}
+
+sample_ceiling_case!(sample_ceiling_standard_lr, 0, 0);
+sample_ceiling_case!(sample_ceiling_standard_ms, 0, 1);
+sample_ceiling_case!(sample_ceiling_soft_lr, 1, 0);
+sample_ceiling_case!(sample_ceiling_soft_ms, 1, 1);
+sample_ceiling_case!(sample_ceiling_true_peak_lr, 2, 0);
+sample_ceiling_case!(sample_ceiling_true_peak_ms, 2, 1);
+
 #[test]
 fn rollback_and_reopen_preserve_pcm_and_publish_only_committed_reduction() {
     let f = factory(8000, &[]);
