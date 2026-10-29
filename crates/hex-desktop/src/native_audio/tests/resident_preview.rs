@@ -1649,6 +1649,20 @@ fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history
             .beat_to_frame(actual.start())
             .unwrap();
         assert!(actual_frame.abs_diff(expected.start_frame) <= 1);
+        let end = BeatTime::from_raw(
+            actual
+                .start()
+                .raw()
+                .checked_add(actual.duration().raw())
+                .unwrap(),
+        );
+        let actual_end = committed
+            .state
+            .project
+            .tempo_map()
+            .beat_to_frame(end)
+            .unwrap();
+        assert!(actual_end.abs_diff(expected.end_frame) <= 1);
     }
     let encoded = hex_storage::encode(&committed.state.project).unwrap();
     assert_eq!(

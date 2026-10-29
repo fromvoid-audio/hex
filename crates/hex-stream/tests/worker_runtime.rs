@@ -606,6 +606,74 @@ fn actual_worker_converts_and_recovers_after_a_full_unpinned_cache() {
 }
 
 #[test]
+fn pinned_real_worker_pages_survive_pressure_and_retry_after_unpin() {
+    let (wav, expected) = TestWav::stereo_pcm16(48_000, 12_288);
+    let asset = asset_id(expected.len(), 48_000);
+    let key = StreamSourceKey::new(117, asset);
+    let verified = VerifiedWavReader::open(wav.path(), reader_limits(expected.len())).unwrap();
+    let metadata = StreamedSourceMetadata::new(
+        key,
+        48_000,
+        48_000,
+        expected.len() as u64,
+        expected.len() as u64,
+        hex_project::IDENTITY_CONVERSION,
+        *verified.fingerprint(),
+    )
+    .unwrap();
+    let definition = SourceDefinition::new(
+        wav.path().to_path_buf(),
+        metadata,
+        reader_limits(expected.len()),
+    );
+    let mut runtime =
+        StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition]).unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    let pages = [0, 1, 2].map(|page_index| PageKey {
+        source: key,
+        page_index,
+    });
+    for page in &pages[..2] {
+        runtime.request_page(key, page.page_index);
+    }
+    assert!(wait_for_pages(
+        &mut runtime,
+        &pages[..2],
+        Duration::from_secs(3)
+    ));
+    assert!(runtime.pin_pages(&pages[..2]));
+    let queued = runtime.stats().queued_requests;
+    runtime.request_page(key, 2);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while runtime.stats().queued_requests < queued + 2 {
+        assert!(
+            Instant::now() < deadline,
+            "refused page did not become retryable"
+        );
+        runtime.pump_ready(8);
+        assert!(runtime.page(key, 2).is_none());
+        runtime.request_page(key, 2);
+        thread::sleep(Duration::from_millis(2));
+    }
+    for (index, page) in pages[..2].iter().enumerate() {
+        assert_eq!(
+            runtime.page(key, page.page_index).unwrap().frames,
+            &expected[index * 4096..(index + 1) * 4096]
+        );
+    }
+    runtime.unpin_all();
+    assert!(wait_for_pages(
+        &mut runtime,
+        &pages[2..],
+        Duration::from_secs(3)
+    ));
+    assert_eq!(runtime.page(key, 2).unwrap().frames, &expected[8192..]);
+    let report = runtime.shutdown().unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+    assert_eq!(report.page_buffers, 3);
+}
+
+#[test]
 fn identity_pages_preserve_exact_samples_and_partial_eof_after_cache_turnover() {
     let page_frames = hex_engine::STREAM_PAGE_FRAMES;
     let (wav, pcm) = TestWav::stereo_pcm16(48_000, page_frames * 2 + 17);
