@@ -702,6 +702,27 @@ fn midi_group_preserves_independent_clip_gain_and_curve_through_seams() {
             gain: ClipGain::new(-6_000).unwrap(),
         })
         .unwrap();
+    let before_curve_refusal = editor.project().snapshot();
+    let error = editor
+        .execute(Command::GroupClips(vec![first, second]))
+        .unwrap_err();
+    assert!(error.to_string().contains("clip volume curves"));
+    assert_eq!(editor.project().snapshot(), before_curve_refusal);
+    for clip in [first, second] {
+        editor
+            .execute(Command::ReplaceMidiClipVolume {
+                clip,
+                volume: MidiClipVolume::new(
+                    vec![MidiClipVolumePoint::linear(
+                        b(0),
+                        MidiClipGain::new(0.5).unwrap(),
+                    )],
+                    b(2),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+    }
     let originals = [
         editor.project().midi_clip(first).unwrap().clone(),
         editor.project().midi_clip(second).unwrap().clone(),
@@ -733,7 +754,56 @@ fn midi_group_preserves_independent_clip_gain_and_curve_through_seams() {
 }
 
 #[test]
-fn midi_group_preserves_volume_seams_and_refuses_unbounded_loop_expansion() {
+fn midi_group_accepts_matching_constant_curves_and_preserves_history() {
+    use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    for gain in [0.0, 0.5, 1.0, 4.0] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let track = track(&mut editor);
+        let first = midi(&mut editor, track, 0);
+        let second = midi(&mut editor, track, 4);
+        for clip in [first, second] {
+            // Exercise implicit unity alongside an explicitly authored unity.
+            if gain == 1.0 && clip == first {
+                continue;
+            }
+            editor
+                .execute(Command::ReplaceMidiClipVolume {
+                    clip,
+                    volume: MidiClipVolume::new(
+                        vec![MidiClipVolumePoint::linear(
+                            b(0),
+                            MidiClipGain::new(gain).unwrap(),
+                        )],
+                        b(2),
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
+        }
+        let before = editor.project().snapshot();
+        let Created::Clip(group) = editor
+            .execute(Command::GroupClips(vec![first, second]))
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        let grouped = editor.project().midi_clip(group).unwrap();
+        assert_eq!(grouped.notes().len(), 2);
+        for beat in [b(0), b(1), b(4), b(5)] {
+            assert_eq!(grouped.volume().gain_at(beat).linear(), gain);
+        }
+        let after = editor.project().snapshot();
+        assert!(editor.undo());
+        let mut restored = editor.project().snapshot();
+        restored.next_id = before.next_id;
+        assert_eq!(restored, before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+    }
+}
+
+#[test]
+fn midi_group_refuses_varying_curves_and_projection_keeps_its_bounds() {
     use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
     let mut e = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let t = track(&mut e);
@@ -757,22 +827,24 @@ fn midi_group_preserves_volume_seams_and_refuses_unbounded_loop_expansion() {
         e.project().midi_clip(a).unwrap().clone(),
         e.project().midi_clip(c).unwrap().clone(),
     ];
-    let Created::Clip(id) = e.execute(Command::GroupClips(vec![a, c])).unwrap() else {
-        panic!()
-    };
-    let group = e.project().midi_clip(id).unwrap();
+    let before = e.project().snapshot();
+    let error = e.execute(Command::GroupClips(vec![a, c])).unwrap_err();
+    assert!(error.to_string().contains("clip volume curves"));
+    assert_eq!(e.project().snapshot(), before);
     for original in originals {
+        let projected = original
+            .volume()
+            .materialized(
+                original.source_playback().unwrap(),
+                BeatTime::ZERO,
+                original.length(),
+            )
+            .unwrap();
         for raw in [0, 1 << 30, 1 << 31, 1 << 32, (2 << 32) - 1] {
             let local = BeatTime::from_raw(raw);
-            assert_eq!(
-                group
-                    .volume()
-                    .gain_at(BeatTime::from_raw(original.start().raw() + raw)),
-                original.volume().gain_at(local)
-            );
+            assert_eq!(projected.gain_at(local), original.volume().gain_at(local));
         }
     }
-    assert!(e.undo());
     e.execute(Command::SetMidiClipSource {
         clip: a,
         source_length: b(2),
@@ -784,7 +856,16 @@ fn midi_group_preserves_volume_seams_and_refuses_unbounded_loop_expansion() {
     })
     .unwrap();
     let before = e.project().snapshot();
-    assert!(e.execute(Command::GroupClips(vec![a, c])).is_err());
+    let clip = e.project().midi_clip(a).unwrap();
+    assert!(
+        clip.volume()
+            .materialized(
+                clip.source_playback().unwrap(),
+                BeatTime::ZERO,
+                clip.length()
+            )
+            .is_err()
+    );
     assert_eq!(e.project().snapshot(), before);
 }
 
@@ -851,6 +932,41 @@ fn directed_midi_group_materializes_note_gates_and_volume_in_forward_output_time
     }
     e.execute(Command::ReverseClips(vec![a, c])).unwrap();
     let before = e.project().snapshot();
+    let error = e.execute(Command::GroupClips(vec![a, c])).unwrap_err();
+    assert!(error.to_string().contains("clip volume curves"));
+    assert_eq!(e.project().snapshot(), before);
+    for clip in [a, c] {
+        let source = e.project().midi_clip(clip).unwrap();
+        let projected = source
+            .volume()
+            .materialized(
+                source.source_playback().unwrap(),
+                BeatTime::ZERO,
+                source.length(),
+            )
+            .unwrap();
+        for (half, gain) in [(0, 1.5), (1, 1.1875), (2, 0.875), (3, 0.5625)] {
+            assert_eq!(
+                projected
+                    .gain_at(BeatTime::from_raw(b(1).raw() * half / 2))
+                    .linear(),
+                gain
+            );
+        }
+        e.execute(Command::ReplaceMidiClipVolume {
+            clip,
+            volume: MidiClipVolume::new(
+                vec![MidiClipVolumePoint::linear(
+                    b(0),
+                    MidiClipGain::new(0.75).unwrap(),
+                )],
+                b(2),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    }
+    let before = e.project().snapshot();
     let Created::Clip(group) = e.execute(Command::GroupClips(vec![a, c])).unwrap() else {
         panic!("group");
     };
@@ -870,13 +986,13 @@ fn directed_midi_group_materializes_note_gates_and_volume_in_forward_output_time
         vec![(b(1), b(1), 60, 2, 93), (b(5), b(1), 60, 2, 93)]
     );
     for offset in [0, 4] {
-        for (half, gain) in [(0, 1.5), (1, 1.1875), (2, 0.875), (3, 0.5625)] {
+        for half in 0..4 {
             assert_eq!(
                 result
                     .volume()
                     .gain_at(BeatTime::from_raw(b(offset).raw() + b(1).raw() * half / 2))
                     .linear(),
-                gain
+                0.75
             );
         }
     }
@@ -1203,6 +1319,45 @@ fn time_group_includes_empty_audio_margins_for_single_and_multiple_clips() {
         assert!(e.redo());
         assert_eq!(e.project().snapshot(), after);
     }
+}
+
+#[test]
+fn time_group_one_midi_clip_keeps_its_varying_curve_and_history() {
+    use hex_project::{MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let track = track(&mut editor);
+    let clip = midi(&mut editor, track, 1);
+    editor
+        .execute(Command::ReplaceMidiClipVolume {
+            clip,
+            volume: MidiClipVolume::new(
+                vec![
+                    MidiClipVolumePoint::linear(b(0), MidiClipGain::new(0.25).unwrap()),
+                    MidiClipVolumePoint::linear(b(2), MidiClipGain::new(1.5).unwrap()),
+                ],
+                b(2),
+            )
+            .unwrap(),
+        })
+        .unwrap();
+    let before = editor.project().snapshot();
+    let start = editor.project().tempo_map().beat_to_frame(b(0)).unwrap();
+    let end = editor.project().tempo_map().beat_to_frame(b(4)).unwrap();
+    editor
+        .execute(Command::GroupTimeRange(
+            hex_project::TimeRange::new(vec![track], start, end).unwrap(),
+        ))
+        .unwrap();
+    let grouped = &editor.project().track(track).unwrap().midi_clips()[0];
+    assert_eq!(grouped.volume().gain_at(b(1)).linear(), 0.25);
+    assert_eq!(grouped.volume().gain_at(b(2)).linear(), 0.875);
+    let after = editor.project().snapshot();
+    assert!(editor.undo());
+    let mut restored = editor.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
 }
 
 #[test]

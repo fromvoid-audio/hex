@@ -1560,6 +1560,16 @@ impl EditorView {
             .and_then(|status| status.rejected_revision())
             .filter(|(revision, _)| *revision > self.observed_rejected_revision);
         if let Some((audio_revision, reason)) = rejected_revision {
+            if reason == hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged
+                && let Some(output) = audio.control.output_identity()
+            {
+                self.latency_rebuild = Some(super::audio_admission::LatencyRebuild::Unresolved {
+                    generation: self.project_generation,
+                    output,
+                    audio_revision,
+                });
+                visible_change |= replace_error(&mut self.error, reason.message());
+            }
             // Resolve the exact project-generation mapping before any applied
             // high-water reconciliation removes candidate metadata. Callback
             // telemetry is audio-revision-only, so stale/coalesced rejection
@@ -1577,6 +1587,21 @@ impl EditorView {
                 visible_change |=
                     self.audio_admission
                         .rejected(project, audio_revision, reason.message());
+                if reason == hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged
+                    && project.generation == self.project_generation
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == project.revision)
+                    && audio
+                        .control
+                        .status()
+                        .is_some_and(|status| status.playing.load(Acquire))
+                    && let Some(output) = audio.control.output_identity()
+                {
+                    self.latency_rebuild =
+                        Some(super::audio_admission::LatencyRebuild::Waiting { project, output });
+                }
             } else if rejected_preview_candidate(
                 &self.playback_candidates,
                 audio_revision,
@@ -1592,6 +1617,9 @@ impl EditorView {
             ) {
                 // Preview failures are transient, but remain visible even
                 // though they do not change the canonical admission footer.
+                if reason == hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged {
+                    self.latency_rebuild = None;
+                }
                 visible_change |= replace_error(
                     &mut self.error,
                     &format!("preview rejected: {}", reason.message()),
@@ -1908,6 +1936,7 @@ impl EditorView {
         visible_change |= pending_before != pending_after;
         visible_change |= self.finish_audio_recovery_tick();
         visible_change |= self.tick_track_meters(Instant::now());
+        visible_change |= self.tick_latency_rebuild();
         self.observe_audio_frame(frame, visible_change, Instant::now())
     }
 
@@ -3412,6 +3441,7 @@ impl EditorView {
     }
 
     pub(super) fn request_seek(&mut self, frame: u64) {
+        self.latency_rebuild = None;
         if self.section_install_pending() {
             self.error = Some("applying edit · wait for audio".into());
             return;
@@ -3744,6 +3774,9 @@ impl EditorView {
     }
 
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
+        if !matches!(action, PlaybackAction::SetMetronome(_)) {
+            self.latency_rebuild = None;
+        }
         if self.section_install_pending()
             && (intent_desired_playing(action) == Some(true)
                 || matches!(action, PlaybackAction::Transport(PlaybackCommand::Seek(_))))
@@ -3898,7 +3931,185 @@ impl EditorView {
         self.error = Some("playback intent tokens exhausted · restart hex to continue".into());
     }
 
+    /// Rebuild only a current, rejected canonical graph. A fresh graph drops
+    /// effect history, so retain the user's transport intent and never restart
+    /// a superseded project, output or explicit transport action.
+    pub(super) fn tick_latency_rebuild(&mut self) -> bool {
+        use super::audio_admission::LatencyRebuild;
+        let Some(rebuild) = self.latency_rebuild else {
+            return false;
+        };
+        if let LatencyRebuild::Unresolved {
+            generation,
+            output,
+            audio_revision,
+        } = rebuild
+        {
+            if generation != self.project_generation
+                || self
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| audio.control.output_identity())
+                    != Some(output)
+            {
+                self.latency_rebuild = None;
+                return false;
+            }
+            let Some(candidate) = self
+                .playback_candidates
+                .iter()
+                .find(|candidate| candidate.audio_revision == audio_revision)
+            else {
+                return false;
+            };
+            if candidate.project_generation != generation
+                || candidate.seek_request_id.is_some()
+                || candidate.device_preview_identity.is_some()
+                || candidate.tuning_preview_identity.is_some()
+                || self
+                    .state
+                    .as_ref()
+                    .is_none_or(|state| state.revision != candidate.state.revision)
+            {
+                self.latency_rebuild = None;
+                return false;
+            }
+            let project = super::audio_admission::ProjectRevision {
+                generation,
+                revision: candidate.state.revision,
+            };
+            self.audio_admission.rejected(
+                project,
+                audio_revision,
+                hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged.message(),
+            );
+            self.latency_rebuild = Some(LatencyRebuild::Waiting { project, output });
+            return true;
+        }
+        let (project, output) = match rebuild {
+            LatencyRebuild::Waiting { project, output }
+            | LatencyRebuild::Restoring {
+                project, output, ..
+            } => (project, output),
+            LatencyRebuild::Unresolved { .. } => return false,
+        };
+        if self.project_generation != project.generation
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|state| state.revision != project.revision)
+            || self
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.control.output_identity())
+                != Some(output)
+        {
+            self.latency_rebuild = None;
+            return false;
+        }
+        match rebuild {
+            LatencyRebuild::Unresolved { .. } => false,
+            LatencyRebuild::Waiting { .. } => {
+                if self.edit_pending()
+                    || self.opening_project
+                    || self.close_prompt_open
+                    || self.save_dialog_open
+                    || self.device_gesture.snapshot().is_some()
+                    || self.tuning.client.snapshot().is_some()
+                    || self.midi_recorder.blocks_edits()
+                    || self.gain_recorder.blocks_edits()
+                    || self.computer_keyboard.input.is_some()
+                    || !self.pending_audio_commands.is_empty()
+                    || self.pending_session_ticket.is_some()
+                    || self.pending_seek_ticket.is_some()
+                    || self.recovery.generation().is_some()
+                    || self.stopped_playback_restore.is_some()
+                {
+                    return false;
+                }
+                // A fresh runtime cuts mutable voices. Until their live-input
+                // custody can be restored explicitly, leave MIDI projects on
+                // the normal stopped-recovery path instead of dropping notes.
+                if self.state.as_ref().is_some_and(|state| {
+                    state
+                        .project
+                        .tracks()
+                        .iter()
+                        .any(|track| track.instrument().is_some() || !track.midi_clips().is_empty())
+                }) {
+                    self.latency_rebuild = None;
+                    return false;
+                }
+                let Some(audio) = self.audio.as_ref() else {
+                    return false;
+                };
+                let Some(status) = audio.control.status() else {
+                    return false;
+                };
+                if !status.playing.load(Acquire)
+                    || !self.play_intent.desired_playing(true)
+                    || self.applied_project_revision == Some(project.revision)
+                {
+                    self.latency_rebuild = None;
+                    return false;
+                }
+                // Stop would discard Session launches. Only rebuild when a
+                // fresh route snapshot proves that every track is in Arrangement.
+                let mut routes = [hex_audio::prepared::SessionRouteEntry::default();
+                    hex_audio::prepared::SESSION_ROUTE_CAPACITY];
+                let Some(snapshot) = status.session_routes(&mut routes) else {
+                    return false;
+                };
+                if snapshot.audio_revision != status.applied_revision.load(Acquire)
+                    || self
+                        .state
+                        .as_ref()
+                        .is_none_or(|state| snapshot.count != state.project.tracks().len())
+                    || routes[..snapshot.count].iter().any(|route| {
+                        route.owner != hex_audio::prepared::SessionRouteOwner::Arrangement
+                            || route.pending.is_some()
+                    })
+                {
+                    self.latency_rebuild = None;
+                    return false;
+                }
+                let frame = status.position.load(Acquire);
+                self.stop();
+                if self.stopped_playback_restore
+                    == Some(super::audio_admission::StoppedPlaybackRestore::Preparing)
+                {
+                    self.latency_rebuild = Some(LatencyRebuild::Restoring {
+                        project,
+                        output,
+                        frame,
+                    });
+                    self.status =
+                        "rebuilding audio · effect tails will reset · playback will resume".into();
+                }
+                true
+            }
+            LatencyRebuild::Restoring { frame, .. } => {
+                if self.stopped_playback_restore.is_some() {
+                    return false;
+                }
+                if self.applied_project_revision != Some(project.revision) {
+                    self.latency_rebuild = None;
+                    return false;
+                }
+                // The project event may arrive after the matching audio ACK.
+                // Keep the resume intent until its edit/command queues drain.
+                if self.edit_pending() || !self.pending_audio_commands.is_empty() {
+                    return false;
+                }
+                self.latency_rebuild = None;
+                self.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+                true
+            }
+        }
+    }
+
     pub(super) fn stop(&mut self) {
+        self.latency_rebuild = None;
         self.midi_step.cancel_pending();
         // Stop explicitly discards voice histories. A previously refused edit
         // or restoration can now install the canonical sound without inheriting

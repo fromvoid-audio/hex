@@ -1,7 +1,10 @@
 //! Original worker custody while its unique callback is loaned through Root's
 //! existing carrier. There is no public constructor, clone or worker extraction.
 use super::*;
-use crate::plugin_worker::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+use crate::plugin_worker::{
+    NativeWorkerCapture, NativeWorkerCaptureProgress, NativeWorkerControllerProgress,
+    NativeWorkerControllerQuery,
+};
 
 pub(crate) struct NativeEffectControl {
     worker: NativeWorker,
@@ -10,6 +13,18 @@ pub(crate) struct NativeEffectControl {
     source_metadata: EffectSourceMetadata,
 }
 impl NativeEffect {
+    pub(crate) fn begin_controller_query(
+        &mut self,
+        query: hex_plugin_host::protocol::ParameterPageQuery,
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        self.worker.begin_controller_query_on_control(query)
+    }
+    pub(crate) fn poll_controller_query(
+        &mut self,
+        request: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerControllerProgress, &'static str> {
+        self.worker.poll_controller_query_on_control(request)
+    }
     pub(crate) fn parameter_values(
         &self,
     ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
@@ -52,6 +67,18 @@ impl NativeEffect {
     }
 }
 impl NativeEffectControl {
+    pub(crate) fn begin_controller_query(
+        &mut self,
+        query: hex_plugin_host::protocol::ParameterPageQuery,
+    ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        self.worker.begin_controller_query_on_control(query)
+    }
+    pub(crate) fn poll_controller_query(
+        &mut self,
+        request: &NativeWorkerControllerQuery,
+    ) -> Result<NativeWorkerControllerProgress, &'static str> {
+        self.worker.poll_controller_query_on_control(request)
+    }
     pub(crate) fn parameter_values(
         &self,
     ) -> Result<crate::plugin_worker::NativeParameterValues, &'static str> {
