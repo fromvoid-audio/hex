@@ -6,7 +6,10 @@ use hex_project::Command;
 use hex_session::service::Request;
 
 impl EditorView {
-    pub(super) fn mixer_strip(&self, cx: &mut Context<Self>, show_main: bool) -> Div {
+    pub(super) fn mixer_strip(&mut self, cx: &mut Context<Self>, show_main: bool) -> Div {
+        if show_main {
+            super::track_gain::retire_stale(self, cx);
+        }
         let mut strip = div()
             .h(px(26.0))
             .flex_shrink_0()
@@ -18,7 +21,7 @@ impl EditorView {
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .text_xs();
-        let Some(state) = self.state.as_ref() else {
+        let Some(state) = self.state.clone() else {
             return strip;
         };
         if let Some(track) = self.selected_track.and_then(|id| state.project.track(id)) {
@@ -73,7 +76,56 @@ impl EditorView {
                         .child(theme::text(balance_label(track.balance()))),
                 );
         }
-        if let Some(fades) = self.selected_fade_controls(state, cx) {
+        if show_main {
+            use hex_session::device_gesture::GestureTarget;
+            let active_gain = self.device_gesture.snapshot().and_then(|snapshot| {
+                if snapshot.key.generation != self.project_generation {
+                    return None;
+                }
+                match snapshot.target {
+                    GestureTarget::TrackGain { track } => Some(track),
+                    _ => None,
+                }
+            });
+            let owner = active_gain
+                .or_else(|| {
+                    self.track_gain_controls
+                        .pending_track_gain(self.project_generation, cx)
+                })
+                .and_then(|id| state.project.track(id))
+                .or_else(|| self.selected_track.and_then(|id| state.project.track(id)));
+            if let Some(track) = owner {
+                let id = track.id();
+                if self.selected_track != Some(id) {
+                    strip = strip.child(
+                        div()
+                            .max_w(px(140.0))
+                            .truncate()
+                            .debug_selector(|| "console-track-gain-owner".into())
+                            .child(theme::text(format!("editing {}", track.name()))),
+                    );
+                }
+                let gain = self.track_volume(track, cx);
+                strip = strip.child(
+                    div()
+                        .w(px(110.0))
+                        .flex_shrink_0()
+                        .debug_selector(move || format!("console-track-gain-{}", id.value()))
+                        .child(gain),
+                );
+            }
+            if let Some(track) = self.selected_track.and_then(|id| state.project.track(id)) {
+                let id = track.id();
+                let peak = self.track_meters.level(id);
+                strip = strip.child(
+                    div()
+                        .flex_shrink_0()
+                        .debug_selector(move || format!("console-track-meter-{}", id.value()))
+                        .child(super::track_meters::render(id, peak, 26.0)),
+                );
+            }
+        }
+        if let Some(fades) = self.selected_fade_controls(&state, cx) {
             strip = strip.children([
                 div()
                     .w(px(1.0))
