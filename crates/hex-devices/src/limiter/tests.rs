@@ -954,16 +954,15 @@ fn study_feasible_output_gain_plan() {
     );
     assert!(constrained_peak <= ceiling + 1e-7);
 
-    // Preserve the entire incumbent, including its first 64 already emitted
-    // frames, while adding a zero-ended plan for the next 64 source frames.
+    // Preserve emitted frames while raising a knot spanning the pending/new
+    // join; the next 64 source frames still end in a zero terminal plan.
     // This is two finite horizons, not a reusable streaming implementation.
     const NEXT: usize = 64;
-    const NEXT_KNOTS: usize = NEXT / STRIDE - 1;
+    const NEXT_KNOTS: usize = NEXT / STRIDE;
     let mut extended = vec![[0.0_f32; 2]; COUNT + NEXT + 126];
     extended[63..63 + COUNT].copy_from_slice(&planned[63..63 + COUNT]);
     let committed = extended[63..63 + 64].to_vec();
-    let pending = extended[63 + 64..63 + COUNT].to_vec();
-    let next_source = &output[64 + COUNT..64 + COUNT + NEXT];
+    let source_all = &output[64..64 + COUNT + NEXT];
     let window_count = extended.len() - 63;
     let mut added_gains = [[0.0_f64; NEXT_KNOTS]; 2];
     for lane in 0..2 {
@@ -979,15 +978,15 @@ fn study_feasible_output_gain_plan() {
         }
         let mut effects = vec![vec![0.0_f64; window_count * 16]; NEXT_KNOTS];
         for (knot, effect) in effects.iter_mut().enumerate() {
-            let center = (knot + 1) * STRIDE;
+            let center = COUNT + knot * STRIDE;
             for start in 0..window_count {
                 for (phase, kernel) in wider.iter().step_by(2).enumerate() {
                     effect[start * 16 + phase] = kernel
                         .iter()
                         .enumerate()
                         .filter_map(|(tap, coefficient)| {
-                            let index = (start + tap).checked_sub(63 + COUNT)?;
-                            let sample = next_source.get(index)?;
+                            let index = (start + tap).checked_sub(63)?;
+                            let sample = source_all.get(index)?;
                             let weight =
                                 (1.0 - index.abs_diff(center) as f64 / STRIDE as f64).max(0.0);
                             Some(coefficient * f64::from(sample[lane]) * weight)
@@ -1014,23 +1013,35 @@ fn study_feasible_output_gain_plan() {
                 }
             }
         }
-        for (index, frame) in extended[63 + COUNT..63 + COUNT + NEXT]
+        for (index, frame) in extended[63 + COUNT - STRIDE..63 + COUNT + NEXT]
             .iter_mut()
             .enumerate()
         {
+            let index = index + COUNT - STRIDE;
             let gain: f64 = added_gains[lane]
                 .iter()
                 .enumerate()
                 .map(|(knot, gain)| {
-                    gain * (1.0 - index.abs_diff((knot + 1) * STRIDE) as f64 / STRIDE as f64)
+                    gain * (1.0 - index.abs_diff(COUNT + knot * STRIDE) as f64 / STRIDE as f64)
                         .max(0.0)
                 })
                 .sum();
-            frame[lane] = (f64::from(next_source[index][lane]) * gain) as f32;
+            frame[lane] =
+                (f64::from(frame[lane]) + f64::from(source_all[index][lane]) * gain) as f32;
         }
     }
     assert_eq!(&extended[63..63 + 64], &committed);
-    assert_eq!(&extended[63 + 64..63 + COUNT], &pending);
+    assert_eq!(
+        &extended[63 + 64..63 + COUNT - STRIDE],
+        &planned[63 + 64..63 + COUNT - STRIDE]
+    );
+    assert!(added_gains.iter().all(|lane| lane[0] > 0.0));
+    assert!(
+        extended
+            .iter()
+            .flatten()
+            .all(|sample| f64::from(sample.abs()) <= ceiling + 1e-7)
+    );
     let mut extension_model_peak = 0.0_f64;
     let mut extension_dense_peak = 0.0_f64;
     for window in extended.windows(64) {
@@ -1049,7 +1060,8 @@ fn study_feasible_output_gain_plan() {
         }
     }
     println!(
-        "extended incumbent: model peak {extension_model_peak:.9}, dense peak {extension_dense_peak:.9}, new mean knot gain {:.6}",
+        "overlapped incumbent: model peak {extension_model_peak:.9}, dense peak {extension_dense_peak:.9}, join gain {:?}, new mean knot gain {:.6}",
+        [added_gains[0][0], added_gains[1][0]],
         added_gains.iter().flatten().sum::<f64>() / (2 * NEXT_KNOTS) as f64
     );
     assert!(extension_model_peak <= ceiling + 1e-7);
