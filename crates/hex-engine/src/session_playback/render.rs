@@ -709,6 +709,7 @@ impl SessionPlayback {
         let mut resident_source_index = 0;
         let mut resident_source_end = 0;
         let mut resident_source_eligible = [false; MAX_TRACKS];
+        let mut resident_analytic_eligible = [false; MAX_TRACKS];
         let mut resident_session_batch = false;
 
         while output_offset < output.len() {
@@ -767,6 +768,7 @@ impl SessionPlayback {
                     arrangement_frame,
                     count,
                     &mut resident_source_eligible,
+                    &mut resident_analytic_eligible,
                 )?;
                 resident_source_index = 0;
                 resident_source_end = count;
@@ -878,10 +880,11 @@ impl SessionPlayback {
                     sources,
                     foreign,
                     external,
-                    use_resident_sources.then_some((
-                        resident_source_index,
-                        resident_session_batch.then_some(&resident_source_eligible),
-                    )),
+                    use_resident_sources.then_some(compensated::BatchedSources {
+                        index: resident_source_index,
+                        session_audio: resident_session_batch.then_some(&resident_source_eligible),
+                        analytic: &resident_analytic_eligible,
+                    }),
                 )?;
                 if use_resident_sources {
                     resident_source_index += 1;
