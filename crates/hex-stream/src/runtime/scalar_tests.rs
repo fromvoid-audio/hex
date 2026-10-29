@@ -576,6 +576,143 @@ fn shutdown_with_full_return_queue_reclaims_held_pages_and_worker_job() {
 }
 
 #[test]
+fn full_return_queue_recovers_and_serves_new_pcm() {
+    let (_draft, scalar) = definition(false, 256);
+    let scalar_key = scalar.metadata().key();
+    let (_wav, audio) = audio_definition();
+    let audio_key = audio.key;
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let (publication_tx, publication_rx) = mpsc::sync_channel(8);
+    let (steps_tx, steps_rx) = mpsc::sync_channel(1);
+    let (quantum_tx, quantum_rx) = mpsc::sync_channel(1);
+    let hooks = crate::worker::TestWorkerHooks {
+        entered: entered_tx,
+        release: release_rx,
+        publications: publication_tx,
+        scalar_steps: Some((steps_tx, quantum_rx)),
+    };
+    let mut config = StreamConfig::with_pool_pages(5);
+    config.return_capacity = 1;
+    let (mut runtime, _) = StreamRuntime::new_factory_with_scalar_sources(
+        config,
+        vec![audio],
+        vec![scalar],
+        false,
+        Some(hooks),
+        #[cfg(feature = "test-support")]
+        None,
+    )
+    .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    let (control, mut pages) = runtime.split().ok().unwrap();
+    for index in 0..3 {
+        pages.request_page(audio_key, index);
+    }
+    release_tx.send(()).unwrap();
+    control.wake_worker();
+    for _ in 0..3 {
+        publication_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
+    assert_eq!(pages.pump_ready(3), 3);
+    pages.request_scalar_page(scalar_key, 0);
+    control.wake_worker();
+    assert_eq!(
+        steps_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        scalar_key
+    );
+
+    // The worker cannot drain the one-slot ring while paused. Reclaiming all
+    // three cache pages therefore exercises both the ring and held returns.
+    #[cfg(feature = "allocation-probe")]
+    assert_zero(allocation_counter::measure(|| {
+        pages.endpoint.reclaim_for_missing(4, 4)
+    }));
+    #[cfg(not(feature = "allocation-probe"))]
+    pages.endpoint.reclaim_for_missing(4, 4);
+    for index in 0..3 {
+        assert!(pages.page(audio_key, index).is_none());
+    }
+    #[cfg(feature = "allocation-probe")]
+    assert_zero(allocation_counter::measure(|| {
+        pages.request_page(audio_key, 3)
+    }));
+    #[cfg(not(feature = "allocation-probe"))]
+    pages.request_page(audio_key, 3);
+    quantum_tx.send(()).unwrap();
+    control.wake_worker();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if steps_rx.try_recv().is_ok() {
+            quantum_tx.send(()).unwrap();
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_zero(allocation_counter::measure(|| {
+            pages.pump_ready(5);
+        }));
+        #[cfg(not(feature = "allocation-probe"))]
+        pages.pump_ready(5);
+        if pages.page(audio_key, 3).is_some() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "PCM did not resume");
+        std::thread::yield_now();
+    }
+    let page = pages.page(audio_key, 3).unwrap();
+    assert_eq!(page.frames.len(), 16001 - 3 * 4096);
+    for (offset, frame) in page.frames.iter().enumerate() {
+        let sample = (3 * 4096 + offset) as f32 / 32768.0;
+        assert_eq!(*frame, [sample, -sample]);
+    }
+    // With one scalar page and page 3 occupying the two previously free
+    // buffers, these requests require returned cache buffers to circulate.
+    #[cfg(feature = "allocation-probe")]
+    assert_zero(allocation_counter::measure(|| {
+        pages.request_page(audio_key, 0);
+        pages.request_page(audio_key, 1);
+    }));
+    #[cfg(not(feature = "allocation-probe"))]
+    {
+        pages.request_page(audio_key, 0);
+        pages.request_page(audio_key, 1);
+    }
+    control.wake_worker();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if steps_rx.try_recv().is_ok() {
+            quantum_tx.send(()).unwrap();
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_zero(allocation_counter::measure(|| {
+            pages.pump_ready(5);
+        }));
+        #[cfg(not(feature = "allocation-probe"))]
+        pages.pump_ready(5);
+        if pages.page(audio_key, 0).is_some() && pages.page(audio_key, 1).is_some() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "returned pages did not circulate"
+        );
+        control.wake_worker();
+        std::thread::yield_now();
+    }
+    for index in 0..2 {
+        let page = pages.page(audio_key, index).unwrap();
+        assert_eq!(page.frames.len(), 4096);
+        for (offset, frame) in page.frames.iter().enumerate() {
+            let sample = (index as usize * 4096 + offset) as f32 / 32768.0;
+            assert_eq!(*frame, [sample, -sample]);
+        }
+    }
+    let report = control.shutdown(pages).unwrap();
+    assert!(report.worker_joined && report.accounting_complete);
+    assert_eq!(report.page_buffers, 5);
+}
+
+#[test]
 fn dense_pending_scalar_yields_pcm_preserves_scalar_fifo_and_stop_reclaims_held_job() {
     // Four dense quanta are enough to hold this fairness boundary; the
     // larger 2,048-event page is checked independently above.
