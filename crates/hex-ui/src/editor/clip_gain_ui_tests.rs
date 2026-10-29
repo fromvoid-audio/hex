@@ -4,121 +4,83 @@ use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px}
 use std::sync::Arc;
 
 #[gpui::test]
-fn midi_top_edge_gain_commits_one_clip_without_changing_curve(cx: &mut TestAppContext) {
-    let (mut visual, editor, environment, clip) = midi_canvas::creation_tests::fixture(cx);
-    let before = editor.read_with(&visual, |view, _| {
-        view.state
-            .as_ref()
-            .unwrap()
-            .project
-            .midi_clip(clip)
-            .unwrap()
-            .volume()
-            .clone()
+fn g_groups_midi_clips_with_different_legacy_curves(cx: &mut TestAppContext) {
+    use super::drag::group_drag_ui_test::{click, fixture, pump};
+    use hex_project::{BeatTime, MidiClipGain, MidiClipVolume, MidiClipVolumePoint};
+    let (_files, handle, editor, _) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddMidiTrack {
+            name: "notes".into(),
+        })));
     });
-    let selector = Box::leak(format!("clip-gain-handle-{}", clip.value()).into_boxed_str());
-    let down = visual
-        .debug_bounds(selector)
-        .expect("midi gain handle")
-        .center();
-    let up = point(down.x, down.y + px(60.0));
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
-    visual.simulate_keystrokes("escape");
-    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(&visual, |view, _| {
-        assert!(!view.clip_gain.held());
-        assert_eq!(
+    pump(&editor, &mut visual);
+    let track = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[1].id()
+    });
+    let mut clips = Vec::new();
+    for (start, gain) in [(BeatTime::ZERO, 0.5), (BeatTime::from_raw(3 << 32), 2.0)] {
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start,
+                length: BeatTime::ONE,
+            })));
+        });
+        pump(&editor, &mut visual);
+        let clip = editor.read_with(&visual, |view, _| {
             view.state
                 .as_ref()
                 .unwrap()
                 .project
-                .midi_clip(clip)
+                .track(track)
                 .unwrap()
-                .volume(),
-            &before
-        );
-    });
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(&visual, |view, _| {
-        assert!(view.clip_gain.held());
-        assert_eq!(view.displayed_clip_gain(clip).unwrap().millidb(), -6_000);
-    });
-    visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
-    editor.read_with(&visual, |view, _| {
-        assert!(matches!(view.last_enqueued_edit, Some(Command::SetMidiClipGain { clip: id, gain }) if id == clip && gain.millidb() == -6_000));
-    });
-    let event = terminal(&editor, &mut visual);
-    assert!(event.error.is_none(), "{:?}", event.error);
-    for _ in 0..2 {
-        editor.update(&mut visual, |_, cx| cx.notify());
-        visual.run_until_parked();
-        editor.read_with(&visual, |view, _| {
-            assert_eq!(view.displayed_clip_gain(clip).unwrap().millidb(), -6_000);
-            assert_eq!(
-                view.state
-                    .as_ref()
-                    .unwrap()
-                    .project
-                    .midi_clip(clip)
-                    .unwrap()
-                    .volume(),
-                &before
+                .midi_clips()
+                .last()
+                .unwrap()
+                .id()
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(
+                view.enqueue(Request::Edit(Command::ReplaceMidiClipVolume {
+                    clip,
+                    volume: MidiClipVolume::new(
+                        vec![MidiClipVolumePoint::linear(
+                            BeatTime::ZERO,
+                            MidiClipGain::new(gain).unwrap()
+                        )],
+                        BeatTime::ONE,
+                    )
+                    .unwrap(),
+                }))
             );
         });
+        pump(&editor, &mut visual);
+        clips.push(clip);
     }
-    editor.update(&mut visual, |view, cx| {
-        view.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
+    click(&mut visual, clips[0], false);
+    click(&mut visual, clips[1], true);
     editor.read_with(&visual, |view, _| {
-        let volume = view
-            .state
-            .as_ref()
-            .unwrap()
-            .project
-            .midi_clip(clip)
-            .unwrap()
-            .volume();
-        assert_eq!(volume.clip_gain().millidb(), -6_000);
-        assert_eq!(volume.points(), before.points());
+        assert_eq!(view.selected_clip_ids(), clips)
     });
-    let after = editor.read_with(&visual, |view, _| {
-        view.state.as_ref().unwrap().project.snapshot()
-    });
-    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+    visual.simulate_keystrokes("g");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
-        assert_eq!(
-            view.state
-                .as_ref()
-                .unwrap()
-                .project
-                .midi_clip(clip)
-                .unwrap()
-                .volume(),
-            &before
-        );
-    });
-    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
-    pump(&editor, &mut visual);
-    let path = environment.root().join("midi-gain.hex");
-    editor.update(&mut visual, |view, _| {
-        assert!(view.enqueue(Request::SaveNew(path.clone())))
-    });
-    pump(&editor, &mut visual);
-    editor.update(&mut visual, |view, _| {
-        assert!(view.enqueue(Request::Open(path)))
-    });
-    pump(&editor, &mut visual);
-    editor.read_with(&visual, |view, _| {
+        let row = view.state.as_ref().unwrap().project.track(track).unwrap();
+        assert_eq!(row.midi_clips().len(), 1);
+        let volume = row.midi_clips()[0].volume();
+        assert_eq!(volume.gain_at(BeatTime::ZERO).linear(), 0.5);
+        assert_eq!(volume.gain_at(BeatTime::from_raw(3 << 32)).linear(), 2.0);
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after);
     });
+}
+
+#[gpui::test]
+fn midi_clip_has_no_audio_gain_handle(cx: &mut TestAppContext) {
+    let (mut visual, _editor, _environment, clip) = midi_canvas::creation_tests::fixture(cx);
+    let selector = Box::leak(format!("clip-gain-handle-{}", clip.value()).into_boxed_str());
+    assert!(visual.debug_bounds(selector).is_none());
 }
 
 #[gpui::test]

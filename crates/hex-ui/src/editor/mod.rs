@@ -59,7 +59,6 @@ mod workspace_view_ui_test;
 mod group_copy;
 mod group_selection;
 mod midi_pending_drag;
-mod midi_volume;
 mod pending_clip_move;
 mod pending_edit;
 #[cfg(test)]
@@ -758,7 +757,6 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_note_gesture: Option<midi_drag::NoteGesture>,
     pub(in crate::editor) midi_group_gesture: Option<midi_group_drag::GroupGesture>,
     pending_midi_drag: Option<midi_pending_drag::Pending>,
-    midi_volume: midi_volume::State,
     pub(in crate::editor) midi_creation: Option<midi_creation::Creation>,
     pub(in crate::editor) midi_stroke: Option<midi_stroke::MidiStroke>,
     pub(in crate::editor) midi_draw_mode: bool,
@@ -1479,7 +1477,6 @@ impl EditorView {
             midi_note_gesture: None,
             midi_group_gesture: None,
             pending_midi_drag: None,
-            midi_volume: midi_volume::State::default(),
             midi_creation: None,
             midi_stroke: None,
             midi_draw_mode: false,
