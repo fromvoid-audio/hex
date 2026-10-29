@@ -482,6 +482,15 @@ impl EditorView {
                                     .min_w_0()
                                     .flex_1()
                                     .truncate()
+                                    .when(track.is_group(), |name| name.flex().items_center())
+                                    .children(track.is_group().then(|| {
+                                        div()
+                                            .flex_shrink_0()
+                                            .debug_selector(move || {
+                                                format!("group-track-marker-{}", track_id.value())
+                                            })
+                                            .child(theme::text("group · "))
+                                    }))
                                     .child(theme::text(track.name().to_lowercase())),
                             )
                             .children(self.route_marker_for_track(
