@@ -953,6 +953,15 @@ fn ordinary_pending_replacement_yields_small_pool_to_the_current_stream() {
 
 #[test]
 fn gain_publication_waits_for_held_later_page_then_applies_exact_pcm() {
+    gated_gain_publication(false);
+}
+
+#[test]
+fn priority_stop_remains_effective_while_gain_waits_for_held_page() {
+    gated_gain_publication(true);
+}
+
+fn gated_gain_publication(stop_while_held: bool) {
     let _serial = serial();
     let frames = (hex_engine::STREAM_PAGE_FRAMES * 3) as u64;
     let project = super::readiness::project_with_frames(frames);
@@ -1070,30 +1079,55 @@ fn gain_publication_waits_for_held_later_page_then_applies_exact_pcm() {
         "gain rejected while page is held: {:?}",
         control.status.rejected_revision()
     );
-    release.send(()).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
+    if stop_while_held {
+        control.stop();
         measured_render(&mut data, &mut output);
-        assert!(
-            control.status.rejected_revision().is_none(),
-            "gain rejected: {:?}",
-            control.status.rejected_revision()
-        );
-        if control.status.applied_revision.load(Acquire) == revision
-            && output.iter().all(|frame| *frame == [0.125; 2])
-        {
-            break;
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(control.status.position.load(Acquire), 0);
+        assert_eq!(output, [[0.0; 2]; 256]);
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            measured_render(&mut data, &mut output);
+            assert!(!control.status.playing.load(Acquire));
+            assert_eq!(control.status.position.load(Acquire), 0);
+            assert_eq!(output, [[0.0; 2]; 256]);
+            assert!(control.status.rejected_revision().is_none());
+            if control.status.applied_revision.load(Acquire) == revision {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "gain did not settle after stop"
+            );
+            std::thread::yield_now();
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "gain did not apply after page release"
-        );
-        std::thread::yield_now();
+    } else {
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            measured_render(&mut data, &mut output);
+            assert!(
+                control.status.rejected_revision().is_none(),
+                "gain rejected: {:?}",
+                control.status.rejected_revision()
+            );
+            if control.status.applied_revision.load(Acquire) == revision
+                && output.iter().all(|frame| *frame == [0.125; 2])
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "gain did not apply after page release"
+            );
+            std::thread::yield_now();
+        }
+        control.stop();
+        measured_render(&mut data, &mut output);
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(output, [[0.0; 2]; 256]);
     }
-    control.stop();
-    measured_render(&mut data, &mut output);
-    assert!(!control.status.playing.load(Acquire));
-    assert_eq!(output, [[0.0; 2]; 256]);
     assert!(control.retire_audio_candidate_domain(domain));
     control.request_shutdown();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
