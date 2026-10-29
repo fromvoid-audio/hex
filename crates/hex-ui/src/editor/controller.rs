@@ -701,7 +701,10 @@ impl EditorView {
                     ) {
                         continue;
                     }
-                    self.retire_audio_preserving_gain_take();
+                    if !self.retire_audio_preserving_gain_take() {
+                        changed = true;
+                        continue;
+                    }
                     self.status = "preparing sampler audio".into();
                     changed = true;
                 }
@@ -757,7 +760,16 @@ impl EditorView {
                         // observation already correlated to this newly opened endpoint.
                         self.reset_output_publication_tracking(new_identity);
                     }
-                    self.retire_audio_preserving_gain_take();
+                    let preserve_outcome_error = self.retired_action_outcomes.is_some()
+                        || self
+                            .audio
+                            .as_ref()
+                            .is_some_and(|current| current.control.has_action_outcomes());
+                    if !self.retire_audio_preserving_gain_take() {
+                        audio.control.close();
+                        changed = true;
+                        continue;
+                    }
                     self.document_audio_mode = audio.mode;
                     self.audio = Some(audio);
                     let mut recovery_status = None;
@@ -783,7 +795,9 @@ impl EditorView {
                     }
                     self.pending_restart_request = None;
                     self.status = recovery_status.unwrap_or("audio ready").into();
-                    self.error = None;
+                    if !preserve_outcome_error {
+                        self.error = None;
+                    }
                     self.reconcile_publication_observation();
                     changed = true;
                 }
@@ -1012,6 +1026,14 @@ impl EditorView {
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
+        visible_change |= self.poll_retired_action_outcomes();
+        if self.retired_action_outcomes.is_none()
+            && self.audio.as_ref().is_some_and(|audio| {
+                audio.control.has_action_outcomes() && audio.control.status().is_none()
+            })
+        {
+            visible_change |= self.retire_audio_preserving_gain_take();
+        }
         visible_change |= self.poll_update(cx);
         visible_change |= self.poll_browser_sample_playback();
         visible_change |= self.tick_gain_recording();
@@ -1405,6 +1427,7 @@ impl EditorView {
                     .filter(|request| self.seek_publication_is_current(*request, None))
                     .map(|request| (request, None))
             });
+        let retired_action_message = self.retired_action_message.take();
         let Some(audio) = self.audio.as_mut() else {
             let pending_after = self
                 .worker_requests_pending
@@ -1413,6 +1436,18 @@ impl EditorView {
             visible_change |= self.tick_track_meters(Instant::now());
             return self.observe_audio_frame(None, visible_change, Instant::now());
         };
+        let reliable_outcomes = audio.control.has_action_outcomes();
+        let mut outcome_batch = [None; hex_audio::prepared::ACTION_OUTCOME_CAPACITY];
+        let mut outcome_failure = None;
+        if let Some(reader) = audio.control.action_outcomes_mut() {
+            for slot in &mut outcome_batch {
+                let Some(receipt) = reader.try_take() else {
+                    break;
+                };
+                *slot = Some(receipt);
+            }
+            outcome_failure = reader.failure();
+        }
         let seek_publication_inflight = self.prepared_seek.as_ref().is_some_and(|seek| {
             matches!(
                 seek.stage,
@@ -1510,10 +1545,11 @@ impl EditorView {
                 "audio graph queue full · waiting for callback",
             );
         }
-        if let Some((ticket, reason)) = audio
-            .control
-            .status()
-            .and_then(|status| status.rejected_action())
+        if !reliable_outcomes
+            && let Some((ticket, reason)) = audio
+                .control
+                .status()
+                .and_then(|status| status.rejected_action())
             && ticket > self.observed_rejected_action
         {
             self.observed_rejected_action = ticket;
@@ -1763,7 +1799,24 @@ impl EditorView {
                 rejected_revision,
             );
         }
-        while let Some(pending) = self.pending_audio_commands.pop_front() {
+        if outcome_failure.is_some() {
+            audio.control.stop();
+            self.pending_audio_commands.clear();
+            self.pending_seek_ticket = None;
+            self.pending_metronome_ticket = None;
+            self.pending_session_ticket = None;
+            self.play_intent.clear();
+            self.recovery.fail();
+            self.pending_recovery_generation = None;
+            visible_change |= replace_error(
+                &mut self.error,
+                "audio command outcomes unavailable · restart audio",
+            );
+        }
+        while outcome_failure.is_none() {
+            let Some(pending) = self.pending_audio_commands.pop_front() else {
+                break;
+            };
             let action_is_current = queued_action_is_current(
                 pending,
                 project_edit_pending,
@@ -1828,51 +1881,134 @@ impl EditorView {
             .control
             .status()
             .is_some_and(|status| status.playing.load(Acquire));
-        if self
-            .pending_metronome_ticket
-            .is_some_and(|ticket| consumed_command >= ticket)
-        {
-            let rejected = audio
+        let mut action_errors = retired_action_message.unwrap_or_default();
+        if reliable_outcomes {
+            self.play_intent.reconcile_actual(actual_playing);
+            for receipt in outcome_batch.into_iter().flatten() {
+                self.play_intent
+                    .reconcile_receipt(receipt.ticket, actual_playing);
+                self.recovery.observe_receipt(receipt);
+                if self.pending_metronome_ticket == Some(receipt.ticket) {
+                    self.pending_metronome_ticket = None;
+                    visible_change = true;
+                }
+                if self.pending_seek_ticket == Some(receipt.ticket) {
+                    self.pending_seek_ticket = None;
+                    visible_change = true;
+                    match receipt.outcome {
+                        hex_audio::prepared::ActionOutcome::Applied => {
+                            replace_status(&mut self.status, "cursor ready");
+                        }
+                        _ => {
+                            replace_status(&mut self.status, "seek was not applied");
+                        }
+                    }
+                }
+                let (pending, result) = reconcile_session_receipt(
+                    self.pending_session_ticket,
+                    self.project_generation,
+                    receipt,
+                );
+                self.pending_session_ticket = pending;
+                match result {
+                    Some(SessionTicketOutcome::Consumed) => {
+                        visible_change |=
+                            replace_status(&mut self.status, "session request consumed");
+                    }
+                    Some(SessionTicketOutcome::Rejected) => {
+                        visible_change |=
+                            replace_status(&mut self.status, "session request rejected");
+                    }
+                    Some(SessionTicketOutcome::Superseded) => {
+                        visible_change |=
+                            replace_status(&mut self.status, "session request superseded");
+                    }
+                    Some(SessionTicketOutcome::Interrupted) => {
+                        visible_change |=
+                            replace_status(&mut self.status, "session request interrupted");
+                    }
+                    None => {}
+                }
+                match receipt.outcome {
+                    hex_audio::prepared::ActionOutcome::Rejected(reason) => {
+                        if !action_errors.is_empty() {
+                            action_errors.push_str(" · ");
+                        }
+                        action_errors.push_str(reason.message());
+                    }
+                    hex_audio::prepared::ActionOutcome::Interrupted => {
+                        if !action_errors.is_empty() {
+                            action_errors.push_str(" · ");
+                        }
+                        action_errors.push_str("audio action interrupted");
+                    }
+                    _ => {}
+                }
+            }
+            if outcome_failure.is_some() {
+                if !action_errors.is_empty() {
+                    action_errors.push_str(" · ");
+                }
+                action_errors.push_str("audio command outcomes unavailable · restart audio");
+            }
+            if !action_errors.is_empty() {
+                visible_change |= replace_error(&mut self.error, &action_errors);
+            }
+        } else {
+            if self
+                .pending_metronome_ticket
+                .is_some_and(|ticket| consumed_command >= ticket)
+            {
+                let rejected = audio
+                    .control
+                    .status()
+                    .and_then(|status| status.rejected_action())
+                    .is_some_and(|(ticket, _)| self.pending_metronome_ticket == Some(ticket));
+                self.pending_metronome_ticket = None;
+                visible_change = true;
+                if rejected {
+                    replace_error(&mut self.error, "metronome request rejected · try again");
+                }
+            }
+            let rejected_action_ticket = audio
                 .control
                 .status()
                 .and_then(|status| status.rejected_action())
-                .is_some_and(|(ticket, _)| self.pending_metronome_ticket == Some(ticket));
-            self.pending_metronome_ticket = None;
-            visible_change = true;
-            if rejected {
-                replace_error(&mut self.error, "metronome request rejected · try again");
+                .map(|(ticket, _)| ticket);
+            self.play_intent
+                .reconcile(consumed_command, actual_playing, rejected_action_ticket);
+            let (pending_session_ticket, session_outcome) = reconcile_session_ticket(
+                self.pending_session_ticket,
+                self.project_generation,
+                consumed_command,
+                rejected_action_ticket,
+            );
+            self.pending_session_ticket = pending_session_ticket;
+            match session_outcome {
+                Some(SessionTicketOutcome::Consumed) => {
+                    visible_change |= replace_status(&mut self.status, "session request consumed");
+                }
+                Some(SessionTicketOutcome::Rejected) => {
+                    visible_change |= replace_status(&mut self.status, "session request rejected");
+                }
+                Some(SessionTicketOutcome::Superseded) => {
+                    visible_change |=
+                        replace_status(&mut self.status, "session request superseded");
+                }
+                Some(SessionTicketOutcome::Interrupted) => {
+                    visible_change |=
+                        replace_status(&mut self.status, "session request interrupted");
+                }
+                None => {}
             }
-        }
-        let rejected_action_ticket = audio
-            .control
-            .status()
-            .and_then(|status| status.rejected_action())
-            .map(|(ticket, _)| ticket);
-        self.play_intent
-            .reconcile(consumed_command, actual_playing, rejected_action_ticket);
-        let (pending_session_ticket, session_outcome) = reconcile_session_ticket(
-            self.pending_session_ticket,
-            self.project_generation,
-            consumed_command,
-            rejected_action_ticket,
-        );
-        self.pending_session_ticket = pending_session_ticket;
-        match session_outcome {
-            Some(SessionTicketOutcome::Consumed) => {
-                visible_change |= replace_status(&mut self.status, "session request consumed");
+            if self
+                .pending_seek_ticket
+                .is_some_and(|ticket| consumed_command >= ticket)
+            {
+                self.pending_seek_ticket = None;
+                visible_change = true;
+                replace_status(&mut self.status, "cursor ready");
             }
-            Some(SessionTicketOutcome::Rejected) => {
-                visible_change |= replace_status(&mut self.status, "session request rejected");
-            }
-            None => {}
-        }
-        if self
-            .pending_seek_ticket
-            .is_some_and(|ticket| consumed_command >= ticket)
-        {
-            self.pending_seek_ticket = None;
-            visible_change = true;
-            replace_status(&mut self.status, "cursor ready");
         }
         if audio
             .control
@@ -1886,10 +2022,9 @@ impl EditorView {
             self.pending_seek_ticket = None;
             self.play_intent.clear();
             visible_change |= replace_status(&mut self.status, "audio device unavailable");
-            visible_change |= replace_error(
-                &mut self.error,
-                "audio device failed · editing and saving remain available",
-            );
+            let diagnostic = "audio device failed · editing and saving remain available";
+            let message = fault_with_action_errors(&self.error, diagnostic, &action_errors);
+            visible_change |= replace_error(&mut self.error, &message);
         } else if audio
             .control
             .status()
@@ -1914,7 +2049,8 @@ impl EditorView {
                     )
                 },
             );
-            visible_change |= replace_error(&mut self.error, &diagnostic);
+            let message = fault_with_action_errors(&self.error, &diagnostic, &action_errors);
+            visible_change |= replace_error(&mut self.error, &message);
         } else if audio
             .control
             .status()
@@ -1922,10 +2058,9 @@ impl EditorView {
         {
             self.stream_source_warning = true;
             visible_change |= replace_status(&mut self.status, "streamed media unavailable");
-            visible_change |= replace_error(
-                &mut self.error,
-                "original media changed · reopen or relink it",
-            );
+            let diagnostic = "original media changed · reopen or relink it";
+            let message = fault_with_action_errors(&self.error, diagnostic, &action_errors);
+            visible_change |= replace_error(&mut self.error, &message);
         } else if self.stream_source_warning {
             self.stream_source_warning = false;
             if self.status == "streamed media unavailable" {
@@ -2485,7 +2620,7 @@ impl EditorView {
                         PendingEditorAudioResult::Opened {
                             project_generation,
                             restart_request,
-                            audio,
+                            mut audio,
                         } if audio_event_disposition(
                             self.project_generation,
                             self.pending_restart_request,
@@ -2493,8 +2628,17 @@ impl EditorView {
                             restart_request,
                         ) == AudioEventDisposition::Current =>
                         {
-                            self.document_audio_mode = audio.mode;
-                            self.audio = Some(audio);
+                            if self.audio.as_ref().is_some_and(|old| {
+                                old.control.has_action_outcomes() && old.control.status().is_none()
+                            }) {
+                                audio.control.close();
+                                self.error = Some(
+                                    "waiting for previous audio outcomes · retry audio".into(),
+                                );
+                            } else {
+                                self.document_audio_mode = audio.mode;
+                                self.audio = Some(audio);
+                            }
                             self.pending_restart_request = None;
                         }
                         PendingEditorAudioResult::Unavailable {
@@ -3565,7 +3709,15 @@ impl EditorView {
         let consumed = self.audio_status().map_or(0, |status| {
             audio_command_prefix(status, self.document_audio_mode)
         });
-        seek_is_pending(self.pending_seek_ticket, consumed, queued)
+        if self
+            .audio
+            .as_ref()
+            .is_some_and(|audio| audio.control.has_action_outcomes())
+        {
+            queued || self.pending_seek_ticket.is_some()
+        } else {
+            seek_is_pending(self.pending_seek_ticket, consumed, queued)
+        }
     }
 
     pub(super) fn cancel_duplicate_chain(&mut self) {
@@ -3776,6 +3928,13 @@ impl EditorView {
 
     pub(super) fn metronome_pending(&self) -> bool {
         self.pending_metronome_ticket.is_some_and(|ticket| {
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.control.has_action_outcomes())
+            {
+                return true;
+            }
             self.audio_status().is_some_and(|status| {
                 audio_command_prefix(status, self.document_audio_mode) < ticket
             })
@@ -4542,6 +4701,31 @@ fn queued_action_is_current(
 enum SessionTicketOutcome {
     Consumed,
     Rejected,
+    Superseded,
+    Interrupted,
+}
+
+fn reconcile_session_receipt(
+    pending: Option<(u64, u64)>,
+    current_generation: u64,
+    receipt: hex_audio::prepared::ActionOutcomeReceipt,
+) -> (Option<(u64, u64)>, Option<SessionTicketOutcome>) {
+    let Some((ticket, generation)) = pending else {
+        return (None, None);
+    };
+    if generation != current_generation {
+        return (None, None);
+    }
+    if ticket != receipt.ticket {
+        return (Some((ticket, generation)), None);
+    }
+    let outcome = match receipt.outcome {
+        hex_audio::prepared::ActionOutcome::Applied => SessionTicketOutcome::Consumed,
+        hex_audio::prepared::ActionOutcome::Rejected(_) => SessionTicketOutcome::Rejected,
+        hex_audio::prepared::ActionOutcome::Superseded => SessionTicketOutcome::Superseded,
+        hex_audio::prepared::ActionOutcome::Interrupted => SessionTicketOutcome::Interrupted,
+    };
+    (None, Some(outcome))
 }
 
 fn reconcile_session_ticket(
@@ -4563,6 +4747,24 @@ fn reconcile_session_ticket(
         return (None, Some(SessionTicketOutcome::Consumed));
     }
     (Some((ticket, generation)), None)
+}
+
+fn fault_with_action_errors(
+    existing: &Option<super::display_error::DisplayError>,
+    diagnostic: &str,
+    action_errors: &str,
+) -> String {
+    if !action_errors.is_empty() {
+        return format!("{diagnostic} · {action_errors}");
+    }
+    if let Some(existing) = existing.as_deref()
+        && existing
+            .strip_prefix(diagnostic)
+            .is_some_and(|rest| rest.starts_with(" · "))
+    {
+        return existing.to_owned();
+    }
+    diagnostic.to_owned()
 }
 
 fn replace_error(error: &mut Option<super::display_error::DisplayError>, message: &str) -> bool {
@@ -4809,8 +5011,8 @@ mod tests {
         SessionTicketOutcome, allows_non_open_request, clear_rejected_scene_duplicate,
         intent_desired_playing, latest_applied_canonical_candidate, pending_playback_for_state,
         preview_source_is_current, promote_playback_candidates, queued_action_is_current,
-        reconcile_session_ticket, rejected_candidate_project, rejected_preview_candidate,
-        retained_install_fresh_policy,
+        reconcile_session_receipt, reconcile_session_ticket, rejected_candidate_project,
+        rejected_preview_candidate, retained_install_fresh_policy,
     };
     use crate::editor::audio_admission::{AudioAdmissionStatus, ProjectRevision};
     use crate::editor::{PendingPlaybackAction, PendingSceneDuplicate, PlaybackCandidate};
@@ -5243,6 +5445,9 @@ mod tests {
     #[test]
     fn earlier_session_rejection_is_not_reported_as_consumed() {
         let (mut control, mut callback) = hex_audio::prepared::channel(48_000).unwrap();
+        let mut reader = control
+            .enable_action_outcomes_on_control(&mut callback)
+            .unwrap();
         let playback = Playback::new(hex_engine::Project::new(48_000, Vec::new()).unwrap());
         control.publish(playback).unwrap();
         callback.begin_block();
@@ -5260,13 +5465,16 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Acquire),
             second
         );
-        let rejected = control.status.rejected_action().map(|(ticket, _)| ticket);
         assert_eq!(
-            reconcile_session_ticket(Some((first, 7)), 7, second, rejected),
+            reconcile_session_receipt(Some((first, 7)), 7, reader.try_take().unwrap()),
             (None, Some(SessionTicketOutcome::Rejected)),
             "a later rejection cannot turn the earlier failed action into consumed feedback"
         );
+        assert_eq!(reader.try_take().unwrap().ticket, second);
         control.request_shutdown();
+        control
+            .retire_action_outcomes_on_control(&mut callback)
+            .unwrap();
         callback.begin_block();
         control.reclaim();
     }

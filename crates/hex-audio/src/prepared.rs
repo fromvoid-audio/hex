@@ -6880,6 +6880,9 @@ mod tests {
     #[test]
     fn multiple_rejected_actions_are_each_observable_after_one_callback() {
         let (mut control, mut callback) = channel(48_000).unwrap();
+        let mut reader = control
+            .enable_action_outcomes_on_control(&mut callback)
+            .unwrap();
         let (playback, _, _, _) = session_audio_graph();
         control.publish(playback).unwrap();
         callback.begin_block();
@@ -6893,10 +6896,21 @@ mod tests {
         assert_eq!(control.status.consumed_command.load(Acquire), second);
         assert_eq!(
             control.status.rejected_action(),
-            Some((first, PlaybackActionRejection::InvalidSessionAction)),
-            "first rejected action must remain observable after the callback consumes both"
+            Some((second, PlaybackActionRejection::InvalidSessionAction)),
         );
+        for ticket in [first, second] {
+            assert_eq!(
+                reader.try_take(),
+                Some(ActionOutcomeReceipt {
+                    ticket,
+                    outcome: ActionOutcome::Rejected(PlaybackActionRejection::InvalidSessionAction),
+                })
+            );
+        }
         control.request_shutdown();
+        control
+            .retire_action_outcomes_on_control(&mut callback)
+            .unwrap();
         callback.begin_block();
         control.reclaim();
     }
