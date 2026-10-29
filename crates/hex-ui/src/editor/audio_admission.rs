@@ -287,6 +287,18 @@ mod tests {
     }
 
     #[test]
+    fn changed_media_rejection_reaches_the_admission_description() {
+        let current = project(2, 17);
+        let mut status = AudioAdmissionStatus::default();
+        status.canonical_revision(current);
+        status.published(current, 31);
+        let reason = hex_engine::PlaybackHandoffRejection::StreamSourceChanged.message();
+        assert!(status.rejected(current, 31, reason));
+        assert!(status.description().contains("original media changed"));
+        assert!(status.description().contains("reopen or relink"));
+    }
+
+    #[test]
     fn current_revision_transitions_pending_applied_and_rejected() {
         let current = project(2, 17);
         let mut status = AudioAdmissionStatus::default();

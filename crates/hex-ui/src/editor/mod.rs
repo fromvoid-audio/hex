@@ -51,6 +51,7 @@ mod project_recovery_ui_test;
 mod section_launch;
 mod track_header;
 mod track_header_device_drop;
+mod track_hierarchy_indent;
 mod track_meters;
 mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -854,6 +855,7 @@ pub(super) struct EditorView {
     preset_dialog_open: bool,
     status: String,
     pub(in crate::editor) error: Option<display_error::DisplayError>,
+    stream_source_warning: bool,
     recovery_failure: Option<Arc<hex_session::service::RecoveryFailure>>,
     recovery_prompt_open: bool,
     computer_keyboard: computer_keyboard::ComputerKeyboard,
@@ -869,6 +871,7 @@ pub(super) struct EditorView {
     track_scroll: track_layout::TrackScroll,
     track_layout: track_layout::TrackLayout,
     arrangement_focus: arrangement_focus::State,
+    track_hierarchy_indent: track_hierarchy_indent::HierarchyIndent,
     track_reorder: track_reorder::TrackReorder,
     #[cfg(all(test, feature = "ui-test-support"))]
     track_row_builds: usize,
@@ -1569,6 +1572,7 @@ impl EditorView {
             preset_dialog_open: false,
             status,
             error: None,
+            stream_source_warning: false,
             recovery_failure: None,
             recovery_prompt_open: false,
             computer_keyboard: computer_keyboard::ComputerKeyboard::default(),
@@ -1584,6 +1588,7 @@ impl EditorView {
             track_scroll: track_layout::TrackScroll::new(),
             track_layout: track_layout::TrackLayout::default(),
             arrangement_focus: arrangement_focus::State::default(),
+            track_hierarchy_indent: track_hierarchy_indent::HierarchyIndent::default(),
             track_reorder: track_reorder::TrackReorder::default(),
             #[cfg(all(test, feature = "ui-test-support"))]
             track_row_builds: 0,
@@ -1830,13 +1835,14 @@ impl EditorView {
         if self.opening_project || self.close_prompt_open {
             return;
         }
-        let choice = if self.mode == EditorMode::Arrangement && self.arrangement_focus.enabled {
-            self.focused_neighbor_track(forward)
-        } else {
-            self.state
-                .as_ref()
-                .and_then(|state| selection::neighbor(&state.project, self.selected_track, forward))
-        };
+        let choice =
+            if self.mode == EditorMode::Arrangement && self.arrangement_focus.projection.enabled {
+                self.focused_neighbor_track(forward)
+            } else {
+                self.state.as_ref().and_then(|state| {
+                    selection::neighbor(&state.project, self.selected_track, forward)
+                })
+            };
         if let Some((index, track, clip)) = choice {
             self.select_track(track, window);
             if let Some(clip) = clip
@@ -1844,7 +1850,9 @@ impl EditorView {
             {
                 self.selected_clip = Some(clip);
             }
-            let row = if self.mode == EditorMode::Arrangement && self.arrangement_focus.enabled {
+            let row = if self.mode == EditorMode::Arrangement
+                && self.arrangement_focus.projection.enabled
+            {
                 Some(index)
             } else {
                 self.arrangement_row_index(index)

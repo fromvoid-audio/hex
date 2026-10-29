@@ -513,6 +513,10 @@ pub struct Status {
     /// This does not claim that an already committed musical route was undone.
     pub stream_invalidated_schedule: AtomicU64,
     pub stream_readiness_refused: AtomicBool,
+    /// A demanded active stream reported changed media; retained through Stop
+    /// until a replacement graph is installed or the output is replaced;
+    /// cached audio alone does not reverify the file.
+    pub stream_source_changed: AtomicBool,
     /// Frames committed before the latest BUFFERING gap; zero when complete.
     pub stream_committed_frames: AtomicU64,
     /// Latest rejected command is read through `rejected_action` for a coherent pair.
@@ -696,6 +700,7 @@ impl Status {
             stream_activated_command: AtomicU64::new(0),
             stream_invalidated_schedule: AtomicU64::new(0),
             stream_readiness_refused: AtomicBool::new(false),
+            stream_source_changed: AtomicBool::new(false),
             stream_committed_frames: AtomicU64::new(0),
             rejected_action_ticket: AtomicU64::new(0),
             rejected_action_reason: AtomicU32::new(0),
@@ -3032,6 +3037,10 @@ impl Callback {
                         return;
                     }
                     refused => {
+                        let source_changed = next
+                            .streams
+                            .as_mut()
+                            .is_some_and(|streams| streams.take_source_changed());
                         let handoff = next
                             .streams
                             .as_mut()
@@ -3054,10 +3063,14 @@ impl Callback {
                         }
                         self.reject_publication(
                             next.revision,
-                            handoff.map_or(
-                                PlaybackHandoffRejection::StreamedPagesNotReady,
-                                PlaybackHandoffRejection::from_error,
-                            ),
+                            if source_changed {
+                                PlaybackHandoffRejection::StreamSourceChanged
+                            } else {
+                                handoff.map_or(
+                                    PlaybackHandoffRejection::StreamedPagesNotReady,
+                                    PlaybackHandoffRejection::from_error,
+                                )
+                            },
                         );
                         self.return_graph(next);
                         self.status.publication_pending.store(false, Release);
@@ -3296,6 +3309,7 @@ impl Callback {
                     self.publish_active_routes(true);
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
+                    self.status.stream_source_changed.store(false, Release);
                     self.status.applied_source.publish(None);
                     self.status.applied_revision.store(revision, Release);
                     self.status.publication_pending.store(false, Release);
@@ -3811,6 +3825,7 @@ impl Callback {
                     },
                     play_applied: false,
                     readiness_refused: false,
+                    source_changed: false,
                     fault: None,
                     action_rejection: None,
                     activated: None,

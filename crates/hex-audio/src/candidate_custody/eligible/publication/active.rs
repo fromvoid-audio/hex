@@ -102,10 +102,16 @@ impl Queued {
                     return InstallDecision::Retry;
                 }
                 Err(_) => {
+                    let source_changed = next
+                        .streaming
+                        .as_mut()
+                        .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed));
                     next.cancel_stream_pending(request.domains);
-                    return InstallDecision::Refused(
-                        hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady,
-                    );
+                    return InstallDecision::Refused(if source_changed {
+                        hex_engine::PlaybackHandoffRejection::StreamSourceChanged
+                    } else {
+                        hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady
+                    });
                 }
             }
         }

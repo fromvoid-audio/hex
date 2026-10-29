@@ -426,6 +426,7 @@ impl EditorView {
                     .iter()
                     .map(|track| {
                         let track_id = track.id();
+                        let hierarchy_indent = self.track_hierarchy_indent.pixels(track_id);
                         let header_focus = self.track_header_focus(track_id, cx);
                         let click_focus = header_focus.clone();
                         let header = div()
@@ -482,6 +483,27 @@ impl EditorView {
                                     .min_w_0()
                                     .flex_1()
                                     .truncate()
+                                    .flex()
+                                    .items_center()
+                                    .children((hierarchy_indent > 0.0).then(|| {
+                                        div()
+                                            .w(px(hierarchy_indent))
+                                            .flex_shrink_0()
+                                            .debug_selector(move || {
+                                                format!(
+                                                    "track-hierarchy-indent-{}",
+                                                    track_id.value()
+                                                )
+                                            })
+                                    }))
+                                    .children(track.is_group().then(|| {
+                                        div()
+                                            .flex_shrink_0()
+                                            .debug_selector(move || {
+                                                format!("group-track-marker-{}", track_id.value())
+                                            })
+                                            .child(theme::text("group · "))
+                                    }))
                                     .child(theme::text(track.name().to_lowercase())),
                             )
                             .children(self.route_marker_for_track(

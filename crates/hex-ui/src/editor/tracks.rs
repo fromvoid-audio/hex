@@ -1488,8 +1488,17 @@ impl EditorView {
         } else {
             (name_colors.muted, name_colors.muted_text)
         };
+        let hierarchy_indent = self.track_hierarchy_indent.pixels(track_id);
         let track_name_view = super::track_header::name()
             .text_color(rgb(name_text))
+            .flex()
+            .items_center()
+            .children((hierarchy_indent > 0.0).then(|| {
+                div()
+                    .w(px(hierarchy_indent))
+                    .flex_shrink_0()
+                    .debug_selector(move || format!("track-hierarchy-indent-{}", track_id.value()))
+            }))
             .id(("track-name", track_id.value()))
             .on_mouse_down(
                 MouseButton::Left,
@@ -1509,6 +1518,12 @@ impl EditorView {
                     .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
             }))
             .debug_selector(|| format!("track-name-{}", track_id.value()))
+            .children(track.is_group().then(|| {
+                div()
+                    .flex_shrink_0()
+                    .debug_selector(move || format!("group-track-marker-{}", track_id.value()))
+                    .child(theme::text("group · "))
+            }))
             .child(self.track_name_label(
                 super::track_name::Target::Track(track.id()),
                 track.name(),

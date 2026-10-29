@@ -464,7 +464,7 @@ impl EditorView {
     }
     pub(super) fn retire_section_pointer_context_for_range(&mut self) {
         self.sections.cursor = None;
-        if !self.arrangement_focus.enabled {
+        if !self.arrangement_focus.projection.enabled {
             self.sections.selected = None;
             self.sections.selection.clear();
         }
@@ -1271,7 +1271,7 @@ impl EditorView {
                     && !self.sections.naming()
                     && self.context_menu.is_none()))
         {
-            if !self.arrangement_focus.enabled {
+            if !self.arrangement_focus.projection.enabled {
                 self.sections.selected = None;
                 self.sections.selection.clear();
             }
@@ -4526,7 +4526,7 @@ mod tests {
                 assert!(view.sections.pending.is_none());
                 assert!(view.last_enqueued_edit.is_none());
                 assert_eq!(view.state.as_ref().unwrap().project, before);
-                assert_eq!(view.arrangement_focus.enabled, focused);
+                assert_eq!(view.arrangement_focus.projection.enabled, focused);
                 assert!(
                     !focused || view.sections.selected == Some(ids[0]),
                     "focus retains its section driver while range scope includes hidden tracks"
@@ -4734,7 +4734,7 @@ mod tests {
                     ),
                     (before.can_undo, before.can_redo)
                 );
-                assert_eq!(view.arrangement_focus.enabled, focused);
+                assert_eq!(view.arrangement_focus.projection.enabled, focused);
             });
             visual.simulate_mouse_down(at, MouseButton::Left, shift);
             visual.simulate_mouse_up(at, MouseButton::Left, shift);
