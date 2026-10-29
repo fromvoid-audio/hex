@@ -109,6 +109,75 @@ fn actual_callback_finishes_before_dispatch_and_stop_discards_late_worker_comple
 }
 
 #[test]
+fn worker_failure_after_audible_pcm_silences_and_retires_on_control() {
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    struct ProcessorOwner(Arc<Mutex<Option<std::thread::ThreadId>>>);
+    impl Drop for ProcessorOwner {
+        fn drop(&mut self) {
+            *self.0.lock().unwrap() = Some(std::thread::current().id());
+        }
+    }
+    let dropped = Arc::new(Mutex::new(None));
+    let owner = ProcessorOwner(Arc::clone(&dropped));
+    let (control, mut callback, transport, worker) = profile();
+    let mut reaper = crate::plugin_worker::spawn(transport, worker, move |mut block| {
+        let _owner = &owner;
+        if block.sequence == 2 {
+            return Err(Fault::Protocol);
+        }
+        for frame in &mut block.pcm[..usize::from(block.frames)] {
+            frame[0] *= 0.5;
+            frame[1] *= 0.5;
+        }
+        Ok(block)
+    })
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    for block in 0..3 {
+        let host = render(&mut callback, 8, 2, false);
+        let expected = if block < 2 {
+            [0.0, 0.0]
+        } else {
+            [0.375, -0.25]
+        };
+        assert!(host.chunks_exact(2).all(|frame| frame == expected));
+        if block < 2 {
+            while reaper.completed_blocks() < block + 1 {
+                assert!(Instant::now() < deadline, "worker did not publish PCM");
+                std::thread::yield_now();
+            }
+        }
+    }
+    while !reaper.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "worker failure did not terminate"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        render(&mut callback, 8, 2, false)
+            .iter()
+            .all(|sample| *sample == 0.0)
+    );
+    assert!(control.status.render_fault.load(Acquire));
+    control.stop();
+    assert!(
+        render(&mut callback, 8, 2, false)
+            .iter()
+            .all(|sample| *sample == 0.0)
+    );
+    assert!(!control.status.playing.load(Acquire));
+    assert_eq!(reaper.join_on_control(), Err(Fault::Protocol));
+    assert_eq!(*dropped.lock().unwrap(), None);
+    drop(callback);
+    drop(reaper);
+    assert_eq!(*dropped.lock().unwrap(), Some(std::thread::current().id()));
+}
+
+#[test]
 fn real_final_host_refusal_and_graph_replacement_never_dispatch_a_pending_block() {
     for graph_change in [false, true] {
         let (mut control, mut callback, transport, mut worker) = profile();
