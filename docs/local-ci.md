@@ -135,6 +135,18 @@ is unproven; the guard does not change OS security or relocate executables.
 Other platforms retain their existing storage behavior without a new filesystem
 qualification claim.
 
+If a test executable stalls before the harness starts on an APFS target, try a
+separate fresh APFS target outside the existing target directory, for example:
+
+```sh
+export CARGO_TARGET_DIR="$PWD/artifacts/cargo-ci-target"
+```
+
+Keep that target for the same executor and run the normal checks again. Preserve
+the previous target and failed report; changing the location is not evidence that
+every test meets its time limit. Measure test setup and execution, including any
+copying or other setup, and investigate any remaining slow test separately.
+
 The summary records the identified filesystem, probe duration and dev cleanup
 duration (including failed cleanup). A target
 preparation failure names that phase and the next unstarted stage; a failed
