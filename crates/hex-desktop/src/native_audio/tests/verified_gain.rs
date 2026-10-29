@@ -44,6 +44,126 @@ fn actual_native_harness() -> Harness {
 }
 
 #[test]
+fn restored_stream_source_recovers_through_actual_desktop_restart() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = actual_native_harness();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let path = files.wav(48_000, 16_384);
+    let original = fs::read(&path).unwrap();
+    let imported = h.run(Request::Import(path.clone()));
+    let context = h.context.unwrap();
+    let expected_project = imported.state.project.clone();
+    let expected_revision = imported.state.revision;
+    let expected_undo = imported.state.can_undo;
+    let expected_redo = imported.state.can_redo;
+    h.applied(context);
+    let audio = h.audio.as_mut().unwrap();
+    let old_identity = audio.control.output_identity().unwrap();
+    audio.control.command(PlaybackCommand::Play).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let output = h.render();
+        if h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+            >= 64
+        {
+            assert_eq!(output, [[0.25; 2]; 64]);
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    fs::write(&path, b"changed source bytes").unwrap();
+    let seek = h
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command_with_ticket(PlaybackCommand::Seek(4096))
+        .unwrap();
+    loop {
+        h.render();
+        if let Some((ticket, reason)) = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .rejected_action()
+            && ticket == seek
+        {
+            assert_eq!(
+                reason,
+                hex_engine::PlaybackActionRejection::StreamSourceChanged
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "changed source seek was not rejected"
+        );
+        std::thread::yield_now();
+    }
+    fs::write(&path, &original).unwrap();
+    h.audio.take().unwrap().control.close();
+    h.backend.lock().unwrap().take();
+    let restarted = h.run(Request::RestartAudio {
+        project_generation: context.project_generation,
+        request_id: 71,
+    });
+    assert_eq!(restarted.state.project, expected_project);
+    assert_eq!(restarted.state.revision, expected_revision);
+    assert_eq!(restarted.state.can_undo, expected_undo);
+    assert_eq!(restarted.state.can_redo, expected_redo);
+    h.open();
+    assert_ne!(
+        h.audio.as_ref().unwrap().control.output_identity(),
+        Some(old_identity)
+    );
+    h.applied(context);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    loop {
+        let output = h.render();
+        if h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+            >= 64
+        {
+            assert_eq!(output, [[0.25; 2]; 64]);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "reverified source did not resume"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(fs::read(path).unwrap(), original);
+}
+
+#[test]
 fn gain_diagnostics_correlate_session_outcome_submission_and_callback_application() {
     use hex_audio::audio_diagnostics::{AudioDiagnosticKind, AudioDiagnosticsFlags};
     use hex_session::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
