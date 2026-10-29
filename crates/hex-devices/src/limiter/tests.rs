@@ -952,86 +952,90 @@ fn study_feasible_output_gain_plan() {
 
     // Preserve emitted frames while raising a knot spanning the pending/new
     // join; the next 64 source frames still end in a zero terminal plan.
-    // This is two finite horizons, not a reusable streaming implementation.
+    // This remains a finite offline experiment, not a streaming implementation.
     const NEXT: usize = 64;
     const NEXT_KNOTS: usize = NEXT / STRIDE;
-    let mut extended = vec![[0.0_f32; 2]; COUNT + NEXT + 126];
+    let mut extended = vec![[0.0_f32; 2]; COUNT + 2 * NEXT + 126];
     extended[63..63 + COUNT].copy_from_slice(&planned[63..63 + COUNT]);
-    let committed = extended[63..63 + 64].to_vec();
-    let source_all = &output[64..64 + COUNT + NEXT];
+    let source_all = &output[64..64 + COUNT + 2 * NEXT];
     let window_count = extended.len() - 63;
-    let mut added_gains = [[0.0_f64; NEXT_KNOTS]; 2];
-    for lane in 0..2 {
-        let mut constraints = vec![0.0_f64; window_count * 32];
-        for (start, window) in extended.windows(64).enumerate() {
-            for (phase, kernel) in wider.iter().enumerate() {
-                constraints[start * 32 + phase] = kernel
-                    .iter()
-                    .zip(window)
-                    .map(|(c, frame)| c * f64::from(frame[lane]))
-                    .sum();
-            }
-        }
-        let mut effects = vec![vec![0.0_f64; window_count * 32]; NEXT_KNOTS];
-        for (knot, effect) in effects.iter_mut().enumerate() {
-            let center = COUNT + knot * STRIDE;
-            for start in 0..window_count {
+    let mut joins = [[0.0_f64; 2]; 2];
+    let mut last_mean = 0.0_f64;
+    for transition in 0..2 {
+        let boundary = COUNT + transition * NEXT;
+        let committed = extended[63..63 + boundary - NEXT].to_vec();
+        let previous = extended[63..63 + boundary - STRIDE].to_vec();
+        let mut added_gains = [[0.0_f64; NEXT_KNOTS]; 2];
+        for lane in 0..2 {
+            let mut constraints = vec![0.0_f64; window_count * 32];
+            for (start, window) in extended.windows(64).enumerate() {
                 for (phase, kernel) in wider.iter().enumerate() {
-                    effect[start * 32 + phase] = kernel
+                    constraints[start * 32 + phase] = kernel
                         .iter()
-                        .enumerate()
-                        .filter_map(|(tap, coefficient)| {
-                            let index = (start + tap).checked_sub(63)?;
-                            let sample = source_all.get(index)?;
-                            let weight =
-                                (1.0 - index.abs_diff(center) as f64 / STRIDE as f64).max(0.0);
-                            Some(coefficient * f64::from(sample[lane]) * weight)
-                        })
+                        .zip(window)
+                        .map(|(c, frame)| c * f64::from(frame[lane]))
                         .sum();
                 }
             }
-        }
-        for _ in 0..3 {
-            for knot in 0..NEXT_KNOTS {
-                let mut step = 1.0 - added_gains[lane][knot];
-                for (&value, &slope) in constraints.iter().zip(&effects[knot]) {
-                    if slope > 0.0 {
-                        step = step.min((limit - value) / slope);
+            let mut effects = vec![vec![0.0_f64; window_count * 32]; NEXT_KNOTS];
+            for (knot, effect) in effects.iter_mut().enumerate() {
+                let center = boundary + knot * STRIDE;
+                for start in 0..window_count {
+                    for (phase, kernel) in wider.iter().enumerate() {
+                        effect[start * 32 + phase] = (center.saturating_sub(STRIDE - 1)
+                            ..=(center + STRIDE - 1).min(source_all.len() - 1))
+                            .filter_map(|index| {
+                                let tap = (63 + index).checked_sub(start)?;
+                                let coefficient = kernel.get(tap)?;
+                                let weight = 1.0 - index.abs_diff(center) as f64 / STRIDE as f64;
+                                Some(coefficient * f64::from(source_all[index][lane]) * weight)
+                            })
+                            .sum();
                     }
-                    if slope < 0.0 {
-                        step = step.min((-limit - value) / slope);
-                    }
-                }
-                let step = step.max(0.0);
-                added_gains[lane][knot] += step;
-                for (value, slope) in constraints.iter_mut().zip(&effects[knot]) {
-                    *value += step * slope;
                 }
             }
-        }
-        for (index, frame) in extended[63 + COUNT - STRIDE..63 + COUNT + NEXT]
-            .iter_mut()
-            .enumerate()
-        {
-            let index = index + COUNT - STRIDE;
-            let gain: f64 = added_gains[lane]
-                .iter()
+            for _ in 0..3 {
+                for knot in 0..NEXT_KNOTS {
+                    let mut step = 1.0 - added_gains[lane][knot];
+                    for (&value, &slope) in constraints.iter().zip(&effects[knot]) {
+                        if slope > 0.0 {
+                            step = step.min((limit - value) / slope);
+                        }
+                        if slope < 0.0 {
+                            step = step.min((-limit - value) / slope);
+                        }
+                    }
+                    let step = step.max(0.0);
+                    added_gains[lane][knot] += step;
+                    for (value, slope) in constraints.iter_mut().zip(&effects[knot]) {
+                        *value += step * slope;
+                    }
+                }
+            }
+            for (index, frame) in extended[63 + boundary - STRIDE..63 + boundary + NEXT]
+                .iter_mut()
                 .enumerate()
-                .map(|(knot, gain)| {
-                    gain * (1.0 - index.abs_diff(COUNT + knot * STRIDE) as f64 / STRIDE as f64)
-                        .max(0.0)
-                })
-                .sum();
-            frame[lane] =
-                (f64::from(frame[lane]) + f64::from(source_all[index][lane]) * gain) as f32;
+            {
+                let index = index + boundary - STRIDE;
+                let gain: f64 = added_gains[lane]
+                    .iter()
+                    .enumerate()
+                    .map(|(knot, gain)| {
+                        gain * (1.0
+                            - index.abs_diff(boundary + knot * STRIDE) as f64 / STRIDE as f64)
+                            .max(0.0)
+                    })
+                    .sum();
+                frame[lane] =
+                    (f64::from(frame[lane]) + f64::from(source_all[index][lane]) * gain) as f32;
+            }
         }
+        assert_eq!(&extended[63..63 + boundary - NEXT], &committed);
+        assert_eq!(&extended[63..63 + boundary - STRIDE], &previous);
+        assert!(added_gains.iter().all(|lane| lane[0] > 0.0));
+        joins[transition] = [added_gains[0][0], added_gains[1][0]];
+        last_mean = added_gains.iter().flatten().sum::<f64>() / (2 * NEXT_KNOTS) as f64;
     }
-    assert_eq!(&extended[63..63 + 64], &committed);
-    assert_eq!(
-        &extended[63 + 64..63 + COUNT - STRIDE],
-        &planned[63 + 64..63 + COUNT - STRIDE]
-    );
-    assert!(added_gains.iter().all(|lane| lane[0] > 0.0));
     assert!(
         extended
             .iter()
@@ -1102,8 +1106,7 @@ fn study_feasible_output_gain_plan() {
     }
     println!(
         "overlapped incumbent: 32-phase peak {extension_model_peak:.9}, 64-phase peak {phase64_peak:.9}, join gain {:?}, new mean knot gain {:.6}",
-        [added_gains[0][0], added_gains[1][0]],
-        added_gains.iter().flatten().sum::<f64>() / (2 * NEXT_KNOTS) as f64
+        joins, last_mean
     );
     println!("cardinal-sinc peak near selected frame {peak_index}: {cardinal_peak:.9}");
     assert!(extension_model_peak <= ceiling + 1e-7);
