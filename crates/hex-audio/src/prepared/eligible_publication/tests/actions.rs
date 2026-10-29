@@ -11,6 +11,112 @@ fn zero(measured: allocation_counter::AllocationInfo) {
     );
 }
 #[test]
+fn split_client_streams_and_retires_its_domain_after_quiescence() {
+    let _serial = serial();
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    let project = readiness::project_with_frames(12_288);
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(12_288);
+    let definition = wav.definition(asset, 11);
+    let mut owner = stream_fixture::owner_with_context(
+        &project,
+        definition.metadata.clone(),
+        Some(hex_engine::AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 25,
+        }),
+    );
+    let identity = owner.identity();
+    let limits = reservation(&mut owner);
+    let (control, callback) = channel(48_000).unwrap();
+    let root = control.native_candidate_root();
+    let (mut data, errors, terminals, mut client, mut publication) =
+        crate::native_callback_owner::reserve_native_worker(control, callback, None);
+    let mut retirement = crate::native_callback_owner::NativeRetirement::new(terminals, root);
+    let control = publication.control().unwrap();
+    control.enable_native_custody().unwrap();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    control.configure_audio_candidate_streaming(3).unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(definition),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .ok()
+        .unwrap();
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    let ticket = control
+        .stage_eligible_audio_candidate(owner, vec![domain], PublicationPolicy::InheritRuntime, 0)
+        .ok()
+        .unwrap();
+    client.activate();
+    client.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 8];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while client.status().unwrap().applied_revision.load(Acquire) == 0 {
+        zero(allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut output).unwrap();
+            })
+        }));
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(output, [[0.25; 2]; 8]);
+    client.stop();
+    zero(allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|c, _| {
+            c.begin_block();
+            c.render(&mut output).unwrap();
+        })
+    }));
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    drop(data);
+    drop(errors);
+    retirement.advance().unwrap();
+    let control = publication.control().unwrap();
+    let ready = loop {
+        control.reclaim();
+        if let Some(ready) = control.recover_audio_candidate(&ticket) {
+            break ready;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert_eq!(ready.disposed.identity(), identity);
+    loop {
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            assert_eq!(report.page_buffers, 4);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(ready);
+    drop(client);
+    drop(publication);
+    finish(&mut retirement);
+}
+#[test]
 fn changed_source_rejects_streamed_seek_with_recovery_guidance() {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
