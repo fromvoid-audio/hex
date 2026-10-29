@@ -1241,13 +1241,17 @@ fn actual_startup_deadline_retires_a_held_entry_without_release_or_processing() 
     let setup = case.setup(27);
     let build = build();
     let source = source();
+    // The held entry is observed before asserting timeout and is never released;
+    // a shorter fixture deadline exercises the same supervision and reap path.
+    let mut preparation = options().preparation;
+    preparation.limits.startup = Duration::from_millis(500);
     let result = case.after_stage(
         8,
         move || {
             Pending::prepare(
                 &build,
                 source,
-                options().preparation,
+                preparation,
                 PreparationCancellation::new_on_control().unwrap(),
                 setup,
             )
