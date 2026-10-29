@@ -7,15 +7,14 @@ use super::*;
 #[derive(Clone, Copy)]
 pub(super) struct BatchedSources<'a> {
     pub(super) index: usize,
-    pub(super) session_audio: Option<&'a [bool; MAX_TRACKS]>,
+    pub(super) audio: &'a [bool; MAX_TRACKS],
     pub(super) analytic: &'a [bool; MAX_TRACKS],
 }
 
 impl SessionPlayback {
-    /// Prepare resident audio and eligible unshared analytic MIDI. Arrangement
-    /// MIDI uses scratch only on audio-free tracks; Session MIDI has no audio
-    /// source in its active route. Active suppressions or continuations retain
-    /// per-frame scheduling. No page provider is read and
+    /// Prepare resident audio and eligible analytic MIDI. A shared receiver uses
+    /// its scratch only when its active route has no local audio source.
+    /// Active suppressions or continuations retain per-frame scheduling. No page provider is read and
     /// per-frame DSP/routing order is unchanged. The caller bounds each window
     /// before every transport or route discontinuity.
     pub(super) fn prepare_resident_sources(
@@ -25,7 +24,7 @@ impl SessionPlayback {
         frames: usize,
         eligible: &mut [bool; MAX_TRACKS],
         analytic: &mut [bool; MAX_TRACKS],
-    ) -> Result<bool, SessionPlaybackError> {
+    ) -> Result<(), SessionPlaybackError> {
         if frames > 256 || self.resident_source_scratch.len() != self.route_scratch.len() {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
@@ -38,9 +37,7 @@ impl SessionPlayback {
             .take(4)
             .count()
             == 4;
-        if batch_session {
-            eligible.fill(false);
-        }
+        eligible.fill(false);
         analytic.fill(false);
         let batch_analytic = self.suppression_scratch.is_empty()
             && self.analytic_continuations.iter().all(Option::is_none);
@@ -53,6 +50,64 @@ impl SessionPlayback {
         {
             let output = &mut scratch[..frames];
             output.fill([0.0; 2]);
+            if batch_analytic && self.revision.source_routing().is_shared(index) {
+                let track = self
+                    .revision
+                    .arrangement()
+                    .tracks()
+                    .get(index)
+                    .ok_or(SessionPlaybackError::UnknownTrack)?;
+                let audio_free = match route.owner {
+                    RouteOwner::Arrangement => track.clips.is_empty(),
+                    RouteOwner::Session { .. } | RouteOwner::Silence => true,
+                    RouteOwner::SessionAudio { .. } => false,
+                };
+                if audio_free
+                    && track.receives_source_audio()
+                    && self
+                        .mutable_instruments
+                        .get(index)
+                        .is_some_and(Option::is_none)
+                {
+                    let floor = self
+                        .historical_floor
+                        .into_iter()
+                        .chain(self.route_historical_floors.get(index).copied().flatten())
+                        .max();
+                    render_source_instrument_chunk(
+                        RouteSourceContext {
+                            revision: &self.revision,
+                            midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                self.revision.session(),
+                                self.midi_admission.as_ref(),
+                            ),
+                            route: effective_midi_route(
+                                &self.revision,
+                                &self.route_scratch,
+                                index,
+                            )?,
+                            historical_floor: floor,
+                            suppressions: &self.suppression_scratch,
+                            continuations: &self.analytic_continuations,
+                            index,
+                            raw: true,
+                            timing: &timing,
+                            table: self.revision.session().sine_table(),
+                        },
+                        &self.route_scratch,
+                        self.historical_floor,
+                        &self.route_historical_floors,
+                        &mut self.spans,
+                        performance_frame,
+                        arrangement_frame,
+                        output,
+                    )?;
+                    *analytic
+                        .get_mut(index)
+                        .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
+                    continue;
+                }
+            }
             match route.owner {
                 RouteOwner::Arrangement => {
                     let track = self
@@ -87,10 +142,15 @@ impl SessionPlayback {
                         *analytic
                             .get_mut(index)
                             .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
-                    } else if track.audio_content_enabled() {
-                        track
-                            .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
-                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    } else if track.clips.iter().all(|clip| !clip.is_streamed()) {
+                        if track.audio_content_enabled() {
+                            track
+                                .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
+                                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                        }
+                        *eligible
+                            .get_mut(index)
+                            .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
                     }
                 }
                 RouteOwner::Session { clip, .. } if batch_analytic => {
@@ -192,7 +252,7 @@ impl SessionPlayback {
                 _ => {}
             }
         }
-        Ok(batch_session)
+        Ok(())
     }
     /// Publish one transport origin immediately before processing its Main
     /// sample. Pre-pushing a whole block could overwrite the bounded stamp ring.
@@ -300,12 +360,7 @@ impl SessionPlayback {
                             // This route has no audio source; its scratch window
                             // holds the instrument side of the ordered graph.
                         } else if let Some(sample_index) = resident_source
-                            .filter(|batch| {
-                                matches!(route.owner, RouteOwner::Arrangement)
-                                    || batch.session_audio.is_some_and(|eligible| {
-                                        eligible.get(index).copied().unwrap_or(false)
-                                    })
-                            })
+                            .filter(|batch| batch.audio.get(index).copied().unwrap_or(false))
                             .map(|batch| batch.index)
                         {
                             audio[0] = *self

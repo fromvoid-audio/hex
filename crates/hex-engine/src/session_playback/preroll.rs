@@ -715,11 +715,10 @@ fn runtime_storage_preflight_bytes(
         return_buses.len(),
         std::mem::size_of::<[Frame; PREROLL_BLOCK_FRAMES]>(),
     )?;
-    if !arrangement.contains_streamed_sources()
-        && arrangement
-            .signal_graph
-            .as_ref()
-            .is_some_and(|graph| graph.needs_runtime() && graph.needs_upstream_frame_routing())
+    if arrangement
+        .signal_graph
+        .as_ref()
+        .is_some_and(|graph| graph.needs_runtime() && graph.needs_upstream_frame_routing())
     {
         add_vec(
             &mut total,
