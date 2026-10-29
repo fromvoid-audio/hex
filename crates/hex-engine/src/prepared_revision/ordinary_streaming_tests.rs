@@ -703,6 +703,15 @@ fn closed_zero_latency_group_demand_matches_render_through_loop_and_seek() {
 
 #[test]
 fn resident_batch_keeps_streamed_session_lookup_and_miss_semantics() {
+    check_streamed_session_lookup_and_miss_semantics(false);
+}
+
+#[test]
+fn resident_session_batch_keeps_streamed_session_lookup_and_miss_semantics() {
+    check_streamed_session_lookup_and_miss_semantics(true);
+}
+
+fn check_streamed_session_lookup_and_miss_semantics(with_resident_sessions: bool) {
     struct FirstMiss<'a> {
         key: StreamSourceKey,
         samples: &'a [Frame],
@@ -723,7 +732,12 @@ fn resident_batch_keeps_streamed_session_lookup_and_miss_semantics() {
             self.requests += 1;
         }
     }
-    let mut f = crate::signal_graph::tests::fixture(&[&[7], &[]], 32);
+    let delays: &[&[u32]] = if with_resident_sessions {
+        &[&[7], &[], &[], &[], &[]]
+    } else {
+        &[&[7], &[]]
+    };
+    let mut f = crate::signal_graph::tests::fixture(delays, 32);
     for audio in f.media.values_mut() {
         *audio = crate::Audio::new(48_000, vec![[0.125, -0.25]; 32]).unwrap();
     }
@@ -761,6 +775,31 @@ fn resident_batch_keeps_streamed_session_lookup_and_miss_semantics() {
     else {
         panic!("created session clip")
     };
+    let mut resident_clips = Vec::new();
+    if with_resident_sessions {
+        for &track in &f.tracks[2..] {
+            let resident_asset = f.editor.project().track(track).unwrap().clips()[0].asset();
+            f.media.insert(
+                resident_asset,
+                crate::Audio::new(48_000, vec![[0.0; 2]; 32]).unwrap(),
+            );
+            let hex_project::Created::SessionClip(resident_clip) = f
+                .editor
+                .execute(hex_project::Command::CreateSessionAudioClip {
+                    track,
+                    scene,
+                    name: "resident".into(),
+                    asset: resident_asset,
+                    source_start: 0,
+                    source_end: 32,
+                })
+                .unwrap()
+            else {
+                panic!("created resident clip")
+            };
+            resident_clips.push(resident_clip);
+        }
+    }
     let key = StreamSourceKey::new(77, asset);
     let mut sources: BTreeMap<_, _> = f
         .media
@@ -810,6 +849,14 @@ fn resident_batch_keeps_streamed_session_lookup_and_miss_semantics() {
                 quantization: LaunchQuantization::Immediate,
             })
             .unwrap();
+        for &resident_clip in &resident_clips {
+            runtime
+                .apply(SessionPlaybackCommand::LaunchClip {
+                    clip: resident_clip,
+                    quantization: LaunchQuantization::Immediate,
+                })
+                .unwrap();
+        }
         runtime.apply(SessionPlaybackCommand::Play).unwrap();
         let mut pages = FirstMiss {
             key,
