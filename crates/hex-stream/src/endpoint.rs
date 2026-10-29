@@ -16,6 +16,10 @@ use rtrb::{Consumer, Producer, PushError};
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
 
+// Installed roles use bits 0–2, legacy pinning uses bit 3, and pending
+// readiness roles use bits 4–6. Legacy pins retain their replacement policy.
+const READINESS_PINS: u8 = 0b0111_0111;
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PageRequest(pub(crate) ResourcePageKey);
 
@@ -235,6 +239,16 @@ impl Endpoint {
     }
 
     pub fn pump_ready(&mut self, limit: usize) -> usize {
+        self.pump_ready_for_pending(limit, &[])
+    }
+
+    /// Install bounded ready pages while retaining any complete extent needed
+    /// by an outstanding readiness intent. This is not a readiness receipt.
+    pub(crate) fn pump_ready_for_pending(
+        &mut self,
+        limit: usize,
+        pending: &[(u8, &[crate::StreamResourceExtent])],
+    ) -> usize {
         self.flush_held_returns();
         let mut installed = 0;
         for _ in 0..limit {
@@ -250,12 +264,61 @@ impl Endpoint {
                 self.return_buffer(page);
                 continue;
             }
-            if self.insert_ready(page) {
+            let mut pending_mask = 0;
+            for (mask, extents) in pending {
+                if let Ok(index) = extents
+                    .binary_search_by_key(&(key.source, key.page_index), |extent| {
+                        (extent.source, extent.page_index)
+                    })
+                {
+                    let extent = extents[index];
+                    if extent.start < extent.end
+                        && extent.end <= page.valid_frames
+                        && page.valid_frames <= page.payload_len()
+                    {
+                        pending_mask |= mask;
+                    }
+                }
+            }
+            if self.insert_ready_with_mask(page, pending_mask) {
                 installed += 1;
             }
         }
         self.flush_held_returns();
         installed
+    }
+
+    /// Protect already-installed complete extents while their set is pending.
+    pub(crate) fn protect_present(&mut self, mask: u8, extents: &[crate::StreamResourceExtent]) {
+        for extent in extents {
+            let key = ResourcePageKey {
+                source: extent.source,
+                page_index: extent.page_index,
+            };
+            if let Some(index) = self.cache_lookup(key)
+                && let CacheSlot::Occupied { page, pinned } = &mut self.cache[index]
+                && extent.start < extent.end
+                && extent.end <= page.valid_frames
+                && page.valid_frames <= page.payload_len()
+            {
+                *pinned |= mask;
+            }
+        }
+    }
+
+    /// Return only unprotected cache victims before requesting missing pages.
+    /// The limit bounds evictions and all page ownership stays in the pool.
+    pub(crate) fn reclaim_for_missing(&mut self, missing: usize, limit: usize) {
+        let available = self.max_cached_pages.saturating_sub(self.cache_count);
+        for _ in 0..missing.saturating_sub(available).min(limit) {
+            let Some(index) = self.unpinned_victim() else {
+                break;
+            };
+            if let Some((page, _)) = self.cache_remove(index) {
+                self.return_buffer(page);
+            }
+        }
+        self.flush_held_returns();
     }
 
     pub fn take_failures(&mut self, output: &mut [StreamFailure]) -> usize {
@@ -470,7 +533,11 @@ impl Endpoint {
         None
     }
 
+    #[cfg(test)]
     fn insert_ready(&mut self, page: Box<PageBuffer>) -> bool {
+        self.insert_ready_with_mask(page, 0)
+    }
+    fn insert_ready_with_mask(&mut self, page: Box<PageBuffer>, pending_mask: u8) -> bool {
         let Some(key) = page.key else {
             self.stale_pages = self.stale_pages.saturating_add(1);
             self.return_buffer(page);
@@ -479,20 +546,24 @@ impl Endpoint {
         if let Some(index) = self.cache_lookup(key) {
             // A readiness-protected page cannot be replaced by a shorter or
             // duplicate decode while an actual protected extent depends on it.
-            if matches!(self.cache[index], CacheSlot::Occupied { pinned, .. } if pinned & 7 != 0) {
+            if matches!(self.cache[index], CacheSlot::Occupied { pinned, .. } if pinned & READINESS_PINS != 0)
+            {
                 self.return_buffer(page);
                 return false;
             }
             let old = std::mem::replace(
                 &mut self.cache[index],
-                CacheSlot::Occupied { page, pinned: 0 },
+                CacheSlot::Occupied {
+                    page,
+                    pinned: pending_mask,
+                },
             );
             if let CacheSlot::Occupied { page, pinned } = old {
                 if let CacheSlot::Occupied {
                     pinned: current, ..
                 } = &mut self.cache[index]
                 {
-                    *current = pinned;
+                    *current |= pinned;
                 }
                 self.return_buffer(page);
             }
@@ -511,7 +582,10 @@ impl Endpoint {
             self.return_buffer(page);
             return false;
         };
-        self.cache[index] = CacheSlot::Occupied { page, pinned: 0 };
+        self.cache[index] = CacheSlot::Occupied {
+            page,
+            pinned: pending_mask,
+        };
         self.cache_count += 1;
         true
     }
@@ -979,6 +1053,107 @@ mod tests {
                 .iter()
                 .all(|slot| matches!(slot, CacheSlot::Empty))
         );
+    }
+
+    #[test]
+    fn pending_ready_page_survives_later_insertion_in_same_pump() {
+        let mut test = endpoint(3, 4, 4);
+        let StreamResourceKey::Audio(source) = test.endpoint.source_keys[0] else {
+            panic!("audio fixture")
+        };
+        let key = |page_index| PageKey { source, page_index };
+        assert!(test.endpoint.insert_ready(page(key(0))));
+        assert!(test.endpoint.insert_ready(page(key(1))));
+        let active = crate::StreamPageExtent {
+            source,
+            page_index: 0,
+            start: 0,
+            end: 1,
+        };
+        let pending = crate::StreamPageExtent {
+            page_index: 2,
+            ..active
+        };
+        test.endpoint.replace_protection(1, &[active.into()]);
+        assert!(test.ready.push(page(key(2))).is_ok());
+        assert!(test.ready.push(page(key(3))).is_ok());
+        let desired = [pending.into()];
+        #[cfg(feature = "allocation-probe")]
+        let mut installed = 0;
+        #[cfg(feature = "allocation-probe")]
+        let allocations = allocation_counter::measure(|| {
+            installed = test.endpoint.pump_ready_for_pending(2, &[(16, &desired)])
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        let installed = test.endpoint.pump_ready_for_pending(2, &[(16, &desired)]);
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(installed, 1);
+        assert!(test.endpoint.has_extent(active));
+        assert!(test.endpoint.has_extent(pending));
+        assert!(test.endpoint.cache_lookup(key(3)).is_none());
+        assert!(test.returns.pop().is_ok());
+        assert!(test.returns.pop().is_ok());
+    }
+
+    #[test]
+    fn reclaim_missing_pages_returns_only_unprotected_victims_with_a_bounded_limit() {
+        let mut test = endpoint(5, 8, 8);
+        let StreamResourceKey::Audio(source) = test.endpoint.source_keys[0] else {
+            panic!("audio fixture")
+        };
+        let keys: Vec<_> = (0..4)
+            .map(|page_index| PageKey { source, page_index })
+            .collect();
+        for key in &keys {
+            assert!(test.endpoint.insert_ready(page(*key)));
+        }
+        let active = crate::StreamPageExtent {
+            source,
+            page_index: 0,
+            start: 0,
+            end: 1,
+        };
+        let pending = crate::StreamPageExtent {
+            page_index: 1,
+            ..active
+        };
+        test.endpoint.replace_protection(1, &[active.into()]);
+        test.endpoint.protect_present(16, &[pending.into()]);
+        #[cfg(feature = "allocation-probe")]
+        let allocations = allocation_counter::measure(|| test.endpoint.reclaim_for_missing(2, 1));
+        #[cfg(not(feature = "allocation-probe"))]
+        test.endpoint.reclaim_for_missing(2, 1);
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(test.endpoint.cache_count, 3);
+        assert!(test.endpoint.has_extent(active));
+        assert!(test.endpoint.has_extent(pending));
+        assert!(test.returns.pop().is_ok());
+        test.endpoint.reclaim_for_missing(2, 1);
+        assert_eq!(test.endpoint.cache_count, 2);
+        assert!(test.endpoint.has_extent(active));
+        assert!(test.endpoint.has_extent(pending));
+        assert!(test.returns.pop().is_ok());
+        test.endpoint.reclaim_for_missing(3, 8);
+        assert_eq!(test.endpoint.cache_count, 2);
+        assert!(test.returns.pop().is_err());
     }
 
     #[test]
