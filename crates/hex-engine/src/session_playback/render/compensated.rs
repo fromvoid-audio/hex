@@ -4,16 +4,26 @@
 //! sample at a time through the same compensation owner.
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(super) struct BatchedSources<'a> {
+    pub(super) index: usize,
+    pub(super) session_audio: Option<&'a [bool; MAX_TRACKS]>,
+    pub(super) analytic: &'a [bool; MAX_TRACKS],
+}
+
 impl SessionPlayback {
-    /// Prepare resident Arrangement and eligible Session audio sources; no page
-    /// provider is read and per-frame DSP/routing order is unchanged. The caller
-    /// bounds the window before every transport or route discontinuity.
+    /// Prepare resident audio and eligible unshared analytic Arrangement MIDI.
+    /// Audio-free analytic tracks reuse their own scratch; active suppressions or
+    /// continuations retain per-frame scheduling. No page provider is read and
+    /// per-frame DSP/routing order is unchanged. The caller bounds each window
+    /// before every transport or route discontinuity.
     pub(super) fn prepare_resident_sources(
         &mut self,
         performance_frame: u64,
         arrangement_frame: u64,
         frames: usize,
         eligible: &mut [bool; MAX_TRACKS],
+        analytic: &mut [bool; MAX_TRACKS],
     ) -> Result<bool, SessionPlaybackError> {
         if frames > 256 || self.resident_source_scratch.len() != self.route_scratch.len() {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -30,6 +40,9 @@ impl SessionPlayback {
         if batch_session {
             eligible.fill(false);
         }
+        analytic.fill(false);
+        let batch_analytic = self.suppression_scratch.is_empty()
+            && self.analytic_continuations.iter().all(Option::is_none);
         for (index, (route, scratch)) in self
             .route_scratch
             .iter()
@@ -46,7 +59,28 @@ impl SessionPlayback {
                         .tracks()
                         .get(index)
                         .ok_or(SessionPlaybackError::UnknownTrack)?;
-                    if track.audio_content_enabled() {
+                    if batch_analytic
+                        && track.clips.is_empty()
+                        && track.midi_source_index.is_none()
+                        && !self.revision.source_routing().is_shared(index)
+                        && self.mutable_instruments[index].is_none()
+                        && track
+                            .instrument
+                            .as_ref()
+                            .is_some_and(|instrument| !instrument.mutable)
+                    {
+                        track
+                            .render_raw_instrument(
+                                arrangement_frame,
+                                performance_frame,
+                                output,
+                                &self.suppression_scratch,
+                                &self.analytic_continuations,
+                                Some(self.revision.session().timing()),
+                            )
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                        analytic[index] = true;
+                    } else if track.audio_content_enabled() {
                         track
                             .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -142,7 +176,7 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         external: Option<hex_lattice::NativeExternalAutomation<'_>>,
-        resident_source: Option<(usize, Option<&[bool; MAX_TRACKS]>)>,
+        resident_source: Option<BatchedSources<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -192,14 +226,20 @@ impl SessionPlayback {
                     let mut audio = [[0.0; 2]];
                     let mut generator = [[0.0; 2]];
                     if self.playing {
-                        if let Some(sample_index) = resident_source
-                            .filter(|(_, eligible)| {
+                        let analytic_index = resident_source
+                            .filter(|batch| batch.analytic[index])
+                            .map(|batch| batch.index);
+                        if analytic_index.is_some() {
+                            // This track has no audio clips; its scratch window
+                            // holds the instrument side of the ordered graph.
+                        } else if let Some(sample_index) = resident_source
+                            .filter(|batch| {
                                 matches!(route.owner, RouteOwner::Arrangement)
-                                    || eligible.is_some_and(|eligible| {
+                                    || batch.session_audio.is_some_and(|eligible| {
                                         eligible.get(index).copied().unwrap_or(false)
                                     })
                             })
-                            .map(|(sample_index, _)| sample_index)
+                            .map(|batch| batch.index)
                         {
                             audio[0] = *self
                                 .resident_source_scratch
@@ -238,7 +278,13 @@ impl SessionPlayback {
                         // source cannot contribute instrument samples. Shared
                         // sources and session routes must still use the normal
                         // scheduler, even when this track has no local instrument.
-                        if track.instrument.is_some()
+                        if let Some(sample_index) = analytic_index {
+                            generator[0] = *self
+                                .resident_source_scratch
+                                .get(index)
+                                .and_then(|samples| samples.get(sample_index))
+                                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                        } else if track.instrument.is_some()
                             || track.midi_source_index.is_some()
                             || self.revision.source_routing().is_shared(index)
                             || !matches!(route.owner, RouteOwner::Arrangement)
