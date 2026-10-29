@@ -5,7 +5,9 @@
 //! an ordinary FIFO receipt; Escape/blur cancel held input, never admitted work.
 //! Command before or during capture latches marker-only intent independently of
 //! Control's live snapping. Option-drag copies song content at structural edges.
-//! Leaving the lane retains the last valid preview.
+//! Leaving the lane retains the last valid preview. Body moves/copies use the
+//! existing Window pointer lease; its painted cursor follows the held command,
+//! while released preview custody remains independent of input capture.
 //! Five-pixel inner edges resize one section; a touching seam resizes both, or
 //! the left marker's end under Command. Paint and input share native bracket cursors.
 //! Shift-click toggles section membership throughout the lane. Header drags own
@@ -187,6 +189,87 @@ enum MenuKind {
 }
 
 impl EditorView {
+    fn section_drag_cursor(&self) -> Option<gpui::CursorStyle> {
+        let g = self.sections.gesture.as_ref()?;
+        if !self.section_current(g) || !matches!(g.mode, Mode::Reorder(_) | Mode::Move(_)) {
+            return None;
+        }
+        Some(
+            if matches!(
+                g.command,
+                Some(Command::DuplicateArrangementSectionAt { .. })
+            ) {
+                super::drag::copy_cursor(true)
+            } else if g.capture.displaced(4.0) {
+                gpui::CursorStyle::ClosedHand
+            } else {
+                gpui::CursorStyle::OpenHand
+            },
+        )
+    }
+    /// The existing Window lease owns body move/copy input and cursor only.
+    /// Release still transfers the original section display to its FIFO receipt.
+    pub(super) fn capture_section_drag(&self, window: &mut Window, cx: &Context<Self>) -> bool {
+        let Some(cursor) = self.section_drag_cursor() else {
+            return true;
+        };
+        let Some(g) = self.sections.gesture.as_ref() else {
+            return true;
+        };
+        let stamp = (g.generation, g.revision, g.capture.key, g.capture.origin_x);
+        let matches = move |g: &Gesture| {
+            (g.generation, g.revision, g.capture.key, g.capture.origin_x) == stamp
+        };
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        window.capture_pointer(
+            cx.entity_id(),
+            gpui::MouseButton::Left,
+            cursor,
+            move |event, window, cx| {
+                let moved = event.downcast_ref::<gpui::MouseMoveEvent>();
+                let released = event
+                    .downcast_ref::<gpui::MouseUpEvent>()
+                    .filter(|e| e.button == gpui::MouseButton::Left);
+                let Some((position, modifiers)) = moved
+                    .map(|e| (e.position, e.modifiers))
+                    .or_else(|| released.map(|e| (e.position, e.modifiers)))
+                else {
+                    return;
+                };
+                let _ = owner.update(cx, |view, cx| {
+                    if !view.sections.gesture.as_ref().is_some_and(matches) {
+                        return;
+                    }
+                    if !view.focus.is_focused(window) {
+                        view.cancel_section_pointer();
+                    } else if released.is_some() {
+                        view.finish_section_pointer(
+                            f32::from(position.x),
+                            f32::from(position.y),
+                            modifiers,
+                        );
+                    } else {
+                        view.update_section_pointer(
+                            f32::from(position.x),
+                            f32::from(position.y),
+                            modifiers,
+                        );
+                    }
+                    cx.notify();
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |view, cx| {
+                    if view.sections.gesture.as_ref().is_some_and(matches) {
+                        view.cancel_section_pointer();
+                        cx.notify();
+                    }
+                });
+            },
+            cx,
+        )
+    }
     pub(super) fn section_pointer_events(
         &self,
         cx: &mut Context<Self>,
@@ -198,7 +281,13 @@ impl EditorView {
             .is_some_and(|state| state.project.tracks().is_empty());
         gpui::canvas(
             |_, _, _| (),
-            move |_, _, window, _| {
+            move |_, _, window, cx| {
+                let view = entity.read(cx);
+                if view.focus.is_focused(window)
+                    && let Some(cursor) = view.section_drag_cursor()
+                {
+                    window.renew_pointer_capture(entity.entity_id(), cursor);
+                }
                 // Populated arrangements register their shared capture on the
                 // existing body canvas; the empty layout has no body capture.
                 if !empty {
@@ -225,6 +314,9 @@ impl EditorView {
                         );
                         if captured {
                             view.focus.focus(window);
+                            if !view.capture_section_drag(window, cx) {
+                                view.cancel_section_pointer();
+                            }
                             cx.notify();
                         }
                         captured
@@ -356,7 +448,6 @@ impl EditorView {
         self.duplicate_intent.cancel_chain();
         self.sections.selected = id;
         self.sections.selection = id.into_iter().collect();
-        self.retain_clip_detail_for_time_selection();
         self.selected_track = None;
         self.arrangement_focus.observe_active_track(None);
         self.selected_clip = None;
@@ -373,7 +464,7 @@ impl EditorView {
     }
     pub(super) fn retire_section_pointer_context_for_range(&mut self) {
         self.sections.cursor = None;
-        if !self.arrangement_focus.enabled {
+        if !self.arrangement_focus.projection.enabled {
             self.sections.selected = None;
             self.sections.selection.clear();
         }
@@ -1180,7 +1271,7 @@ impl EditorView {
                     && !self.sections.naming()
                     && self.context_menu.is_none()))
         {
-            if !self.arrangement_focus.enabled {
+            if !self.arrangement_focus.projection.enabled {
                 self.sections.selected = None;
                 self.sections.selection.clear();
             }
@@ -1535,6 +1626,7 @@ impl EditorView {
         let previous_focus = window.focused(cx);
         focus.focus(window);
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             selected: 0,
@@ -1588,6 +1680,7 @@ impl EditorView {
     pub(super) fn section_elements(
         &self,
         viewport: Viewport,
+        scale: f32,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let Some(state) = self.state.as_ref() else {
@@ -1622,12 +1715,8 @@ impl EditorView {
         if viewport.length == 0 {
             return Vec::new();
         }
-        let header_height = self
-            .main_track_lane_bounds
-            .map_or(super::clip_name::CLIP_NAME_HEIGHT, |lane| {
-                super::time_selection::header_hit_height(lane.height)
-            });
         let mut elements = Vec::new();
+        let mut selected_edges = Vec::new();
         for (index, m) in display.markers.iter().enumerate() {
             let (Ok(start), Ok(end)) = (
                 display.tempo.beat_to_frame(m.start),
@@ -1669,6 +1758,8 @@ impl EditorView {
             let pixel_width = self.main_track_lane_bounds.map_or(0.0, |lane| {
                 lane.width * ((end - start) as f32 / viewport.length as f32)
             });
+            let stroke = 1.0 / scale.max(1.0);
+            let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
             let mut element = hex_widgets::rectangle_surface(
                 (start - viewport.start) as f32 / viewport.length as f32,
                 (end - start) as f32 / viewport.length as f32, pixel_width,
@@ -1677,6 +1768,10 @@ impl EditorView {
                 .debug_selector(move || format!("arrangement-section-{index}"))
                 .top_0()
                 .bottom_0()
+                .left_0()
+                .w_full()
+                .border_l(px(if has_border { stroke } else { 0.0 }))
+                .border_r(px(0.0))
                 .cursor(gpui::CursorStyle::Arrow)
                 .border_color(rgb(border))
                 .bg(section_fill(colors.0))
@@ -1690,7 +1785,12 @@ impl EditorView {
                     })
                     .into()
                 });
-            let mut header = hex_widgets::rectangle_body(-1.0, header_height)
+            let mut header = hex_widgets::rectangle_body(-1.0, super::clip_name::CLIP_NAME_HEIGHT)
+                // Resolve against this layout, including a single H/resize frame.
+                // Previous lane measurements still own pointer geometry, not paint height.
+                .h(relative(super::time_selection::SELECTION_HANDLE_FRACTION))
+                .min_h(px(super::clip_name::CLIP_NAME_HEIGHT))
+                .max_h(relative(1.0))
                 .id(("arrangement-section-header", index))
                 .debug_selector(move || format!("arrangement-section-header-{index}"))
                 .bg(rgb(colors.0))
@@ -1734,8 +1834,40 @@ impl EditorView {
                 element =
                     element.children([hex_widgets::rectangle_edge(part, INNER_EDGE_WIDTH, 0.0)]);
             }
-            elements.push(element.into_any_element());
+            elements.push(
+                super::tracks::clip_boundary_shell(
+                    element,
+                    (start - viewport.start) as f32 / viewport.length as f32,
+                    (end - start) as f32 / viewport.length as f32,
+                    stroke,
+                    border,
+                    hover.2,
+                    true,
+                    has_border,
+                    0.0,
+                    move || format!("arrangement-section-trailing-{index}"),
+                )
+                .into_any_element(),
+            );
+            if selected {
+                selected_edges.push(
+                    div()
+                        .debug_selector(move || {
+                            format!("arrangement-section-selected-trailing-{index}")
+                        })
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(relative(
+                            (end - viewport.start) as f32 / viewport.length as f32,
+                        ))
+                        .w(px(stroke))
+                        .bg(rgb(border))
+                        .into_any_element(),
+                );
+            }
         }
+        elements.extend(selected_edges);
         for pair in display.markers.windows(2) {
             if pair[0].end != pair[1].start {
                 continue;
@@ -2095,8 +2227,23 @@ mod tests {
     fn option_drag_copies_sections_with_live_modifiers_and_acknowledged_selection(
         cx: &mut TestAppContext,
     ) {
-        for (late, select_elsewhere) in [(false, false), (true, false), (false, true)] {
+        for (late, select_elsewhere, empty) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
             let (handle, editor, ids) = fixture(cx);
+            if empty {
+                editor.update(cx, |view, cx| {
+                    let track = view.state.as_ref().unwrap().project.tracks()[0].id();
+                    assert!(view.enqueue(Request::Edit(Command::RemoveTrack(track))));
+                    let event = next(&view.service);
+                    assert!(event.error.is_none());
+                    view.receive(event);
+                    cx.notify();
+                });
+            }
             let mut visual = VisualTestContext::from_window(handle, cx);
             visual.run_until_parked();
             editor.update(cx, |view, cx| {
@@ -2134,6 +2281,10 @@ mod tests {
             );
             visual.simulate_modifiers_change(copy);
             visual.run_until_parked();
+            assert_eq!(
+                visual.rendered_cursor_style(),
+                Some(gpui::CursorStyle::DragCopy)
+            );
             editor.read_with(cx, |view, _| {
                 assert!(matches!(view.sections.gesture.as_ref().unwrap().command,
                     Some(Command::DuplicateArrangementSectionAt { section, target, after: true })
@@ -2142,6 +2293,11 @@ mod tests {
             });
             // Option is live copy intent, unlike latched marker-only Command.
             visual.simulate_modifiers_change(Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(
+                visual.rendered_cursor_style(),
+                Some(gpui::CursorStyle::ClosedHand)
+            );
             editor.read_with(cx, |view, _| {
                 assert!(matches!(
                     view.sections.gesture.as_ref().unwrap().command,
@@ -2184,6 +2340,11 @@ mod tests {
             for _ in 0..3 {
                 visual.update(|window, _| window.refresh());
                 visual.run_until_parked();
+                assert_ne!(
+                    visual.rendered_cursor_style(),
+                    Some(gpui::CursorStyle::DragCopy),
+                    "pending preview must not retain a held copy cursor"
+                );
                 assert_eq!(
                     [
                         bounds(&mut visual, 0),
@@ -2241,6 +2402,62 @@ mod tests {
     }
 
     #[gpui::test]
+    fn section_copy_cursor_cancels_without_late_release_edits(cx: &mut TestAppContext) {
+        for loss in ["escape", "button", "window", "focus", "generation"] {
+            let (handle, editor, _) = fixture(cx);
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.update(|window, _| window.activate_window());
+            visual.run_until_parked();
+            let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
+            let (from, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 13)));
+            let copy = Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            };
+            visual.simulate_mouse_down(from, MouseButton::Left, copy);
+            visual.simulate_mouse_move(to, MouseButton::Left, copy);
+            visual.run_until_parked();
+            assert_eq!(
+                visual.rendered_cursor_style(),
+                Some(gpui::CursorStyle::DragCopy)
+            );
+            let outside = point(px(1.0), px(1.0));
+            visual.simulate_mouse_move(outside, MouseButton::Left, copy);
+            visual.run_until_parked();
+            assert_eq!(
+                visual.rendered_cursor_style(),
+                Some(gpui::CursorStyle::DragCopy)
+            );
+            match loss {
+                "escape" => visual.simulate_keystrokes("escape"),
+                "button" => visual.simulate_mouse_move(outside, None, copy),
+                "window" => visual.deactivate_window(),
+                "focus" => visual.update(|w, cx| {
+                    editor.update(cx, |v, cx| v.search_browser(w, cx));
+                }),
+                _ => editor.update(cx, |v, cx| {
+                    v.project_generation += 1;
+                    cx.notify();
+                }),
+            }
+            visual.run_until_parked();
+            visual.simulate_mouse_up(outside, MouseButton::Left, copy);
+            visual.run_until_parked();
+            assert_ne!(
+                visual.rendered_cursor_style(),
+                Some(gpui::CursorStyle::DragCopy)
+            );
+            editor.read_with(cx, |v, _| {
+                assert!(
+                    v.sections.gesture.is_none() && v.sections.pending.is_none(),
+                    "{loss}"
+                );
+                assert_eq!(v.state.as_ref().unwrap().project, before, "{loss}");
+                assert_eq!(v.worker_requests_pending, 0);
+            });
+        }
+    }
+    #[gpui::test]
     fn command_drag_replaces_overlapped_markers_and_retains_preview_until_actual_ack(
         cx: &mut TestAppContext,
     ) {
@@ -2268,6 +2485,10 @@ mod tests {
         visual.simulate_mouse_move(point(px(1.0), px(1.0)), MouseButton::Left, copy);
         visual.simulate_modifiers_change(marker_modifier);
         visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::ClosedHand)
+        );
         editor.read_with(cx, |view, _| {
             assert!(matches!(
                 view.sections.gesture.as_ref().unwrap().command,
@@ -2665,13 +2886,26 @@ mod tests {
                 "dragging equal-meter sections must not create meter boundaries"
             );
         });
-        assert_eq!(
-            visual.rendered_background("arrangement-grid-line-192000"),
-            Some(gpui::Background::from(rgb(theme::color(
-                theme::PaletteRole::Border
-            )))),
-            "the moved section seam remains an ordinary grid line, not a red meter marker"
+        assert!(
+            visual
+                .debug_bounds("arrangement-grid-line-192000")
+                .is_some()
         );
+        editor.read_with(cx, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            let viewport = v.visible_viewport(state.timeline_frames);
+            let width = v.main_track_lane_bounds.unwrap().width;
+            let line = super::super::musical_time::grid_lines(
+                &state.project,
+                viewport,
+                width,
+                v.snap_grid,
+            )
+            .into_iter()
+            .find(|line| line.frame == 192_000)
+            .unwrap();
+            assert!(!line.meter_marker, "the moved seam is not a meter marker");
+        });
     }
     #[gpui::test]
     fn selected_sections_l_uses_outer_bounds_and_one_history_edit(cx: &mut TestAppContext) {
@@ -2683,7 +2917,7 @@ mod tests {
         visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(chorus, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        for (key, start, end) in [("l", 192_000, 288_000), ("cmd-l", 0, 288_000)] {
+        for (key, start, end) in [("l", 192_000, 288_000), ("w", 0, 288_000)] {
             if start == 0 {
                 let intro = editor.read_with(cx, |v, _| position(v, 2));
                 let shift = Modifiers {
@@ -3015,6 +3249,7 @@ mod tests {
     fn section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels(
         cx: &mut TestAppContext,
     ) {
+        let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         use std::sync::Arc;
         let (handle, editor, ids) = fixture(cx);
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -3147,6 +3382,7 @@ mod tests {
         });
         editor.update(cx, |view, _| {
             view.cancel_section_pointer();
+            view.audio = None;
         });
     }
 
@@ -4290,7 +4526,7 @@ mod tests {
                 assert!(view.sections.pending.is_none());
                 assert!(view.last_enqueued_edit.is_none());
                 assert_eq!(view.state.as_ref().unwrap().project, before);
-                assert_eq!(view.arrangement_focus.enabled, focused);
+                assert_eq!(view.arrangement_focus.projection.enabled, focused);
                 assert!(
                     !focused || view.sections.selected == Some(ids[0]),
                     "focus retains its section driver while range scope includes hidden tracks"
@@ -4498,7 +4734,7 @@ mod tests {
                     ),
                     (before.can_undo, before.can_redo)
                 );
-                assert_eq!(view.arrangement_focus.enabled, focused);
+                assert_eq!(view.arrangement_focus.projection.enabled, focused);
             });
             visual.simulate_mouse_down(at, MouseButton::Left, shift);
             visual.simulate_mouse_up(at, MouseButton::Left, shift);

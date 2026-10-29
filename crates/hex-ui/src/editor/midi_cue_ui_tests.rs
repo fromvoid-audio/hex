@@ -163,6 +163,15 @@ fn rendered_ruler_case(cx: &mut TestAppContext, stateful: bool) {
         );
         assert_eq!(view.midi_selection.ids(), before.3.as_slice());
     });
+    editor.update(cx, |view, cx| {
+        view.selected_clip = None;
+        view.selected_track = None;
+        assert!(view.detail_clip_id().is_none());
+        assert!(view.midi_playhead_source_beat().is_none());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("midi-note-roll").is_none());
     editor.update(cx, |view, _| {
         view.audio.take();
     });

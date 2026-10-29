@@ -1,7 +1,7 @@
 //! Caller-finite exact demand backing follows its actual runtime State and
 //! returns to the reserved Root slot before normal metadata destruction.
 use super::*;
-use hex_engine::StreamPageExtent;
+use hex_engine::StreamResourceExtent;
 mod actions;
 mod demand;
 mod ordinary;
@@ -32,7 +32,8 @@ struct PendingAction {
 }
 pub(super) struct Workspace {
     handoff_diagnostic: Option<hex_engine::PlaybackHandoffError>,
-    pub(super) extents: [Vec<StreamPageExtent>; 2],
+    pub(super) source_changed: bool,
+    pub(super) extents: [Vec<StreamResourceExtent>; 2],
     pub(super) limit: usize,
     pub(super) stamps: [Option<hex_stream::ReadinessStamp>; 2],
     pub(super) active: [Option<hex_stream::ReadinessStamp>; 2],
@@ -49,13 +50,14 @@ impl Workspace {
     }
 
     fn prepare(limit: usize) -> Result<Self, &'static str> {
-        let mut extents: [Vec<StreamPageExtent>; 2] = std::array::from_fn(|_| Vec::new());
+        let mut extents: [Vec<StreamResourceExtent>; 2] = std::array::from_fn(|_| Vec::new());
         for rows in &mut extents {
             rows.try_reserve_exact(limit)
                 .map_err(|_| "stream demand reservation failed")?;
         }
         Ok(Self {
             handoff_diagnostic: None,
+            source_changed: false,
             extents,
             limit,
             stamps: [None; 2],
@@ -71,7 +73,7 @@ impl Workspace {
     pub(super) fn backing_bytes(&self) -> Option<usize> {
         self.extents.iter().try_fold(0usize, |bytes, rows| {
             rows.capacity()
-                .checked_mul(std::mem::size_of::<StreamPageExtent>())?
+                .checked_mul(std::mem::size_of::<StreamResourceExtent>())?
                 .checked_add(bytes)
         })
     }
@@ -84,6 +86,7 @@ impl Workspace {
     }
     pub(super) fn clear(&mut self) {
         self.handoff_diagnostic = None;
+        self.source_changed = false;
         for rows in &mut self.extents {
             rows.clear();
         }
@@ -132,7 +135,7 @@ impl Custody {
         let requested = count
             .checked_mul(2)
             .and_then(|n| n.checked_mul(limit))
-            .and_then(|n| n.checked_mul(std::mem::size_of::<StreamPageExtent>()))
+            .and_then(|n| n.checked_mul(std::mem::size_of::<StreamResourceExtent>()))
             .ok_or("stream demand storage overflow")?;
         let temporary = count
             .checked_mul(std::mem::size_of::<Workspace>())

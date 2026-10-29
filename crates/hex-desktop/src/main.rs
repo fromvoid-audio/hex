@@ -7,6 +7,8 @@
 //! with independently verified control-worker stream pages for offline output.
 //! Reads hex-plugin-catalog's copied source metadata at hex-preferences' existing
 //! application-support location; neither grants native source admission.
+//! Uses fs2, sha2 and nix on control workers for local update custody, receipt identity
+//! and bounded owned-helper cancellation; none is used by an audio callback.
 //!
 //! # Does not own
 //! Does not implement project edits, codecs or musical DSP. Native source/publication adapters
@@ -19,8 +21,20 @@ mod native_audio;
 mod native_sources;
 mod streamed_export;
 mod time_selection_profile;
+mod update_lease;
+mod update_supervisor;
 
 fn main() {
+    // Keep shared publication custody until every desktop worker has shut
+    // down. Do not pass this file descriptor to any update helper.
+    let _update_lease = match update_lease::acquire_for_current_executable() {
+        Ok(lease) => lease,
+        Err(error) => {
+            let _ = writeln!(std::io::stderr().lock(), "{error}");
+            std::process::exit(1);
+        }
+    };
+
     let mut arguments = std::env::args_os().skip(1);
     if arguments
         .next()
@@ -68,7 +82,27 @@ fn main() {
     let midi_handle = midi_worker.as_ref().ok().map(hex_midi::Worker::handle);
     let mut mts_worker = hex_mts::Worker::start();
     let mts_handle = mts_worker.as_ref().ok().map(hex_mts::Worker::handle);
-    Application::new().run(move |cx: &mut App| {
+    let update_client = if _update_lease.is_some() {
+        std::env::current_exe()
+            .ok()
+            .and_then(|executable| std::fs::canonicalize(executable).ok())
+            .and_then(|executable| {
+                let target = executable.ancestors().nth(3)?.to_path_buf();
+                let (client, worker) = hex_ui::update_channel();
+                if let Err(error) = update_supervisor::start(target, worker) {
+                    eprintln!("local update worker unavailable: {error}");
+                    return None;
+                }
+                Some(client)
+            })
+    } else {
+        None
+    };
+    let application = Application::new().with_assets(hex_ui::assets::HexAssets);
+    application.run(move |cx: &mut App| {
+        if let Some(client) = &update_client {
+            hex_ui::install_update_client(cx, client.clone());
+        }
         if let Some(handle) = &midi_handle {
             hex_ui::install_controller_input(cx, handle.clone());
         }
@@ -105,17 +139,20 @@ fn main() {
     }
 }
 
-/// Startup-only flag; repeated options deliberately use the last value.
+/// Current development default: recommended failure/action tracing, including
+/// optimized builds. Startup-only overrides deliberately use the last value;
+/// audio-only flags retain their separate category scope.
 fn diagnostic_options(
     arguments: impl Iterator<Item = std::ffi::OsString>,
 ) -> Result<(hex_audio::audio_diagnostics::AudioDiagnosticsFlags, bool), &'static str> {
     use hex_audio::audio_diagnostics::AudioDiagnosticsFlags;
-    let mut flags = AudioDiagnosticsFlags::OFF;
-    let mut actions = false;
+    let recommended = "publication,transport,readiness".parse::<AudioDiagnosticsFlags>()?;
+    let mut flags = recommended;
+    let mut actions = true;
     for argument in arguments {
         if argument == "--diagnostics" {
             // Raw timing floods the bounded trace on every callback; request it explicitly.
-            flags = "publication,transport,readiness".parse()?;
+            flags = recommended;
             actions = true;
         } else if argument == "--diagnostics=off" {
             flags = AudioDiagnosticsFlags::OFF;
@@ -145,12 +182,24 @@ mod diagnostics_flag_tests {
     use super::*;
     use hex_audio::audio_diagnostics::AudioDiagnosticsFlags as Flags;
     #[test]
-    fn tracing_is_opt_in_and_categories_or_explicit_off_survive_other_flags() {
+    fn ordinary_development_startup_enables_failure_and_action_diagnostics() {
+        for args in [vec![], vec!["--demo"]] {
+            let (flags, actions) =
+                diagnostic_options(args.into_iter().map(std::ffi::OsString::from)).unwrap();
+            assert!(actions);
+            assert!(flags.contains(Flags::PUBLICATION));
+            assert!(flags.contains(Flags::TRANSPORT));
+            assert!(flags.contains(Flags::READINESS));
+            assert!(!flags.contains(Flags::TIMING));
+        }
+    }
+
+    #[test]
+    fn audio_categories_and_explicit_off_survive_other_flags() {
         let parse = |args: &[&str]| {
             diagnostic_options(args.iter().map(|arg| std::ffi::OsString::from(*arg)))
                 .map(|options| options.0)
         };
-        assert_eq!(parse(&["--demo"]), Ok(Flags::OFF));
         assert_eq!(parse(&["--audio-diagnostics"]), Ok(Flags::ALL));
         assert_eq!(
             parse(&["--audio-diagnostics", "--audio-diagnostics=off"]),
@@ -167,6 +216,18 @@ mod diagnostics_flag_tests {
         assert_eq!(
             diagnostic_options(["--diagnostics".into(), "--diagnostics=off".into()].into_iter()),
             Ok((Flags::OFF, false))
+        );
+        assert_eq!(
+            diagnostic_options(["--diagnostics=off".into()].into_iter()),
+            Ok((Flags::OFF, false))
+        );
+        assert_eq!(
+            diagnostic_options(["--audio-diagnostics=off".into()].into_iter()),
+            Ok((Flags::OFF, true))
+        );
+        assert_eq!(
+            diagnostic_options(["--diagnostics=off".into(), "--diagnostics".into()].into_iter()),
+            Ok(("publication,transport,readiness".parse().unwrap(), true))
         );
         assert!(diagnostic_options(["--diagnostics=wat".into()].into_iter()).is_err());
     }

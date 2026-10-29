@@ -177,6 +177,91 @@ fn retained_root_labels_are_bounded_and_independent_of_the_project() {
     assert_eq!(project.snapshot(), before);
     assert_eq!(root.clip.retained_snapshot(), snapshot);
 }
+
+#[test]
+fn retained_root_nesting_has_a_bounded_depth() {
+    use crate::{AudioClipEdit, AudioEvent, AudioEvents};
+    use std::sync::Arc;
+
+    let f = fixture();
+    let project = f.editor.project();
+    let clip = project.clip(f.audio).unwrap();
+    let tempo = Arc::new(project.tempo_map().clone());
+    let mut root = project
+        .restore_retained_audio_root(1, clip.retained_snapshot(), tempo.clone())
+        .unwrap();
+    for depth in 2..=crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH + 1 {
+        let mut snapshot = clip.retained_snapshot();
+        snapshot.looping = false;
+        snapshot.source_phase = 0;
+        let mut edit = AudioClipEdit::capture(clip);
+        Arc::make_mut(&mut edit.domain).looping = false;
+        Arc::make_mut(&mut edit.domain).source_phase = 0;
+        Arc::make_mut(&mut edit.domain).events = Some(Arc::new(AudioEvents {
+            next_id: 2,
+            events: vec![AudioEvent {
+                active: true,
+                gain: crate::ClipGain::UNITY,
+                source: 1,
+                id: 1,
+                start: 0,
+                end: clip.duration(),
+                source_start: 0,
+                fade: None,
+            }],
+            sources: vec![root.clone()],
+        }));
+        snapshot.edit = Some(edit);
+        let result = project.restore_retained_audio_root(1, snapshot, tempo.clone());
+        if depth <= crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH {
+            root = result.unwrap();
+            assert_eq!(root.clip.referenced_assets().count(), depth);
+        } else {
+            assert_eq!(
+                result.unwrap_err().0,
+                "retained audio nesting limit reached"
+            );
+            break;
+        }
+    }
+    let before = root.clip.audio_events();
+    let changed = before
+        .edited(
+            crate::AudioEventEdit::SetRetainedPathActive {
+                sources: vec![1; crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH - 1],
+                events: vec![1],
+                active: false,
+            },
+            root.clip.audio_edit().unwrap().domain.clock.length(),
+        )
+        .unwrap();
+    let mut events = &changed;
+    for _ in 0..crate::retained_audio::MAX_RETAINED_AUDIO_DEPTH - 1 {
+        events = events.sources[0]
+            .clip
+            .audio_edit()
+            .unwrap()
+            .domain
+            .events
+            .as_ref()
+            .unwrap();
+    }
+    assert!(!events.events[0].active);
+    assert!(before.events[0].active);
+    assert!(
+        before
+            .edited(
+                crate::AudioEventEdit::SetRetainedPathActive {
+                    sources: vec![1, 999],
+                    events: vec![1],
+                    active: false,
+                },
+                root.clip.audio_edit().unwrap().domain.clock.length(),
+            )
+            .is_err()
+    );
+    assert_eq!(root.clip.audio_events(), before);
+}
 #[test]
 fn mixed_group_either_anchor_preserves_offsets_payloads_ids_and_one_history_step() {
     for midi_anchor in [false, true] {

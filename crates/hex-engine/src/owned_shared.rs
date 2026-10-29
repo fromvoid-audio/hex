@@ -67,6 +67,64 @@ impl<T> OwnedShared<T> {
 // Closed canonical operation for the ordinary gain-recording path. No generic
 // mutable borrow or Arc escapes, and private prepared roots expose no caller.
 impl OwnedShared<crate::Project> {
+    pub(crate) fn prepare_scalar_automation(
+        &mut self,
+        input: crate::device_automation::NativeParameterInputTarget,
+    ) -> Result<(), crate::Invalid> {
+        let project = Arc::get_mut(&mut self.arc).ok_or(crate::Invalid(
+            "scalar automation preparation is already shared",
+        ))?;
+        let mut found = false;
+        for chain in project
+            .tracks
+            .iter_mut()
+            .map(|track| &mut track.device_chain)
+            .chain(
+                project
+                    .return_buses
+                    .iter_mut()
+                    .map(|bus| &mut bus.device_chain),
+            )
+            .chain(std::iter::once(&mut project.main_device_chain))
+        {
+            if !chain.iter().any(|device| {
+                device.owner == input.identity().owner()
+                    && device.device_id == input.identity().device_id()
+            }) {
+                continue;
+            }
+            let devices = Arc::get_mut(chain).ok_or(crate::Invalid(
+                "scalar automation device preparation is already shared",
+            ))?;
+            for device in devices {
+                if device.owner != input.identity().owner()
+                    || device.device_id != input.identity().device_id()
+                {
+                    continue;
+                }
+                if found {
+                    return Err(crate::Invalid(
+                        "scalar automation device identity is not unique",
+                    ));
+                }
+                found = true;
+                if input.target().is_host() {
+                    device
+                        .automation
+                        .prepare_external_host(input.target())
+                        .map_err(|_| {
+                            crate::Invalid("scalar automation host lane exceeds its budget")
+                        })?;
+                }
+            }
+        }
+        if !found {
+            return Err(crate::Invalid("scalar automation device is unavailable"));
+        }
+        project.requires_scalar_automation = true;
+        Ok(())
+    }
+
     pub(crate) fn arm_gain_recording(
         &mut self,
         track: hex_project::TrackId,

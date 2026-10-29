@@ -1,6 +1,9 @@
+pub(crate) mod alias_projection_v60;
 pub(crate) mod appearance;
 mod arrangement_sections;
+mod audio_alias_projection;
 pub(crate) mod audio_events;
+pub(crate) mod automation_read;
 pub(crate) mod branch_audio;
 pub(crate) mod clip_activation;
 pub(crate) mod clip_aliases;
@@ -10,7 +13,9 @@ pub(crate) mod content_views;
 pub(crate) mod crossfades;
 pub(crate) mod device_assets;
 pub(crate) mod device_automation;
+pub(crate) mod event_activation;
 pub(crate) mod event_fades;
+pub(crate) mod event_gain;
 pub(crate) mod fade_curve_positions;
 pub(crate) mod fade_shapes;
 pub(crate) mod gain_envelopes;
@@ -19,11 +24,14 @@ pub(crate) mod grouped_audio;
 mod host_gain;
 pub(crate) mod legacy;
 pub(crate) mod legacy_early;
+pub(crate) mod midi_clip_gain;
 mod midi_clip_volume;
 pub(crate) mod midi_one_shot;
 mod migrations;
 pub(crate) mod musical_audio;
 pub(crate) mod native_sources;
+pub(crate) mod nested_audio;
+pub(crate) mod note_activation;
 mod original_sources;
 pub(crate) mod playable_routing;
 pub(crate) mod provenance;
@@ -1898,6 +1906,7 @@ impl DocumentV12 {
                                         .notes
                                         .into_iter()
                                         .map(|note| MidiNoteSnapshot {
+                                            active: true,
                                             id: note.id,
                                             start_raw: note.start_raw,
                                             duration_raw: note.duration_raw,
@@ -2299,6 +2308,7 @@ impl DocumentV11 {
                                         .notes
                                         .into_iter()
                                         .map(|note| MidiNoteSnapshot {
+                                            active: true,
                                             id: note.id,
                                             start_raw: note.start_raw,
                                             duration_raw: note.duration_raw,
@@ -2389,6 +2399,7 @@ impl DocumentV10 {
                                             .notes
                                             .into_iter()
                                             .map(|n| MidiNoteSnapshot {
+                                                active: true,
                                                 id: n.id,
                                                 start_raw: n.start_raw,
                                                 duration_raw: n.duration_raw,
@@ -2537,6 +2548,7 @@ impl DocumentV9 {
                                         .notes
                                         .into_iter()
                                         .map(|n| MidiNoteSnapshot {
+                                            active: true,
                                             id: n.id,
                                             start_raw: n.start_raw,
                                             duration_raw: n.duration_raw,
@@ -2654,6 +2666,7 @@ fn midi_v10_into_snapshot(clip: MidiClipDtoV10) -> MidiClipSnapshot {
             .notes
             .into_iter()
             .map(|note| MidiNoteSnapshot {
+                active: true,
                 id: note.id,
                 start_raw: note.start_raw,
                 duration_raw: note.duration_raw,
@@ -2775,6 +2788,7 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
                                     .notes
                                     .into_iter()
                                     .map(|note| MidiNoteSnapshot {
+                                        active: true,
                                         id: note.id,
                                         start_raw: note.start_raw,
                                         duration_raw: note.duration_raw,
@@ -3075,3 +3089,5 @@ fn clips_into_snapshot(clips: Vec<Clip>) -> Result<Vec<ClipSnapshot>, StorageErr
         })
         .collect()
 }
+
+pub(crate) mod host_automation;

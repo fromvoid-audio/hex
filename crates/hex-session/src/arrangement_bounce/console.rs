@@ -53,6 +53,7 @@ pub(super) fn content(
                         .iter()
                         .map(|n| hex_project::MidiNoteSnapshot {
                             id: n.id().value(),
+                            active: n.active(),
                             start_raw: n.start().raw(),
                             duration_raw: n.duration().raw(),
                             pitch: n.pitch(),

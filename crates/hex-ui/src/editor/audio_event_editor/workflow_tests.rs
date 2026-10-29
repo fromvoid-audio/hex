@@ -154,6 +154,56 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
         );
         assert!(v.error.is_some());
     });
+    // The same oversized source refuses event gain during preparation. Its
+    // released value remains displayed until the real terminal arrives.
+    editor.update(&mut visual, |v, cx| {
+        v.audio_event_editor.range = None;
+        v.error = None;
+        cx.notify();
+    });
+    repaint(&mut visual, &editor);
+    let grip = visual.debug_bounds("audio-event-gain-1").unwrap().center();
+    let moved = point(grip.x, grip.y + px(20.0));
+    visual.simulate_mouse_down(grip, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let terminal = loop {
+        if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
+            if event.request_complete {
+                break event;
+            }
+            editor.update(&mut visual, |v, cx| {
+                v.receive(event);
+                cx.notify();
+            });
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "real event gain terminal"
+        );
+        std::thread::yield_now();
+    };
+    assert!(terminal.error.is_some());
+    for _ in 0..3 {
+        repaint(&mut visual, &editor);
+        assert!(visual.debug_bounds("audio-event-gain-value-1").is_some());
+        editor.read_with(&visual, |v, _| {
+            assert!(v.audio_event_editor.pending.is_some());
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(terminal);
+        cx.notify();
+    });
+    repaint(&mut visual, &editor);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.pending.is_none());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(!v.state.as_ref().unwrap().can_undo);
+        assert!(v.error.is_some());
+    });
     assert_eq!(std::fs::read(original_path).unwrap(), original_bytes);
 }
 
@@ -195,7 +245,8 @@ fn edit(
 }
 fn select(visual: &mut VisualTestContext, from: f32, to: f32) {
     let b = visual.debug_bounds("audio-events-waveform").unwrap();
-    let down = point(b.left() + b.size.width * from, b.top() + px(10.0));
+    // Paint blank ruler time below the distinct playback-start grab target.
+    let down = point(b.left() + b.size.width * from, b.top() + px(16.0));
     let up = point(b.left() + b.size.width * to, down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
@@ -252,7 +303,8 @@ fn event_overlap_accent_covers_only_replaced_audio_and_survives_release(cx: &mut
         v.audio_event_editor.grid = SnapGrid::Off
     });
     let body = visual.debug_bounds("audio-events-waveform").unwrap();
-    let down = point(body.left() + body.size.width * 0.125, body.top() + px(26.0));
+    // The top five pixels now own event gain; move from the remaining rail.
+    let down = point(body.left() + body.size.width * 0.125, body.top() + px(32.0));
     let up = point(body.left() + body.size.width * 0.375, down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
@@ -623,7 +675,7 @@ fn check_event_move_release(cx: &mut TestAppContext, outside: bool) {
         Arc::clone(&v.state.as_ref().unwrap().project)
     });
     let b = visual.debug_bounds("audio-events-waveform").unwrap();
-    let down = point(b.left() + b.size.width * 0.125, b.top() + px(26.0));
+    let down = point(b.left() + b.size.width * 0.125, b.top() + px(32.0));
     let up = point(b.left() + b.size.width * 0.5, down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(up, MouseButton::Left, Modifiers::default());
@@ -649,6 +701,21 @@ fn check_event_move_release(cx: &mut TestAppContext, outside: bool) {
             assert_eq!(v.state.as_ref().unwrap().project, before)
         });
     }
+    let lane = editor.read_with(&visual, |v, _| v.drag_lanes[&v.selected_track.unwrap()]);
+    let empty = point(
+        px(lane.left + lane.width * 0.95),
+        px(lane.top + lane.height * 0.75),
+    );
+    visual.simulate_click(empty, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("audio-events-waveform").is_none());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.pending.is_some())
+    });
+    let original_header = visual.debug_bounds(name(clip)).unwrap().center();
+    visual.simulate_click(original_header, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.debug_bounds("audio-event-1"), Some(held));
     let other_header = visual.debug_bounds(name(other)).unwrap().center();
     visual.simulate_click(other_header, Modifiers::default());
     visual.run_until_parked();
@@ -1926,3 +1993,48 @@ fn cmd_f_fits_the_focused_event_selection_without_opening_browser(cx: &mut TestA
 }
 #[path = "pointer_tests.rs"]
 mod pointer_tests;
+
+#[gpui::test]
+fn held_two_selects_audio_event_edges_without_editing_source(cx: &mut TestAppContext) {
+    let (_files, mut visual, editor, _clip) = open(cx);
+    focus_events(&mut visual);
+    let event = visual.debug_bounds("audio-event-1").unwrap();
+    let down = point(event.left() + px(2.), event.center().y);
+    let end = point(down.x + px(70.), down.y);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    visual.simulate_mouse_move(down, None, Modifiers::default());
+    visual.run_until_parked();
+    let key = gpui::Keystroke::parse("2").unwrap();
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: key.clone(),
+        is_held: false,
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::IBeam)
+    );
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::IBeam)
+    );
+    visual.simulate_event(gpui::KeyUpEvent { keystroke: key });
+    visual.run_until_parked();
+    assert_ne!(
+        visual.rendered_cursor_style(),
+        Some(gpui::CursorStyle::IBeam)
+    );
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let (start, end) = v.audio_event_editor.range.unwrap();
+        assert!(end > start);
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+}
+
+#[path = "play_start_tests.rs"]
+mod saved_start_tests;

@@ -404,6 +404,22 @@ fn registered_resources_export_mix_range_captures_stems_and_float_bounce() {
                 .map(|(a, b)| [a[0] + b[0], a[1] + b[1]])
                 .collect();
             assert_eq!(pcm16(&capture), quantize(&captured));
+            let capture_range = directory.0.join("capture-range.wav");
+            let report = hex_export::render_prepared_controlled_with_device_resources(
+                &capture_range,
+                Arc::clone(&f.revision),
+                &f.resources,
+                129,
+                320,
+                ExportSignal::CapturedMix(vec![
+                    OutputCaptureId::Track(f.sampler),
+                    OutputCaptureId::Return(f.bus),
+                ]),
+                &ExportControl::default(),
+            )
+            .unwrap();
+            assert_eq!(report.frames, 320);
+            assert_eq!(pcm16(&capture_range), quantize(&captured[129..449]));
             let stems = directory.0.join("stems");
             hex_export::render_stems_new_with_device_resources(
                 &stems,

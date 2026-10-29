@@ -27,12 +27,56 @@ fn fixture() -> (Editor, TrackId, SceneId, ClipId) {
 }
 fn note(pitch: u8) -> MidiNoteInsert {
     MidiNoteInsert {
+        active: true,
         start: BeatTime::ZERO,
         duration: BeatTime::from_raw(1 << 32),
         pitch,
         channel: 0,
         velocity: 100,
     }
+}
+
+#[test]
+fn clip_gain_is_independent_of_curve_and_has_valid_history() {
+    let (mut editor, _, _, clip) = fixture();
+    let length = BeatTime::from_raw(4 << 32);
+    let curve = crate::MidiClipVolume::new(
+        vec![crate::MidiClipVolumePoint::linear(
+            BeatTime::ZERO,
+            crate::MidiClipGain::new(0.25).unwrap(),
+        )],
+        length,
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceMidiClipVolume {
+            clip,
+            volume: curve.clone(),
+        })
+        .unwrap();
+    let gain = crate::ClipGain::new(-6_000).unwrap();
+    cycle(&mut editor, Command::SetMidiClipGain { clip, gain }, true);
+    let volume = editor.project().midi_clip_volume(clip).unwrap();
+    assert_eq!(volume.points(), curve.points());
+    assert_eq!(volume.clip_gain(), gain);
+    editor
+        .execute(Command::ReplaceMidiClipVolume {
+            clip,
+            volume: crate::MidiClipVolume::default(),
+        })
+        .unwrap();
+    let volume = editor.project().midi_clip_volume(clip).unwrap();
+    assert!(volume.points().is_empty());
+    assert_eq!(volume.clip_gain(), gain);
+    assert!(editor.undo());
+    assert_eq!(
+        editor.project().midi_clip_volume(clip).unwrap().points(),
+        curve.points()
+    );
+    assert_eq!(
+        editor.project().midi_clip_volume(clip).unwrap().clip_gain(),
+        gain
+    );
 }
 fn cycle(editor: &mut Editor, command: Command, prepared: bool) {
     let old = editor.project().clone();

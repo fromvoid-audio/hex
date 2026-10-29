@@ -53,7 +53,6 @@ impl AudioTransformPreparation {
             || edit.domain.pitch_cents != 0
             || !edit.domain.source_gain.is_empty()
             || sources.is_empty()
-            || sources.len() != events.sources.len()
             || events.events.iter().any(|event| event.source == 0)
         {
             return Err(Invalid(
@@ -62,22 +61,21 @@ impl AudioTransformPreparation {
         }
         // A grouped root is frozen in frames, so tempo only serves the finite
         // placement projection. Its frame clock is independent of this map.
-        let tempo = &sources[0].root.tempo;
+        let first_root = events
+            .sources
+            .first()
+            .ok_or(Invalid("grouped audio source missing"))?;
+        let anchor = sources
+            .iter()
+            .find(|source| std::ptr::eq(source.root, first_root))
+            .ok_or(Invalid("grouped audio dependency missing"))?;
+        let tempo = &anchor.root.tempo;
         let projection = AudioViewProjection::new(clip, tempo)?;
         if clip.duration() > MAX_AUDIO_DOMAIN_FRAMES || projection.occurrence_count() > 8_192 {
             return Err(Invalid("grouped audio exceeds bounded placement work"));
         }
         let mut work = edit.domain.clock.length();
         for source in sources {
-            if source
-                .root
-                .clip
-                .audio_edit()
-                .and_then(|edit| edit.domain.events.as_ref())
-                .is_some_and(|events| !events.sources.is_empty())
-            {
-                return Err(Invalid("nested grouped audio preparation is unsupported"));
-            }
             let root = &source.root.clip;
             let root_work = if let Some(inner) = root.audio_edit() {
                 inner.validate(root, &source.root.tempo, source.asset.playback_frames())?;
@@ -120,7 +118,6 @@ impl AudioTransformPreparation {
         // source's immutable PCM and conversion identity participates explicitly.
         // Group output is frozen in frames; translating its destination does
         // not change the captured source program or require another PCM copy.
-        let anchor = &sources[0];
         if let Some(audio) = self.lookup_key(anchor.audio, anchor.asset, |key| {
             matches!(key, EntryKey::Group { root_only: old_root_only, edit: old, duration, sources: old_sources }
                 if *old_root_only == root_only && old == edit && *duration == clip.duration()
@@ -148,24 +145,44 @@ impl AudioTransformPreparation {
             .try_reserve_exact(root_bytes / std::mem::size_of::<crate::Frame>())
             .map_err(|_| Invalid("grouped audio allocation failed"))?;
         root_pcm.resize(root_bytes / std::mem::size_of::<crate::Frame>(), [0.0; 2]);
-        for source in sources {
+        // Dependencies are collected in depth-first order. Advance once across
+        // sibling subtrees instead of repeatedly scanning from the beginning.
+        let mut source_index = 0usize;
+        for root in &events.sources {
             if self.cancelled() {
                 return Err(Invalid("audio preparation cancelled"));
             }
-            let compiled = self.compile_clip_at_tempo(
-                &source.root.tempo,
-                &source.root.clip,
-                source.asset,
-                PreparedAudioSourceRef::Resident(source.audio),
-            )?;
+            let offset = sources[source_index..]
+                .iter()
+                .position(|source| std::ptr::eq(source.root, root))
+                .ok_or(Invalid("grouped audio dependency missing"))?;
+            source_index += offset;
+            let source = &sources[source_index];
+            let child_start = source_index + 1;
+            let child_end = child_start
+                .checked_add(root.clip.retained_audio_roots().count())
+                .filter(|end| *end <= sources.len())
+                .ok_or(Invalid("grouped audio dependency tree is incomplete"))?;
+            source_index = child_end;
+            let compiled = if root.clip.has_retained_audio_roots() {
+                Some(self.compile_group(&root.clip, &sources[child_start..child_end])?)
+            } else {
+                self.compile_clip_at_tempo(
+                    &root.tempo,
+                    &root.clip,
+                    source.asset,
+                    PreparedAudioSourceRef::Resident(source.audio),
+                )?
+            };
             for event in events
                 .events
                 .iter()
-                .filter(|event| event.source == source.root.id)
+                .filter(|event| event.active && event.source == source.root.id)
             {
                 let destination = root_pcm
                     .get_mut(event.start as usize..event.end as usize)
                     .ok_or(Invalid("grouped audio event exceeds root"))?;
+                let event_gain = event.gain.linear();
                 for (offset, frame) in destination.iter_mut().enumerate() {
                     if offset % 4096 == 0 && self.cancelled() {
                         return Err(Invalid("audio preparation cancelled"));
@@ -199,6 +216,10 @@ impl AudioTransformPreparation {
                             let gain = fade.shape().gain_at(at);
                             sample[0] *= gain;
                             sample[1] *= gain;
+                        }
+                        if event_gain != 1.0 {
+                            sample[0] *= event_gain;
+                            sample[1] *= event_gain;
                         }
                         *frame = sample;
                     }

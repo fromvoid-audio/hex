@@ -306,7 +306,7 @@ fn g_time_selection_keeps_empty_margins_and_original_event_timing(cx: &mut TestA
 }
 
 #[gpui::test]
-fn g_renders_a_repeated_audio_group_and_selects_its_one_result(cx: &mut TestAppContext) {
+fn g_retains_a_repeated_audio_group_and_selects_its_one_result(cx: &mut TestAppContext) {
     let (_files, handle, editor, clips) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(&mut visual, |view, _| {
@@ -344,7 +344,15 @@ fn g_renders_a_repeated_audio_group_and_selects_its_one_result(cx: &mut TestAppC
         let selected = view.selected_clip.unwrap();
         assert_eq!(project.tracks()[0].clips().len(), 1);
         assert_eq!(view.selected_clip_ids(), vec![selected]);
-        assert!(!project.clip(selected).unwrap().has_retained_audio_roots());
+        assert!(
+            project
+                .clip(selected)
+                .unwrap()
+                .audio_events()
+                .sources
+                .iter()
+                .any(|root| root.clip.has_retained_audio_roots())
+        );
         assert!(!project.clip(selected).unwrap().looping());
         assert!(view.bounce_control.is_none());
     });

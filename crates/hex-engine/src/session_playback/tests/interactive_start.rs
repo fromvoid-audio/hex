@@ -167,6 +167,84 @@ fn play_from_chases_a_held_mutable_note_without_replaying_the_prefix() {
 }
 
 #[test]
+fn play_from_note_onset_and_off_boundaries_match_authored_pcm() {
+    // At 120 bpm and 48 kHz this one-beat note ends at frame 24,000.
+    for limiter in [None, Some(false), Some(true)] {
+        let prepared = start_fixture(0, 1 << 32, limiter);
+        let latency = prepared.arrangement().main_latency_frames() as usize;
+        assert_eq!(latency > 0, limiter.is_some());
+        let frames = 512 + latency;
+        let mut oracle = SessionPlayback::new(start_fixture(0, 1 << 32, limiter)).unwrap();
+        oracle.apply(SessionPlaybackCommand::Play).unwrap();
+        let onset = render_checkpoint_partitioned(&mut oracle, &[256], frames);
+        assert!(onset.iter().flatten().any(|sample| *sample != 0.0));
+
+        for destination in [0, 24_000, 24_001] {
+            let expected = if destination == 0 {
+                onset.clone()
+            } else {
+                vec![[0.0; 2]; frames]
+            };
+            for block in [1, 17, 64, 128, 256, 512] {
+                let mut playback = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+                playback.play_from(destination).unwrap();
+                let actual = render_checkpoint_partitioned(&mut playback, &[block], frames);
+                assert_eq!(
+                    actual, expected,
+                    "limiter={limiter:?}, destination={destination}, block={block}"
+                );
+                assert_eq!(playback.arrangement_frame(), destination + frames as u64);
+                assert_eq!(playback.performance_frame(), destination + frames as u64);
+            }
+        }
+    }
+}
+
+#[test]
+fn chased_note_gate_and_stop_match_authored_pcm_at_fixed_block_sizes() {
+    let prepared = start_fixture(0, 1 << 32, None);
+    let mut oracle = SessionPlayback::new(start_fixture(1 << 31, 1 << 31, None)).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    assert!(
+        render_checkpoint_prefix(&mut oracle, 12_000)
+            .iter()
+            .flatten()
+            .all(|value| *value == 0.0)
+    );
+    let expected = render_checkpoint_partitioned(&mut oracle, &[256], 12_064);
+    assert!(
+        expected[..12_000]
+            .iter()
+            .flatten()
+            .any(|value| *value != 0.0)
+    );
+    assert!(
+        expected[12_040..]
+            .iter()
+            .flatten()
+            .all(|value| *value == 0.0)
+    );
+    for block in [1, 17, 64, 128, 256, 512] {
+        let mut playback = Playback::try_from_prepared_with_session(Arc::clone(&prepared)).unwrap();
+        playback
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::PlayFrom(12_000)))
+            .unwrap();
+        let mut actual = vec![[0.0; 2]; expected.len()];
+        for chunk in actual.chunks_mut(block) {
+            playback.render(chunk).unwrap();
+        }
+        assert_eq!(actual, expected, "block size {block}");
+        playback
+            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Stop))
+            .unwrap();
+        let mut stopped = [[1.0; 2]; 32];
+        playback.render(&mut stopped).unwrap();
+        assert_eq!(stopped, [[0.0; 2]; 32]);
+        assert_eq!(playback.position(), 0);
+    }
+}
+
+#[test]
 fn play_from_invalid_destination_is_atomic_and_strict_seek_still_refuses_chase() {
     let (prepared, track) = mutable_checkpoint_fixture(1 << 32);
     let mut runtime = SessionPlayback::new(prepared).unwrap();
@@ -236,7 +314,26 @@ fn play_from_resets_active_mutable_state_and_repeated_starts_are_identical() {
 }
 
 #[test]
-fn shared_play_from_chases_each_contributor_once_and_preserves_handoff_note_offs() {
+fn shared_chase_and_handoff_without_limiter() {
+    shared_chase_and_handoff(None, &[0, 127]);
+}
+
+#[test]
+fn shared_chase_immediate_handoff_with_track_limiter() {
+    shared_chase_and_handoff(Some(false), &[0]);
+}
+
+#[test]
+fn shared_chase_delayed_handoff_with_track_limiter() {
+    shared_chase_and_handoff(Some(false), &[127]);
+}
+
+#[test]
+fn shared_chase_and_handoff_with_main_limiter() {
+    shared_chase_and_handoff(Some(true), &[0, 127]);
+}
+
+fn shared_chase_and_handoff(limiter: Option<bool>, handoff_frames: &[usize]) {
     fn shared(start: u64, duration: u64, limiter: Option<bool>, pitch: u8) -> Project {
         let definition = super::source_loop_tests::mutable_definition();
         let project =
@@ -299,10 +396,7 @@ fn shared_play_from_chases_each_contributor_once_and_preserves_handoff_note_offs
     let definition = super::source_loop_tests::mutable_definition();
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    for (limiter, first) in [None, Some(false), Some(true)]
-        .into_iter()
-        .flat_map(|limiter| [0, 127].map(|first| (limiter, first)))
-    {
+    for &first in handoff_frames {
         let project = shared(0, 1 << 32, limiter, 67);
         let mut runtime = ordinary_mutable_playback(&project, &registry);
         let latency = runtime.revision.arrangement().main_latency_frames() as usize;

@@ -99,7 +99,7 @@ fn items<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>, const MAX: usize
     }
     d.deserialize_seq(Rows::<T, MAX>(std::marker::PhantomData))
 }
-fn isolated_root(
+pub(super) fn isolated_root(
     project: &Project,
     clip: ClipSnapshot,
     tempo: &hex_project::TempoMap,
@@ -387,6 +387,8 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
                     .into_iter()
                     .map(|e| {
                         Ok(AudioEvent {
+                            active: true,
+                            gain: hex_project::ClipGain::UNITY,
                             id: e.id,
                             source: e.source,
                             start: e.start,

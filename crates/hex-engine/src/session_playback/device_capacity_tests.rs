@@ -63,6 +63,7 @@ fn mutable_session_loop_project(id: hex_lattice_contract::DeviceTypeId) -> Proje
     clip.source.looping = true;
     clip.source.notes = vec![
         MidiNoteSnapshot {
+            active: true,
             id: first_note_id,
             start_raw: 1 << 32,
             duration_raw: 2 << 32,
@@ -71,6 +72,7 @@ fn mutable_session_loop_project(id: hex_lattice_contract::DeviceTypeId) -> Proje
             velocity: 100,
         },
         MidiNoteSnapshot {
+            active: true,
             id: second_note_id,
             start_raw: 2 << 32,
             duration_raw: 1 << 24,
@@ -177,6 +179,7 @@ fn registered_voice_cap_rejects_overlapping_finite_arrangement_notes() {
         TrackContentSnapshot::Audio(_) => panic!("fixture contains Arrangement MIDI"),
     };
     clip.notes.push(MidiNoteSnapshot {
+        active: true,
         id: snapshot.next_id,
         start_raw: 0,
         duration_raw: 1 << 32,

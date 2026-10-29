@@ -400,6 +400,7 @@ fn materialize_shifted_midi(
                 .ok_or(Invalid("shifted midi note collapsed"))?;
             notes.push(MidiNote {
                 id: NoteId(project.allocate_id()?),
+                active: note.active(),
                 start: BeatTime::from_raw(relative),
                 duration: BeatTime::from_raw(duration),
                 pitch: note.pitch(),

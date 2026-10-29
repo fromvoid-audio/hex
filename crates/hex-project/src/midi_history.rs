@@ -42,6 +42,10 @@ impl Location {
 }
 #[derive(Clone, Copy, Debug)]
 enum Notes {
+    Activation {
+        active: bool,
+        changed: usize,
+    },
     /// Existing identities only, with the exact collateral retirement count.
     /// A group may retire selected members after deterministic author priority;
     /// a single update additionally proves every victim's exact left prefix.
@@ -300,6 +304,27 @@ impl Plan {
                 source_length: None,
                 edit: Notes::authoring(source.next_id, 0, notes.len()),
             },
+            Command::SetMidiNotesActive {
+                clip,
+                notes,
+                active,
+            } => {
+                let source_notes = source.midi_source(*clip).ok_or(MISSING)?;
+                let indices = crate::midi::note_indices(source_notes, notes.iter().copied())?;
+                let changed = indices.iter().try_fold(0usize, |count, &index| {
+                    let note = source_notes.notes.get(index).ok_or(MISSING)?;
+                    Ok::<_, Invalid>(count + usize::from(note.active != *active))
+                })?;
+                Kind::Notes {
+                    location: location(*clip)?,
+                    source_length: None,
+                    volume_range: None,
+                    edit: Notes::Activation {
+                        active: *active,
+                        changed,
+                    },
+                }
+            }
             Command::UpdateMidiNotes { clip, .. } => Kind::Notes {
                 volume_range: None,
                 location: location(*clip)?,
@@ -330,9 +355,11 @@ impl Plan {
                     },
                 }
             }
-            Command::ReplaceMidiClipVolume { clip, .. } => Kind::Volume {
-                location: location(*clip)?,
-            },
+            Command::ReplaceMidiClipVolume { clip, .. } | Command::SetMidiClipGain { clip, .. } => {
+                Kind::Volume {
+                    location: location(*clip)?,
+                }
+            }
             Command::SetMidiClipSource { clip, .. }
             | Command::SetSessionMidiClipSource { clip, .. } => Kind::Source {
                 location: location(*clip)?,
@@ -663,7 +690,7 @@ impl MidiHistoryEffect {
 fn birth_volume(source: &Project, copied: Option<ClipId>, volume: &crate::MidiClipVolume) -> bool {
     match copied {
         Some(clip) => source.midi_clip_volume(clip) == Some(volume),
-        None => volume.points().is_empty(),
+        None => volume.is_unity(),
     }
 }
 fn source_shell_with_extent(a: &MidiSource, b: &MidiSource, length: Option<BeatTime>) -> bool {
@@ -707,6 +734,30 @@ fn source_shell(a: &MidiSource, b: &MidiSource) -> bool {
 }
 fn notes_match(a: &MidiSource, b: &MidiSource, edit: Notes) -> bool {
     match edit {
+        Notes::Activation { active, changed } => {
+            if a.notes.len() != b.notes.len() {
+                return false;
+            }
+            let mut observed = 0usize;
+            for (old, new) in a.notes.iter().zip(&b.notes) {
+                if old.id != new.id
+                    || old.start != new.start
+                    || old.duration != new.duration
+                    || old.pitch != new.pitch
+                    || old.channel != new.channel
+                    || old.velocity != new.velocity
+                {
+                    return false;
+                }
+                if old.active != new.active {
+                    if new.active != active {
+                        return false;
+                    }
+                    observed += 1;
+                }
+            }
+            observed == changed
+        }
         Notes::AuthorEdit {
             first,
             inserted,
@@ -865,6 +916,7 @@ fn prefix_matches(old: &crate::MidiNote, new: &crate::MidiNote, gate: Option<Bea
         && old.pitch == new.pitch
         && old.channel == new.channel
         && old.velocity == new.velocity
+        && old.active == new.active
 }
 fn birth_source(
     project: &Project,
@@ -890,8 +942,11 @@ fn birth_source(
                         .checked_add(1)
                         .and_then(|n| n.checked_add(i as u64))
                         == Some(a.id.value())
-                        && (a.start, a.duration, a.pitch, a.channel, a.velocity)
-                            == (b.start, b.duration, b.pitch, b.channel, b.velocity)
+                        && (
+                            a.start, a.duration, a.pitch, a.channel, a.velocity, a.active,
+                        ) == (
+                            b.start, b.duration, b.pitch, b.channel, b.velocity, b.active,
+                        )
                 })
     } else {
         copied.is_none()

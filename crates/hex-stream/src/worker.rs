@@ -1,13 +1,16 @@
 use crate::{
     endpoint::{PageBuffer, PageRequest},
     types::{
-        CatalogFootprint, PageKey, SourceDefinition, StreamConfig, StreamFailure,
-        StreamFailureKind, VerifiedCatalog,
+        CatalogFootprint, PageKey, ScalarSourceDefinition, SourceDefinition, StreamConfig,
+        StreamFailure, StreamFailureKind, VerifiedCatalog,
     },
 };
-use hex_engine::StreamedSourceMetadata;
+use hex_engine::{StreamResourceKey, StreamedSourceMetadata};
+use std::collections::VecDeque;
+pub(crate) mod scalar;
 use hex_media::{ResampleKernel, ResamplePlan, VerifiedWavReader};
 use rtrb::{Consumer, Producer, PushError};
+use scalar::ScalarJob;
 use std::{
     sync::{
         Arc,
@@ -103,6 +106,70 @@ pub(crate) fn preparation_data_bound(
     Some((data, data.checked_add(extra)?))
 }
 
+/// The prepared readers/maps already exist before this quote. Their original
+/// full decode/checkpoint peak belongs to control preparation, not this worker.
+pub(crate) fn preparation_data_bound_with_scalar_sources(
+    config: StreamConfig,
+    definitions: &[SourceDefinition],
+    definition_capacity: usize,
+    scalar_definitions: &[ScalarSourceDefinition],
+    scalar_capacity: usize,
+) -> Option<(usize, usize)> {
+    let (base, peak) = preparation_data_bound(config, definitions, definition_capacity)?;
+    if scalar_capacity < scalar_definitions.len() {
+        return None;
+    }
+    let mut extra = scalar_capacity
+        .checked_mul(std::mem::size_of::<ScalarSourceDefinition>())?
+        .checked_add(scalar_definitions.len().checked_mul(
+            std::mem::size_of::<hex_engine::ScalarSourceMetadata>()
+                + std::mem::size_of::<crate::ScalarSharedData>(),
+        )?)?;
+    if !scalar_definitions.is_empty() {
+        extra = extra
+            .checked_add(std::mem::size_of::<Option<ScalarJob>>())?
+            .checked_add(
+                config
+                    .request_capacity
+                    .checked_mul(std::mem::size_of::<crate::ResourcePageKey>())?,
+            )?
+            .checked_add(std::mem::size_of::<VecDeque<crate::ResourcePageKey>>())?;
+    }
+    let mut paths = definitions
+        .iter()
+        .try_fold(0usize, |n, d| n.checked_add(d.path.capacity()))?;
+    for (index, definition) in scalar_definitions.iter().enumerate() {
+        if scalar_definitions[..index]
+            .iter()
+            .any(|old| old.metadata().key() == definition.metadata().key())
+        {
+            return None;
+        }
+        let layout = definition.source.data_layout();
+        paths = paths.checked_add(layout.path_capacity_bytes())?;
+        extra = extra
+            .checked_add(layout.path_capacity_bytes())?
+            .checked_add(layout.captured_tempo().checked_backing_bytes()?)?;
+        if !scalar_definitions[..index]
+            .iter()
+            .any(|old| Arc::ptr_eq(&old.projection, &definition.projection))
+        {
+            extra = extra
+                .checked_add(std::mem::size_of::<hex_project::TempoMap>())?
+                .checked_add(
+                    definition
+                        .projection
+                        .owned_allocation_layout()
+                        .checked_backing_bytes()?,
+                )?;
+        }
+    }
+    if paths > config.max_catalog_path_bytes {
+        return None;
+    }
+    Some((base.checked_add(extra)?, peak.checked_add(extra)?))
+}
+
 #[cfg(test)]
 // Observe actual worker publication/holding without exposing a production API.
 // The gate also honors Stop, so a failed test cannot strand a paused worker.
@@ -110,10 +177,30 @@ pub(crate) struct TestWorkerHooks {
     pub(crate) entered: SyncSender<()>,
     pub(crate) release: std::sync::mpsc::Receiver<()>,
     pub(crate) publications: SyncSender<usize>,
+    pub(crate) scalar_steps: Option<(
+        SyncSender<hex_engine::ScalarSourceKey>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
 }
 
 #[cfg(test)]
 impl TestWorkerHooks {
+    fn before_scalar_step(&self, key: hex_engine::ScalarSourceKey, stop: &AtomicBool) -> bool {
+        let Some((steps, release)) = &self.scalar_steps else {
+            return true;
+        };
+        if steps.try_send(key).is_err() {
+            return false;
+        }
+        while !stop.load(Ordering::Acquire) {
+            match release.recv_timeout(Duration::from_millis(2)) {
+                Ok(()) => return true,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return false,
+            }
+        }
+        false
+    }
     fn wait_for_release(&self, stop: &AtomicBool) -> bool {
         if self.entered.send(()).is_err() {
             return false;
@@ -129,14 +216,17 @@ impl TestWorkerHooks {
     }
 }
 
+#[cfg_attr(any(test, feature = "test-support"), allow(clippy::too_many_arguments))] // Fixed owners plus test-only gates.
 pub(crate) fn run_worker(
     config: StreamConfig,
     definitions: Vec<SourceDefinition>,
+    mut scalar_definitions: Vec<ScalarSourceDefinition>,
     mut free_pages: Vec<Box<PageBuffer>>,
     mut queues: WorkerQueues,
     stop: Arc<AtomicBool>,
     catalog_result: SyncSender<Result<VerifiedCatalog, StreamFailureKind>>,
     #[cfg(test)] test_hooks: Option<TestWorkerHooks>,
+    #[cfg(feature = "test-support")] mut page_gate: Option<crate::test_support::PageGate>,
 ) -> Vec<Box<PageBuffer>> {
     let mut source_scratch = Vec::new();
     let scratch_ok = source_scratch
@@ -151,11 +241,17 @@ pub(crate) fn run_worker(
         && held_failures
             .try_reserve_exact(config.request_capacity.saturating_mul(2))
             .is_ok();
-    let catalog = if scratch_ok && held_ok {
+    let mut deferred_scalar = VecDeque::new();
+    let deferred_ok = scalar_definitions.is_empty()
+        || deferred_scalar
+            .try_reserve_exact(config.request_capacity)
+            .is_ok();
+    let catalog = if scratch_ok && held_ok && deferred_ok {
         build_catalog(&config, definitions, &mut source_scratch, &stop)
     } else {
         Err(StreamFailureKind::DecodeFailed)
     };
+    scalar_definitions.sort_unstable_by_key(|definition| definition.metadata().key());
     let catalog_message = catalog.as_ref().map_or_else(
         |error| Err(*error),
         |(sources, footprint, data)| {
@@ -166,7 +262,16 @@ pub(crate) fn run_worker(
                 crate::AllocationData::of::<Box<PageBuffer>>(held_pages.capacity());
             data.held_failures =
                 crate::AllocationData::of::<StreamFailure>(held_failures.capacity());
-            verified_membership(sources, *footprint, data)
+            data.scalar_deferred_keys =
+                crate::AllocationData::of::<crate::ResourcePageKey>(deferred_scalar.capacity());
+            data.scalar_deferred_inline = if scalar_definitions.is_empty() {
+                0
+            } else {
+                std::mem::size_of::<VecDeque<crate::ResourcePageKey>>()
+            };
+            data.scalar_source_slots =
+                crate::AllocationData::of::<ScalarSourceDefinition>(scalar_definitions.capacity());
+            verified_membership(sources, &scalar_definitions, *footprint, data)
         },
     );
     if catalog_result.send(catalog_message).is_err() {
@@ -183,8 +288,12 @@ pub(crate) fn run_worker(
     {
         return free_pages;
     }
+    let mut scalar_job: Option<ScalarJob> = None;
     loop {
-        while let Ok(page) = queues.returns.pop() {
+        for _ in 0..config.return_capacity {
+            let Ok(page) = queues.returns.pop() else {
+                break;
+            };
             free_pages.push(page);
         }
         flush_held_pages(&mut held_pages, &mut queues.ready);
@@ -199,11 +308,87 @@ pub(crate) fn run_worker(
             thread::park_timeout(Duration::from_millis(2));
             continue;
         }
-        let Ok(request) = queues.requests.pop() else {
-            thread::park_timeout(Duration::from_millis(2));
+        #[cfg(test)]
+        if let Some(job) = &scalar_job {
+            if let (Some(hooks), StreamResourceKey::Scalar(key)) = (&test_hooks, job.key.source) {
+                if !hooks.before_scalar_step(key, &stop) {
+                    break;
+                }
+            }
+        }
+        if let Some(mut job) = scalar_job.take() {
+            let outcome = job.step(&mut scalar_definitions[job.source]);
+            match outcome {
+                Ok(false) => {
+                    scalar_job = Some(job);
+                    thread::yield_now();
+                }
+                Ok(true) => {
+                    if let Err(PushError::Full(page)) = queues.ready.push(job.page) {
+                        held_pages.push(page);
+                    }
+                }
+                Err(kind) => {
+                    job.page.key = None;
+                    job.page.valid_frames = 0;
+                    free_pages.push(job.page);
+                    hold_failure(
+                        StreamFailure {
+                            key: job.key.source,
+                            page_index: job.key.page_index,
+                            kind,
+                        },
+                        &mut held_failures,
+                        &mut queues.failures,
+                    );
+                }
+            }
+        }
+        // One scalar quantum, then at most one request intake. PCM can progress
+        // while a dense scalar page remains pending. Other scalar keys retain
+        // FIFO order without consuming another page/cursor. Stop wins before I/O.
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        let request = if scalar_job.is_none() {
+            deferred_scalar
+                .pop_front()
+                .map(PageRequest)
+                .or_else(|| queues.requests.pop().ok())
+        } else {
+            queues.requests.pop().ok()
+        };
+        let Some(PageRequest(key)) = request else {
+            if scalar_job.is_none() {
+                thread::park_timeout(Duration::from_millis(2));
+            }
             continue;
         };
-        let PageRequest(key) = request;
+        #[cfg(feature = "test-support")]
+        if page_gate.as_ref().is_some_and(|gate| {
+            key.source == StreamResourceKey::Audio(gate.key.source)
+                && key.page_index == gate.key.page_index
+        }) && let Some(gate) = page_gate.take()
+            && !gate.wait(&stop)
+        {
+            break;
+        }
+        if matches!(key.source, StreamResourceKey::Scalar(_)) && scalar_job.is_some() {
+            if deferred_scalar.len() < deferred_scalar.capacity() {
+                deferred_scalar.push_back(key);
+            } else {
+                hold_failure(
+                    StreamFailure {
+                        key: key.source,
+                        page_index: key.page_index,
+                        kind: StreamFailureKind::CapacityExhausted,
+                    },
+                    &mut held_failures,
+                    &mut queues.failures,
+                );
+            }
+            continue;
+        }
         let Some(mut page) = free_pages.pop() else {
             // No source buffer is available until the endpoint returns an
             // evicted/stale page. Preserve the request without an allocation.
@@ -215,8 +400,47 @@ pub(crate) fn run_worker(
             hold_failure(failure, &mut held_failures, &mut queues.failures);
             continue;
         };
+        if let StreamResourceKey::Scalar(scalar_key) = key.source {
+            match scalar_definitions
+                .binary_search_by_key(&scalar_key, |definition| definition.metadata().key())
+            {
+                Ok(index) => {
+                    match ScalarJob::begin(index, &mut scalar_definitions[index], key, page) {
+                        Ok(job) => scalar_job = Some(job),
+                        Err((page, kind)) => {
+                            free_pages.push(page);
+                            hold_failure(
+                                StreamFailure {
+                                    key: key.source,
+                                    page_index: key.page_index,
+                                    kind,
+                                },
+                                &mut held_failures,
+                                &mut queues.failures,
+                            );
+                        }
+                    }
+                }
+                Err(_) => {
+                    free_pages.push(page);
+                    hold_failure(
+                        StreamFailure {
+                            key: key.source,
+                            page_index: key.page_index,
+                            kind: StreamFailureKind::UnknownSource,
+                        },
+                        &mut held_failures,
+                        &mut queues.failures,
+                    );
+                }
+            }
+            continue;
+        }
+        let StreamResourceKey::Audio(audio_key) = key.source else {
+            continue;
+        };
         let Some(source_index) = sources
-            .binary_search_by_key(&key.source, |source| source.definition.key)
+            .binary_search_by_key(&audio_key, |source| source.definition.key)
             .ok()
         else {
             free_pages.push(page);
@@ -232,7 +456,16 @@ pub(crate) fn run_worker(
             continue;
         };
         let source = &mut sources[source_index];
-        match render_page(source, key, &mut page, &mut source_scratch, &stop) {
+        match render_page(
+            source,
+            PageKey {
+                source: audio_key,
+                page_index: key.page_index,
+            },
+            &mut page,
+            &mut source_scratch,
+            &stop,
+        ) {
             Ok(()) => {
                 match queues.ready.push(page) {
                     Ok(()) => {}
@@ -260,8 +493,17 @@ pub(crate) fn run_worker(
             }
         }
     }
+    // Stop may arrive during a scalar quantum, after the loop's initial
+    // return drain. Reclaim every returned buffer on every loop exit before
+    // destroying the worker queue; otherwise the original pair loses custody.
+    while let Ok(page) = queues.returns.pop() {
+        free_pages.push(page);
+    }
     // All final descriptor/kernel and scratch destruction occurs after the
     // worker loop, and the caller joins this thread outside rendering.
+    if let Some(job) = scalar_job.take() {
+        free_pages.push(job.page);
+    }
     free_pages.append(&mut held_pages);
     drop(sources);
     drop(source_scratch);
@@ -270,7 +512,8 @@ pub(crate) fn run_worker(
 
 fn verified_membership(
     sources: &[Source],
-    footprint: CatalogFootprint,
+    scalar_sources: &[ScalarSourceDefinition],
+    mut footprint: CatalogFootprint,
     mut data: crate::WorkerData,
 ) -> Result<VerifiedCatalog, StreamFailureKind> {
     let mut members = Vec::new();
@@ -285,7 +528,80 @@ fn verified_membership(
     members.sort_unstable_by_key(StreamedSourceMetadata::key);
     data.membership = crate::AllocationData::of::<StreamedSourceMetadata>(members.capacity());
     data.catalog_object = std::mem::size_of::<VerifiedCatalog>();
+    let mut scalar_members = Vec::new();
+    scalar_members
+        .try_reserve_exact(scalar_sources.len())
+        .map_err(|_| StreamFailureKind::CapacityExhausted)?;
+    scalar_members.extend(
+        scalar_sources
+            .iter()
+            .map(|source| source.metadata().clone()),
+    );
+    data.scalar_membership =
+        crate::AllocationData::of::<hex_engine::ScalarSourceMetadata>(scalar_members.capacity());
+    data.scalar_job_data = if scalar_sources.is_empty() {
+        0
+    } else {
+        std::mem::size_of::<Option<ScalarJob>>()
+    };
+    let mut shared_rows = Vec::new();
+    shared_rows
+        .try_reserve_exact(scalar_sources.len())
+        .map_err(|_| StreamFailureKind::CapacityExhausted)?;
+    for (index, source) in scalar_sources.iter().enumerate() {
+        let layout = source.source.data_layout();
+        shared_rows.push(crate::ScalarSharedData {
+            source_identity: layout.source_owner().identity(),
+            projection_identity: Arc::as_ptr(&source.projection) as usize,
+            projection_data_bytes: std::mem::size_of::<hex_project::TempoMap>()
+                .checked_add(
+                    source
+                        .projection
+                        .owned_allocation_layout()
+                        .checked_backing_bytes()
+                        .ok_or(StreamFailureKind::CapacityExhausted)?,
+                )
+                .ok_or(StreamFailureKind::CapacityExhausted)?,
+            source_handles: 1,
+            projection_handles: 1,
+        });
+        data.scalar_source_backings = data
+            .scalar_source_backings
+            .checked_add(layout.path_capacity_bytes())
+            .and_then(|n| n.checked_add(layout.captured_tempo().checked_backing_bytes()?))
+            .ok_or(StreamFailureKind::CapacityExhausted)?;
+        footprint.catalog_path_bytes = footprint
+            .catalog_path_bytes
+            .checked_add(layout.path_capacity_bytes())
+            .ok_or(StreamFailureKind::CapacityExhausted)?;
+        if !scalar_sources[..index]
+            .iter()
+            .any(|old| Arc::ptr_eq(&old.projection, &source.projection))
+        {
+            data.scalar_projection_data = data
+                .scalar_projection_data
+                .checked_add(std::mem::size_of::<hex_project::TempoMap>())
+                .and_then(|n| {
+                    n.checked_add(
+                        source
+                            .projection
+                            .owned_allocation_layout()
+                            .checked_backing_bytes()?,
+                    )
+                })
+                .ok_or(StreamFailureKind::CapacityExhausted)?;
+            data.scalar_projection_groups += 1;
+        }
+    }
+    data.scalar_shared_rows =
+        crate::AllocationData::of::<crate::ScalarSharedData>(shared_rows.capacity());
+    data.scalar_source_handles = scalar_sources.len();
+    // One in-flight cursor holds one additional source and projection handle.
+    data.scalar_cursor_handle_bound = if scalar_sources.is_empty() { 0 } else { 2 };
+    footprint.sources += scalar_sources.len();
     Ok(VerifiedCatalog {
+        scalar_sources: scalar_members,
+        scalar_shared_data: shared_rows,
         data,
         footprint,
         sources: members,
@@ -646,7 +962,7 @@ fn render_page(
         page.frames.fill([0.0; 2]);
         return Err(StreamFailureKind::DecodeFailed);
     }
-    page.key = Some(key);
+    page.key = Some(key.into());
     page.valid_frames = count;
     Ok(())
 }
@@ -751,11 +1067,12 @@ pub(crate) mod tests {
             file.write_all(b"data").expect("data header");
             file.write_all(&(u32::from(frames) * 4).to_le_bytes())
                 .expect("data length");
+            let mut pcm = Vec::with_capacity(usize::from(frames) * 4);
             for index in 0..i16::try_from(frames).expect("bounded fixture frames") {
-                file.write_all(&index.to_le_bytes()).expect("left sample");
-                file.write_all(&(-index).to_le_bytes())
-                    .expect("right sample");
+                pcm.extend_from_slice(&index.to_le_bytes());
+                pcm.extend_from_slice(&(-index).to_le_bytes());
             }
+            file.write_all(&pcm).expect("PCM samples");
             file.sync_all().expect("flush fixture");
             Self(path)
         }
@@ -842,10 +1159,13 @@ pub(crate) mod tests {
         });
         let make_page = |index| {
             let mut page = PageBuffer::new().expect("page buffer");
-            page.key = Some(PageKey {
-                source,
-                page_index: index,
-            });
+            page.key = Some(
+                PageKey {
+                    source,
+                    page_index: index,
+                }
+                .into(),
+            );
             page.valid_frames = 1;
             page.frames[0] = [index as f32, -(index as f32)];
             page
@@ -860,10 +1180,13 @@ pub(crate) mod tests {
         let queued = ready_rx.pop().expect("sentinel page");
         assert_eq!(
             queued.key,
-            Some(PageKey {
-                source,
-                page_index: 1
-            })
+            Some(
+                PageKey {
+                    source,
+                    page_index: 1
+                }
+                .into()
+            )
         );
 
         flush_held_pages(&mut held, &mut ready);
@@ -878,17 +1201,23 @@ pub(crate) mod tests {
         recovered.sort_by_key(|page| page.key.map(|key| key.page_index));
         assert_eq!(
             recovered[0].key,
-            Some(PageKey {
-                source,
-                page_index: 2
-            })
+            Some(
+                PageKey {
+                    source,
+                    page_index: 2
+                }
+                .into()
+            )
         );
         assert_eq!(
             recovered[1].key,
-            Some(PageKey {
-                source,
-                page_index: 3
-            })
+            Some(
+                PageKey {
+                    source,
+                    page_index: 3
+                }
+                .into()
+            )
         );
         assert_eq!(recovered[0].frames[0], [2.0, -2.0]);
         assert_eq!(recovered[1].frames[0], [3.0, -3.0]);
@@ -914,17 +1243,17 @@ pub(crate) mod tests {
         });
         let failures = [
             StreamFailure {
-                key,
+                key: key.into(),
                 page_index: 1,
                 kind: StreamFailureKind::SourceChanged,
             },
             StreamFailure {
-                key,
+                key: key.into(),
                 page_index: 2,
                 kind: StreamFailureKind::Cancelled,
             },
             StreamFailure {
-                key,
+                key: key.into(),
                 page_index: 3,
                 kind: StreamFailureKind::CapacityExhausted,
             },

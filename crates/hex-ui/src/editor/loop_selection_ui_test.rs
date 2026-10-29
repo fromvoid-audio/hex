@@ -156,7 +156,7 @@ pub(super) fn click(visual: &mut VisualTestContext, clip: ClipId, additive: bool
 }
 #[gpui::test]
 fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &mut TestAppContext) {
-    for key in ["l", "w", "cmd-l"] {
+    for key in ["l", "w"] {
         let cx = &mut cx.new_app();
         let (handle, editor, audio, _, files) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
@@ -611,7 +611,7 @@ fn l_midi_end_uses_absolute_beat_endpoint_across_tempo_change(cx: &mut TestAppCo
 }
 
 #[gpui::test]
-fn command_l_uses_all_three_clip_ids_and_nonprimary_outer_bounds_with_one_undo(
+fn selection_loop_uses_all_three_clip_ids_and_nonprimary_outer_bounds_with_one_undo(
     cx: &mut TestAppContext,
 ) {
     let (handle, editor, audio, midi, _files) = fixture(cx);
@@ -651,12 +651,12 @@ fn command_l_uses_all_three_clip_ids_and_nonprimary_outer_bounds_with_one_undo(
             assert_eq!(selection.len(), 3);
             (v.state.as_ref().unwrap().project.snapshot(), selection)
         });
-        // Exact platform shortcut, not the plain-L alias.
-        visual.simulate_keystrokes("cmd-l");
+        // Plain selection-loop shortcut; Command-L has separate toggle coverage.
+        visual.simulate_keystrokes("l");
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |v, _| {
             let p = &v.state.as_ref().unwrap().project;
-            let r = p.loop_region().expect("Command-L sets full selection");
+            let r = p.loop_region().expect("selection loop sets full selection");
             assert_eq!((r.start(), r.end(), r.enabled()), (0, 192_000, true));
             let mut expected = before.clone();
             expected.loop_region = p.loop_region();
@@ -670,7 +670,7 @@ fn command_l_uses_all_three_clip_ids_and_nonprimary_outer_bounds_with_one_undo(
             assert_eq!(
                 v.state.as_ref().unwrap().project.snapshot(),
                 before,
-                "Command-L selection is one history edit"
+                "selection loop selection is one history edit"
             )
         });
         visual.simulate_keystrokes("cmd-shift-z");
@@ -679,27 +679,10 @@ fn command_l_uses_all_three_clip_ids_and_nonprimary_outer_bounds_with_one_undo(
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
         });
     }
-    // Musical typing keeps plain L as a note; Command-L remains an explicit shortcut.
-    click(&mut visual, midi, false);
-    editor.update(&mut visual, |v, _| {
-        v.computer_keyboard.enabled = true;
-    });
-    let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
-    visual.simulate_keystrokes("l");
-    pump(&editor, &mut visual);
-    editor.read_with(&visual, |v, _| {
-        assert_eq!(v.state.as_ref().unwrap().revision, revision)
-    });
-    visual.simulate_keystrokes("cmd-l");
-    pump(&editor, &mut visual);
-    editor.read_with(&visual, |v, _| {
-        let r = v.state.as_ref().unwrap().project.loop_region().unwrap();
-        assert_eq!((r.start(), r.end()), (72_000, 120_000));
-    });
 }
 
 #[gpui::test]
-fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
+fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
     cx: &mut TestAppContext,
 ) {
     let (handle, editor, audio, _, _files) = fixture(cx);
@@ -724,7 +707,7 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
                 pulse_started: Instant::now(),
             });
         });
-        visual.simulate_keystrokes("cmd-l");
+        visual.simulate_keystrokes("l");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             let r = v.state.as_ref().unwrap().project.loop_region().unwrap();
@@ -753,7 +736,7 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
         };
         v.time_selection.as_mut().unwrap().end_track = stale;
     });
-    visual.simulate_keystrokes("cmd-l");
+    visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision);
@@ -769,7 +752,7 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
         };
         v.selected_clip = Some(stale);
     });
-    visual.simulate_keystrokes("cmd-l");
+    visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
@@ -778,7 +761,7 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
         v.time_selection = None;
         v.selected_clip = None;
     });
-    visual.simulate_keystrokes("cmd-l");
+    visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -794,12 +777,12 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
     editor.update(&mut visual, |v, _| {
         v.worker_requests_pending = 1;
     });
-    visual.simulate_keystrokes("cmd-l");
+    visual.simulate_keystrokes("l");
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             v.state.as_ref().unwrap().revision,
             revision,
-            "pending edit refuses Command-L"
+            "pending edit refuses selection loop"
         );
         assert!(v.pending_requests.is_empty(), "no deferred selection write");
     });
@@ -810,7 +793,7 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
     visual
         .update(|window, cx| editor.read_with(cx, |v, _| v.browser.search.read(cx).focus(window)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-l");
+    visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -821,7 +804,7 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
     });
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-l");
+    visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -834,7 +817,7 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
     visual.simulate_mouse_down(tempo.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(tempo.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-l");
+    visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -861,7 +844,7 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
     visual.simulate_keystrokes("cmd-r");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| assert!(v.track_name.is_editing()));
-    visual.simulate_keystrokes("cmd-l");
+    visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -879,13 +862,13 @@ fn command_l_time_selection_precedes_clip_and_protects_stale_and_owned_focus(
         })
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-l");
+    visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             v.state.as_ref().unwrap().revision,
-            revision,
-            "Command-L is Arrangement-only, never a Session toggle"
+            revision + 1,
+            "plain l retains the Session loop toggle"
         )
     });
 }
@@ -939,7 +922,7 @@ fn loop_review_session_cell_selection_is_not_a_stale_arrangement_selection(
     visual.simulate_click(position, Modifiers::default());
     visual.run_until_parked();
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-    for key in ["cmd-l", "l"] {
+    for key in ["l", "w"] {
         visual.simulate_keystrokes(key);
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
@@ -1021,7 +1004,7 @@ fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag
         });
         // Controlled retained-focus dispatch through actual platform keys. This is
         // not a claim that an ordinary browser row click retains editor focus.
-        for key in ["cmd-l", "l"] {
+        for key in ["l", "w"] {
             visual.simulate_keystrokes(key);
             editor.read_with(&visual, |v, _| {
                 assert_eq!(v.worker_requests_pending, 0, "{native} / {key}");
@@ -1035,8 +1018,8 @@ fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag
 }
 
 #[gpui::test]
-fn loop_review_held_middle_pan_refuses_l_and_command_l_until_release(cx: &mut TestAppContext) {
-    for key in ["l", "cmd-l"] {
+fn loop_review_held_middle_pan_refuses_selection_loop_until_release(cx: &mut TestAppContext) {
+    for key in ["l", "w"] {
         let cx = &mut cx.new_app();
         let (handle, editor, audio, midi, _files) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1153,7 +1136,7 @@ fn loop_review_held_middle_pan_refuses_l_and_command_l_until_release(cx: &mut Te
 
 #[gpui::test]
 fn loop_review_ruler_scrub_keeps_held_and_released_targets_until_refusal(cx: &mut TestAppContext) {
-    for key in ["l", "cmd-l"] {
+    for key in ["l", "w"] {
         let cx = &mut cx.new_app();
         let (handle, editor, _, midi, _files) = fixture(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1364,14 +1347,14 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             assert!(
-                !v.arrangement_focus.enabled,
+                !v.arrangement_focus.projection.enabled,
                 "no optimistic focus before ACK"
             )
         });
     }
     install_loop_terminal(&editor, &mut visual, own);
     editor.read_with(&visual, |v, _| {
-        assert!(v.arrangement_focus.enabled);
+        assert!(v.arrangement_focus.projection.enabled);
         assert_eq!(&*v.arrangement_focus_ranges(), &[(96_000, 120_000)]);
     });
     visual.simulate_keystrokes("l");
@@ -1386,22 +1369,24 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
                 .unwrap()
                 .enabled()
         );
-        assert!(v.arrangement_focus.enabled);
+        assert!(v.arrangement_focus.projection.enabled);
     });
     choose_loop_section(&mut visual, 2, false);
-    visual.simulate_keystrokes("cmd-l");
+    visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(&*v.arrangement_focus_ranges(), &[(144_000, 168_000)]);
-        assert!(v.arrangement_focus.enabled);
+        assert!(v.arrangement_focus.projection.enabled);
     });
     visual.simulate_keystrokes("q");
-    editor.read_with(&visual, |v, _| assert!(!v.arrangement_focus.enabled));
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.arrangement_focus.projection.enabled)
+    });
     visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(
-            !v.arrangement_focus.enabled,
+            !v.arrangement_focus.projection.enabled,
             "same-range toggle does not re-arm focus"
         )
     });
@@ -1410,7 +1395,7 @@ fn section_loop_focus_waits_for_own_ack_switches_sections_and_preserves_repeat_t
     visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert!(v.arrangement_focus.enabled);
+        assert!(v.arrangement_focus.projection.enabled);
         assert_eq!(
             &*v.arrangement_focus_ranges(),
             &[(24_000, 48_000), (144_000, 168_000)]
@@ -1473,7 +1458,7 @@ fn section_loop_focus_ignores_changed_selection_and_refused_or_replaced_terminal
         }
         install_loop_terminal(&editor, &mut visual, own);
         editor.read_with(&visual, |v, _| {
-            assert!(!v.arrangement_focus.enabled, "{case}")
+            assert!(!v.arrangement_focus.projection.enabled, "{case}")
         });
     }
 }
@@ -1488,6 +1473,11 @@ fn section_loop_focus_respects_held_foreground_automation_input(cx: &mut TestApp
         assert!(v.automation_view.enabled);
         v.state.as_ref().unwrap().project.tracks()[0].id()
     });
+    editor.update(&mut visual, |v, cx| {
+        v.gain_lane.track = Some(track);
+        cx.notify();
+    });
+    visual.run_until_parked();
     let selector =
         Box::leak(format!("arrangement-automation-plot-{}", track.value()).into_boxed_str());
     let plot = visual.debug_bounds(selector).unwrap();
@@ -1510,10 +1500,214 @@ fn section_loop_focus_respects_held_foreground_automation_input(cx: &mut TestApp
             "held curve cannot submit a section loop/focus"
         );
         assert!(v.last_enqueued_edit.is_none());
-        assert!(!v.arrangement_focus.enabled);
+        assert!(!v.arrangement_focus.projection.enabled);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+}
+
+#[gpui::test]
+fn command_l_toggles_active_loop_preserves_bounds_and_uses_loop_play_origin(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, _, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::SetLoopRegion {
+            start: 24_000,
+            end: 48_000,
+            enabled: false
+        })))
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |view, cx| {
+        let track = view.state.as_ref().unwrap().project.tracks()[0].id();
+        view.time_selection = Some(TimeSelection {
+            anchor_track: track,
+            end_track: track,
+            anchor_frame: 36_000,
+            end_frame: 72_000,
+        });
+        view.edit_cursor = Some(super::edit_cursor::EditCursor {
+            track,
+            frame: 96_000,
+            generation: view.project_generation,
+            pulse_color: 0,
+            pulse_started: Instant::now(),
+        });
+        cx.notify();
+    });
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let loop_region = view.state.as_ref().unwrap().project.loop_region().unwrap();
+        assert_eq!(
+            (
+                loop_region.start(),
+                loop_region.end(),
+                loop_region.enabled()
+            ),
+            (24_000, 48_000, true)
+        );
+        assert_eq!(
+            view.edit_cursor.unwrap().frame,
+            96_000,
+            "loop origin does not rewrite the edit cursor"
+        );
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .loop_region()
+                .unwrap()
+                .enabled()
+        )
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    visual.simulate_keystrokes("space");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(24_000))
+        )
+    });
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let loop_region = view.state.as_ref().unwrap().project.loop_region().unwrap();
+        assert_eq!(
+            (
+                loop_region.start(),
+                loop_region.end(),
+                loop_region.enabled()
+            ),
+            (24_000, 48_000, false)
+        );
+        assert_eq!(
+            view.playback_start_frame(),
+            36_000,
+            "loop off restores time-selection precedence"
+        );
+    });
+    for enabled in [true, false] {
+        let toggle = visual
+            .debug_bounds("transport-loop-toggle")
+            .unwrap()
+            .center();
+        visual.simulate_click(toggle, Modifiers::default());
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .loop_region()
+                    .unwrap()
+                    .enabled(),
+                enabled
+            );
+            if enabled {
+                assert_eq!(view.playback_start_frame(), 24_000);
+            }
+        });
+    }
+    editor.update(&mut visual, |view, _| view.computer_keyboard.enabled = true);
+    let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+    visual.simulate_keystrokes("l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().revision, revision)
+    });
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .loop_region()
+                .unwrap()
+                .enabled()
+        )
+    });
+    editor.update(&mut visual, |view, cx| {
+        view.computer_keyboard.enabled = false;
+        view.mode = EditorMode::Session;
+        cx.notify();
+    });
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .loop_region()
+                .unwrap()
+                .enabled()
+        )
+    });
+    let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+    let tempo = visual.debug_bounds("project-tempo-value").unwrap().center();
+    visual.simulate_click(tempo, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-l");
+    visual.update(|window, cx| window.dispatch_action(Box::new(super::ToggleLoop), cx));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().revision,
+            revision,
+            "numeric text owns the modified shortcut and direct action"
+        )
+    });
+    visual.simulate_keystrokes("escape");
+    visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
+    editor.update(&mut visual, |view, _| view.worker_requests_pending = 1);
+    visual.simulate_keystrokes("cmd-l");
+    editor.read_with(&visual, |view, _| assert!(view.pending_requests.is_empty()));
+    editor.update(&mut visual, |view, _| {
+        view.worker_requests_pending = 0;
+        assert!(view.enqueue(Request::Edit(Command::ClearLoopRegion)));
+    });
+    pump(&editor, &mut visual);
+    let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.state.as_ref().unwrap().project.loop_region().is_none());
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::SetLoopRegion {
+            start: 72_000,
+            end: 36_000,
+            enabled: true
+        })))
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_some());
+        assert!(view.state.as_ref().unwrap().project.loop_region().is_none());
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+        assert_eq!(
+            view.playback_start_frame(),
+            36_000,
+            "refused loop edits cannot publish a fake play origin"
+        );
+    });
 }

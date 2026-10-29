@@ -1328,6 +1328,12 @@ class LocalCiRunner:
         self.target_lock = lock
         try:
             self._check_target_filesystem(target)
+            # Full Cargo metadata can create .rustc_info.json. Record the target
+            # before that command while holding the same lock used for handoff.
+            initial_identity = self._directory_identity(target)
+            initially_empty = initial_identity is None or not any(target.iterdir())
+            if not initially_empty and not adopt and not os.path.lexists(owner_path):
+                raise TargetCacheError("release ownership is unknown; explicit adoption or an empty target required")
             replacement = expected_recreated_target_identity
             if replacement is not None:
                 if (not adopt or expected_owner_sha256 is None
@@ -1436,8 +1442,19 @@ class LocalCiRunner:
                     raise TargetCacheError("release target identity/repository changed; explicit adoption required")
             # An existing dev marker is NOT evidence of release ownership.
             populated = target.exists() and any(target.iterdir())
-            if record is None and populated and not adopt:
-                raise TargetCacheError("release ownership is unknown; explicit adoption or an empty target required")
+            if record is None and not adopt:
+                if not initially_empty:
+                    raise TargetCacheError("release ownership is unknown; explicit adoption or an empty target required")
+                if target.is_symlink() or (initial_identity is not None and identity != initial_identity):
+                    raise TargetCacheError("fresh release target identity changed during preflight")
+                # Only Cargo's metadata cache may have appeared since the
+                # locked empty-target observation; never accept a symlink or
+                # an unrelated file as evidence of an empty target.
+                entries = list(target.iterdir()) if target.exists() else []
+                if any(p.name != ".rustc_info.json" or not stat.S_ISREG(p.lstat().st_mode)
+                       for p in entries):
+                    raise TargetCacheError("fresh release target changed during preflight")
+                populated = False
             reuse = bool(record and record["state"] == "ready" and not adopt
                          and record.get("target_identity") == identity
                          and record["workspace_owner"] == workspace

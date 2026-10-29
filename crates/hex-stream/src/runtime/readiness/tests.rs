@@ -85,6 +85,8 @@ fn pair_with_hooks(
         StreamConfig::with_pool_pages(4),
         vec![SourceDefinition::new(wav.0.clone(), metadata, limits)],
         hooks,
+        #[cfg(feature = "test-support")]
+        None,
     )
     .unwrap();
     runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
@@ -131,6 +133,7 @@ fn exact_decode_receipts(ordinary: bool) {
     let (release_tx, release_rx) = mpsc::sync_channel(1);
     let (publication_tx, publication_rx) = mpsc::sync_channel(2);
     let (_wav, control, pages, key) = pair_with_hooks(Some(crate::worker::TestWorkerHooks {
+        scalar_steps: None,
         entered: entered_tx,
         release: release_rx,
         publications: publication_tx,

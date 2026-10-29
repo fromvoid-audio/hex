@@ -831,6 +831,15 @@ impl ResidentHarness {
 }
 
 #[test]
+fn default_audio_policy_admits_the_actual_stream_workspace_on_startup() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::new();
+    assert!(h.next().error.is_none());
+    let (revision, _) = h.applied(0);
+    assert!(revision > 0);
+}
+
+#[test]
 fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonical() {
     use hex_project::{Command, Created};
     use hex_session::device_gesture::ParameterValue;
@@ -924,6 +933,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
     h.refuse.store(true, std::sync::atomic::Ordering::Release);
     h.service
         .submit(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: true,
             key,
             sequence: 2,
             value: ParameterValue::Float(0.25),
@@ -998,6 +1008,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
             (last, _) = h.applied(after);
         }
         let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+            manual_edit: true,
             key,
             sequence: 2,
             value: ParameterValue::Float(1.0),
@@ -1662,6 +1673,20 @@ fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history
             .beat_to_frame(actual.start())
             .unwrap();
         assert!(actual_frame.abs_diff(expected.start_frame) <= 1);
+        let end = BeatTime::from_raw(
+            actual
+                .start()
+                .raw()
+                .checked_add(actual.duration().raw())
+                .unwrap(),
+        );
+        let actual_end = committed
+            .state
+            .project
+            .tempo_map()
+            .beat_to_frame(end)
+            .unwrap();
+        assert!(actual_end.abs_diff(expected.end_frame) <= 1);
     }
     let encoded = hex_storage::encode(&committed.state.project).unwrap();
     assert_eq!(

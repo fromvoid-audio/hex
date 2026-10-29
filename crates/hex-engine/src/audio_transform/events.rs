@@ -21,6 +21,9 @@ pub(super) fn compose(
         .map_err(|_| Invalid("audio event composition allocation failed"))?;
     output.resize(source.len(), [0.0, 0.0]);
     for event in &events.events {
+        if !event.active {
+            continue;
+        }
         let start = usize::try_from(edit.root_frame_at(event.start, tempo)?)
             .map_err(|_| Invalid("audio event start overflow"))?;
         let end = usize::try_from(edit.root_frame_at(event.end, tempo)?)
@@ -87,6 +90,17 @@ pub(super) fn compose(
                     for channel in sample {
                         *channel *= gain;
                     }
+                }
+            }
+        }
+        let gain = event.gain.linear();
+        if gain != 1.0 {
+            for (index, sample) in destination.iter_mut().enumerate() {
+                if index % 4096 == 0 && cancelled.load(Ordering::Relaxed) {
+                    return Err(Invalid("audio event preparation cancelled"));
+                }
+                for channel in sample {
+                    *channel *= gain;
                 }
             }
         }

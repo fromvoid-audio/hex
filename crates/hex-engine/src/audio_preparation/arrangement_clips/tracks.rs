@@ -343,6 +343,7 @@ impl TrackAssembly {
             &OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
         )>,
         effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
+        native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || self.rows.iter().any(|r| {
@@ -386,7 +387,7 @@ impl TrackAssembly {
         self.active = wanted;
         reserve(&mut self.destinations, pairs.len(), &mut self.growth)?;
         self.destinations.resize(pairs.len(), false);
-        let solo = project.tracks().iter().any(|t| t.soloed());
+        let solo = crate::TrackSoloSelection::prepare(project);
         // Reserve ALL target backing before any gain fill or owned constructor.
         for (ordinal, (r, t)) in self.rows.iter_mut().zip(project.tracks()).enumerate() {
             r.ordinal = ordinal;
@@ -399,20 +400,25 @@ impl TrackAssembly {
                 .and_then(|source| source.receiver())
                 .and_then(|id| project.tracks().iter().position(|track| track.id() == id));
             r.source_audio_receiver = t.receives_source_audio();
-            r.source_input_enabled = !t.muted() && (!solo || t.soloed());
+            r.source_input_enabled =
+                !t.muted() && (!solo.any || solo.selected(ordinal).map_err(invalid)?);
             r.audio_content_enabled = r.source_input_enabled;
             r.meter_disposal = Disposal::Unstarted;
             r.chain_disposal = Disposal::Unstarted;
             r.mix = Some(
-                PreparedTrackMix::new(t.gain(), t.balance(), crate::effective_track_mute(t, solo))
-                    .map_err(invalid)?,
+                PreparedTrackMix::new(
+                    t.gain(),
+                    t.balance(),
+                    solo.muted(ordinal, t).map_err(invalid)?,
+                )
+                .map_err(invalid)?,
             );
             r.source_mix = r.mix;
             reserve(&mut r.clips, t.clips().len(), &mut self.growth)?;
             reserve(&mut r.pairs, t.clips().len(), &mut self.growth)?;
             reserve(&mut r.sends, t.sends().len(), &mut self.growth)?;
             let neutral =
-                PreparedTrackMix::new(1.0, t.balance(), crate::effective_track_mute(t, solo))
+                PreparedTrackMix::new(1.0, t.balance(), solo.muted(ordinal, t).map_err(invalid)?)
                     .map_err(invalid)?;
             r.gain
                 .reserve(t.gain_envelope(), project.tempo_map(), neutral, t.gain())
@@ -467,11 +473,12 @@ impl TrackAssembly {
                 .fill(t.gain_envelope(), project.tempo_map())
                 .map_err(gain_error)?;
             r.meter = Some(OwnedShared::new_owned(hex_lattice::DeviceMeter::default()));
-            r.chain = Some(r.effects.prepare_with_effects(
+            r.chain = Some(r.effects.prepare_with_effects_and_input(
                 t.devices(),
                 hex_lattice::ProcessorChainOwner::Track(t.id().value()),
                 project.sample_rate(),
                 effects,
+                native_input,
             )?);
             self.growth = self
                 .growth

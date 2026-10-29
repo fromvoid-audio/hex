@@ -181,6 +181,9 @@ impl EditorView {
         // This compact editor replaces the open detail body, leaving real track rows at minimum size.
         self.clip_view_open = false;
         self.select_track(track, window);
+        self.automation_view
+            .devices
+            .clear_main(super::device_panel::DevicePanelOwner::Track(track));
         self.gain_lane.track = Some(track);
         self.gain_lane.selected = self
             .state
@@ -193,6 +196,9 @@ impl EditorView {
         cx.notify();
     }
     pub(super) fn cancel_gain_draft(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.cancel_device_automation_draft(cx) {
+            return true;
+        }
         if self.gain_recorder.blocks_edits() {
             self.cancel_gain_recording();
             cx.notify();

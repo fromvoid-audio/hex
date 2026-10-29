@@ -124,10 +124,18 @@ pub enum SessionPlaybackError {
     SessionTempoUnavailable(crate::PreparedTempoError),
     ReleaseBankFull,
     DeviceRuntime,
+    /// An incompatible latency history cannot be transferred while transport
+    /// retains its current position and processing state.
+    LatencyLayoutChanged,
+    /// Active source history cannot be adopted by the replacement provider.
+    SourceHistoryUnavailable,
     /// The exact foreign endpoint is still needed by an outgoing tail. A
     /// publication owner may retry pure handoff planning after real rendering
     /// advances that tail; it must not duplicate, reset or substitute the source.
     ForeignTailSourceBusy,
+    /// The retained group path is still processing an outgoing tail. The
+    /// publication owner can retry once the predecessor drains or stops.
+    GroupTailRoutingBusy,
     MutableInstrumentRuntime,
     MutableInstrumentDiagnostic(&'static str),
     MutableInstrumentEvents,
@@ -162,8 +170,17 @@ impl SessionPlaybackError {
             Self::TempoConversion => "session playback timing conversion failed",
             Self::ReleaseBankFull => "session playback outgoing release bank is full",
             Self::DeviceRuntime => "session playback native device runtime is unavailable",
+            Self::LatencyLayoutChanged => {
+                "latency layout changed · stop transport before applying this revision"
+            }
+            Self::SourceHistoryUnavailable => {
+                "source history cannot transfer · stop transport before applying this revision"
+            }
             Self::ForeignTailSourceBusy => {
                 "native effect endpoint is still owned by an outgoing tail"
+            }
+            Self::GroupTailRoutingBusy => {
+                "group routing change is waiting for an outgoing tail · stop or wait for it to finish"
             }
             Self::MutableInstrumentRuntime => {
                 "session playback mutable instrument runtime is unavailable"
@@ -429,6 +446,8 @@ pub struct SessionPlayback {
     capture_runtime: u64,
     capture_epoch: u64,
     gain_recording_override: Option<f32>,
+    // Optional control allocation; the callback mutates Copy contents only.
+    native_parameter_state: Option<Box<native_parameter_input::State>>,
     compensation: Option<crate::signal_graph::SignalRuntime>,
     device_metering: bool,
     revision: Arc<PreparedRevision>,
@@ -448,6 +467,7 @@ pub struct SessionPlayback {
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
     main_chain: hex_lattice::NativeRuntimeChain,
     return_scratch: Vec<[Frame; 256]>,
+    meter_cells: Vec<meter_capture::Cell>,
     return_effect_tails: ReturnEffectTailBank,
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
     mutable_onsets: MutableOnsetBuffer,
@@ -476,7 +496,9 @@ pub struct SessionPlayback {
     release_order_scratch: u64,
     suppressions: Vec<MidiOccurrenceSuppression>,
     suppression_scratch: Vec<MidiOccurrenceSuppression>,
-    spans: MidiSpanBuffer,
+    // Keep the fixed large span payload out of by-value constructor temporaries.
+    // Its stable Box is allocated on control and retired with this runtime.
+    spans: Box<MidiSpanBuffer>,
     analytic_import: analytic_import::ImportPlan,
     performance_frame: u64,
     arrangement_frame: u64,
@@ -814,6 +836,7 @@ impl SessionPlayback {
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
+            native_parameter_state: _,
             compensation,
             device_metering: _,
             revision: _,
@@ -831,6 +854,7 @@ impl SessionPlayback {
             return_chains,
             main_chain,
             return_scratch: _,
+            meter_cells: _,
             return_effect_tails,
             mutable_instruments,
             mutable_onsets: _,
@@ -1704,6 +1728,24 @@ impl SessionPlayback {
             .try_reserve_exact(return_buses.len())
             .map_err(|_| SessionPlaybackError::Allocation)?;
         let mut return_scratch = Vec::new();
+        let mut meter_cells = Vec::new();
+        let meter_count = arrangement_tracks
+            .len()
+            .checked_add(return_buses.len())
+            .ok_or(SessionPlaybackError::Allocation)?;
+        meter_cells
+            .try_reserve_exact(meter_count)
+            .map_err(|_| SessionPlaybackError::Allocation)?;
+        for track in arrangement_tracks {
+            let id = track
+                .canonical_track_id()
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            meter_cells.push(meter_capture::Cell::new(OutputCaptureId::Track(id)));
+        }
+        for bus in return_buses {
+            meter_cells.push(meter_capture::Cell::new(OutputCaptureId::Return(bus.id)));
+        }
+        meter_capture::sort(&mut meter_cells);
         return_scratch
             .try_reserve_exact(return_buses.len())
             .map_err(|_| SessionPlaybackError::Allocation)?;
@@ -1793,13 +1835,42 @@ impl SessionPlayback {
             .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        let scalar_automation = match revision.scalar_automation.as_ref() {
+            Some(_) => {
+                let input = revision
+                    .native_parameter_input_target()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                let arrival = revision
+                    .arrangement()
+                    .signal_graph
+                    .as_ref()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                    .parameter_arrival(input)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                Some(Box::new(
+                    crate::scalar_automation::State::new(input, arrival)
+                        .map_err(|_| SessionPlaybackError::Allocation)?,
+                ))
+            }
+            None => None,
+        };
         let analytic_import = analytic_import::ImportPlan::new()?;
         let current_sampler_keyboards = Vec::new();
         let current_route_cut_scratch = Vec::new();
+        let native_parameter_state = revision.native_parameter_input_target().map(|_| {
+            Box::new(native_parameter_input::State {
+                scalar: scalar_automation,
+                ..Default::default()
+            })
+        });
         if let Some(allowance) = linear_resource_allowance {
             let actual = preroll::RuntimeStorage {
                 live_expression: false,
                 computer_keyboard: None,
+                native_parameter_state: native_parameter_state.is_some(),
+                scalar_automation: native_parameter_state
+                    .as_deref()
+                    .is_some_and(|state| state.scalar.is_some()),
                 compensation: compensation.as_ref(),
                 main_chain: &main_chain,
                 current_sampler_keyboards: &current_sampler_keyboards,
@@ -1816,6 +1887,7 @@ impl SessionPlayback {
                 route_scratch: route_scratch.capacity(),
                 current_route_cut_scratch: current_route_cut_scratch.capacity(),
                 return_scratch: return_scratch.capacity(),
+                meter_cells: meter_cells.capacity(),
                 mutable_events: mutable_events.capacity(),
                 tail_mixes: tail_mixes.capacity(),
                 tail_suffix_starts: tail_suffix_starts.capacity(),
@@ -1845,6 +1917,7 @@ impl SessionPlayback {
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
             gain_recording_override: None,
+            native_parameter_state,
             compensation,
             device_metering: false,
             revision,
@@ -1862,6 +1935,7 @@ impl SessionPlayback {
             return_chains,
             main_chain,
             return_scratch,
+            meter_cells,
             return_effect_tails,
             mutable_instruments,
             mutable_onsets: MutableOnsetBuffer::default(),
@@ -1886,7 +1960,7 @@ impl SessionPlayback {
             release_order_scratch: 0,
             suppressions,
             suppression_scratch,
-            spans: MidiSpanBuffer::default(),
+            spans: Box::new(MidiSpanBuffer::default()),
             analytic_import,
             performance_frame: 0,
             arrangement_frame: 0,
@@ -2288,6 +2362,7 @@ pub(super) fn base_timing_for(
 }
 
 mod capture;
+mod meter_capture;
 mod release_location;
 use release_location::ReleaseLocation;
 /// These tables never grow, shrink, swap ownership or allocate in handoff or
@@ -2402,6 +2477,7 @@ mod render_diagnostic_tests {
     }
 }
 mod gain_recording;
+mod native_parameter_input;
 #[cfg(test)]
 mod return_feed_tests;
 

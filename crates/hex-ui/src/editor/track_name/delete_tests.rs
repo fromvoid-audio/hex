@@ -45,113 +45,120 @@ fn header(visual: &mut VisualTestContext, track: TrackId, modifiers: Modifiers) 
     visual.run_until_parked();
 }
 #[gpui::test]
-fn header_backspace_removes_selected_tracks_and_restores_contents_in_one_undo(
+fn header_backspace_removes_one_track_and_restores_contents_in_one_undo(cx: &mut TestAppContext) {
+    header_backspace_removes_tracks(cx, false);
+}
+
+#[gpui::test]
+fn header_backspace_removes_multiple_tracks_and_restores_contents_in_one_undo(
     cx: &mut TestAppContext,
 ) {
+    header_backspace_removes_tracks(cx, true);
+}
+
+fn header_backspace_removes_tracks(cx: &mut TestAppContext, multiple: bool) {
     cx.update(crate::editor::bind_editor_keys);
     let files = crate::editor::external_audio_drop_ui_test::BatchFiles::new();
     let wav = files.wav("delete.wav", 48_000, 48_000);
-    for multiple in [false, true] {
-        let service = Service::new(48_000, 32, 8_000_000).unwrap();
-        next(&service);
-        service.submit(Request::Import(wav.clone())).unwrap();
-        let imported = next(&service);
-        let audio = imported.state.project.tracks()[0].id();
-        service
-            .submit(Request::AddNativeDevice {
-                track: audio,
-                class: hex_engine::NativeDeviceClass::Effect,
-                type_id: Box::new(
-                    hex_engine::native_device_catalog()
-                        .unwrap()
-                        .remove(0)
-                        .type_id,
-                ),
-                before: None,
-            })
-            .unwrap();
-        let with_device = next(&service);
-        let device = with_device.state.project.track(audio).unwrap().devices()[0].id();
-        service
-            .submit(Request::Edit(Command::AddMidiTrack {
-                name: "midi".into(),
-            }))
-            .unwrap();
-        let event = next(&service);
-        let midi = event.state.project.tracks()[1].id();
-        let before = event.state.project.snapshot();
-        let handle = *cx.add_window(|_, _| gpui::Empty);
-        let editor = cx
-            .update_window(handle, |_, window, cx| {
-                let editor = window.replace_root(cx, |window, cx| {
-                    EditorView::new(window, cx, service, Err("offline delete test".into()))
-                });
-                editor.update(cx, |view, cx| {
-                    view.state = Some(event.state);
-                    cx.notify();
-                });
-                editor
-            })
-            .unwrap();
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.run_until_parked();
-        header(&mut visual, audio, Modifiers::default());
-        // A real device numeric field takes focus from the selected header.
-        let numeric = visual
-            .debug_bounds(Box::leak(
-                format!("device-{}-parameter-1-value", device.value()).into_boxed_str(),
-            ))
-            .expect("utility gain numeric field");
-        visual.simulate_click(numeric.center(), Modifiers::default());
-        visual.simulate_keystrokes("cmd-a");
-        visual.simulate_input("12");
-        visual.simulate_keystrokes("backspace");
-        editor.read_with(&visual, |view, _| {
-            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
-            assert!(
-                !view.edit_pending(),
-                "numeric Backspace must not submit a track edit"
-            );
-        });
-        visual.simulate_keystrokes("escape");
-        header(&mut visual, audio, Modifiers::default());
-        if multiple {
-            header(
-                &mut visual,
-                midi,
-                Modifiers {
-                    platform: true,
-                    ..Default::default()
-                },
-            );
-        }
-        visual.simulate_keystrokes("backspace");
-        pump(&editor, &mut visual);
-        let after = editor.read_with(&visual, |view, _| {
-            let p = &view.state.as_ref().unwrap().project;
-            assert!(
-                p.track(audio).is_none(),
-                "header Backspace removes the selected track"
-            );
-            assert_eq!(p.track(midi).is_none(), multiple);
-            assert!(view.selected_track_ids().is_empty());
-            p.snapshot()
-        });
-        visual.simulate_keystrokes("cmd-z");
-        pump(&editor, &mut visual);
-        editor.read_with(&visual, |view, _| {
-            assert_eq!(
-                view.state.as_ref().unwrap().project.snapshot(),
-                before,
-                "one Undo restores every removed track and its contents"
-            )
-        });
-        visual.simulate_keystrokes("cmd-shift-z");
-        pump(&editor, &mut visual);
-        editor.read_with(&visual, |view, _| {
-            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
-        });
+    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    next(&service);
+    service.submit(Request::Import(wav.clone())).unwrap();
+    let imported = next(&service);
+    let audio = imported.state.project.tracks()[0].id();
+    service
+        .submit(Request::AddNativeDevice {
+            track: audio,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(
+                hex_engine::native_device_catalog()
+                    .unwrap()
+                    .remove(0)
+                    .type_id,
+            ),
+            before: None,
+        })
+        .unwrap();
+    let with_device = next(&service);
+    let device = with_device.state.project.track(audio).unwrap().devices()[0].id();
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "midi".into(),
+        }))
+        .unwrap();
+    let event = next(&service);
+    let midi = event.state.project.tracks()[1].id();
+    let before = event.state.project.snapshot();
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new(window, cx, service, Err("offline delete test".into()))
+            });
+            editor.update(cx, |view, cx| {
+                view.state = Some(event.state);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    header(&mut visual, audio, Modifiers::default());
+    // A real device numeric field takes focus from the selected header.
+    let numeric = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-1-value", device.value()).into_boxed_str(),
+        ))
+        .expect("utility gain numeric field");
+    visual.simulate_click(numeric.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("12");
+    visual.simulate_keystrokes("backspace");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(
+            !view.edit_pending(),
+            "numeric Backspace must not submit a track edit"
+        );
+    });
+    visual.simulate_keystrokes("escape");
+    header(&mut visual, audio, Modifiers::default());
+    if multiple {
+        header(
+            &mut visual,
+            midi,
+            Modifiers {
+                platform: true,
+                ..Default::default()
+            },
+        );
     }
+    visual.simulate_keystrokes("backspace");
+    pump(&editor, &mut visual);
+    let after = editor.read_with(&visual, |view, _| {
+        let p = &view.state.as_ref().unwrap().project;
+        assert!(
+            p.track(audio).is_none(),
+            "header Backspace removes the selected track"
+        );
+        assert_eq!(p.track(midi).is_none(), multiple);
+        assert!(view.selected_track_ids().is_empty());
+        p.snapshot()
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().project.snapshot(),
+            before,
+            "one Undo restores every removed track and its contents"
+        )
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
+    });
 }
 
 #[gpui::test]

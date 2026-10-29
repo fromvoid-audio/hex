@@ -417,4 +417,77 @@ mod tests {
         assert_eq!(fs::read(path.join("unrelated")).unwrap(), b"preserve");
         fs::remove_dir_all(parent).unwrap();
     }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn file_size_limit_cleans_all_staged_stems_without_publishing_a_batch() {
+        const CHILD: &str = "HEX_STEMS_FILE_LIMIT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let parent = std::env::temp_dir().join(format!(
+                "hex-stems-limit-{}-{}",
+                std::process::id(),
+                NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&parent).unwrap();
+            let neighbor = parent.join("unrelated");
+            fs::write(&neighbor, b"preserve").unwrap();
+            let path = parent.join("batch");
+            let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+            let mut stems = Vec::new();
+            for name in ["first", "second"] {
+                let Created::Track(track) = editor
+                    .execute(Command::AddTrack { name: name.into() })
+                    .unwrap()
+                else {
+                    panic!("track")
+                };
+                stems.push(Stem {
+                    id: OutputCaptureId::Track(track),
+                    name: name.into(),
+                });
+            }
+            let revision = Arc::new(
+                PreparedRevision::prepare(
+                    editor.project(),
+                    &std::collections::BTreeMap::new(),
+                    Arc::new(hex_engine::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            let error =
+                render_stems_new(&path, revision, 0, 4096, &stems, &ExportControl::default())
+                    .unwrap_err();
+            assert!(
+                matches!(error, ExportError::Io { operation: "write staged stem samples", source }
+                if source.kind() == io::ErrorKind::FileTooLarge)
+            );
+            assert!(!path.exists());
+            assert_eq!(fs::read(&neighbor).unwrap(), b"preserve");
+            assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+            fs::remove_file(neighbor).unwrap();
+            fs::remove_dir(parent).unwrap();
+            return;
+        }
+
+        // Keep the limit and signal disposition inside the child process.
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", "ulimit -f 1; trap '' XFSZ; exec \"$@\"", "_"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "stems::tests::file_size_limit_cleans_all_staged_stems_without_publishing_a_batch",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
 }

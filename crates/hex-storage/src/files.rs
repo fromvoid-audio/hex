@@ -188,7 +188,7 @@ fn save_with_finish(
     Ok(FileToken::from_validated_bytes(Arc::from(bytes)))
 }
 
-fn finish_publication(temporary: &Path, path: &Path) -> Result<(), FinishError> {
+pub(crate) fn finish_publication(temporary: &Path, path: &Path) -> Result<(), FinishError> {
     // Attempt directory sync even when temporary cleanup failed. Neither step
     // may roll back a destination that has already been published.
     let cleanup_error = fs::remove_file(temporary).err();

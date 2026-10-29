@@ -15,6 +15,7 @@ fn group_edges_anchor_each_opposite_edge_and_commit_once_after_release(cx: &mut 
                     notes: [(60, 1, 2), (64, 2, 1)]
                         .into_iter()
                         .map(|(pitch, start, halves)| MidiNoteInsert {
+                            active: true,
                             start: BeatTime::from_quarters(start).unwrap(),
                             duration: BeatTime::from_raw(BeatTime::ONE.raw() * halves / 2),
                             pitch,
@@ -228,6 +229,7 @@ fn group_leading_resize_paints_and_commits_the_same_destructive_prefix(cx: &mut 
                 notes: [(0, 60), (1, 60), (2, 64)]
                     .into_iter()
                     .map(|(start, pitch)| MidiNoteInsert {
+                        active: true,
                         start: BeatTime::from_quarters(start).unwrap(),
                         duration: BeatTime::ONE,
                         pitch,

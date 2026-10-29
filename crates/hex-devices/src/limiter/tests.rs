@@ -5,6 +5,7 @@ use hex_lattice::{
 };
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
 use parameter::*;
+mod true_peak_oracle;
 fn state(changes: &[(ParameterId, ParameterValue)]) -> NativeDeviceState {
     let mut state = DEFINITION.default_state().unwrap();
     for (id, value) in changes {
@@ -49,6 +50,67 @@ fn render(
         offset = end;
     }
     output
+}
+
+#[test]
+fn meter_reports_committed_post_input_gain_in_both_modes() {
+    for settings in [
+        vec![(GAIN, ParameterValue::Float(6.0))],
+        vec![
+            (MAXIMIZE, ParameterValue::Bool(true)),
+            (THRESHOLD, ParameterValue::Float(-6.0)),
+        ],
+    ] {
+        let mut runtime = factory(48_000, &settings).create_runtime().unwrap();
+        let mut input = [[0.125, -0.25]; 16];
+        runtime.begin_block();
+        runtime.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+        runtime.rollback_block();
+        assert_eq!(runtime.take_dynamics_meter().unwrap().post_input_peak, 0.0);
+
+        let mut input = [[0.125, -0.25]; 16];
+        runtime.begin_block();
+        runtime.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+        runtime.commit_block();
+        let peak = runtime.take_dynamics_meter().unwrap().post_input_peak;
+        assert!(
+            (peak - 0.25 * 10.0_f32.powf(6.0 / 20.0)).abs() < 1e-5,
+            "{peak}"
+        );
+        assert_eq!(runtime.take_dynamics_meter().unwrap().post_input_peak, 0.0);
+    }
+}
+
+#[test]
+fn meter_tracks_the_actual_gain_ramp_and_silence() {
+    let mut changed = factory(
+        48_000,
+        &[
+            (GAIN, ParameterValue::Float(6.0)),
+            (ROUTING, ParameterValue::Choice(1)),
+        ],
+    )
+    .create_runtime()
+    .unwrap();
+    let old_ms = factory(48_000, &[(ROUTING, ParameterValue::Choice(1))])
+        .create_runtime()
+        .unwrap();
+    assert!(changed.can_inherit_from(old_ms.as_ref()));
+    changed.inherit_from(old_ms.as_ref());
+    let mut frame = [[0.25, -0.5]];
+    changed.begin_block();
+    changed.process_block(&mut frame, &EMPTY_DEVICE_RESOURCES);
+    changed.commit_block();
+    let peak = changed.take_dynamics_meter().unwrap().post_input_peak;
+    let target = 10.0_f32.powf(6.0 / 20.0);
+    let expected = 0.5 * (1.0 + (target - 1.0) / 240.0);
+    assert!((peak - expected).abs() < 1e-6, "{peak} != {expected}");
+
+    let mut silence = [[0.0; 2]; 16];
+    changed.begin_block();
+    changed.process_block(&mut silence, &EMPTY_DEVICE_RESOURCES);
+    changed.commit_block();
+    assert_eq!(changed.take_dynamics_meter().unwrap().post_input_peak, 0.0);
 }
 #[test]
 fn state_is_strict_and_inactive_values_survive_mode_switching() {
@@ -195,6 +257,115 @@ fn declared_latency_storage_and_impulse_are_exact_for_all_configurations() {
         }
     }
 }
+#[test]
+fn standard_anticipates_a_transient_without_a_large_background_step() {
+    let mut runtime = factory(48_000, &[(CEILING, ParameterValue::Float(0.0))])
+        .create_runtime()
+        .unwrap();
+    let mut input = vec![[0.25; 2]; 2_400];
+    input[2_000] = [4.0; 2];
+    let output = render(runtime.as_mut(), &input, &[31, 64, 7]);
+    let max_step = output[1_000..2_070]
+        .windows(2)
+        .map(|pair| (pair[1][0] - pair[0][0]).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(max_step < 0.01, "background step {max_step}");
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .all(|sample| sample.abs() <= 1.000_001)
+    );
+}
+
+#[test]
+fn standard_attack_respects_link_and_sample_ceiling_across_rates() {
+    for rate in [8_000, 44_100, 48_000, 96_000, 192_000] {
+        for link in [0.0, 1.0] {
+            let f = factory(
+                rate,
+                &[
+                    (CEILING, ParameterValue::Float(0.0)),
+                    (LINK, ParameterValue::Float(link)),
+                ],
+            );
+            let latency = f.algorithmic_latency_frames().unwrap() as usize;
+            let transient = 2 * latency + 500;
+            let mut input = vec![[0.25; 2]; transient + latency + 100];
+            input[transient] = [4.0, 0.25];
+            let mut runtime = f.create_runtime().unwrap();
+            let output = render(runtime.as_mut(), &input, &[1, 63, 257, 17]);
+            let preceding = output[transient - 1..transient + latency]
+                .windows(2)
+                .map(|pair| (pair[1][0] - pair[0][0]).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(preceding < 0.02, "rate={rate} link={link} step={preceding}");
+            assert!(
+                output
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.abs() <= 1.000_001),
+                "rate={rate} link={link}"
+            );
+            if link == 0.0 {
+                assert_eq!(output[transient + latency][1], 0.25);
+            } else {
+                assert!(output[transient + latency][1] < 0.07);
+            }
+        }
+    }
+}
+
+#[test]
+fn standard_attack_keeps_earlier_deadlines_when_stronger_peaks_arrive() {
+    let f = factory(
+        8_000,
+        &[
+            (CEILING, ParameterValue::Float(0.0)),
+            (LINK, ParameterValue::Float(1.0)),
+        ],
+    );
+    let latency = f.algorithmic_latency_frames().unwrap() as usize;
+    let mut input = vec![[0.25; 2]; 200];
+    input[100][0] = 2.0;
+    input[110][0] = 8.0;
+    let mut runtime = f.create_runtime().unwrap();
+    let output = render(runtime.as_mut(), &input, &[3, 17, 1]);
+    assert!(output[100 + latency][0] <= 1.0);
+    assert!(output[110 + latency][0] <= 1.0);
+    let max_step = output[99..=110 + latency]
+        .windows(2)
+        .map(|pair| (pair[1][1] - pair[0][1]).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(max_step < 0.025, "linked background step {max_step}");
+}
+
+#[test]
+fn standard_attack_rollback_and_compatible_handoff_preserve_envelope() {
+    let f = factory(48_000, &[(CEILING, ParameterValue::Float(0.0))]);
+    let mut original = f.create_runtime().unwrap();
+    let mut reference = f.create_runtime().unwrap();
+    let mut input = vec![[0.25; 2]; 1_010];
+    input[1_000] = [4.0; 2];
+    assert_eq!(
+        render(original.as_mut(), &input, &[1010]),
+        render(reference.as_mut(), &input, &[1010])
+    );
+    original.begin_block();
+    let mut abandoned = [[0.25; 2]; 20];
+    original.process_block(&mut abandoned, &EMPTY_DEVICE_RESOURCES);
+    original.rollback_block();
+
+    let mut successor = f.create_runtime().unwrap();
+    assert!(successor.can_inherit_from(original.as_ref()));
+    successor.inherit_from(original.as_ref());
+    let continuation = [[0.25; 2]; 200];
+    assert_eq!(
+        render(successor.as_mut(), &continuation, &[7, 53]),
+        render(reference.as_mut(), &continuation, &[200])
+    );
+}
+
 #[test]
 fn sample_ceiling_and_partition_independence_with_extreme_stereo_transients() {
     for mode in 0..3 {
@@ -787,4 +958,132 @@ fn compatible_quiet_handoffs_preserve_envelopes_and_gain_ramps() {
     );
     let mut fresh = changed.create_runtime().unwrap();
     assert_ne!(render(fresh.as_mut(), &input, &[17]), continuation);
+}
+
+#[test]
+fn reduction_meter_matches_original_factor_oracle_across_routing_and_rollback() {
+    // Captured from the original per-factor dB owner at base fd44b147; each
+    // value represents the same delayed sample, not independent stage peaks.
+    type MeterReference = ([f32; 2], bool);
+    const EXPECTED: [[[MeterReference; 2]; 6]; 2] = [
+        [
+            [
+                ([17.97917_f32, 18.7157_f32], false),
+                ([399.6043_f32, 398.4103_f32], false),
+            ],
+            [
+                ([405.5046_f32, 399.9174_f32], false),
+                ([402.7183_f32, 401.1347_f32], false),
+            ],
+            [
+                ([18.59695_f32, 19.33349_f32], true),
+                ([400.2221_f32, 399.028_f32], true),
+            ],
+            [
+                ([404.4733_f32, 399.8142_f32], true),
+                ([403.3361_f32, 400.4533_f32], true),
+            ],
+            [
+                ([401.8966_f32, 399.7475_f32], false),
+                ([400.2112_f32, 399.8473_f32], false),
+            ],
+            [
+                ([402.8987_f32, 398.1146_f32], false),
+                ([401.1973_f32, 400.0852_f32], false),
+            ],
+        ],
+        [
+            [
+                ([17.97917_f32, 18.7157_f32], false),
+                ([600_f32, 18.57331_f32], false),
+            ],
+            [
+                ([606.0206_f32, 606.0206_f32], false),
+                ([606.0206_f32, 606.0206_f32], false),
+            ],
+            [
+                ([18.59695_f32, 19.33349_f32], true),
+                ([601.8317_f32, 19.19109_f32], true),
+            ],
+            [
+                ([607.8524_f32, 607.8524_f32], true),
+                ([607.8524_f32, 607.8524_f32], true),
+            ],
+            [
+                ([600_f32, 600_f32], false),
+                ([600_f32, 18.90832_f32], false),
+            ],
+            [
+                ([606.0029_f32, 606.0029_f32], false),
+                ([606.0206_f32, 606.0206_f32], false),
+            ],
+        ],
+    ];
+    for (extreme, cases) in EXPECTED.iter().enumerate() {
+        for (case, expected) in cases.iter().enumerate() {
+            let mode = (case / 2) as u32;
+            let routing = (case % 2) as u32;
+            let f = factory(
+                8_000,
+                &[
+                    (MODE, ParameterValue::Choice(mode)),
+                    (ROUTING, ParameterValue::Choice(routing)),
+                    (LINK, ParameterValue::Float(0.0)),
+                    (LINK_MID_SIDE, ParameterValue::Float(0.0)),
+                    (RELEASE, ParameterValue::Float(0.01)),
+                    (CEILING, ParameterValue::Float(-1.0)),
+                ],
+            );
+            let mut runtime = f.create_runtime().unwrap();
+            for block in 0..20 {
+                let mut frames: Vec<StereoFrame> = (0..64)
+                    .map(|n| {
+                        let i = block * 64 + n;
+                        let scale = if i % 173 < 5 {
+                            if extreme == 0 {
+                                1e20_f32
+                            } else {
+                                f32::MAX / 4.0
+                            }
+                        } else if i % 97 < 9 {
+                            8.0
+                        } else {
+                            1.0
+                        };
+                        [
+                            scale * (i * 37 % 257 - 128) as f32 / 128.0,
+                            scale * (i * 71 % 251 - 125) as f32 / 128.0,
+                        ]
+                    })
+                    .collect();
+                if block % 5 == 0 {
+                    let mut discarded = frames.clone();
+                    runtime.begin_block();
+                    runtime.process_block(&mut discarded, &EMPTY_DEVICE_RESOURCES);
+                    runtime.rollback_block();
+                    assert_eq!(
+                        runtime.take_dynamics_meter().unwrap(),
+                        hex_lattice::DynamicsMeter::default()
+                    );
+                }
+                runtime.begin_block();
+                runtime.process_block(&mut frames, &EMPTY_DEVICE_RESOURCES);
+                runtime.commit_block();
+                let actual = runtime.take_dynamics_meter().unwrap();
+                if let Some(index) = [3, 19].iter().position(|&value| value == block) {
+                    let (levels, clipped) = expected[index];
+                    assert_eq!(actual.clipped, clipped, "case={case} block={block}");
+                    for (lane, &expected_level) in levels.iter().enumerate() {
+                        let tolerance = if expected_level <= 120.0 { 1e-4 } else { 1e-3 };
+                        assert!(
+                            (actual.reduction_db[lane] - expected_level).abs() <= tolerance,
+                            "extreme={extreme} case={case} block={block} lane={lane}: actual={} expected={}",
+                            actual.reduction_db[lane],
+                            expected_level
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
