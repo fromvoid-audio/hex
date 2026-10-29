@@ -638,6 +638,119 @@ fn queued_gain_take_ignores_earlier_terminal_before_its_own_install(cx: &mut Tes
 }
 
 #[gpui::test]
+fn fault_disarms_gain_without_an_admitted_take(cx: &mut TestAppContext) {
+    let _guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let mut project =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    let hex_project::Created::Track(track) = project
+        .execute(hex_project::Command::AddTrack {
+            name: "gain".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let original = project.project().clone();
+    let (mut output, mut backend) = open_gain_output();
+    let client = output.take_client().unwrap();
+    let (handle, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, original.clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(&mut visual, |view, _| {
+        view.audio = Some(crate::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "headless".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.gain_recorder.mode = Mode::Ready;
+        view.gain_recorder.track = Some(track);
+        view.gain_recorder.generation = view.project_generation;
+        view.gain_recorder.revision = view.state.as_ref().unwrap().revision;
+    });
+    backend.report_device_error().unwrap();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.tick_gain_recording());
+        assert!(view.gain_recorder.mode == Mode::Idle);
+        assert!(!view.gain_recorder.blocks_edits());
+        assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn device_fault_keeps_gain_take_and_recovery_cursor(cx: &mut TestAppContext) {
+    gain_fault_keeps_take_and_cursor(cx, false);
+}
+
+#[gpui::test]
+fn render_fault_keeps_gain_take_and_recovery_cursor(cx: &mut TestAppContext) {
+    gain_fault_keeps_take_and_cursor(cx, true);
+}
+
+fn gain_fault_keeps_take_and_cursor(cx: &mut TestAppContext, render_fault: bool) {
+    let _guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let mut fixture = delivered_fixture(cx, false);
+    let (before, cursor) = fixture.editor.read_with(&fixture.visual, |view, _| {
+        let status = view.audio.as_ref().unwrap().control.status().unwrap();
+        (
+            view.state.as_ref().unwrap().project.snapshot(),
+            status.recovery_position(),
+        )
+    });
+    assert!(cursor > 0);
+    if render_fault {
+        fixture.backend.report_render_error().unwrap();
+    } else {
+        fixture.backend.report_device_error().unwrap();
+    }
+    fixture.editor.update(&mut fixture.visual, |view, _| {
+        assert!(view.tick_gain_recording());
+        assert_eq!(
+            view.audio
+                .as_ref()
+                .unwrap()
+                .control
+                .status()
+                .unwrap()
+                .recovery_position(),
+            cursor
+        );
+        assert_eq!(view.gain_recorder.events.len(), 1);
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+    });
+    let mut frames = [[1.0; 2]; 16];
+    let mut host = [1.0; 32];
+    fixture
+        .backend
+        .render_direct(&mut frames, &mut host)
+        .unwrap();
+    assert_eq!(host, [0.0; 32]);
+    fixture.editor.update(&mut fixture.visual, |view, _| {
+        view.tick_gain_recording();
+        assert_eq!(
+            view.audio
+                .as_ref()
+                .unwrap()
+                .control
+                .status()
+                .unwrap()
+                .recovery_position(),
+            cursor
+        );
+        assert!(view.gain_recorder.has_retained_take());
+        assert_eq!(view.gain_recorder.events.len(), 1);
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        view.discard_gain_take();
+        assert!(!view.gain_recorder.blocks_edits());
+    });
+}
+
+#[gpui::test]
 fn finished_gain_receipts_survive_all_current_output_retirement_paths(cx: &mut TestAppContext) {
     let _output_fixture_guard =
         crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
