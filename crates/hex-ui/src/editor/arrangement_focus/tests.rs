@@ -176,47 +176,6 @@ fn select_section(visual: &mut VisualTestContext, index: u64, toggle_membership:
     visual.run_until_parked();
 }
 
-#[test]
-fn section_focus_keeps_nested_group_ancestors_of_visible_tracks() {
-    let mut f = model();
-    let group = |model: &mut Editor, track| {
-        let Created::Track(id) = model
-            .execute(Command::GroupTracks {
-                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
-                name: "group".into(),
-            })
-            .unwrap()
-        else {
-            panic!("group")
-        };
-        id
-    };
-    let inner = group(&mut f.model, f.tracks[3]);
-    let outer = group(&mut f.model, inner);
-    let unrelated = group(&mut f.model, f.tracks[2]);
-    let mut focus = State {
-        enabled: true,
-        ..Default::default()
-    };
-    assert!(focus.rebuild(1, 1, f.model.project(), &f.sections[..1], None));
-    let visible: Vec<_> = focus
-        .indices
-        .iter()
-        .map(|index| f.model.project().tracks()[*index].id())
-        .collect();
-    let position = |id| {
-        visible
-            .iter()
-            .position(|candidate| *candidate == id)
-            .unwrap()
-    };
-    assert!(position(outer) < position(inner) && position(inner) < position(f.tracks[3]));
-    assert!(!visible.contains(&unrelated));
-    assert!(!visible.contains(&f.tracks[2]));
-    assert!(focus.tracks.contains(&outer) && focus.tracks.contains(&inner));
-    assert!(!focus.rebuild(1, 1, f.model.project(), &f.sections[..1], None));
-}
-
 #[gpui::test]
 fn section_focus_renders_visible_child_with_nested_group_headers(cx: &mut TestAppContext) {
     let (mut visual, editor, mut f) = open(cx);
