@@ -341,6 +341,17 @@ fn console_track_drag_turns_left_to_a_group_and_undoes(cx: &mut TestAppContext) 
             Some(target_group)
         )
     });
+    let after = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
+    });
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
     receive(&mut visual, &editor);
     editor.read_with(&visual, |v, _| {
@@ -379,6 +390,17 @@ fn console_track_drag_turns_left_to_a_group_and_undoes(cx: &mut TestAppContext) 
             v.state.as_ref().unwrap().project.tracks()[0].id(),
             ids[size - 1]
         )
+    });
+    let after = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
     });
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
     receive(&mut visual, &editor);
