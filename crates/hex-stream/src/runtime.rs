@@ -994,6 +994,146 @@ mod tests {
     }
 
     #[test]
+    fn full_request_queue_retries_with_real_worker_and_preserves_pcm_and_custody() {
+        use hex_engine::StreamedSourceMetadata;
+        use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits, WavReaderLimits};
+        use hex_project::{Command, Created, Editor, Project};
+
+        let wav = crate::worker::tests::Fixture::pcm16_frames(12_001);
+        let limits = VerifiedWavReaderLimits::new(
+            WavReaderLimits::new(2 * 1024 * 1024, 12_001, 128, 32_768),
+            1024 * 1024,
+        );
+        let reader = VerifiedWavReader::open(&wav.0, limits).unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "queue-source.wav".into(),
+                sample_rate: 48_000,
+                frames: 12_001,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let key = StreamSourceKey::new(105, asset);
+        let metadata = StreamedSourceMetadata::new(
+            key,
+            48_000,
+            48_000,
+            12_001,
+            12_001,
+            hex_project::IDENTITY_CONVERSION,
+            *reader.fingerprint(),
+        )
+        .unwrap();
+        drop(reader);
+        let mut config = StreamConfig::with_pool_pages(4);
+        config.request_capacity = 2;
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let (publication_tx, publication_rx) = mpsc::sync_channel(3);
+        let hooks = crate::worker::TestWorkerHooks {
+            entered: entered_tx,
+            release: release_rx,
+            publications: publication_tx,
+            scalar_steps: None,
+        };
+        let mut runtime = StreamRuntime::new_inner(
+            config,
+            vec![SourceDefinition::new(wav.0.clone(), metadata, limits)],
+            Some(hooks),
+        )
+        .unwrap();
+        runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        // The worker cannot consume the queue until released. A rejected page
+        // must not acquire a pending entry or be mistaken for a coalesced one.
+        #[cfg(feature = "allocation-probe")]
+        let measured = allocation_counter::measure(|| {
+            runtime.request_page(key, 0);
+            runtime.request_page(key, 1);
+            runtime.request_page(key, 2);
+            runtime.request_page(key, 0);
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            runtime.request_page(key, 0);
+            runtime.request_page(key, 1);
+            runtime.request_page(key, 2);
+            runtime.request_page(key, 0);
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.count_current,
+                measured.bytes_total,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let stats = runtime.stats();
+        assert_eq!(
+            (
+                stats.queued_requests,
+                stats.rejected_requests,
+                stats.coalesced_requests
+            ),
+            (2, 1, 1)
+        );
+        release_tx.send(()).unwrap();
+        runtime.wake_worker();
+        for _ in 0..2 {
+            assert_eq!(
+                publication_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+                0
+            );
+        }
+        assert_eq!(runtime.pump_ready(2), 2);
+        runtime.request_page(key, 2);
+        runtime.wake_worker();
+        assert_eq!(
+            publication_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            0
+        );
+        assert_eq!(runtime.pump_ready(1), 1);
+        let stats = runtime.stats();
+        assert_eq!(
+            (
+                stats.queued_requests,
+                stats.rejected_requests,
+                stats.coalesced_requests
+            ),
+            (3, 1, 1)
+        );
+        for index in 0..3 {
+            let page = runtime.page(key, index).expect("accepted or retried page");
+            let start = index as usize * hex_engine::STREAM_PAGE_FRAMES;
+            for (offset, frame) in page.frames.iter().enumerate() {
+                let sample = (start + offset) as f32 / 32768.0;
+                assert_eq!(*frame, [sample, -sample]);
+            }
+            assert_eq!(
+                page.frames.len(),
+                (12_001 - start).min(hex_engine::STREAM_PAGE_FRAMES)
+            );
+        }
+        let report = runtime
+            .shutdown()
+            .expect("joined worker and recovered page pool");
+        assert!(report.worker_joined && report.accounting_complete);
+        assert_eq!(report.page_buffers, 4);
+        assert_eq!(
+            report.queued_pages_reclaimed
+                + report.held_return_pages_reclaimed
+                + report.worker_pages_reclaimed,
+            4
+        );
+    }
+
+    #[test]
     fn shutdown_reclaims_undrained_ready_queue_and_worker_held_pages() {
         let report = shutdown_queue_fixture(true);
         assert!(report.worker_joined);
