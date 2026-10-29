@@ -167,6 +167,49 @@ fn play_from_chases_a_held_mutable_note_without_replaying_the_prefix() {
 }
 
 #[test]
+fn play_from_one_frame_before_note_off_matches_one_frame_authored_note() {
+    // At 120 bpm, a quarter note ends at frame 24,000. Round the independent
+    // one-frame beat duration up so its note-off lands on frame one.
+    let one_frame = (1_u64 << 32).div_ceil(24_000);
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let mut snapshot = project(1.0, 0, one_frame).snapshot();
+    // The oracle exercises Arrangement; omit the unrelated Session source so
+    // its own template admission does not constrain this short-note fixture.
+    snapshot.session.cells.clear();
+    let oracle_project = with_test_instrument(&Project::from_snapshot(snapshot).unwrap(), id, 0);
+    let oracle_revision = revision_with_instrument_registry(
+        &oracle_project,
+        Arc::new(hex_devices::SineTable::new()),
+        &registry,
+    );
+    let mut oracle = SessionPlayback::new(oracle_revision).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let expected = render_checkpoint_partitioned(&mut oracle, &[64], 512);
+    assert!(expected[0].iter().any(|sample| *sample != 0.0));
+    assert!(expected[1..8].iter().flatten().any(|sample| *sample != 0.0));
+    assert!(expected[16..].iter().flatten().all(|sample| *sample == 0.0));
+
+    let prepared = start_fixture(0, 1 << 32, None);
+    for block in [1, 7, 17, 64, 128, 256, 512] {
+        let mut playback = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+        playback.play_from(23_999).unwrap();
+        let actual = render_checkpoint_partitioned(&mut playback, &[block], 512);
+        assert_eq!(actual, expected, "block size {block}");
+        assert_eq!(playback.arrangement_frame(), 24_511);
+        assert_eq!(playback.performance_frame(), 24_511);
+    }
+}
+
+#[test]
 fn play_from_note_onset_and_off_boundaries_match_authored_pcm() {
     // At 120 bpm and 48 kHz this one-beat note ends at frame 24,000.
     for limiter in [None, Some(false), Some(true)] {
