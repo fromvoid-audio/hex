@@ -101,6 +101,18 @@ pub fn open_sampler_load_test_backend(
     editor::sampler_load_fixture(cx, backend, root, directory)
 }
 
+/// Exercise the real headless MIDI receipt-pressure and editor custody path.
+#[cfg(feature = "ui-test-support")]
+pub fn exercise_midi_receipt_pressure(
+    cx: &mut gpui::TestAppContext,
+    root: std::path::PathBuf,
+    reservation: hex_session::SourcePlanReservation,
+    output: hex_audio::WorkerPreparedOutput,
+    render: impl FnMut(&mut [[f32; 2]], &mut [f32]) -> Result<(), hex_engine::Invalid>,
+) {
+    editor::midi_pressure_fixture(cx, root, reservation, output, render)
+}
+
 /// Read-only browser insertion evidence. Neither the view nor this query owns
 /// a native endpoint, and a pending request alone grants no applied source.
 #[cfg(feature = "ui-test-support")]
