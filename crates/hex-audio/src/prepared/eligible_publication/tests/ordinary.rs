@@ -84,6 +84,131 @@ fn measured_render(
     );
 }
 #[test]
+fn ordinary_streamed_actions_deliver_split_client_outcomes() {
+    let _serial = serial();
+    let project = super::readiness::project_with_frames(12_288);
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(12_288);
+    let definition = wav.definition(asset, 11);
+    let metadata = definition.metadata.clone();
+    let store = ResidentDeviceAssets::default();
+    let (mut control, mut callback) = channel(48_000).unwrap();
+    let mut reader = control
+        .enable_action_outcomes_on_control(&mut callback)
+        .unwrap();
+    let root = control.native_candidate_root();
+    let (mut data, errors, terminals, mut client, mut publication) =
+        crate::native_callback_owner::reserve_native_worker(control, callback, None);
+    let mut retirement =
+        crate::native_callback_owner::NativeRetirement::new(terminals, root.clone());
+    let control = publication.control().unwrap();
+    control.enable_native_custody().unwrap();
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            3,
+            4096,
+        )
+        .unwrap();
+    let _domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(definition),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .ok()
+        .unwrap();
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, metadata, &store),
+            PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation: 7,
+                editor_revision: 3,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    client.activate();
+    let play = client.command_with_ticket(PlaybackCommand::Play).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while client.status().unwrap().applied_revision.load(Acquire) != revision {
+        measured_block(&mut data);
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        reader.try_take(),
+        Some(ActionOutcomeReceipt {
+            ticket: play,
+            outcome: ActionOutcome::Applied
+        })
+    );
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| assert!(callback.streamed_transport_mode()));
+    assert!(
+        !client
+            .status()
+            .unwrap()
+            .verified_streaming_mode
+            .load(Acquire)
+    );
+    let seek = client
+        .command_with_ticket(PlaybackCommand::Seek(4096))
+        .unwrap();
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let pause = client.command_with_ticket(PlaybackCommand::Pause).unwrap();
+    measured_block(&mut data);
+    assert_eq!(
+        reader.try_take(),
+        Some(ActionOutcomeReceipt {
+            ticket: seek,
+            outcome: ActionOutcome::Rejected(PlaybackActionRejection::StreamActionCancelled)
+        })
+    );
+    assert_eq!(
+        reader.try_take(),
+        Some(ActionOutcomeReceipt {
+            ticket: pause,
+            outcome: ActionOutcome::Applied
+        })
+    );
+    assert_eq!(reader.failure(), None);
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    drop(data);
+    drop(errors);
+    drop(client);
+    drop(publication);
+    finish(&mut retirement);
+    while !root.test_eligible_complete() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+}
+#[test]
 fn ordinary_publication_reports_changed_source_after_catalog_admission() {
     let _serial = serial();
     let project = super::readiness::project_with_frames(32_768);

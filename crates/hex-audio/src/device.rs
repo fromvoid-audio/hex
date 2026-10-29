@@ -59,6 +59,7 @@ pub enum WorkerOutputProfile {
 pub(crate) enum PreparedOutputKind {
     Legacy,
     Worker(WorkerOutputProfile),
+    WorkerReliable(WorkerOutputProfile),
 }
 impl PreparedOutputKind {
     fn physical_callback_request(
@@ -66,7 +67,8 @@ impl PreparedOutputKind {
         supported: cpal::SupportedBufferSize,
     ) -> Result<Option<u16>, String> {
         match self {
-            Self::Worker(WorkerOutputProfile::PluginBridge) => {
+            Self::Worker(WorkerOutputProfile::PluginBridge)
+            | Self::WorkerReliable(WorkerOutputProfile::PluginBridge) => {
                 bridge_callback_request(supported).map(Some)
             }
             _ => Ok(None),
@@ -80,6 +82,7 @@ pub struct WorkerPreparedOutput {
     _stream: lifecycle::StreamOwner,
     pub publication: prepared::WorkerControl,
     client: Option<prepared::Client>,
+    action_outcomes: Option<prepared::ActionOutcomeReader>,
     pub sample_rate: u32,
     pub label: String,
     pub spectrum_error: Option<String>,
@@ -99,6 +102,22 @@ impl WorkerPreparedOutput {
         )?
         .into_worker()
     }
+    /// Open an output with bounded action outcomes selected before native
+    /// callback exposure, including streamed playback.
+    pub fn open_with_reliable_action_outcomes(
+        profile: WorkerOutputProfile,
+    ) -> Result<Self, String> {
+        open_prepared(
+            None,
+            lifecycle::Lease::acquire()?,
+            PreparedOutputKind::WorkerReliable(profile),
+        )?
+        .into_worker()
+    }
+    /// Take the unique observer; it can outlive this output and its client.
+    pub fn take_action_outcomes(&mut self) -> Option<prepared::ActionOutcomeReader> {
+        self.action_outcomes.take()
+    }
     pub fn take_client(&mut self) -> Option<prepared::Client> {
         let mut client = self.client.take()?;
         client.activate();
@@ -110,6 +129,7 @@ pub(crate) struct Opened {
     legacy: Option<prepared::Control>,
     publication: Option<prepared::WorkerControl>,
     client: Option<prepared::Client>,
+    action_outcomes: Option<prepared::ActionOutcomeReader>,
     sample_rate: u32,
     label: String,
     spectrum: Option<SpectrumReader>,
@@ -133,6 +153,7 @@ impl Opened {
                 .publication
                 .ok_or("worker publication endpoint unavailable")?,
             client: Some(self.client.ok_or("worker command endpoint unavailable")?),
+            action_outcomes: self.action_outcomes,
             sample_rate: self.sample_rate,
             label: self.label,
             spectrum_error: self.spectrum_error,
@@ -144,7 +165,10 @@ pub(crate) fn open_prepared(
     lease: lifecycle::Lease,
     kind: PreparedOutputKind,
 ) -> Result<Opened, String> {
-    let worker = matches!(kind, PreparedOutputKind::Worker(_));
+    let worker = matches!(
+        kind,
+        PreparedOutputKind::Worker(_) | PreparedOutputKind::WorkerReliable(_)
+    );
     let device = cpal::default_host()
         .default_output_device()
         .ok_or("no default audio output device")?;
@@ -214,6 +238,20 @@ pub(crate) fn open_prepared(
             return Err(error.to_string());
         }
     };
+    let action_outcomes = if matches!(kind, PreparedOutputKind::WorkerReliable(_)) {
+        match control.enable_action_outcomes_on_control(&mut callback) {
+            Ok(reader) => Some(reader),
+            Err(error) => {
+                drop(lifecycle::StreamOwner::failed_preparation_custody(
+                    lease,
+                    spectrum_reaper,
+                ));
+                return Err(error.to_owned());
+            }
+        }
+    } else {
+        None
+    };
     if let Some(frames) = physical_callback_request {
         if let Err(error) = control.configure_physical_callback_request(&mut callback, frames) {
             drop(lifecycle::StreamOwner::failed_preparation_custody(
@@ -278,6 +316,7 @@ pub(crate) fn open_prepared(
         legacy: legacy_control,
         publication: worker_control,
         client,
+        action_outcomes,
         sample_rate: config.sample_rate,
         label,
         spectrum,
@@ -596,6 +635,7 @@ pub(crate) fn headless_worker_output(
             _stream: stream,
             publication,
             client: Some(client),
+            action_outcomes: None,
             sample_rate: rate,
             label: "headless constructor fixture".into(),
             spectrum_error: None,
