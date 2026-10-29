@@ -612,8 +612,25 @@ where
 pub(crate) fn headless_worker_output(
     rate: u32,
 ) -> Result<(WorkerPreparedOutput, crate::worker_fixture::HeadlessBackend), String> {
+    headless_worker_output_with_outcomes(rate, false)
+}
+
+#[cfg(feature = "allocation-probe")]
+pub(crate) fn headless_worker_output_with_outcomes(
+    rate: u32,
+    reliable: bool,
+) -> Result<(WorkerPreparedOutput, crate::worker_fixture::HeadlessBackend), String> {
     let lease = lifecycle::Lease::acquire()?;
     let (mut control, mut callback) = prepared::channel(rate).map_err(|e| e.to_string())?;
+    let action_outcomes = if reliable {
+        Some(
+            control
+                .enable_action_outcomes_on_control(&mut callback)
+                .map_err(str::to_owned)?,
+        )
+    } else {
+        None
+    };
     control
         .configure_physical_callback_request(
             &mut callback,
@@ -635,7 +652,7 @@ pub(crate) fn headless_worker_output(
             _stream: stream,
             publication,
             client: Some(client),
-            action_outcomes: None,
+            action_outcomes,
             sample_rate: rate,
             label: "headless constructor fixture".into(),
             spectrum_error: None,
