@@ -5241,6 +5241,37 @@ mod tests {
     }
 
     #[test]
+    fn earlier_session_rejection_is_not_reported_as_consumed() {
+        let (mut control, mut callback) = hex_audio::prepared::channel(48_000).unwrap();
+        let playback = Playback::new(hex_engine::Project::new(48_000, Vec::new()).unwrap());
+        control.publish(playback).unwrap();
+        callback.begin_block();
+        let first = control
+            .launch_and_play_with_ticket(hex_engine::SessionPlaybackCommand::Stop)
+            .unwrap();
+        let second = control
+            .action_with_ticket(PlaybackAction::SetMetronome(true))
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(
+            control
+                .status
+                .consumed_command
+                .load(std::sync::atomic::Ordering::Acquire),
+            second
+        );
+        let rejected = control.status.rejected_action().map(|(ticket, _)| ticket);
+        assert_eq!(
+            reconcile_session_ticket(Some((first, 7)), 7, second, rejected),
+            (None, Some(SessionTicketOutcome::Rejected)),
+            "a later rejection cannot turn the earlier failed action into consumed feedback"
+        );
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
     fn session_ticket_feedback_clears_on_consumption_or_matching_rejection() {
         assert_eq!(
             reconcile_session_ticket(Some((5, 7)), 7, 4, None),

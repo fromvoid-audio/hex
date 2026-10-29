@@ -6621,6 +6621,30 @@ mod tests {
     }
 
     #[test]
+    fn multiple_rejected_actions_are_each_observable_after_one_callback() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, _, _, _) = session_audio_graph();
+        control.publish(playback).unwrap();
+        callback.begin_block();
+        let first = control
+            .launch_and_play_with_ticket(hex_engine::SessionPlaybackCommand::Stop)
+            .unwrap();
+        let second = control
+            .launch_and_play_with_ticket(hex_engine::SessionPlaybackCommand::Seek(4))
+            .unwrap();
+        callback.begin_block();
+        assert_eq!(control.status.consumed_command.load(Acquire), second);
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((first, PlaybackActionRejection::InvalidSessionAction)),
+            "first rejected action must remain observable after the callback consumes both"
+        );
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
     fn first_render_cause_is_latched_before_stop_and_new_admission_clears_it() {
         let (mut control, mut callback) = channel(48_000).expect("channel");
         let (playback, _) = spectrum_eq8_graph();
