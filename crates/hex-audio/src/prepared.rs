@@ -513,6 +513,9 @@ pub struct Status {
     /// This does not claim that an already committed musical route was undone.
     pub stream_invalidated_schedule: AtomicU64,
     pub stream_readiness_refused: AtomicBool,
+    /// A demanded active stream reported changed media; retained through Stop
+    /// until this output is replaced; cached audio does not reverify the file.
+    pub stream_source_changed: AtomicBool,
     /// Frames committed before the latest BUFFERING gap; zero when complete.
     pub stream_committed_frames: AtomicU64,
     /// Latest rejected command is read through `rejected_action` for a coherent pair.
@@ -696,6 +699,7 @@ impl Status {
             stream_activated_command: AtomicU64::new(0),
             stream_invalidated_schedule: AtomicU64::new(0),
             stream_readiness_refused: AtomicBool::new(false),
+            stream_source_changed: AtomicBool::new(false),
             stream_committed_frames: AtomicU64::new(0),
             rejected_action_ticket: AtomicU64::new(0),
             rejected_action_reason: AtomicU32::new(0),
@@ -3819,6 +3823,7 @@ impl Callback {
                     },
                     play_applied: false,
                     readiness_refused: false,
+                    source_changed: false,
                     fault: None,
                     action_rejection: None,
                     activated: None,

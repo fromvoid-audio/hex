@@ -1915,6 +1915,16 @@ impl EditorView {
                 },
             );
             visible_change |= replace_error(&mut self.error, &diagnostic);
+        } else if audio
+            .control
+            .status()
+            .is_some_and(|status| status.stream_source_changed.load(Acquire))
+        {
+            visible_change |= replace_status(&mut self.status, "streamed media unavailable");
+            visible_change |= replace_error(
+                &mut self.error,
+                "original media changed · reopen or relink it",
+            );
         }
         if audio.control.status().is_some_and(|status| {
             !status.device_fault.load(Relaxed)

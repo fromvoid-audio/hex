@@ -7,6 +7,49 @@ use std::sync::{Arc, atomic::Ordering::Relaxed};
 use std::time::Instant;
 
 #[gpui::test]
+fn changed_stream_media_status_reaches_editor_error(cx: &mut TestAppContext) {
+    let (mut output, mut backend) = hex_audio::worker_fixture::open(48_000).unwrap();
+    let client = output.take_client().unwrap();
+    let (_, editor) = editor_window(
+        cx,
+        Project::new(48_000).unwrap(),
+        Arc::new(Default::default()),
+    );
+    editor.update(cx, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::VerifiedStreaming,
+        });
+        view.tick(cx);
+        assert!(
+            !view
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("original media changed"))
+        );
+        view.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .stream_source_changed
+            .store(true, Relaxed);
+        view.tick(cx);
+        assert_eq!(
+            view.error.as_deref(),
+            Some("original media changed · reopen or relink it")
+        );
+        assert_eq!(view.status, "streamed media unavailable");
+        view.audio.take().unwrap().control.close();
+    });
+    drop(output);
+    backend.close();
+}
+
+#[gpui::test]
 fn output_meter_status_snapshot_reaches_actual_editor_at_minimum_size(cx: &mut TestAppContext) {
     let (handle, editor) = editor_window(
         cx,

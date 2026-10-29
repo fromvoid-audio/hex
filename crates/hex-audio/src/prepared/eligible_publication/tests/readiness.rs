@@ -861,6 +861,192 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
 }
 
 #[test]
+fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() {
+    let _serial = serial();
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    let project = project_with_frames(8192);
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(8192);
+    let definition = wav.definition(asset, 11);
+    let source_path = definition.path.clone();
+    let mut owner = stream_fixture::owner_with_context(
+        &project,
+        definition.metadata.clone(),
+        Some(hex_engine::AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 9,
+        }),
+    );
+    let limits = reservation(&mut owner);
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    control.configure_audio_candidate_streaming(3).unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(definition),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .ok()
+        .unwrap();
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    let ticket = control
+        .stage_eligible_audio_candidate(owner, vec![domain], PublicationPolicy::InheritRuntime, 0)
+        .ok()
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 256];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while control.status.applied_revision.load(Acquire) == 0 {
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut output).unwrap();
+            })
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(!control.status.stream_source_changed.load(Acquire));
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(output, [[0.25; 2]; 256]);
+    std::fs::write(source_path, b"changed source bytes").unwrap();
+    while control.status.position.load(Acquire) < 4096 {
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut output).unwrap();
+            })
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(output, [[0.25; 2]; 256]);
+        assert!(std::time::Instant::now() < deadline);
+    }
+    while !control.status.stream_readiness_refused.load(Acquire) {
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut output).unwrap();
+            })
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(output, [[0.0; 2]; 256]);
+        assert_eq!(control.status.position.load(Acquire), 4096);
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let reported = control.status.stream_source_changed.load(Acquire);
+    control.stop();
+    let measured = allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|c, _| {
+            c.begin_block();
+            c.render(&mut output).unwrap();
+        })
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(control.status.position.load(Acquire), 0);
+    assert!(!control.status.playing.load(Acquire));
+    let retained_after_stop = control.status.stream_source_changed.load(Acquire);
+    // Cached audio can play after Stop, but it cannot reverify the changed file.
+    control.command(PlaybackCommand::Play).unwrap();
+    while control.status.position.load(Acquire) == 0 {
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut output).unwrap();
+            })
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(output, [[0.25; 2]; 256]);
+    data.owner_mut().unwrap().run(|c, _| {
+        c.begin_block();
+        c.render(&mut output).unwrap();
+    });
+    assert!(control.status.stream_source_changed.load(Acquire));
+    control.stop();
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    drop(data);
+    drop(errors);
+    retirement.advance().unwrap();
+    let returned = recover(&mut control, &ticket);
+    loop {
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(returned);
+    drop(control);
+    finish(&mut retirement);
+    assert!(reported, "changed source must be reported");
+    assert!(retained_after_stop, "Stop must not erase the warning");
+    let (new_control, _) = crate::prepared::channel(48_000).unwrap();
+    assert!(!new_control.status.stream_source_changed.load(Acquire));
+}
+
+#[test]
 fn changed_source_after_catalog_admission_reports_recovery() {
     let _serial = serial();
     if !hex_engine::audio_storage_constructor_layout_supported() {
