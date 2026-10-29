@@ -333,17 +333,45 @@ pub fn request_worker_open_with_profile(
     expected_sample_rate: Option<u32>,
     profile: WorkerOutputProfile,
 ) -> Result<WorkerRecoveryOpen, RecoveryOpenError> {
+    request_worker_open_kind(expected_sample_rate, profile, false)
+}
+
+/// Queue an output with its reliable action reader selected before callback
+/// exposure. This uses the same bounded exclusive lane and abandonment custody
+/// as the ordinary worker open; callers must take and drain the unique reader.
+pub fn request_worker_open_with_reliable_action_outcomes(
+    expected_sample_rate: Option<u32>,
+    profile: WorkerOutputProfile,
+) -> Result<WorkerRecoveryOpen, RecoveryOpenError> {
+    request_worker_open_kind(expected_sample_rate, profile, true)
+}
+
+fn request_worker_open_kind(
+    expected_sample_rate: Option<u32>,
+    profile: WorkerOutputProfile,
+    reliable: bool,
+) -> Result<WorkerRecoveryOpen, RecoveryOpenError> {
     if expected_sample_rate.is_some_and(|rate| !(8_000..=192_000).contains(&rate)) {
         return Err(RecoveryOpenError::InvalidRate);
     }
     let sender = service().map_err(|_| RecoveryOpenError::WorkerClosed)?;
-    let waiter = enqueue_open_kind(
-        sender,
-        state(),
-        expected_sample_rate,
-        PreparedOutputKind::Worker(profile),
-    )?;
+    let waiter = enqueue_worker_open(sender, state(), expected_sample_rate, profile, reliable)?;
     Ok(WorkerRecoveryOpen { waiter })
+}
+
+fn enqueue_worker_open<T: Send + 'static, R: Send + 'static>(
+    sender: &SyncSender<LifecycleMessage<T, R>>,
+    state: &Arc<OpenState>,
+    expected_sample_rate: Option<u32>,
+    profile: WorkerOutputProfile,
+    reliable: bool,
+) -> Result<OpenWaiter<T>, RecoveryOpenError> {
+    let kind = if reliable {
+        PreparedOutputKind::WorkerReliable(profile)
+    } else {
+        PreparedOutputKind::Worker(profile)
+    };
+    enqueue_open_kind(sender, state, expected_sample_rate, kind)
 }
 
 /// Queue a default-device reopen for the expected project rate without waiting.
@@ -987,15 +1015,20 @@ mod candidate_retirement_tests {
 
     #[test]
     fn worker_open_uses_same_lane_and_preserves_negotiated_completion_and_abandonment() {
-        for profile in [
-            WorkerOutputProfile::DeviceDefault,
-            WorkerOutputProfile::PluginBridge,
+        for (profile, reliable) in [
+            (WorkerOutputProfile::DeviceDefault, false),
+            (WorkerOutputProfile::PluginBridge, false),
+            (WorkerOutputProfile::DeviceDefault, true),
+            (WorkerOutputProfile::PluginBridge, true),
         ] {
             let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<u32, ()>>(3);
             let state = Arc::new(OpenState::new());
-            let mut waiter =
-                enqueue_open_kind(&sender, &state, None, PreparedOutputKind::Worker(profile))
-                    .unwrap();
+            let mut waiter = enqueue_worker_open(&sender, &state, None, profile, reliable).unwrap();
+            let kind = if reliable {
+                PreparedOutputKind::WorkerReliable(profile)
+            } else {
+                PreparedOutputKind::Worker(profile)
+            };
             assert!(matches!(
                 enqueue_open(&sender, &state, None),
                 Err(RecoveryOpenError::Busy)
@@ -1008,7 +1041,7 @@ mod candidate_retirement_tests {
                     receiver,
                     || false,
                     |rate, worker| {
-                        assert_eq!(worker, PreparedOutputKind::Worker(profile));
+                        assert_eq!(worker, kind);
                         assert_eq!(rate, None);
                         Some(Ok(44100))
                     },
@@ -1208,6 +1241,63 @@ mod tests {
     use std::time::Instant;
 
     #[test]
+    fn worker_open_selects_reliable_profile_on_the_existing_bounded_lane() {
+        for profile in [
+            WorkerOutputProfile::DeviceDefault,
+            WorkerOutputProfile::PluginBridge,
+        ] {
+            for reliable in [false, true] {
+                let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<(), ()>>(1);
+                let state = Arc::new(OpenState::new());
+                let waiter =
+                    enqueue_worker_open(&sender, &state, Some(48_000), profile, reliable).unwrap();
+                let LifecycleMessage::Open(request) = receiver.try_recv().unwrap() else {
+                    panic!("expected an open request");
+                };
+                assert_eq!(request.expected_sample_rate, Some(48_000));
+                assert_eq!(
+                    request.kind,
+                    if reliable {
+                        PreparedOutputKind::WorkerReliable(profile)
+                    } else {
+                        PreparedOutputKind::Worker(profile)
+                    }
+                );
+                finish_request(&request);
+                drop(waiter);
+            }
+        }
+        assert!(matches!(
+            request_worker_open_with_reliable_action_outcomes(
+                Some(7_999),
+                WorkerOutputProfile::DeviceDefault
+            ),
+            Err(RecoveryOpenError::InvalidRate)
+        ));
+        assert!(matches!(
+            request_worker_open_with_reliable_action_outcomes(
+                Some(192_001),
+                WorkerOutputProfile::PluginBridge
+            ),
+            Err(RecoveryOpenError::InvalidRate)
+        ));
+        let (sender, _receiver) = mpsc::sync_channel::<LifecycleMessage<(), ()>>(0);
+        let state = Arc::new(OpenState::new());
+        assert!(matches!(
+            enqueue_worker_open(
+                &sender,
+                &state,
+                None,
+                WorkerOutputProfile::DeviceDefault,
+                true
+            ),
+            Err(RecoveryOpenError::QueueFull)
+        ));
+        assert_eq!(state.reserved.load(Acquire), 0);
+        assert!(!state.in_service.load(Acquire));
+    }
+
+    #[test]
     fn failed_stop_retains_owner_and_disposal_runs_on_worker() {
         struct Resource(Arc<AtomicBool>, Arc<Mutex<Option<thread::ThreadId>>>);
         impl Drop for Resource {
@@ -1339,7 +1429,14 @@ mod tests {
         });
         let worker_id = worker_id_rx.recv_timeout(Duration::from_secs(1)).unwrap();
 
-        let waiter = enqueue_open::<LateOutput, ()>(&sender, &state, Some(48_000)).unwrap();
+        let waiter = enqueue_worker_open::<LateOutput, ()>(
+            &sender,
+            &state,
+            Some(48_000),
+            WorkerOutputProfile::DeviceDefault,
+            true,
+        )
+        .unwrap();
         assert!(open_started_rx.recv_timeout(Duration::from_secs(1)).is_ok());
         drop(waiter);
         assert!(matches!(
