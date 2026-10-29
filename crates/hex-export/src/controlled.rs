@@ -199,7 +199,8 @@ pub fn control_storage_allowance(signal: Option<&ExportSignal>) -> Result<usize,
 }
 
 /// Resolve an optional range for the causal controlled renderer. Explicit
-/// spans and pre-Main capture/stem defaults retain their own source semantics.
+/// spans remain exact. Automatic pre-Main captures include source arrival
+/// latency, excluding Main-only processing; effect residual tails are separate.
 pub fn controlled_frame_count(
     project: &Project,
     start: u64,
@@ -216,7 +217,11 @@ pub fn controlled_frame_count(
                     )
                 })?,
                 ExportSignal::CapturedMix(_) | ExportSignal::Stems(_) => {
-                    project.audible_end_frame()
+                    project.untrimmed_capture_source_end_frame().map_err(|_| {
+                        ExportError::Invalid(
+                            "automatic capture range overflows; choose an explicit range",
+                        )
+                    })?
                 }
             };
             end.unwrap_or(0).saturating_sub(start)
