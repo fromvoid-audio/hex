@@ -106,6 +106,7 @@ pub enum PlaybackActionRejection {
     StreamPagesNotReady = 12,
     StreamActionCancelled = 13,
     SamplerEditBusy = 14,
+    StreamSourceChanged = 15,
 }
 
 impl PlaybackActionRejection {
@@ -125,6 +126,7 @@ impl PlaybackActionRejection {
             12 => Some(Self::StreamPagesNotReady),
             13 => Some(Self::StreamActionCancelled),
             14 => Some(Self::SamplerEditBusy),
+            15 => Some(Self::StreamSourceChanged),
             _ => None,
         }
     }
@@ -147,6 +149,7 @@ impl PlaybackActionRejection {
             Self::InvalidSessionAction => "session playback action was rejected",
             Self::StreamActionBusy => "stream action waits for an earlier command or publication",
             Self::StreamPagesNotReady => "stream action page protection is unavailable",
+            Self::StreamSourceChanged => "original media changed · reopen or relink it",
             Self::SamplerEditBusy => "sampler edit is preparing; retry after audio is ready",
             Self::StreamActionCancelled => {
                 "stream action was cancelled by transport or replacement"
