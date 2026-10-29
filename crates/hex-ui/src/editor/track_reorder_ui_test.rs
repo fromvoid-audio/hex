@@ -110,6 +110,14 @@ pub(super) fn live_tracks(
     count: usize,
     notes: bool,
 ) -> (VisualTestContext, gpui::Entity<EditorView>, Vec<TrackId>) {
+    live_tracks_with_notes(cx, count, if notes { 8 } else { 0 })
+}
+
+pub(super) fn live_tracks_with_notes(
+    cx: &mut TestAppContext,
+    count: usize,
+    notes: u8,
+) -> (VisualTestContext, gpui::Entity<EditorView>, Vec<TrackId>) {
     use hex_session::service::{Request, Service};
     cx.update(super::bind_editor_keys);
     let service = Service::new(48000, 32, 8000000).unwrap();
@@ -121,7 +129,7 @@ pub(super) fn live_tracks(
             }))
             .unwrap();
         state = next(&service).state;
-        if notes {
+        if notes != 0 {
             let track = state.project.tracks().last().unwrap().id();
             service
                 .submit(Request::Edit(Command::PlaceMidiClip {
@@ -134,7 +142,7 @@ pub(super) fn live_tracks(
             let Some(Created::Clip(clip)) = event.created else {
                 panic!("clip")
             };
-            for pitch in 60..68 {
+            for pitch in 60..60 + notes {
                 service
                     .submit(Request::Edit(Command::AddMidiNote {
                         clip,

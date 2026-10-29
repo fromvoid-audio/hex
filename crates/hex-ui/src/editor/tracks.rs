@@ -1490,6 +1490,7 @@ impl EditorView {
         };
         let track_name_view = super::track_header::name()
             .text_color(rgb(name_text))
+            .when(track.is_group(), |name| name.flex().items_center())
             .id(("track-name", track_id.value()))
             .on_mouse_down(
                 MouseButton::Left,
@@ -1509,6 +1510,12 @@ impl EditorView {
                     .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
             }))
             .debug_selector(|| format!("track-name-{}", track_id.value()))
+            .children(track.is_group().then(|| {
+                div()
+                    .flex_shrink_0()
+                    .debug_selector(move || format!("group-track-marker-{}", track_id.value()))
+                    .child(theme::text("group · "))
+            }))
             .child(self.track_name_label(
                 super::track_name::Target::Track(track.id()),
                 track.name(),
