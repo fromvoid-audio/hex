@@ -219,6 +219,7 @@ pub enum PlaybackHandoffRejection {
     StreamedPagesNotReady = 9,
     LatencyLayoutChanged = 10,
     SourceHistoryUnavailable = 11,
+    StreamSourceChanged = 12,
 }
 
 impl PlaybackHandoffRejection {
@@ -262,6 +263,7 @@ impl PlaybackHandoffRejection {
             9 => Some(Self::StreamedPagesNotReady),
             10 => Some(Self::LatencyLayoutChanged),
             11 => Some(Self::SourceHistoryUnavailable),
+            12 => Some(Self::StreamSourceChanged),
             _ => None,
         }
     }
@@ -289,6 +291,7 @@ impl PlaybackHandoffRejection {
             Self::FreshRuntimeCancelled => "playback was cancelled before it became active",
             Self::ConstructorClaimsUnavailable => "constructor playback claims are unavailable",
             Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
+            Self::StreamSourceChanged => "original media changed · reopen or relink it",
             Self::LatencyLayoutChanged => {
                 "latency layout changed · stop transport before applying this revision"
             }

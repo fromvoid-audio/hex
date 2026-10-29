@@ -49,6 +49,11 @@ impl OrdinaryStreams {
     pub(crate) fn take_handoff_diagnostic(&mut self) -> Option<hex_engine::PlaybackHandoffError> {
         self.workspace.as_mut()?.handoff_diagnostic.take()
     }
+    pub(crate) fn take_source_changed(&mut self) -> bool {
+        self.workspace
+            .as_mut()
+            .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed))
+    }
     pub(crate) fn view<'a>(
         &'a mut self,
         playback: &'a mut hex_engine::playback::Playback,
