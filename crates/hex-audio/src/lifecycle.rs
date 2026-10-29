@@ -39,16 +39,16 @@ pub enum AudioLifecycleFailure {
     MismatchedOwner = 3,
 }
 
-struct LifecycleStatus(AtomicU8);
+pub(crate) struct LifecycleStatus(AtomicU8);
 impl LifecycleStatus {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self(AtomicU8::new(0))
     }
     fn fail(&self, failure: AudioLifecycleFailure) {
         // Preserve the first failing owner; there is no reset/retry operation.
         let _ = self.0.compare_exchange(0, failure as u8, AcqRel, Acquire);
     }
-    fn failure(&self) -> Option<AudioLifecycleFailure> {
+    pub(crate) fn failure(&self) -> Option<AudioLifecycleFailure> {
         match self.0.load(Acquire) {
             1 => Some(AudioLifecycleFailure::Retirement),
             2 => Some(AudioLifecycleFailure::Cleanup),
@@ -58,6 +58,22 @@ impl LifecycleStatus {
     }
 }
 static LIFECYCLE_STATUS: LifecycleStatus = LifecycleStatus::new();
+
+pub(crate) fn finish_retirement_cleanup(root: &crate::candidate_custody::CandidateRoot) -> bool {
+    finish_cleanup_observed(root, &LIFECYCLE_STATUS)
+}
+
+pub(crate) fn finish_cleanup_observed(
+    root: &crate::candidate_custody::CandidateRoot,
+    status: &LifecycleStatus,
+) -> bool {
+    let complete = root.finish_on_control();
+    if root.cleanup_failed() {
+        status.fail(AudioLifecycleFailure::Cleanup);
+        return false;
+    }
+    complete
+}
 
 /// Read the first confirmed retained failure without starting a worker, locking,
 /// allocating or releasing the output lease. `None` does not imply readiness:

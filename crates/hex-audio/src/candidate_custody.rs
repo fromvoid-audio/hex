@@ -1339,8 +1339,13 @@ mod tests {
             slot.phase = Phase::Cleaning;
         }
         assert!(!root.cleanup_failed());
-        root.advance_on_control();
+        let status = crate::lifecycle::LifecycleStatus::new();
+        assert!(!crate::lifecycle::finish_cleanup_observed(&root, &status));
         assert!(root.cleanup_failed());
+        assert_eq!(
+            status.failure(),
+            Some(crate::AudioLifecycleFailure::Cleanup)
+        );
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert!(root.recover(&ticket).is_none());
         assert!(lock(&root.0.bank).slots[ticket.stamp.slot].ready.is_some());
