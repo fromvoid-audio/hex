@@ -65,6 +65,159 @@ fn try_compile(f: &Fixture) -> Result<Project, Invalid> {
 }
 
 #[test]
+fn shared_analytic_receiver_compensation_preserves_mixed_routes_and_loop_partitions() {
+    use crate::{LaunchQuantization, SessionPlaybackCommand};
+    let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 16).unwrap();
+    let state = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Instrument,
+        hex_devices::SINE_INSTRUMENT_TYPE_ID,
+    )
+    .unwrap();
+    let Created::NativeSource(source) = editor
+        .execute(Command::CreateNativeSource {
+            name: "shared".into(),
+            devices: vec![state],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("source")
+    };
+    let mut tracks = Vec::new();
+    for pitch in [60, 64, 67] {
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: Some(source),
+            })
+            .unwrap();
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch,
+                velocity: 96,
+                channel: 0,
+            })
+            .unwrap();
+        tracks.push(track);
+    }
+    editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: Some(tracks[1]),
+        })
+        .unwrap();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(clip) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track: tracks[0],
+            scene,
+            name: "session".into(),
+            source_length: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("session clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 72,
+            velocity: 96,
+            channel: 0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 257,
+            enabled: true,
+        })
+        .unwrap();
+    let limiter = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Effect,
+        DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track: tracks[1],
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &std::collections::BTreeMap::new(),
+            Arc::new(SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let render = |partition| {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 1024];
+        for chunk in output.chunks_mut(partition) {
+            playback.render(chunk).unwrap();
+        }
+        (
+            output,
+            playback.performance_frame(),
+            playback.arrangement_frame(),
+        )
+    };
+    let expected = render(1);
+    assert!(
+        expected
+            .0
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1.0e-6)
+    );
+    assert_eq!((expected.1, expected.2), (1024, 253));
+    for partition in [17, 64, 256, 512] {
+        assert_eq!(render(partition), expected, "partition {partition}");
+    }
+}
+
+#[test]
 fn shared_source_main_only_latency_preserves_receiver_mix_and_partitions() {
     for mutable in [false, true] {
         let kind = if mutable {
