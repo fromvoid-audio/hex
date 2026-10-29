@@ -651,6 +651,9 @@ fn enqueue_action(
     audition: &mut processor_audition::ProcessorAuditionTargetControl,
     action: PlaybackAction,
 ) -> Result<u64, PlaybackAction> {
+    // Stamp before admission so a command racing a fault is fenced even if
+    // the output installs a replacement before the callback consumes it.
+    let transport_epoch = status.transport_epoch.load(Acquire);
     let sampler_edit_gate = status.sampler_edit.gate();
     if sampler_edit_gate & 1 != 0 && !sampler_edit::is_stop(action) {
         return Err(action);
@@ -669,6 +672,7 @@ fn enqueue_action(
             ticket: next,
             action,
             sampler_edit_gate,
+            transport_epoch,
         })
         .map_err(|PushError::Full(q)| q.action)?;
     *ticket = next;

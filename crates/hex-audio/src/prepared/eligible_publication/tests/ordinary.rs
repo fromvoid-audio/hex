@@ -517,6 +517,10 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
     );
     assert_eq!(control.status.performance_frame.load(Acquire), 0);
     if !keyboard && !sampler {
+        // The queue cut has passed; this start races the faulting callback.
+        let stale = control
+            .command_with_ticket(PlaybackCommand::PlayFrom(2))
+            .unwrap();
         data.owner_mut().unwrap().run(|callback, _| {
             assert_eq!(callback.stream_pending_play, Some(play));
             callback.report_render_fault(Some(&Invalid("injected buffered failure")), 0);
@@ -524,6 +528,14 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
         assert_eq!(
             control.status.rejected_action(),
             Some((play, PlaybackActionRejection::OutputFailed))
+        );
+        assert_eq!(control.status.recovery_position(), 0);
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((stale, PlaybackActionRejection::OutputFailed))
         );
         assert_eq!(control.status.recovery_position(), 0);
         play = control.command_with_ticket(PlaybackCommand::Play).unwrap();

@@ -322,6 +322,11 @@ impl Callback {
             if cut.stop_through.is_some_and(|stop| queued.ticket <= stop) {
                 continue;
             }
+            if stale_output_start(&self.status, queued) {
+                self.status
+                    .publish_rejected_action(queued.ticket, PlaybackActionRejection::OutputFailed);
+                continue;
+            }
             if !self.status.sampler_edit.permits(queued) {
                 self.status.publish_rejected_action(
                     queued.ticket,
