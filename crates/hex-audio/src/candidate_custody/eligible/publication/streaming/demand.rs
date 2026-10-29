@@ -87,6 +87,7 @@ impl StateView<'_> {
             .ok_or(hex_engine::Invalid("stream demand workspace unavailable"))?;
         workspace.handoff_diagnostic = None;
         workspace.source_changed = false;
+        workspace.capacity_conflict = false;
         let runtime = self
             .runtime
             .as_mut()
@@ -281,8 +282,10 @@ impl StateView<'_> {
                     admitted_command_prefix: request.command_prefix,
                     window,
                 };
-                loan.submit_resources(role, stamp, rows)
-                    .map_err(|_| hex_engine::Invalid("stream protection reservation refused"))?;
+                if let Err(refusal) = loan.submit_resources(role, stamp, rows) {
+                    workspace.capacity_conflict = refusal == hex_stream::ReadinessRefusal::Capacity;
+                    return Err(hex_engine::Invalid("stream protection reservation refused"));
+                }
                 pages.inner.epoch = epoch;
                 stamps[token.slot] = Some(stamp);
             }
@@ -470,6 +473,9 @@ impl ActiveView<'_> {
         mut project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
         mut foreign: Option<&mut dyn hex_lattice::ForeignProcessors>,
     ) -> StreamOutcome {
+        if let Some(workspace) = self.state.streaming.as_mut() {
+            workspace.capacity_conflict = false;
+        }
         let mut request = StreamInstall {
             domains,
             pending_play: false,
@@ -540,7 +546,13 @@ impl ActiveView<'_> {
                 Ok(Some(window)) => window,
                 result => {
                     let refused = result.is_err();
-                    self.state.cancel_stream_pending(domains);
+                    // Keep partial ready pages under their exact pending intent
+                    // across buffering callbacks. Changed demand or commands
+                    // invalidate the stamp on the next preparation; failures
+                    // still release it immediately.
+                    if refused {
+                        self.state.cancel_stream_pending(domains);
+                    }
                     output[committed..].fill([0.0; 2]);
                     return StreamOutcome {
                         progress: StreamProgress::Buffering {

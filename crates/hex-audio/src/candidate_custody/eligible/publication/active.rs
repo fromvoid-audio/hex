@@ -84,6 +84,14 @@ impl Queued {
                 .as_ref()
                 .is_none_or(|runtime| runtime.contains_streamed_sources());
         if streamed {
+            if previous
+                .as_mut()
+                .is_some_and(|old| old.stream_view().has_pending_render_window())
+            {
+                // The candidate's claims and cancellation were checked first.
+                // Let the predecessor complete its exact pending window.
+                return InstallDecision::Retry;
+            }
             let Some(request) = stream.as_deref_mut() else {
                 return InstallDecision::Refused(
                     hex_engine::PlaybackHandoffRejection::StreamedPagesNotReady,
@@ -96,9 +104,6 @@ impl Queued {
             ) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
-                    if previous.is_some() {
-                        next.cancel_stream_pending(request.domains);
-                    }
                     return InstallDecision::Retry;
                 }
                 Err(_) => {
@@ -267,6 +272,12 @@ impl Queued {
     }
     pub(crate) fn streaming_enabled(&self) -> bool {
         self.state.streaming.is_some()
+    }
+    pub(crate) fn has_stream_install_pending(&self) -> bool {
+        self.state.streaming.as_ref().is_some_and(|workspace| {
+            workspace.role == Some(hex_stream::ProtectionRole::Candidate)
+                && workspace.stamps.iter().any(Option::is_some)
+        })
     }
     pub(crate) fn cancel_stream_readiness(&mut self, domains: &mut [Option<DomainEnvelope>; 2]) {
         self.state.cancel_stream_pending(domains);

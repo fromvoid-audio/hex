@@ -920,6 +920,144 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
     finish(&mut retirement);
 }
 
+#[cfg(feature = "stream-test-support")]
+#[test]
+fn stalled_current_window_does_not_prevent_candidate_cancellation() {
+    let _serial = serial();
+    assert!(hex_engine::audio_storage_constructor_layout_supported());
+    let project = project_with_frames(8192);
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(8192);
+    let definition = wav.definition(asset, 11);
+    let metadata = definition.metadata.clone();
+    let (gate, entered, release) = hex_stream::test_support::PageGate::new(hex_stream::PageKey {
+        source: metadata.key(),
+        page_index: 1,
+    });
+    let context = Some(hex_engine::AudioSourceContext {
+        project_generation: 0,
+        editor_revision: 7,
+    });
+    let mut a = stream_fixture::owner_with_context(&project, metadata.clone(), context);
+    let b = stream_fixture::owner_with_context(&project, metadata, context);
+    let b_id = b.identity();
+    let limits = reservation(&mut a);
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    control.configure_audio_candidate_streaming(2).unwrap();
+    let mut runtime = hex_stream::StreamRuntime::new_with_page_gate(
+        hex_stream::StreamConfig::with_pool_pages(4),
+        vec![definition],
+        gate,
+    )
+    .unwrap();
+    runtime
+        .wait_until_ready(std::time::Duration::from_secs(2))
+        .unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            runtime.split().ok().unwrap(),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .ok()
+        .unwrap();
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    let a_ticket = control
+        .stage_eligible_audio_candidate(a, vec![domain], PublicationPolicy::InheritRuntime, 0)
+        .ok()
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 256];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut gate_entered = false;
+    loop {
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut output).unwrap();
+            })
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        gate_entered |= entered.try_recv().is_ok();
+        if gate_entered
+            && control.status.position.load(Acquire) == 4096
+            && control.status.stream_buffering.load(Acquire)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "current window did not stall"
+        );
+        std::thread::yield_now();
+    }
+    let b_ticket = control
+        .stage_eligible_audio_candidate(b, vec![domain], PublicationPolicy::InheritRuntime, 0)
+        .ok()
+        .unwrap();
+    data.owner_mut().unwrap().run(|c, _| {
+        c.begin_block();
+        c.render(&mut output).unwrap();
+    });
+    assert!(control.status.publication_pending.load(Acquire));
+    assert_eq!(
+        control.cancel_audio_candidate(&b_ticket),
+        crate::AudioCandidateCancellationResult::Cancelled
+    );
+    data.owner_mut().unwrap().run(|c, _| {
+        c.begin_block();
+        c.render(&mut output).unwrap();
+    });
+    let ready_b = recover(&mut control, &b_ticket);
+    assert_eq!(ready_b.disposed.identity(), b_id);
+    assert_eq!(
+        ready_b.return_kind,
+        crate::AudioCandidateReturnKind::NeverInstalled
+    );
+    assert!(control.status.stream_buffering.load(Acquire));
+    release.send(()).unwrap();
+    drop(ready_b);
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    drop(data);
+    drop(errors);
+    retirement.advance().unwrap();
+    let ready_a = recover(&mut control, &a_ticket);
+    loop {
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(ready_a);
+    drop(control);
+    finish(&mut retirement);
+}
+
 #[test]
 fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() {
     let _serial = serial();

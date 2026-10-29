@@ -37,6 +37,31 @@ pub(super) fn record_outcome(
     outcome.fault.map_or(Ok(()), Err)
 }
 impl Callback {
+    /// Yield only a successor's exact outstanding reservation after the
+    /// current window reports capacity pressure. The next nonempty render
+    /// gives the current window one opportunity before another admission.
+    pub(super) fn yield_pending_stream_successor(&mut self) -> bool {
+        let mut yielded = false;
+        if let Some(streams) = self
+            .deferred
+            .as_mut()
+            .and_then(|next| next.streams.as_mut())
+            && streams.has_install_pending()
+        {
+            streams.cancel_install(&mut self.domain_pages);
+            yielded = true;
+        }
+        if let Some(next) = self.deferred_eligible.as_mut()
+            && next.has_stream_install_pending()
+        {
+            next.cancel_stream_readiness(&mut self.domain_pages);
+            yielded = true;
+        }
+        if yielded {
+            self.yield_stream_successor_once = true;
+        }
+        yielded
+    }
     pub(super) fn stream_action_pending(&self) -> bool {
         self.active
             .as_ref()

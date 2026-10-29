@@ -43,6 +43,10 @@ const COMMANDS: usize = 32;
 
 #[cfg(feature = "allocation-probe")]
 impl Callback {
+    #[cfg(feature = "stream-test-support")]
+    pub(crate) fn test_stream_successor_yielded(&self) -> bool {
+        self.yield_stream_successor_once
+    }
     /// Read-only headless control observation while the callback is quiescent.
     /// Empty is queue state, not graph/source application or native readiness.
     pub(crate) fn publication_queue_empty_on_control(&self) -> bool {
@@ -1156,6 +1160,7 @@ pub struct Callback {
     deferred_eligible: Option<crate::candidate_custody::QueuedEligibleCandidate>,
     domain_pages: [Option<crate::candidate_custody::DomainEnvelope>; 2],
     stream_pending_play: Option<u64>,
+    yield_stream_successor_once: bool,
     stream_prefix: u64,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
     held_retirement: Option<ReturnedPublication>,
@@ -1289,6 +1294,7 @@ pub fn channel_with_spectrum(
             deferred_eligible: None,
             domain_pages: std::array::from_fn(|_| None),
             stream_pending_play: None,
+            yield_stream_successor_once: false,
             stream_prefix: 0,
             held_retirement: None,
             terminal_disposal_pending: false,
@@ -2940,6 +2946,26 @@ impl Callback {
             }
             let mut promotions = None;
             if !forced_refusal && stale_fence.is_none() && next.streams.is_some() {
+                if let Some(mut active) = self
+                    .active
+                    .as_mut()
+                    .and_then(ActivePublication::stream_view)
+                    && active.has_pending_render_window()
+                {
+                    if matches!(
+                        next.policy,
+                        PublicationPolicy::InheritRuntime
+                            | PublicationPolicy::InheritUnderArrangement(_)
+                    ) {
+                        // Give an inheriting successor's predecessor a chance
+                        // to commit its exact pending window first.
+                        self.deferred = Some(next);
+                        return;
+                    }
+                    // A fresh replacement is a recovery path when the current
+                    // source cannot complete; it must not wait on that source.
+                    active.cancel_pending_render_window(&mut self.domain_pages);
+                }
                 self.cancel_active_stream_action();
                 if let Some(mut active) = self
                     .active
@@ -3025,14 +3051,6 @@ impl Callback {
                             next.source_context,
                             frames.unwrap_or(0),
                         );
-                        if self.active.is_some()
-                            && let Some(streams) = next.streams.as_mut()
-                        {
-                            // Pending wanted extents reserve pool capacity too.
-                            // Yield speculation before the predecessor renders
-                            // its next chunk, as eligible publications do.
-                            streams.cancel_install(&mut self.domain_pages);
-                        }
                         self.deferred = Some(next);
                         return;
                     }
@@ -3598,7 +3616,12 @@ impl Callback {
         }
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
-        if !self.status.closing.load(Acquire)
+        let yield_successor = self.yield_stream_successor_once;
+        if !output.is_empty() {
+            self.yield_stream_successor_once = false;
+        }
+        if !yield_successor
+            && !self.status.closing.load(Acquire)
             && self
                 .deferred
                 .as_ref()
@@ -3607,7 +3630,8 @@ impl Callback {
             self.advance_legacy_publication(Some(output.len()));
         }
 
-        if !self.status.closing.load(Acquire)
+        if !yield_successor
+            && !self.status.closing.load(Acquire)
             && self
                 .deferred_eligible
                 .as_ref()
@@ -3731,7 +3755,7 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::stream_view)
         {
-            let outcome = active.render_streamed_with_foreign(
+            let mut outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
@@ -3740,11 +3764,16 @@ impl Callback {
                 project.as_mut(),
                 foreign,
             );
+            let action_pending = active.has_stream_action();
+            let capacity_conflict = active.capacity_conflict();
+            if capacity_conflict && self.yield_pending_stream_successor() {
+                outcome.readiness_refused = false;
+            }
             streaming::record_outcome(
                 &self.status,
                 &mut self.stream_pending_play,
                 self.stream_prefix,
-                active.has_stream_action(),
+                action_pending,
                 outcome,
             )?;
         } else if let Some(mut active) = self
@@ -3783,7 +3812,7 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::stream_view)
         {
-            let outcome = active.render_streamed_with_foreign(
+            let mut outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
@@ -3792,11 +3821,16 @@ impl Callback {
                 None,
                 foreign,
             );
+            let action_pending = active.has_stream_action();
+            let capacity_conflict = active.capacity_conflict();
+            if capacity_conflict && self.yield_pending_stream_successor() {
+                outcome.readiness_refused = false;
+            }
             streaming::record_outcome(
                 &self.status,
                 &mut self.stream_pending_play,
                 self.stream_prefix,
-                active.has_stream_action(),
+                action_pending,
                 outcome,
             )?;
             self.publish_transport();
