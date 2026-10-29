@@ -16,7 +16,7 @@ use std::{
 };
 #[test]
 fn compensated_export_skips_startup_and_publishes_exact_first_and_final_source_frames() {
-    for (track_delay, main_delay) in [(true, false), (false, true), (true, true)] {
+    for (track_delay, main_delay) in [(false, false), (true, false), (false, true), (true, true)] {
         assert_default_export_final_frame(track_delay, main_delay);
     }
 }
@@ -99,7 +99,7 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
     ));
     std::fs::create_dir(&directory).unwrap();
     let refused_bounce = directory.join("latency-bounce.wav");
-    let refusal = hex_export::render_arrangement_bounce_new(
+    let bounce = hex_export::render_arrangement_bounce_new(
         &refused_bounce,
         Arc::clone(&prepared),
         None,
@@ -107,10 +107,13 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
         17,
         false,
         &hex_export::ExportControl::default(),
-    )
-    .unwrap_err();
-    assert!(refusal.to_string().contains("zero-latency"));
-    assert!(!refused_bounce.exists());
+    );
+    if track_delay || main_delay {
+        assert!(bounce.unwrap_err().to_string().contains("zero-latency"));
+        assert!(!refused_bounce.exists());
+    } else {
+        assert!(bounce.is_ok());
+    }
     let legacy = directory.join("legacy.wav");
     let shared = directory.join("prepared.wav");
     let a = hex_export::render_new(&legacy, &compiled, 0, default_end).unwrap();
@@ -137,9 +140,10 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
     );
     let track = editor.project().tracks()[0].id();
     let capture = ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]);
+    let capture_latency = 7 * u64::from(track_delay);
     assert_eq!(
         controlled_frame_count(prepared.arrangement(), 0, None, &capture).unwrap(),
-        17
+        17 + capture_latency
     );
     assert_eq!(
         controlled_frame_count(
@@ -149,8 +153,56 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
             &ExportSignal::Stems(vec![])
         )
         .unwrap(),
+        17 + capture_latency
+    );
+    assert_eq!(
+        controlled_frame_count(prepared.arrangement(), 0, Some(17), &capture).unwrap(),
         17
     );
+    let mut capture_expected = vec![0_u8; capture_latency as usize * 4];
+    capture_expected.extend_from_slice(&expected);
+    let starts: &[u64] = if track_delay { &[0, 3, 19] } else { &[0, 3] };
+    for &start in starts {
+        let span = controlled_frame_count(prepared.arrangement(), start, None, &capture).unwrap();
+        let path = directory.join(format!("capture-{start}.wav"));
+        let report = hex_export::render_prepared_controlled(
+            &path,
+            Arc::clone(&prepared),
+            start,
+            span,
+            capture.clone(),
+            &ExportControl::default(),
+        )
+        .unwrap();
+        assert_eq!(report.frames, 17 + capture_latency - start);
+        assert_eq!(
+            &std::fs::read(path).unwrap()[44..],
+            &capture_expected[start as usize * 4..]
+        );
+    }
+    let stem_path = directory.join("stems");
+    let stem = hex_export::Stem {
+        id: hex_engine::OutputCaptureId::Track(track),
+        name: "source".into(),
+    };
+    let stem_span = controlled_frame_count(
+        prepared.arrangement(),
+        0,
+        None,
+        &ExportSignal::Stems(vec![stem.clone()]),
+    )
+    .unwrap();
+    hex_export::render_stems_new(
+        &stem_path,
+        Arc::clone(&prepared),
+        0,
+        stem_span,
+        &[stem],
+        &ExportControl::default(),
+    )
+    .unwrap();
+    let stem_file = stem_path.join(format!("track-{}-source.wav", track.value()));
+    assert_eq!(&std::fs::read(stem_file).unwrap()[44..], &capture_expected);
     for (label, span) in [("automatic", frames), ("explicit", 17)] {
         let path = directory.join(format!("{label}.wav"));
         let report = hex_export::render_prepared_controlled(
@@ -171,6 +223,138 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
     }
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn automatic_return_and_stems_include_pre_main_latency_but_not_main_latency() {
+    use hex_engine::OutputCaptureId;
+    use hex_export::{ExportControl, ExportSignal, Stem, controlled_frame_count};
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "source".into(),
+            path: "memory.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 17,
+            playback_frames: 17,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    let Created::ReturnTrack(bus) = editor
+        .execute(Command::AddReturnTrack { name: "bus".into() })
+        .unwrap()
+    else {
+        panic!("return")
+    };
+    editor
+        .execute(Command::SetReturnSend {
+            track,
+            return_track: bus,
+            gain: 1.0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertReturnDevice {
+            return_track: bus,
+            before: None,
+            state: Definition.default_state().unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: Definition.default_state().unwrap(),
+        })
+        .unwrap();
+    let mut samples = vec![[0.0; 2]; 17];
+    samples[0] = [0.25, -0.5];
+    samples[16] = [-0.75, 0.125];
+    let media = BTreeMap::from([(asset, Audio::new(48_000, samples.clone()).unwrap())]);
+    let effects: [&dyn NativeDeviceDefinition; 1] = [&Definition];
+    let effects = NativeDeviceRegistry::new(&effects).unwrap();
+    let prepared = Arc::new(
+        PreparedRevision::prepare_with_test_registries(
+            editor.project(),
+            &media,
+            Arc::new(SineTable::new()),
+            None,
+            &effects,
+            &hex_engine_instruments(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(prepared.arrangement().main_latency_frames(), 14);
+    let signal = ExportSignal::CapturedMix(vec![OutputCaptureId::Return(bus)]);
+    let frames = controlled_frame_count(prepared.arrangement(), 0, None, &signal).unwrap();
+    assert_eq!(frames, 24);
+    let directory = std::env::temp_dir().join(format!(
+        "hex-return-capture-{}-{}",
+        std::process::id(),
+        NEXT_RETURN.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let path = directory.join("return.wav");
+    hex_export::render_prepared_controlled(
+        &path,
+        Arc::clone(&prepared),
+        0,
+        frames,
+        signal,
+        &ExportControl::default(),
+    )
+    .unwrap();
+    let mut expected = vec![0_u8; 7 * 4];
+    expected.extend(
+        samples
+            .iter()
+            .flatten()
+            .flat_map(|s| ((s * 32767.0_f32).round() as i16).to_le_bytes()),
+    );
+    assert_eq!(&std::fs::read(path).unwrap()[44..], &expected);
+
+    let stems = [
+        Stem {
+            id: OutputCaptureId::Track(track),
+            name: "source".into(),
+        },
+        Stem {
+            id: OutputCaptureId::Return(bus),
+            name: "bus".into(),
+        },
+    ];
+    let batch = directory.join("stems");
+    let frames = controlled_frame_count(
+        prepared.arrangement(),
+        0,
+        None,
+        &ExportSignal::Stems(stems.to_vec()),
+    )
+    .unwrap();
+    assert_eq!(frames, 24);
+    hex_export::render_stems_new(
+        &batch,
+        prepared,
+        0,
+        frames,
+        &stems,
+        &ExportControl::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        &std::fs::read(batch.join(format!("track-{}-source.wav", track.value()))).unwrap()[44..],
+        &expected
+    );
+    assert_eq!(
+        &std::fs::read(batch.join(format!("return-{}-bus.wav", bus.value()))).unwrap()[44..],
+        &expected
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+static NEXT_RETURN: AtomicU64 = AtomicU64::new(0);
 // Only the effect fixture is used; the empty instrument registry is truthful.
 fn hex_engine_instruments() -> hex_lattice::NativeInstrumentRegistry<'static> {
     hex_lattice::NativeInstrumentRegistry::new(&[]).unwrap()

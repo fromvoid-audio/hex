@@ -2419,6 +2419,24 @@ impl Project {
         self.audible_end_frame
     }
 
+    /// Conservative causal end of source material at pre-Main capture taps.
+    ///
+    /// The graph's pre-Main arrival includes routing compensation but excludes
+    /// serial Main processors. All selected taps may therefore be covered even
+    /// if some finish earlier. Processor residual tails are not included.
+    pub fn untrimmed_capture_source_end_frame(&self) -> Result<Option<u64>, Invalid> {
+        let latency = self
+            .signal_graph
+            .as_ref()
+            .map_or(0, |graph| graph.main_latency());
+        self.audible_end_frame
+            .map(|end| {
+                end.checked_add(u64::from(latency))
+                    .ok_or(Invalid("pre-Main capture range overflow"))
+            })
+            .transpose()
+    }
+
     /// Causal Main output end for an untrimmed, automatically sized offline
     /// range. Ordinary source-length exports trim startup separately and must
     /// continue to use `audible_end_frame`. Explicit ranges never use this bound.

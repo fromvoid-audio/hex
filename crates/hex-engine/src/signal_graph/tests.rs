@@ -237,6 +237,23 @@ fn actual_dry_and_seven_frame_paths_align_capture_and_both_renderers_across_part
     }
 }
 
+#[test]
+fn pre_main_capture_source_end_checks_missing_and_overflow() {
+    let f = fixture(&[&[], &[7]], 300);
+    let revision = prepare(&f).unwrap();
+    let mut project = (**revision.arrangement()).clone();
+    let source_end = project.audible_end_frame().unwrap();
+    assert_eq!(
+        project.untrimmed_capture_source_end_frame().unwrap(),
+        Some(source_end + 7)
+    );
+
+    project.audible_end_frame = Some(u64::MAX);
+    assert!(project.untrimmed_capture_source_end_frame().is_err());
+    project.audible_end_frame = None;
+    assert_eq!(project.untrimmed_capture_source_end_frame().unwrap(), None);
+}
+
 fn actual_dry_and_seven_frame_paths_align_capture_and_both_renderers_across_partitions_at_rate(
     sample_rate: u32,
 ) {
