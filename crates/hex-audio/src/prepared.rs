@@ -514,7 +514,8 @@ pub struct Status {
     pub stream_invalidated_schedule: AtomicU64,
     pub stream_readiness_refused: AtomicBool,
     /// A demanded active stream reported changed media; retained through Stop
-    /// until this output is replaced; cached audio does not reverify the file.
+    /// until a replacement graph is installed or the output is replaced;
+    /// cached audio alone does not reverify the file.
     pub stream_source_changed: AtomicBool,
     /// Frames committed before the latest BUFFERING gap; zero when complete.
     pub stream_committed_frames: AtomicU64,
@@ -3308,6 +3309,7 @@ impl Callback {
                     self.publish_active_routes(true);
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
+                    self.status.stream_source_changed.store(false, Release);
                     self.status.applied_source.publish(None);
                     self.status.applied_revision.store(revision, Release);
                     self.status.publication_pending.store(false, Release);

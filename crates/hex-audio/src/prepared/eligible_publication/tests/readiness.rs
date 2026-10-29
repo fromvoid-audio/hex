@@ -871,6 +871,7 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
     let wav = stream_fixture::Wav::with_frames(8192);
     let definition = wav.definition(asset, 11);
     let source_path = definition.path.clone();
+    let original = std::fs::read(&source_path).unwrap();
     let mut owner = stream_fixture::owner_with_context(
         &project,
         definition.metadata.clone(),
@@ -923,7 +924,7 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
         std::thread::yield_now();
     }
     assert_eq!(output, [[0.25; 2]; 256]);
-    std::fs::write(source_path, b"changed source bytes").unwrap();
+    std::fs::write(&source_path, b"changed source bytes").unwrap();
     while control.status.position.load(Acquire) < 4096 {
         let measured = allocation_counter::measure(|| {
             data.owner_mut().unwrap().run(|c, _| {
@@ -1013,6 +1014,53 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
     assert!(control.status.stream_source_changed.load(Acquire));
     control.stop();
     data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    std::fs::write(&source_path, &original).unwrap();
+    let replacement_definition = wav.definition(asset, 11);
+    let replacement = stream_fixture::owner_with_context(
+        &project,
+        replacement_definition.metadata.clone(),
+        Some(hex_engine::AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 10,
+        }),
+    );
+    let replacement_domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(replacement_definition),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .unwrap_or_else(|_| panic!("replacement domain"));
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    let replacement_ticket = control
+        .stage_eligible_audio_candidate(
+            replacement,
+            vec![replacement_domain],
+            PublicationPolicy::InheritRuntime,
+            0,
+        )
+        .unwrap_or_else(|refusal| panic!("replacement refused: {}", refusal.reason));
+    let measured = allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|c, _| {
+            c.begin_block();
+            c.render(&mut output).unwrap();
+        })
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), 2);
+    assert!(!control.status.stream_source_changed.load(Acquire));
+    let old = recover(&mut control, &ticket);
+    assert_eq!(old.return_kind, crate::AudioCandidateReturnKind::Replaced);
+    drop(old);
     let mut backend = Some(());
     let mut pending = false;
     let mut disposed = false;
@@ -1027,11 +1075,20 @@ fn changed_source_during_playback_reports_fault_and_preserves_committed_audio() 
     drop(data);
     drop(errors);
     retirement.advance().unwrap();
-    let returned = recover(&mut control, &ticket);
+    let returned = recover(&mut control, &replacement_ticket);
+    let mut recovered_old = false;
+    let mut recovered_new = false;
     loop {
         control.reclaim();
         if let Some(report) = control.recover_audio_candidate_domain(domain) {
             assert!(report.worker_joined && report.accounting_complete);
+            recovered_old = true;
+        }
+        if let Some(report) = control.recover_audio_candidate_domain(replacement_domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            recovered_new = true;
+        }
+        if recovered_old && recovered_new {
             break;
         }
         assert!(std::time::Instant::now() < deadline);

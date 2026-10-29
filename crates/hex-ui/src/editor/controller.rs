@@ -1925,6 +1925,12 @@ impl EditorView {
                 &mut self.error,
                 "original media changed · reopen or relink it",
             );
+        } else if self.status == "streamed media unavailable" {
+            visible_change |= replace_status(&mut self.status, "audio ready");
+            if self.error.as_deref() == Some("original media changed · reopen or relink it") {
+                self.error = None;
+                visible_change = true;
+            }
         }
         if audio.control.status().is_some_and(|status| {
             !status.device_fault.load(Relaxed)

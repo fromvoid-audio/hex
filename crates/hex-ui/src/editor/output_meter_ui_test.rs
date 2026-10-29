@@ -43,6 +43,16 @@ fn changed_stream_media_status_reaches_editor_error(cx: &mut TestAppContext) {
             Some("original media changed · reopen or relink it")
         );
         assert_eq!(view.status, "streamed media unavailable");
+        view.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .stream_source_changed
+            .store(false, Relaxed);
+        view.tick(cx);
+        assert_eq!(view.status, "audio ready");
+        assert_eq!(view.error.as_deref(), None);
         view.audio.take().unwrap().control.close();
     });
     drop(output);
