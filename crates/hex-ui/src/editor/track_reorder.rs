@@ -43,6 +43,7 @@ struct ConsoleLayout {
 struct Gesture {
     mode: EditorMode,
     console: Option<ConsoleLayout>,
+    pending_page: Option<usize>,
     generation: u64,
     revision: u64,
     track: TrackId,
@@ -183,6 +184,7 @@ impl EditorView {
         self.track_reorder.gesture = Some(Gesture {
             mode: self.mode,
             console,
+            pending_page: None,
             generation: self.project_generation,
             revision,
             track,
@@ -310,7 +312,13 @@ impl EditorView {
     }
     fn track_reorder_current(&self, g: &Gesture) -> bool {
         self.mode == g.mode
-            && g.console.as_ref().is_none_or(|layout| layout.frame.current_view(self) && self.track_reorder.console_layout.as_ref() == Some(layout))
+            && g.console.as_ref().is_none_or(|layout| {
+                let frame_current = match g.pending_page {
+                    Some(page) => layout.frame.current_transition_view(self, page),
+                    None => layout.frame.current_view(self),
+                };
+                frame_current && self.track_reorder.console_layout.as_ref() == Some(layout)
+            })
             && g.generation == self.project_generation
             && !self.edit_pending()
             // The immutable revision fences every frozen member; pointer
@@ -330,7 +338,10 @@ impl EditorView {
         self.track_reorder.gesture.as_ref().is_none_or(|g| {
             g.console
                 .as_ref()
-                .is_none_or(|layout| layout.frame.current(self, window))
+                .is_none_or(|layout| match g.pending_page {
+                    Some(page) => layout.frame.current_transition(self, window, page),
+                    None => layout.frame.current(self, window),
+                })
         })
     }
     pub(super) fn cancel_track_reorder(&mut self) -> bool {
@@ -343,7 +354,9 @@ impl EditorView {
                 || !self.console_gesture_current(window)
         }) {
             self.cancel_track_reorder();
-        } else if let Some(g) = &self.track_reorder.gesture {
+        } else if let Some(g) = &self.track_reorder.gesture
+            && g.pending_page.is_none()
+        {
             // Wheel/scrollbar motion can change list geometry without a pointer
             // move. The painted gap and release hit test share this mapping.
             self.update_track_reorder(gpui::point(px(g.pointer.0), px(g.pointer.1)));
@@ -516,37 +529,112 @@ impl EditorView {
                     .border_color(rgb(theme::color(theme::PaletteRole::Secondary))),
             }
         });
+        let dragging = self
+            .track_reorder
+            .gesture
+            .as_ref()
+            .is_some_and(|g| g.mode == EditorMode::Session && g.moved);
+        let previous = (dragging && page.range.start > 0).then(|| {
+            div()
+                .debug_selector(|| "console-track-page-previous-cue".into())
+                .absolute()
+                .left_0()
+                .top_0()
+                .bottom_0()
+                .w(px(24.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(rgb(theme::color(theme::PaletteRole::Secondary)))
+                .child(theme::text("‹"))
+        });
+        let next = (dragging
+            && page.range.end < self.arrangement_focus.projection.console_indices.len())
+        .then(|| {
+            div()
+                .debug_selector(|| "console-track-page-next-cue".into())
+                .absolute()
+                .right(px(scene_width))
+                .top_0()
+                .bottom_0()
+                .w(px(24.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(rgb(theme::color(theme::PaletteRole::Secondary)))
+                .child(theme::text("›"))
+        });
         let entity = cx.entity();
-        div().absolute().inset_0().children(visual).child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, _, cx| {
-                    entity.update(cx, |view, _| {
-                        let layout = ConsoleLayout {
-                            frame,
-                            bounds,
-                            page: page.clone(),
-                            column_width,
-                            scene_width,
-                        };
-                        view.track_reorder.console_layout = Some(layout);
-                        view.track_reorder.painted_gap = view
-                            .track_reorder
-                            .gesture
-                            .as_ref()
-                            .filter(|g| {
-                                g.mode == EditorMode::Session
-                                    && drawn.is_some_and(|(destination, _)| {
-                                        g.destination == Some(destination)
-                                    })
-                            })
-                            .and_then(|g| view.track_gap_witness(g));
-                    });
-                },
-            )
+        div()
             .absolute()
-            .inset_0(),
-        )
+            .inset_0()
+            .children(visual)
+            .children(previous)
+            .children(next)
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, cx| {
+                        entity.update(cx, |view, cx| {
+                            let layout = ConsoleLayout {
+                                frame,
+                                bounds,
+                                page: page.clone(),
+                                column_width,
+                                scene_width,
+                            };
+                            let transition = view
+                                .track_reorder
+                                .gesture
+                                .as_ref()
+                                .and_then(|g| g.pending_page);
+                            if let Some(expected_page) = transition {
+                                let accepted = view
+                                    .track_reorder
+                                    .gesture
+                                    .as_ref()
+                                    .and_then(|g| g.console.as_ref())
+                                    .is_some_and(|old| {
+                                        old.frame.current_transition(view, window, expected_page)
+                                            && frame.current(view, window)
+                                            && old.bounds == bounds
+                                            && old.column_width == column_width
+                                            && old.scene_width == scene_width
+                                    });
+                                view.track_reorder.console_layout = Some(layout.clone());
+                                view.track_reorder.painted_gap = None;
+                                if !accepted {
+                                    view.cancel_track_reorder();
+                                } else if let Some(g) = view.track_reorder.gesture.as_mut() {
+                                    g.console = Some(layout);
+                                    g.pending_page = None;
+                                    let pointer = g.pointer;
+                                    view.update_track_reorder(gpui::point(
+                                        px(pointer.0),
+                                        px(pointer.1),
+                                    ));
+                                }
+                                cx.notify();
+                                return;
+                            }
+                            view.track_reorder.console_layout = Some(layout);
+                            view.track_reorder.painted_gap = view
+                                .track_reorder
+                                .gesture
+                                .as_ref()
+                                .filter(|g| {
+                                    g.mode == EditorMode::Session
+                                        && drawn.is_some_and(|(destination, _)| {
+                                            g.destination == Some(destination)
+                                        })
+                                })
+                                .and_then(|g| view.track_gap_witness(g));
+                        });
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
     }
 
     fn update_track_reorder(&mut self, position: gpui::Point<gpui::Pixels>) -> bool {
@@ -559,6 +647,11 @@ impl EditorView {
         }
         g.pointer = pointer;
         g.moved |= g.crosses_threshold(pointer);
+        if g.pending_page.is_some() {
+            g.destination = None;
+            self.track_reorder.gesture = Some(g);
+            return true;
+        }
         g.destination = g
             .moved
             .then(|| {
@@ -607,7 +700,8 @@ impl EditorView {
         };
         // A wheel/scrollbar or final pointer event can arrive before a repaint.
         // Never commit a different gap than the user actually saw highlighted.
-        if self.track_gap_witness(&g) != self.track_reorder.painted_gap {
+        if g.pending_page.is_some() || self.track_gap_witness(&g) != self.track_reorder.painted_gap
+        {
             return captured;
         }
         if let Some(destination) = g.destination {
@@ -650,8 +744,8 @@ impl EditorView {
         if !self.track_reorder_current(g) {
             return self.cancel_track_reorder();
         }
-        if g.mode != EditorMode::Arrangement {
-            return false;
+        if g.mode == EditorMode::Session {
+            return self.tick_console_reorder(now);
         }
         let Some(b) = self.arrangement_bounds else {
             return false;
@@ -692,6 +786,57 @@ impl EditorView {
         self.update_track_reorder(pointer);
         true
     }
+    /// Turn one Console page after a held edge; no destination exists until
+    /// the new page and its matching target have both painted.
+    fn tick_console_reorder(&mut self, now: Instant) -> bool {
+        let Some(g) = self.track_reorder.gesture.as_ref() else {
+            return false;
+        };
+        let Some(layout) = g.console.as_ref() else {
+            return false;
+        };
+        if !g.moved
+            || g.pending_page.is_some()
+            || now.saturating_duration_since(g.last_scroll) < Duration::from_millis(450)
+        {
+            return false;
+        }
+        let left = f32::from(layout.bounds.origin.x);
+        let top = f32::from(layout.bounds.origin.y);
+        let end = left + (f32::from(layout.bounds.size.width) - layout.scene_width).max(0.0);
+        let bottom = top + f32::from(layout.bounds.size.height);
+        let (x, y) = g.pointer;
+        if x < left || x > end || y < top || y > bottom {
+            return false;
+        }
+        let size = self.session_visible_columns.max(1);
+        let maximum = self
+            .arrangement_focus
+            .projection
+            .console_indices
+            .len()
+            .saturating_sub(size);
+        let current = layout.page.range.start;
+        let next = if x <= left + 24.0 {
+            current.saturating_sub(size)
+        } else if x >= end - 24.0 {
+            current.saturating_add(size).min(maximum)
+        } else {
+            return false;
+        };
+        if next == current {
+            return false;
+        }
+        if let Some(g) = self.track_reorder.gesture.as_mut() {
+            g.pending_page = Some(next);
+            g.last_scroll = now;
+            g.destination = None;
+        }
+        self.track_reorder.painted_gap = None;
+        self.session_track_start = next;
+        true
+    }
+
     pub(super) fn track_reorder_line(&self) -> Option<Div> {
         let destination = self
             .track_reorder
