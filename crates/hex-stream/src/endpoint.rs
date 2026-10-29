@@ -18,7 +18,8 @@ use std::hash::{Hash, Hasher};
 
 // Installed roles use bits 0–2, legacy pinning uses bit 3, and pending
 // readiness roles use bits 4–6. Legacy pins retain their replacement policy.
-const READINESS_PINS: u8 = 0b0111_0111;
+const INSTALLED_PINS: u8 = 0b0000_0111;
+const PENDING_PINS: u8 = 0b0111_0000;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PageRequest(pub(crate) ResourcePageKey);
@@ -544,10 +545,20 @@ impl Endpoint {
             return false;
         };
         if let Some(index) = self.cache_lookup(key) {
-            // A readiness-protected page cannot be replaced by a shorter or
-            // duplicate decode while an actual protected extent depends on it.
-            if matches!(self.cache[index], CacheSlot::Occupied { pinned, .. } if pinned & READINESS_PINS != 0)
-            {
+            // Installed pages retain their original owner. A pending-only page
+            // has no receipt or borrowed consumer, so a strictly longer decode
+            // may replace it only if it covers every existing pending role.
+            let refuse = match &self.cache[index] {
+                CacheSlot::Occupied { page: old, pinned } => {
+                    let pending = *pinned & PENDING_PINS;
+                    *pinned & INSTALLED_PINS != 0
+                        || (pending != 0
+                            && (page.valid_frames <= old.valid_frames
+                                || pending_mask & pending != pending))
+                }
+                CacheSlot::Empty => true,
+            };
+            if refuse {
                 self.return_buffer(page);
                 return false;
             }
@@ -1052,6 +1063,44 @@ mod tests {
                 .cache
                 .iter()
                 .all(|slot| matches!(slot, CacheSlot::Empty))
+        );
+    }
+
+    #[test]
+    fn longer_duplicate_can_satisfy_overlapping_pending_extents() {
+        let mut test = endpoint(3, 4, 4);
+        let StreamResourceKey::Audio(source) = test.endpoint.source_keys[0] else {
+            panic!("audio fixture")
+        };
+        let key = PageKey {
+            source,
+            page_index: 0,
+        };
+        let shorter = crate::StreamPageExtent {
+            source,
+            page_index: 0,
+            start: 0,
+            end: 7,
+        };
+        let longer = crate::StreamPageExtent { end: 8, ..shorter };
+        let mut first = page(key);
+        first.valid_frames = 7;
+        assert!(test.endpoint.insert_ready(first));
+        test.endpoint.protect_present(16, &[shorter.into()]);
+        let mut complete = page(key);
+        complete.valid_frames = 8;
+        assert!(test.ready.push(complete).is_ok());
+        let a = [shorter.into()];
+        let b = [longer.into()];
+        assert_eq!(
+            test.endpoint
+                .pump_ready_for_pending(1, &[(16, &a), (32, &b)]),
+            1
+        );
+        assert!(test.endpoint.has_extent(shorter));
+        assert!(test.endpoint.has_extent(longer));
+        assert!(
+            matches!(&test.endpoint.cache[test.endpoint.cache_lookup(key).unwrap()], CacheSlot::Occupied { pinned, .. } if pinned & 48 == 48)
         );
     }
 
