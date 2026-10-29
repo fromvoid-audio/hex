@@ -152,7 +152,7 @@ impl super::EditorView {
         {
             if modifiers.shift
                 && self.mode == super::EditorMode::Arrangement
-                && self.arrangement_focus.enabled
+                && self.arrangement_focus.projection.enabled
             {
                 let ids = self
                     .track_selection
