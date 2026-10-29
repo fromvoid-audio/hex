@@ -298,6 +298,30 @@ report compilation separately. This targeted profile is not a substitute for
 the other affected owner and consumer checks, or for an unoptimized debugging
 run when one is needed.
 
+For a focused streamed-readiness or ordinary audio publication unit test whose
+test-harness startup exceeds the unit limit, compile the same library test
+harness with a smaller test profile and explicit final symbol stripping:
+
+```sh
+mkdir -p artifacts
+CARGO_PROFILE_TEST_DEBUG=0 cargo \
+  --config 'profile.test.package.hex-engine.opt-level="z"' \
+  --config 'profile.test.package.hex-stream.opt-level="z"' \
+  --config 'profile.test.package.hex-audio.opt-level="z"' \
+  rustc -p hex-audio --features allocation-probe --lib --profile test --locked \
+  --message-format=json -- -C strip=symbols > artifacts/audio-test-build.jsonl
+```
+
+Use `-p hex-stream` instead for its library tests. The Cargo JSON
+`compiler-artifact` whose `target.name` is `hex_audio` or `hex_stream` and
+whose `profile.test` is true identifies the executable in its `executable`
+field. Invoke that executable with the full test name and `--exact`; confirm
+that one test actually ran. The final rustc flag matters: the test-profile
+`strip` setting alone may result in `strip=debuginfo` for a library test harness.
+This is compiler-produced stripping; no post-build strip or re-sign step is
+excluded from the measurement. Debug assertions remain enabled. Other affected
+checks and configurations still apply.
+
 Focused tests can form part of a reviewed change-based merge check set when its
 affected contracts, consumers and configurations are covered; an isolated passing
 test alone does not establish that scope.
