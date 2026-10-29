@@ -86,6 +86,7 @@ impl StateView<'_> {
             .filter(|w| w.valid())
             .ok_or(hex_engine::Invalid("stream demand workspace unavailable"))?;
         workspace.handoff_diagnostic = None;
+        workspace.source_changed = false;
         let runtime = self
             .runtime
             .as_mut()
@@ -236,10 +237,13 @@ impl StateView<'_> {
                 // stale buffers returned. Consuming its receipt releases the
                 // failed pending key; continue bounded service below. Actual
                 // source/read failures still refuse the affected window.
-                failed_window |= failure.kind != hex_stream::StreamFailureKind::CapacityExhausted
-                    && rows.iter().any(|row| {
-                        row.source == failure.key && row.page_index == failure.page_index
-                    });
+                let demanded = rows
+                    .iter()
+                    .any(|row| row.source == failure.key && row.page_index == failure.page_index);
+                failed_window |=
+                    failure.kind != hex_stream::StreamFailureKind::CapacityExhausted && demanded;
+                workspace.source_changed |=
+                    demanded && failure.kind == hex_stream::StreamFailureKind::SourceChanged;
                 pages.inner.last_failure = Some(failure);
             }
             if failed_window {

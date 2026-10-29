@@ -84,6 +84,128 @@ fn measured_render(
     );
 }
 #[test]
+fn ordinary_publication_reports_changed_source_after_catalog_admission() {
+    let _serial = serial();
+    let project = super::readiness::project_with_frames(32_768);
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_frames(32_768);
+    let definition = wav.definition(asset, 11);
+    let metadata = definition.metadata.clone();
+    let source_path = definition.path.clone();
+    let store = ResidentDeviceAssets::default();
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_device_resource_publication_on_control(resource_limits())
+        .unwrap();
+    control
+        .configure_ordinary_streaming_on_control(
+            crate::AudioCandidateDomainReservation {
+                max_retained_data_bytes: 8 * 1024 * 1024,
+                max_construction_peak_data_bytes: 8 * 1024 * 1024,
+            },
+            3,
+            4096,
+        )
+        .unwrap();
+    let audio = hex_engine::Audio::new(48_000, vec![[0.375; 2]; 32_768]).unwrap();
+    let resources = PreparedDeviceResources::prepare_on_control(
+        &store,
+        &project,
+        1_000_000,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let revision = hex_engine::PreparedRevision::prepare_with_device_resources(
+        &project,
+        &BTreeMap::from([(asset, audio)]),
+        Arc::new(hex_engine::SineTable::new()),
+        None,
+        &hex_engine::audio_transform::AudioTransformPreparation::default(),
+        &resources,
+        100_000,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let donor =
+        Playback::try_from_prepared_with_device_resources(Arc::new(revision), &resources).unwrap();
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 3,
+    };
+    let donor_revision = control
+        .publish_with_admission_and_source_on_control(
+            donor,
+            PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|error| panic!("donor publication: {error:?}"));
+    control.command(PlaybackCommand::Play).unwrap();
+    assert_eq!(measured_block(&mut data), [[0.375; 2]; 8]);
+    assert_eq!(
+        control.status.applied_revision.load(Acquire),
+        donor_revision
+    );
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(definition),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .unwrap_or_else(|_| panic!("source registration"));
+    std::fs::write(source_path, b"changed source bytes").unwrap();
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            compile(&project, metadata, &store),
+            PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                editor_revision: 4,
+                ..context
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap_or_else(|_| panic!("ordinary publication"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let rejection = loop {
+        assert_eq!(measured_block(&mut data), [[0.375; 2]; 8]);
+        if let Some(rejection) = control.status.rejected_revision() {
+            break rejection;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert_eq!(
+        rejection,
+        (revision, PlaybackHandoffRejection::StreamSourceChanged)
+    );
+    assert_eq!(
+        control.status.applied_revision.load(Acquire),
+        donor_revision
+    );
+    assert!(control.retire_audio_candidate_domain(domain));
+    control.request_shutdown();
+    loop {
+        measured_block(&mut data);
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+}
+
+#[test]
 fn ordinary_resource_graph_requires_actual_catalog_and_protected_pages_and_returns_before_join() {
     ordinary_case(false, false, false);
 }
