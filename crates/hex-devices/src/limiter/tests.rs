@@ -1063,7 +1063,8 @@ fn study_feasible_output_gain_plan() {
         kernel
     });
     let mut phase64_peak = 0.0_f64;
-    for window in extended.windows(64) {
+    let mut peak_index = 0;
+    for (index, window) in extended.windows(64).enumerate() {
         for kernel in &denser {
             for lane in 0..2 {
                 let value: f64 = kernel
@@ -1071,7 +1072,31 @@ fn study_feasible_output_gain_plan() {
                     .zip(window)
                     .map(|(c, frame)| c * f64::from(frame[lane]))
                     .sum();
-                phase64_peak = phase64_peak.max(value.abs());
+                if value.abs() > phase64_peak {
+                    phase64_peak = value.abs();
+                    peak_index = index + 31;
+                }
+            }
+        }
+    }
+    // Exact cardinal sinc of this finite, zero-extended fragment, evaluated
+    // near the Lanczos-selected peak only. This is not a global or DAC bound.
+    assert!((2.0 * sinc(0.5) - 4.0 / std::f64::consts::PI).abs() < 1e-12);
+    let mut cardinal_peak = 0.0_f64;
+    for index in peak_index.saturating_sub(2)..=(peak_index + 2).min(extended.len() - 1) {
+        for phase in 0..32 {
+            let position = index as f64 + phase as f64 / 32.0;
+            for lane in 0..2 {
+                let mut sum = 0.0_f64;
+                let mut compensation = 0.0_f64;
+                for (sample_index, sample) in extended.iter().enumerate() {
+                    let term = f64::from(sample[lane]) * sinc(position - sample_index as f64);
+                    let corrected = term - compensation;
+                    let next = sum + corrected;
+                    compensation = (next - sum) - corrected;
+                    sum = next;
+                }
+                cardinal_peak = cardinal_peak.max(sum.abs());
             }
         }
     }
@@ -1080,6 +1105,7 @@ fn study_feasible_output_gain_plan() {
         [added_gains[0][0], added_gains[1][0]],
         added_gains.iter().flatten().sum::<f64>() / (2 * NEXT_KNOTS) as f64
     );
+    println!("cardinal-sinc peak near selected frame {peak_index}: {cardinal_peak:.9}");
     assert!(extension_model_peak <= ceiling + 1e-7);
 }
 #[test]
