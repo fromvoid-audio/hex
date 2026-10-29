@@ -665,6 +665,68 @@ fn study_true_peak_with_independent_lanczos_reconstruction() {
         peak > ceiling + 0.01,
         "expected the documented counterexample"
     );
+    // A single gain for the entire rendered file preserves every cancellation,
+    // but requires future knowledge and cannot serve as a streaming algorithm.
+    let uniform_gain = ceiling / peak;
+    println!(
+        "offline uniform gain {uniform_gain:.6} ({:.2} dB)",
+        20.0 * uniform_gain.log10()
+    );
+
+    // Offline feasibility experiment only: bound each reconstruction by the
+    // sum of absolute contributions and apply the tightest window gain to
+    // every contributing sample. This sacrifices phase cancellation and has
+    // unbounded whole-file storage; it is not a real-time candidate.
+    let mut gains = vec![[1.0_f64; 2]; output.len()];
+    for (index, window) in output.windows(64).enumerate() {
+        for lane in 0..2 {
+            let mut maximum = 0.0_f64;
+            for kernel in &kernels {
+                let bound: f64 = kernel
+                    .iter()
+                    .zip(window)
+                    .map(|(c, sample)| (c * f64::from(sample[lane])).abs())
+                    .sum();
+                maximum = maximum.max(bound);
+            }
+            if maximum > ceiling {
+                let gain = ceiling / maximum;
+                for frame in &mut gains[index..index + 64] {
+                    frame[lane] = frame[lane].min(gain);
+                }
+            }
+        }
+    }
+    let guarded: Vec<_> = output
+        .iter()
+        .zip(&gains)
+        .map(|(sample, gain)| {
+            [
+                (f64::from(sample[0]) * gain[0]) as f32,
+                (f64::from(sample[1]) * gain[1]) as f32,
+            ]
+        })
+        .collect();
+    let mut guarded_peak = 0.0_f64;
+    for window in guarded.windows(64) {
+        // Spot-check eight phases; the absolute bound above covers all 32.
+        for kernel in kernels.iter().step_by(4) {
+            for lane in 0..2 {
+                let value: f64 = kernel
+                    .iter()
+                    .zip(window)
+                    .map(|(c, sample)| c * f64::from(sample[lane]))
+                    .sum();
+                guarded_peak = guarded_peak.max(value.abs());
+            }
+        }
+    }
+    let min_gain = gains.iter().flatten().copied().fold(1.0_f64, f64::min);
+    println!(
+        "absolute-bound guarded eight-phase peak {guarded_peak:.9}, minimum gain {min_gain:.6} ({:.2} dB)",
+        20.0 * min_gain.log10()
+    );
+    assert!(guarded_peak <= ceiling + 1e-6);
 }
 #[test]
 fn invalid_rates_and_nonfinite_pcm_are_contained() {
