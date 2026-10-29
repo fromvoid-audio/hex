@@ -359,3 +359,184 @@ static NEXT_RETURN: AtomicU64 = AtomicU64::new(0);
 fn hex_engine_instruments() -> hex_lattice::NativeInstrumentRegistry<'static> {
     hex_lattice::NativeInstrumentRegistry::new(&[]).unwrap()
 }
+
+#[test]
+fn automatic_ranges_include_finite_serial_and_routed_return_tails() {
+    use hex_engine::OutputCaptureId;
+    use hex_export::{ExportControl, ExportSignal, Stem, controlled_frame_count};
+    use hex_lattice::conformance::owned_delay;
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 24).unwrap();
+    let mut tracks = Vec::new();
+    let mut media = BTreeMap::new();
+    for (name, value) in [("serial", 0.25_f32), ("send", 0.125)] {
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: name.into(),
+                path: format!("{name}.wav").into(),
+                source_sample_rate: 48_000,
+                source_frames: 1,
+                playback_frames: 1,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("fixture track")
+        };
+        tracks.push(track);
+        media.insert(asset, Audio::new(48_000, vec![[value, -value]]).unwrap());
+    }
+    let delay = || owned_delay::state(4).unwrap();
+    for track in [tracks[0], tracks[0], tracks[1]] {
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: delay(),
+            })
+            .unwrap();
+    }
+    let Created::ReturnTrack(first) = editor
+        .execute(Command::AddReturnTrack {
+            name: "first".into(),
+        })
+        .unwrap()
+    else {
+        panic!("first return")
+    };
+    let Created::ReturnTrack(second) = editor
+        .execute(Command::AddReturnTrack {
+            name: "second".into(),
+        })
+        .unwrap()
+    else {
+        panic!("second return")
+    };
+    editor
+        .execute(Command::SetReturnSend {
+            track: tracks[1],
+            return_track: first,
+            gain: 1.0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetReturnFeed {
+            source: first,
+            destination: second,
+            gain: 1.0,
+        })
+        .unwrap();
+    for bus in [first, second] {
+        editor
+            .execute(Command::InsertReturnDevice {
+                return_track: bus,
+                before: None,
+                state: delay(),
+            })
+            .unwrap();
+    }
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: delay(),
+        })
+        .unwrap();
+    let effects: [&dyn NativeDeviceDefinition; 1] = [&owned_delay::DEFINITION];
+    let registry = NativeDeviceRegistry::new(&effects).unwrap();
+    let prepared = Arc::new(
+        PreparedRevision::prepare_with_test_registries(
+            editor.project(),
+            &media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+            &hex_engine_instruments(),
+        )
+        .unwrap(),
+    );
+    let serial = OutputCaptureId::Track(tracks[0]);
+    let send = OutputCaptureId::Track(tracks[1]);
+    let first = OutputCaptureId::Return(first);
+    let second = OutputCaptureId::Return(second);
+    let main = ExportSignal::Main;
+    assert_eq!(
+        controlled_frame_count(prepared.arrangement(), 0, None, &main).unwrap(),
+        17
+    );
+    for (id, expected) in [(serial, 9), (send, 5), (first, 9), (second, 13)] {
+        assert_eq!(
+            controlled_frame_count(
+                prepared.arrangement(),
+                0,
+                None,
+                &ExportSignal::CapturedMix(vec![id])
+            )
+            .unwrap(),
+            expected
+        );
+    }
+    let selected = [serial, send, first, second];
+    let stems: Vec<_> = selected
+        .iter()
+        .enumerate()
+        .map(|(index, &id)| Stem {
+            id,
+            name: format!("part{index}"),
+        })
+        .collect();
+    assert_eq!(
+        controlled_frame_count(
+            prepared.arrangement(),
+            0,
+            None,
+            &ExportSignal::Stems(stems.clone())
+        )
+        .unwrap(),
+        13
+    );
+    let directory = std::env::temp_dir().join(format!(
+        "hex-finite-tail-{}-{}",
+        std::process::id(),
+        NEXT_RETURN.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let main_path = directory.join("main.wav");
+    hex_export::render_prepared_controlled(
+        &main_path,
+        Arc::clone(&prepared),
+        0,
+        17,
+        main,
+        &ExportControl::default(),
+    )
+    .unwrap();
+    let bytes = std::fs::read(main_path).unwrap();
+    assert_ne!(
+        &bytes[44 + 16 * 4..44 + 17 * 4],
+        &[0; 4],
+        "final Main tail sample"
+    );
+    let batch = directory.join("stems");
+    hex_export::render_stems_new(
+        &batch,
+        Arc::clone(&prepared),
+        0,
+        13,
+        &stems,
+        &ExportControl::default(),
+    )
+    .unwrap();
+    for (index, id, last) in [(0, serial, 8), (1, send, 4), (2, first, 8), (3, second, 12)] {
+        let (kind, value) = match id {
+            OutputCaptureId::Track(id) => ("track", id.value()),
+            OutputCaptureId::Return(id) => ("return", id.value()),
+        };
+        let bytes = std::fs::read(batch.join(format!("{kind}-{value}-part{index}.wav"))).unwrap();
+        assert_ne!(
+            &bytes[44 + last * 4..44 + (last + 1) * 4],
+            &[0; 4],
+            "last stem sample {index}"
+        );
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
