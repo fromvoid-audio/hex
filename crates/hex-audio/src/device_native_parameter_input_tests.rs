@@ -353,6 +353,33 @@ fn native_input_reserves_cancel_under_full_normal_pressure_and_retires_each_cred
 }
 
 #[test]
+fn render_fault_aborts_a_racing_native_parameter_gesture() {
+    let (mut control, mut callback, target) = fixture(false);
+    control
+        .native_parameter_input
+        .begin(target, value(0.5))
+        .unwrap();
+    control
+        .status
+        .render_fault
+        .store(true, std::sync::atomic::Ordering::Release);
+    let mut source = [[0.0; 2]; 8];
+    let _ = render(&mut callback, &mut source);
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Superseded { .. })
+    ));
+    assert!(matches!(
+        control.native_parameter_input.try_receipt(),
+        Some(Receipt::Aborted {
+            reason: AbortReason::OutputFailed,
+            ..
+        })
+    ));
+    shutdown(&mut control, &mut callback);
+}
+
+#[test]
 fn device_error_aborts_a_queued_native_parameter_gesture() {
     let (mut control, mut callback, target) = fixture(false);
     control

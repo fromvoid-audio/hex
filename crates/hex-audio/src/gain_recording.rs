@@ -103,6 +103,8 @@ pub struct Control {
     credits: Credits,
     finishing: bool,
     status: Option<std::sync::Arc<crate::prepared::Status>>,
+    #[cfg(test)]
+    pub(crate) begin_gate: Option<std::sync::Arc<std::sync::Barrier>>,
 }
 pub(crate) struct Callback {
     commands: Consumer<Command>,
@@ -135,6 +137,8 @@ pub(crate) fn channel() -> (Control, Callback) {
             credits: Credits::default(),
             finishing: false,
             status: None,
+            #[cfg(test)]
+            begin_gate: None,
         },
         Callback {
             commands: incoming,
@@ -173,6 +177,11 @@ impl Control {
             .status
             .as_ref()
             .map_or(Ok(false), |s| s.reserve_gain_begin())?;
+        #[cfg(test)]
+        if let Some(gate) = &self.begin_gate {
+            gate.wait();
+            gate.wait();
+        }
         if self
             .commands
             .push(Command {
