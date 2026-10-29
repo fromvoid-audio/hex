@@ -4327,6 +4327,16 @@ mod tests {
     use super::*;
     use std::sync::{Barrier, Weak};
 
+    #[test]
+    fn prepared_channel_accepts_only_supported_sample_rates() {
+        for rate in [0, 7_999, 192_001, u32::MAX] {
+            assert!(channel(rate).is_err(), "accepted {rate} hz");
+        }
+        for rate in [8_000, 192_000] {
+            assert!(channel(rate).is_ok(), "rejected {rate} hz");
+        }
+    }
+
     fn spectrum_test_target(
         owner: hex_engine::ProcessorChainOwner,
         project_generation: u64,
