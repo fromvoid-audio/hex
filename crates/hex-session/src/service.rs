@@ -491,6 +491,14 @@ pub enum Request {
         tracks: hex_project::TrackSelectionIds,
         before: Option<hex_project::TrackId>,
     },
+    /// Captured complete-subtree move to an explicit canonical parent/boundary.
+    /// Uses the same bounded selection and source revision as `ReorderTracks`.
+    ReparentTracks {
+        project_generation: u64,
+        revision: u64,
+        tracks: hex_project::TrackSelectionIds,
+        destination: hex_project::TrackDestination,
+    },
     /// Captured Main-lane intent. Never retarget to a newer document/revision.
     EditArrangementSection {
         project_generation: u64,
@@ -833,6 +841,7 @@ impl Request {
             Request::CommitMidiTake { .. }
                 | Request::Undo
                 | Request::ReorderTracks { .. }
+                | Request::ReparentTracks { .. }
                 | Request::MoveExistingClips { .. }
                 | Request::EditArrangementSection { .. }
                 | Request::SamplerEdit(SamplerEdit::History(_))
@@ -2495,6 +2504,38 @@ fn run_worker(
                     })
                 },
             ),
+            Request::ReparentTracks {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                tracks,
+                destination,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("track reparent canceled · project changed".to_owned())
+                } else if tracks
+                    .ids()
+                    .iter()
+                    .any(|id| session.project().track(*id).is_none())
+                    || destination
+                        .before
+                        .is_some_and(|id| session.project().track(id).is_none())
+                    || destination
+                        .parent_group
+                        .is_some_and(|id| session.project().track(id).is_none())
+                {
+                    Err("track reparent target no longer exists".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before reparenting tracks".into())
+                } else {
+                    Ok(Command::ReparentTracks {
+                        tracks: tracks.clone(),
+                        destination: *destination,
+                    })
+                },
+            ),
             Request::InsertBrowserInstrumentTrack {
                 project_generation: expected_generation,
                 revision: expected_revision,
@@ -3031,6 +3072,7 @@ fn run_worker(
                         ..
                     }
                     | Request::ReorderTracks { .. }
+                    | Request::ReparentTracks { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
             );
@@ -3054,6 +3096,7 @@ fn run_worker(
                     | Request::TrackClipboard { .. }
                     | Request::DeviceClipboard { .. }
                     | Request::ReorderTracks { .. }
+                    | Request::ReparentTracks { .. }
                     | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
@@ -3471,7 +3514,7 @@ fn run_worker(
                         replacement_revision = Some(prepared);
                     }
                 }
-                Request::ReorderTracks { .. } => {
+                Request::ReorderTracks { .. } | Request::ReparentTracks { .. } => {
                     error = Some("track reorder target was not resolved".into());
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {

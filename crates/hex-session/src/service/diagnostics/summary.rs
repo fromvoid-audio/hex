@@ -1166,6 +1166,14 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("reorder_tracks"; ["project_generation" => project_generation, "revision" => revision, "tracks_count" => tracks.ids().len(), "tracks_first_ids" => FirstIds(tracks.ids()), "before" => before.map(|id| id.value())]; omitted="")
         }
+        Request::ReparentTracks {
+            project_generation,
+            revision,
+            tracks,
+            destination,
+        } => {
+            describe!("reparent_tracks"; ["project_generation" => project_generation, "revision" => revision, "tracks_count" => tracks.ids().len(), "tracks_first_ids" => FirstIds(tracks.ids()), "parent" => destination.parent_group.map(|id| id.value()), "before" => destination.before.map(|id| id.value())]; omitted="")
+        }
         Request::EditArrangementSection {
             project_generation,
             revision,
