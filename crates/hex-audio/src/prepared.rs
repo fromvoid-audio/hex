@@ -3032,6 +3032,10 @@ impl Callback {
                         return;
                     }
                     refused => {
+                        let source_changed = next
+                            .streams
+                            .as_mut()
+                            .is_some_and(|streams| streams.take_source_changed());
                         let handoff = next
                             .streams
                             .as_mut()
@@ -3054,10 +3058,14 @@ impl Callback {
                         }
                         self.reject_publication(
                             next.revision,
-                            handoff.map_or(
-                                PlaybackHandoffRejection::StreamedPagesNotReady,
-                                PlaybackHandoffRejection::from_error,
-                            ),
+                            if source_changed {
+                                PlaybackHandoffRejection::StreamSourceChanged
+                            } else {
+                                handoff.map_or(
+                                    PlaybackHandoffRejection::StreamedPagesNotReady,
+                                    PlaybackHandoffRejection::from_error,
+                                )
+                            },
                         );
                         self.return_graph(next);
                         self.status.publication_pending.store(false, Release);

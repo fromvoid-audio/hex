@@ -861,6 +861,117 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
 }
 
 #[test]
+fn changed_source_after_catalog_admission_reports_recovery() {
+    let _serial = serial();
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    let (project, _) = utility_fixture::project();
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::new();
+    let definition = wav.definition(asset, 11);
+    let source_path = definition.path.clone();
+    let mut owner = stream_fixture::owner_with_context(
+        &project,
+        definition.metadata.clone(),
+        Some(hex_engine::AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 7,
+        }),
+    );
+    let limits = reservation(&mut owner);
+    let (mut control, mut data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    control.configure_audio_candidate_streaming(3).unwrap();
+    let domain = control
+        .begin_audio_candidate_domain_preparation(
+            hex_stream::StreamConfig::with_pool_pages(4),
+            vec![definition],
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match control
+            .poll_audio_candidate_domain_preparation(domain)
+            .unwrap()
+        {
+            crate::AudioCandidateDomainPreparationProgress::Ready => break,
+            crate::AudioCandidateDomainPreparationProgress::Verifying => {}
+            other => panic!("unexpected source preparation: {other:?}"),
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    std::fs::write(source_path, b"changed source bytes").unwrap();
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.begin_block());
+    let ticket = control
+        .stage_eligible_audio_candidate(owner, vec![domain], PublicationPolicy::InheritRuntime, 0)
+        .ok()
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[1.0; 2]; 8];
+    while control.status.rejected_revision().is_none() {
+        let measured = allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|callback, _| {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            });
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "changed source must be refused"
+        );
+        std::thread::yield_now();
+    }
+    let rejection = control.status.rejected_revision().unwrap();
+    assert_eq!(output, [[0.0; 2]; 8]);
+    assert_eq!(control.status.applied_revision.load(Acquire), 0);
+    let returned = recover(&mut control, &ticket);
+    assert_eq!(
+        returned.return_kind,
+        crate::AudioCandidateReturnKind::NeverInstalled
+    );
+    drop(returned);
+    assert!(control.retire_audio_candidate_domain(domain));
+    loop {
+        control.reclaim();
+        data.owner_mut()
+            .unwrap()
+            .run(|callback, _| callback.begin_block());
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+    assert_eq!(
+        rejection.1.message(),
+        "original media changed · reopen or relink it"
+    );
+}
+
+#[test]
 fn changed_file_pending_domain_refuses_without_loan_or_ack_and_keeps_pool_until_report() {
     let _serial = serial();
     let Some(mut owner) = candidate() else { return };
