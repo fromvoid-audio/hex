@@ -98,7 +98,61 @@ fn section_focus_renders_visible_child_with_nested_group_headers(cx: &mut TestAp
         groups.push(group);
         child = group;
     }
+    for index in 0..8 {
+        f.model
+            .execute(Command::AddTrack {
+                name: format!("extra {index}"),
+            })
+            .unwrap();
+    }
     replace(&mut visual, &editor, f.model.project().clone());
+    // A folded subtree removes two rows before the last track. Q must save
+    // the visible row's canonical identity rather than its filtered index.
+    let outer_fold = selector("group-fold", groups[1].value());
+    let at = visual.debug_bounds(outer_fold).unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_resize(size(px(1280.0), px(420.0)));
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        view.track_scroll.list.scroll_to(gpui::ListOffset {
+            item_ix: 4,
+            offset_in_item: px(0.0),
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        let top = view.track_scroll.list.logical_scroll_top();
+        let canonical = view.arrangement_track_index(top.item_ix).unwrap();
+        assert!(
+            canonical > top.item_ix,
+            "top row must follow the collapsed subtree"
+        );
+        let expected = view.state.as_ref().unwrap().project.tracks()[canonical].id();
+        view.toggle_arrangement_focus();
+        assert_eq!(
+            view.arrangement_focus.restore_scroll.map(|(id, _)| id),
+            Some(expected)
+        );
+        view.toggle_arrangement_focus();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        view.track_scroll.list.scroll_to(gpui::ListOffset {
+            item_ix: 0,
+            offset_in_item: px(0.0),
+        });
+        cx.notify();
+    });
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
+    visual.run_until_parked();
+    let at = visual.debug_bounds(outer_fold).unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
     visual.simulate_keystrokes("q");
     visual.run_until_parked();
     select_section(&mut visual, 0, false);
@@ -113,6 +167,30 @@ fn section_focus_renders_visible_child_with_nested_group_headers(cx: &mut TestAp
         visual
             .debug_bounds(selector("arrangement-track-header", f.tracks[2].value()))
             .is_none()
+    );
+    let fold = selector("group-fold", groups[0].value());
+    let at = visual.debug_bounds(fold).unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(selector("arrangement-track-header", groups[0].value()))
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(selector("arrangement-track-header", f.tracks[3].value()))
+            .is_none()
+    );
+    let at = visual.debug_bounds(fold).unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(selector("arrangement-track-header", f.tracks[3].value()))
+            .is_some()
     );
 }
 

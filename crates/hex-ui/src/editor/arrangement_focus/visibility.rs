@@ -65,6 +65,7 @@ struct Stamp {
     revision: u64,
     enabled: bool,
     new_track: Option<TrackId>,
+    fold_revision: u64,
 }
 
 /// Cached, view-only projection; no widget, scroll or audio ownership.
@@ -74,6 +75,8 @@ pub(crate) struct Projection {
     stamp: Option<Stamp>,
     selected: Vec<SectionId>,
     pub(crate) new_track: Option<TrackId>,
+    folded: BTreeSet<TrackId>,
+    fold_revision: u64,
     pub(crate) ranges: Rc<[(u64, u64)]>,
     pub(crate) indices: Vec<usize>,
     pub(crate) tracks: BTreeSet<TrackId>,
@@ -104,6 +107,18 @@ fn section_intervals(project: &Project, selected: &[SectionId]) -> Rc<[(u64, u64
     union.into()
 }
 impl Projection {
+    pub(crate) fn folded(&self, id: TrackId) -> bool {
+        self.folded.contains(&id)
+    }
+    pub(crate) fn filtering(&self) -> bool {
+        !self.ranges.is_empty() || !self.folded.is_empty()
+    }
+    pub(crate) fn toggle_fold(&mut self, id: TrackId) {
+        if !self.folded.remove(&id) {
+            self.folded.insert(id);
+        }
+        self.fold_revision = self.fold_revision.wrapping_add(1);
+    }
     pub(super) fn generation_changed(&self, generation: u64) -> bool {
         self.stamp.is_some_and(|s| s.generation != generation)
     }
@@ -126,6 +141,7 @@ impl Projection {
         if self.stamp.is_some_and(|s| s.generation != generation) {
             self.enabled = false;
             self.new_track = None;
+            self.folded.clear();
         }
         self.observe_active_track(active_track);
         if !self.enabled || self.selected != selected {
@@ -136,6 +152,7 @@ impl Projection {
             revision,
             enabled: self.enabled,
             new_track: self.new_track,
+            fold_revision: self.fold_revision,
         };
         if self.stamp == Some(stamp) && self.selected == selected {
             return false;
@@ -151,6 +168,8 @@ impl Projection {
             self.new_track = None;
             stamp.new_track = None;
         }
+        self.folded
+            .retain(|id| project.track(*id).is_some_and(Track::is_group));
         self.selected.clear();
         self.selected.extend_from_slice(selected);
         self.ranges = ranges;
@@ -158,11 +177,21 @@ impl Projection {
         self.tracks.clear();
         self.clips.clear();
         let visible = visible_tracks(project, &self.ranges, self.new_track);
+        let mut ancestors: Vec<(TrackId, bool)> = Vec::with_capacity(hex_project::MAX_GROUP_DEPTH);
         for (index, track) in project.tracks().iter().enumerate() {
-            if !self.ranges.is_empty() && !visible.contains(&track.id()) {
+            while ancestors.last().map(|(id, _)| *id) != track.parent_group()
+                && !ancestors.is_empty()
+            {
+                ancestors.pop();
+            }
+            let hidden = ancestors.last().is_some_and(|(_, hidden)| *hidden);
+            if track.is_group() && ancestors.len() < hex_project::MAX_GROUP_DEPTH {
+                ancestors.push((track.id(), hidden || self.folded.contains(&track.id())));
+            }
+            if hidden || (!self.ranges.is_empty() && !visible.contains(&track.id())) {
                 continue;
             }
-            if !self.ranges.is_empty() {
+            if self.filtering() {
                 self.tracks.insert(track.id());
                 self.clips.extend(
                     track
