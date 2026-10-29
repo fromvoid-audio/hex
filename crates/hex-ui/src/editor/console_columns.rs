@@ -14,7 +14,7 @@ use hex_session::{
     service::{ArrangementDeviceDestination, Request},
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(super) struct ColumnFrame {
     generation: u64,
     revision: u64,
@@ -35,14 +35,17 @@ impl ColumnFrame {
         }
     }
     pub(super) fn current(self, view: &EditorView, window: &Window) -> bool {
+        self.current_view(view)
+            && self.window == window.window_handle().window_id()
+            && self.size == window.bounds().size
+    }
+    pub(super) fn current_view(self, view: &EditorView) -> bool {
         view.mode == EditorMode::Session
             && self.generation == view.project_generation
             && view
                 .state
                 .as_ref()
                 .is_some_and(|state| state.revision == self.revision)
-            && self.window == window.window_handle().window_id()
-            && self.size == window.bounds().size
             && self.page == view.session_track_start
             && self.fold_revision == view.arrangement_focus.projection.fold_revision()
     }

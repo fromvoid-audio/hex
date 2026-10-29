@@ -12,7 +12,7 @@ pub(super) struct Column {
     pub id: TrackId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct TrackPage {
     pub range: Range<usize>,
     pub columns: Vec<Column>,
