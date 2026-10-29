@@ -836,6 +836,64 @@ mod tests {
         assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn file_size_limit_removes_incomplete_stage_and_preserves_destination() {
+        const CHILD: &str = "HEX_EXPORT_FILE_LIMIT_CHILD";
+        if let Some(mode) = std::env::var_os(CHILD) {
+            struct Silence;
+            impl BlockRenderer for Silence {
+                fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+                    frames.fill([0.0; 2]);
+                    Ok(())
+                }
+            }
+            let dir = TestDir::new();
+            let target = dir.0.join("output.wav");
+            let publication = if mode == "replace" {
+                fs::write(&target, b"prior recording").unwrap();
+                Publication::confirmed_save(&target).unwrap()
+            } else {
+                Publication::CreateNew
+            };
+            let error =
+                publish(&target, 48_000, 0, 4096, &publication, || Ok(Silence)).unwrap_err();
+            assert!(matches!(error, ExportError::Io { source, .. }
+                if source.kind() == io::ErrorKind::FileTooLarge));
+            if mode == "replace" {
+                assert_eq!(fs::read(&target).unwrap(), b"prior recording");
+                assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+            } else {
+                assert!(!target.exists());
+                assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
+            }
+            return;
+        }
+
+        for mode in ["new", "replace"] {
+            // The child inherits the limit and ignored SIGXFSZ; no process-wide
+            // limit or signal handler is changed in the parent test runner.
+            let output = std::process::Command::new("/bin/sh")
+                .args(["-c", "ulimit -f 1; trap '' XFSZ; exec \"$@\"", "_"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::file_size_limit_removes_incomplete_stage_and_preserves_destination",
+                    "--nocapture",
+                ])
+                .env(CHILD, mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode} child failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+    }
+
     #[test]
     fn destination_write_errors_explain_read_only_and_permission_failures() {
         for (kind, expected) in [
