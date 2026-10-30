@@ -671,6 +671,90 @@ fn dense_reconstructed_peak(output: &[StereoFrame]) -> (f64, usize) {
     maximum
 }
 #[test]
+fn bs1770_meter_recovers_intersample_peaks_of_a_known_signal() {
+    // A quarter-rate sine offset by 45 degrees has 0.7071 sample peaks and a
+    // 1.0 continuous peak; the standard 4x meter must recover it closely.
+    let tone: Vec<StereoFrame> = (0..4096)
+        .map(|i| {
+            let value =
+                (std::f64::consts::FRAC_PI_2 * i as f64 + std::f64::consts::FRAC_PI_4).sin() as f32;
+            [value, -value]
+        })
+        .collect();
+    let sample_peak = tone.iter().flatten().fold(0.0_f32, |a, s| a.max(s.abs()));
+    assert!(sample_peak < 0.71);
+    let true_peak = true_peak_oracle::bs1770_true_peak(&tone).unwrap();
+    assert!((true_peak - 1.0).abs() < 0.03, "{true_peak}");
+    assert!(true_peak_oracle::bs1770_true_peak(&[]).is_none());
+    assert!(true_peak_oracle::bs1770_true_peak(&[[f32::NAN, 0.0]]).is_none());
+}
+
+/// Render a gated-burst fixture through True Peak mode at 48 and 192 kHz in
+/// both routings, returning the largest BS.1770-4 meter reading.
+///
+/// Gated bursts make the gain move inside the 32-tap detector window. The
+/// detector reconstructs the pre-gain input, so modulation-induced
+/// intersample peaks are not tracked (Pulse #3379). The 0.1 criterion is the
+/// standard BS.1770-4 4x meter with a recorded +0.3 dB bound; ideal
+/// reconstruction reads higher and remains a documented limitation.
+fn gated_burst_bs1770_peak(high: f32, low: f32) -> f64 {
+    let ceiling = 10.0_f64.powf(-1.0 / 20.0);
+    let bound = ceiling * 10.0_f64.powf(0.3 / 20.0);
+    let mut worst = 0.0_f64;
+    for rate in [48_000, 192_000] {
+        for routing in [0, 1] {
+            let factory = factory(
+                rate,
+                &[
+                    (MODE, ParameterValue::Choice(2)),
+                    (ROUTING, ParameterValue::Choice(routing)),
+                    (LINK, ParameterValue::Float(0.0)),
+                    (RELEASE, ParameterValue::Float(0.01)),
+                    (CEILING, ParameterValue::Float(-1.0)),
+                ],
+            );
+            let mut runtime = factory.create_runtime().unwrap();
+            let mut input: Vec<StereoFrame> = (0..4000)
+                .map(|i| {
+                    let envelope = if i % 137 < 17 { 10.0 } else { 1.0 };
+                    [
+                        envelope * (i as f32 * high + 0.2).sin(),
+                        envelope * (i as f32 * low + 0.7).sin(),
+                    ]
+                })
+                .collect();
+            input.extend(vec![[0.0; 2]; 2048]);
+            let output = render(runtime.as_mut(), &input, &[1, 63, 257]);
+            let sample_peak = output
+                .iter()
+                .flatten()
+                .fold(0.0_f64, |a, s| a.max(f64::from(s.abs())));
+            assert!(sample_peak <= ceiling + 1e-6, "{high} {rate} {routing}");
+            let measured = true_peak_oracle::bs1770_true_peak(&output).unwrap();
+            assert!(
+                measured <= bound,
+                "{high} {rate} {routing}: {:+.3} dB",
+                20.0 * (measured / ceiling).log10()
+            );
+            worst = worst.max(measured);
+        }
+    }
+    // Guard against the fixture silently becoming trivial.
+    assert!(worst > ceiling * 0.99, "{worst}");
+    worst
+}
+
+#[test]
+fn true_peak_mode_stays_within_bs1770_bound_on_near_nyquist_bursts() {
+    gated_burst_bs1770_peak(2.7, 2.1);
+}
+
+#[test]
+fn true_peak_mode_stays_within_bs1770_bound_on_mid_band_bursts() {
+    gated_burst_bs1770_peak(0.8, 0.6);
+}
+
+#[test]
 fn invalid_rates_and_nonfinite_pcm_are_contained() {
     for rate in [0, 7999, 192001, u32::MAX] {
         assert!(

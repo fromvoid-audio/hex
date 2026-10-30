@@ -97,6 +97,97 @@ fn at_valid(frames: &[StereoFrame], position: f64) -> [f64; 2] {
     sum
 }
 
+/// ITU-R BS.1770-4 Annex 2 true-peak interpolation: four 12-tap polyphase
+/// filters (4x oversampling), applied to a zero-extended record. This is the
+/// standard loudness-meter measurement, deliberately independent of the
+/// limiter's own detector; it is not an ideal-reconstruction bound.
+const BS1770_PHASES: [[f64; 12]; 4] = [
+    [
+        0.0017089843750,
+        0.0109863281250,
+        -0.0196533203125,
+        0.0332031250000,
+        -0.0594482421875,
+        0.1373291015625,
+        0.9721679687500,
+        -0.1022949218750,
+        0.0476074218750,
+        -0.0266113281250,
+        0.0148925781250,
+        -0.0083007812500,
+    ],
+    [
+        -0.0291748046875,
+        0.0292968750000,
+        -0.0517578125000,
+        0.0891113281250,
+        -0.1665039062500,
+        0.4650878906250,
+        0.7797851562500,
+        -0.2003173828125,
+        0.1015625000000,
+        -0.0582275390625,
+        0.0330810546875,
+        -0.0189208984375,
+    ],
+    [
+        -0.0189208984375,
+        0.0330810546875,
+        -0.0582275390625,
+        0.1015625000000,
+        -0.2003173828125,
+        0.7797851562500,
+        0.4650878906250,
+        -0.1665039062500,
+        0.0891113281250,
+        -0.0517578125000,
+        0.0292968750000,
+        -0.0291748046875,
+    ],
+    [
+        -0.0083007812500,
+        0.0148925781250,
+        -0.0266113281250,
+        0.0476074218750,
+        -0.1022949218750,
+        0.9721679687500,
+        0.1373291015625,
+        -0.0594482421875,
+        0.0332031250000,
+        -0.0196533203125,
+        0.0109863281250,
+        0.0017089843750,
+    ],
+];
+
+/// Largest BS.1770-4 true-peak magnitude over both lanes, or `None` for an
+/// empty or nonfinite record.
+pub(super) fn bs1770_true_peak(frames: &[StereoFrame]) -> Option<f64> {
+    if frames.is_empty() || !finite(frames) {
+        return None;
+    }
+    let taps = BS1770_PHASES[0].len();
+    let mut peak = 0.0_f64;
+    for index in 0..frames.len() + taps {
+        for phase in &BS1770_PHASES {
+            for lane in 0..2 {
+                let value: f64 = phase
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(tap, coefficient)| {
+                        let source = index.checked_sub(tap)?;
+                        frames
+                            .get(source)
+                            .map(|frame| coefficient * f64::from(frame[lane]))
+                    })
+                    .sum();
+                peak = peak.max(value.abs());
+            }
+        }
+    }
+    Some(peak)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
