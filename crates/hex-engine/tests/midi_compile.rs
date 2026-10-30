@@ -1262,7 +1262,7 @@ fn pause_and_resume_of_a_sounding_note_is_partition_invariant() {
     let project = compile::project(editor.project(), &BTreeMap::new()).unwrap();
     let run = |block: usize| {
         let mut playback = Playback::new(project.clone());
-        let mut render = |playback: &mut Playback, frames: usize| {
+        let render = |playback: &mut Playback, frames: usize| {
             let mut output = vec![[9.0; 2]; frames];
             for chunk in output.chunks_mut(block) {
                 playback.render(chunk).unwrap();
