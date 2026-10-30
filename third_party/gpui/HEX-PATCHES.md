@@ -16,7 +16,7 @@ AppKit access stays inside GPUI's existing native boundary.
 This is an excluded external dependency, not a Hex workspace crate. Hex crates
 retain unsafe_code=forbid. Do not edit the machine's registry cache, add app FFI,
 or grow this patch beyond the documented input, cursor, titlebar, test-support,
-explicit grid-literal and bounded accessibility decisions.
+explicit grid-literal, bounded accessibility and text decoration storage decisions.
 view-cache epoch, scene replay and explicit grid-literal decisions.
 See scripts/check-gpui-patch.py and run python3 scripts/check-gpui-patch.py from the Hex
 workspace.
@@ -380,3 +380,14 @@ Test support may install an application's asset source and inspect completed
 monochrome sprite geometry. This is for deterministic SVG consumer tests; it
 does not change the native asset cache, create an OS window, or establish
 native framebuffer appearance.
+
+30 October text decoration storage: `ShapedLine`, `WrappedLine` and the two
+`WindowTextSystem` shaping accumulators keep up to four `DecorationRun`s inline
+instead of thirty-two, and spill beyond that to the existing dynamic storage. No
+span, text-length or project limit is added; run order, styles, glyph shaping,
+wrapping and painting are unchanged. Ordinary labels carry one to three runs, so
+each shaped line copies and caches far less inline storage. Only
+`src/text_system.rs` and `src/text_system/line.rs` change; provenance hashes and
+the cumulative patch were regenerated from the verified published 0.2.2 archive.
+Hex's `text_decoration_runs` regression shapes and paints 1/4/5/32/33/80-run
+mixed-UTF-8 lines across both inline boundaries.
