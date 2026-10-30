@@ -161,9 +161,10 @@ selected clips, a time selection, or the selected main sections. pressing again
 with the same bounds toggles looping off or on, retaining the range. with no
 selection, these keys toggle the existing loop. **command+l** toggles the active
 transport loop without changing its bounds. when starting playback with space,
-an enabled loop provides its beginning as the play-start position, even when the
-edit cursor or time selection is outside it. disabling the loop restores the
-normal time-selection and edit-cursor start behavior.
+playback starts at the time-selection start or the edit cursor, even when an
+enabled loop lies elsewhere: starting before the loop plays into it and then
+repeats it, and starting after its end plays on without looping. only when there
+is no selection or edit cursor does an enabled loop supply its beginning.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 setting new loop bounds from selected main sections also turns on section focus
