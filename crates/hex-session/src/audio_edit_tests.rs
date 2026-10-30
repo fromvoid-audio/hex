@@ -632,6 +632,11 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
         [(0.25, 0.25), (-0.5, -0.5)]
     );
     assert_eq!(views[&group].length, 10_000);
+    // The looped clip still exposes outer-clip peaks, built from the shared
+    // root rather than a materialized repeat, and distinct from its root preview.
+    assert_eq!(views[&group].offset, 0);
+    assert_eq!(views[&group].waveform.source_frames, 10_000);
+    assert!(!Arc::ptr_eq(&views[&group].waveform, &root.waveform));
     drop(views);
     let mut renderer = hex_engine::Renderer::new(cropped.arrangement());
     renderer.play();

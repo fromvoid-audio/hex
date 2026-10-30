@@ -2199,12 +2199,22 @@ pub(crate) struct InstrumentTrack {
 
 /// Immutable control-side root/crop view for worker waveform preparation.
 /// Audio retains the same PCM reservation as playback; never build summaries in render.
+/// Without `repeat`, the clip plays `audio[offset..offset + length)` once. With it,
+/// the clip's `length` frames loop `audio[offset..offset + period)` from `phase`.
 #[derive(Debug, Clone)]
 pub struct PreparedAudioClipView {
     pub clip: hex_project::ClipId,
     pub audio: Audio,
     pub offset: u64,
     pub length: u64,
+    pub repeat: Option<PreparedAudioRepeat>,
+}
+
+/// Loop geometry of a prepared clip that plays a shared root instead of outer PCM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreparedAudioRepeat {
+    pub period: u64,
+    pub phase: u64,
 }
 
 #[derive(Debug, Clone)]
