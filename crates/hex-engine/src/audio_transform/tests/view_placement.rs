@@ -195,13 +195,75 @@ fn row_start(editor: &Editor, clip: hex_project::ClipId) -> u64 {
     editor.project().clip(clip).unwrap().start()
 }
 
+/// Section duplication splits a song-long repeat at the section edge and copies
+/// the pieces. Each piece used to flatten its own outer buffer while the old
+/// revision still held its own, exhausting the resident frame budget.
 #[test]
-fn placement_cache_keys_phase_and_retains_audible_outer_pcm_after_root_eviction() {
+fn split_and_copied_frame_repeat_pieces_share_one_root_without_outer_pcm() {
+    let (mut editor, clip, media) = placed(AudioViewMode::Repeat, 500);
+    let context = isolated(1024 * 1024, 512 * 1024, 16);
+    let canonical = editor.project().clip(clip).unwrap().clone();
+    let (start, length) = (canonical.start(), canonical.duration());
+    let unsplit = prepare(&editor, &media, &context);
+    let expected = render(&unsplit, start, length as usize, 127);
+    let root = unsplit.arrangement().audio_clip_views()[0].audio.clone();
+    let retained = context.retained_pcm_bytes();
+    assert_eq!(retained, std::mem::size_of_val(root.frames()));
+    let split_at = 3_137;
+    let Created::Clip(tail) = editor
+        .execute(Command::SplitClip {
+            clip,
+            frame: start + split_at,
+        })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    let track = editor.project().tracks()[0].id();
+    let tail_length = length - split_at;
+    let copies = 64;
+    for copy in 0..copies {
+        let clipboard = Arc::new(editor.project().capture_clips(&[tail]).unwrap());
+        editor
+            .execute(Command::PasteClips {
+                clipboard,
+                track,
+                frame: start + length + copy * tail_length,
+                insert: false,
+            })
+            .unwrap();
+    }
+    let copied = prepare(&editor, &media, &context);
+    let views = copied.arrangement().audio_clip_views();
+    assert_eq!(views.len(), 2 + copies as usize);
+    assert!(views.iter().all(|view| view.audio.shares_pcm_with(&root)));
+    assert_eq!(context.retained_pcm_bytes(), retained);
+    for block in [1, 127, 509] {
+        assert_eq!(render(&copied, start, length as usize, block), expected);
+    }
+    for copy in [0, 1, copies - 1] {
+        assert_eq!(
+            render(
+                &copied,
+                start + length + copy * tail_length,
+                tail_length as usize,
+                61
+            ),
+            expected[split_at as usize..],
+            "copy {copy}"
+        );
+    }
+}
+
+#[test]
+fn repeat_phase_shares_one_root_and_retains_audible_pcm_after_cache_eviction() {
     let (editor, _, media) = placed(AudioViewMode::Repeat, 500);
     let context = isolated(200_000, 64_000, 1);
     let budget = Arc::clone(&context.budget);
     let first = prepare(&editor, &media, &context);
     let original = render(&first, 0, 5_200, 127);
+    let root = first.arrangement().audio_clip_views()[0].audio.clone();
+    let root_bytes = std::mem::size_of_val(root.frames());
     let mut snapshot = editor.project().snapshot();
     snapshot.tracks[0].audio_clips_mut().unwrap()[0]
         .edit
@@ -213,17 +275,21 @@ fn placement_cache_keys_phase_and_retains_audible_outer_pcm_after_root_eviction(
         .cycle_phase = 750;
     let changed = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
     let second = prepare(&changed, &media, &context);
-    assert!(
-        !first.arrangement().audio_clip_views()[0]
-            .audio
-            .shares_pcm_with(&second.arrangement().audio_clip_views()[0].audio)
+    let (a, b) = (
+        &first.arrangement().audio_clip_views()[0],
+        &second.arrangement().audio_clip_views()[0],
     );
+    // Phase is loop geometry over the same processing root, not another buffer.
+    assert!(a.audio.shares_pcm_with(&b.audio));
+    assert_eq!((a.offset, a.repeat.unwrap().period), (1_000, 2_000));
+    assert_ne!(a.repeat.unwrap().phase, b.repeat.unwrap().phase);
     assert_ne!(render(&second, 0, 5_200, 257), original);
     assert_eq!(render(&first, 0, 5_200, 31), original);
-    assert_eq!(context.cached_pcm_bytes().unwrap(), 5_200 * 8);
-    assert_eq!(budget.used(), 2 * 5_200 * 8);
+    assert_eq!(budget.used(), root_bytes);
+    drop(root);
     drop(first);
-    assert_eq!(budget.used(), 5_200 * 8);
+    // The audible revision, not the evictable cache, keeps its root alive.
+    assert_eq!(budget.used(), root_bytes);
     drop(second);
     drop(context);
     assert_eq!(budget.used(), 0);
