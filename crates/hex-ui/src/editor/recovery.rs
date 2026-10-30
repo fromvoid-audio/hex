@@ -9,7 +9,6 @@ mod tests;
 
 impl EditorView {
     pub(super) fn recover_audio(&mut self) {
-        self.invalidate_prepared_seek();
         if self.close_prompt_open
             || self.opening_project
             || self.save_dialog_open
@@ -22,7 +21,16 @@ impl EditorView {
             self.error = Some("project is still loading".into());
             return;
         };
-        let position = self.cursor_position();
+        if self.seek_pending() && self.recovery.generation().is_none() {
+            self.error =
+                Some("seek pending · wait for audio or press stop before restarting".into());
+            return;
+        }
+        self.invalidate_prepared_seek();
+        let position = self.recovery.position().unwrap_or_else(|| {
+            self.audio_status()
+                .map_or(self.offline_cursor, |status| status.recovery_position())
+        });
         let generation = match self.recovery.begin(position) {
             Ok(generation) => generation,
             Err(message) => {
@@ -30,13 +38,10 @@ impl EditorView {
                 return;
             }
         };
-        self.gain_recorder.discard();
         self.offline_cursor = position;
-        if let Some(audio) = self.audio.take() {
-            let mut audio = audio;
-            audio.control.stop();
-            audio.control.close();
-            drop(audio);
+        if !self.retire_audio_preserving_gain_take() {
+            self.recovery.fail();
+            return;
         }
         self.clear_audio_accounting();
         if self.restart_audio_for_current_document() {
@@ -55,6 +60,16 @@ impl EditorView {
     pub(super) fn finish_audio_recovery_tick(&mut self) -> bool {
         if self.recovery.generation().is_none() {
             return false;
+        }
+        let reliable = self
+            .audio
+            .as_ref()
+            .is_some_and(|audio| audio.control.has_action_outcomes());
+        if reliable && self.recovery.seek_failed() {
+            self.fail_audio_recovery(
+                "recovered cursor request was not applied · retry available".into(),
+            );
+            return true;
         }
         let graph_is_current = self
             .state
@@ -142,6 +157,9 @@ impl EditorView {
                 position,
                 playing,
             )
+        } else if reliable {
+            self.recovery
+                .complete_exact(graph_is_current, position, playing)
         } else {
             self.recovery.complete(
                 graph_is_current,
@@ -167,12 +185,7 @@ impl EditorView {
     pub(super) fn fail_audio_recovery(&mut self, error: String) {
         self.offline_cursor = self.cursor_position();
         self.recovery.fail();
-        if let Some(audio) = self.audio.take() {
-            let mut audio = audio;
-            audio.control.stop();
-            audio.control.close();
-            drop(audio);
-        }
+        self.retire_audio_preserving_gain_take();
         self.pending_recovery_generation = None;
         self.pending_restart_request = None;
         self.clear_audio_accounting();

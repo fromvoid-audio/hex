@@ -28,6 +28,12 @@ and 4000 characters from the last 64 KiB of the log. Earlier or unrecognized
 diagnostics remain in the complete log; unreadable logs have a controlled fallback.
 Console text removes terminal controls and redacts known sensitive environment
 values and credential-like assignments/options; retained logs and argv stay intact.
+
+If report publication fails, stderr identifies the failed write/publication phase
+and retains the actual command result and raw log path when work already ran.
+The last summary may remain incomplete; even successful commands cannot qualify
+without the report. Keep those original bytes and logs, restore storage, and run
+fresh checks. A publication failure does not authorize checkpoint continuation.
 Commands over 2000 characters are explicitly truncated and refer to the summary.
 
 The printed rerun is diagnostic only and partial, even when its original step was
@@ -111,6 +117,42 @@ Explicit native acceptance inputs (any nonempty `HEX_VST3_*`, including partial
 SDK/fixture/receipt setup, or `HEX_TEST_SIGNING_IDENTITY`) keep comprehensive
 Python discovery for app-only merges too. Native suites retain their own opt-in
 requirements; a skipped fixture is not native acceptance.
+
+## macOS target storage
+
+Use a persistent Cargo target on APFS. Set `CARGO_TARGET_DIR` to a fresh directory
+on that volume before the normal local-CI command. For an existing populated
+target, retain the ordinary ownership checks; do not adopt or delete another
+executor's cache merely to bypass a refusal.
+
+The dev and release guards identify the nearest existing target ancestor's local
+device with `df -P`, then read `diskutil info -plist`. Each subprocess has a
+five-second timeout. Missing, failed or malformed macOS volume metadata refuses
+preparation before cleanup or owner publication. macOS ExFAT targets refuse
+explicitly: observed AppleDouble cleanup failures and test-executable launch
+stalls make that storage unsuitable for these checks. The launch-stall cause
+is unproven; the guard does not change OS security or relocate executables.
+Other platforms retain their existing storage behavior without a new filesystem
+qualification claim.
+
+If a test executable stalls before the harness starts on an APFS target, try a
+separate fresh APFS target outside the existing target directory, for example:
+
+```sh
+export CARGO_TARGET_DIR="$PWD/artifacts/cargo-ci-target"
+```
+
+Keep that target for the same executor and run the normal checks again. Preserve
+the previous target and failed report; changing the location is not evidence that
+every test meets its time limit. Measure test setup and execution, including any
+copying or other setup, and investigate any remaining slow test separately.
+
+The summary records the identified filesystem, probe duration and dev cleanup
+duration (including failed cleanup). A target
+preparation failure names that phase and the next unstarted stage; a failed
+cleanup links `target-handoff-clean.log`. It does not blame the preceding passing
+format or test stage. Preserve the failed report and original target contents,
+choose an APFS target, and rerun with normal provenance and deadlines.
 
 ## Continue after a disk refusal
 
@@ -249,6 +291,75 @@ cargo test -p hex-audio --features allocation-probe --locked
 cargo test -p hex-stream --features allocation-probe --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
+
+For the focused Limiter stage-clock allocation check, a smaller test binary
+can reduce cold-start time while retaining debug assertions and the same test
+coverage. This opt-in command optimizes only `hex-engine`; it does not change
+the workspace's default test profile or the application build:
+
+```sh
+CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_TEST_STRIP=symbols \
+  cargo --config 'profile.test.package.hex-engine.opt-level=1' test \
+  -p hex-audio --locked --features allocation-probe --test callback_stage_clocks \
+  stage_clocks::limiter_output_gain_uses_delayed_content_clock_without_callback_allocations \
+  -- --exact
+```
+
+Measure the selected check's wall time, including test-process startup, and
+report compilation separately. This targeted profile is not a substitute for
+the other affected owner and consumer checks, or for an unoptimized debugging
+run when one is needed.
+
+For a focused streamed-readiness or ordinary audio publication regression whose
+library test startup exceeds the unit limit, an optimized test harness can retain
+debug assertions and overflow checks:
+
+```sh
+mkdir -p artifacts
+CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true \
+  CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+  CARGO_PROFILE_RELEASE_STRIP=symbols cargo \
+  --config 'profile.release.package.hex-engine.opt-level="z"' \
+  --config 'profile.release.package.hex-stream.opt-level="z"' \
+  --config 'profile.release.package.hex-audio.opt-level="z"' \
+  --config 'profile.release.package.allocation-counter.opt-level=0' \
+  test -p hex-audio --features allocation-probe --lib --release --locked \
+  --no-run --message-format=json > artifacts/audio-test-build.jsonl
+```
+
+For the stream owner, use `-p hex-stream --features allocation-probe` with the
+same profile settings. The Cargo JSON `compiler-artifact` with target `hex_audio`
+or `hex_stream` and `profile.test` true identifies the executable. Invoke it
+with the full test name and `--exact`;
+confirm exactly one test ran and include process launch in the timing. Use the
+corresponding `--test` target for separately linked consumer and calibration
+checks. Do not set global `RUSTFLAGS` for symbol stripping: the PCM constructor
+layout gate deliberately rejects that unsupported compiler configuration. The
+profile does not guarantee every launch meets the limit or replace the other
+affected owner, consumer, and configuration checks.
+
+For allocator-probe sensitivity checks, the original two tests can also be
+compiled as an optimized, separately linked executable while retaining the
+test target's debug assertions and overflow checks. The pinned counter is
+compiled with the same opt-level, debug-assertion and overflow settings as the
+ordinary debug test profile:
+
+```sh
+mkdir -p artifacts
+cargo --config 'profile.release.package.allocation-counter.opt-level=0' \
+  --config 'profile.release.package.allocation-counter.debug-assertions=true' \
+  --config 'profile.release.package.allocation-counter.overflow-checks=true' \
+  rustc -p hex-audio --features allocation-probe \
+  --test allocation_probe_calibration --release --locked --message-format=json \
+  -- -C debug-assertions=yes -C overflow-checks=yes -C strip=symbols \
+  > artifacts/allocation-calibration-build.jsonl
+```
+
+Use the JSON test artifact's `executable` path to run each calibration test
+with its full name and `--exact`. Include process startup in each wall time;
+report compilation separately. The normal test target and discovery remain
+unchanged. This is an optional measurement profile, not proof that every cold
+launch fits the limit or that the affected audio/stream tests are covered.
 
 Focused tests can form part of a reviewed change-based merge check set when its
 affected contracts, consumers and configurations are covered; an isolated passing

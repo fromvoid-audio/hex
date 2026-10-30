@@ -1,11 +1,14 @@
-//! GPUI-independent MIDI draw stroke admission and coordinate mapping.
+//! Control-side MIDI draw stroke admission and coordinate mapping.
+//! Pure resolution and accepted display custody retain their existing owners.
 use super::{EditorView, midi_drag};
 use super::{midi_stroke, midi_stroke::StrokeContext};
-use gpui::Window;
+use gpui::{Context, Window};
+
+#[path = "midi_draw_pointer.rs"]
+mod pointer;
 #[cfg(test)]
 use hex_project::BeatTime;
 use hex_project::{ClipId, MidiNote, NoteId};
-use hex_session::service::Request;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -31,6 +34,7 @@ impl EditorView {
         hit: Option<NoteId>,
         modifiers: StrokeModifiers,
         window: &mut Window,
+        cx: &Context<Self>,
     ) -> bool {
         let Some(context) = self.current_stroke_context(rendered.bounds, modifiers) else {
             return false;
@@ -38,6 +42,7 @@ impl EditorView {
         if !same_rendered_frame(context, rendered)
             || !self.midi_draw_mode
             || self.edit_pending()
+            || self.midi_stroke.is_some()
             || self.project_generation != rendered.generation
         {
             return false;
@@ -77,6 +82,9 @@ impl EditorView {
             hit,
         ) {
             Ok(stroke) => {
+                if !self.capture_midi_draw_pointer(&stroke, window, cx) {
+                    return false;
+                }
                 self.midi_note_gesture = None;
                 self.midi_group_gesture = None;
                 self.cancel_all_midi_marquees();
@@ -149,9 +157,16 @@ impl EditorView {
             stroke.cancel();
             return true;
         }
+        // finish retires the working stroke and clears its own preview. Keep
+        // the final shared geometry before that, then transfer only on admission.
+        let preview = stroke.shared_preview();
         match stroke.finish(context, pending) {
             Ok(Some(command)) => {
-                self.enqueue(Request::Edit(command));
+                self.submit_midi_drag_preview(
+                    context.clip,
+                    super::midi_pending_drag::Frozen::Stroke(preview),
+                    command,
+                );
             }
             Ok(None) => {}
             Err(error) => self.error = Some(stroke_error(error).into()),
@@ -389,6 +404,7 @@ mod tests {
         let mut insert = Vec::new();
         for pitch in [60, 61, 62] {
             insert.push(hex_project::MidiNoteInsert {
+                active: true,
                 start: BeatTime::from_quarters(pitch as u64 - 60).unwrap(),
                 duration: BeatTime::ONE,
                 pitch,

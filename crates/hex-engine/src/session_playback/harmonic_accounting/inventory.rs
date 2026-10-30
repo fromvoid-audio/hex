@@ -116,6 +116,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         track.instrument_position = Some(48);
         for slot in 0..64 {
             track.devices.push(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: next,
                 state: if index >= shape.tracks - shape.effect_tracks && slot == 63 {
@@ -147,6 +148,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
                     loop_end_raw: 8 << 32,
                     looping: false,
                     notes: vec![hex_project::MidiNoteSnapshot {
+                        active: true,
                         id: next + 1,
                         start_raw: 0,
                         duration_raw: 8 << 32,
@@ -166,6 +168,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         let mut devices = Vec::new();
         for slot in 0..64 {
             devices.push(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: next,
                 state: if index < shape.returns && slot == 63 {
@@ -285,10 +288,19 @@ pub(super) fn ownership(runtime: &SessionPlayback, proposed: bool) -> Ownership 
         base = base
             .checked_sub(owner.accounted_storage_bytes().unwrap())
             .unwrap();
-        let ledgers = owner.ledger_capacity_bytes().unwrap();
+        let source_live_bytes = if owner.is_source_owner() {
+            MutableInstrumentTrackRuntime::source_live_storage_upper_bound()
+        } else {
+            0
+        };
+        let ledgers = owner
+            .ledger_capacity_bytes()
+            .unwrap()
+            .checked_add(source_live_bytes)
+            .unwrap();
         assert_eq!(
             ledgers,
-            128 * size_of::<crate::mutable_instrument::MutableOccurrence>()
+            128 * size_of::<crate::mutable_instrument::MutableOccurrence>() + source_live_bytes
         );
         OwnerCharge {
             header: if proposed {

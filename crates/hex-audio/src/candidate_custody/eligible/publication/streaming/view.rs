@@ -19,6 +19,28 @@ pub(super) struct StateView<'a> {
 pub(crate) struct ActiveView<'a> {
     pub(super) state: StateView<'a>,
 }
+impl ActiveView<'_> {
+    pub(crate) fn capacity_conflict(&self) -> bool {
+        self.state
+            .streaming
+            .as_ref()
+            .is_some_and(|workspace| workspace.capacity_conflict)
+    }
+    /// A current render window has reserved readiness but has not committed.
+    pub(crate) fn has_pending_render_window(&self) -> bool {
+        self.state.streaming.as_ref().is_some_and(|workspace| {
+            workspace.pending_action.is_none()
+                && workspace.role == Some(ProtectionRole::Transition)
+                && workspace.stamps.iter().any(Option::is_some)
+        })
+    }
+    pub(crate) fn cancel_pending_render_window(
+        &mut self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+    ) {
+        self.state.cancel_stream_pending(domains);
+    }
+}
 impl State {
     fn stream_view(&mut self) -> StateView<'_> {
         StateView {

@@ -65,18 +65,53 @@ pub(super) fn session_editor_has_focus(mode: EditorMode, piano_focused: bool) ->
     arrow_target(mode, piano_focused) == ArrowTarget::Session
 }
 
+#[cfg(test)]
 pub(super) fn resolve_navigation(
     project: &Project,
     selected_cell: Option<(TrackId, SceneId)>,
     selected_scene: Option<SceneId>,
     direction: Direction,
 ) -> Option<Selection> {
+    let indices: Vec<usize> = (0..project.tracks().len()).collect();
+    resolve_visible_navigation(project, &indices, selected_cell, selected_scene, direction)
+}
+
+/// Navigation uses the same canonical-index projection as painted columns.
+pub(super) fn resolve_visible_navigation(
+    project: &Project,
+    indices: &[usize],
+    selected_cell: Option<(TrackId, SceneId)>,
+    selected_scene: Option<SceneId>,
+    direction: Direction,
+) -> Option<Selection> {
     let tracks = project.tracks();
+    let visible_track =
+        |position: usize| indices.get(position).and_then(|index| tracks.get(*index));
     let scenes = project.scenes();
     if let Some((track, scene)) = selected_cell {
-        let track_index = tracks.iter().position(|item| item.id() == track)?;
         let scene_index = scenes.iter().position(|item| item.id() == scene)?;
-        if direction == Direction::Right && track_index + 1 == tracks.len() {
+        let Some(track_index) = indices
+            .iter()
+            .position(|index| tracks.get(*index).is_some_and(|item| item.id() == track))
+        else {
+            let canonical = project
+                .tracks()
+                .iter()
+                .position(|item| item.id() == track)?;
+            let next = indices.partition_point(|index| *index < canonical);
+            return match direction {
+                Direction::Right if next >= indices.len() => Some(Selection::Scene(scene)),
+                Direction::Right => Some(Selection::Cell {
+                    track: visible_track(next)?.id(),
+                    scene,
+                }),
+                Direction::Left | Direction::Up | Direction::Down => Some(Selection::Cell {
+                    track: visible_track(next.saturating_sub(1))?.id(),
+                    scene,
+                }),
+            };
+        };
+        if direction == Direction::Right && track_index + 1 == indices.len() {
             return Some(Selection::Scene(scene));
         }
         let next_track = match direction {
@@ -92,7 +127,7 @@ pub(super) fn resolve_navigation(
             Direction::Left | Direction::Right => scene_index,
         };
         return Some(Selection::Cell {
-            track: tracks.get(next_track)?.id(),
+            track: visible_track(next_track)?.id(),
             scene: scenes.get(next_scene)?.id(),
         });
     }
@@ -111,18 +146,18 @@ pub(super) fn resolve_navigation(
                     )?
                     .id(),
             )),
-            Direction::Left if !tracks.is_empty() => Some(Selection::Cell {
-                track: tracks.last()?.id(),
+            Direction::Left if !indices.is_empty() => Some(Selection::Cell {
+                track: tracks.get(*indices.last()?)?.id(),
                 scene,
             }),
             Direction::Left | Direction::Right => Some(Selection::Scene(scene)),
         };
     }
-    if tracks.is_empty() {
+    if indices.is_empty() {
         return Some(Selection::Scene(scenes.first()?.id()));
     }
     Some(Selection::Cell {
-        track: tracks.first()?.id(),
+        track: visible_track(0)?.id(),
         scene: scenes.first()?.id(),
     })
 }

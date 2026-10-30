@@ -79,6 +79,8 @@ mod tests {
             events: [(1, 0, 20), (2, 30, 40), (3, 60, 100)]
                 .into_iter()
                 .map(|(id, start, end)| AudioEvent {
+                    active: true,
+                    gain: hex_project::ClipGain::UNITY,
                     source: 0,
                     id,
                     start,

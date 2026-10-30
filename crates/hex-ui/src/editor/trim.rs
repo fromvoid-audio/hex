@@ -696,12 +696,14 @@ pub(super) fn handle_width(clip_width: f32) -> f32 {
     .handle_width(clip_width)
 }
 
-pub(super) fn rendered_clip_width(lane_width: f32, width_fraction: f64, minimum: f32) -> f32 {
+/// The painted interval and its hit geometry retain canonical endpoints even
+/// below handle size; narrow clips yield their edge handles to the move body.
+pub(super) fn rendered_clip_width(lane_width: f32, width_fraction: f64) -> f32 {
     let width = lane_width * width_fraction as f32;
-    if !width.is_finite() || width <= 0.0 || !minimum.is_finite() || minimum <= 0.0 {
+    if !width.is_finite() || width <= 0.0 || lane_width <= 0.0 || width_fraction <= 0.0 {
         return 0.0;
     }
-    width.max(minimum)
+    width
 }
 
 fn pointer_in_lane_x(x: f32, lane: LaneBounds) -> bool {
@@ -877,6 +879,7 @@ impl EditorView {
         visible_end: u64,
         clip_width: f32,
         viewport: Viewport,
+        scale: f32,
         cx: &mut Context<Self>,
     ) -> Vec<Stateful<Div>> {
         if !drag_admitted(self) || handle_width(clip_width) <= 0.0 {
@@ -892,21 +895,21 @@ impl EditorView {
         let payload =
             self.audio_trim_payload(state, track, clip, lane, viewport, asset.playback_frames());
         if visible_start == clip.start() {
-            handles.push(self.trim_handle(state, payload.clone(), clip_width, None, cx));
+            handles.push(self.trim_handle(state, payload.clone(), clip_width, None, scale, cx));
         }
         if let Some(end) = clip.start().checked_add(clip.duration())
             && visible_end == end
         {
             let mut right = payload.clone();
             right.edge = TrimEdge::Right;
-            handles.push(self.trim_handle(state, right, clip_width, None, cx));
+            handles.push(self.trim_handle(state, right, clip_width, None, scale, cx));
         }
         if let Some(controls) = loop_handles::audio_controls(clip, &state.project, lane, viewport) {
             for control in controls.handles.into_iter().flatten() {
                 let mut drag = payload.clone();
                 drag.edge = TrimEdge::Right;
                 drag.loop_kind = Some(control.kind);
-                handles.push(self.trim_handle(state, drag, clip_width, Some(control), cx));
+                handles.push(self.trim_handle(state, drag, clip_width, Some(control), scale, cx));
             }
         }
         handles
@@ -924,6 +927,7 @@ impl EditorView {
         visible_end: u64,
         clip_width: f32,
         viewport: Viewport,
+        scale: f32,
         cx: &mut Context<Self>,
     ) -> Vec<Stateful<Div>> {
         if !drag_admitted(self) || handle_width(clip_width) <= 0.0 {
@@ -963,6 +967,7 @@ impl EditorView {
                 lane,
                 viewport,
                 None,
+                scale,
                 cx,
             ));
         }
@@ -977,6 +982,7 @@ impl EditorView {
                 lane,
                 viewport,
                 None,
+                scale,
                 cx,
             ));
         }
@@ -993,6 +999,7 @@ impl EditorView {
                     lane,
                     viewport,
                     Some(control),
+                    scale,
                     cx,
                 ));
             }
@@ -1010,6 +1017,7 @@ impl EditorView {
         lane: LaneBounds,
         viewport: Viewport,
         control: Option<loop_handles::LoopControl>,
+        scale: f32,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let clip_id = payload.clip.id();
@@ -1029,7 +1037,7 @@ impl EditorView {
                 TrimEdge::Right => ("midi-trim-right", "midi-clip-trim-right"),
             },
         };
-        loop_handles::base(edge, clip_width, control)
+        loop_handles::base(edge, clip_width, control, scale)
             .id((element_prefix, clip_id.value()))
             .debug_selector(move || format!("{debug_prefix}-{}", clip_id.value()))
             .map(|surface| loop_handles::decorate(surface, control))
@@ -1127,6 +1135,7 @@ impl EditorView {
         payload: TrimDrag,
         clip_width: f32,
         control: Option<loop_handles::LoopControl>,
+        scale: f32,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let clip_id = payload.clip.id();
@@ -1149,7 +1158,7 @@ impl EditorView {
                 TrimEdge::Right => ("trim-right", "clip-trim-right"),
             },
         };
-        loop_handles::base(edge, clip_width, control)
+        loop_handles::base(edge, clip_width, control, scale)
             .id((element_prefix, clip_id.value()))
             .debug_selector(move || format!("{debug_prefix}-{}", clip_id.value()))
             .map(|surface| loop_handles::decorate(surface, control))
@@ -1983,12 +1992,11 @@ mod tests {
             // Full-height edges must leave the central body available for moves.
             assert!(clip_width - left - right >= 1.0);
         }
-        let narrow_audio = rendered_clip_width(720.0, 0.0005, 3.0);
-        let narrow_midi = rendered_clip_width(720.0, 0.0005, 4.0);
-        assert_eq!(narrow_audio, 3.0);
-        assert_eq!(handle_width(narrow_audio), 1.0);
-        assert_eq!(narrow_midi, 4.0);
-        assert_eq!(handle_width(narrow_midi), 1.5);
+        let narrow = rendered_clip_width(720.0, 0.0005);
+        assert_eq!(narrow, 0.36);
+        assert_eq!(handle_width(narrow), 0.0);
+        assert_eq!(rendered_clip_width(f32::NAN, 1.0), 0.0);
+        assert_eq!(rendered_clip_width(720.0, f64::INFINITY), 0.0);
         assert_eq!(handle_width(f32::NAN), 0.0);
         assert_eq!(handle_width(0.0), 0.0);
     }

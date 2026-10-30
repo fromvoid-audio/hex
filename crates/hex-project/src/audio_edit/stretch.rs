@@ -176,7 +176,7 @@ pub fn preview_audio_clip_stretch(
     super::project_clip(&mut result, tempo)?;
     result
         .audio_edit()
-        .unwrap()
+        .ok_or(Invalid("stretch edit missing after projection"))?
         .validate(&result, tempo, asset_frames)?;
     Ok(result)
 }

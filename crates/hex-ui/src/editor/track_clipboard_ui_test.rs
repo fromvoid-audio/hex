@@ -1,7 +1,7 @@
 //! Real header shortcuts/menu routing and exact delayed ordinary completion.
 use super::{
     EditorView,
-    track_reorder_ui_test::{bounds, live_tracks, receive},
+    track_reorder_ui_test::{bounds, live_tracks, live_tracks_with_notes, receive},
 };
 use gpui::{Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use hex_project::TrackId;
@@ -18,9 +18,280 @@ fn select(v: &mut VisualTestContext, id: TrackId, toggle: bool) {
 fn snapshot(v: &VisualTestContext, e: &Entity<EditorView>) -> hex_project::Snapshot {
     e.read_with(v, |e, _| e.state.as_ref().unwrap().project.snapshot())
 }
+
+fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
+    let (mut visual, editor, ids) = live_tracks(cx, 2, false);
+    select(&mut visual, ids[0], false);
+    select(&mut visual, ids[1], true);
+    editor.update(&mut visual, |view, cx| {
+        view.mode = mode;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let prefix = if mode == super::EditorMode::Arrangement {
+        "arrangement-track-header"
+    } else {
+        "session-track"
+    };
+    let right_click = |visual: &mut VisualTestContext, id: TrackId| {
+        let selector = Box::leak(format!("{prefix}-{}", id.value()).into_boxed_str());
+        let point = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_mouse_down(point, MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(point, MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+    };
+    let choose = |visual: &mut VisualTestContext, label: &str| {
+        let index = editor.read_with(visual, |view, _| {
+            view.context_menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .position(|item| item.label == label)
+                .unwrap()
+        });
+        for _ in 0..index {
+            visual.simulate_keystrokes("down");
+        }
+        visual.simulate_keystrokes("enter");
+        receive(visual, &editor);
+    };
+    right_click(&mut visual, ids[0]);
+    choose(&mut visual, "group tracks");
+    let group = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let group = project
+            .tracks()
+            .iter()
+            .find(|track| track.is_group())
+            .unwrap();
+        for id in &ids {
+            assert_eq!(project.track(*id).unwrap().parent_group(), Some(group.id()));
+        }
+        group.id()
+    });
+    let selector = Box::leak(format!("group-track-marker-{}", group.value()).into_boxed_str());
+    assert!(visual.debug_bounds(selector).is_some());
+    for id in &ids {
+        let selector = Box::leak(format!("track-hierarchy-indent-{}", id.value()).into_boxed_str());
+        assert_eq!(
+            f32::from(visual.debug_bounds(selector).unwrap().size.width),
+            4.0
+        );
+    }
+    if mode == super::EditorMode::Arrangement {
+        let fold = Box::leak(format!("group-fold-{}", group.value()).into_boxed_str());
+        let click_fold = |visual: &mut VisualTestContext| {
+            let point = visual.debug_bounds(fold).unwrap().center();
+            visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+        };
+        let before = snapshot(&visual, &editor);
+        let selected = editor.read_with(&visual, |view, _| view.selected_track_ids());
+        click_fold(&mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_track_ids(), selected);
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+            assert!(view.arrangement_track_visible(group));
+            assert!(ids.iter().all(|id| !view.arrangement_track_visible(*id)));
+            assert_eq!(
+                view.focused_neighbor_track(true).map(|(_, track, _)| track),
+                Some(group)
+            );
+        });
+        for id in &ids {
+            let selector =
+                Box::leak(format!("arrangement-track-header-{}", id.value()).into_boxed_str());
+            assert!(visual.debug_bounds(selector).is_none());
+        }
+        click_fold(&mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert!(ids.iter().all(|id| view.arrangement_track_visible(*id)));
+            assert_eq!(view.selected_track_ids(), selected);
+        });
+    }
+    if mode == super::EditorMode::Session {
+        let fold = Box::leak(format!("console-group-fold-{}", group.value()).into_boxed_str());
+        let click_fold = |visual: &mut VisualTestContext| {
+            let point = visual.debug_bounds(fold).unwrap().center();
+            visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+        };
+        let before = snapshot(&visual, &editor);
+        let selected = editor.read_with(&visual, |view, _| view.selected_track_ids());
+        click_fold(&mut visual);
+        for id in &ids {
+            let selector = Box::leak(format!("session-track-{}", id.value()).into_boxed_str());
+            assert!(visual.debug_bounds(selector).is_none());
+        }
+        editor.update(&mut visual, |view, cx| {
+            view.set_mode(super::EditorMode::Arrangement);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert!(ids.iter().all(|id| !view.arrangement_track_visible(*id)));
+            assert_eq!(view.selected_track_ids(), selected);
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        editor.update(&mut visual, |view, cx| {
+            view.set_mode(super::EditorMode::Session);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        click_fold(&mut visual);
+        for id in &ids {
+            let selector = Box::leak(format!("session-track-{}", id.value()).into_boxed_str());
+            assert!(visual.debug_bounds(selector).is_some());
+        }
+    }
+    right_click(&mut visual, group);
+    choose(&mut visual, "ungroup tracks");
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert!(project.track(group).is_none());
+        for id in &ids {
+            assert_eq!(project.track(*id).unwrap().parent_group(), None);
+        }
+    });
+    for id in &ids {
+        let selector = Box::leak(format!("track-hierarchy-indent-{}", id.value()).into_boxed_str());
+        assert!(visual.debug_bounds(selector).is_none());
+    }
+    visual.simulate_keystrokes("cmd-z");
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(group)
+                .unwrap()
+                .is_group()
+        )
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.state.as_ref().unwrap().project.track(group).is_none())
+    });
+}
+
 #[gpui::test]
-fn track_clipboard_header_duplicate_cut_copy_paste_and_setup_only_menu(cx: &mut TestAppContext) {
-    let (mut v, e, ids) = live_tracks(cx, 3, true);
+fn group_track_header_menu_arrangement(cx: &mut TestAppContext) {
+    group_track_header_menu(cx, super::EditorMode::Arrangement);
+}
+
+#[gpui::test]
+fn group_track_header_menu_session(cx: &mut TestAppContext) {
+    group_track_header_menu(cx, super::EditorMode::Session);
+}
+
+#[gpui::test]
+fn console_fold_hides_cells_navigation_and_invalidates_column_frame(cx: &mut TestAppContext) {
+    use hex_project::{Command, TrackSelectionIds};
+    use hex_session::service::Request;
+    let (mut visual, editor, ids) = live_tracks(cx, 8, false);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::GroupTracks {
+            tracks: TrackSelectionIds::new(&ids[..2]).unwrap(),
+            name: "group".into(),
+        })));
+    });
+    receive(&mut visual, &editor);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddScene {
+            name: "scene".into()
+        })))
+    });
+    receive(&mut visual, &editor);
+    let (group, scene) = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        (
+            project
+                .tracks()
+                .iter()
+                .find(|track| track.is_group())
+                .unwrap()
+                .id(),
+            project.scenes()[0].id(),
+        )
+    });
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.set_mode(super::EditorMode::Session);
+            view.selected_cell = Some((ids[0], scene));
+            view.focus.focus(window);
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    let frame = visual.update(|window, cx| {
+        editor.read_with(cx, |view, _| {
+            super::console_columns::ColumnFrame::capture(
+                view,
+                window,
+                view.state.as_ref().unwrap().revision,
+            )
+        })
+    });
+    let fold = Box::leak(format!("console-group-fold-{}", group.value()).into_boxed_str());
+    let at = visual.debug_bounds(fold).unwrap().center();
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, _| {
+            assert!(
+                !frame.current(view, window),
+                "old drop geometry cannot survive a fold"
+            );
+            assert_eq!(
+                view.selected_cell,
+                Some((ids[0], scene)),
+                "fold retains hidden selection"
+            );
+        })
+    });
+    for id in &ids[..2] {
+        let cell =
+            Box::leak(format!("console-cell-{}-{}", id.value(), scene.value()).into_boxed_str());
+        assert!(visual.debug_bounds(cell).is_none());
+    }
+    let next_cell =
+        Box::leak(format!("console-cell-{}-{}", ids[2].value(), scene.value()).into_boxed_str());
+    assert!(visual.debug_bounds(next_cell).is_some());
+    visual.simulate_keystrokes("right");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_cell, Some((ids[2], scene)))
+    });
+    visual.simulate_keystrokes("left");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_cell, Some((group, scene)))
+    });
+    let next_page = visual.debug_bounds("next tracks").unwrap().center();
+    visual.simulate_mouse_down(next_page, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(next_page, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| assert!(view.session_track_start > 0));
+    let last_header = Box::leak(format!("session-track-{}", ids[7].value()).into_boxed_str());
+    let last_cell =
+        Box::leak(format!("console-cell-{}-{}", ids[7].value(), scene.value()).into_boxed_str());
+    let last_edge =
+        Box::leak(format!("console-column-header-before-{}", ids[7].value()).into_boxed_str());
+    assert!(visual.debug_bounds(last_header).is_some());
+    assert!(visual.debug_bounds(last_cell).is_some());
+    assert!(visual.debug_bounds(last_edge).is_some());
+}
+
+#[gpui::test]
+fn track_clipboard_copy_and_duplicate_from_header(cx: &mut TestAppContext) {
+    let (mut v, e, ids) = live_tracks_with_notes(cx, 3, 1);
     select(&mut v, ids[0], false);
     select(&mut v, ids[2], true);
     let original = snapshot(&v, &e);
@@ -50,11 +321,16 @@ fn track_clipboard_header_duplicate_cut_copy_paste_and_setup_only_menu(cx: &mut 
                 .source()
                 .notes()
                 .len(),
-            8
+            1
         );
     });
     v.simulate_keystrokes("cmd-z");
     receive(&mut v, &e);
+}
+
+#[gpui::test]
+fn track_clipboard_cut_paste_and_setup_only_menu(cx: &mut TestAppContext) {
+    let (mut v, e, ids) = live_tracks_with_notes(cx, 3, 1);
     select(&mut v, ids[0], false);
     select(&mut v, ids[2], true);
     v.simulate_keystrokes("cmd-x");
@@ -121,6 +397,11 @@ fn track_clipboard_header_duplicate_cut_copy_paste_and_setup_only_menu(cx: &mut 
         assert_eq!(tracks.ids(), &[ids[1]]);
     });
     v.simulate_keystrokes("escape");
+}
+
+#[gpui::test]
+fn track_clipboard_keys_stay_in_name_editor(cx: &mut TestAppContext) {
+    let (mut v, e, ids) = live_tracks(cx, 3, false);
     select(&mut v, ids[1], false);
     v.simulate_keystrokes("cmd-r");
     v.run_until_parked();

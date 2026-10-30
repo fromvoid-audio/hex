@@ -783,6 +783,57 @@ mod tests {
     }
 
     #[test]
+    fn render_failure_after_complete_blocks_preserves_destination_and_removes_staging() {
+        struct FailingRenderer {
+            calls: std::rc::Rc<std::cell::Cell<usize>>,
+        }
+        impl BlockRenderer for FailingRenderer {
+            fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+                let calls = self.calls.get() + 1;
+                self.calls.set(calls);
+                if calls == 3 {
+                    return Err(ExportError::Invalid("injected render failure"));
+                }
+                frames.fill([0.25, -0.25]);
+                Ok(())
+            }
+        }
+
+        for replace in [false, true] {
+            let dir = TestDir::new();
+            let path = dir.0.join("output.wav");
+            if replace {
+                fs::write(&path, b"prior recording").unwrap();
+            }
+            let consent = Publication::confirmed_save(&path).unwrap();
+            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+            let result = publish(
+                &path,
+                48_000,
+                0,
+                (3 * FRAMES_PER_BLOCK) as u64,
+                &consent,
+                || {
+                    Ok(FailingRenderer {
+                        calls: calls.clone(),
+                    })
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(ExportError::Invalid("injected render failure"))
+            ));
+            assert_eq!(calls.get(), 3);
+            if replace {
+                assert_eq!(fs::read(&path).unwrap(), b"prior recording");
+            } else {
+                assert!(!path.exists());
+            }
+            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), usize::from(replace));
+        }
+    }
+
+    #[test]
     fn cancellation_after_staging_cleans_temporary_and_late_collision_preserves_new_destination() {
         struct BoundaryRenderer {
             collision: Option<PathBuf>,
@@ -834,6 +885,64 @@ mod tests {
         );
         assert_eq!(fs::read(&path).unwrap(), b"concurrent writer");
         assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn file_size_limit_removes_incomplete_stage_and_preserves_destination() {
+        const CHILD: &str = "HEX_EXPORT_FILE_LIMIT_CHILD";
+        if let Some(mode) = std::env::var_os(CHILD) {
+            struct Silence;
+            impl BlockRenderer for Silence {
+                fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+                    frames.fill([0.0; 2]);
+                    Ok(())
+                }
+            }
+            let dir = TestDir::new();
+            let target = dir.0.join("output.wav");
+            let publication = if mode == "replace" {
+                fs::write(&target, b"prior recording").unwrap();
+                Publication::confirmed_save(&target).unwrap()
+            } else {
+                Publication::CreateNew
+            };
+            let error =
+                publish(&target, 48_000, 0, 4096, &publication, || Ok(Silence)).unwrap_err();
+            assert!(matches!(error, ExportError::Io { source, .. }
+                if source.kind() == io::ErrorKind::FileTooLarge));
+            if mode == "replace" {
+                assert_eq!(fs::read(&target).unwrap(), b"prior recording");
+                assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+            } else {
+                assert!(!target.exists());
+                assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
+            }
+            return;
+        }
+
+        for mode in ["new", "replace"] {
+            // The child inherits the limit and ignored SIGXFSZ; no process-wide
+            // limit or signal handler is changed in the parent test runner.
+            let output = std::process::Command::new("/bin/sh")
+                .args(["-c", "ulimit -f 1; trap '' XFSZ; exec \"$@\"", "_"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::file_size_limit_removes_incomplete_stage_and_preserves_destination",
+                    "--nocapture",
+                ])
+                .env(CHILD, mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode} child failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
     }
 
     #[test]

@@ -115,8 +115,7 @@ fn assert_binding(
 #[test]
 fn retained_sampler_unlink_delete_rebind_undo_redo_preserves_resident_pcm() {
     let files = sampler_export::tests::Files::new(false);
-    let (mut session, export_snapshot) = sampler_export::tests::direct_sampler(&files);
-    drop(export_snapshot);
+    let mut session = interactive_sampler_session(&files);
     let observed = Arc::new(Observed::default());
     let mut sink = OfflineSink {
         observed: Arc::clone(&observed),

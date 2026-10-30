@@ -342,8 +342,12 @@ impl SessionPlayback {
                 .arrangement()
                 .loop_region()
                 .is_some_and(|region| region.enabled() && destination_frame >= region.end());
-        let storage_preflight = arrangement_runtime_storage_preflight_bytes(&revision)
-            .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
+        let storage_preflight = if matches!(policy, PrerollRuntimePolicy::LinearExport) {
+            linear_export_runtime_storage_preflight_bytes(&revision)
+        } else {
+            arrangement_runtime_storage_preflight_bytes(&revision)
+        }
+        .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;
         if storage_preflight > storage_budget_bytes {
             return Err(ArrangementPrerollError::StorageBudgetExceeded);
         }
@@ -413,7 +417,11 @@ impl SessionPlayback {
         }
         candidate.transient_loop = transient_loop;
         if !start_playing {
-            candidate.apply(SessionPlaybackCommand::Pause)?;
+            // Restore stopped transport without performing the user Pause
+            // discontinuity: preroll history must remain frozen until Play or
+            // an admitted live input releases the primed clip gates.
+            candidate.playing = false;
+            candidate.monitor_source_releases = false;
         }
         if !Arc::ptr_eq(&candidate.revision, &revision) {
             return Err(ArrangementPrerollError::CandidatePositionMismatch);
@@ -425,6 +433,11 @@ impl SessionPlayback {
         RuntimeStorage {
             live_expression: self.live_expression.is_some(),
             computer_keyboard: self.computer_keyboard.as_deref(),
+            native_parameter_state: self.native_parameter_state.is_some(),
+            scalar_automation: self
+                .native_parameter_state
+                .as_deref()
+                .is_some_and(|state| state.scalar.is_some()),
             compensation: self.compensation.as_ref(),
             main_chain: &self.main_chain,
             current_sampler_keyboards: &self.current_sampler_keyboards,
@@ -441,6 +454,8 @@ impl SessionPlayback {
             route_scratch: self.route_scratch.capacity(),
             current_route_cut_scratch: self.current_route_cut_scratch.capacity(),
             return_scratch: self.return_scratch.capacity(),
+            resident_source_scratch: self.resident_source_scratch.capacity(),
+            meter_cells: self.meter_cells.capacity(),
             mutable_events: self.mutable_events.capacity(),
             tail_mixes: self.tail_mixes.capacity(),
             tail_suffix_starts: self.tail_suffix_starts.capacity(),
@@ -464,6 +479,8 @@ impl SessionPlayback {
 pub(super) struct RuntimeStorage<'a> {
     pub(super) live_expression: bool,
     pub(super) computer_keyboard: Option<&'a crate::computer_keyboard::ComputerKeyboardRuntime>,
+    pub(super) native_parameter_state: bool,
+    pub(super) scalar_automation: bool,
     pub(super) compensation: Option<&'a crate::signal_graph::SignalRuntime>,
     pub(super) main_chain: &'a hex_lattice::NativeRuntimeChain,
     pub(super) current_sampler_keyboards:
@@ -481,6 +498,8 @@ pub(super) struct RuntimeStorage<'a> {
     pub(super) route_scratch: usize,
     pub(super) current_route_cut_scratch: usize,
     pub(super) return_scratch: usize,
+    pub(super) resident_source_scratch: usize,
+    pub(super) meter_cells: usize,
     pub(super) mutable_events: usize,
     pub(super) tail_mixes: usize,
     pub(super) tail_suffix_starts: usize,
@@ -497,6 +516,19 @@ pub(super) struct RuntimeStorage<'a> {
 impl RuntimeStorage<'_> {
     pub(super) fn bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<SessionPlayback>();
+        checked_add(&mut total, std::mem::size_of::<MidiSpanBuffer>())?;
+        if self.scalar_automation {
+            checked_add(
+                &mut total,
+                crate::scalar_automation::State::requested_data_bytes(),
+            )?;
+        }
+        if self.native_parameter_state {
+            checked_add(
+                &mut total,
+                SessionPlayback::native_parameter_input_state_bytes(),
+            )?;
+        }
         if let Some(admission) = self.midi_admission {
             checked_add(&mut total, admission.retained_bytes()?)?;
         }
@@ -545,6 +577,8 @@ impl RuntimeStorage<'_> {
             self.return_effect_tails.accounted_storage_bytes()?,
         )?;
         add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.return_scratch)?;
+        add_capacity::<[Frame; PREROLL_BLOCK_FRAMES]>(&mut total, self.resident_source_scratch)?;
+        add_capacity::<super::meter_capture::Cell>(&mut total, self.meter_cells)?;
         add_capacity::<Option<MutableInstrumentTrackRuntime>>(
             &mut total,
             self.mutable_instruments.capacity(),
@@ -597,6 +631,22 @@ impl RuntimeStorage<'_> {
 pub(super) fn arrangement_runtime_storage_preflight_bytes(
     revision: &PreparedRevision,
 ) -> Option<usize> {
+    runtime_storage_preflight_bytes(revision, SESSION_RELEASE_CAPACITY)
+}
+
+pub(super) fn linear_export_runtime_storage_preflight_bytes(
+    revision: &PreparedRevision,
+) -> Option<usize> {
+    runtime_storage_preflight_bytes(
+        revision,
+        SessionPlayback::release_capacity_for(revision, true),
+    )
+}
+
+fn runtime_storage_preflight_bytes(
+    revision: &PreparedRevision,
+    release_capacity: usize,
+) -> Option<usize> {
     let arrangement = revision.arrangement();
     let track_count = arrangement.tracks().len();
     let return_buses = arrangement.return_buses();
@@ -606,6 +656,19 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
         )?
         .checked_sub(std::mem::size_of::<hex_lattice::NativeRuntimeChain>())?;
     let mut total = std::mem::size_of::<SessionPlayback>();
+    checked_add(&mut total, std::mem::size_of::<MidiSpanBuffer>())?;
+    if revision.scalar_automation.is_some() {
+        checked_add(
+            &mut total,
+            crate::scalar_automation::State::requested_data_bytes(),
+        )?;
+    }
+    if revision.native_parameter_input_target().is_some() {
+        checked_add(
+            &mut total,
+            SessionPlayback::native_parameter_input_state_bytes(),
+        )?;
+    }
     checked_add(&mut total, main_bytes)?;
     if let Some(graph) = &arrangement.signal_graph {
         checked_add(
@@ -652,13 +715,30 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
         return_buses.len(),
         std::mem::size_of::<[Frame; PREROLL_BLOCK_FRAMES]>(),
     )?;
+    if arrangement
+        .signal_graph
+        .as_ref()
+        .is_some_and(|graph| graph.needs_runtime() && graph.needs_upstream_frame_routing())
+    {
+        add_vec(
+            &mut total,
+            track_count,
+            std::mem::size_of::<[Frame; PREROLL_BLOCK_FRAMES]>(),
+        )?;
+    }
+    add_vec(
+        &mut total,
+        track_count.checked_add(return_buses.len())?,
+        std::mem::size_of::<super::meter_capture::Cell>(),
+    )?;
     checked_add(&mut total, ReturnEffectTailBank::preflight_storage_bytes()?)?;
     add_vec(
         &mut total,
         track_count,
         std::mem::size_of::<Option<MutableInstrumentTrackRuntime>>(),
     )?;
-    for track in arrangement.tracks() {
+    let source_routing = revision.source_routing();
+    for (index, track) in arrangement.tracks().iter().enumerate() {
         let id = track.canonical_track_id()?;
         if let Some(factory) = revision.session().mutable_instrument_factory(id) {
             checked_add(
@@ -672,6 +752,14 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
                 &mut total,
                 std::mem::size_of::<MutableInstrumentTrackRuntime>(),
             )?;
+            if !revision.requires_control_sampler_sources()
+                && source_routing.receiver_index(index) == Some(index)
+            {
+                checked_add(
+                    &mut total,
+                    MutableInstrumentTrackRuntime::source_live_storage_upper_bound(),
+                )?;
+            }
         }
     }
     add_vec(
@@ -707,7 +795,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     for _ in 0..2 {
         add_vec(
             &mut total,
-            SESSION_RELEASE_CAPACITY,
+            release_capacity,
             std::mem::size_of::<ReleaseEntry>(),
         )?;
     }
@@ -733,7 +821,7 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     for _ in 0..2 {
         add_vec(
             &mut total,
-            SESSION_RELEASE_CAPACITY,
+            release_capacity,
             std::mem::size_of::<MidiOccurrenceSuppression>(),
         )?;
     }

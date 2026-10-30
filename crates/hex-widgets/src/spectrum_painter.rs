@@ -36,13 +36,16 @@ enum Command {
     Close,
 }
 fn commands(points: &[[f32; 2]], pass: Pass, mut emit: impl FnMut(Command)) {
-    emit(Command::Move(points[0]));
+    let (Some(first), Some(last)) = (points.first(), points.last()) else {
+        return;
+    };
+    emit(Command::Move(*first));
     for i in 0..points.len() - 1 {
         emit(Command::Cubic(segment(points, i)));
     }
     if pass == Pass::Fill {
-        emit(Command::Line([points.last().unwrap()[0], 0.0]));
-        emit(Command::Line([points[0][0], 0.0]));
+        emit(Command::Line([last[0], 0.0]));
+        emit(Command::Line([first[0], 0.0]));
         emit(Command::Close);
     }
 }

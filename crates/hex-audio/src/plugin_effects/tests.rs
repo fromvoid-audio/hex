@@ -26,7 +26,8 @@ fn actual_effect_data_limit_precedes_allocations_and_retains_original_disposal()
         let configuration = NativeEffect::configuration_on_control(identity, &instance).unwrap();
         let quoted = NativeWorker::preconstruction_data_bytes_on_control(&instance).unwrap()
             + configuration.prepared.total_latency_frames() as usize
-                * std::mem::size_of::<[f32; 2]>();
+                * std::mem::size_of::<[f32; 2]>()
+            + EffectSourceMetadata::required_data_bytes(instance.configuration()).unwrap();
         drop(configuration);
         let limit = quoted + allowance;
         let mut outcome = None;

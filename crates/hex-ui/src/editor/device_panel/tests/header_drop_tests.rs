@@ -537,3 +537,75 @@ fn header_drop_preserves_invalid_track_gain_draft_without_admitting_an_edit(
         assert_eq!(control.display_text(), "invalid");
     });
 }
+
+#[gpui::test]
+fn option_drag_copies_device_to_another_track_header(cx: &mut TestAppContext) {
+    let (service, _, source, device, _, _) = actor_utility_fixture();
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "destination".into(),
+        }))
+        .unwrap();
+    let event = receive_service_event(&service);
+    let Created::Track(target) = event.created.unwrap() else {
+        panic!("target");
+    };
+    let (handle, editor) = actor_editor_window(cx, service, event.state, source);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(800.0)));
+    visual.run_until_parked();
+    let title = visual
+        .debug_bounds(Box::leak(
+            format!("device-drag-title-{}", device.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    let header = visual
+        .debug_bounds(Box::leak(
+            format!("session-track-{}", target.value()).into_boxed_str(),
+        ))
+        .unwrap()
+        .center();
+    let option = Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    visual.simulate_mouse_down(title, MouseButton::Left, option);
+    visual.simulate_mouse_move(
+        point(title.x + px(12.0), title.y),
+        MouseButton::Left,
+        option,
+    );
+    visual.simulate_mouse_move(header, MouseButton::Left, option);
+    visual.run_until_parked();
+    visual.simulate_mouse_up(header, MouseButton::Left, option);
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(target)
+            .unwrap()
+            .devices()
+            .len()
+            == 1
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let copy = &project.track(target).unwrap().devices()[0];
+        assert_ne!(copy.id(), device);
+        assert_eq!(copy.state(), project.device(device).unwrap().state());
+        assert_eq!(view.selected_track, Some(source));
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(target)
+            .unwrap()
+            .devices()
+            .is_empty()
+    });
+}

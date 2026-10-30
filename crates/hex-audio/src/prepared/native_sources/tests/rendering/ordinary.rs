@@ -4,6 +4,7 @@ use super::*;
 use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
 use std::collections::BTreeMap;
 
+mod capture;
 mod pressure;
 #[cfg(not(debug_assertions))]
 mod profile;
@@ -173,6 +174,7 @@ fn compile(f: &OrdinaryFixture, with_native: bool) -> Playback {
             } else {
                 &[]
             },
+            &[],
             &mut |effects| {
                 effects.prepare_registered_revision(
                     f.editor.project(),

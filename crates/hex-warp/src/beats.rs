@@ -99,7 +99,7 @@ pub(super) fn render(
         }
         let next = (i + 1..anchors.len())
             .find(|j| anchors[*j].attack || *j == anchors.len() - 1)
-            .unwrap();
+            .expect("the final anchor always terminates the search");
         let start = anchor.output.saturating_sub(anchor.before);
         let end = (anchor.output + anchor.after).min(request.output_frames);
         synthesis::bed(
@@ -150,7 +150,7 @@ pub(super) fn render(
             start: output,
             end: request.output_frames,
             source_start: source,
-            source_end: anchors.last().unwrap().source,
+            source_end: anchors.last().expect("anchors indexed above").source,
             locked_end: false,
         },
         pitch,

@@ -25,7 +25,7 @@ RUNTIME_CONSUMERS = {"hex-devices": {"hex-storage"}}
 TOOLING = {
     "launch", "scripts/launch-restart.py", "scripts/hex-test-build.py",
     "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
-    "scripts/ci_plan.py", "scripts/local-ci.py", "scripts/python_test_plan.py", "scripts/ci_checkpoint.py",
+    "scripts/ci_plan.py", "scripts/local-ci.py", "scripts/python_test_plan.py", "scripts/ci_checkpoint.py", "scripts/ci_target_storage.py",
 }
 
 
@@ -169,9 +169,11 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
     known_consumers = {"hex-devices", "hex-engine", "hex-audio", "hex-ui", "hex-storage",
                        "hex-desktop", "hex-cli", "hex-export", "hex-session", "hex-media", "hex-stream"}
     reviewed_features = {"hex-engine": {"instrument-test-support"}, "hex-export": {"instrument-test-support"},
-                         "hex-audio": {"allocation-probe"}, "hex-desktop": {"allocation-probe"},
+                         # Stream test hooks gate no compressor code or tests; compressor
+                         # plans still lint those configurations (local-ci boundary_steps).
+                         "hex-audio": {"allocation-probe", "stream-test-support"}, "hex-desktop": {"allocation-probe"},
                          "hex-ui": {"ui-test-support"}, "hex-session": {"source-overview-test-support"},
-                         "hex-stream": {"allocation-probe"}}
+                         "hex-stream": {"allocation-probe", "test-support"}}
     narrow = bool(executable) and set(executable) <= compressor and set(affected) <= known_consumers
     narrow = narrow and all(set(p["features"]) <= reviewed_features.get(p["name"], set())
                             for p in inventory if p["name"] in affected)

@@ -1,33 +1,28 @@
 //! Loop controls dispatch canonical edits; DSP and validation belong to the engine/model.
 use super::{EditorMode, EditorView};
-use gpui::Window;
+use gpui::{Context, Window};
 use hex_project::Command;
 use hex_session::service::Request;
 
 impl EditorView {
-    /// Command-L applies the contextual action to the complete Arrangement selection.
-    pub(super) fn set_loop_from_clip(&mut self, window: &Window) {
-        if self.mode == EditorMode::Arrangement && self.loop_shortcut_context(window) {
-            self.apply_selection_loop();
-        }
-    }
-
     /// Plain L/W remain musical notes while typing is enabled and retain the
-    /// existing Session toggle. Command-L is the explicit modified shortcut.
-    pub(super) fn loop_selection_key(&mut self, window: &Window) {
-        if self.computer_keyboard.enabled || !self.loop_shortcut_context(window) {
+    /// existing Session toggle. Command-L toggles the active transport loop.
+    pub(super) fn loop_selection_key(&mut self, window: &Window, cx: &Context<Self>) {
+        if self.computer_keyboard.enabled || !self.loop_shortcut_clear() {
+            return;
+        }
+        if self.clip_loop_key(window) || !self.focus.is_focused(window) {
             return;
         }
         if self.mode != EditorMode::Arrangement {
             self.toggle_loop();
         } else {
-            self.apply_selection_loop();
+            self.apply_selection_loop(cx);
         }
     }
 
-    fn loop_shortcut_context(&self, window: &Window) -> bool {
-        self.focus.is_focused(window)
-            && !self.sections.naming()
+    fn loop_shortcut_clear(&self) -> bool {
+        !self.sections.naming()
             && !self.changelog.is_open()
             && !self.track_name.is_editing()
             && self.clip_name_edit.is_none()
@@ -38,10 +33,49 @@ impl EditorView {
             && !self.export_dialog_open
     }
 
-    fn apply_selection_loop(&mut self) {
-        if self.edit_pending()
+    /// Modified loop toggle is transport-wide and never derives new bounds.
+    pub(super) fn toggle_active_loop_shortcut(&mut self, window: &Window) {
+        if !self.loop_shortcut_clear()
+            || self.opening_project
+            || self.close_prompt_open
+            || self.controller_input_is_open()
+            || self.preset_dialog_open
+            || self.send_menu_track.is_some()
+            || (self.clip_view_open
+                && self.device_panel_active
+                && self.device_panel.add_menu_is_open(self.state.as_deref()))
+            || window
+                .context_stack()
+                .iter()
+                .any(|context| context.contains("hex_text_editing"))
+        {
+            return;
+        }
+        if !self.loop_edit_ready() {
+            self.error = Some("finish the current edit before changing the loop".into());
+            return;
+        }
+        if self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.loop_region())
+            .is_some()
+        {
+            self.toggle_loop();
+        }
+    }
+
+    fn loop_edit_ready(&self) -> bool {
+        !(self.edit_pending()
             || self.arrangement_pan.is_some()
             || self.scrub_active()
+            || self.gain_lane.pointer_is_active()
+            || self.automation_view.devices.pointer_active()
+            || self.device_gesture.snapshot().is_some()
+            || self.clip_paint_gesture.is_some()
+            || self.clip_detail_resize.is_active()
+            || self.project_spectrum.resize_is_active()
+            || self.device_panel.navigation.is_active()
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
             || self.active_clip_drag.is_some()
@@ -53,7 +87,13 @@ impl EditorView {
             || self.track_resize_active()
             || self.loop_rail_gesture.is_some()
             || self.sections.held()
-            || self.section_install_pending()
+            || self.section_install_pending())
+    }
+
+    fn apply_selection_loop(&mut self, cx: &Context<Self>) {
+        if !self.loop_edit_ready()
+            || (self.section_loop_bounds().ok().flatten().is_some()
+                && !self.arrangement_view_change_available(cx))
         {
             self.error = Some("finish the current edit before setting the loop".into());
             return;
@@ -66,11 +106,18 @@ impl EditorView {
                 self.toggle_loop();
             }
             Ok(Some((start, end))) => {
-                self.enqueue(Request::Edit(Command::SetLoopRegion {
-                    start,
-                    end,
-                    enabled: true,
-                }));
+                if self.section_loop_bounds() == Ok(Some((start, end))) {
+                    match hex_project::LoopRegion::new(start, end, true) {
+                        Ok(region) => self.submit_section_loop_preview(region),
+                        Err(error) => self.error = Some(error.0.into()),
+                    }
+                } else {
+                    self.enqueue(Request::Edit(Command::SetLoopRegion {
+                        start,
+                        end,
+                        enabled: true,
+                    }));
+                }
             }
             Ok(None) if existing.is_some() => self.toggle_loop(),
             Ok(None) => {}

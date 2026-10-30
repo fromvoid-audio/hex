@@ -138,6 +138,8 @@ impl Editor {
         require_midi: bool,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<(Created, T), E> {
+        let mut command = command;
+        let alias_plan = crate::clip_alias_edit::Plan::capture(&self.project, &mut command)?;
         let section_publication = command.requires_section_publication();
         let stopped_bounce = matches!(
             &command,
@@ -154,12 +156,17 @@ impl Editor {
         }
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
+        let alias_changed = alias_plan.finish(&mut candidate)?;
+        if alias_changed {
+            Project::from_snapshot(candidate.snapshot())?;
+        }
         candidate.validate_source_bindings()?;
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
         candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
+        candidate.validate_device_automation()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;
         let effect = plan.and_then(|p| p.finish(result, &self.project, &candidate));
@@ -262,8 +269,14 @@ impl Editor {
         if let Some(warp) = arrangement_import {
             results = candidate.apply_audio_imports(commands, warp)?;
         } else {
-            for command in commands {
+            let mut alias_changed = false;
+            for mut command in commands {
+                let alias_plan = crate::clip_alias_edit::Plan::capture(&candidate, &mut command)?;
                 results.push(candidate.apply(command)?);
+                alias_changed |= alias_plan.finish(&mut candidate)?;
+            }
+            if alias_changed {
+                Project::from_snapshot(candidate.snapshot())?;
             }
         }
         candidate.validate_track_hierarchy()?;
@@ -271,6 +284,7 @@ impl Editor {
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
         candidate.validate_retained_audio_roots()?;
         candidate.validate_device_asset_references()?;
+        candidate.validate_device_automation()?;
         candidate.validate_midi_volumes()?;
         candidate.validate_playable_routes()?;
         // Reserve before preparation/commit. No history allocation follows it.

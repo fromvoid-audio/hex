@@ -532,6 +532,7 @@ fn new_notes_and_exact_publication_note_off_share_the_current_owner_boundary() {
         let next = on.next_id;
         if let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut on.tracks[0].content {
             midi_clips[0].notes.push(MidiNoteSnapshot {
+                active: true,
                 id: next,
                 start_raw: start,
                 duration_raw: duration,
@@ -544,6 +545,7 @@ fn new_notes_and_exact_publication_note_off_share_the_current_owner_boundary() {
             panic!("fixture midi")
         };
         clip.source.notes.push(MidiNoteSnapshot {
+            active: true,
             id: next + 1,
             start_raw: start,
             duration_raw: duration,
@@ -602,6 +604,7 @@ fn analytic_polyphony_above_mutable_limit_and_capture_single_sample_order_are_pr
     if let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut on.tracks[0].content {
         for offset in 0..24 {
             midi_clips[0].notes.push(MidiNoteSnapshot {
+                active: true,
                 id: on.next_id + offset,
                 start_raw: 0,
                 duration_raw: 8 << 32,
@@ -680,7 +683,7 @@ fn reconstructed_matching_session_sources_keep_current_ownership_through_histori
 }
 
 #[test]
-fn stopped_enable_edits_start_at_target_but_paused_notes_keep_continuity() {
+fn stopped_enable_edits_start_at_target_and_paused_notes_release_without_retrigger() {
     for session in [false, true] {
         for paused in [false, true] {
             let on = fixture(1, 0, 0, 8 << 32);
@@ -694,15 +697,28 @@ fn stopped_enable_edits_start_at_target_but_paused_notes_keep_continuity() {
             })
             .unwrap();
             let mut disabled = handoff(&mut old, &off);
-            // Rendering while stopped/paused must not advance the ramp clock.
-            assert_eq!(render_checkpoint_prefix(&mut disabled, 16), [[0.0; 2]; 16]);
+            // Pause releases continue at the captured source age while the
+            // canonical transport and parameter ramp clock stay frozen.
+            let monitored = render_checkpoint_prefix(&mut disabled, 16);
+            for (offset, actual) in monitored.iter().enumerate() {
+                let expected = if paused {
+                    signal(96 + offset as u64, 96, 1.0)
+                } else {
+                    [0.0; 2]
+                };
+                assert_eq!(
+                    *actual, expected,
+                    "monitor session={session}, paused={paused}, offset={offset}"
+                );
+            }
+            assert_eq!(disabled.performance_frame(), if paused { 96 } else { 0 });
             disabled.apply(SessionPlaybackCommand::Play).unwrap();
             let actual = render_checkpoint_prefix(&mut disabled, 241);
             for (offset, frame) in actual.iter().enumerate() {
                 let expected = if paused {
                     signal(
-                        96 + offset as u64,
-                        192_000,
+                        112 + offset as u64,
+                        96,
                         (1.0 - offset as f64 / 240.0).max(0.0),
                     )
                 } else {

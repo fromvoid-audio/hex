@@ -1,6 +1,241 @@
 //! Actual loaded-source epoch and fresh-channel controls.
 use super::*;
 
+// The fixture confirms the SDK is held before checking cancellation or timeout.
+const HELD_OPERATION_TIMEOUT: Duration = Duration::from_millis(20);
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_current_capture_uses_same_quiescent_instance_and_keeps_startup_historical() {
+    let case = Case::new();
+    let mut instance = Pending::prepare(
+        &build(),
+        source(),
+        options().preparation,
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(0),
+    )
+    .unwrap()
+    .complete_on_control(Some(options().presentation))
+    .unwrap();
+    let child = instance.child_id_on_control();
+    let initial = instance.ready().initial_state.clone();
+    for n in 0..2 {
+        let block = request(instance.configuration(), n);
+        instance.exchange_on_worker(block).unwrap();
+    }
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let (stopped, captured) = stopped.capture_state_retained_on_control().unwrap();
+    assert_eq!(stopped.child_id_on_control(), child);
+    assert_eq!(stopped.completed_blocks(), 2);
+    let old = hex_plugin_state::decode(&initial).unwrap();
+    let current = hex_plugin_state::decode(&captured).unwrap();
+    assert_eq!(old.identity, current.identity);
+    assert_eq!(&old.component.unwrap()[4..8], &0_u32.to_le_bytes());
+    assert_eq!(&current.component.unwrap()[4..8], &2_u32.to_le_bytes());
+    let (stopped, repeated) = stopped.capture_state_retained_on_control().unwrap();
+    assert_eq!(repeated, captured);
+    let previous = stopped.configuration().binding;
+    let mut instance = stopped
+        .resume_retained_on_control(
+            Binding {
+                epoch: previous.epoch + 1,
+                ..previous
+            },
+            Some(options().presentation),
+        )
+        .unwrap();
+    assert_eq!(instance.ready().initial_state, initial);
+    assert_eq!(instance.child_id_on_control(), child);
+    let block = request(instance.configuration(), 2);
+    instance.exchange_on_worker(block).unwrap();
+    let terminal = instance
+        .stop_and_reap_on_control()
+        .unwrap()
+        .terminal
+        .unwrap();
+    assert_eq!((terminal.blocks, terminal.frames), (3, 24));
+    let observed = case.observation().unwrap();
+    assert_eq!(&observed[1..4], &[0, 1, 1]);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_current_capture_preserves_independent_controller_and_failed_capture_custody() {
+    let case = Case::new();
+    let selected = source();
+    let saved = startup_state(&selected, true, 3);
+    let mut instance = Pending::prepare_with_restore(
+        &build(),
+        selected,
+        options().preparation,
+        Some(saved.clone()),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(37),
+    )
+    .unwrap()
+    .complete_on_control(Some(options().presentation))
+    .unwrap();
+    let initial = instance.ready().initial_state.clone();
+    let block = request(instance.configuration(), 0);
+    instance.exchange_on_worker(block).unwrap();
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let (stopped, captured) = stopped.capture_state_retained_on_control().unwrap();
+    let state = decode(&captured).unwrap();
+    assert_eq!(&state.component.unwrap()[8..12], &0.75_f32.to_le_bytes());
+    assert_eq!(&state.controller.unwrap()[4..8], &91_u32.to_le_bytes());
+    let trace = case.restore_observation();
+    assert_eq!(
+        &trace[..3],
+        &[1, 1, 1],
+        "capture must not restore or synchronize the controller again"
+    );
+    assert_eq!(&trace[10..13], &[2, 2, 1]);
+    let independent = Case::new();
+    let mut restored = Pending::prepare_with_restore(
+        &build(),
+        source(),
+        options().preparation,
+        Some(captured.clone()),
+        PreparationCancellation::new_on_control().unwrap(),
+        independent.setup_restore(37),
+    )
+    .unwrap()
+    .complete_on_control(Some(options().presentation))
+    .unwrap();
+    let input = request(restored.configuration(), 0);
+    let actual = restored.exchange_on_worker(input).unwrap();
+    assert_eq!(&actual.pcm[..3], &[[0.0; 2]; 3]);
+    for (index, frame) in actual.pcm[..8].iter().enumerate().skip(3) {
+        assert_eq!(*frame, input.pcm[index - 3].map(|value| value * 0.75 * 0.5));
+    }
+    assert_eq!(independent.restore_observation()[7], 91);
+    assert!(
+        restored
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+    let previous = stopped.configuration().binding;
+    let mut instance = stopped
+        .resume_on_control(
+            Binding {
+                epoch: previous.epoch + 1,
+                ..previous
+            },
+            Some(options().presentation),
+        )
+        .unwrap();
+    assert_eq!(instance.ready().initial_state, initial);
+    assert_eq!(instance.configuration().restore, Some(saved));
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    for (variant, reason) in [(69, 6), (70, 12)] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup(variant),
+        )
+        .unwrap();
+        let confirmed = instance.ready().initial_state.clone();
+        let probe = epoch_probe(&mut instance);
+        let stopped = instance.quiesce_retained_on_control().unwrap();
+        let result = stopped.capture_state_retained_on_control();
+        epoch_refusal(result, Some(reason), &probe);
+        assert!(
+            decode(&confirmed).unwrap().component.is_some(),
+            "retain last confirmed bytes on refusal"
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_current_capture_held_sdk_cancel_and_timeout_retain_original_lease() {
+    // Preparation still revalidates the source and helper for every child.
+    let fixture_build = build();
+    let fixture_source = source();
+    for cancel in [true, false] {
+        let case = Case::new();
+        let context = PreparationCancellation::new_on_control().unwrap();
+        let token = context.token_on_control();
+        let mut instance = Prepared::prepare(
+            &fixture_build,
+            fixture_source.clone(),
+            options(),
+            context,
+            case.setup(71),
+        )
+        .unwrap();
+        // Keep normal preparation time, then bound the deliberately held SDK call.
+        instance.limits.startup = HELD_OPERATION_TIMEOUT;
+        let probe = epoch_probe(&mut instance);
+        let stopped = instance.quiesce_retained_on_control().unwrap();
+        let result = case.after_stage(
+            22,
+            move || stopped.capture_state_retained_on_control().map(|_| ()),
+            || {
+                if cancel {
+                    token.cancel_on_control();
+                }
+            },
+        );
+        let failure = retained_epoch_failure(result, &probe);
+        assert!(
+            matches!(failure.cause(), Error::Cancelled) && cancel
+                || matches!(failure.cause(), Error::Timeout) && !cancel
+        );
+        assert_eq!(
+            dispose_epoch_failure(failure, &probe).status.code(),
+            Some(9)
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_current_capture_held_sdk_observes_caller_intent_cancellation() {
+    use std::sync::atomic::AtomicBool;
+
+    let case = Case::new();
+    let context = PreparationCancellation::new_on_control().unwrap();
+    let mut instance =
+        Prepared::prepare(&build(), source(), options(), context, case.setup(71)).unwrap();
+    let initial = instance.ready().initial_state.clone();
+    let probe = epoch_probe(&mut instance);
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+    let capture_cancelled = std::sync::Arc::clone(&cancelled);
+    let result = case.after_stage(
+        22,
+        move || {
+            stopped
+                .capture_state_retained_while_on_control(|| {
+                    capture_cancelled.load(AtomicOrdering::Acquire)
+                })
+                .map(|_| ())
+        },
+        || cancelled.store(true, AtomicOrdering::Release),
+    );
+    let failure = retained_epoch_failure(result, &probe);
+    assert!(matches!(failure.cause(), Error::Cancelled));
+    assert_eq!(
+        dispose_epoch_failure(failure, &probe).status.code(),
+        Some(9)
+    );
+    assert!(hex_plugin_state::decode(&initial).is_ok());
+}
+
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_same_child_quiescence_preserves_dsp_controller_capture_and_cumulative_pcm() {
@@ -328,6 +563,8 @@ fn actual_epoch_sdk_refusal_exception_crash_and_changed_latency_never_resume_or_
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_epoch_held_sdk_lanes_cancel_or_timeout_without_release_and_other_pcm_survives() {
     let mut other = another_instance();
+    let fixture_build = build();
+    let fixture_source = source();
     let mut sequence = 0;
     for (variant, stage, resuming) in [
         (61, 20, false),
@@ -339,9 +576,16 @@ fn actual_epoch_held_sdk_lanes_cancel_or_timeout_without_release_and_other_pcm_s
             let case = Case::new();
             let context = PreparationCancellation::new_on_control().unwrap();
             let token = context.token_on_control();
-            let mut instance =
-                Prepared::prepare(&build(), source(), options(), context, case.setup(variant))
-                    .unwrap();
+            let mut instance = Prepared::prepare(
+                &fixture_build,
+                fixture_source.clone(),
+                options(),
+                context,
+                case.setup(variant),
+            )
+            .unwrap();
+            // Apply the shorter deadline only after the real child is prepared.
+            instance.limits.startup = HELD_OPERATION_TIMEOUT;
             let probe = epoch_probe(&mut instance);
             let result = if resuming {
                 let stopped = instance.quiesce_on_control().unwrap();
@@ -477,5 +721,89 @@ fn actual_quiescent_stale_cancelled_dropped_and_retired_owners_never_restart() {
             assert_eq!(observed[8], 1, "no new processing start for {terminal}");
         }
         assert_eq!(observed[10], 0, "no PCM replay for {terminal}");
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_stopped_flush_refusal_exception_shape_controller_and_retained_borrow_keep_failed_source_custody()
+ {
+    use crate::transport::{ParameterPoint, Parameters};
+    for (variant, reason) in [(72, 7), (73, 12), (75, 7), (76, 11), (77, 7)] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup_restore(variant),
+        )
+        .unwrap();
+        let initial = instance.ready().initial_state.clone();
+        let probe = epoch_probe(&mut instance);
+        let stopped = instance.quiesce_retained_on_control().unwrap();
+        let mut points = Parameters::default();
+        points
+            .push(ParameterPoint {
+                frame: 0,
+                id: 7,
+                normalized: 0.75,
+            })
+            .unwrap();
+        epoch_refusal(
+            stopped.flush_parameters_retained_on_control(&points),
+            Some(reason),
+            &probe,
+        );
+        assert_eq!(
+            &decode(&initial).unwrap().component.unwrap()[8..12],
+            &1.0_f32.to_le_bytes(),
+            "failure never rewrites confirmed startup state"
+        );
+    }
+    for cancel in [true, false] {
+        let case = Case::new();
+        let context = PreparationCancellation::new_on_control().unwrap();
+        let token = context.token_on_control();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            context,
+            case.setup_restore(74),
+        )
+        .unwrap();
+        let probe = epoch_probe(&mut instance);
+        let stopped = instance.quiesce_retained_on_control().unwrap();
+        let result = case.after_stage(
+            24,
+            move || {
+                let mut points = Parameters::default();
+                points
+                    .push(ParameterPoint {
+                        frame: 0,
+                        id: 7,
+                        normalized: 0.75,
+                    })
+                    .unwrap();
+                stopped
+                    .flush_parameters_retained_on_control(&points)
+                    .map(|_| ())
+            },
+            || {
+                if cancel {
+                    token.cancel_on_control();
+                }
+            },
+        );
+        let failure = retained_epoch_failure(result, &probe);
+        assert!(
+            matches!(failure.cause(), Error::Cancelled) && cancel
+                || matches!(failure.cause(), Error::Timeout) && !cancel
+        );
+        assert_eq!(
+            dispose_epoch_failure(failure, &probe).status.code(),
+            Some(9)
+        );
     }
 }

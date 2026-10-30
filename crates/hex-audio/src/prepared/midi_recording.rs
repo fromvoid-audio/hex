@@ -31,7 +31,10 @@ impl Callback {
         if self.status.closing.load(Acquire) {
             return Some(AbortReason::Cancelled);
         }
-        if self.status.device_fault.load(Acquire) || self.status.render_fault.load(Acquire) {
+        if self.status.device_fault.load(Acquire)
+            || self.status.render_fault.load(Acquire)
+            || target.transport_epoch <= self.status.last_output_fault_epoch.load(Acquire)
+        {
             return Some(AbortReason::OutputFailed);
         }
         if self.output_transport.is_some() {

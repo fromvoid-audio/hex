@@ -103,6 +103,7 @@ fn ordinary_outputs_keep_device_defaults_even_when_the_plugin_profile_is_unavail
         for kind in [
             PreparedOutputKind::Legacy,
             PreparedOutputKind::Worker(WorkerOutputProfile::DeviceDefault),
+            PreparedOutputKind::WorkerReliable(WorkerOutputProfile::DeviceDefault),
         ] {
             assert_eq!(kind.physical_callback_request(supported).unwrap(), None);
         }
@@ -111,9 +112,20 @@ fn ordinary_outputs_keep_device_defaults_even_when_the_plugin_profile_is_unavail
                 .physical_callback_request(supported)
                 .is_err()
         );
+        assert!(
+            PreparedOutputKind::WorkerReliable(WorkerOutputProfile::PluginBridge)
+                .physical_callback_request(supported)
+                .is_err()
+        );
     }
     assert_eq!(
         PreparedOutputKind::Worker(WorkerOutputProfile::PluginBridge)
+            .physical_callback_request(cpal::SupportedBufferSize::Range { min: 64, max: 1024 })
+            .unwrap(),
+        Some(256)
+    );
+    assert_eq!(
+        PreparedOutputKind::WorkerReliable(WorkerOutputProfile::PluginBridge)
             .physical_callback_request(cpal::SupportedBufferSize::Range { min: 64, max: 1024 })
             .unwrap(),
         Some(256)

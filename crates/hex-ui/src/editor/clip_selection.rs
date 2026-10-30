@@ -143,7 +143,6 @@ impl EditorView {
         self.clip_selection.anchor = Some((track, clip));
         self.clip_selection.scope = Some((self.project_generation, state.revision));
         self.selected_track = Some(track);
-        self.retained_clip_detail = None;
         self.selected_clip = Some(clip);
         self.midi_selection.clear();
         self.midi_note_gesture = None;
@@ -202,7 +201,8 @@ impl EditorView {
         if let Some(state) = &self.state {
             selection.select(&state.project, track, clip, modifiers);
             if modifiers.shift
-                && self.arrangement_focus.enabled
+                && (self.arrangement_focus.projection.enabled
+                    || self.arrangement_focus.projection.filtering())
                 && self.mode == super::EditorMode::Arrangement
             {
                 selection.apply_members(

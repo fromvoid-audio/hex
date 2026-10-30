@@ -1,5 +1,7 @@
 //! One active local draft and read-only prepared curves; the actor owns every
 //! committed edit. Detail and inline plots share pointer/command semantics.
+//! Inline automation owns its target independently of background clip selection;
+//! the detail lane follows the selected track only outside automation view.
 //! Released markers retain their source-stamped ordered receipt until the exact
 //! terminal and canonical state arrive in one receive; cancellation of held input
 //! never revokes already-admitted display custody.
@@ -179,6 +181,9 @@ impl EditorView {
         // This compact editor replaces the open detail body, leaving real track rows at minimum size.
         self.clip_view_open = false;
         self.select_track(track, window);
+        self.automation_view
+            .devices
+            .clear_main(super::device_panel::DevicePanelOwner::Track(track));
         self.gain_lane.track = Some(track);
         self.gain_lane.selected = self
             .state
@@ -191,6 +196,9 @@ impl EditorView {
         cx.notify();
     }
     pub(super) fn cancel_gain_draft(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.cancel_device_automation_draft(cx) {
+            return true;
+        }
         if self.gain_recorder.blocks_edits() {
             self.cancel_gain_recording();
             cx.notify();

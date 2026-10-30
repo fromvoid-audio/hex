@@ -47,9 +47,19 @@ impl MeterState {
         if self.dynamics_routing != routing {
             self.dynamics.reduction_db = [0.0; 2];
             self.dynamics.clipped = false;
+            self.dynamics.post_input_peak = 0.0;
             self.dynamics_routing = routing;
         }
         let decay = 24.0 * elapsed_seconds.max(0.0);
+        let peak = reading.unwrap_or_default().post_input_peak;
+        self.dynamics.post_input_peak = if playing {
+            peak.max(
+                self.dynamics.post_input_peak
+                    * 10.0_f32.powf(-12.0 * elapsed_seconds.max(0.0) / 20.0),
+            )
+        } else {
+            0.0
+        };
         for (held, peak) in self
             .dynamics
             .reduction_db
@@ -125,12 +135,7 @@ pub(super) fn dynamics(
     state.update_dynamics(routing, reading, playing, elapsed)
 }
 
-pub(super) fn render(
-    view: &mut EditorView,
-    cx: &mut Context<EditorView>,
-    device: &hex_project::Device,
-    class: NativeDeviceClass,
-) -> Div {
+fn sample_levels(view: &mut EditorView, device: &hex_project::Device) -> ([f32; 2], [f32; 2]) {
     let id = device.id();
     // Follow the audible device through pending edits; never read a candidate or export.
     let source = audible_meter(view, device);
@@ -166,8 +171,17 @@ pub(super) fn render(
             state.held[index] = state.held[index].max(peak);
         }
     }
-    let levels = state.levels;
-    let held = state.held;
+    (state.levels, state.held)
+}
+
+pub(super) fn render(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: &hex_project::Device,
+    class: NativeDeviceClass,
+) -> Div {
+    let id = device.id();
+    let (levels, held) = sample_levels(view, device);
     let mut strip = div().flex().w(px(WIDTH)).px(px(1.0)).gap(px(3.0));
     for (index, descriptor, value) in [
         (
@@ -273,6 +287,7 @@ mod tests {
         let left_right = hex_engine::DynamicsMeter {
             reduction_db: [12.0, 8.0],
             clipped: true,
+            post_input_peak: 0.75,
         };
         assert_eq!(
             state.update_dynamics(Some(0), Some(left_right), true, 0.0),
@@ -286,6 +301,7 @@ mod tests {
         let mid_side = hex_engine::DynamicsMeter {
             reduction_db: [3.0, 5.0],
             clipped: false,
+            post_input_peak: 0.0,
         };
         assert_eq!(
             state.update_dynamics(Some(1), Some(mid_side), true, 0.0),

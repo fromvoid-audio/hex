@@ -31,6 +31,9 @@ impl RendererRuntime {
                 let frame = start
                     .checked_add(offset as u64)
                     .ok_or(Invalid("render range overflow"))?;
+                let end = frame
+                    .checked_add(1)
+                    .ok_or(Invalid("render range overflow"))?;
                 let beat = project
                     .tempo_map
                     .as_ref()
@@ -63,13 +66,15 @@ impl RendererRuntime {
                             let track = &project.tracks[index];
                             let mut audio = [[0.0; 2]];
                             let mut generator = [[0.0; 2]];
-                            track.render_raw_audio(frame, &mut audio, pages.as_deref_mut())?;
-                            track.render_raw_instrument(
+                            if track.audio_content_enabled() {
+                                track.render_raw_audio(frame, &mut audio, pages.as_deref_mut())?;
+                            }
+                            crate::render_source_generators(
+                                project,
+                                index,
                                 frame,
-                                frame,
+                                end,
                                 &mut generator,
-                                &[],
-                                &[],
                                 volume_timing,
                             )?;
                             let processed = compensation.process_track(
@@ -83,9 +88,7 @@ impl RendererRuntime {
                                 &mut None,
                             )?;
                             let mixed = compensation.fader(track, index, None, processed)?;
-                            let main =
-                                compensation.edge(compensation.graph.tracks[index].main, mixed)?;
-                            compensation.main[index] = main;
+                            compensation.route_track_output(index, mixed)?;
                             for feed_index in 0..compensation.graph.tracks[index].audio_feeds.len()
                             {
                                 let feed =

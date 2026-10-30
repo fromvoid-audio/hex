@@ -61,6 +61,8 @@ pub(crate) struct NativeCandidateBoundary {
     data_cell: usize,
     error_cell: usize,
     endpoint_cells: Option<[usize; 2]>,
+    receipt_mailbox: Option<usize>,
+    action_ledger: Option<usize>,
     data_bytes: usize,
     anchored: bool,
     channels: ChannelStorage,
@@ -109,6 +111,8 @@ impl NativeCandidateBoundary {
             data_cell,
             error_cell,
             endpoint_cells: None,
+            receipt_mailbox: None,
+            action_ledger: data.callback.action_writer_identity(),
             data_bytes,
             anchored: false,
             channels,
@@ -125,6 +129,7 @@ impl NativeCandidateBoundary {
         let control = publication.owner_ref()?;
         if control.native_candidate_root().root_id() != self.root
             || !client.owner_ref()?.matches(&control.status)
+            || client.owner_ref()?.action_admission_identity() != self.action_ledger
         {
             return None;
         }
@@ -136,6 +141,14 @@ impl NativeCandidateBoundary {
         let forwarding = client.owner_ref()?.resident_forwarding_storage(control)?;
         self.channels = self.channels.plus(forwarding)?;
         self.data_bytes = self.data_bytes.checked_add(forwarding.data_bytes)?;
+        self.receipt_mailbox = Some(client.receipt_mailbox_identity()?);
+        let receipt_bytes = crate::prepared::retired_scalar_receipts::storage_bytes();
+        self.channels = self.channels.plus(ChannelStorage {
+            data_bytes: receipt_bytes,
+            shared_groups: 1,
+            shared_handles: 2,
+        })?;
+        self.data_bytes = self.data_bytes.checked_add(receipt_bytes)?;
         self.spectrum_reader_bound = true;
         let client_cell = client.guard().shared_cell()?;
         let publication_cell = publication.guard().shared_cell()?;
@@ -156,7 +169,7 @@ impl NativeCandidateBoundary {
         self.channels = self.channels.plus(ChannelStorage {
             data_bytes: 0,
             shared_groups: 2,
-            shared_handles: 5,
+            shared_handles: 5 + usize::from(self.action_ledger.is_some()),
         })?;
         Some(self)
     }
@@ -175,11 +188,17 @@ impl NativeCandidateBoundary {
                 .as_ref()
                 .zip(endpoints.publication.cell.as_ref())
                 .is_some_and(|(client, publication)| {
-                    expected
-                        == [
-                            Arc::as_ptr(client) as usize,
-                            Arc::as_ptr(publication) as usize,
-                        ]
+                    self.receipt_mailbox == Some(endpoints.receipts.identity())
+                        && self.action_ledger
+                            == endpoints
+                                .action_failure
+                                .as_ref()
+                                .map(|signal| signal.identity())
+                        && expected
+                            == [
+                                Arc::as_ptr(client) as usize,
+                                Arc::as_ptr(publication) as usize,
+                            ]
                 }),
             _ => false,
         };

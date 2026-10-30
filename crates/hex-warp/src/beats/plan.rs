@@ -65,15 +65,22 @@ impl<'a> Schedule<'a> {
         } else {
             first.max(0)
         };
-        let end = request.map.segments().last().unwrap().source_end_q32;
+        let end = request
+            .map
+            .segments()
+            .last()
+            .expect("segments()[0] indexed above")
+            .source_end_q32;
         let last = end.div_euclid(Q32).div_euclid(region);
         if last - first > MAX_MAP_SEGMENTS as i128 {
             return Err(Error::Invalid(
                 "logical preserve cycle count exceeds bounded plan",
             ));
         }
+        // Empty attacks with no division returned Physical above.
+        let division = || division_frames.expect("division set when attacks are empty");
         let count = if request.attacks.is_empty() {
-            ((request.input.region_length - 1) / division_frames.unwrap() + 1) as usize
+            ((request.input.region_length - 1) / division() + 1) as usize
         } else {
             request.attacks.len()
         };
@@ -84,15 +91,16 @@ impl<'a> Schedule<'a> {
             work.check(count as u64 * 16)?;
             for i in 0..count {
                 let at = if request.attacks.is_empty() {
-                    i as u64 * division_frames.unwrap()
+                    i as u64 * division()
                 } else {
                     request.attacks[i]
                 };
                 let source = cycle * region + i128::from(at);
                 if let Some(output) = request.map.output_for_source(source * Q32)
                     && output < request.output_frames as u64
-                    && output >= points.last().unwrap().output as u64
-                    && source as f64 > points.last().unwrap().source
+                    && let Some(previous) = points.last()
+                    && output >= previous.output as u64
+                    && source as f64 > previous.source
                 {
                     if points.len() == MAX_MAP_SEGMENTS {
                         return Err(Error::Invalid(

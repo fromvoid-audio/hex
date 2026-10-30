@@ -87,7 +87,7 @@ impl<'a> Bounds<'a> {
     fn new(physical: &'a [Anchor]) -> Self {
         let next = (1..physical.len())
             .find(|i| physical[*i].attack || *i == physical.len() - 1)
-            .unwrap();
+            .expect("the final anchor always terminates the search");
         Self {
             physical,
             previous: 0,
@@ -99,7 +99,7 @@ impl<'a> Bounds<'a> {
             self.previous = self.next;
             self.next = (self.next + 1..self.physical.len())
                 .find(|i| self.physical[*i].attack || *i == self.physical.len() - 1)
-                .unwrap();
+                .expect("the final anchor always terminates the search");
         }
         let lower = self.physical[self.previous].source.floor() as i128;
         let upper = self.physical[self.next].source.ceil() as i128 - 1;

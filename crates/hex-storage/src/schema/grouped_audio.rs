@@ -99,7 +99,7 @@ fn items<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>, const MAX: usize
     }
     d.deserialize_seq(Rows::<T, MAX>(std::marker::PhantomData))
 }
-fn isolated_root(
+pub(super) fn isolated_root(
     project: &Project,
     clip: ClipSnapshot,
     tempo: &hex_project::TempoMap,
@@ -162,6 +162,7 @@ pub(crate) fn require_legacy_compatible(project: &Project) -> Result<(), Storage
     }
 }
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
+    super::clip_aliases::require_legacy_compatible(project)?;
     super::track_groups::require_legacy_compatible(project)?;
     Project::from_legacy_snapshot(project.snapshot()).map_err(invalid)?;
     let mut snapshot = project.snapshot();
@@ -386,6 +387,8 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
                     .into_iter()
                     .map(|e| {
                         Ok(AudioEvent {
+                            active: true,
+                            gain: hex_project::ClipGain::UNITY,
                             id: e.id,
                             source: e.source,
                             start: e.start,

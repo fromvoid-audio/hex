@@ -68,7 +68,13 @@ struct Preparation {
     cancelling: bool,
 }
 pub(super) struct NativeAudioSink {
+    audio_diagnostics: hex_audio::audio_diagnostics::AudioDiagnosticsFlags,
     plugins: plugins::Plugins,
+    request_cancellation: Option<hex_session::service::RequestCancellation>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    native_graph_gate: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    native_graph_busy_observer: Option<SyncSender<()>>,
     policy: Result<AudioPolicy, String>,
     resident: resident::Resident,
     // Selected before initialization; applies to every resident graph, including an empty project.
@@ -112,11 +118,19 @@ pub(super) struct NativeAudioSink {
     retired_sampler_hold: hex_session::service::NativeSamplerReservationHold,
     #[cfg(all(test, feature = "allocation-probe"))]
     output_factory: Option<OutputFactory>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    lifecycle_status: Option<fn() -> Option<hex_audio::AudioLifecycleFailure>>,
 }
 impl NativeAudioSink {
     fn new(events: SyncSender<EditorAudioEvent>) -> Self {
         Self {
+            audio_diagnostics: Default::default(),
             plugins: plugins::Plugins::default(),
+            request_cancellation: None,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            native_graph_gate: None,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            native_graph_busy_observer: None,
             policy: AudioPolicy::new(),
             resident: resident::Resident::default(),
             worker_owned_resident_graphs: true,
@@ -155,6 +169,8 @@ impl NativeAudioSink {
             retired_sampler_hold: Default::default(),
             #[cfg(all(test, feature = "allocation-probe"))]
             output_factory: None,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            lifecycle_status: None,
         }
     }
     fn relinquish_output(&mut self) {
@@ -194,6 +210,24 @@ impl NativeAudioSink {
         if !self.open_pending {
             return;
         }
+        let failure = hex_audio::audio_lifecycle_failure();
+        #[cfg(all(test, feature = "allocation-probe"))]
+        let failure = self.lifecycle_status.map_or(failure, |status| status());
+        if let Some(failure) = failure {
+            let reason = match failure {
+                hex_audio::AudioLifecycleFailure::Retirement => "audio output shutdown failed",
+                hex_audio::AudioLifecycleFailure::Cleanup => "audio resource cleanup failed",
+                hex_audio::AudioLifecycleFailure::MismatchedOwner => {
+                    "audio lifecycle ownership mismatch"
+                }
+            };
+            self.open_error = Some(format!("{reason}; save your project and restart hex"));
+            self.open_pending = false;
+            // Abandon only this result request. The lifecycle owner retains the
+            // old output lease, failed resources and first destructor payload.
+            self.opening = None;
+            return;
+        }
         #[cfg(all(test, feature = "allocation-probe"))]
         if let Some(factory) = self.output_factory.as_mut() {
             match factory(self.requested_rate) {
@@ -215,7 +249,10 @@ impl NativeAudioSink {
             } else {
                 hex_audio::WorkerOutputProfile::DeviceDefault
             };
-            match hex_audio::request_worker_open_with_profile(self.requested_rate, profile) {
+            match hex_audio::request_worker_open_with_reliable_action_outcomes(
+                self.requested_rate,
+                profile,
+            ) {
                 Ok(opening) => self.opening = Some(opening),
                 Err(
                     hex_audio::RecoveryOpenError::Busy | hex_audio::RecoveryOpenError::QueueFull,
@@ -303,9 +340,24 @@ impl NativeAudioSink {
             });
             return;
         }
-        let Some(client) = output.take_client() else {
+        if let Some(control) = output.publication.control() {
+            control.set_audio_diagnostics(self.audio_diagnostics);
+        }
+        let Some(mut client) = output.take_client() else {
             return;
         };
+        let reader = output.take_action_outcomes();
+        if reader.is_none_or(|reader| client.attach_action_outcomes(reader).is_err()) {
+            client.close();
+            drop(self.output.take());
+            self.output_generation = Some(generation);
+            self.pending_open_event = Some(EditorAudioEvent::Unavailable {
+                project_generation: generation,
+                restart_request: self.restart_request,
+                error: "audio command outcomes unavailable".into(),
+            });
+            return;
+        }
         self.output_identity = client.output_identity();
         self.output_generation = Some(generation);
         self.pending_open_event = Some(EditorAudioEvent::Opened {
@@ -806,10 +858,14 @@ impl NativeAudioSink {
                 };
                 self.observe(context, "submitted", state);
             }
+            // Transient admission states keep the built candidate for a later poll.
+            // An unsealed domain is usually a superseded source construction that
+            // is still retiring; refusing would block this newer canonical state.
             Err(
                 "playback publication already pending"
                 | "candidate publication queue is full"
-                | "candidate preparation is busy",
+                | "candidate preparation is busy"
+                | "source construction is not sealed",
             ) => {
                 self.preparation = Some(pending);
                 self.observe(context, "busy", EditorPublicationState::Busy);
@@ -844,6 +900,29 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn capture_plugin_states_for_save(
+        &mut self,
+        input: hex_session::service::PluginStateSaveInput<'_>,
+    ) -> Result<Vec<hex_session::service::PluginStateCapture>, String> {
+        self.capture_plugin_save(input)
+    }
+    fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
+        self.request_cancellation = Some(cancellation);
+    }
+    fn finish_resident_effect_edit(&mut self, context: AudioSourceContext, accepted: bool) {
+        self.plugins.finish_edit(context, accepted);
+    }
+    fn plugin_state_restore_ready(&self) -> Option<AudioSourceContext> {
+        self.plugins.reopen_ready()
+    }
+    fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
+        if self.plugins.finish_reopen(context, accepted) && accepted {
+            // The exact replacement graph was admitted with this unpublished
+            // owner still inventoried. Retire it on control only after success.
+            self.resident
+                .discard_obsolete_pending_after_restore(context);
+        }
+    }
     fn prepare_stopped_playback_restore(
         &mut self,
         context: AudioSourceContext,
@@ -888,11 +967,13 @@ impl WorkerAudioSink for NativeAudioSink {
         )
             -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<hex_engine::PreparedRevision>, String> {
-        let Some(output) = self.output.as_mut() else {
-            input.visit_plugin_effects(|_, _| Err("native vst3 output unavailable".into()))?;
-            return Ok(None);
-        };
-        self.plugins.compile(output, input, prepare)
+        self.plugins.compile(
+            self.output.as_mut(),
+            input,
+            self.desired.as_deref(),
+            self.request_cancellation.as_ref(),
+            prepare,
+        )
     }
     fn ordinary_source_reservation(&self) -> Option<hex_session::SourcePlanReservation> {
         if !self.worker_owned_resident_graphs {
@@ -1012,6 +1093,15 @@ impl WorkerAudioSink for NativeAudioSink {
         hex_session::service::ResidentPublicationAcceptance,
         hex_session::service::ResidentPublicationRefusal,
     > {
+        if let Err(error) = self.plugins.check_reopen_publication(
+            metadata.context,
+            matches!(
+                policy,
+                hex_session::service::ResidentPublicationPolicy::RestorePluginState
+            ),
+        ) {
+            return Err(hex_session::service::ResidentPublicationRefusal { playback, error });
+        }
         if let Some(files) = files.as_ref() {
             // Authoring aliases can advance the canonical revision while
             // retaining this exact compiler/source set. File capture counters
@@ -1047,6 +1137,10 @@ impl WorkerAudioSink for NativeAudioSink {
                 loop {
                     if files.shutdown.load(Acquire)
                         || files.cancel.is_some_and(|cancel| cancel.load(Acquire))
+                        || (self.plugins.preparing_edit(metadata.context)
+                            && self.request_cancellation.as_ref().is_some_and(
+                                hex_session::service::RequestCancellation::is_cancelled,
+                            ))
                     {
                         self.retire_resident_files(files.sources);
                         return Err(hex_session::service::ResidentPublicationRefusal {
@@ -1149,6 +1243,9 @@ impl WorkerAudioSink for NativeAudioSink {
             self.relinquish_output();
             self.request_open(Some(source.sample_rate()), None);
         }
+        if previous != Some(generation) {
+            self.plugins.request_reopen(&source);
+        }
         self.desired = Some(source);
     }
     fn restart_audio(&mut self, generation: u64, request_id: u64) -> Result<(), String> {
@@ -1156,6 +1253,7 @@ impl WorkerAudioSink for NativeAudioSink {
             .desired
             .as_ref()
             .filter(|s| s.context().project_generation == generation)
+            .cloned()
             .ok_or("audio document changed")?;
         let rate = snapshot.sample_rate();
         let incomplete = snapshot.audio_mode() == DocumentAudioMode::VerifiedStreaming
@@ -1178,6 +1276,7 @@ impl WorkerAudioSink for NativeAudioSink {
             return Ok(());
         }
         self.request_open(Some(rate), Some(request_id));
+        self.plugins.request_reopen(&snapshot);
         Ok(())
     }
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
@@ -1290,6 +1389,8 @@ impl WorkerAudioSink for NativeAudioSink {
                     control.reclaim();
                     control.poll_resident_publication();
                 }
+                self.plugins
+                    .poll_reopen(&mut output, self.desired.as_deref());
                 self.plugins.poll(
                     &mut output,
                     self.desired.as_ref().map(|source| source.context()),
@@ -1312,16 +1413,20 @@ impl WorkerAudioSink for NativeAudioSink {
     }
 }
 
-pub(super) fn backend() -> Result<EditorBackend, String> {
+pub(super) fn backend(
+    flags: hex_audio::audio_diagnostics::AudioDiagnosticsFlags,
+) -> Result<EditorBackend, String> {
     let source_reservation = AudioPolicy::source_reservation();
     let resident_native = AudioPolicy::new()?.resident_native;
     let (events, audio_events) = mpsc::sync_channel(4);
     let recovery = hex_session::service::untitled_recovery_path()?;
+    let mut sink = NativeAudioSink::new(events);
+    sink.audio_diagnostics = flags;
     let service = Service::with_audio_sink_and_native_reservation(
         32,
         MAX_RESIDENT_FRAMES,
         Some(recovery),
-        Box::new(NativeAudioSink::new(events)),
+        Box::new(sink),
         resident_native,
     )
     .map_err(|e| e.to_string())?;

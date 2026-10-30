@@ -445,7 +445,8 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(plan.classify(["launch", "crates/hex-ui/src/a.rs"], inventory)[0], "rust")
         for name in ("crates/hex-ui/Cargo.toml", "crates/hex-ui/build.rs"):
             self.assertEqual(plan.classify([name], inventory)[0], "rust")
-        self.assertEqual(plan.classify(["scripts/ci_plan.py"], inventory)[0], "tooling")
+        for path in ("scripts/ci_plan.py", "scripts/ci_target_storage.py"):
+            self.assertEqual(plan.classify([path], inventory)[0], "tooling")
         self.assertEqual(plan.classify(["AGENTS.md"], inventory)[0], "metadata")
 
     def test_immutable_rename_deletion_untracked_and_prose_digest(self):
@@ -571,6 +572,12 @@ class ScopeTests(unittest.TestCase):
         self.assertTrue(any("ui-test-support" in a and "compressor" in a for a in commands))
         self.assertFalse(any("--workspace" in a for a in commands))
         self.assertFalse(any("operator" in a for a in commands))
+        # Reviewed stream hooks are linted, never silently skipped, but their
+        # unrelated full suites are not run for a compressor-only change.
+        stream = [a for a in commands if "stream-test-support" in a]
+        self.assertTrue(stream)
+        self.assertTrue(all(a[:2] == ("cargo", "clippy") for a in stream))
+        self.assertTrue(any("test-support" in a and "hex-stream" in a and a[1] == "clippy" for a in commands))
         self.assertIn("hex-midi", boundary["excluded_packages"])
         with tempfile.TemporaryDirectory() as directory:
             fixture_root = Path(directory)
@@ -959,6 +966,17 @@ class CacheIdentityTests(unittest.TestCase):
             self.assertNotEqual(old, key())
             old = key()
             env["RUSTFLAGS"] = "--cfg changed"
+            self.assertNotEqual(old, key())
+            # Target storage policy participates in the guarded CI inputs too.
+            (root / "scripts").mkdir()
+            helper = root / "scripts/ci_target_storage.py"
+            old = key()
+            helper.write_text("original storage guard")
+            self.assertNotEqual(old, key())
+            old = key()
+            stamp = helper.stat()
+            helper.write_text("modified storage guard")
+            os.utime(helper, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
             self.assertNotEqual(old, key())
 
     def test_member_and_intermediate_absent_configs_change_guarded_witness(self):
