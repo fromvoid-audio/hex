@@ -91,7 +91,7 @@ fn track_header_dispatch_latency(cx: &mut TestAppContext) {
 }
 
 pub(super) fn next(service: &hex_session::service::Service) -> hex_session::service::Event {
-    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             return event;

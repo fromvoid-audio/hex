@@ -3692,7 +3692,7 @@ mod overlap_tests {
         // On a setup failure, retain the path until the real import ACK proves
         // the worker has completed its filesystem access.
         service.submit(Request::Import(path.clone())).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = crate::test_wait::hang_deadline();
         let e = loop {
             if let Ok(event) = service.try_event() {
                 if event.error.is_some() {

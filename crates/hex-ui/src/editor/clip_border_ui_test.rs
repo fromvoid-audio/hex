@@ -257,13 +257,16 @@ fn bottom_border_fixture(cx: &mut TestAppContext) -> BorderFixture {
     use gpui::AppContext;
     use hex_session::service::{Event, Request, Service};
     fn next(service: &Service) -> Event {
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let until = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);
                 return event;
             }
-            assert!(std::time::Instant::now() < until);
+            assert!(
+                std::time::Instant::now() < until,
+                "next: hang guard expired"
+            );
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }

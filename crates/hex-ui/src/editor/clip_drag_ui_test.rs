@@ -972,13 +972,16 @@ fn upper_rail_next(service: &Service) -> hex_session::service::Event {
     event
 }
 fn upper_rail_terminal(service: &Service) -> hex_session::service::Event {
-    use std::time::{Duration, Instant};
-    let until = Instant::now() + Duration::from_secs(10);
+    use std::time::Duration;
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "upper_rail_terminal: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -1089,9 +1092,9 @@ pub(super) fn upper_rail_owned_fixture(
 fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack(
     cx: &mut TestAppContext,
 ) {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = crate::test_wait::hang_deadline();
         loop {
             let done = editor.update(&mut *visual, |view, cx| {
                 if view.tick(cx) {
@@ -1104,7 +1107,10 @@ fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worke
                 visual.run_until_parked();
                 return;
             }
-            assert!(Instant::now() < until);
+            assert!(
+                std::time::Instant::now() < until,
+                "pump: hang guard expired"
+            );
             std::thread::sleep(Duration::from_millis(2));
         }
     }
@@ -2545,7 +2551,7 @@ fn upper_rail_fixture_same_root_survives_actual_catalog_job_and_view_drop(cx: &m
 #[test]
 fn upper_rail_fixture_pre_ack_real_import_refusal_preserves_disk_without_arc_leak() {
     use hex_session::service::Request;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     let files = super::test_environment::Environment::new().unwrap();
     let root = files.root().to_owned();
     let weak = Arc::downgrade(&files);
@@ -2559,12 +2565,15 @@ fn upper_rail_fixture_pre_ack_real_import_refusal_preserves_disk_without_arc_lea
         let service = Service::new(48_000, 32, 8_000_000).unwrap();
         upper_rail_next(&service);
         service.submit(Request::Import(missing.clone())).unwrap();
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = crate::test_wait::hang_deadline();
         let event = loop {
             if let Ok(event) = service.try_event() {
                 break event;
             }
-            assert!(Instant::now() < until);
+            assert!(
+                std::time::Instant::now() < until,
+                "upper_rail_fixture_pre_ack_real_import_refusal_preserves_disk_without_arc_leak: hang guard expired"
+            );
             std::thread::sleep(Duration::from_millis(2));
         };
         assert!(event.request_complete);
@@ -2592,7 +2601,7 @@ fn upper_rail_fixture_pre_ack_real_import_refusal_preserves_disk_without_arc_lea
 /// The test executor leaves the UI poll timer parked: the real worker may finish,
 /// but its ACK is not installed until pump_move explicitly ticks the controller.
 pub(super) fn pump_move(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |view, cx| {
             if view.tick(cx) {
@@ -2605,7 +2614,10 @@ pub(super) fn pump_move(editor: &gpui::Entity<EditorView>, visual: &mut VisualTe
         if done {
             return;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pump_move: hang guard expired"
+        );
         std::thread::yield_now();
     }
 }
@@ -3254,12 +3266,12 @@ fn rendered_move_real_refusal_retires_only_its_matching_fifo_terminal(cx: &mut T
         "unrelated real terminal retains display"
     );
     editor.update(&mut visual, |v, cx| {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = crate::test_wait::hang_deadline();
         let refused = loop {
             if let Ok(event) = v.service.try_event() {
                 break event;
             }
-            assert!(std::time::Instant::now() < deadline);
+            assert!(std::time::Instant::now() < deadline, "rendered_move_real_refusal_retires_only_its_matching_fifo_terminal: hang guard expired");
             std::thread::yield_now();
         };
         assert!(refused.request_complete && refused.error.is_some());

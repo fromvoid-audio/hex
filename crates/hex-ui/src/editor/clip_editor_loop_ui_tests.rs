@@ -2,12 +2,12 @@
 use super::*;
 use gpui::{Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size};
 use hex_project::BeatTime;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 pub(in crate::editor) fn hold(
     editor: &Entity<EditorView>,
     visual: &mut VisualTestContext,
 ) -> hex_session::service::Event {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Some(event) = editor.update(&mut *visual, |v, _| v.service.try_event().ok()) {
             return event;

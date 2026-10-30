@@ -241,13 +241,13 @@ pub fn serial_output() -> std::sync::MutexGuard<'static, ()> {
 /// Open a headless worker once a previous output's lease has retired.
 /// The lifecycle service releases the process-wide lease asynchronously after
 /// close, so a test following another may briefly observe it as busy. Waits
-/// at most ten seconds, matching the parallel GPUI test retry loops, so a
+/// at most thirty seconds, matching the shared GPUI test hang guard, so a
 /// leaked lease still fails the caller.
 pub fn open_after_retirement(
     rate: u32,
     reliable_action_outcomes: bool,
 ) -> Result<(crate::WorkerPreparedOutput, HeadlessBackend), String> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         match crate::device::headless_worker_output_with_outcomes(rate, reliable_action_outcomes) {
             Err(error)

@@ -3,7 +3,7 @@ use super::*;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn wait_for_plugin_scan(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(visual, |view, _| {
@@ -443,7 +443,7 @@ fn browser_vst3_selected_native_worker_persists_real_row_and_reload_without_fore
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn wait_plugin_browser(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(visual, |view, _| {
