@@ -10,7 +10,8 @@ from pathlib import Path
 
 REVIEWED_MODULES = frozenset({
     "test_changelog", "test_ci_plan", "test_device_catalog", "test_device_layout",
-    "test_eq8_response_compare", "test_gpui_patch", "test_hex_test_build",
+    "test_eq8_response_compare", "test_gpui_patch", "test_dependency_patches",
+    "test_hex_test_build",
     "test_launch", "test_launch_restart", "test_launch_restart_compile",
     # Update entry and process-observer fixtures exercise standalone tooling;
     # updater script and test edits still take comprehensive discovery.
