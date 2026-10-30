@@ -1807,22 +1807,22 @@ impl EditorView {
     }
 
     fn playback_start_frame(&self) -> u64 {
-        // Only the acknowledged canonical loop owns the next start. Keep cursor
-        // and time selection intact for ordinary playback after disabling it.
-        if let Some(region) = self
-            .state
-            .as_ref()
-            .and_then(|state| state.project.loop_region())
-            .filter(|region| region.enabled())
-        {
-            return region.start();
-        }
+        // The user's placed position wins, even outside an enabled loop; the
+        // acknowledged canonical loop only supplies a start when none is placed.
         if let Some(selection) = self.normalized_time_selection() {
             return selection.start();
         }
-        self.edit_cursor
+        if let Some(cursor) = self
+            .edit_cursor
             .filter(|cursor| cursor.generation == self.project_generation)
-            .map_or(0, |cursor| cursor.frame)
+        {
+            return cursor.frame;
+        }
+        self.state
+            .as_ref()
+            .and_then(|state| state.project.loop_region())
+            .filter(|region| region.enabled())
+            .map_or(0, |region| region.start())
     }
 
     pub(super) fn toggle_solo(&mut self, track: TrackId, exclusive: bool) {

@@ -1586,10 +1586,8 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
-                if enabled { 32_000 } else { 28_000 }
-            )),
-            "active loop wins; otherwise reverse time selection supplies its normalized start"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(28_000)),
+            "reverse time selection supplies its normalized start, even outside an enabled loop"
         );
     });
 
@@ -1609,10 +1607,8 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
-                if enabled { 32_000 } else { 73_000 }
-            )),
-            "active loop wins; otherwise a point selection falls back to the edit cursor"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
+            "a point selection falls back to the edit cursor, even outside an enabled loop"
         );
     });
 
@@ -1631,7 +1627,7 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
             Some(hex_engine::playback::PlaybackCommand::PlayFrom(
                 if enabled { 32_000 } else { 0 }
             )),
-            "active loop wins; otherwise no selection or cursor starts at project beginning"
+            "with no selection or cursor, an enabled loop start or project beginning"
         );
     });
 
@@ -1674,10 +1670,8 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
-                if enabled { 32_000 } else { 73_000 }
-            )),
-            "Space after Pause uses active loop or edit cursor rather than the paused playhead"
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
+            "Space after Pause uses the edit cursor rather than the paused playhead"
         );
         assert_eq!(
             view.state.as_ref().unwrap().project.loop_region(),
@@ -1695,9 +1689,7 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
     editor.read_with(cx, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(
-                if enabled { 32_000 } else { 73_000 }
-            )),
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(73_000)),
             "Space reaches transport even if a retained focus is no longer mounted"
         );
     });

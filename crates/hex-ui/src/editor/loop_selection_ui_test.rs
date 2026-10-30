@@ -1515,7 +1515,7 @@ fn section_loop_focus_respects_held_foreground_automation_input(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn command_l_toggles_active_loop_preserves_bounds_and_uses_loop_play_origin(
+fn command_l_toggles_active_loop_preserves_bounds_and_keeps_selection_play_origin(
     cx: &mut TestAppContext,
 ) {
     let (handle, editor, _, _, _files) = fixture(cx);
@@ -1561,7 +1561,7 @@ fn command_l_toggles_active_loop_preserves_bounds_and_uses_loop_play_origin(
         assert_eq!(
             view.edit_cursor.unwrap().frame,
             96_000,
-            "loop origin does not rewrite the edit cursor"
+            "loop toggle does not rewrite the edit cursor"
         );
     });
     visual.simulate_keystrokes("cmd-z");
@@ -1584,7 +1584,8 @@ fn command_l_toggles_active_loop_preserves_bounds_and_uses_loop_play_origin(
     editor.read_with(&visual, |view, _| {
         assert_eq!(
             view.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::PlayFrom(24_000))
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(36_000)),
+            "an enabled loop does not override the time-selection start"
         )
     });
     visual.simulate_keystrokes("cmd-l");
@@ -1602,7 +1603,7 @@ fn command_l_toggles_active_loop_preserves_bounds_and_uses_loop_play_origin(
         assert_eq!(
             view.playback_start_frame(),
             36_000,
-            "loop off restores time-selection precedence"
+            "loop off keeps time-selection precedence"
         );
     });
     for enabled in [true, false] {
@@ -1623,9 +1624,7 @@ fn command_l_toggles_active_loop_preserves_bounds_and_uses_loop_play_origin(
                     .enabled(),
                 enabled
             );
-            if enabled {
-                assert_eq!(view.playback_start_frame(), 24_000);
-            }
+            assert_eq!(view.playback_start_frame(), 36_000);
         });
     }
     editor.update(&mut visual, |view, _| view.computer_keyboard.enabled = true);
