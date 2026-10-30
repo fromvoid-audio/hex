@@ -3,16 +3,19 @@ use crate::editor::{EditorView, external_audio_drop_ui_test::BatchFiles, musical
 use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use hex_project::{ClipId, Command, TrackId};
 use hex_session::service::{Event, Request, Service};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(10);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(e) = service.try_event() {
             assert!(e.error.is_none(), "{:?}", e.error);
             return e;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -156,7 +159,7 @@ fn waveform_body_painter_stays_below_ordinary_selected_and_looped_headers(cx: &m
 }
 
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(10);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -168,7 +171,10 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
             visual.run_until_parked();
             return;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "pump: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }

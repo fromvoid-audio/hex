@@ -9,7 +9,7 @@ use std::{
 };
 
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         match service.try_event() {
             Ok(event) => return event,
@@ -44,7 +44,7 @@ impl DeliveredFixture {
         // existing lifecycle reaper, rather than this UI fixture, drains receipts.
         drop(self.output.take());
         self.backend.close();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             let pending = self.editor.update(&mut self.visual, |view, _| {
                 view.tick_gain_recording();
@@ -65,7 +65,7 @@ fn open_gain_output() -> (
     hex_audio::WorkerPreparedOutput,
     hex_audio::worker_fixture::HeadlessBackend,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(pair) => return pair,

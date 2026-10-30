@@ -79,7 +79,7 @@ fn pump(
     cx: &mut TestAppContext,
     done: impl Fn(&EditorView) -> bool,
 ) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -413,7 +413,7 @@ fn saved_destination(
 ) -> (std::path::PathBuf, std::sync::Arc<hex_project::Project>) {
     use hex_session::service::{Event, Request};
     fn receive(service: &Service) -> Event {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);
@@ -1026,7 +1026,7 @@ fn returned_open_picker_admits_own_recovery_restore_without_admitting_edits(
     // Receive the real restart and restoration completions explicitly. This
     // older source's separate restart-counter finding belongs to Source6;
     // a zero pending count alone must not masquerade as restoration proof.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let mut restored = false;
     while !restored {
         if let Ok(event) = editor.read_with(cx, |view, _| view.service.try_event()) {

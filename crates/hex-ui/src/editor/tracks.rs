@@ -3508,7 +3508,7 @@ mod overlap_tests {
         });
     }
     fn drag_content_next(service: &hex_session::service::Service) -> hex_session::service::Event {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);
@@ -3692,7 +3692,7 @@ mod overlap_tests {
         // On a setup failure, retain the path until the real import ACK proves
         // the worker has completed its filesystem access.
         service.submit(Request::Import(path.clone())).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = crate::test_wait::hang_deadline();
         let e = loop {
             if let Ok(event) = service.try_event() {
                 if event.error.is_some() {

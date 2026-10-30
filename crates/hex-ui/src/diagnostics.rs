@@ -484,7 +484,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         fn next(service: &hex_session::service::Service) -> hex_session::service::Event {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             loop {
                 if let Ok(event) = service.try_event() {
                     return event;

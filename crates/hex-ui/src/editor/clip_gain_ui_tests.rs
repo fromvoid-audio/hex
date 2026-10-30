@@ -135,7 +135,7 @@ fn audio_top_edge_gain_changes_only_gain_and_releases_one_command(cx: &mut TestA
 }
 
 fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let ready = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -155,7 +155,7 @@ fn terminal(
     editor: &gpui::Entity<EditorView>,
     visual: &mut VisualTestContext,
 ) -> hex_session::service::Event {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = editor.read_with(&*visual, |v, _| v.service.try_event()) {
             if event.request_complete {

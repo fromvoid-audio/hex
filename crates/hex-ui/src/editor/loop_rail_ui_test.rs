@@ -21,13 +21,16 @@ fn loop_editor_with_tracks(
     cx.update(super::bind_editor_keys);
     let service = Service::new(48_000, 32, 8_000_000).unwrap();
     fn next(service: &Service) -> Event {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);
                 return event;
             }
-            assert!(std::time::Instant::now() < deadline);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "next: hang guard expired"
+            );
             thread::sleep(Duration::from_millis(1));
         }
     }

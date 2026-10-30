@@ -210,7 +210,7 @@ fn arrangement_catalog_worker_completion_and_undo_preserve_prior_selection(
 ) {
     use hex_session::service::{Request, Service};
     fn next(service: &Service) -> hex_session::service::Event {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 return event;
@@ -220,7 +220,7 @@ fn arrangement_catalog_worker_completion_and_undo_preserve_prior_selection(
         }
     }
     fn pump(editor: &gpui::Entity<super::EditorView>, cx: &mut TestAppContext, count: usize) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             editor.update(cx, |view, cx| {
                 view.tick(cx);

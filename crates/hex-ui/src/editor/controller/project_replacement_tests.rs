@@ -329,7 +329,7 @@ fn worker_snapshots_and_undo_keep_the_last_user_detail_focus(cx: &mut TestAppCon
 }
 
 fn receive_worker_event(view: &mut EditorView) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         match view.service.try_event() {
             Ok(event) => {

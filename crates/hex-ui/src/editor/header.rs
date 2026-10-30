@@ -408,7 +408,7 @@ mod ui_tests {
         let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
         let mut visual = VisualTestContext::from_window(handle, cx);
         // The existing headless control carrier supplies labels without OS audio.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = crate::test_wait::hang_deadline();
         let (mut output, _backend) = loop {
             match hex_audio::worker_fixture::open(48_000) {
                 Ok(output) => break output,
@@ -578,7 +578,7 @@ mod ui_tests {
         let mut ready: Option<Arc<hex_session::service::ViewState>> = None;
         for loading in [true, false] {
             if !loading {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                let deadline = crate::test_wait::hang_deadline();
                 loop {
                     let installed = editor.update(&mut visual, |v, cx| {
                         if v.tick(cx) {

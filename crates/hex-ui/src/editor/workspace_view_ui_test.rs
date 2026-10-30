@@ -4,17 +4,20 @@ use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTes
 use hex_session::service::{Event, Request, Service};
 
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none());
             return event;
         }
-        assert!(Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "next: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[gpui::test]
 fn workspace_generation2_pointer_selected_views_route_actual_tab(cx: &mut TestAppContext) {
@@ -138,7 +141,7 @@ fn workspace_generation2_startup_app_bindings_and_browser_return_route_tab(
         .unwrap();
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         editor.update(&mut visual, |v, cx| {
             v.tick(cx);
@@ -148,7 +151,10 @@ fn workspace_generation2_startup_app_bindings_and_browser_return_route_tab(
         if editor.read_with(&visual, |v, _| v.state.is_some()) {
             break;
         }
-        assert!(Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "workspace_generation2_startup_app_bindings_and_browser_return_route_tab: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     // No fixture assignment to mode, state, root focus or selection.
@@ -174,7 +180,7 @@ fn workspace_generation2_startup_app_bindings_and_browser_return_route_tab(
             name: "focus return".into()
         })))
     });
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         editor.update(&mut visual, |v, cx| {
             v.tick(cx);
@@ -186,7 +192,10 @@ fn workspace_generation2_startup_app_bindings_and_browser_return_route_tab(
         }) {
             break;
         }
-        assert!(Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "workspace_generation2_startup_app_bindings_and_browser_return_route_tab: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     eprintln!("actual app input setup and constructor-owned startup focus: reciprocal Tab passed");

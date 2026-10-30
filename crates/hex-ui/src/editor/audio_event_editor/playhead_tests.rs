@@ -7,10 +7,7 @@ use crate::editor::{
 };
 use gpui::{Entity, TestAppContext, VisualTestContext, px, size};
 use hex_project::Command;
-use std::{
-    sync::atomic::Ordering::Acquire,
-    time::{Duration, Instant},
-};
+use std::{sync::atomic::Ordering::Acquire, time::Instant};
 
 fn marker(
     visual: &mut VisualTestContext,
@@ -47,7 +44,7 @@ fn pump_until(
     backend: &mut hex_audio::worker_fixture::HeadlessBackend,
     ready: impl Fn(&EditorView) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         held_pointer_tests::pump_output(editor, cx, output, backend);
         visual.run_until_parked();

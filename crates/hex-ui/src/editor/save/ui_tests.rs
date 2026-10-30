@@ -20,7 +20,7 @@ fn pump(
     cx: &mut TestAppContext,
     done: impl Fn(&EditorView) -> bool,
 ) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -62,9 +62,12 @@ fn fixture(
     fs::create_dir(root.join("samples")).unwrap();
     let path = root.join("My Original.hex");
     let service = Service::new(48_000, 16, 8_000_000).unwrap();
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     while service.try_event().is_err() {
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "fixture: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     service.submit(Request::SaveNew(path.clone())).unwrap();
@@ -73,7 +76,10 @@ fn fixture(
             assert!(event.error.is_none());
             break;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "fixture: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     // The historical schema36 tempo lineage has this same envelope without sections.
@@ -186,7 +192,7 @@ fn save(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
     assert!(detail.contains("new or versioned name"));
 }
 fn wait_for_picker(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         editor.update(visual, |view, cx| {
             view.tick(cx);

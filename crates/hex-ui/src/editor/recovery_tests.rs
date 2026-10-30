@@ -19,7 +19,7 @@ use std::sync::{
     },
     mpsc::{SyncSender, TryRecvError, sync_channel},
 };
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // An already-open actual worker endpoint, without a second lifecycle implementation. The native
 // desktop tests own reopen/teardown; this fixture exercises UI recovery through the real Service
@@ -332,7 +332,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
         wav.extend_from_slice(&8192_i16.to_le_bytes());
     }
     std::fs::write(&wav_path, wav).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(output) => break output,
@@ -387,7 +387,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     )
     .unwrap();
     let mut receive = || {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             backend.render(&mut [[0.0; 2]; 64]).unwrap();
             match service.try_event() {
@@ -396,7 +396,10 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
                     break event;
                 }
                 Err(TryRecvError::Empty) => {
-                    assert!(Instant::now() < deadline);
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position: hang guard expired"
+                    );
                     std::thread::yield_now();
                 }
                 Err(error) => panic!("{error}"),
@@ -463,7 +466,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
         view.pending_playback = None;
         view.tick(cx);
     });
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if editor.update(cx, |view, cx| {
@@ -494,7 +497,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     editor.update(cx, |view, _| {
         assert!(view.enqueue(add_limiter(second_track)));
     });
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     let rejected_event = loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         editor.update(cx, |view, cx| {
@@ -516,7 +519,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
         } => *audio_revision,
         _ => panic!("unexpected held publication"),
     };
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if editor.update(cx, |view, cx| {
@@ -532,7 +535,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     }
     release.send(rejected_event).unwrap();
     let mut captured = None;
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     let mut released_restore = false;
     let mut stopped_seen = false;
     loop {
@@ -634,7 +637,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     editor.update(cx, |view, _| {
         assert!(view.enqueue(add_limiter(second_track)));
     });
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if editor.update(cx, |view, cx| {
@@ -663,7 +666,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     });
 
     // A worker refusal of the fresh stopped graph must never restart transport.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if editor.update(cx, |view, cx| {
@@ -690,7 +693,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     editor.update(cx, |view, _| {
         assert!(view.enqueue(add_limiter(second_track)))
     });
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if editor.update(cx, |view, cx| {
@@ -718,7 +721,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     // Retry the retained project while stopped, then force the callback to
     // reject the next fresh publication before it can be installed.
     editor.update(cx, |view, _| view.stop());
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if editor.update(cx, |view, cx| {
@@ -742,7 +745,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     editor.update(cx, |view, _| {
         assert!(view.enqueue(add_limiter(second_track)))
     });
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if editor.update(cx, |view, cx| {
@@ -792,7 +795,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
 
     // A later Pause is a new user intent and must cancel automatic resume.
     editor.update(cx, |view, _| view.stop());
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if editor.update(cx, |view, cx| {
@@ -815,7 +818,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     editor.update(cx, |view, _| {
         assert!(view.enqueue(add_limiter(second_track)))
     });
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if editor.update(cx, |view, cx| {
@@ -850,7 +853,7 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
 ) {
     let _output_fixture_guard =
         crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(output) => break output,
@@ -903,7 +906,7 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
     )
     .unwrap();
     let mut receive = || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             backend.render(&mut [[0.0; 2]; 64]).unwrap();
             match service.try_event() {
@@ -913,7 +916,10 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
                     break event;
                 }
                 Err(TryRecvError::Empty) => {
-                    assert!(Instant::now() < deadline);
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack: hang guard expired"
+                    );
                     std::thread::yield_now();
                 }
                 Err(error) => panic!("{error}"),
@@ -1032,7 +1038,7 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
         view.pending_playback = None;
         view.tick(cx);
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let ready = editor.update(cx, |view, cx| {
@@ -1066,7 +1072,7 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
         assert!(!pending.start_playing);
         assert!(pending.prepared_revision.is_none());
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let done = editor.update(cx, |view, cx| {
@@ -1118,7 +1124,7 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
         );
     });
     // Apply the real graph while its protected metadata is withheld from the UI.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let delayed_revision = loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let revision = held.lock().unwrap().as_ref().and_then(|event| match event {
@@ -1150,7 +1156,7 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
         assert_eq!(view.recovery.position(), Some(0));
         assert_eq!(view.recovery.prepared_request(), None);
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let done = editor.update(cx, |view, cx| {

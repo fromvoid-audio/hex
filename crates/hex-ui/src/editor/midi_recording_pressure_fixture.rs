@@ -3,14 +3,10 @@ use super::*;
 use gpui::{AppContext, TestAppContext, VisualTestContext};
 use hex_project::{BeatTime, Command};
 use hex_session::service::{Event, Request, Service};
-use std::{
-    path::PathBuf,
-    sync::mpsc,
-    time::{Duration, Instant},
-};
+use std::{path::PathBuf, sync::mpsc, time::Instant};
 
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);

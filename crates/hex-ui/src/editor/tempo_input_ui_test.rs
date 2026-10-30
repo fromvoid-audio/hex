@@ -272,7 +272,7 @@ fn project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortc
 fn playback_vector_controls_follow_actual_transport_status(cx: &mut TestAppContext) {
     use crate::editor::device_panel::tests::eq_ui_tests::{graph_layout_tests, held_pointer_tests};
     use crate::editor::midi_canvas::creation_tests::fixture;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     let _guard = graph_layout_tests::status_fixture_guard();
     let (mut visual, editor, _environment, _) = fixture(cx);
@@ -332,7 +332,7 @@ fn playback_vector_controls_follow_actual_transport_status(cx: &mut TestAppConte
 
     for (button, playing) in [(play, true), (stop, false)] {
         visual.simulate_click(button.center(), Modifiers::default());
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
             visual.run_until_parked();

@@ -69,7 +69,7 @@ fn pump(
     cx: &mut TestAppContext,
     done: impl Fn(&EditorView) -> bool,
 ) {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -98,7 +98,7 @@ fn flush(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) {
 fn open(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>) {
     editor.update_in(visual, |view, window, _| view.focus.focus(window));
     visual.dispatch_action(OpenProject);
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if visual.pending_open_directory().is_some() {
@@ -137,7 +137,7 @@ fn save_as(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>, or
     } else {
         visual.dispatch_action(SaveAsProject);
     }
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if visual.pending_save_options().is_some() {
@@ -166,7 +166,7 @@ fn saved(
     });
 }
 fn service_state(service: &Service) -> Arc<hex_session::service::ViewState> {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
@@ -344,10 +344,13 @@ fn project_directory_dirty_open_cancel_save_as_cancel_and_dont_save_failure_keep
     visual.run_until_parked();
     cx.simulate_prompt_answer("save");
     pump(&editor, &mut visual, |view| view.save_dialog_open);
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     while cx.pending_save_options().is_none() {
         visual.run_until_parked();
-        assert!(std::time::Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "project_directory_dirty_open_cancel_save_as_cancel_and_dont_save_failure_keep_folder: hang guard expired"
+        );
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     assert_eq!(cx.pending_save_options().unwrap().0, folder);
@@ -497,7 +500,7 @@ fn project_directory_owned_writer_persists_latest_success_after_view_drop(cx: &m
     });
     close(visual, editor);
     gate.release();
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         cx.run_until_parked();
         if !writes.lock().unwrap().running {
@@ -841,7 +844,7 @@ fn named_startup_success(
     });
 }
 fn finish_startup_jobs(cx: &mut TestAppContext, gate: &TestGate, writes: &Arc<Mutex<Writes>>) {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     while !gate.finished.load(Ordering::Acquire) || writes.lock().unwrap().running {
         cx.run_until_parked();
         assert!(

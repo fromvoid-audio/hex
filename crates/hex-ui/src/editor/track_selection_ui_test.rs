@@ -520,18 +520,21 @@ fn selected_solo_click_shortcut_and_history_share_the_complete_selection(cx: &mu
     use hex_project::{Command, TrackId};
     use hex_session::service::{Event, Request, Service};
     fn next(service: &Service) -> Event {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);
                 return event;
             }
-            assert!(std::time::Instant::now() < deadline);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "next: hang guard expired"
+            );
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
     fn flush(editor: &gpui::Entity<super::EditorView>, cx: &mut TestAppContext) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             editor.update(cx, |view, cx| {
                 view.tick(cx);
@@ -542,7 +545,10 @@ fn selected_solo_click_shortcut_and_history_share_the_complete_selection(cx: &mu
             }) {
                 return;
             }
-            assert!(std::time::Instant::now() < deadline);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "flush: hang guard expired"
+            );
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }

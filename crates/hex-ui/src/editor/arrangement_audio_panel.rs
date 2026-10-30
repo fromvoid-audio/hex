@@ -1130,7 +1130,7 @@ mod tests {
         use std::time::{Duration, Instant};
 
         fn next(service: &Service) -> Event {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             loop {
                 if let Ok(event) = service.try_event() {
                     assert!(event.error.is_none(), "{:?}", event.error);
@@ -1145,7 +1145,7 @@ mod tests {
         }
 
         fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             loop {
                 let done = editor.update(&mut *visual, |v, cx| {
                     v.tick(cx);

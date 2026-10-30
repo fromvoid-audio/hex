@@ -8,18 +8,21 @@ use hex_session::service::{Event, Request, Service};
 use std::time::{Duration, Instant};
 
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(10);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
 pub(super) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(10);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -507,12 +510,12 @@ fn released_resize_survives_earlier_completion_until_project_replacement(cx: &mu
         assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(3));
         let earlier = next(&v.service);
         let replacement = next(&v.service);
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = crate::test_wait::hang_deadline();
         let terminal = loop {
             if let Ok(event) = v.service.try_event() {
                 break event;
             }
-            assert!(Instant::now() < until);
+            assert!(std::time::Instant::now() < until, "released_resize_survives_earlier_completion_until_project_replacement: hang guard expired");
             std::thread::sleep(Duration::from_millis(2));
         };
         assert!(earlier.request_complete && !earlier.project_replaced);
@@ -617,7 +620,7 @@ fn pending_resize_correlates_real_fifo_acceptance_failure_and_deferred_submissio
                 "independent edits preserve preview; deletion invalidates its stable clip owner"
             );
         });
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = crate::test_wait::hang_deadline();
         loop {
             let completed = editor.update(&mut visual, |v, _| {
                 if let Ok(event) = v.service.try_event() {
@@ -644,7 +647,10 @@ fn pending_resize_correlates_real_fifo_acceptance_failure_and_deferred_submissio
             if completed {
                 break;
             }
-            assert!(Instant::now() < until);
+            assert!(
+                std::time::Instant::now() < until,
+                "pending_resize_correlates_real_fifo_acceptance_failure_and_deferred_submission: hang guard expired"
+            );
             std::thread::sleep(Duration::from_millis(2));
         }
     }

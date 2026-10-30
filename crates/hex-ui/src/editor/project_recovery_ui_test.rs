@@ -2,13 +2,10 @@
 use super::*;
 use gpui::{AppContext, Entity, Modifiers, TestAppContext, VisualTestContext};
 use hex_session::service::{Request, Service};
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |view, cx| {
             if view.tick(cx) {
@@ -182,12 +179,15 @@ fn unavailable_recovery_cancel_preserves_old_journal_and_confirm_starts_current_
 }
 
 fn next(service: &Service) -> hex_session::service::Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::yield_now();
     }
 }

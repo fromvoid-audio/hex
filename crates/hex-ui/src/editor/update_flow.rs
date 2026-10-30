@@ -451,7 +451,7 @@ mod tests {
     #[gpui::test]
     fn changed_project_refuses_ready_helper_without_approval(cx: &mut TestAppContext) {
         let service = Service::new(48_000, 32, 8_000_000).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none());
@@ -543,9 +543,12 @@ mod tests {
     #[gpui::test]
     fn save_restart_waits_for_its_save_and_ready_helper(cx: &mut TestAppContext) {
         let service = Service::new(48_000, 32, 8_000_000).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = crate::test_wait::hang_deadline();
         while service.try_event().is_err() {
-            assert!(Instant::now() < deadline);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "save_restart_waits_for_its_save_and_ready_helper: hang guard expired"
+            );
             std::thread::yield_now();
         }
         let path =
@@ -556,7 +559,10 @@ mod tests {
                 assert!(event.save_complete && event.error.is_none());
                 break event.state;
             }
-            assert!(Instant::now() < deadline);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "save_restart_waits_for_its_save_and_ready_helper: hang guard expired"
+            );
             std::thread::yield_now();
         };
         let (client, worker) = crate::update_channel();

@@ -67,7 +67,7 @@ fn editor_reports_each_rejection_and_keeps_reader_through_retirement(cx: &mut Te
     });
     backend.close();
     drop(output);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(cx, |view, _| {
             view.poll_retired_action_outcomes();
@@ -152,7 +152,7 @@ fn occupied_retirement_slot_keeps_the_closed_current_reader(cx: &mut TestAppCont
     });
     backend.close();
     drop(output);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(cx, |view, _| {
             view.poll_retired_action_outcomes();

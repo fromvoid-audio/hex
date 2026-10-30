@@ -12,12 +12,7 @@ use hex_engine::{NativeDeviceClass, PreparedRevision, SineTable, playback::Playb
 use hex_lattice_contract::ParameterValue;
 use hex_project::{Command, Editor, Project};
 use hex_session::{arrangement_seek::ArrangementSeekMode, service::Service};
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    thread,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeMap, sync::Arc, thread, time::Instant};
 
 fn one_track_project() -> Project {
     let mut editor =
@@ -101,7 +96,7 @@ fn post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation
         .request_arrangement_seek(intent.spec().unwrap())
         .unwrap();
     let pending = PendingSeek::from_intent(request, &intent, fence);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let result = loop {
         if let Some(result) = service.try_arrangement_seek_result() {
             break result;
@@ -396,7 +391,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         .request_arrangement_seek(intent.spec().expect("captured section worker spec"))
         .expect("admit seek worker request");
     pending.request_id = request_id;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let result = loop {
         if let Some(result) = service.try_arrangement_seek_result() {
             break result;
@@ -518,7 +513,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         (768, 768)
     );
     let request = service.request_arrangement_seek(latest_spec).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let latest_result = loop {
         if let Some(result) = service.try_arrangement_seek_result() {
             break result;

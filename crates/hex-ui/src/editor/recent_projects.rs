@@ -411,10 +411,10 @@ mod tests {
     ) {
         use gpui::VisualTestContext;
         use hex_session::service::Request;
-        use std::time::{Duration, Instant};
+        use std::time::Instant;
 
         fn settle(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             loop {
                 editor.update(&mut *visual, |view, cx| {
                     view.tick(cx);

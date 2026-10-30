@@ -38,7 +38,7 @@ mod saturator_ui_tests;
 mod shortcut_text_tests;
 
 fn receive_service_event(service: &Service) -> Event {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         match service.try_event() {
             Ok(event) => return event,
@@ -205,7 +205,7 @@ fn pump_until(
     cx: &mut TestAppContext,
     mut done: impl FnMut(&EditorView) -> bool,
 ) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -649,7 +649,7 @@ fn device_paste_during_playback_applies_to_actual_callback(cx: &mut TestAppConte
         .center();
     visual.simulate_click(title, Modifiers::default());
     visual.simulate_keystrokes("space");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while !backend.status().unwrap().playing.load(Acquire) {
         eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
         visual.run_until_parked();
@@ -1082,7 +1082,7 @@ fn device_drop_then_space_starts_actual_callback_and_applies_device(cx: &mut Tes
     visual.simulate_mouse_move(destination, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("space");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
         visual.run_until_parked();
