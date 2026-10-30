@@ -858,10 +858,14 @@ impl NativeAudioSink {
                 };
                 self.observe(context, "submitted", state);
             }
+            // Transient admission states keep the built candidate for a later poll.
+            // An unsealed domain is usually a superseded source construction that
+            // is still retiring; refusing would block this newer canonical state.
             Err(
                 "playback publication already pending"
                 | "candidate publication queue is full"
-                | "candidate preparation is busy",
+                | "candidate preparation is busy"
+                | "source construction is not sealed",
             ) => {
                 self.preparation = Some(pending);
                 self.observe(context, "busy", EditorPublicationState::Busy);
