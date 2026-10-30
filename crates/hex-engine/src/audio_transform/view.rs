@@ -1,6 +1,7 @@
 //! Control-side realization of the canonical finite placement projection.
-//! A frame-clock placement that tiles its root window plays that shared root as
-//! a loop (or crop); split and copied pieces add no PCM. Other placements
+//! A placement whose occurrences all read one shared root (frame clocks, or
+//! musical clocks at translation-free origins) and tile its window plays that
+//! root as a loop (or crop); split and copied pieces add no PCM. Other placements
 //! materialize one contiguous outer buffer shared with waveform preparation.
 //! Full processing roots keep their own cache/reservation; their crops never
 //! restart warp, source envelopes, events or fades. No callback scheduler changes.
@@ -184,6 +185,12 @@ impl AudioTransformPreparation {
             let root = self.prepare_audio_at_tempo(tempo_map, &root_edit, asset, source)?;
             return looped_clip(root, clip, shape);
         }
+        if matches!(edit.domain.clock, AudioDomainClock::Beats(_))
+            && let Some((root, shape)) =
+                self.shared_musical_root(tempo_map, clip, edit, asset, source, &projection)?
+        {
+            return looped_clip(root, clip, shape);
+        }
         if let Some(audio) = self.lookup_key(source, asset, |key| {
             key.matches_view(edit, tempo_map, clip.start(), clip.duration())
         })? {
@@ -325,6 +332,41 @@ pub(super) fn occurrence_edit(
     Ok(root)
 }
 
+impl AudioTransformPreparation {
+    /// Prepare each musical occurrence root (translation-free origins share one
+    /// cached render). Only when all of them are that one PCM can the placement
+    /// play it as a loop; otherwise the caller materializes as before, reusing
+    /// the roots prepared here through the cache.
+    fn shared_musical_root(
+        &self,
+        tempo_map: &hex_project::TempoMap,
+        clip: &hex_project::Clip,
+        edit: &AudioClipEdit,
+        asset: &Asset,
+        source: &Audio,
+        projection: &AudioViewProjection,
+    ) -> Result<Option<(Audio, RootLoop)>, Invalid> {
+        let mut shared: Option<Audio> = None;
+        for index in 0..projection.occurrence_count() {
+            if self.cancelled() {
+                return Err(Invalid("audio preparation cancelled"));
+            }
+            let occurrence = projection.occurrence(index)?;
+            let root_edit = occurrence_edit(edit, occurrence.root_origin, self, tempo_map)?;
+            let root = self.prepare_audio_at_tempo(tempo_map, &root_edit, asset, source)?;
+            match &shared {
+                Some(first) if !first.shares_pcm_with(&root) => return Ok(None),
+                Some(_) => {}
+                None => shared = Some(root),
+            }
+        }
+        let Some(root) = shared else {
+            return Ok(None);
+        };
+        Ok(occurrence_loop(clip, projection)?.map(|shape| (root, shape)))
+    }
+}
+
 /// Loop geometry of a placement whose output equals its processing root's crop
 /// window `[offset, offset + period)` looped from `phase`.
 #[derive(Clone, Copy)]
@@ -350,9 +392,39 @@ pub(super) fn root_loop(
     {
         return Ok(None);
     }
+    tiled_window(clip, projection, edit.view_start, edit.view_end)
+}
+
+/// Musical occurrences carry their own projected window. When every occurrence
+/// already resolved to one shared root, the window is read from the first two
+/// occurrences (a lone occurrence is a crop) and verified like a frame window.
+pub(super) fn occurrence_loop(
+    clip: &hex_project::Clip,
+    projection: &AudioViewProjection,
+) -> Result<Option<RootLoop>, Invalid> {
+    let (start, end) = match projection.occurrence_count() {
+        0 => return Ok(None),
+        1 => {
+            let only = projection.occurrence(0)?;
+            (only.root_start, only.root_end)
+        }
+        _ => (
+            projection.occurrence(1)?.root_start,
+            projection.occurrence(0)?.root_end,
+        ),
+    };
+    tiled_window(clip, projection, start, end)
+}
+
+/// Verify that occurrences tile the clip by looping root window `[offset, end)`.
+fn tiled_window(
+    clip: &hex_project::Clip,
+    projection: &AudioViewProjection,
+    offset: u64,
+    end: u64,
+) -> Result<Option<RootLoop>, Invalid> {
     let first = projection.occurrence(0)?;
-    let offset = edit.view_start;
-    let Some(period) = edit.view_end.checked_sub(offset).filter(|n| *n > 0) else {
+    let Some(period) = end.checked_sub(offset).filter(|n| *n > 0) else {
         return Ok(None);
     };
     let Some(phase) = first

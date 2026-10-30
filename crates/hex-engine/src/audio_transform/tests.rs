@@ -12,6 +12,8 @@ mod group;
 mod aliases;
 #[path = "tests/content_reverse.rs"]
 mod content_reverse;
+#[path = "tests/musical_sharing.rs"]
+mod musical_sharing;
 #[path = "tests/view_placement.rs"]
 mod view_placement;
 
