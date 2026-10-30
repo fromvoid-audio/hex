@@ -1246,6 +1246,54 @@ fn sounding_note_does_not_survive_seek_or_stop_across_partitions() {
 }
 
 #[test]
+fn pause_and_resume_of_a_sounding_note_is_partition_invariant() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(1, 2));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(1, 2),
+            pitch: 69,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    let project = compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    let run = |block: usize| {
+        let mut playback = Playback::new(project.clone());
+        let mut render = |playback: &mut Playback, frames: usize| {
+            let mut output = vec![[9.0; 2]; frames];
+            for chunk in output.chunks_mut(block) {
+                playback.render(chunk).unwrap();
+            }
+            output
+        };
+        playback.apply(PlaybackCommand::Play);
+        let before = render(&mut playback, 3_000);
+        playback.apply(PlaybackCommand::Pause);
+        let paused_at = playback.position();
+        let paused = render(&mut playback, 500);
+        assert_eq!(playback.position(), paused_at, "block {block}");
+        playback.apply(PlaybackCommand::Play);
+        let resumed = render(&mut playback, 2_000);
+        (before, paused, resumed, paused_at)
+    };
+    let expected = run(128);
+    assert_eq!(expected.1, vec![[0.0; 2]; 500]);
+    let mut whole_playback = Playback::new(project.clone());
+    whole_playback.apply(PlaybackCommand::Play);
+    let mut whole = vec![[0.0; 2]; 5_000];
+    whole_playback.render(&mut whole).unwrap();
+    assert_eq!(expected.0, whole[..3_000]);
+    // Resume continues the same timeline position as an uninterrupted render.
+    assert_eq!(expected.2, whole[3_000..]);
+    for block in [1_usize, 17, 64, 512] {
+        assert_eq!(run(block), expected, "block {block}");
+    }
+}
+
+#[test]
 fn interval_tree_keeps_earlier_notes_when_median_onset_is_in_the_future() {
     const TOTAL_FRAMES: usize = 320_000;
     let (mut editor, track) = setup();
