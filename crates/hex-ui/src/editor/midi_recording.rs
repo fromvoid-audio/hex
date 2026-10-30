@@ -546,7 +546,7 @@ impl EditorView {
 mod tests {
     use super::super::midi_canvas::creation_tests::{fixture, pump};
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     #[gpui::test]
     fn midi_take_survives_delayed_commit_and_refusal_while_document_actions_are_blocked(
@@ -613,7 +613,7 @@ mod tests {
                 cx.notify();
             });
             visual.run_until_parked();
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             let event = loop {
                 if let Ok(event) = editor.update(&mut visual, |view, _| view.service.try_event()) {
                     break event;
@@ -668,13 +668,13 @@ mod tests {
 mod lifecycle_tests {
     use super::super::midi_canvas::creation_tests::{fixture, pump};
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     fn open_output() -> (
         hex_audio::WorkerPreparedOutput,
         hex_audio::worker_fixture::HeadlessBackend,
     ) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             match hex_audio::worker_fixture::open(48_000) {
                 Ok((mut output, backend)) => {

@@ -195,7 +195,7 @@ fn receive_worker(
     cx: &mut TestAppContext,
     initial: bool,
 ) {
-    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let end = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(cx, |view, cx| {
             if view.tick(cx) {

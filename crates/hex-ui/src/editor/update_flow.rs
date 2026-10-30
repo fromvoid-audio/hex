@@ -451,7 +451,7 @@ mod tests {
     #[gpui::test]
     fn changed_project_refuses_ready_helper_without_approval(cx: &mut TestAppContext) {
         let service = Service::new(48_000, 32, 8_000_000).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none());

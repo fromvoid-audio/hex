@@ -753,15 +753,12 @@ mod tests {
     ) {
         let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         use hex_project::{Command, Created, Editor, Project};
-        use std::{
-            sync::Arc,
-            time::{Duration, Instant},
-        };
+        use std::{sync::Arc, time::Instant};
         fn open() -> (
             hex_audio::WorkerPreparedOutput,
             hex_audio::worker_fixture::HeadlessBackend,
         ) {
-            let end = Instant::now() + Duration::from_secs(5);
+            let end = crate::test_wait::hang_deadline();
             loop {
                 match hex_audio::worker_fixture::open(48_000) {
                     Ok((mut output, backend)) => {

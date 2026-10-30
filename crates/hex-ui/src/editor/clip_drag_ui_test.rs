@@ -2483,10 +2483,7 @@ fn shift_edge_stretch_escape_and_focus_loss_cancel_without_release_edit(cx: &mut
 
 #[gpui::test]
 fn upper_rail_fixture_same_root_survives_actual_catalog_job_and_view_drop(cx: &mut TestAppContext) {
-    use std::{
-        sync::atomic::Ordering,
-        time::{Duration, Instant},
-    };
+    use std::{sync::atomic::Ordering, time::Instant};
     let (files, handle, editor) = upper_rail_owned_fixture(cx);
     let root = files.root().to_owned();
     let weak = Arc::downgrade(&files);
@@ -2530,7 +2527,7 @@ fn upper_rail_fixture_same_root_survives_actual_catalog_job_and_view_drop(cx: &m
     assert!(gate.root_present_during_save.load(Ordering::Relaxed));
     visual.update(|_, _| {});
     assert!(weak.upgrade().is_none(), "no leaked fixture/view/job Arc");
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(
             Instant::now() < until,

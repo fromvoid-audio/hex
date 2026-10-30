@@ -4,7 +4,7 @@ use super::creation_tests::{fixture, pump};
 use gpui::{Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
 use hex_project::{BeatTime, ClipId, Command, MidiNoteInsert};
 use hex_session::service::{Event, Request};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 fn beat(value: f64) -> BeatTime {
     BeatTime::from_raw((value * BeatTime::ONE.raw() as f64) as u64)
@@ -60,7 +60,7 @@ fn bodies(editor: &Entity<EditorView>, visual: &mut VisualTestContext) -> Vec<[i
     result
 }
 fn terminal(editor: &Entity<EditorView>, visual: &mut VisualTestContext) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = editor.read_with(&*visual, |v, _| v.service.try_event()) {
             if event.request_complete {
@@ -232,7 +232,7 @@ fn released_note_move_copy_and_both_resize_edges_keep_geometry_through_real_term
                     }))
                 );
             });
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             while editor.read_with(&visual, |v, _| !v.pending_requests.is_empty()) {
                 editor.update(&mut visual, |v, cx| {
                     v.tick(cx);
@@ -244,7 +244,10 @@ fn released_note_move_copy_and_both_resize_edges_keep_geometry_through_real_term
                     held,
                     "earlier tuning completion cannot retire note display"
                 );
-                assert!(Instant::now() < deadline);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "released_note_move_copy_and_both_resize_edges_keep_geometry_through_real_terminal: hang guard expired"
+                );
                 std::thread::yield_now();
             }
         }

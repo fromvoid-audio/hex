@@ -66,7 +66,7 @@ fn actor_fixture_in_mode(
     use hex_project::Created;
     use hex_session::service::{Request, Service};
     fn receive(service: &Service) -> hex_session::service::Event {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 return event;
@@ -152,7 +152,7 @@ fn actor_fixture_in_mode(
 }
 
 fn pump(editor: &Entity<EditorView>, cx: &mut TestAppContext, done: impl Fn(&EditorView) -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         editor.update(cx, |view, cx| {
             view.tick(cx);
@@ -1018,7 +1018,7 @@ fn header_fixture_real_catalog_retains_one_root_after_view_and_caller_drop(
     assert!(gate.root_present_during_save.load(Ordering::Relaxed));
     visual.update(|_, _| {});
     assert!(weak.upgrade().is_none());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(
             std::time::Instant::now() < deadline,

@@ -5669,7 +5669,7 @@ mod tuning_audition_error_tests {
     use super::*;
     use gpui::TestAppContext;
     fn next(service: &hex_session::service::Service) -> Event {
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             match service.try_event() {
                 Ok(event) => return event,
@@ -5741,7 +5741,7 @@ mod comparison_source_binding_tests {
         // Actual worker-minted binding; AppliedAudioSource below is a nonowning
         // protocol fixture, not proof that a native constructor/callback ran.
         let service = hex_session::service::Service::new(48_000, 16, 0).unwrap();
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         let receive = || loop {
             assert!(Instant::now() < deadline, "bounded comparison worker");
             match service.try_event() {
@@ -5917,12 +5917,15 @@ mod sampler_native_ui_protocol_tests {
         )
         .unwrap();
         let receive = || {
-            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             loop {
                 match service.try_event() {
                     Ok(event) => break event,
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        assert!(Instant::now() < deadline);
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "worker_preview_ack_case: hang guard expired"
+                        );
                         std::thread::yield_now();
                     }
                     Err(error) => panic!("{error}"),
@@ -6039,7 +6042,7 @@ mod sampler_native_ui_protocol_tests {
         );
         let canonical = event.state;
         let context = canonical.canonical_audio_source.as_ref().unwrap().context();
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         let (mut output, mut backend) = loop {
             match hex_audio::worker_fixture::open(48_000) {
                 Ok(output) => break output,
@@ -6224,12 +6227,15 @@ mod sampler_native_ui_protocol_tests {
                     action: hex_project::DeviceComparisonAction::Switch,
                 })
                 .unwrap();
-            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             let event = loop {
                 match view.service.try_event() {
                     Ok(event) => break event,
                     Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        assert!(Instant::now() < deadline);
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "worker_preview_ack_case: hang guard expired"
+                        );
                         std::thread::yield_now();
                     }
                     Err(error) => panic!("{error}"),
@@ -6313,12 +6319,15 @@ mod sampler_native_ui_protocol_tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let service = hex_session::service::Service::new(16_000, 8, 0).unwrap();
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         let event = loop {
             match service.try_event() {
                 Ok(event) => break event,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    assert!(Instant::now() < deadline);
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "resident_publication_correlates_preview_restart_and_stopped_restore: hang guard expired"
+                    );
                     std::thread::yield_now();
                 }
                 Err(error) => panic!("{error}"),
@@ -6525,12 +6534,15 @@ mod sampler_native_ui_protocol_tests {
         // UI protocol metadata only; actual native proof/PCM is covered by the
         // Service/Desktop eligible publication and callback integration probes.
         let service = hex_session::service::Service::new(16000, 8, 0).unwrap();
-        let end = Instant::now() + std::time::Duration::from_secs(5);
+        let end = crate::test_wait::hang_deadline();
         let event = loop {
             match service.try_event() {
                 Ok(e) => break e,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    assert!(Instant::now() < end);
+                    assert!(
+                        std::time::Instant::now() < end,
+                        "native_sampler_applied_source_recovers_lost_submitted_metadata_without_legacy_promotion: hang guard expired"
+                    );
                     std::thread::yield_now();
                 }
                 Err(e) => panic!("{e}"),

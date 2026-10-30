@@ -231,13 +231,16 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         let snapshot = loop {
             let snapshot = handle.snapshot().unwrap();
             if matches!(snapshot.state, State::Unavailable(_)) {
                 break snapshot;
             }
-            assert!(std::time::Instant::now() < deadline);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "review_final_native_mts_errors_are_lowercase_at_the_ui_boundary: hang guard expired"
+            );
             std::thread::sleep(std::time::Duration::from_millis(2));
         };
         let State::Unavailable(error) = snapshot.state else {
@@ -265,7 +268,7 @@ mod tests {
         use hex_session::service::{Request, Service};
         use hex_session::tuning_gesture::TuningGestureRequest;
         fn next(service: &Service) -> hex_session::service::Event {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let deadline = crate::test_wait::hang_deadline();
             loop {
                 match service.try_event() {
                     Ok(event) => return event,

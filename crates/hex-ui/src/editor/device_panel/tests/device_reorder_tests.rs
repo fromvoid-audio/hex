@@ -496,7 +496,7 @@ fn option_drag_copy_applies_to_the_playing_callback(cx: &mut TestAppContext) {
     let (mut output, mut backend) =
         eq_ui_tests::held_pointer_tests::attach_actual_output(&editor, cx, &mut visual);
     visual.simulate_keystrokes("space");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while !backend.status().unwrap().playing.load(Acquire) {
         eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
         visual.run_until_parked();

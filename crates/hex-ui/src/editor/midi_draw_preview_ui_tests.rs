@@ -196,7 +196,7 @@ fn queued_draw_batch_matches_only_its_exact_variant_and_survives_earlier_termina
     });
     // The real controller drains the earlier tuning terminal before submitting
     // the queued draw at the end of tick. The draw terminal remains unreceived.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while editor.read_with(&visual, |v, _| !v.pending_requests.is_empty()) {
         editor.update(&mut visual, |v, cx| {
             v.tick(cx);
@@ -204,7 +204,10 @@ fn queued_draw_batch_matches_only_its_exact_variant_and_survives_earlier_termina
         });
         repaint(&editor, &mut visual);
         assert_eq!(geometry(&editor, &mut visual), held);
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "queued_draw_batch_matches_only_its_exact_variant_and_survives_earlier_terminal: hang guard expired"
+        );
         std::thread::yield_now();
     }
     let reply = terminal(&editor, &mut visual);

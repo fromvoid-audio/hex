@@ -136,7 +136,7 @@ fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
         view.selected_track = Some(track);
         view.select_browser_source(BrowserSection::Plugins, cx);
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(&visual, |view, _| !view.browser.plugins.loading) {
@@ -173,7 +173,7 @@ fn unavailable_effect_activation(cx: &mut TestAppContext, pointer: bool) {
             view.error, view.status, view.selected_track, view.state.as_ref().map(|s| (s.revision, s.project.tracks().len()))
         );
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         cx.background_executor
             .advance_clock(std::time::Duration::from_millis(16));
@@ -227,7 +227,7 @@ fn browser_vst3_restores_searchable_typed_rows_and_enter_refuses_unavailable_inv
         view.select_browser_source(BrowserSection::Plugins, cx);
         view.start_plugin_catalog(cx);
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(&visual, |view, _| !view.browser.plugins.loading) {
@@ -636,7 +636,7 @@ fn browser_vst3_sidebar_visibility_selects_real_source_and_preserves_search_hist
     cx.update(crate::editor::bind_editor_keys);
     let (handle, editor, _track, directory, _wave) = browser_drag_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         visual.run_until_parked();
         if editor.read_with(&visual, |view, _| !view.browser.plugins.loading) {

@@ -236,7 +236,7 @@ fn empty_track_fixture_catalog_job_owns_same_root_after_view_and_caller_drop(
     assert!(gate.root_present_during_save.load(Ordering::Relaxed));
     visual.update(|_, _| {});
     assert!(weak.upgrade().is_none());
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(std::time::Instant::now() < until, "owned root cleanup");
         std::thread::yield_now();

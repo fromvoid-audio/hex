@@ -323,12 +323,15 @@ fn actual_source_ack_cancels_old_pointer_and_blur_before_held_copy_ack_keeps_bas
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after)
     });
     visual.simulate_keystrokes("cmd-d");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let event = loop {
         if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
             break event;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "actual_source_ack_cancels_old_pointer_and_blur_before_held_copy_ack_keeps_baseline: hang guard expired"
+        );
         std::thread::yield_now();
     };
     assert!(event.error.is_none());

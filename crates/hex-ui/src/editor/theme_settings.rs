@@ -1174,7 +1174,7 @@ mod tests {
                 editor
             })
             .expect("editor window");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             cx.run_until_parked();
             if editor.read_with(cx, |view, _| {

@@ -1002,7 +1002,7 @@ fn prove_fixture_catalog_custody(cx: &mut TestAppContext, unwind: bool) {
         weak.upgrade().is_none(),
         "fixture/view/job owners released without Arc leak"
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(
             Instant::now() < deadline,

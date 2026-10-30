@@ -101,7 +101,7 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
         v.state.as_ref().unwrap().project.snapshot()
     });
     visual.simulate_keystrokes("cmd-x");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let terminal = loop {
         if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
             if event.request_complete {
@@ -167,7 +167,7 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
     visual.simulate_mouse_down(grip, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let terminal = loop {
         if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
             if event.request_complete {

@@ -2127,7 +2127,7 @@ mod tests {
 
     #[track_caller]
     fn next(service: &Service) -> Event {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 return event;
@@ -3252,7 +3252,7 @@ mod tests {
         let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         use std::sync::Arc;
         let (handle, editor, ids) = fixture(cx);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         let (mut output, mut backend) = loop {
             match hex_audio::worker_fixture::open(48_000) {
                 Ok(output) => break output,

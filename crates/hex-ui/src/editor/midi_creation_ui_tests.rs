@@ -6,19 +6,19 @@ use gpui::{
 };
 use hex_project::{BeatTime, Command};
 use hex_session::service::{Event, Request, Service};
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::yield_now();
     }
 }
@@ -81,7 +81,7 @@ pub(in crate::editor) fn fixture(
     (visual, editor, environment, clip)
 }
 pub(in crate::editor) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -93,7 +93,10 @@ pub(in crate::editor) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTe
         if done {
             return;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "pump: hang guard expired"
+        );
         std::thread::yield_now();
     }
 }

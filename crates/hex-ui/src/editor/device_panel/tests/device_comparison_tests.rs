@@ -932,7 +932,7 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
         )
         .unwrap(),
     );
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(output) => break output,
@@ -1295,7 +1295,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         .prepared_revision()
         .unwrap()
         .clone();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(output) => break output,

@@ -6,10 +6,10 @@ use gpui::{
 };
 use hex_project::{Command, Created, TrackId};
 use hex_session::service::Service;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 fn event(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(4);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         match service.try_event() {
             Ok(event) => return event,
@@ -194,7 +194,7 @@ fn control_assign(
     choose_label(visual, editor, "add new automation lane");
 }
 fn pump(visual: &mut VisualTestContext, editor: &Entity<EditorView>) {
-    let deadline = Instant::now() + Duration::from_secs(4);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(visual, |view, cx| {
             view.tick(cx);

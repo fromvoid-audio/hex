@@ -10,7 +10,7 @@ fn terminal(
     visual: &mut VisualTestContext,
     editor: &Entity<EditorView>,
 ) -> hex_session::service::Event {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = editor.read_with(&*visual, |v, _| v.service.try_event()) {
             if event.request_complete {

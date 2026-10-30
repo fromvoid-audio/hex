@@ -791,9 +791,9 @@ fn two_axis_curve_drags_change_pcm_keep_endpoints_and_bound_vertical_travel(
 
 #[gpui::test]
 fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppContext) {
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
     fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             let ready = editor.update(&mut *visual, |v, cx| {
                 if v.tick(cx) {
@@ -844,7 +844,7 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
     let held = visual.debug_bounds(selector).unwrap();
     let preview = editor.read_with(&visual, |v, _| v.fade_preview(clip).unwrap());
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let event = loop {
         if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
             if event.request_complete {
@@ -974,7 +974,7 @@ fn real_refusal_retires_frozen_curve_with_its_canonical_state(cx: &mut TestAppCo
     visual.run_until_parked();
     let held = visual.debug_bounds(selector).unwrap();
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let terminal = loop {
         if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event())
             && event.request_complete

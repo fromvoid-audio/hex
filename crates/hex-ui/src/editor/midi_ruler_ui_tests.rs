@@ -7,10 +7,7 @@ use crate::editor::{
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
 use hex_project::{BeatTime, Command, MidiNoteInsert};
 use hex_session::service::{Event, Service};
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 fn beat(n: u64) -> BeatTime {
     BeatTime::from_quarters(n).unwrap()
 }
@@ -68,13 +65,16 @@ fn drag(visual: &mut VisualTestContext, from: f32, to: f32) {
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
 }
 pub(super) fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::yield_now();
     }
 }
