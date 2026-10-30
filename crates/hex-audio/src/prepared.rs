@@ -257,8 +257,6 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
     }
 }
 
-// A start queued before an output fault must not revive that output, even
-// if graph recovery clears the fault before the command reaches the callback.
 fn starts_playback(action: PlaybackAction) -> bool {
     matches!(
         action,
@@ -273,6 +271,8 @@ fn starts_playback(action: PlaybackAction) -> bool {
     )
 }
 
+// A start queued before an output fault must not revive that output, even
+// if graph recovery clears the fault before the command reaches the callback.
 fn stale_output_start(status: &Status, queued: QueuedCommand) -> bool {
     starts_playback(queued.action)
         && queued.transport_epoch <= status.last_output_fault_epoch.load(Acquire)
