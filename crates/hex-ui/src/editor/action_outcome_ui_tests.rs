@@ -291,8 +291,9 @@ fn explicit_editor_play_after_render_fault_does_not_run_failed_graph(cx: &mut Te
         hex_project::Project::new(48_000).unwrap(),
         Arc::default(),
     );
+    let _output_serial = hex_audio::worker_fixture::serial_output();
     let (mut output, mut backend) =
-        hex_audio::worker_fixture::open_with_reliable_action_outcomes(48_000).unwrap();
+        hex_audio::worker_fixture::open_after_retirement(48_000, true).unwrap();
     let audio = hex_engine::Audio::new(48_000, vec![[0.25; 2]; 256]).unwrap();
     let track = hex_engine::Track::new(
         vec![hex_engine::Clip::new(audio, 0, 256, false).unwrap()],
