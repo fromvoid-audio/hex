@@ -165,6 +165,11 @@ playback starts at the time-selection start or the edit cursor, even when an
 enabled loop lies elsewhere: starting before the loop plays into it and then
 repeats it, and starting after its end plays on without looping. only when there
 is no selection or edit cursor does an enabled loop supply its beginning.
+moving or resizing the loop during playback takes effect immediately with the
+same rule: inside the new loop the playhead wraps at its new end, before it the
+playhead plays into it, and after it playback continues. a known limit: a loop
+change made while an arrangement instrument note is still sounding is not yet
+applied to playback.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 setting new loop bounds from selected main sections also turns on section focus
