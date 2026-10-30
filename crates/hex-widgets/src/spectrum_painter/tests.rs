@@ -585,3 +585,15 @@ fn shared_fill_budget_skips_malformed_layers_without_bypassing_total_input_cap(
         }
     }
 }
+
+#[test]
+fn empty_and_single_point_layers_never_panic() {
+    for pass in [Pass::Fill, Pass::Trace] {
+        let mut emitted = 0;
+        commands(&[], pass, |_| emitted += 1);
+        assert_eq!(emitted, 0);
+        let mut single = Vec::new();
+        commands(&[[1.0, 2.0]], pass, |command| single.push(command));
+        assert!(matches!(single.first(), Some(Command::Move([1.0, 2.0]))));
+    }
+}

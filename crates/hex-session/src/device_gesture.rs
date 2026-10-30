@@ -332,7 +332,10 @@ impl GestureClient {
             ParameterValue::Float(0.0),
         )?;
         self.origin_parameters = Some(initial);
-        self.active.as_mut().unwrap().parameters = Some(initial);
+        self.active
+            .as_mut()
+            .ok_or("device snapshot gesture did not begin")?
+            .parameters = Some(initial);
         self.pending_begin = Some(GestureRequest::BeginSnapshot {
             key,
             device,
@@ -1418,7 +1421,10 @@ impl GestureMachine {
                     .ok_or(SessionError::Invalid(
                         "gesture preview produced no revision",
                     ))?;
-                    let current = self.active.as_mut().unwrap();
+                    let current = self
+                        .active
+                        .as_mut()
+                        .ok_or(SessionError::Invalid("gesture ended during preview"))?;
                     current.snapshot.manual_edit = !touched.is_empty();
                     current.snapshot.touched_parameters = touched;
                     current.snapshot.sequence = sequence;
