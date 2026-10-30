@@ -212,12 +212,11 @@ impl OperatorFeedbackRuntime {
     pub(super) fn filter_parameter_boundary(
         &self,
     ) -> Option<(crate::fm4::OperatorFeedbackParameters, u32)> {
-        self.retarget.map(|r| {
-            (
-                r.values_at(self.retarget_elapsed)
-                    .expect("validated shared ramp"),
-                r.frames() - self.retarget_elapsed,
-            )
+        // Elapsed never exceeds the ramp; an impossible overrun reports no
+        // boundary instead of panicking on the render/handoff path.
+        self.retarget.and_then(|r| {
+            let parameters = r.values_at(self.retarget_elapsed).ok()?;
+            Some((parameters, r.frames().checked_sub(self.retarget_elapsed)?))
         })
     }
 

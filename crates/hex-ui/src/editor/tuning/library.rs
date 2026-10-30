@@ -23,7 +23,9 @@ impl EditorView {
         {
             return;
         }
-        let context = self.tuning.library_terminal.take().unwrap();
+        let Some(context) = self.tuning.library_terminal.take() else {
+            return;
+        };
         if !accepted || !context.refresh || key.generation != self.project_generation {
             return;
         }

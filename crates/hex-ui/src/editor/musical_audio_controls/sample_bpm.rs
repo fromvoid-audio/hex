@@ -126,7 +126,9 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
             _subscription: subscription,
         });
     }
-    let binding = view.sample_bpm_control.as_ref().unwrap();
+    let Some(binding) = view.sample_bpm_control.as_ref() else {
+        return;
+    };
     binding
         .entity
         .update(cx, |numeric, cx| numeric.set_availability(availability, cx));
