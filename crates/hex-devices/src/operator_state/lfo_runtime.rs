@@ -25,12 +25,18 @@ pub(super) struct OperatorLfoFactory {
     base: [u8; FEEDBACK_PAYLOAD_BYTES],
     lfo: LfoSettings,
     enabled: super::enable::EnableSettings,
+    // Validated once on control by `prepare_factory`.
     feedback: [f64; 4],
-    // Validated once on control so the render path never revalidates.
-    feedback_parameters: crate::fm4::OperatorFeedbackParameters,
     release: u64,
     rate: u32,
     filter: Option<crate::operator_filter::Prepared>,
+}
+
+impl OperatorLfoFactory {
+    fn feedback_parameters(&self) -> crate::fm4::OperatorFeedbackParameters {
+        self.configuration
+            .validated_feedback_parameters(self.feedback)
+    }
 }
 
 pub(super) fn prepare_factory(
@@ -47,7 +53,7 @@ pub(super) fn prepare_factory(
     }
     let state = settings.to_state()?;
     let feedback = settings.effective_feedback().map(f64::from);
-    let feedback_parameters = configuration
+    configuration
         .feedback_parameters(feedback)
         .map_err(|_| DeviceContractError::InvalidParameterValue)?;
     Ok(Some(OperatorLfoFactory {
@@ -60,7 +66,6 @@ pub(super) fn prepare_factory(
         lfo: settings.lfo,
         enabled: settings.enabled,
         feedback,
-        feedback_parameters,
         rate,
         filter: settings
             .filter
@@ -299,7 +304,7 @@ impl<const N: usize> Runtime<N> {
             .filter
             .as_ref()
             .and_then(|b| b.parameters)
-            .map_or_else(|| self.factory.feedback_parameters, ParameterRamp::value);
+            .map_or_else(|| self.factory.feedback_parameters(), ParameterRamp::value);
         if self.enable_ramp.is_some() {
             p.with_oscillator_levels(self.current_levels())
         } else {
@@ -307,8 +312,8 @@ impl<const N: usize> Runtime<N> {
         }
     }
     fn copy(&mut self, other: &Self) {
-        let target = self.factory.feedback_parameters;
-        let old_target = other.factory.feedback_parameters;
+        let target = self.factory.feedback_parameters();
+        let old_target = other.factory.feedback_parameters();
         let parameters = if target == old_target {
             if let Some(ramp) = other.enable_ramp {
                 Some(ParameterRamp {
@@ -808,7 +813,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
                     old.filter_parameter_boundary()
                         .map(|(start, frames)| ParameterRamp {
                             start,
-                            target: self.factory.feedback_parameters,
+                            target: self.factory.feedback_parameters(),
                             elapsed: 0,
                             frames,
                         });
@@ -889,7 +894,7 @@ fn export<const N: usize>(runtime: &Runtime<N>) -> Option<super::harmonic_runtim
         base[super::LFO_PAYLOAD_BYTES + i * 4..super::LFO_PAYLOAD_BYTES + i * 4 + 4]
             .copy_from_slice(&u32::from(*enabled).to_le_bytes());
     }
-    let parameters = parameter_words(runtime.factory.feedback_parameters);
+    let parameters = parameter_words(runtime.factory.feedback_parameters());
     let mut ramp = runtime.enable_ramp.map(|r| ParameterRamp {
         source: std::array::from_fn(|i| if i < 4 { r.start[i] } else { parameters[i] }),
         elapsed: r.elapsed,

@@ -554,11 +554,20 @@ impl PreparedOperatorConfiguration {
         if !self.feedback_amounts_are_valid(feedback_turns) {
             return Err(Invalid("invalid Operator feedback retarget values"));
         }
-        Ok(OperatorFeedbackParameters {
+        Ok(self.validated_feedback_parameters(feedback_turns))
+    }
+
+    /// Build parameters for feedback already accepted by `feedback_parameters`
+    /// on control. Render paths use this so they never revalidate or fail.
+    pub(crate) fn validated_feedback_parameters(
+        &self,
+        feedback_turns: [f64; OPERATORS],
+    ) -> OperatorFeedbackParameters {
+        OperatorFeedbackParameters {
             oscillator_levels: self.oscillator_levels,
             carrier_weights: self.configuration.routing.carriers,
             feedback_turns,
-        })
+        }
     }
 
     /// Immutable enable continuation: borrow the unchanged note and override
