@@ -230,7 +230,15 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
                                    'maximize_control)', 'threshold)', 'display)', 'mode)',
                                    'lookahead)', 'routing)', 'release)', 'auto)'))
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not transport_vector_component and not limiter_component:
+        # Device chain insertion gaps are text-free hit targets beside each device.
+        device_insertion_component = (
+            path.relative_to(ROOT).as_posix() in (
+                'crates/hex-ui/src/editor/device_panel.rs',
+                'crates/hex-ui/src/editor/device_panel/return_drag.rs',
+            )
+            and suffix.startswith('insertion_gap(')
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not transport_vector_component and not limiter_component and not device_insertion_component:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):
