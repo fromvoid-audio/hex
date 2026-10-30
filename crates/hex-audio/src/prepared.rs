@@ -4091,14 +4091,20 @@ impl Callback {
         {
             self.advance_eligible_publication(Some(output.len()));
         }
-        // A replacement may clear the fault above. Until then, no failed graph
-        // or its device chain is rendered, including while transport is stopped.
-        if self.status.render_fault.load(Acquire) {
-            output.fill([0.0; 2]);
-            return Ok(());
-        }
         if !output.is_empty() {
             self.prepare_midi_recording_quantum(output.len());
+        }
+        // A replacement may clear the fault above. Until then, no failed graph
+        // or its device chain is rendered, including while transport is stopped.
+        // Take and live-input quanta still run so a racing take or gesture
+        // receives its `OutputFailed` terminal instead of waiting on silence.
+        if self.status.render_fault.load(Acquire) {
+            if !output.is_empty() {
+                self.prepare_gain_recording_quantum();
+                self.prepare_native_parameter_quantum();
+            }
+            output.fill([0.0; 2]);
+            return Ok(());
         }
         if self.status.closing.load(Acquire) || !self.render_section_launch(output)? {
             self.render_project(output)?;
