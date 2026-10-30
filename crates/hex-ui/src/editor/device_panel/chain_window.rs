@@ -62,6 +62,22 @@ impl ChainWindow {
             .is_some_and(|focus| focus.is_focused(window))
     }
 
+    /// Scroll the least distance that shows `device` with its gutters, or its
+    /// start when wider than the viewport. Unknown geometry leaves it alone.
+    pub(super) fn reveal(&self, device: DeviceId) {
+        let Some(&(_, left, width)) = self.cards.iter().find(|card| card.0 == device) else {
+            return;
+        };
+        if let Some(offset) = reveal_offset(
+            left,
+            width,
+            f32::from(self.scroll.offset().x),
+            self.width.get(),
+        ) {
+            self.scroll.set_offset(point(px(offset), px(0.0)));
+        }
+    }
+
     fn visible(&self, device: DeviceId, initial_width: Option<f32>) -> bool {
         let measured = self.width.get();
         let width = if measured.is_finite() && measured > 0.0 {
@@ -84,6 +100,26 @@ impl ChainWindow {
                 left + card_width + offset >= -overscan && left + offset <= width + overscan
             })
     }
+}
+
+fn reveal_offset(left: f32, width: f32, offset: f32, viewport: f32) -> Option<f32> {
+    if ![left, width, offset, viewport]
+        .iter()
+        .all(|value| value.is_finite())
+        || viewport <= 0.0
+    {
+        return None;
+    }
+    let start = left - DEVICE_CHAIN_PADDING;
+    let end = left + width + DEVICE_CHAIN_PADDING;
+    let target = if start + offset < 0.0 {
+        -start
+    } else if end + offset > viewport {
+        (viewport - end).max(-start)
+    } else {
+        return None;
+    };
+    Some(target.min(0.0))
 }
 
 pub(super) fn must_mount(
@@ -236,5 +272,38 @@ mod tests {
             chain.visible(ids[2], None),
             "invalid viewport cannot hide a card"
         );
+    }
+
+    #[test]
+    fn reveal_scrolls_the_least_distance_to_show_a_card() {
+        // Card 150..750 in a 400 px viewport.
+        assert_eq!(
+            reveal_offset(150.0, 600.0, 0.0, 400.0),
+            Some(-147.0),
+            "too wide: show start"
+        );
+        assert_eq!(
+            reveal_offset(150.0, 200.0, 0.0, 400.0),
+            None,
+            "already visible"
+        );
+        assert_eq!(
+            reveal_offset(150.0, 300.0, 0.0, 400.0),
+            Some(-53.0),
+            "right edge"
+        );
+        assert_eq!(
+            reveal_offset(150.0, 200.0, -300.0, 400.0),
+            Some(-147.0),
+            "left edge"
+        );
+        assert_eq!(
+            reveal_offset(3.0, 100.0, -50.0, 400.0),
+            Some(0.0),
+            "first card"
+        );
+        for viewport in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(reveal_offset(150.0, 300.0, 0.0, viewport), None);
+        }
     }
 }

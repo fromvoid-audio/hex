@@ -1,13 +1,22 @@
 //! Device-selection keys own only the directly focused card, never its editors.
 //! C/zero read live canonical bypass and use the same terminal barrier as pointer
 //! bypass; rendered generation/owner/type identity refuses retired card handlers.
+//! Left/right step the selection through the chain, and paste targets a chosen
+//! insertion gap, else the position after the selection.
 use super::*;
 use crate::diagnostics::ActionTraceContext as _;
 use gpui::{FocusHandle, KeyBinding};
 
 gpui::actions!(
     hex_device_selection,
-    [RemoveSelectedDevice, CopyDevices, CutDevices, PasteDevices]
+    [
+        RemoveSelectedDevice,
+        CopyDevices,
+        CutDevices,
+        PasteDevices,
+        SelectPreviousDevice,
+        SelectNextDevice
+    ]
 );
 
 #[derive(Clone, Copy)]
@@ -64,6 +73,10 @@ pub(in crate::editor) fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-c", CopyDevices, Some("hex_device_selection")),
         KeyBinding::new("cmd-x", CutDevices, Some("hex_device_selection")),
         KeyBinding::new("cmd-v", PasteDevices, Some("hex_device_selection")),
+        // Deeper than the editor's clip/session arrows; nested controls that
+        // own focus receive them through propagation.
+        KeyBinding::new("left", SelectPreviousDevice, Some("hex_device_selection")),
+        KeyBinding::new("right", SelectNextDevice, Some("hex_device_selection")),
     ]);
 }
 
@@ -101,10 +114,15 @@ fn clipboard(
         .copied()
         .filter(|id| view.device_panel.is_selected(*id))
         .collect();
-    let before = order
-        .iter()
-        .rposition(|id| selected.contains(id))
-        .and_then(|index| order.get(index + 1).copied());
+    let before = view
+        .device_panel
+        .insertion_before(&order)
+        .unwrap_or_else(|| {
+            order
+                .iter()
+                .rposition(|id| selected.contains(id))
+                .and_then(|index| order.get(index + 1).copied())
+        });
     let action = match intent {
         ClipboardIntent::Copy | ClipboardIntent::Cut => {
             let Ok(selected) = hex_project::DeviceSelectionIds::new(&selected) else {
@@ -138,6 +156,31 @@ fn clipboard(
             .selection_focus(cx)
             .focus(window);
     }
+    cx.notify();
+}
+
+/// Select the neighboring device and move keyboard focus to its card.
+/// Selection is view state; no parameter draft is finalized or dispatched.
+fn step(view: &mut EditorView, forward: bool, window: &mut Window, cx: &mut Context<EditorView>) {
+    let Some(owner) = view.device_panel.owner else {
+        return;
+    };
+    let Some(state) = view.state.as_ref() else {
+        return;
+    };
+    if selected_owner(view, state) != Some(owner) {
+        return;
+    }
+    let order = chain_ids(&state.project, owner);
+    let Some(device) = view.device_panel.step_target(&order, forward) else {
+        return;
+    };
+    view.device_panel.select_only(Some(device));
+    view.device_panel.chain_window.reveal(device);
+    view.device_panel
+        .chain_window
+        .focus(device, cx)
+        .focus(window);
     cx.notify();
 }
 
@@ -183,6 +226,32 @@ pub(super) fn rail(view: &mut EditorView, cx: &Context<EditorView>, rail: Div) -
                 cx.propagate();
             }
         }))
+        .on_action(
+            cx.trace(|view, _: &SelectPreviousDevice, window, cx| {
+                rail_step(view, false, window, cx)
+            }),
+        )
+        .on_action(
+            cx.trace(|view, _: &SelectNextDevice, window, cx| rail_step(view, true, window, cx)),
+        )
+}
+
+fn rail_step(
+    view: &mut EditorView,
+    forward: bool,
+    window: &mut Window,
+    cx: &mut Context<EditorView>,
+) {
+    if view
+        .device_panel
+        .chain_window
+        .selection_focus(cx)
+        .is_focused(window)
+    {
+        step(view, forward, window, cx);
+    } else {
+        cx.propagate();
+    }
 }
 
 /// Observe release even after focus moved from the neutral rail into text.
@@ -286,7 +355,23 @@ pub(super) fn card(
     let copy_focus = focus.clone();
     let cut_focus = focus.clone();
     let paste_focus = focus.clone();
+    let previous_focus = focus.clone();
+    let next_focus = focus.clone();
     card.key_context("hex_device_selection")
+        .on_action(cx.trace(move |view, _: &SelectPreviousDevice, window, cx| {
+            if previous_focus.is_focused(window) {
+                step(view, false, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
+        .on_action(cx.trace(move |view, _: &SelectNextDevice, window, cx| {
+            if next_focus.is_focused(window) {
+                step(view, true, window, cx);
+            } else {
+                cx.propagate();
+            }
+        }))
         .on_action(cx.trace(move |view, _: &CopyDevices, window, cx| {
             if copy_focus.is_focused(window) {
                 clipboard(view, ClipboardIntent::Copy, window, cx);
