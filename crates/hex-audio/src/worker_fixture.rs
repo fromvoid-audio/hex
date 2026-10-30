@@ -228,22 +228,34 @@ pub fn open_with_reliable_action_outcomes(
     crate::device::headless_worker_output_with_outcomes(rate, true)
 }
 
+/// Serialize tests that open the process-wide headless output. Hold the guard
+/// for the whole test so its own retirement cannot race the next opener; a
+/// poisoned guard is recovered so one failed test does not fail the rest.
+pub fn serial_output() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Open a headless worker once a previous output's lease has retired.
 /// The lifecycle service releases the process-wide lease asynchronously after
 /// close, so a test following another may briefly observe it as busy. Waits
-/// at most two seconds, so a leaked lease still fails the caller.
+/// at most ten seconds, matching the parallel GPUI test retry loops, so a
+/// leaked lease still fails the caller.
 pub fn open_after_retirement(
     rate: u32,
     reliable_action_outcomes: bool,
 ) -> Result<(crate::WorkerPreparedOutput, HeadlessBackend), String> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         match crate::device::headless_worker_output_with_outcomes(rate, reliable_action_outcomes) {
             Err(error)
                 if error == "audio output is open or still shutting down"
                     && std::time::Instant::now() < deadline =>
             {
-                std::thread::yield_now();
+                // Sleep rather than spin so waiting tests do not starve retirement.
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
             result => return result,
         }
