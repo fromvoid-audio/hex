@@ -2,9 +2,10 @@
 //! Structural relocation may freeze original tempo/root context independently of
 //! destination placement. Cache identity, mapping, fades and events all consume
 //! that retained processing law; a crop never restarts full-root analysis.
-//! Finite Once/Repeat placements compose the canonical projection into one
-//! resident outer buffer, shared with waveform preparation. Their distinct
-//! cache identity retains complete geometry and tempo. Outer frames and summed
+//! Frame-clock placements that tile their root window loop the shared cached
+//! root without outer PCM. Other finite Once/Repeat placements compose the
+//! canonical projection into one resident outer buffer, shared with waveform
+//! preparation; their distinct cache identity retains geometry and tempo. Outer frames and summed
 //! musical full-root work each cap at 16777216; at most 8192 occurrences are
 //! admitted before PCM allocation. Unsupported streamed placement preparation
 //! refuses without changing project or media. Ordinary crops keep their path.

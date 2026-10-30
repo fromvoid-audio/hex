@@ -16,6 +16,21 @@ impl AudioTransformPreparation {
         clip: &hex_project::Clip,
         sources: &[GroupSource<'_>],
     ) -> Result<Clip, Invalid> {
+        // A loop-shaped frame placement plays the shared composite root, so
+        // split or duplicated copies of the group add no outer PCM.
+        if let Some(edit) = clip.audio_edit()
+            && edit.content_view.is_none()
+            && let Some(anchor) = edit
+                .domain
+                .events
+                .as_ref()
+                .and_then(|events| events.sources.first())
+            && let Some(shape) =
+                super::view::root_loop(clip, edit, &AudioViewProjection::new(clip, &anchor.tempo)?)?
+        {
+            let root = self.prepare_group_audio(clip, sources, true)?;
+            return super::view::looped_clip(root, clip, shape);
+        }
         let audio = self.prepare_group_audio(clip, sources, false)?;
         super::view::placed_clip(audio, clip)
     }
@@ -120,7 +135,8 @@ impl AudioTransformPreparation {
         // not change the captured source program or require another PCM copy.
         if let Some(audio) = self.lookup_key(anchor.audio, anchor.asset, |key| {
             matches!(key, EntryKey::Group { root_only: old_root_only, edit: old, duration, sources: old_sources }
-                if *old_root_only == root_only && old == edit && *duration == clip.duration()
+                if *old_root_only == root_only && same_group_program(old, edit, root_only)
+                && (root_only || *duration == clip.duration())
                 && old_sources.len() == sources.len()
                 && old_sources.iter().zip(sources).all(|((pcm, conversion, rate), source)|
                     pcm.shares_pcm_with(source.audio) && pcm.sample_rate() == source.audio.sample_rate()
@@ -292,4 +308,16 @@ impl AudioTransformPreparation {
         })?;
         Ok(audio)
     }
+}
+
+/// The composite root depends on the frame domain (events, sources, fade) and its
+/// processing clock, never on the finite crop or placement read from it. Outer
+/// output additionally depends on that crop/placement and the clip duration.
+fn same_group_program(old: &AudioClipEdit, edit: &AudioClipEdit, root_only: bool) -> bool {
+    if !root_only {
+        return old == edit;
+    }
+    (Arc::ptr_eq(&old.domain, &edit.domain) || old.domain == edit.domain)
+        && old.timing == edit.timing
+        && old.processing_projection == edit.processing_projection
 }

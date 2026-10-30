@@ -636,6 +636,13 @@ fn compile_project_inner<'a>(
                         audio: audio.clone(),
                         offset: compiled.source_offset as u64,
                         length: compiled.end - compiled.start,
+                        repeat: compiled.looping.then(|| crate::PreparedAudioRepeat {
+                            period: compiled.source_length as u64,
+                            phase: compiled
+                                .metadata
+                                .as_deref()
+                                .map_or(0, |metadata| metadata.source_phase),
+                        }),
                     });
                 }
                 Ok::<_, Invalid>(compiled)
