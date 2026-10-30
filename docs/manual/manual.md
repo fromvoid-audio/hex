@@ -791,6 +791,39 @@ the complete edit.
 | export | command+shift+e |
 | changelog | command+shift+l |
 
+# known limitations
+
+these limits apply to the current 0.1 alpha. they describe tested behavior, not
+promises about later versions.
+
+- **platforms.** packages are built and checked for macos on apple silicon
+  only. windows and intel macs are not supported.
+- **recovery is explicit.** hex keeps a recovery checkpoint next to a saved
+  project, but it never restores one by itself. use the recovery actions in
+  **file** (see recover work) and save the result under a new name.
+- **true peak limiting.** the limiter's true peak mode keeps every sample at or
+  below the ceiling. on fast, heavily gated material, a standard itu-r bs.1770
+  true-peak meter can read up to about 0.3 db above the ceiling. lower the
+  ceiling slightly if a delivery specification is strict.
+- **limiter on a track or return.** a limiter on a track or return costs much
+  more processing than one on main. on dense projects this can cause dropouts;
+  prefer the main limiter where it achieves the same result.
+- **media changed while playing.** if a streamed audio file is deleted or moved
+  while it plays, hex keeps playing the data it already verified until you stop
+  or reopen the project; reopening asks you to relink it. if a streamed file's
+  contents change, hex refuses to play that source rather than play different audio.
+  restore the original file or relink it.
+- **midi clip trimming** is not supported yet.
+- **audio device settings.** hex uses the macos default output and its default
+  configuration; there is no device, sample-rate or buffer-size chooser.
+- **performance.** timing figures in hex's development notes were measured
+  headless on one apple silicon machine. they do not guarantee real-time
+  playback on your device, and long sessions with around 100 active tracks
+  have not been soak-tested.
+- **native testing.** interaction, listening and device checks for each package
+  are run by people, not by automated checks. see `TESTING.md` for the package's
+  status.
+
 # report a beta problem
 
 include the full version and source shown for the package, the macos version and
