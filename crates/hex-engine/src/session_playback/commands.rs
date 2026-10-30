@@ -208,8 +208,7 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::MutableInstrumentChase);
             }
         }
-        let base_timing =
-            base_timing_for(self.revision.session(), self.periodic_tempo_at(frame, 0));
+        let base_timing = base_timing_for(self.revision.session(), self.periodic_tempo_at(frame));
         let beat = base_timing
             .frame_to_beat(frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
@@ -258,7 +257,7 @@ impl SessionPlayback {
         frame
             .checked_add(1)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        base_timing_for(self.revision.session(), self.periodic_tempo_at(frame, 0))
+        base_timing_for(self.revision.session(), self.periodic_tempo_at(frame))
             .frame_to_beat(frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)
     }
@@ -368,7 +367,7 @@ impl SessionPlayback {
                 }
                 let timing = timing_view_for(
                     self.revision.session(),
-                    self.periodic_tempo_at(frame, 0),
+                    self.periodic_tempo_at(frame),
                     self.anchor,
                 );
                 prepared

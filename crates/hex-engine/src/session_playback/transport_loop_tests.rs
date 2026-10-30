@@ -4,7 +4,7 @@ use super::*;
 const Q: u64 = 1_u64 << 32;
 
 #[test]
-fn paused_audio_loop_change_with_limiter_preserves_samples_and_clock() {
+fn audio_loop_change_with_limiter_preserves_samples_and_clock() {
     use hex_lattice_contract::NativeDeviceMetadata;
     let mut snapshot = audio_project(0, 32, 4).snapshot();
     for asset in &mut snapshot.assets {
@@ -61,16 +61,33 @@ fn paused_audio_loop_change_with_limiter_preserves_samples_and_clock() {
         )
     };
     let loop_revision = prepare(&looped);
+    // A loop edit while playing inside the new region continues exactly as if
+    // that loop had always been set: same wrap, samples and clocks.
     let mut live = SessionPlayback::new(prepare(&linear)).unwrap();
-    live.apply(SessionPlaybackCommand::Play).unwrap();
-    live.render(&mut [[0.0; 2]; 600]).unwrap();
+    let mut live_oracle = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
+    for runtime in [&mut live, &mut live_oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 600]).unwrap();
+    }
     let mut live_candidate = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
-    assert!(matches!(
-        live_candidate.try_inherit_state_from(&mut live),
-        Err(SessionPlaybackError::Arrangement(
-            "compensated timing changed · stop transport before applying this revision"
-        ))
-    ));
+    live_candidate.try_inherit_state_from(&mut live).unwrap();
+    let mut live_actual = vec![[0.0; 2]; 6000];
+    let mut live_expected = live_actual.clone();
+    for chunk in live_actual.chunks_mut(127) {
+        live_candidate.render(chunk).unwrap();
+    }
+    for chunk in live_expected.chunks_mut(127) {
+        live_oracle.render(chunk).unwrap();
+    }
+    assert_eq!(
+        live_candidate.arrangement_frame(),
+        live_oracle.arrangement_frame()
+    );
+    assert_eq!(
+        live_candidate.performance_frame(),
+        live_oracle.performance_frame()
+    );
+    assert_eq!(live_actual, live_expected);
     let mut tempo_snapshot = linear.snapshot();
     tempo_snapshot.tempo_points = vec![TempoPoint::new(
         BeatTime::ZERO,
@@ -163,6 +180,48 @@ fn paused_loop_change_with_limiter_refuses_active_instrument_tail_without_corrup
     assert_eq!(donor.performance_frame(), oracle.performance_frame());
     assert_eq!(actual, expected);
     assert!(actual.iter().flatten().any(|value| value.abs() > 0.001));
+}
+
+#[test]
+fn loop_edited_behind_a_wrapped_cursor_continues_linearly() {
+    let source = crate::Audio::new(48_000, vec![[0.25, 0.25]; 32]).unwrap();
+    let media = audio_media(&audio_project(0, 32, 4), &source, &source);
+    let looped = |start, end| {
+        let mut snapshot = audio_project(0, 32, 4).snapshot();
+        snapshot.loop_region = Some(LoopRegion::new(start, end, true).unwrap());
+        Arc::new(
+            PreparedRevision::prepare(
+                &legacy_project_from_snapshot(snapshot).unwrap(),
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        )
+    };
+    let mut active = SessionPlayback::new(looped(0, 2048)).unwrap();
+    active.apply(SessionPlaybackCommand::Play).unwrap();
+    active.render(&mut [[0.0; 2]; 3072]).unwrap();
+    assert_eq!(
+        (active.arrangement_frame(), active.arrangement_loop_pass),
+        (1024, 1)
+    );
+
+    let mut behind = SessionPlayback::new(looped(0, 512)).unwrap();
+    behind.try_inherit_state_from(&mut active).unwrap();
+    behind.render(&mut [[0.0; 2]; 1000]).unwrap();
+    assert_eq!(
+        behind.arrangement_frame(),
+        2024,
+        "no jump back into the new loop"
+    );
+    assert_eq!(behind.performance_frame(), 4072);
+
+    let mut ahead = SessionPlayback::new(looped(4096, 4608)).unwrap();
+    ahead.try_inherit_state_from(&mut behind).unwrap();
+    ahead.render(&mut [[0.0; 2]; 3000]).unwrap();
+    assert_eq!(ahead.arrangement_frame(), 4096 + (5024 - 4608));
+    assert_eq!(ahead.arrangement_loop_pass, 2);
 }
 
 #[test]
