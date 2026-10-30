@@ -1254,6 +1254,64 @@ fn truncated_source_refuses_its_page_without_stalling_another_source() {
 }
 
 #[test]
+fn deleted_source_keeps_serving_verified_pcm_and_a_new_catalog_refuses_it() {
+    let (wav, expected) = TestWav::stereo_pcm16(48_000, 4096);
+    let asset = asset_id(4096, 48_000);
+    let key = StreamSourceKey::new(103, asset);
+    let reader = VerifiedWavReader::open(wav.path(), reader_limits(4096)).expect("verified");
+    let metadata = StreamedSourceMetadata::new(
+        key,
+        48_000,
+        48_000,
+        4096,
+        4096,
+        hex_project::IDENTITY_CONVERSION,
+        *reader.fingerprint(),
+    )
+    .expect("metadata");
+    drop(reader);
+    let definition = || {
+        SourceDefinition::new(
+            wav.path().to_path_buf(),
+            metadata.clone(),
+            reader_limits(4096),
+        )
+    };
+    let mut runtime =
+        StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition()]).expect("runtime");
+    runtime
+        .wait_until_ready(Duration::from_secs(3))
+        .expect("ready");
+    // Removing the path after verification leaves the worker's open descriptor
+    // on the same verified bytes; it must neither fail nor serve other data.
+    assert!(
+        runtime.page(key, 0).is_none(),
+        "page must be read after deletion"
+    );
+    fs::remove_file(wav.path()).expect("delete fixture");
+    let page = PageKey {
+        source: key,
+        page_index: 0,
+    };
+    runtime.request_page(key, 0);
+    assert!(wait_for_pages(
+        &mut runtime,
+        &[page],
+        Duration::from_secs(3)
+    ));
+    assert_eq!(runtime.page(key, 0).expect("page").frames, expected);
+    let report = runtime.shutdown().expect("balanced shutdown");
+    assert!(report.worker_joined && report.accounting_complete);
+
+    // Reopening the deleted path is an explicit catalog failure, not a stall.
+    let mut reopened =
+        StreamRuntime::new(StreamConfig::with_pool_pages(3), vec![definition()]).expect("runtime");
+    assert!(reopened.wait_until_ready(Duration::from_secs(3)).is_err());
+    let report = reopened.shutdown().expect("balanced shutdown");
+    assert!(report.worker_joined && report.accounting_complete);
+}
+
+#[test]
 fn catalog_rejects_nonfinite_float_samples_outside_the_first_page() {
     let wav = TestWav::stereo_float_with_nan(8192);
     let asset = asset_id(8192, 48_000);
