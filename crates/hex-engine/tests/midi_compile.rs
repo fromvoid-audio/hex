@@ -1189,6 +1189,63 @@ fn instrument_render_is_partition_seek_pause_and_stop_invariant() {
 }
 
 #[test]
+fn sounding_note_does_not_survive_seek_or_stop_across_partitions() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(1, 2));
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(1, 2),
+            pitch: 69,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+    let project = compile::project(editor.project(), &BTreeMap::new()).unwrap();
+    let mut whole_playback = Playback::new(project.clone());
+    whole_playback.apply(PlaybackCommand::Play);
+    let mut whole = vec![[0.0; 2]; 14_400];
+    whole_playback.render(&mut whole).unwrap();
+
+    for block in [1_usize, 17, 64, 128, 512] {
+        // (destination, expected PCM after the transport moves away from a held note)
+        for (destination, expected) in [
+            (20_000_u64, vec![[0.0; 2]; 1_024]),
+            (5_000, whole[5_000..6_024].to_vec()),
+        ] {
+            let mut playback = Playback::new(project.clone());
+            playback.apply(PlaybackCommand::Play);
+            let mut held = vec![[0.0; 2]; 3_000];
+            for chunk in held.chunks_mut(block) {
+                playback.render(chunk).unwrap();
+            }
+            assert_eq!(held, whole[..3_000], "block {block}");
+            playback.apply(PlaybackCommand::Seek(destination));
+            let mut after = vec![[9.0; 2]; 1_024];
+            for chunk in after.chunks_mut(block) {
+                playback.render(chunk).unwrap();
+            }
+            assert_eq!(after, expected, "block {block} seek {destination}");
+        }
+        let mut playback = Playback::new(project.clone());
+        playback.apply(PlaybackCommand::Play);
+        let mut held = vec![[0.0; 2]; 3_000];
+        for chunk in held.chunks_mut(block) {
+            playback.render(chunk).unwrap();
+        }
+        playback.apply(PlaybackCommand::Stop);
+        playback.apply(PlaybackCommand::Seek(20_000));
+        playback.apply(PlaybackCommand::Play);
+        let mut after = vec![[9.0; 2]; 1_024];
+        for chunk in after.chunks_mut(block) {
+            playback.render(chunk).unwrap();
+        }
+        assert_eq!(after, vec![[0.0; 2]; 1_024], "block {block} stop");
+    }
+}
+
+#[test]
 fn interval_tree_keeps_earlier_notes_when_median_onset_is_in_the_future() {
     const TOTAL_FRAMES: usize = 320_000;
     let (mut editor, track) = setup();
