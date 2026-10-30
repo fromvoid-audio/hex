@@ -5372,3 +5372,23 @@ diff --git a/src/element.rs b/src/element.rs
 
  impl Display for GlobalElementId {
      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+diff --git a/src/text_system/line.rs b/src/text_system/line.rs
+index 189a3e8..581fcc1 100644
+--- a/src/text_system/line.rs
++++ b/src/text_system/line.rs
+@@ -37 +37 @@ pub struct ShapedLine {
+-    pub(crate) decoration_runs: SmallVec<[DecorationRun; 32]>,
++    pub(crate) decoration_runs: SmallVec<[DecorationRun; 4]>,
+@@ -117 +117 @@ pub struct WrappedLine {
+-    pub(crate) decoration_runs: SmallVec<[DecorationRun; 32]>,
++    pub(crate) decoration_runs: SmallVec<[DecorationRun; 4]>,
+diff --git a/src/text_system.rs b/src/text_system.rs
+index 85a3133..5b9520b 100644
+--- a/src/text_system.rs
++++ b/src/text_system.rs
+@@ -377 +377 @@ impl WindowTextSystem {
+-        let mut decoration_runs = SmallVec::<[DecorationRun; 32]>::new();
++        let mut decoration_runs = SmallVec::<[DecorationRun; 4]>::new();
+@@ -429 +429 @@ impl WindowTextSystem {
+-            let mut decoration_runs = SmallVec::<[DecorationRun; 32]>::new();
++            let mut decoration_runs = SmallVec::<[DecorationRun; 4]>::new();
