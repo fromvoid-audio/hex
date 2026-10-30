@@ -45,7 +45,9 @@ fn restart_respects_unconsumed_seek_and_stop_after_fault(cx: &mut gpui::TestAppC
 }
 
 fn restart_from_fault(cx: &mut gpui::TestAppContext, stop: bool) {
-    let (mut output, mut backend) = hex_audio::worker_fixture::open(48_000).unwrap();
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
     let playback = Playback::new(hex_engine::Project::new(48_000, Vec::new()).unwrap());
     output
         .publication

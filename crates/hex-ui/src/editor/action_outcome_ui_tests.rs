@@ -11,8 +11,9 @@ fn editor_reports_each_rejection_and_keeps_reader_through_retirement(cx: &mut Te
         hex_project::Project::new(48_000).unwrap(),
         Arc::default(),
     );
+    let _output_serial = hex_audio::worker_fixture::serial_output();
     let (mut output, mut backend) =
-        hex_audio::worker_fixture::open_with_reliable_action_outcomes(48_000).unwrap();
+        hex_audio::worker_fixture::open_after_retirement(48_000, true).unwrap();
     output
         .publication
         .control()
@@ -102,8 +103,9 @@ fn occupied_retirement_slot_keeps_the_closed_current_reader(cx: &mut TestAppCont
     let old_reader = old_control
         .enable_action_outcomes_on_control(&mut old_callback)
         .unwrap();
+    let _output_serial = hex_audio::worker_fixture::serial_output();
     let (mut output, mut backend) =
-        hex_audio::worker_fixture::open_with_reliable_action_outcomes(48_000).unwrap();
+        hex_audio::worker_fixture::open_after_retirement(48_000, true).unwrap();
     output
         .publication
         .control()
@@ -183,8 +185,9 @@ fn callback_rejection_remains_visible_when_output_is_faulted(cx: &mut TestAppCon
         hex_project::Project::new(48_000).unwrap(),
         Arc::default(),
     );
+    let _output_serial = hex_audio::worker_fixture::serial_output();
     let (mut output, mut backend) =
-        hex_audio::worker_fixture::open_with_reliable_action_outcomes(48_000).unwrap();
+        hex_audio::worker_fixture::open_after_retirement(48_000, true).unwrap();
     output
         .publication
         .control()
@@ -245,8 +248,9 @@ fn retired_action_interruption_survives_current_output_fault(cx: &mut TestAppCon
     old.request_shutdown();
     old.retire_action_outcomes_on_control(&mut callback)
         .unwrap();
+    let _output_serial = hex_audio::worker_fixture::serial_output();
     let (mut output, mut backend) =
-        hex_audio::worker_fixture::open_with_reliable_action_outcomes(48_000).unwrap();
+        hex_audio::worker_fixture::open_after_retirement(48_000, true).unwrap();
     let mut client = output.take_client().unwrap();
     assert!(
         client
