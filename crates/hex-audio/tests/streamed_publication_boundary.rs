@@ -196,7 +196,7 @@ fn ordinary_stream_publication(compensated: bool) {
     .unwrap();
     stream.wait_until_ready(Duration::from_secs(2)).unwrap();
     let pair = stream.split().ok().unwrap();
-    let (mut output, mut backend) = worker_fixture::open(48_000).unwrap();
+    let (mut output, mut backend) = worker_fixture::open_after_retirement(48_000, false).unwrap();
     let control = output.publication.control().unwrap();
     control.set_audio_diagnostics(AudioDiagnosticsFlags::TRANSPORT);
     control

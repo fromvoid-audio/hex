@@ -750,6 +750,7 @@ impl EditorView {
                 active_audio_revision: fence.expected_active_revision(),
                 route_generation: fence.route_state_generation(),
                 admitted_command_ticket: fence.admitted_command_ticket(),
+                output_fault_epoch: fence.output_fault_epoch(),
             },
             device_preview: intent.device_preview_identity,
             tuning_preview: None,

@@ -14,7 +14,8 @@ fn actual_native_harness() -> Harness {
         if slot.is_some() {
             return Ok(None);
         }
-        match hex_audio::worker_fixture::open(rate.unwrap_or(48_000)) {
+        match hex_audio::worker_fixture::open_with_reliable_action_outcomes(rate.unwrap_or(48_000))
+        {
             Ok((output, callback)) => {
                 *slot = Some(callback);
                 Ok(Some(output))

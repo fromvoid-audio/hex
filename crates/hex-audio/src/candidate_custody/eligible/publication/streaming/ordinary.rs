@@ -52,7 +52,7 @@ impl OrdinaryStreams {
                 && workspace.stamps.iter().any(Option::is_some)
         })
     }
-    #[cfg(all(test, feature = "stream-test-support"))]
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
     pub(crate) fn test_domain_cached(
         &self,
         domains: &mut [Option<DomainEnvelope>; 2],
@@ -72,7 +72,7 @@ impl OrdinaryStreams {
                 })
         })
     }
-    #[cfg(all(test, feature = "stream-test-support"))]
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
     pub(crate) fn test_domain_protected(
         &self,
         domains: &mut [Option<DomainEnvelope>; 2],

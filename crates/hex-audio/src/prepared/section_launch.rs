@@ -27,6 +27,9 @@ impl Callback {
                 || old.playback.session_route_state_generation() != fence.route_state_generation
         }) || self.status.admitted_ticket.load(Acquire)
             != fence.admitted_command_ticket
+            || self.status.last_output_fault_epoch.load(Acquire) != fence.output_fault_epoch
+            || self.status.render_fault.load(Acquire)
+            || self.status.device_fault.load(Acquire)
             || self.status.pending_stop_marker.load(Acquire) != 0;
         let result = if cancelled {
             Err(PlaybackHandoffRejection::FreshRuntimeCancelled)
@@ -192,6 +195,37 @@ mod tests {
             callback.begin_block();
             callback.render(output).unwrap();
         }
+    }
+
+    #[test]
+    fn fault_rejects_waiting_section_instead_of_waiting_on_stopped_clock() {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let source = source();
+                let (mut control, mut callback) = active(&source, 3_997, true);
+                let fence = control.capture_fresh_runtime_fence().unwrap();
+                let revision = control
+                    .publish_with_policy(
+                        candidate(&source),
+                        PublicationPolicy::InstallSectionWhenReady {
+                            fence,
+                            quantization: LaunchQuantization::EightBars,
+                        },
+                    )
+                    .unwrap();
+                callback.report_render_fault(Some(&Invalid("injected failure")), 3_997);
+                let mut output = [[1.0; 2]; 16];
+                render_checked(&mut callback, &mut output);
+                assert_eq!(output, [[0.0; 2]; 16]);
+                assert_eq!(
+                    control.status.rejected_revision(),
+                    Some((revision, PlaybackHandoffRejection::RuntimeFenceChanged))
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
