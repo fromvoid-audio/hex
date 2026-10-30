@@ -135,7 +135,7 @@ fn successful_open_without_confirmed_failure_keeps_output_and_emits_opened() {
     let mut sink = NativeAudioSink::new(events);
     let deadline = Instant::now() + Duration::from_secs(3);
     let (output, backend) = loop {
-        match hex_audio::worker_fixture::open(48_000) {
+        match hex_audio::worker_fixture::open_with_reliable_action_outcomes(48_000) {
             Ok(opened) => break opened,
             Err(error) if error == "audio output is open or still shutting down" => {
                 assert!(
@@ -172,7 +172,7 @@ fn successful_open_without_confirmed_failure_keeps_output_and_emits_opened() {
     // Observation must not release the actual exclusive lease: a second
     // constructor still refuses while this output and callback remain retained.
     assert!(matches!(
-        hex_audio::worker_fixture::open(48_000),
+        hex_audio::worker_fixture::open_with_reliable_action_outcomes(48_000),
         Err(error) if error == "audio output is open or still shutting down"
     ));
     assert!(!sink.open_pending);

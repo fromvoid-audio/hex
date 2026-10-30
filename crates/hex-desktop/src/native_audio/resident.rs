@@ -432,6 +432,7 @@ impl NativeAudioSink {
                             && expected.active_audio_revision == actual.expected_active_revision()
                             && expected.route_generation == actual.route_state_generation()
                             && expected.admitted_command_ticket == actual.admitted_command_ticket()
+                            && expected.output_fault_epoch == actual.output_fault_epoch()
                     }) else {
                         return Err(ResidentPublicationRefusal {
                             playback,

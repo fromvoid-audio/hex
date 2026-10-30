@@ -430,7 +430,9 @@ impl ResidentHarness {
             // The prior fixture's async native carrier can still own the exclusive Lease
             // after its control owner has returned. Retry exactly as the existing Harness does.
             let (output, backend) =
-                match hex_audio::worker_fixture::open(requested_rate.unwrap_or(rate)) {
+                match hex_audio::worker_fixture::open_with_reliable_action_outcomes(
+                    requested_rate.unwrap_or(rate),
+                ) {
                     Ok(pair) => pair,
                     Err(error) if error == "audio output is open or still shutting down" => {
                         return Ok(None);
@@ -1023,6 +1025,7 @@ impl ResidentHarness {
                 active_audio_revision: fence.expected_active_revision(),
                 route_generation: fence.route_state_generation(),
                 admitted_command_ticket: fence.admitted_command_ticket(),
+                output_fault_epoch: fence.output_fault_epoch(),
             },
             device_preview,
             tuning_preview,
@@ -1044,6 +1047,36 @@ impl ResidentHarness {
             std::thread::yield_now();
         }
     }
+}
+
+#[test]
+fn resident_seek_refuses_fault_epoch_changed_after_capture() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::new();
+    let initial = h.next();
+    assert!(initial.error.is_none());
+    h.applied(0);
+    let intent = h.seek_intent(1, initial.state.revision, None, None);
+    h.callback
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .report_render_error()
+        .unwrap();
+    // Isolate epoch validation at the actual Session/Desktop handoff even
+    // after the fault flag changes; keep the same output and revision.
+    h.audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .render_fault
+        .store(false, std::sync::atomic::Ordering::Release);
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    assert!(h.next().error.is_none());
+    let error = h.seek_result().result.unwrap_err();
+    assert!(error.contains("runtime changed"), "{error}");
 }
 
 #[test]
