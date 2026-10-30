@@ -24,6 +24,11 @@
 //! dense reconstructed-output tests cover modulation and intersample peaks;
 //! this finite model does not prove every DAC's continuous-time behavior or
 //! acoustic identity with Live's unpublished reconstruction/release laws.
+//! The detector reconstructs the pre-gain input, so gain that moves inside the
+//! detector window can create untracked intersample peaks. On gated-burst
+//! fixtures the standard BS.1770-4 4x meter reads up to about +0.25 dB above
+//! the ceiling (tests bound it at +0.3 dB) and ideal reconstruction reads
+//! higher; an output-aware gain path is required to remove this.
 //!
 //! M/s uses one independently linked encoded stage followed by a fully linked
 //! l/r safety stage after decoding, so arbitrary stereo signals respect the

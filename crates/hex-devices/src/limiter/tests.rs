@@ -670,518 +670,90 @@ fn dense_reconstructed_peak(output: &[StereoFrame]) -> (f64, usize) {
     }
     maximum
 }
-
 #[test]
-#[ignore = "diagnostic independent reconstruction; a limiter correction is not yet implemented"]
-fn study_true_peak_with_independent_lanczos_reconstruction() {
-    let factory = factory(
-        48_000,
-        &[
-            (MODE, ParameterValue::Choice(2)),
-            (LINK, ParameterValue::Float(0.0)),
-            (RELEASE, ParameterValue::Float(0.01)),
-            (CEILING, ParameterValue::Float(-1.0)),
-        ],
-    );
-    let mut runtime = factory.create_runtime().unwrap();
-    let mut input: Vec<_> = (0..4000)
+fn bs1770_meter_recovers_intersample_peaks_of_a_known_signal() {
+    // A quarter-rate sine offset by 45 degrees has 0.7071 sample peaks and a
+    // 1.0 continuous peak; the standard 4x meter must recover it closely.
+    let tone: Vec<StereoFrame> = (0..4096)
         .map(|i| {
-            let envelope = if i % 137 < 17 { 10.0 } else { 1.0 };
-            [
-                envelope * (i as f32 * 2.7 + 0.2).sin(),
-                envelope * (i as f32 * 2.1 + 0.7).sin(),
-            ]
+            let value =
+                (std::f64::consts::FRAC_PI_2 * i as f64 + std::f64::consts::FRAC_PI_4).sin() as f32;
+            [value, -value]
         })
         .collect();
-    input.extend(vec![[0.0; 2]; 2048]);
-    let output = render(runtime.as_mut(), &input, &[1, 63, 257]);
-    let sinc = |x: f64| {
-        if x.abs() < 1e-12 {
-            1.0
-        } else {
-            (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
-        }
-    };
-    let kernels: [[f64; 64]; 32] = std::array::from_fn(|phase| {
-        let mut kernel = std::array::from_fn(|tap| {
-            let d = 31.0 + phase as f64 / 32.0 - tap as f64;
-            sinc(d) * sinc(d / 32.0)
-        });
-        let sum: f64 = kernel.iter().sum();
-        for coefficient in &mut kernel {
-            *coefficient /= sum;
-        }
-        kernel
-    });
-    let mut peak = 0.0_f64;
-    let mut at = 0;
-    for (index, window) in output.windows(64).enumerate() {
-        for kernel in &kernels {
-            for lane in 0..2 {
-                let value: f64 = kernel
-                    .iter()
-                    .zip(window)
-                    .map(|(c, s)| c * f64::from(s[lane]))
-                    .sum();
-                if value.abs() > peak {
-                    peak = value.abs();
-                    at = index + 31;
-                }
-            }
-        }
-    }
-    let ceiling = 10.0_f64.powf(-1.0 / 20.0);
-    println!("independent Lanczos peak {peak:.9}, ceiling {ceiling:.9}, frame {at}");
-    assert!(
-        peak > ceiling + 0.01,
-        "expected the documented counterexample"
-    );
-    // A single gain for the entire rendered file preserves every cancellation,
-    // but requires future knowledge and cannot serve as a streaming algorithm.
-    let uniform_gain = ceiling / peak;
-    println!(
-        "offline uniform gain {uniform_gain:.6} ({:.2} dB)",
-        20.0 * uniform_gain.log10()
-    );
-
-    // Offline feasibility experiment only: bound each reconstruction by the
-    // sum of absolute contributions and apply the tightest window gain to
-    // every contributing sample. This sacrifices phase cancellation and has
-    // unbounded whole-file storage; it is not a real-time candidate.
-    let mut gains = vec![[1.0_f64; 2]; output.len()];
-    for (index, window) in output.windows(64).enumerate() {
-        for lane in 0..2 {
-            let mut maximum = 0.0_f64;
-            for kernel in &kernels {
-                let bound: f64 = kernel
-                    .iter()
-                    .zip(window)
-                    .map(|(c, sample)| (c * f64::from(sample[lane])).abs())
-                    .sum();
-                maximum = maximum.max(bound);
-            }
-            if maximum > ceiling {
-                let gain = ceiling / maximum;
-                for frame in &mut gains[index..index + 64] {
-                    frame[lane] = frame[lane].min(gain);
-                }
-            }
-        }
-    }
-    let guarded: Vec<_> = output
-        .iter()
-        .zip(&gains)
-        .map(|(sample, gain)| {
-            [
-                (f64::from(sample[0]) * gain[0]) as f32,
-                (f64::from(sample[1]) * gain[1]) as f32,
-            ]
-        })
-        .collect();
-    let mut guarded_peak = 0.0_f64;
-    for window in guarded.windows(64) {
-        // Spot-check eight phases; the absolute bound above covers all 32.
-        for kernel in kernels.iter().step_by(4) {
-            for lane in 0..2 {
-                let value: f64 = kernel
-                    .iter()
-                    .zip(window)
-                    .map(|(c, sample)| c * f64::from(sample[lane]))
-                    .sum();
-                guarded_peak = guarded_peak.max(value.abs());
-            }
-        }
-    }
-    let min_gain = gains.iter().flatten().copied().fold(1.0_f64, f64::min);
-    println!(
-        "absolute-bound guarded eight-phase peak {guarded_peak:.9}, minimum gain {min_gain:.6} ({:.2} dB)",
-        20.0 * min_gain.log10()
-    );
-    assert!(guarded_peak <= ceiling + 1e-6);
+    let sample_peak = tone.iter().flatten().fold(0.0_f32, |a, s| a.max(s.abs()));
+    assert!(sample_peak < 0.71);
+    let true_peak = true_peak_oracle::bs1770_true_peak(&tone).unwrap();
+    assert!((true_peak - 1.0).abs() < 0.03, "{true_peak}");
+    assert!(true_peak_oracle::bs1770_true_peak(&[]).is_none());
+    assert!(true_peak_oracle::bs1770_true_peak(&[[f32::NAN, 0.0]]).is_none());
 }
 
-#[test]
-#[ignore = "offline feasibility experiment, not a real-time limiter correction"]
-fn study_feasible_output_gain_plan() {
-    const TAPS: usize = 32;
-    const PHASES: usize = 8;
-    const COUNT: usize = 128;
-    let f = factory(
-        48_000,
-        &[
-            (MODE, ParameterValue::Choice(2)),
-            (LINK, ParameterValue::Float(0.0)),
-            (RELEASE, ParameterValue::Float(0.01)),
-            (CEILING, ParameterValue::Float(-1.0)),
-        ],
-    );
-    let mut runtime = f.create_runtime().unwrap();
-    let input: Vec<_> = (0..512)
-        .map(|i| {
-            let envelope = if i % 137 < 17 { 10.0 } else { 1.0 };
-            [
-                envelope * (i as f32 * 2.7 + 0.2).sin(),
-                envelope * (i as f32 * 2.1 + 0.7).sin(),
-            ]
-        })
-        .collect();
-    let output = render(runtime.as_mut(), &input, &[1, 63, 257]);
-    let sinc = |x: f64| {
-        if x.abs() < 1e-12 {
-            1.0
-        } else {
-            (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
-        }
-    };
-    let kernels: [[f64; TAPS]; PHASES] = std::array::from_fn(|phase| {
-        let mut kernel = std::array::from_fn(|tap| {
-            let d = 15.0 + phase as f64 / PHASES as f64 - tap as f64;
-            sinc(d) * sinc(d / 16.0)
-        });
-        let sum: f64 = kernel.iter().sum();
-        for coefficient in &mut kernel {
-            *coefficient /= sum;
-        }
-        kernel
-    });
+/// Render a gated-burst fixture through True Peak mode at 48 and 192 kHz in
+/// both routings, returning the largest BS.1770-4 meter reading.
+///
+/// Gated bursts make the gain move inside the 32-tap detector window. The
+/// detector reconstructs the pre-gain input, so modulation-induced
+/// intersample peaks are not tracked (Pulse #3379). The 0.1 criterion is the
+/// standard BS.1770-4 4x meter with a recorded +0.3 dB bound; ideal
+/// reconstruction reads higher and remains a documented limitation.
+fn gated_burst_bs1770_peak(high: f32, low: f32) -> f64 {
     let ceiling = 10.0_f64.powf(-1.0 / 20.0);
-    let limit = ceiling - 1e-6;
-    let mut samples = vec![[0.0_f64; 2]; COUNT + 2 * (TAPS - 1)];
-    for (destination, sample) in samples[TAPS - 1..TAPS - 1 + COUNT]
-        .iter_mut()
-        .zip(&output[64..64 + COUNT])
-    {
-        *destination = sample.map(f64::from);
-    }
-    let mut gains = vec![[0.0_f64; 2]; samples.len()];
-    // All-zero output is feasible. Each coordinate may only increase while
-    // every overlapping signed reconstruction remains within the limit.
-    for _ in 0..2 {
-        for index in TAPS - 1..TAPS - 1 + COUNT {
-            for lane in 0..2 {
-                let mut step = 1.0 - gains[index][lane];
-                for start in index.saturating_sub(TAPS - 1)..=index.min(samples.len() - TAPS) {
-                    for kernel in &kernels {
-                        let value: f64 = (0..TAPS)
-                            .map(|tap| {
-                                kernel[tap] * samples[start + tap][lane] * gains[start + tap][lane]
-                            })
-                            .sum();
-                        let slope = kernel[index - start] * samples[index][lane];
-                        if slope > 0.0 {
-                            step = step.min((limit - value) / slope);
-                        }
-                        if slope < 0.0 {
-                            step = step.min((-limit - value) / slope);
-                        }
-                    }
-                }
-                gains[index][lane] += step.max(0.0);
-            }
-        }
-    }
-    let result: Vec<_> = samples
-        .iter()
-        .zip(&gains)
-        .map(|(sample, gain)| [(sample[0] * gain[0]) as f32, (sample[1] * gain[1]) as f32])
-        .collect();
-    let mut max_model = 0.0_f64;
-    for window in result.windows(TAPS) {
-        for kernel in &kernels {
-            for lane in 0..2 {
-                let value: f64 = kernel
-                    .iter()
-                    .zip(window)
-                    .map(|(c, s)| c * f64::from(s[lane]))
-                    .sum();
-                max_model = max_model.max(value.abs());
-            }
-        }
-    }
-    let selected = &gains[TAPS - 1..TAPS - 1 + COUNT];
-    let min_gain = selected.iter().flatten().copied().fold(1.0_f64, f64::min);
-    let mean_gain = selected.iter().flatten().sum::<f64>() / (COUNT * 2) as f64;
-    let jump = selected
-        .windows(2)
-        .flat_map(|pair| (0..2).map(move |lane| (pair[1][lane] - pair[0][lane]).abs()))
-        .fold(0.0_f64, f64::max);
-    let wider: [[f64; 64]; 32] = std::array::from_fn(|phase| {
-        let mut kernel = std::array::from_fn(|tap| {
-            let d = 31.0 + phase as f64 / 32.0 - tap as f64;
-            sinc(d) * sinc(d / 32.0)
-        });
-        let sum: f64 = kernel.iter().sum();
-        for coefficient in &mut kernel {
-            *coefficient /= sum;
-        }
-        kernel
-    });
-    let mut independent_peak = 0.0_f64;
-    for window in result.windows(64) {
-        for kernel in &wider {
-            for lane in 0..2 {
-                let value: f64 = kernel
-                    .iter()
-                    .zip(window)
-                    .map(|(c, s)| c * f64::from(s[lane]))
-                    .sum();
-                independent_peak = independent_peak.max(value.abs());
-            }
-        }
-    }
-    println!(
-        "32-tap/8-phase feasible peak {max_model:.9}; gain min {min_gain:.6}, mean {mean_gain:.6}, max adjacent gain jump {jump:.6}"
-    );
-    println!("independent 64-tap/32-phase peak {independent_peak:.9}, ceiling {ceiling:.9}");
-    assert!(max_model <= ceiling + 1e-7);
-
-    // A second offline plan uses eight-frame linear knots, with zero endpoints
-    // and a 64-tap/32-phase signed constraint. It still has no emitted past.
-    const STRIDE: usize = 8;
-    const KNOTS: usize = COUNT / STRIDE - 1;
-    let source = &samples[TAPS - 1..TAPS - 1 + COUNT];
-    let mut padded = vec![[0.0_f64; 2]; COUNT + 126];
-    padded[63..63 + COUNT].copy_from_slice(source);
-    let windows = padded.len() - 63;
-    let mut knot_gain = [[0.0_f64; KNOTS]; 2];
-    let mut planned = vec![[0.0_f32; 2]; padded.len()];
-    for lane in 0..2 {
-        // Precompute each knot's linear contribution to every constraint.
-        let mut effects = vec![vec![0.0_f64; windows * 32]; KNOTS];
-        for (knot, effect) in effects.iter_mut().enumerate() {
-            let center = (knot + 1) * STRIDE;
-            for (start, window) in padded.windows(64).enumerate() {
-                for (phase, kernel) in wider.iter().enumerate() {
-                    effect[start * 32 + phase] = kernel
-                        .iter()
-                        .zip(window)
-                        .enumerate()
-                        .map(|(tap, (coefficient, frame))| {
-                            let absolute = start + tap;
-                            let weight = absolute.checked_sub(63).map_or(0.0, |index| {
-                                (1.0 - index.abs_diff(center) as f64 / STRIDE as f64).max(0.0)
-                            });
-                            coefficient * frame[lane] * weight
-                        })
-                        .sum();
-                }
-            }
-        }
-        let mut constraints = vec![0.0_f64; windows * 32];
-        for _ in 0..3 {
-            for knot in 0..KNOTS {
-                let mut step = 1.0 - knot_gain[lane][knot];
-                for (&value, &slope) in constraints.iter().zip(&effects[knot]) {
-                    if slope > 0.0 {
-                        step = step.min((limit - value) / slope);
-                    }
-                    if slope < 0.0 {
-                        step = step.min((-limit - value) / slope);
-                    }
-                }
-                let step = step.max(0.0);
-                knot_gain[lane][knot] += step;
-                for (value, slope) in constraints.iter_mut().zip(&effects[knot]) {
-                    *value += step * slope;
-                }
-            }
-        }
-        for (index, frame) in planned[63..63 + COUNT].iter_mut().enumerate() {
-            let gain: f64 = knot_gain[lane]
-                .iter()
-                .enumerate()
-                .map(|(knot, gain)| {
-                    let center = (knot + 1) * STRIDE;
-                    gain * (1.0 - index.abs_diff(center) as f64 / STRIDE as f64).max(0.0)
+    let bound = ceiling * 10.0_f64.powf(0.3 / 20.0);
+    let mut worst = 0.0_f64;
+    for rate in [48_000, 192_000] {
+        for routing in [0, 1] {
+            let factory = factory(
+                rate,
+                &[
+                    (MODE, ParameterValue::Choice(2)),
+                    (ROUTING, ParameterValue::Choice(routing)),
+                    (LINK, ParameterValue::Float(0.0)),
+                    (RELEASE, ParameterValue::Float(0.01)),
+                    (CEILING, ParameterValue::Float(-1.0)),
+                ],
+            );
+            let mut runtime = factory.create_runtime().unwrap();
+            let mut input: Vec<StereoFrame> = (0..4000)
+                .map(|i| {
+                    let envelope = if i % 137 < 17 { 10.0 } else { 1.0 };
+                    [
+                        envelope * (i as f32 * high + 0.2).sin(),
+                        envelope * (i as f32 * low + 0.7).sin(),
+                    ]
                 })
-                .sum();
-            frame[lane] = (source[index][lane] * gain) as f32;
+                .collect();
+            input.extend(vec![[0.0; 2]; 2048]);
+            let output = render(runtime.as_mut(), &input, &[1, 63, 257]);
+            let sample_peak = output
+                .iter()
+                .flatten()
+                .fold(0.0_f64, |a, s| a.max(f64::from(s.abs())));
+            assert!(sample_peak <= ceiling + 1e-6, "{high} {rate} {routing}");
+            let measured = true_peak_oracle::bs1770_true_peak(&output).unwrap();
+            assert!(
+                measured <= bound,
+                "{high} {rate} {routing}: {:+.3} dB",
+                20.0 * (measured / ceiling).log10()
+            );
+            worst = worst.max(measured);
         }
     }
-    let mut constrained_peak = 0.0_f64;
-    for window in planned.windows(64) {
-        for kernel in &wider {
-            for lane in 0..2 {
-                let value: f64 = kernel
-                    .iter()
-                    .zip(window)
-                    .map(|(c, frame)| c * f64::from(frame[lane]))
-                    .sum();
-                constrained_peak = constrained_peak.max(value.abs());
-            }
-        }
-    }
-    let max_knot_jump = knot_gain
-        .iter()
-        .flat_map(|lane| lane.windows(2).map(|pair| (pair[1] - pair[0]).abs()))
-        .fold(0.0_f64, f64::max);
-    println!(
-        "smooth knot plan: 32-phase peak {constrained_peak:.9}, max knot jump {max_knot_jump:.6}, mean knot gain {:.6}",
-        knot_gain.iter().flatten().sum::<f64>() / (2 * KNOTS) as f64
-    );
-    assert!(constrained_peak <= ceiling + 1e-7);
-
-    // Preserve emitted frames while raising a knot spanning the pending/new
-    // join; the next 64 source frames still end in a zero terminal plan.
-    // This remains a finite offline experiment, not a streaming implementation.
-    const NEXT: usize = 64;
-    const NEXT_KNOTS: usize = NEXT / STRIDE;
-    let mut extended = vec![[0.0_f32; 2]; COUNT + 2 * NEXT + 126];
-    extended[63..63 + COUNT].copy_from_slice(&planned[63..63 + COUNT]);
-    let source_all = &output[64..64 + COUNT + 2 * NEXT];
-    let window_count = extended.len() - 63;
-    let mut joins = [[0.0_f64; 2]; 2];
-    let mut last_mean = 0.0_f64;
-    for transition in 0..2 {
-        let boundary = COUNT + transition * NEXT;
-        let committed = extended[63..63 + boundary - NEXT].to_vec();
-        let previous = extended[63..63 + boundary - STRIDE].to_vec();
-        let mut added_gains = [[0.0_f64; NEXT_KNOTS]; 2];
-        for lane in 0..2 {
-            let mut constraints = vec![0.0_f64; window_count * 32];
-            for (start, window) in extended.windows(64).enumerate() {
-                for (phase, kernel) in wider.iter().enumerate() {
-                    constraints[start * 32 + phase] = kernel
-                        .iter()
-                        .zip(window)
-                        .map(|(c, frame)| c * f64::from(frame[lane]))
-                        .sum();
-                }
-            }
-            let mut effects = vec![vec![0.0_f64; window_count * 32]; NEXT_KNOTS];
-            for (knot, effect) in effects.iter_mut().enumerate() {
-                let center = boundary + knot * STRIDE;
-                for start in 0..window_count {
-                    for (phase, kernel) in wider.iter().enumerate() {
-                        effect[start * 32 + phase] = (center.saturating_sub(STRIDE - 1)
-                            ..=(center + STRIDE - 1).min(source_all.len() - 1))
-                            .filter_map(|index| {
-                                let tap = (63 + index).checked_sub(start)?;
-                                let coefficient = kernel.get(tap)?;
-                                let weight = 1.0 - index.abs_diff(center) as f64 / STRIDE as f64;
-                                Some(coefficient * f64::from(source_all[index][lane]) * weight)
-                            })
-                            .sum();
-                    }
-                }
-            }
-            for _ in 0..3 {
-                for knot in 0..NEXT_KNOTS {
-                    let mut step = 1.0 - added_gains[lane][knot];
-                    for (&value, &slope) in constraints.iter().zip(&effects[knot]) {
-                        if slope > 0.0 {
-                            step = step.min((limit - value) / slope);
-                        }
-                        if slope < 0.0 {
-                            step = step.min((-limit - value) / slope);
-                        }
-                    }
-                    let step = step.max(0.0);
-                    added_gains[lane][knot] += step;
-                    for (value, slope) in constraints.iter_mut().zip(&effects[knot]) {
-                        *value += step * slope;
-                    }
-                }
-            }
-            for (index, frame) in extended[63 + boundary - STRIDE..63 + boundary + NEXT]
-                .iter_mut()
-                .enumerate()
-            {
-                let index = index + boundary - STRIDE;
-                let gain: f64 = added_gains[lane]
-                    .iter()
-                    .enumerate()
-                    .map(|(knot, gain)| {
-                        gain * (1.0
-                            - index.abs_diff(boundary + knot * STRIDE) as f64 / STRIDE as f64)
-                            .max(0.0)
-                    })
-                    .sum();
-                frame[lane] =
-                    (f64::from(frame[lane]) + f64::from(source_all[index][lane]) * gain) as f32;
-            }
-        }
-        assert_eq!(&extended[63..63 + boundary - NEXT], &committed);
-        assert_eq!(&extended[63..63 + boundary - STRIDE], &previous);
-        assert!(added_gains.iter().all(|lane| lane[0] > 0.0));
-        joins[transition] = [added_gains[0][0], added_gains[1][0]];
-        last_mean = added_gains.iter().flatten().sum::<f64>() / (2 * NEXT_KNOTS) as f64;
-    }
-    assert!(
-        extended
-            .iter()
-            .flatten()
-            .all(|sample| f64::from(sample.abs()) <= ceiling + 1e-7)
-    );
-    let mut extension_model_peak = 0.0_f64;
-    for window in extended.windows(64) {
-        for kernel in &wider {
-            for lane in 0..2 {
-                let value: f64 = kernel
-                    .iter()
-                    .zip(window)
-                    .map(|(c, frame)| c * f64::from(frame[lane]))
-                    .sum();
-                extension_model_peak = extension_model_peak.max(value.abs());
-            }
-        }
-    }
-    let denser: [[f64; 64]; 64] = std::array::from_fn(|phase| {
-        let mut kernel = std::array::from_fn(|tap| {
-            let d = 31.0 + phase as f64 / 64.0 - tap as f64;
-            sinc(d) * sinc(d / 32.0)
-        });
-        let sum: f64 = kernel.iter().sum();
-        for coefficient in &mut kernel {
-            *coefficient /= sum;
-        }
-        kernel
-    });
-    let mut phase64_peak = 0.0_f64;
-    let mut peak_index = 0;
-    for (index, window) in extended.windows(64).enumerate() {
-        for kernel in &denser {
-            for lane in 0..2 {
-                let value: f64 = kernel
-                    .iter()
-                    .zip(window)
-                    .map(|(c, frame)| c * f64::from(frame[lane]))
-                    .sum();
-                if value.abs() > phase64_peak {
-                    phase64_peak = value.abs();
-                    peak_index = index + 31;
-                }
-            }
-        }
-    }
-    // Exact cardinal sinc of this finite, zero-extended fragment, evaluated
-    // near the Lanczos-selected peak only. This is not a global or DAC bound.
-    assert!((2.0 * sinc(0.5) - 4.0 / std::f64::consts::PI).abs() < 1e-12);
-    let mut cardinal_peak = 0.0_f64;
-    for index in peak_index.saturating_sub(2)..=(peak_index + 2).min(extended.len() - 1) {
-        for phase in 0..32 {
-            let position = index as f64 + phase as f64 / 32.0;
-            for lane in 0..2 {
-                let mut sum = 0.0_f64;
-                let mut compensation = 0.0_f64;
-                for (sample_index, sample) in extended.iter().enumerate() {
-                    let term = f64::from(sample[lane]) * sinc(position - sample_index as f64);
-                    let corrected = term - compensation;
-                    let next = sum + corrected;
-                    compensation = (next - sum) - corrected;
-                    sum = next;
-                }
-                cardinal_peak = cardinal_peak.max(sum.abs());
-            }
-        }
-    }
-    println!(
-        "overlapped incumbent: 32-phase peak {extension_model_peak:.9}, 64-phase peak {phase64_peak:.9}, join gain {:?}, new mean knot gain {:.6}",
-        joins, last_mean
-    );
-    println!("cardinal-sinc peak near selected frame {peak_index}: {cardinal_peak:.9}");
-    assert!(extension_model_peak <= ceiling + 1e-7);
+    // Guard against the fixture silently becoming trivial.
+    assert!(worst > ceiling * 0.99, "{worst}");
+    worst
 }
+
+#[test]
+fn true_peak_mode_stays_within_bs1770_bound_on_near_nyquist_bursts() {
+    gated_burst_bs1770_peak(2.7, 2.1);
+}
+
+#[test]
+fn true_peak_mode_stays_within_bs1770_bound_on_mid_band_bursts() {
+    gated_burst_bs1770_peak(0.8, 0.6);
+}
+
 #[test]
 fn invalid_rates_and_nonfinite_pcm_are_contained() {
     for rate in [0, 7999, 192001, u32::MAX] {
