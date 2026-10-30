@@ -278,12 +278,11 @@ fn stale_output_start(status: &Status, queued: QueuedCommand) -> bool {
         && queued.transport_epoch <= status.last_output_fault_epoch.load(Acquire)
 }
 
+// A refused PlayFrom keeps its frame as recovery cursor intent. Seek is not
+// a start: it still applies to the stopped graph while a render fault is latched.
 fn fault_cursor_intent(action: PlaybackAction) -> Option<u64> {
     match action {
-        PlaybackAction::Transport(
-            PlaybackCommand::Seek(frame) | PlaybackCommand::PlayFrom(frame),
-        )
-        | PlaybackAction::Session(hex_engine::SessionPlaybackCommand::Seek(frame)) => Some(frame),
+        PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) => Some(frame),
         _ => None,
     }
 }
@@ -2158,10 +2157,11 @@ impl Control {
     /// receive `OutputFailed`, even if a replacement has cleared the fault.
     /// Priority Stop can supersede them; later user commands and explicit
     /// seek/stop retain their ordinary ordering.
-    /// While a render fault remains latched, starts and seeks receive
-    /// `OutputFailed`; an explicit Seek or PlayFrom still updates the recovery
-    /// cursor unless a later priority Stop supersedes it. A replacement must
-    /// clear the fault before a new start can run the graph.
+    /// While a render fault remains latched, starts receive `OutputFailed`
+    /// and the failed graph is not rendered; a refused PlayFrom still updates
+    /// the recovery cursor unless a later priority Stop supersedes it. Seek
+    /// and Stop keep their ordinary semantics. A replacement must clear the
+    /// fault before a new start can run the graph.
     pub fn command_with_ticket(
         &mut self,
         command: PlaybackCommand,
@@ -3855,13 +3855,14 @@ impl Callback {
                 ));
                 continue;
             }
-            if self.status.render_fault.load(Acquire)
-                && (starts_playback(queued.action) || fault_cursor_intent(queued.action).is_some())
-            {
+            if self.status.render_fault.load(Acquire) && starts_playback(queued.action) {
                 if cut.stop_through.is_none_or(|stop| queued.ticket > stop)
                     && let Some(frame) = fault_cursor_intent(queued.action)
                 {
                     self.status.recovery_position.store(frame, Release);
+                    // An earlier applied Seek unfroze the cursor; keep this intent
+                    // from being overwritten by the stopped graph's position.
+                    self.recovery_position_frozen = true;
                 }
                 self.status
                     .publish_rejected_action(queued.ticket, PlaybackActionRejection::OutputFailed);

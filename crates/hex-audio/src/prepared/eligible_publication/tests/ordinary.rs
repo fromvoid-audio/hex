@@ -228,15 +228,21 @@ fn ordinary_streamed_actions_deliver_split_client_outcomes() {
         .command_with_ticket(PlaybackCommand::PlayFrom(64))
         .unwrap();
     assert_eq!(measured_block(&mut data), [[0.0; 2]; 8]);
-    for ticket in [seek, play_from] {
-        assert_eq!(
-            reader.try_take(),
-            Some(ActionOutcomeReceipt {
-                ticket,
-                outcome: ActionOutcome::Rejected(PlaybackActionRejection::OutputFailed)
-            })
-        );
-    }
+    // Seek keeps its ordinary stopped-graph semantics; only the start is refused.
+    assert_eq!(
+        reader.try_take(),
+        Some(ActionOutcomeReceipt {
+            ticket: seek,
+            outcome: ActionOutcome::Applied
+        })
+    );
+    assert_eq!(
+        reader.try_take(),
+        Some(ActionOutcomeReceipt {
+            ticket: play_from,
+            outcome: ActionOutcome::Rejected(PlaybackActionRejection::OutputFailed)
+        })
+    );
     assert_eq!(client.status().unwrap().recovery_position(), 64);
     assert!(!client.status().unwrap().playing.load(Acquire));
     client.stop();
@@ -1021,7 +1027,7 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
             control.status.rejected_action().map(|(ticket, _)| ticket),
             Some(seek)
         );
-        assert_eq!(control.status.recovery_position(), 12);
+        assert_eq!(control.status.recovery_position(), last_position);
         control.stop();
         assert_eq!(control.status.recovery_position(), 0);
         measured_block(&mut data);
