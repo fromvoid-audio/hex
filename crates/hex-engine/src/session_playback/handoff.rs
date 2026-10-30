@@ -669,8 +669,7 @@ impl SessionPlayback {
         let old_base = previous.revision.session().timing();
         let new_base = self.revision.session().timing();
         let same_base = old_base.same_map(new_base);
-        let candidate_periodic =
-            self.periodic_tempo_at(previous.arrangement_frame, previous.arrangement_loop_pass);
+        let candidate_periodic = self.periodic_tempo_at(previous.arrangement_frame);
         let same_periodic = previous.periodic_tempo() == candidate_periodic;
         let old_clock = previous.timing_view();
         let old_beat = old_clock
@@ -681,15 +680,17 @@ impl SessionPlayback {
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
         let timing_changed = !same_base || !same_periodic;
-        // A paused loop-only edit may carry the closed compensation history;
-        // the planner below still refuses incompatible sources and active tails.
-        // An edited base tempo map or a live change still needs the old guard.
-        if timing_changed
+        // A loop-only edit keeps the canonical base map, paused or playing.
+        // Delayed stamps already carry their own beats, and the candidate's
+        // anchor keeps new stamps continuous at the cut; the planner below
+        // still refuses incompatible sources and active tails. An edited base
+        // tempo map still needs the old guard once the clock has moved.
+        if !same_base
             && (self.revision.arrangement().main_latency_frames() > 0
                 || previous.revision.arrangement().main_latency_frames() > 0)
             && (previous.playing
-                || !same_base
-                    && (previous.performance_frame != 0 || previous.arrangement_frame != 0))
+                || previous.performance_frame != 0
+                || previous.arrangement_frame != 0)
         {
             return Err(SessionPlaybackError::Arrangement(
                 "compensated timing changed · stop transport before applying this revision",

@@ -2002,16 +2002,11 @@ impl SessionPlayback {
     }
 
     pub(crate) fn periodic_tempo(&self) -> Option<PreparedPeriodicSessionTempo> {
-        self.periodic_tempo_at(self.arrangement_frame, self.arrangement_loop_pass)
+        self.periodic_tempo_at(self.arrangement_frame)
     }
 
-    fn periodic_tempo_at(
-        &self,
-        frame: u64,
-        loop_pass: u64,
-    ) -> Option<PreparedPeriodicSessionTempo> {
-        self.active_loop_region_at(frame, loop_pass)
-            .and(self.periodic_tempo)
+    fn periodic_tempo_at(&self, frame: u64) -> Option<PreparedPeriodicSessionTempo> {
+        self.active_loop_region_at(frame).and(self.periodic_tempo)
     }
 
     pub fn performance_frame(&self) -> u64 {
@@ -2031,17 +2026,18 @@ impl SessionPlayback {
         }
     }
 
-    /// The saved/audition loop participates only when playback reaches it from
-    /// before its end. An absolute seek at or after the end begins a linear
-    /// first pass; a completed wrap retains the existing periodic loop law.
+    /// The saved/audition loop participates only while the cursor is before
+    /// its end, on every pass. An absolute seek at or after the end begins a
+    /// linear pass; a cursor before the start plays into the loop and wraps.
+    /// A loop edited behind a cursor that already wrapped likewise lets
+    /// playback continue linearly instead of jumping into the new region.
     /// This query does not change loop settings or introduce transport state.
     pub(crate) fn active_loop_region(&self) -> Option<hex_project::LoopRegion> {
-        self.active_loop_region_at(self.arrangement_frame, self.arrangement_loop_pass)
+        self.active_loop_region_at(self.arrangement_frame)
     }
 
-    fn active_loop_region_at(&self, frame: u64, loop_pass: u64) -> Option<hex_project::LoopRegion> {
-        self.loop_region()
-            .filter(|region| loop_pass > 0 || frame < region.end())
+    fn active_loop_region_at(&self, frame: u64) -> Option<hex_project::LoopRegion> {
+        self.loop_region().filter(|region| frame < region.end())
     }
 
     /// Exact immutable graph retained by this runtime.
@@ -2135,7 +2131,7 @@ impl SessionPlayback {
         // than accepting a graph that will fail at its first render/launch.
         base_timing_for(
             self.revision.session(),
-            self.periodic_tempo_at(arrangement_frame, 0),
+            self.periodic_tempo_at(arrangement_frame),
         )
         .frame_to_beat(performance_frame)
         .map_err(|_| SessionPlaybackError::TempoConversion)?;
