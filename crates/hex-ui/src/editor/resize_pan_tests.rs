@@ -7,19 +7,23 @@ use hex_project::{BeatTime, ClipId, Command, Created, TrackId};
 use hex_session::service::{Event, Request, Service};
 use std::time::{Duration, Instant};
 
+/// Wall-clock hang guard for worker/session progress. Sized for a loaded
+/// developer machine; simulated controller time is passed separately.
+const HANG_GUARD: Duration = Duration::from_secs(30);
+
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + HANG_GUARD;
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(Instant::now() < until, "session event did not arrive");
         std::thread::sleep(Duration::from_millis(2));
     }
 }
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + HANG_GUARD;
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -31,7 +35,10 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
             visual.run_until_parked();
             return;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            Instant::now() < until,
+            "editor worker requests did not drain"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
