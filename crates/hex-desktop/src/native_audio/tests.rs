@@ -1448,6 +1448,79 @@ fn rapid_new_verified_import_supersession_applies_decoded_pcm() {
     }
 }
 
+/// Play from the start until the callback renders `level` on both channels.
+fn play_from_start_expecting(h: &mut Harness, level: f32) {
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let output = h.render();
+        if output
+            .iter()
+            .all(|frame| frame.iter().all(|sample| (*sample - level).abs() < 0.0001))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected PCM {level} not rendered"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+}
+
+#[test]
+fn verified_undo_supersedes_an_uninstalled_import_and_redo_restores_it() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let path = files.wav(44100, 9600);
+    let mut h = Harness::with_rate(44100);
+    h.next();
+    h.open();
+    // The superseded import's source domain may still be retiring when Undo is
+    // admitted; that transient state must be retried, never block the newer
+    // canonical state. Repeat in fresh documents to cover both interleavings.
+    for _ in 0..4 {
+        h.run(Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(AudioPolicy::source_reservation()),
+        });
+        h.open();
+        let first = h.run(Request::Import(path.clone()));
+        h.applied(h.context.unwrap());
+        // No callback renders before Undo, so the second import's candidate is
+        // necessarily uninstalled and Undo's newer snapshot must supersede it.
+        let second = h.run(Request::Import(path.clone()));
+        assert_eq!(second.state.project.tracks().len(), 2);
+        let undone = h.run(Request::Undo);
+        // Undo restores content; the ID allocator stays monotonic.
+        let mut restored = undone.state.project.snapshot();
+        let expected = first.state.project.snapshot();
+        restored.next_id = expected.next_id;
+        assert_eq!(restored, expected);
+        assert!(undone.state.can_redo);
+        h.applied(h.context.unwrap());
+        play_from_start_expecting(&mut h, 0.25);
+        let redone = h.run(Request::Redo);
+        assert_eq!(
+            redone.state.project.snapshot(),
+            second.state.project.snapshot()
+        );
+        h.applied(h.context.unwrap());
+        play_from_start_expecting(&mut h, 0.5);
+    }
+}
+
 #[test]
 fn exact_root_domain_retirement_intent_survives_cleaning_and_recovers_before_reuse() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
