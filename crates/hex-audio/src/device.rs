@@ -16,7 +16,10 @@ use cpal::{
 };
 use hex_engine::Frame;
 use std::{
-    sync::{Arc, atomic::Ordering::Relaxed},
+    sync::{
+        Arc,
+        atomic::Ordering::{Acquire, Relaxed},
+    },
     time::Instant,
 };
 
@@ -56,6 +59,7 @@ pub enum WorkerOutputProfile {
 pub(crate) enum PreparedOutputKind {
     Legacy,
     Worker(WorkerOutputProfile),
+    WorkerReliable(WorkerOutputProfile),
 }
 impl PreparedOutputKind {
     fn physical_callback_request(
@@ -63,7 +67,8 @@ impl PreparedOutputKind {
         supported: cpal::SupportedBufferSize,
     ) -> Result<Option<u16>, String> {
         match self {
-            Self::Worker(WorkerOutputProfile::PluginBridge) => {
+            Self::Worker(WorkerOutputProfile::PluginBridge)
+            | Self::WorkerReliable(WorkerOutputProfile::PluginBridge) => {
                 bridge_callback_request(supported).map(Some)
             }
             _ => Ok(None),
@@ -77,6 +82,7 @@ pub struct WorkerPreparedOutput {
     _stream: lifecycle::StreamOwner,
     pub publication: prepared::WorkerControl,
     client: Option<prepared::Client>,
+    action_outcomes: Option<prepared::ActionOutcomeReader>,
     pub sample_rate: u32,
     pub label: String,
     pub spectrum_error: Option<String>,
@@ -96,6 +102,22 @@ impl WorkerPreparedOutput {
         )?
         .into_worker()
     }
+    /// Open an output with bounded action outcomes selected before native
+    /// callback exposure, including streamed playback.
+    pub fn open_with_reliable_action_outcomes(
+        profile: WorkerOutputProfile,
+    ) -> Result<Self, String> {
+        open_prepared(
+            None,
+            lifecycle::Lease::acquire()?,
+            PreparedOutputKind::WorkerReliable(profile),
+        )?
+        .into_worker()
+    }
+    /// Take the unique observer; it can outlive this output and its client.
+    pub fn take_action_outcomes(&mut self) -> Option<prepared::ActionOutcomeReader> {
+        self.action_outcomes.take()
+    }
     pub fn take_client(&mut self) -> Option<prepared::Client> {
         let mut client = self.client.take()?;
         client.activate();
@@ -107,6 +129,7 @@ pub(crate) struct Opened {
     legacy: Option<prepared::Control>,
     publication: Option<prepared::WorkerControl>,
     client: Option<prepared::Client>,
+    action_outcomes: Option<prepared::ActionOutcomeReader>,
     sample_rate: u32,
     label: String,
     spectrum: Option<SpectrumReader>,
@@ -130,6 +153,7 @@ impl Opened {
                 .publication
                 .ok_or("worker publication endpoint unavailable")?,
             client: Some(self.client.ok_or("worker command endpoint unavailable")?),
+            action_outcomes: self.action_outcomes,
             sample_rate: self.sample_rate,
             label: self.label,
             spectrum_error: self.spectrum_error,
@@ -141,7 +165,10 @@ pub(crate) fn open_prepared(
     lease: lifecycle::Lease,
     kind: PreparedOutputKind,
 ) -> Result<Opened, String> {
-    let worker = matches!(kind, PreparedOutputKind::Worker(_));
+    let worker = matches!(
+        kind,
+        PreparedOutputKind::Worker(_) | PreparedOutputKind::WorkerReliable(_)
+    );
     let device = cpal::default_host()
         .default_output_device()
         .ok_or("no default audio output device")?;
@@ -211,6 +238,20 @@ pub(crate) fn open_prepared(
             return Err(error.to_string());
         }
     };
+    let action_outcomes = if matches!(kind, PreparedOutputKind::WorkerReliable(_)) {
+        match control.enable_action_outcomes_on_control(&mut callback) {
+            Ok(reader) => Some(reader),
+            Err(error) => {
+                drop(lifecycle::StreamOwner::failed_preparation_custody(
+                    lease,
+                    spectrum_reaper,
+                ));
+                return Err(error.to_owned());
+            }
+        }
+    } else {
+        None
+    };
     if let Some(frames) = physical_callback_request {
         if let Err(error) = control.configure_physical_callback_request(&mut callback, frames) {
             drop(lifecycle::StreamOwner::failed_preparation_custody(
@@ -275,6 +316,7 @@ pub(crate) fn open_prepared(
         legacy: legacy_control,
         publication: worker_control,
         client,
+        action_outcomes,
         sample_rate: config.sample_rate,
         label,
         spectrum,
@@ -334,6 +376,13 @@ where
             owner.run(|callback, status| {
                 let start = Instant::now();
                 callback.begin_block();
+                if status.device_fault.load(Acquire) {
+                    callback.fence_device_fault();
+                    data.fill(T::from_sample(0.0));
+                    status.peak_left.store(0, Relaxed);
+                    status.peak_right.store(0, Relaxed);
+                    return;
+                }
                 let mut block: [Frame; 256] = [[0.0; 2]; 256];
                 let mut peaks = [0.0_f32; 2];
                 let complete = data.len() / channels * channels;
@@ -563,8 +612,25 @@ where
 pub(crate) fn headless_worker_output(
     rate: u32,
 ) -> Result<(WorkerPreparedOutput, crate::worker_fixture::HeadlessBackend), String> {
+    headless_worker_output_with_outcomes(rate, false)
+}
+
+#[cfg(feature = "allocation-probe")]
+pub(crate) fn headless_worker_output_with_outcomes(
+    rate: u32,
+    reliable: bool,
+) -> Result<(WorkerPreparedOutput, crate::worker_fixture::HeadlessBackend), String> {
     let lease = lifecycle::Lease::acquire()?;
     let (mut control, mut callback) = prepared::channel(rate).map_err(|e| e.to_string())?;
+    let action_outcomes = if reliable {
+        Some(
+            control
+                .enable_action_outcomes_on_control(&mut callback)
+                .map_err(str::to_owned)?,
+        )
+    } else {
+        None
+    };
     control
         .configure_physical_callback_request(
             &mut callback,
@@ -586,6 +652,7 @@ pub(crate) fn headless_worker_output(
             _stream: stream,
             publication,
             client: Some(client),
+            action_outcomes,
             sample_rate: rate,
             label: "headless constructor fixture".into(),
             spectrum_error: None,
@@ -911,6 +978,90 @@ mod tests {
             callback.begin_block();
             callback.render(source)
         }
+    }
+
+    #[test]
+    fn gain_begin_racing_fault_and_prequeued_recovery_keeps_failure_cause() {
+        let (mut control, mut callback, target) = recording_callback();
+        let replacement =
+            hex_engine::playback::Playback::new(hex_engine::Project::new(48_000, vec![]).unwrap());
+        control.publish(replacement).unwrap();
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        control.gain_recording.begin_gate = Some(gate.clone());
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                gate.wait();
+                callback.report_render_fault(Some(&hex_engine::Invalid("injected failure")), 16);
+                callback.begin_block();
+                gate.wait();
+            });
+            control.gain_recording.begin(target, 0.8).unwrap();
+        });
+        control.gain_recording.begin_gate = None;
+        let mut source = [[0.0; 2]; 8];
+        checked_recording_render(&mut callback, &mut source).unwrap();
+        assert!(matches!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Superseded { .. })
+        ));
+        assert!(matches!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Aborted {
+                reason: AbortReason::OutputFailed,
+                ..
+            })
+        ));
+        assert!(!control.status.render_fault.load(Acquire));
+        assert!(control.status.reserve_midi_begin().is_ok());
+        control.status.midi_end();
+    }
+
+    #[test]
+    fn render_fault_aborts_a_racing_gain_take() {
+        let (mut control, mut callback, target) = recording_callback();
+        control.gain_recording.begin(target, 0.8).unwrap();
+        control
+            .status
+            .render_fault
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut source = [[0.0; 2]; 8];
+        checked_recording_render(&mut callback, &mut source).unwrap();
+        assert!(matches!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Superseded { .. })
+        ));
+        assert!(matches!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Aborted {
+                reason: AbortReason::OutputFailed,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn device_error_aborts_a_queued_gain_take() {
+        let (mut control, mut callback, target) = recording_callback();
+        control.gain_recording.begin(target, 0.8).unwrap();
+        control
+            .status
+            .device_fault
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut source = [[1.0; 2]; 8];
+        assert!(checked_recording_render(&mut callback, &mut source).is_ok());
+        assert_eq!(source, [[0.0; 2]; 8]);
+        assert!(matches!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Superseded { .. })
+        ));
+        assert!(matches!(
+            control.gain_recording.try_receipt(),
+            Some(Receipt::Aborted {
+                reason: AbortReason::OutputFailed,
+                ..
+            })
+        ));
+        assert!(control.gain_recording.begin(target, 0.8).is_err());
     }
 
     #[test]

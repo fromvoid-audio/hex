@@ -572,6 +572,12 @@ class ScopeTests(unittest.TestCase):
         self.assertTrue(any("ui-test-support" in a and "compressor" in a for a in commands))
         self.assertFalse(any("--workspace" in a for a in commands))
         self.assertFalse(any("operator" in a for a in commands))
+        # Reviewed stream hooks are linted, never silently skipped, but their
+        # unrelated full suites are not run for a compressor-only change.
+        stream = [a for a in commands if "stream-test-support" in a]
+        self.assertTrue(stream)
+        self.assertTrue(all(a[:2] == ("cargo", "clippy") for a in stream))
+        self.assertTrue(any("test-support" in a and "hex-stream" in a and a[1] == "clippy" for a in commands))
         self.assertIn("hex-midi", boundary["excluded_packages"])
         with tempfile.TemporaryDirectory() as directory:
             fixture_root = Path(directory)

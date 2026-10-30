@@ -32,6 +32,8 @@ struct PendingAction {
 }
 pub(super) struct Workspace {
     handoff_diagnostic: Option<hex_engine::PlaybackHandoffError>,
+    pub(super) source_changed: bool,
+    pub(super) capacity_conflict: bool,
     pub(super) extents: [Vec<StreamResourceExtent>; 2],
     pub(super) limit: usize,
     pub(super) stamps: [Option<hex_stream::ReadinessStamp>; 2],
@@ -56,6 +58,8 @@ impl Workspace {
         }
         Ok(Self {
             handoff_diagnostic: None,
+            source_changed: false,
+            capacity_conflict: false,
             extents,
             limit,
             stamps: [None; 2],
@@ -84,6 +88,8 @@ impl Workspace {
     }
     pub(super) fn clear(&mut self) {
         self.handoff_diagnostic = None;
+        self.source_changed = false;
+        self.capacity_conflict = false;
         for rows in &mut self.extents {
             rows.clear();
         }

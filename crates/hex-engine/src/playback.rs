@@ -106,6 +106,9 @@ pub enum PlaybackActionRejection {
     StreamPagesNotReady = 12,
     StreamActionCancelled = 13,
     SamplerEditBusy = 14,
+    StreamSourceChanged = 15,
+    OutputFailed = 16,
+    NoActivePlayback = 17,
 }
 
 impl PlaybackActionRejection {
@@ -125,12 +128,16 @@ impl PlaybackActionRejection {
             12 => Some(Self::StreamPagesNotReady),
             13 => Some(Self::StreamActionCancelled),
             14 => Some(Self::SamplerEditBusy),
+            15 => Some(Self::StreamSourceChanged),
+            16 => Some(Self::OutputFailed),
+            17 => Some(Self::NoActivePlayback),
             _ => None,
         }
     }
 
     pub const fn message(self) -> &'static str {
         match self {
+            Self::NoActivePlayback => "no active playback graph",
             Self::MetronomeUnavailable => {
                 "metronome requires prepared musical timing and sample storage"
             }
@@ -147,6 +154,8 @@ impl PlaybackActionRejection {
             Self::InvalidSessionAction => "session playback action was rejected",
             Self::StreamActionBusy => "stream action waits for an earlier command or publication",
             Self::StreamPagesNotReady => "stream action page protection is unavailable",
+            Self::StreamSourceChanged => "original media changed · reopen or relink it",
+            Self::OutputFailed => "audio output failed · restart audio before retrying",
             Self::SamplerEditBusy => "sampler edit is preparing; retry after audio is ready",
             Self::StreamActionCancelled => {
                 "stream action was cancelled by transport or replacement"
@@ -219,6 +228,7 @@ pub enum PlaybackHandoffRejection {
     StreamedPagesNotReady = 9,
     LatencyLayoutChanged = 10,
     SourceHistoryUnavailable = 11,
+    StreamSourceChanged = 12,
 }
 
 impl PlaybackHandoffRejection {
@@ -262,6 +272,7 @@ impl PlaybackHandoffRejection {
             9 => Some(Self::StreamedPagesNotReady),
             10 => Some(Self::LatencyLayoutChanged),
             11 => Some(Self::SourceHistoryUnavailable),
+            12 => Some(Self::StreamSourceChanged),
             _ => None,
         }
     }
@@ -289,6 +300,7 @@ impl PlaybackHandoffRejection {
             Self::FreshRuntimeCancelled => "playback was cancelled before it became active",
             Self::ConstructorClaimsUnavailable => "constructor playback claims are unavailable",
             Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
+            Self::StreamSourceChanged => "original media changed · reopen or relink it",
             Self::LatencyLayoutChanged => {
                 "latency layout changed · stop transport before applying this revision"
             }

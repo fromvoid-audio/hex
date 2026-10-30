@@ -669,6 +669,31 @@ impl CandidateRoot {
         definitions: Vec<hex_stream::SourceDefinition>,
         readiness: hex_stream::StreamReadinessReservation,
     ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
+        self.begin_domain_preparation_inner(
+            config,
+            definitions,
+            readiness,
+            #[cfg(feature = "stream-test-support")]
+            None,
+        )
+    }
+    #[cfg(feature = "stream-test-support")]
+    pub(crate) fn begin_domain_preparation_with_gate(
+        &self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        readiness: hex_stream::StreamReadinessReservation,
+        gate: hex_stream::test_support::PageGate,
+    ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
+        self.begin_domain_preparation_inner(config, definitions, readiness, Some(gate))
+    }
+    fn begin_domain_preparation_inner(
+        &self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        readiness: hex_stream::StreamReadinessReservation,
+        #[cfg(feature = "stream-test-support")] gate: Option<hex_stream::test_support::PageGate>,
+    ) -> Result<AudioCandidateDomainToken, AudioCandidateDomainStartError> {
         {
             let bank = lock(&self.0.bank);
             if bank.closing || bank.retiring {
@@ -677,6 +702,19 @@ impl CandidateRoot {
                 ));
             }
         }
+        #[cfg(feature = "stream-test-support")]
+        let result = match gate {
+            Some(gate) => {
+                self.0
+                    .eligible
+                    .begin_preparation_with_gate(config, definitions, readiness, gate)
+            }
+            None => self
+                .0
+                .eligible
+                .begin_preparation(config, definitions, readiness),
+        };
+        #[cfg(not(feature = "stream-test-support"))]
         let result = self
             .0
             .eligible

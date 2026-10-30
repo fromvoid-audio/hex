@@ -4397,6 +4397,107 @@ fn mutable_short_note_releases_inside_query_and_matches_partitioned_render() {
 }
 
 #[test]
+fn mutable_coincident_release_and_attack_keep_order_across_segment_boundaries() {
+    use hex_lattice::NativeInstrumentEvent;
+
+    let source = project(1.0, 0, 8 << 32);
+    let track = source.tracks().first().unwrap();
+    let clip = track.midi_clips().first().unwrap();
+    let note = clip.notes().first().unwrap();
+    let factory = MutableFeedbackFactory {
+        level: 0.2,
+        release_frames: 8,
+    };
+    let render = |segments: &[usize]| {
+        let mut runtime =
+            crate::mutable_instrument::MutableInstrumentTrackRuntime::new(&factory, 48_000)
+                .unwrap();
+        let mut onsets = crate::mutable_instrument::MutableOnsetBuffer::default();
+        for (iteration, start, end, velocity) in [(0, 0, 4, 100), (1, 4, 8, 80)] {
+            onsets
+                .push(crate::mutable_instrument::MutableNoteOnset {
+                    key: crate::mutable_instrument::MutableOccurrenceKey::new(
+                        track.id(),
+                        clip.id(),
+                        note.id(),
+                        iteration,
+                        0,
+                    ),
+                    onset_beat: hex_project::BeatTime::from_raw(start << 32),
+                    gate_end_beat: hex_project::BeatTime::from_raw(end << 32),
+                    source_start: start,
+                    source_gate_end: end,
+                    pitch: 60,
+                    channel: 0,
+                    velocity,
+                })
+                .unwrap();
+        }
+        let mut audio = [[0.0; 2]; 28];
+        let mut events = Vec::new();
+        let mut observed = Vec::new();
+        let mut start = 0;
+        for &end in segments {
+            runtime.begin_block();
+            runtime
+                .process_segment(
+                    track.id(),
+                    start as u64,
+                    start as u64,
+                    &mut audio[start..end],
+                    &mut onsets,
+                    &[],
+                    &mut events,
+                )
+                .unwrap();
+            observed.extend(events.iter().map(|event| match *event {
+                NativeInstrumentEvent::NoteOn {
+                    frame_offset,
+                    occurrence_id,
+                    ..
+                } => (start + frame_offset, true, occurrence_id),
+                NativeInstrumentEvent::NoteOff {
+                    frame_offset,
+                    occurrence_id,
+                } => (start + frame_offset, false, occurrence_id),
+                NativeInstrumentEvent::Expression { .. } => panic!("unexpected expression"),
+            }));
+            runtime.commit_block();
+            start = end;
+        }
+        assert_eq!(start, audio.len());
+        (audio, observed)
+    };
+    let (whole, events) = render(&[28]);
+    assert_eq!(
+        events,
+        [(0, true, 1), (4, false, 1), (4, true, 2), (8, false, 2)]
+    );
+    // Independent fixture oracle: the first release remains sounding for
+    // eight frames, overlapping the second note, then its feedback tail fades.
+    let mut feedback = 0.0_f32;
+    for (index, frame) in whole.iter().enumerate() {
+        let first = if index < 12 { 0.2_f32 } else { 0.0 };
+        let second = if (4..16).contains(&index) {
+            0.2_f32 * 0.8
+        } else {
+            0.0
+        };
+        let direct = first + second;
+        feedback = feedback * 0.5 + direct * 0.25;
+        assert_eq!(*frame, [direct + feedback; 2], "frame {index}");
+        if index == 22 {
+            feedback = 0.0;
+        }
+    }
+    for segments in [&[4, 8, 28][..], &[1, 3, 4, 5, 8, 9, 28][..]] {
+        let (audio, actual_events) = render(segments);
+        assert_eq!(actual_events, events, "segments {segments:?}");
+        assert_eq!(audio, whole, "segments {segments:?}");
+    }
+}
+
+#[test]
 fn mutable_event_order_is_canonical_for_same_frame_notes_and_partitions() {
     let source = project(1.0, 0, 8 << 32);
     let track = source.tracks().first().unwrap();
@@ -10215,127 +10316,160 @@ fn session_audio_quantized_launch_begins_on_the_due_performance_frame() {
 }
 
 #[test]
-fn quantized_scene_launch_and_cancel_match_explicit_pcm_across_block_sizes() {
-    for sample_rate in [44_100_u32, 48_000, 96_000] {
-        let due = usize::try_from(sample_rate).unwrap() * 2;
-        let source: Vec<Frame> = (0..32)
-            .map(|index| [index as f32 + 0.25, -(index as f32 + 0.5)])
-            .collect();
-        let audio = crate::Audio::new(sample_rate, source.clone()).unwrap();
-        let other = crate::Audio::new(sample_rate, vec![[0.0; 2]; 32]).unwrap();
-        let mut snapshot = audio_project(5, 18, 4).snapshot();
-        snapshot.sample_rate = sample_rate;
-        for asset in &mut snapshot.assets {
-            asset.source_sample_rate = sample_rate;
-        }
-        let project = legacy_project_from_snapshot(snapshot).unwrap();
-        let scene = project.scenes()[0].id();
-        let media = audio_media(&project, &audio, &other);
-        let revision = Arc::new(
-            PreparedRevision::prepare(
-                &project,
-                &media,
-                Arc::new(hex_devices::SineTable::new()),
-                None,
-            )
-            .unwrap(),
+fn quantized_scene_44100_launch_matches_partitioned_pcm() {
+    assert_quantized_scene_pcm(44100, false);
+}
+
+#[test]
+fn quantized_scene_44100_cancel_matches_partitioned_pcm() {
+    assert_quantized_scene_pcm(44100, true);
+}
+
+#[test]
+fn quantized_scene_48000_launch_matches_partitioned_pcm() {
+    assert_quantized_scene_pcm(48000, false);
+}
+
+#[test]
+fn quantized_scene_48000_cancel_matches_partitioned_pcm() {
+    assert_quantized_scene_pcm(48000, true);
+}
+
+#[test]
+fn quantized_scene_96000_launch_matches_partitioned_pcm() {
+    assert_quantized_scene_pcm(96000, false);
+}
+
+#[test]
+fn quantized_scene_96000_cancel_matches_partitioned_pcm() {
+    assert_quantized_scene_pcm(96000, true);
+}
+
+fn assert_quantized_scene_pcm(sample_rate: u32, cancelled: bool) {
+    let due = usize::try_from(sample_rate).unwrap() * 2;
+    let source: Vec<Frame> = (0..32)
+        .map(|index| [index as f32 + 0.25, -(index as f32 + 0.5)])
+        .collect();
+    let audio = crate::Audio::new(sample_rate, source.clone()).unwrap();
+    let other = crate::Audio::new(sample_rate, vec![[0.0; 2]; 32]).unwrap();
+    let mut snapshot = audio_project(5, 18, 4).snapshot();
+    snapshot.sample_rate = sample_rate;
+    for asset in &mut snapshot.assets {
+        asset.source_sample_rate = sample_rate;
+    }
+    let project = legacy_project_from_snapshot(snapshot).unwrap();
+    let scene = project.scenes()[0].id();
+    let media = audio_media(&project, &audio, &other);
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            &project,
+            &media,
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let clip = revision.session().audio_clips()[0].id;
+    let track = revision.session().audio_clips()[0].track;
+    // An empty block at the exact due frame must not commit a launch;
+    // cancellation before the next nonempty block must still win.
+    let mut boundary = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    boundary.apply(SessionPlaybackCommand::Play).unwrap();
+    boundary.render(&mut [[0.0; 2]; 1]).unwrap();
+    boundary
+        .apply(SessionPlaybackCommand::LaunchScene {
+            scene,
+            quantization: LaunchQuantization::FourQuarter,
+        })
+        .unwrap();
+    let mut prefix = vec![[1.0; 2]; due - 1];
+    boundary.render(&mut prefix).unwrap();
+    assert!(prefix.iter().all(|frame| *frame == [0.0; 2]));
+    assert_eq!(boundary.performance_frame(), due as u64);
+    boundary.render(&mut []).unwrap();
+    assert_eq!(
+        boundary.owner(track),
+        Some(SessionPlaybackOwner::Arrangement)
+    );
+    assert!(boundary.route_status(0).unwrap().pending.is_some());
+    if cancelled {
+        boundary
+            .apply(SessionPlaybackCommand::CancelPending { track: Some(track) })
+            .unwrap();
+    }
+    let mut first_due = [[0.0; 2]; 1];
+    boundary.render(&mut first_due).unwrap();
+    assert_eq!(first_due[0], if cancelled { [0.0; 2] } else { source[5] });
+    assert_eq!(
+        boundary.owner(track),
+        Some(if cancelled {
+            SessionPlaybackOwner::Arrangement
+        } else {
+            SessionPlaybackOwner::Session { clip }
+        })
+    );
+    assert!(boundary.route_status(0).unwrap().pending.is_none());
+    // The full early-queued prefix is checked above. Reuse only the final
+    // 1024 frames for each partition so all sizes still cross the due frame.
+    for block in [1_usize, 17, 64, 128, 256, 512] {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let start = due - 1024;
+        playback
+            .apply(SessionPlaybackCommand::Seek(start as u64))
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut [[0.0; 2]; 1]).unwrap();
+        playback
+            .apply(SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization: LaunchQuantization::FourQuarter,
+            })
+            .unwrap();
+        assert_eq!(
+            playback
+                .route_status(0)
+                .unwrap()
+                .pending
+                .unwrap()
+                .performance_frame,
+            due as u64
         );
-        let clip = revision.session().audio_clips()[0].id;
-        let track = revision.session().audio_clips()[0].track;
-        for cancelled in [false, true] {
-            // An empty block at the exact due frame must not commit a launch;
-            // cancellation before the next nonempty block must still win.
-            let mut boundary = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-            boundary.apply(SessionPlaybackCommand::Play).unwrap();
-            boundary.render(&mut [[0.0; 2]; 1]).unwrap();
-            boundary
-                .apply(SessionPlaybackCommand::LaunchScene {
-                    scene,
-                    quantization: LaunchQuantization::FourQuarter,
-                })
+        if cancelled {
+            playback
+                .apply(SessionPlaybackCommand::CancelPending { track: Some(track) })
                 .unwrap();
-            boundary.render(&mut vec![[0.0; 2]; due - 1]).unwrap();
-            assert_eq!(boundary.performance_frame(), due as u64);
-            boundary.render(&mut []).unwrap();
-            assert_eq!(
-                boundary.owner(track),
-                Some(SessionPlaybackOwner::Arrangement)
-            );
-            assert!(boundary.route_status(0).unwrap().pending.is_some());
-            if cancelled {
-                boundary
-                    .apply(SessionPlaybackCommand::CancelPending { track: Some(track) })
-                    .unwrap();
-            }
-            let mut first_due = [[0.0; 2]; 1];
-            boundary.render(&mut first_due).unwrap();
-            assert_eq!(first_due[0], if cancelled { [0.0; 2] } else { source[5] });
-            assert_eq!(
-                boundary.owner(track),
-                Some(if cancelled {
-                    SessionPlaybackOwner::Arrangement
-                } else {
-                    SessionPlaybackOwner::Session { clip }
-                })
-            );
-            assert!(boundary.route_status(0).unwrap().pending.is_none());
-            for block in [1_usize, 17, 64, 128, 256, 512] {
-                let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
-                playback.apply(SessionPlaybackCommand::Play).unwrap();
-                playback.render(&mut [[0.0; 2]; 1]).unwrap();
-                playback
-                    .apply(SessionPlaybackCommand::LaunchScene {
-                        scene,
-                        quantization: LaunchQuantization::FourQuarter,
-                    })
-                    .unwrap();
-                assert_eq!(
-                    playback
-                        .route_status(0)
-                        .unwrap()
-                        .pending
-                        .unwrap()
-                        .performance_frame,
-                    due as u64
-                );
-                if cancelled {
-                    playback
-                        .apply(SessionPlaybackCommand::CancelPending { track: Some(track) })
-                        .unwrap();
-                    assert!(playback.route_status(0).unwrap().pending.is_none());
-                }
-                playback.render(&mut []).unwrap();
-                assert_eq!(playback.performance_frame(), 1);
-                assert_eq!(
-                    playback.owner(track),
-                    Some(SessionPlaybackOwner::Arrangement)
-                );
-                let mut output = vec![[1.0; 2]; due + 20 - 1];
-                for chunk in output.chunks_mut(block) {
-                    playback.render(chunk).unwrap();
-                }
-                for (offset, actual) in output.iter().enumerate() {
-                    let frame = offset + 1;
-                    let expected = if !cancelled && (due..due + 13).contains(&frame) {
-                        source[5 + frame - due]
-                    } else {
-                        [0.0; 2]
-                    };
-                    assert_eq!(
-                        *actual, expected,
-                        "rate={sample_rate}, cancelled={cancelled}, block={block}, frame={frame}"
-                    );
-                }
-                let expected_owner = if cancelled {
-                    SessionPlaybackOwner::Arrangement
-                } else {
-                    SessionPlaybackOwner::Session { clip }
-                };
-                assert_eq!(playback.owner(track), Some(expected_owner));
-                assert!(playback.route_status(0).unwrap().pending.is_none());
-                assert_eq!(playback.performance_frame(), (due + 20) as u64);
-            }
+            assert!(playback.route_status(0).unwrap().pending.is_none());
         }
+        playback.render(&mut []).unwrap();
+        assert_eq!(playback.performance_frame(), (start + 1) as u64);
+        assert_eq!(
+            playback.owner(track),
+            Some(SessionPlaybackOwner::Arrangement)
+        );
+        let mut output = vec![[1.0; 2]; due + 20 - start - 1];
+        for chunk in output.chunks_mut(block) {
+            playback.render(chunk).unwrap();
+        }
+        for (offset, actual) in output.iter().enumerate() {
+            let frame = start + offset + 1;
+            let expected = if !cancelled && (due..due + 13).contains(&frame) {
+                source[5 + frame - due]
+            } else {
+                [0.0; 2]
+            };
+            assert_eq!(
+                *actual, expected,
+                "rate={sample_rate}, cancelled={cancelled}, block={block}, frame={frame}"
+            );
+        }
+        let expected_owner = if cancelled {
+            SessionPlaybackOwner::Arrangement
+        } else {
+            SessionPlaybackOwner::Session { clip }
+        };
+        assert_eq!(playback.owner(track), Some(expected_owner));
+        assert!(playback.route_status(0).unwrap().pending.is_none());
+        assert_eq!(playback.performance_frame(), (due + 20) as u64);
     }
 }
 
@@ -12263,6 +12397,21 @@ fn linear_receiverless_bound_source_uses_audio_only_quote_and_renders_silence() 
 }
 
 #[test]
+fn resident_batch_storage_is_included_in_preroll_admission() {
+    let fixture = crate::signal_graph::tests::fixture(&[&[7], &[]], 32);
+    let revision = crate::signal_graph::tests::prepare(&fixture).unwrap();
+    let preflight = super::preroll::arrangement_runtime_storage_preflight_bytes(&revision).unwrap();
+    let runtime = SessionPlayback::new(revision).unwrap();
+    assert_eq!(runtime.resident_source_scratch.len(), 2);
+    let actual =
+        runtime.accounted_runtime_storage_bytes().unwrap() + super::preroll::PREROLL_SCRATCH_BYTES;
+    assert!(
+        actual <= preflight,
+        "actual={actual}, preflight={preflight}"
+    );
+}
+
+#[test]
 fn arrangement_preroll_storage_preflight_covers_constructed_runtime() {
     let (prepared, _) = mutable_checkpoint_fixture(8 << 32);
     let preflight = super::preroll::arrangement_runtime_storage_preflight_bytes(&prepared).unwrap();
@@ -13035,4 +13184,133 @@ fn console_audio_loop_intro_repeats_across_partitions_handoff_and_stop() {
             assert_eq!(stopped, [[0.0; 2]; 3]);
         }
     }
+}
+
+#[test]
+fn mixed_streamed_resident_and_midi_compensation_preserves_page_readiness_and_storage() {
+    #[derive(Default)]
+    struct ChangingPages {
+        frames: [[f32; 2]; 32],
+        reads: Vec<(StreamSourceKey, u64)>,
+        requests: Vec<(StreamSourceKey, u64)>,
+    }
+    impl MediaPages for ChangingPages {
+        fn page(&mut self, key: StreamSourceKey, page_index: u64) -> Option<BorrowedMediaPage<'_>> {
+            self.reads.push((key, page_index));
+            (self.reads.len() > 1).then_some(BorrowedMediaPage {
+                page_index,
+                frames: &self.frames,
+            })
+        }
+        fn request_page(&mut self, key: StreamSourceKey, page_index: u64) {
+            self.requests.push((key, page_index));
+        }
+    }
+    let source_project = session_audio_midi_arrangement_mix_project();
+    let mut editor = Editor::new(source_project, 16).unwrap();
+    let track = editor.project().tracks().last().unwrap().id();
+    editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "resident".into(),
+            path: "resident.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 32,
+            playback_frames: 32,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap();
+    let limiter = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 24,
+            enabled: true,
+        })
+        .unwrap();
+    let project = editor.project();
+    let media: BTreeMap<_, _> = project
+        .assets()
+        .map(|asset| {
+            let source = if asset.id().value() == 4 {
+                PreparedAudioSource::Streamed(Arc::new(
+                    StreamedSourceMetadata::new(
+                        StreamSourceKey::new(82, asset.id()),
+                        asset.source_sample_rate(),
+                        project.sample_rate(),
+                        asset.source_frames(),
+                        asset.playback_frames(),
+                        asset.conversion_version(),
+                        [0x82; 32],
+                    )
+                    .unwrap(),
+                ))
+            } else {
+                PreparedAudioSource::Resident(
+                    crate::Audio::new(48_000, vec![[0.05, -0.03]; 32]).unwrap(),
+                )
+            };
+            (asset.id(), source)
+        })
+        .collect();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_prepared_audio_sources(
+            project,
+            &media,
+            82,
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let preflight = super::preroll::arrangement_runtime_storage_preflight_bytes(&revision).unwrap();
+    let render = |partition| {
+        let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let actual = runtime.accounted_runtime_storage_bytes().unwrap()
+            + super::preroll::PREROLL_SCRATCH_BYTES;
+        assert!(actual <= preflight, "actual={actual} preflight={preflight}");
+        assert_eq!(
+            runtime.resident_source_scratch.len(),
+            project.tracks().len()
+        );
+        let clip = revision.session().midi_clips()[0].id;
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut pages = ChangingPages {
+            frames: [[0.1, -0.2]; 32],
+            ..Default::default()
+        };
+        let mut output = [[0.0; 2]; 512];
+        for chunk in output.chunks_mut(partition) {
+            runtime.render_with_pages(chunk, &mut pages).unwrap();
+        }
+        (
+            output,
+            pages.reads,
+            pages.requests,
+            runtime.performance_frame(),
+            runtime.arrangement_frame(),
+        )
+    };
+    let expected = render(1);
+    let actual = render(17);
+    assert_eq!(actual, expected);
+    assert!(actual.0.iter().flatten().any(|sample| *sample != 0.0));
+    assert!(actual.1.len() > 1);
+    assert_eq!(actual.2.len(), 1);
 }

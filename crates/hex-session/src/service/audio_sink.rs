@@ -89,6 +89,8 @@ pub struct ResidentFreshRuntimeFence {
     pub active_audio_revision: u64,
     pub route_generation: u64,
     pub admitted_command_ticket: u64,
+    /// Last output-fault epoch observed before the seek was prepared.
+    pub output_fault_epoch: u64,
 }
 /// Nonowning scalar witness for the actual installed graph's audition loop.
 /// No PCM, prepared graph, lease or callback runtime is borrowed or transferred.
@@ -990,6 +992,14 @@ mod tests {
         )
         .unwrap();
         let initial = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "track".into(),
+            }))
+            .unwrap();
+        let edited = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(edited.error.is_none());
+        assert!(edited.state.can_undo);
         for (generation, id, valid) in [(1, 1, false), (0, 0, false), (0, 2, true)] {
             service
                 .submit(Request::RestartAudio {
@@ -998,7 +1008,10 @@ mod tests {
                 })
                 .unwrap();
             let event = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
-            assert_eq!(event.state.revision, initial.state.revision);
+            assert_eq!(event.state.revision, edited.state.revision);
+            assert_eq!(event.state.project, edited.state.project);
+            assert_eq!(event.state.can_undo, edited.state.can_undo);
+            assert_eq!(event.state.can_redo, edited.state.can_redo);
             assert_eq!(
                 event
                     .state
@@ -1022,6 +1035,15 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].0, rows[0].1), (0, 2));
         assert_ne!(rows[0].2, thread::current().id());
+        drop(rows);
+        service.submit(Request::Undo).unwrap();
+        let undone = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(undone.error.is_none());
+        assert!(undone.state.project.tracks().is_empty());
+        service.submit(Request::Redo).unwrap();
+        let redone = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(redone.error.is_none());
+        assert_eq!(redone.state.project, edited.state.project);
     }
     #[test]
     fn failed_device_initialization_keeps_offline_canonical_edits_available() {

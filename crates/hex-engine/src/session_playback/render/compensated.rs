@@ -4,7 +4,256 @@
 //! sample at a time through the same compensation owner.
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(super) struct BatchedSources<'a> {
+    pub(super) index: usize,
+    pub(super) audio: &'a [bool; MAX_TRACKS],
+    pub(super) analytic: &'a [bool; MAX_TRACKS],
+}
+
 impl SessionPlayback {
+    /// Prepare resident audio and eligible analytic MIDI. A shared receiver uses
+    /// its scratch only when its active route has no local audio source.
+    /// Active suppressions or continuations retain per-frame scheduling. No page provider is read and
+    /// per-frame DSP/routing order is unchanged. The caller bounds each window
+    /// before every transport or route discontinuity.
+    pub(super) fn prepare_resident_sources(
+        &mut self,
+        performance_frame: u64,
+        arrangement_frame: u64,
+        frames: usize,
+        eligible: &mut [bool; MAX_TRACKS],
+        analytic: &mut [bool; MAX_TRACKS],
+    ) -> Result<(), SessionPlaybackError> {
+        if frames > 256 || self.resident_source_scratch.len() != self.route_scratch.len() {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        // Keep small Session graphs on the original one-frame path; larger
+        // graphs can amortize the preparation work across the window.
+        let batch_session = self
+            .route_scratch
+            .iter()
+            .filter(|route| matches!(route.owner, RouteOwner::SessionAudio { .. }))
+            .take(4)
+            .count()
+            == 4;
+        eligible.fill(false);
+        analytic.fill(false);
+        let batch_analytic = self.suppression_scratch.is_empty()
+            && self.analytic_continuations.iter().all(Option::is_none);
+        let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
+        for (index, (route, scratch)) in self
+            .route_scratch
+            .iter()
+            .zip(self.resident_source_scratch.iter_mut())
+            .enumerate()
+        {
+            let output = &mut scratch[..frames];
+            output.fill([0.0; 2]);
+            if batch_analytic && self.revision.source_routing().is_shared(index) {
+                let track = self
+                    .revision
+                    .arrangement()
+                    .tracks()
+                    .get(index)
+                    .ok_or(SessionPlaybackError::UnknownTrack)?;
+                let audio_free = match route.owner {
+                    RouteOwner::Arrangement => track.clips.is_empty(),
+                    RouteOwner::Session { .. } | RouteOwner::Silence => true,
+                    RouteOwner::SessionAudio { .. } => false,
+                };
+                if audio_free
+                    && track.receives_source_audio()
+                    && self
+                        .mutable_instruments
+                        .get(index)
+                        .is_some_and(Option::is_none)
+                {
+                    let floor = self
+                        .historical_floor
+                        .into_iter()
+                        .chain(self.route_historical_floors.get(index).copied().flatten())
+                        .max();
+                    render_source_instrument_chunk(
+                        RouteSourceContext {
+                            revision: &self.revision,
+                            midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                self.revision.session(),
+                                self.midi_admission.as_ref(),
+                            ),
+                            route: effective_midi_route(
+                                &self.revision,
+                                &self.route_scratch,
+                                index,
+                            )?,
+                            historical_floor: floor,
+                            suppressions: &self.suppression_scratch,
+                            continuations: &self.analytic_continuations,
+                            index,
+                            raw: true,
+                            timing: &timing,
+                            table: self.revision.session().sine_table(),
+                        },
+                        &self.route_scratch,
+                        self.historical_floor,
+                        &self.route_historical_floors,
+                        &mut self.spans,
+                        performance_frame,
+                        arrangement_frame,
+                        output,
+                    )?;
+                    *analytic
+                        .get_mut(index)
+                        .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
+                    continue;
+                }
+            }
+            match route.owner {
+                RouteOwner::Arrangement => {
+                    let track = self
+                        .revision
+                        .arrangement()
+                        .tracks()
+                        .get(index)
+                        .ok_or(SessionPlaybackError::UnknownTrack)?;
+                    if batch_analytic
+                        && track.clips.is_empty()
+                        && track.midi_source_index.is_none()
+                        && !self.revision.source_routing().is_shared(index)
+                        && self
+                            .mutable_instruments
+                            .get(index)
+                            .is_some_and(Option::is_none)
+                        && track
+                            .instrument
+                            .as_ref()
+                            .is_some_and(|instrument| !instrument.mutable)
+                    {
+                        track
+                            .render_raw_instrument(
+                                arrangement_frame,
+                                performance_frame,
+                                output,
+                                &self.suppression_scratch,
+                                &self.analytic_continuations,
+                                Some(self.revision.session().timing()),
+                            )
+                            .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                        *analytic
+                            .get_mut(index)
+                            .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
+                    } else if track.clips.iter().all(|clip| !clip.is_streamed()) {
+                        if track.audio_content_enabled() {
+                            track
+                                .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
+                                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                        }
+                        *eligible
+                            .get_mut(index)
+                            .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
+                    }
+                }
+                RouteOwner::Session { clip, .. } if batch_analytic => {
+                    let track = self
+                        .revision
+                        .arrangement()
+                        .tracks()
+                        .get(index)
+                        .ok_or(SessionPlaybackError::UnknownTrack)?;
+                    if track.midi_source_index.is_some()
+                        || self.revision.source_routing().is_shared(index)
+                        || !self
+                            .mutable_instruments
+                            .get(index)
+                            .is_some_and(Option::is_none)
+                    {
+                        continue;
+                    }
+                    let midi = crate::session_inventory::EffectiveSessionMidi::new(
+                        self.revision.session(),
+                        self.midi_admission.as_ref(),
+                    );
+                    let prepared = midi
+                        .midi_clip_for_track(clip, route.id)
+                        .ok_or(SessionPlaybackError::UnknownClip)?;
+                    if prepared.track != route.id {
+                        return Err(SessionPlaybackError::ClipTrackMismatch);
+                    }
+                    if !prepared.instrument_enabled()
+                        || prepared.instrument_template().is_event_source()
+                    {
+                        continue;
+                    }
+                    let floor = self
+                        .historical_floor
+                        .into_iter()
+                        .chain(self.route_historical_floors.get(index).copied().flatten())
+                        .max();
+                    render_route_source_chunk::<dyn MediaPages, _>(
+                        RouteSourceContext {
+                            revision: &self.revision,
+                            midi,
+                            route: *route,
+                            historical_floor: floor,
+                            suppressions: &self.suppression_scratch,
+                            continuations: &self.analytic_continuations,
+                            index,
+                            raw: true,
+                            timing: &timing,
+                            table: self.revision.session().sine_table(),
+                        },
+                        &mut self.spans,
+                        performance_frame,
+                        arrangement_frame,
+                        output,
+                        None,
+                        SourceStage::Instrument,
+                    )?;
+                    *analytic
+                        .get_mut(index)
+                        .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
+                }
+                RouteOwner::SessionAudio { clip, launch_frame } if batch_session => {
+                    let track = self
+                        .revision
+                        .arrangement()
+                        .tracks()
+                        .get(index)
+                        .ok_or(SessionPlaybackError::UnknownTrack)?;
+                    let is_eligible = eligible
+                        .get_mut(index)
+                        .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                    if !track.audio_content_enabled() {
+                        *is_eligible = true;
+                        continue;
+                    }
+                    let prepared = self
+                        .revision
+                        .session()
+                        .audio_clip(clip)
+                        .ok_or(SessionPlaybackError::UnknownClip)?;
+                    if prepared.track != route.id {
+                        return Err(SessionPlaybackError::ClipTrackMismatch);
+                    }
+                    if let PreparedAudioSource::Resident(audio) = prepared.source() {
+                        if prepared.active {
+                            render_resident_session_audio(
+                                prepared,
+                                audio,
+                                launch_frame,
+                                performance_frame,
+                                output,
+                                crate::PreparedTrackMix::identity(),
+                            )?;
+                        }
+                        *is_eligible = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
     /// Publish one transport origin immediately before processing its Main
     /// sample. Pre-pushing a whole block could overwrite the bounded stamp ring.
     pub(super) fn push_compensated_stamp(
@@ -54,6 +303,7 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         external: Option<hex_lattice::NativeExternalAutomation<'_>>,
+        resident_source: Option<BatchedSources<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -103,37 +353,60 @@ impl SessionPlayback {
                     let mut audio = [[0.0; 2]];
                     let mut generator = [[0.0; 2]];
                     if self.playing {
-                        render_route_source_chunk(
-                            RouteSourceContext {
-                                revision: &self.revision,
-                                midi: crate::session_inventory::EffectiveSessionMidi::new(
-                                    self.revision.session(),
-                                    self.midi_admission.as_ref(),
-                                ),
-                                route,
-                                historical_floor: self.historical_floor_for(index),
-                                suppressions: &self.suppression_scratch,
-                                continuations: &self.analytic_continuations,
-                                index,
-                                // Retained Main history can keep this path active
-                                // after the current graph returns to a fused mix.
-                                // The content-origin fader below owns that mix.
-                                raw: true,
-                                timing: &timing,
-                                table: self.revision.session().sine_table(),
-                            },
-                            &mut self.spans,
-                            performance_frame,
-                            arrangement_frame,
-                            &mut audio,
-                            pages.as_deref_mut(),
-                            SourceStage::Audio,
-                        )?;
+                        let analytic_index = resident_source
+                            .filter(|batch| batch.analytic.get(index).copied().unwrap_or(false))
+                            .map(|batch| batch.index);
+                        if analytic_index.is_some() {
+                            // This route has no audio source; its scratch window
+                            // holds the instrument side of the ordered graph.
+                        } else if let Some(sample_index) = resident_source
+                            .filter(|batch| batch.audio.get(index).copied().unwrap_or(false))
+                            .map(|batch| batch.index)
+                        {
+                            audio[0] = *self
+                                .resident_source_scratch
+                                .get(index)
+                                .and_then(|samples| samples.get(sample_index))
+                                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                        } else {
+                            render_route_source_chunk(
+                                RouteSourceContext {
+                                    revision: &self.revision,
+                                    midi: crate::session_inventory::EffectiveSessionMidi::new(
+                                        self.revision.session(),
+                                        self.midi_admission.as_ref(),
+                                    ),
+                                    route,
+                                    historical_floor: self.historical_floor_for(index),
+                                    suppressions: &self.suppression_scratch,
+                                    continuations: &self.analytic_continuations,
+                                    index,
+                                    // Retained Main history can keep this path active
+                                    // after the current graph returns to a fused mix.
+                                    // The content-origin fader below owns that mix.
+                                    raw: true,
+                                    timing: &timing,
+                                    table: self.revision.session().sine_table(),
+                                },
+                                &mut self.spans,
+                                performance_frame,
+                                arrangement_frame,
+                                &mut audio,
+                                pages.as_deref_mut(),
+                                SourceStage::Audio,
+                            )?;
+                        }
                         // An ordinary arrangement audio track without a MIDI
                         // source cannot contribute instrument samples. Shared
                         // sources and session routes must still use the normal
                         // scheduler, even when this track has no local instrument.
-                        if track.instrument.is_some()
+                        if let Some(sample_index) = analytic_index {
+                            generator[0] = *self
+                                .resident_source_scratch
+                                .get(index)
+                                .and_then(|samples| samples.get(sample_index))
+                                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                        } else if track.instrument.is_some()
                             || track.midi_source_index.is_some()
                             || self.revision.source_routing().is_shared(index)
                             || !matches!(route.owner, RouteOwner::Arrangement)

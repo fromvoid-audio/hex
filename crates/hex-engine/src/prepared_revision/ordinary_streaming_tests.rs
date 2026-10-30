@@ -700,3 +700,183 @@ fn closed_zero_latency_group_demand_matches_render_through_loop_and_seek() {
         .unwrap();
     assert_eq!(output, f.samples[17..37]);
 }
+
+#[test]
+fn resident_batch_keeps_streamed_session_lookup_and_miss_semantics() {
+    check_streamed_session_lookup_and_miss_semantics(false);
+}
+
+#[test]
+fn resident_session_batch_keeps_streamed_session_lookup_and_miss_semantics() {
+    check_streamed_session_lookup_and_miss_semantics(true);
+}
+
+fn check_streamed_session_lookup_and_miss_semantics(with_resident_sessions: bool) {
+    struct FirstMiss<'a> {
+        key: StreamSourceKey,
+        samples: &'a [Frame],
+        reads: usize,
+        requests: usize,
+    }
+    impl MediaPages for FirstMiss<'_> {
+        fn page(&mut self, key: StreamSourceKey, index: u64) -> Option<BorrowedMediaPage<'_>> {
+            assert_eq!((key, index), (self.key, 0));
+            self.reads += 1;
+            (self.reads > 1).then_some(BorrowedMediaPage {
+                page_index: 0,
+                frames: self.samples,
+            })
+        }
+        fn request_page(&mut self, key: StreamSourceKey, index: u64) {
+            assert_eq!((key, index), (self.key, 0));
+            self.requests += 1;
+        }
+    }
+    let delays: &[&[u32]] = if with_resident_sessions {
+        &[&[7], &[], &[], &[], &[]]
+    } else {
+        &[&[7], &[]]
+    };
+    let mut f = crate::signal_graph::tests::fixture(delays, 32);
+    for audio in f.media.values_mut() {
+        *audio = crate::Audio::new(48_000, vec![[0.125, -0.25]; 32]).unwrap();
+    }
+    let hex_project::Created::Asset(asset) = f
+        .editor
+        .execute(hex_project::Command::AddAsset {
+            path: "streamed-session.wav".into(),
+            sample_rate: 48_000,
+            frames: 32,
+        })
+        .unwrap()
+    else {
+        panic!("created streamed asset")
+    };
+    let hex_project::Created::Scene(scene) = f
+        .editor
+        .execute(hex_project::Command::AddScene {
+            name: "scene".into(),
+        })
+        .unwrap()
+    else {
+        panic!("created scene")
+    };
+    let hex_project::Created::SessionClip(clip) = f
+        .editor
+        .execute(hex_project::Command::CreateSessionAudioClip {
+            track: f.tracks[1],
+            scene,
+            name: "stream".into(),
+            asset,
+            source_start: 0,
+            source_end: 32,
+        })
+        .unwrap()
+    else {
+        panic!("created session clip")
+    };
+    let mut resident_clips = Vec::new();
+    if with_resident_sessions {
+        for &track in &f.tracks[2..] {
+            let resident_asset = f.editor.project().track(track).unwrap().clips()[0].asset();
+            f.media.insert(
+                resident_asset,
+                crate::Audio::new(48_000, vec![[0.0; 2]; 32]).unwrap(),
+            );
+            let hex_project::Created::SessionClip(resident_clip) = f
+                .editor
+                .execute(hex_project::Command::CreateSessionAudioClip {
+                    track,
+                    scene,
+                    name: "resident".into(),
+                    asset: resident_asset,
+                    source_start: 0,
+                    source_end: 32,
+                })
+                .unwrap()
+            else {
+                panic!("created resident clip")
+            };
+            resident_clips.push(resident_clip);
+        }
+    }
+    let key = StreamSourceKey::new(77, asset);
+    let mut sources: BTreeMap<_, _> = f
+        .media
+        .iter()
+        .map(|(id, audio)| (*id, PreparedAudioSource::Resident(audio.clone())))
+        .collect();
+    sources.insert(
+        asset,
+        PreparedAudioSource::Streamed(Arc::new(
+            StreamedSourceMetadata::new(
+                key,
+                48_000,
+                48_000,
+                32,
+                32,
+                hex_project::IDENTITY_CONVERSION,
+                [77; 32],
+            )
+            .unwrap(),
+        )),
+    );
+    let definition = crate::signal_graph::tests::Definition;
+    let definitions: [&dyn hex_lattice::NativeDeviceDefinition; 1] = [&definition];
+    let effects = hex_lattice::NativeDeviceRegistry::new(&definitions).unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_source_bank(
+            f.editor.project(),
+            crate::compile::SourceBank::Mixed(&sources, 77),
+            Arc::new(SineTable::new()),
+            None,
+            &effects,
+            &instruments,
+            &crate::audio_transform::AudioTransformPreparation::default(),
+            None,
+            None,
+        )
+        .unwrap(),
+    );
+    assert!(!revision.arrangement().contains_streamed_sources());
+    let samples = [[0.25, -0.125]; 32];
+    for partition in [1, 7, 17, 40] {
+        let mut runtime = crate::SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        runtime
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        for &resident_clip in &resident_clips {
+            runtime
+                .apply(SessionPlaybackCommand::LaunchClip {
+                    clip: resident_clip,
+                    quantization: LaunchQuantization::Immediate,
+                })
+                .unwrap();
+        }
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut pages = FirstMiss {
+            key,
+            samples: &samples,
+            reads: 0,
+            requests: 0,
+        };
+        let mut output = [[0.0; 2]; 40];
+        for chunk in output.chunks_mut(partition) {
+            runtime.render_with_pages(chunk, &mut pages).unwrap();
+        }
+        let mut expected = [[0.0; 2]; 40];
+        for (index, frame) in expected.iter_mut().enumerate().skip(7).take(32) {
+            *frame = if index == 7 {
+                [0.125, -0.25]
+            } else {
+                [0.375, -0.375]
+            };
+        }
+        assert_eq!(output, expected, "partition {partition}");
+        assert_eq!((pages.reads, pages.requests), (32, 1));
+    }
+}

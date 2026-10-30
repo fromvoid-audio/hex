@@ -1,6 +1,9 @@
 //! Actual loaded-source epoch and fresh-channel controls.
 use super::*;
 
+// The fixture confirms the SDK is held before checking cancellation or timeout.
+const HELD_OPERATION_TIMEOUT: Duration = Duration::from_millis(20);
+
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_current_capture_uses_same_quiescent_instance_and_keeps_startup_historical() {
@@ -159,12 +162,23 @@ fn actual_current_capture_preserves_independent_controller_and_failed_capture_cu
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_current_capture_held_sdk_cancel_and_timeout_retain_original_lease() {
+    // Preparation still revalidates the source and helper for every child.
+    let fixture_build = build();
+    let fixture_source = source();
     for cancel in [true, false] {
         let case = Case::new();
         let context = PreparationCancellation::new_on_control().unwrap();
         let token = context.token_on_control();
-        let mut instance =
-            Prepared::prepare(&build(), source(), options(), context, case.setup(71)).unwrap();
+        let mut instance = Prepared::prepare(
+            &fixture_build,
+            fixture_source.clone(),
+            options(),
+            context,
+            case.setup(71),
+        )
+        .unwrap();
+        // Keep normal preparation time, then bound the deliberately held SDK call.
+        instance.limits.startup = HELD_OPERATION_TIMEOUT;
         let probe = epoch_probe(&mut instance);
         let stopped = instance.quiesce_retained_on_control().unwrap();
         let result = case.after_stage(
@@ -549,6 +563,8 @@ fn actual_epoch_sdk_refusal_exception_crash_and_changed_latency_never_resume_or_
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_epoch_held_sdk_lanes_cancel_or_timeout_without_release_and_other_pcm_survives() {
     let mut other = another_instance();
+    let fixture_build = build();
+    let fixture_source = source();
     let mut sequence = 0;
     for (variant, stage, resuming) in [
         (61, 20, false),
@@ -560,9 +576,16 @@ fn actual_epoch_held_sdk_lanes_cancel_or_timeout_without_release_and_other_pcm_s
             let case = Case::new();
             let context = PreparationCancellation::new_on_control().unwrap();
             let token = context.token_on_control();
-            let mut instance =
-                Prepared::prepare(&build(), source(), options(), context, case.setup(variant))
-                    .unwrap();
+            let mut instance = Prepared::prepare(
+                &fixture_build,
+                fixture_source.clone(),
+                options(),
+                context,
+                case.setup(variant),
+            )
+            .unwrap();
+            // Apply the shorter deadline only after the real child is prepared.
+            instance.limits.startup = HELD_OPERATION_TIMEOUT;
             let probe = epoch_probe(&mut instance);
             let result = if resuming {
                 let stopped = instance.quiesce_on_control().unwrap();

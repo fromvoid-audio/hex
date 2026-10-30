@@ -467,6 +467,8 @@ pub struct SessionPlayback {
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
     main_chain: hex_lattice::NativeRuntimeChain,
     return_scratch: Vec<[Frame; 256]>,
+    // Constructor-owned, transaction-local resident source windows.
+    resident_source_scratch: Vec<[Frame; 256]>,
     meter_cells: Vec<meter_capture::Cell>,
     return_effect_tails: ReturnEffectTailBank,
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
@@ -854,6 +856,7 @@ impl SessionPlayback {
             return_chains,
             main_chain,
             return_scratch: _,
+            resident_source_scratch: _,
             meter_cells: _,
             return_effect_tails,
             mutable_instruments,
@@ -1835,6 +1838,18 @@ impl SessionPlayback {
             .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        // Resident Arrangement and eligible Session audio share this window.
+        // Generic streamed providers retain their original per-frame lookups.
+        let mut resident_source_scratch = Vec::new();
+        if compensation
+            .as_ref()
+            .is_some_and(|runtime| runtime.graph.needs_upstream_frame_routing())
+        {
+            resident_source_scratch
+                .try_reserve_exact(arrangement_tracks.len())
+                .map_err(|_| SessionPlaybackError::Allocation)?;
+            resident_source_scratch.resize(arrangement_tracks.len(), [[0.0; 2]; 256]);
+        }
         let scalar_automation = match revision.scalar_automation.as_ref() {
             Some(_) => {
                 let input = revision
@@ -1887,6 +1902,7 @@ impl SessionPlayback {
                 route_scratch: route_scratch.capacity(),
                 current_route_cut_scratch: current_route_cut_scratch.capacity(),
                 return_scratch: return_scratch.capacity(),
+                resident_source_scratch: resident_source_scratch.capacity(),
                 meter_cells: meter_cells.capacity(),
                 mutable_events: mutable_events.capacity(),
                 tail_mixes: tail_mixes.capacity(),
@@ -1935,6 +1951,7 @@ impl SessionPlayback {
             return_chains,
             main_chain,
             return_scratch,
+            resident_source_scratch,
             meter_cells,
             return_effect_tails,
             mutable_instruments,

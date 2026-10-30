@@ -200,8 +200,8 @@ impl EditorView {
                                 .justify_center()
                                 .text_xs()
                                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                                .child(theme::text(if self.arrangement_focus.enabled {
-                                    "no clips in selected sections · q restores all tracks"
+                                .child(theme::text(if self.arrangement_focus.projection.enabled {
+                                    "no clips in selected sections · q clears section focus"
                                 } else {
                                     "no tracks · import audio or add a track"
                                 })),

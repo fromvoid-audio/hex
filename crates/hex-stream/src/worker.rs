@@ -216,7 +216,7 @@ impl TestWorkerHooks {
     }
 }
 
-#[cfg_attr(test, allow(clippy::too_many_arguments))] // Fixed owners plus a test-only gate.
+#[cfg_attr(any(test, feature = "test-support"), allow(clippy::too_many_arguments))] // Fixed owners plus test-only gates.
 pub(crate) fn run_worker(
     config: StreamConfig,
     definitions: Vec<SourceDefinition>,
@@ -226,6 +226,7 @@ pub(crate) fn run_worker(
     stop: Arc<AtomicBool>,
     catalog_result: SyncSender<Result<VerifiedCatalog, StreamFailureKind>>,
     #[cfg(test)] test_hooks: Option<TestWorkerHooks>,
+    #[cfg(feature = "test-support")] mut page_gate: Option<crate::test_support::PageGate>,
 ) -> Vec<Box<PageBuffer>> {
     let mut source_scratch = Vec::new();
     let scratch_ok = source_scratch
@@ -363,6 +364,15 @@ pub(crate) fn run_worker(
             }
             continue;
         };
+        #[cfg(feature = "test-support")]
+        if page_gate.as_ref().is_some_and(|gate| {
+            key.source == StreamResourceKey::Audio(gate.key.source)
+                && key.page_index == gate.key.page_index
+        }) && let Some(gate) = page_gate.take()
+            && !gate.wait(&stop)
+        {
+            break;
+        }
         if matches!(key.source, StreamResourceKey::Scalar(_)) && scalar_job.is_some() {
             if deferred_scalar.len() < deferred_scalar.capacity() {
                 deferred_scalar.push_back(key);
@@ -1057,11 +1067,12 @@ pub(crate) mod tests {
             file.write_all(b"data").expect("data header");
             file.write_all(&(u32::from(frames) * 4).to_le_bytes())
                 .expect("data length");
+            let mut pcm = Vec::with_capacity(usize::from(frames) * 4);
             for index in 0..i16::try_from(frames).expect("bounded fixture frames") {
-                file.write_all(&index.to_le_bytes()).expect("left sample");
-                file.write_all(&(-index).to_le_bytes())
-                    .expect("right sample");
+                pcm.extend_from_slice(&index.to_le_bytes());
+                pcm.extend_from_slice(&(-index).to_le_bytes());
             }
+            file.write_all(&pcm).expect("PCM samples");
             file.sync_all().expect("flush fixture");
             Self(path)
         }

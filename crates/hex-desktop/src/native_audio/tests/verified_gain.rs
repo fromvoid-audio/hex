@@ -14,7 +14,8 @@ fn actual_native_harness() -> Harness {
         if slot.is_some() {
             return Ok(None);
         }
-        match hex_audio::worker_fixture::open(rate.unwrap_or(48_000)) {
+        match hex_audio::worker_fixture::open_with_reliable_action_outcomes(rate.unwrap_or(48_000))
+        {
             Ok((output, callback)) => {
                 *slot = Some(callback);
                 Ok(Some(output))
@@ -40,6 +41,241 @@ fn actual_native_harness() -> Harness {
         context: None,
         observation,
         wait: Duration::from_secs(10),
+    }
+}
+
+#[test]
+fn restored_stream_source_recovers_through_actual_desktop_restart() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = actual_native_harness();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let path = files.wav(48_000, 16_384);
+    let original = fs::read(&path).unwrap();
+    let imported = h.run(Request::Import(path.clone()));
+    let context = h.context.unwrap();
+    let expected_project = imported.state.project.clone();
+    let expected_revision = imported.state.revision;
+    let expected_undo = imported.state.can_undo;
+    let expected_redo = imported.state.can_redo;
+    h.applied(context);
+    let audio = h.audio.as_mut().unwrap();
+    let old_identity = audio.control.output_identity().unwrap();
+    audio.control.command(PlaybackCommand::Play).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let output = h.render();
+        if h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+            >= 64
+        {
+            assert_eq!(output, [[0.25; 2]; 64]);
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    fs::write(&path, b"changed source bytes").unwrap();
+    let seek = h
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command_with_ticket(PlaybackCommand::Seek(4096))
+        .unwrap();
+    loop {
+        h.render();
+        if let Some((ticket, reason)) = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .rejected_action()
+            && ticket == seek
+        {
+            assert_eq!(
+                reason,
+                hex_engine::PlaybackActionRejection::StreamSourceChanged
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "changed source seek was not rejected"
+        );
+        std::thread::yield_now();
+    }
+    fs::write(&path, &original).unwrap();
+    h.audio.take().unwrap().control.close();
+    h.backend.lock().unwrap().take();
+    let restarted = h.run(Request::RestartAudio {
+        project_generation: context.project_generation,
+        request_id: 71,
+    });
+    assert_eq!(restarted.state.project, expected_project);
+    assert_eq!(restarted.state.revision, expected_revision);
+    assert_eq!(restarted.state.can_undo, expected_undo);
+    assert_eq!(restarted.state.can_redo, expected_redo);
+    h.open();
+    assert_ne!(
+        h.audio.as_ref().unwrap().control.output_identity(),
+        Some(old_identity)
+    );
+    h.applied(context);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    loop {
+        let output = h.render();
+        if h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .position
+            .load(Acquire)
+            >= 64
+        {
+            assert_eq!(output, [[0.25; 2]; 64]);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "reverified source did not resume"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(fs::read(path).unwrap(), original);
+}
+
+#[test]
+fn repeated_device_errors_refuse_publication_until_desktop_restart() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = actual_native_harness();
+    h.next();
+    h.open();
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.open();
+    h.applied(h.context.unwrap());
+    let imported = h.run(Request::Import(files.wav(48_000, 16_384)));
+    let track = imported.state.project.tracks()[0].id();
+    h.applied(h.context.unwrap());
+    let mut retired_identities = Vec::new();
+    for (request_id, gain, expected_sample) in [(72, 0.5, 0.125), (73, 0.25, 0.0625)] {
+        while h.events.try_recv().is_ok() {}
+        let old_identity = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+        assert!(!retired_identities.contains(&old_identity));
+        retired_identities.push(old_identity);
+        let measured = {
+            let mut backend = h.backend.lock().unwrap();
+            allocation_counter::measure(|| backend.as_mut().unwrap().report_device_error().unwrap())
+        };
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .device_fault
+                .load(Acquire)
+        );
+        let changed = h.run(Request::Edit(hex_project::Command::Gain { track, gain }));
+        let context = h.context.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(EditorAudioEvent::Publication {
+                context: seen,
+                state: EditorPublicationState::Fault(reason),
+                ..
+            }) = h.events.try_recv()
+                && seen == context
+            {
+                assert!(reason.contains("restart audio"));
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "faulted publication was not reported"
+            );
+            std::thread::yield_now();
+        }
+        h.audio.take().unwrap().control.close();
+        h.backend.lock().unwrap().take();
+        let restarted = h.run(Request::RestartAudio {
+            project_generation: context.project_generation,
+            request_id,
+        });
+        assert_eq!(restarted.state.project, changed.state.project);
+        assert_eq!(restarted.state.revision, changed.state.revision);
+        assert_eq!(restarted.state.can_undo, changed.state.can_undo);
+        assert_eq!(restarted.state.can_redo, changed.state.can_redo);
+        h.open();
+        assert!(
+            !retired_identities
+                .contains(&h.audio.as_ref().unwrap().control.output_identity().unwrap())
+        );
+        assert!(
+            !h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .device_fault
+                .load(Acquire)
+        );
+        h.applied(context);
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        loop {
+            let output = h.render();
+            if h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .position
+                .load(Acquire)
+                >= 64
+            {
+                assert_eq!(output, [[expected_sample; 2]; 64]);
+                break;
+            }
+            assert!(Instant::now() < deadline, "restarted output did not resume");
+            std::thread::yield_now();
+        }
     }
 }
 
@@ -166,10 +402,13 @@ fn gain_diagnostics_correlate_session_outcome_submission_and_callback_applicatio
 }
 
 #[test]
-fn verified_held_track_gain_zero_to_positive_reaches_callback_before_commit() {
-    for session in [false, true] {
-        verified_gain_case(session);
-    }
+fn verified_arrangement_gain_reaches_callback_before_commit() {
+    verified_gain_case(false);
+}
+
+#[test]
+fn verified_session_gain_reaches_callback_before_commit() {
+    verified_gain_case(true);
 }
 fn verified_gain_case(session: bool) {
     let _native = NATIVE_FIXTURE.lock().unwrap();
@@ -588,7 +827,11 @@ fn stable_gain(h: &Harness, applied: hex_audio::prepared::AppliedAudioSource, ga
             Instant::now() < deadline,
             "verified page worker made no sustained progress"
         );
-        std::thread::sleep(Duration::from_millis(1));
+        if committed == 0 {
+            std::thread::sleep(Duration::from_millis(1));
+        } else {
+            std::thread::yield_now();
+        }
     }
 }
 

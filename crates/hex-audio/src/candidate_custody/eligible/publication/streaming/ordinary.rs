@@ -46,8 +46,63 @@ pub(crate) struct OrdinaryStreams {
     workspace: Option<Workspace>,
 }
 impl OrdinaryStreams {
+    pub(crate) fn has_install_pending(&self) -> bool {
+        self.workspace.as_ref().is_some_and(|workspace| {
+            workspace.role == Some(hex_stream::ProtectionRole::Candidate)
+                && workspace.stamps.iter().any(Option::is_some)
+        })
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_domain_cached(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        source: hex_engine::StreamResourceKey,
+    ) -> bool {
+        let Some(workspace) = self.workspace.as_ref() else {
+            return false;
+        };
+        self.refs.iter().flatten().any(|token| {
+            let rows = &workspace.extents[token.slot];
+            super::demand::envelope(domains, *token)
+                .ok()
+                .and_then(|pages| pages.inner.loan.as_ref())
+                .is_some_and(|loan| {
+                    rows.iter()
+                        .any(|row| row.source == source && loan.test_has_resource_extent(*row))
+                })
+        })
+    }
+    #[cfg(all(test, feature = "stream-test-support", feature = "allocation-probe"))]
+    pub(crate) fn test_domain_protected(
+        &self,
+        domains: &mut [Option<DomainEnvelope>; 2],
+        source: hex_engine::StreamResourceKey,
+    ) -> bool {
+        let Some(workspace) = self.workspace.as_ref() else {
+            return false;
+        };
+        let Some(role) = workspace.role else {
+            return false;
+        };
+        self.refs.iter().flatten().any(|token| {
+            let Some(stamp) = workspace.stamps[token.slot] else {
+                return false;
+            };
+            let rows = &workspace.extents[token.slot];
+            rows.iter().any(|row| row.source == source)
+                && super::demand::envelope(domains, *token)
+                    .ok()
+                    .and_then(|pages| pages.inner.loan.as_ref())
+                    .is_some_and(|loan| loan.is_resource_protected(role, stamp, rows))
+        })
+    }
     pub(crate) fn take_handoff_diagnostic(&mut self) -> Option<hex_engine::PlaybackHandoffError> {
         self.workspace.as_mut()?.handoff_diagnostic.take()
+    }
+    pub(crate) fn take_source_changed(&mut self) -> bool {
+        self.workspace
+            .as_mut()
+            .is_some_and(|workspace| std::mem::take(&mut workspace.source_changed))
     }
     pub(crate) fn view<'a>(
         &'a mut self,

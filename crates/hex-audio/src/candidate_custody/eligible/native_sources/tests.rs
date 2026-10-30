@@ -63,7 +63,14 @@ pub(crate) fn input_for(
             output_channels: 2,
             limits: native::Limits {
                 startup: Duration::from_secs(3),
-                exchange: Duration::from_secs(1),
+                // This isolated held-worker driver observes the callback fault
+                // before cleanup. Shorten only its eventual native I/O timeout;
+                // it still requires the unresponsive child to be reaped.
+                exchange: if std::env::var_os("HEX_AUDIO_HELD_WORKER_DRIVER").is_some() {
+                    Duration::from_millis(400)
+                } else {
+                    Duration::from_secs(1)
+                },
                 retirement: Duration::from_secs(3),
             },
         },
@@ -1049,6 +1056,20 @@ pub(crate) fn original_worker_published_blocks(
     let index = bank.sources.index(binding)?;
     match work.sources.cells[index].owner.as_ref()? {
         Owner::Loaned(control) => Some(control.test_published_blocks()),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "allocation-probe")]
+pub(crate) fn original_worker_transport_live(
+    root: &CandidateRoot,
+    binding: Binding,
+) -> Option<bool> {
+    let work = lock(&root.0.eligible.work);
+    let bank = lock(&root.0.eligible.bank);
+    let index = bank.sources.index(binding)?;
+    match work.sources.cells[index].owner.as_ref()? {
+        Owner::Loaned(control) => Some(control.transport_is_live_on_control()),
         _ => None,
     }
 }

@@ -662,11 +662,17 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
     pcm_at_cursor(&mut h, &refused, &mut applied, &mut request_id, 0.5);
 }
 
-#[test]
-fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
-    use hex_engine::SamplerParameter::{AttackMs, Gain};
-    use hex_session::service::{SamplerEdit, SamplerParameterEdit};
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+/// Loaded sampler on a MIDI track with one full-velocity note, all applied.
+struct SamplerNote {
+    h: ResidentHarness,
+    _files: Files,
+    notes: Event,
+    track: hex_project::TrackId,
+    sampler: hex_project::Device,
+    applied: u64,
+}
+
+fn sampler_note_fixture() -> SamplerNote {
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(32_768);
     assert!(h.next().error.is_none());
@@ -696,7 +702,6 @@ fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
         .instrument()
         .unwrap()
         .clone();
-    let device = sampler.id();
     let placed = h.run(Request::Edit(Command::PlaceMidiClip {
         track,
         start: BeatTime::ZERO,
@@ -715,6 +720,30 @@ fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
         velocity: 127,
     }));
     (applied, _) = h.applied(applied);
+    SamplerNote {
+        h,
+        _files: files,
+        notes,
+        track,
+        sampler,
+        applied,
+    }
+}
+
+#[test]
+fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
+    use hex_engine::SamplerParameter::{AttackMs, Gain};
+    use hex_session::service::{SamplerEdit, SamplerParameterEdit};
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let SamplerNote {
+        mut h,
+        _files: files,
+        notes,
+        track,
+        sampler,
+        mut applied,
+    } = sampler_note_fixture();
+    let device = sampler.id();
     let mut request_id = 100;
     pcm_at_cursor(&mut h, &notes, &mut applied, &mut request_id, 0.25);
     let make_edit = |event: &Event, parameter, value| SamplerParameterEdit {
@@ -990,4 +1019,57 @@ fn copied_frame_groups_share_audio_under_tight_admission_and_survive_history_reo
     assert!(pcm[288..].iter().all(|frame| *frame == [0.0; 2]));
     // The actual worker publishes all candidates before canonical commit;
     // every render also checks zero total and signed-net callback allocations.
+}
+
+#[test]
+fn history_refused_while_edit_publication_pending_keeps_both_stacks_and_pcm() {
+    use hex_engine::SamplerParameter::Gain;
+    use hex_session::service::{SamplerEdit, SamplerParameterEdit};
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let SamplerNote {
+        mut h,
+        _files,
+        notes,
+        track,
+        sampler,
+        mut applied,
+    } = sampler_note_fixture();
+    let device = sampler.id();
+    let mut request_id = 100;
+    pcm_at_cursor(&mut h, &notes, &mut applied, &mut request_id, 0.25);
+    let gain = h.run(Request::SamplerEdit(SamplerEdit::Parameter(
+        SamplerParameterEdit {
+            request_id: 2,
+            project_generation: 0,
+            revision: notes.state.revision,
+            track,
+            device,
+            parameter: Gain,
+            value: 0.5,
+            cancel: Arc::new(AtomicBool::new(false)),
+        },
+    )));
+    assert_eq!(gain.sampler_edit_complete, Some(2));
+    // One resident publication may be pending: history is refused, not queued or lost.
+    let refuse = |h: &mut ResidentHarness, request: Request, current: &Event| {
+        h.service.submit(request).unwrap();
+        let refused = h.next();
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("playback publication already pending")
+        );
+        assert_eq!(refused.state.revision, current.state.revision);
+        assert_eq!(refused.state.project, current.state.project);
+        refused
+    };
+    assert!(refuse(&mut h, Request::Undo, &gain).state.can_undo);
+    (applied, _) = h.applied(applied);
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project, notes.state.project);
+    assert!(refuse(&mut h, Request::Redo, &undone).state.can_redo);
+    (applied, _) = h.applied(applied);
+    let redone = h.run(Request::Redo);
+    assert_eq!(redone.state.project, gain.state.project);
+    (applied, _) = h.applied(applied);
+    pcm_at_cursor(&mut h, &redone, &mut applied, &mut request_id, 0.125);
 }

@@ -201,7 +201,8 @@ impl EditorView {
         if let Some(state) = &self.state {
             selection.select(&state.project, track, clip, modifiers);
             if modifiers.shift
-                && self.arrangement_focus.enabled
+                && (self.arrangement_focus.projection.enabled
+                    || self.arrangement_focus.projection.filtering())
                 && self.mode == super::EditorMode::Arrangement
             {
                 selection.apply_members(

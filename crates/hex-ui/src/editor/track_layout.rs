@@ -199,8 +199,10 @@ impl EditorView {
         true
     }
     pub(super) fn arrangement_view_change_available(&self, cx: &Context<Self>) -> bool {
-        !(self.mode != super::EditorMode::Arrangement
-            || !self.drag_available()
+        self.mode == super::EditorMode::Arrangement && self.track_view_change_available(cx)
+    }
+    pub(super) fn track_view_change_available(&self, cx: &Context<Self>) -> bool {
+        !(!self.drag_available()
             || self.edit_pending()
             || self.track_name.is_editing()
             || self.sections.naming()

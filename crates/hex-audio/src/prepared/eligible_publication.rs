@@ -73,6 +73,23 @@ impl PublicationControl {
         self.candidate_root
             .begin_domain_preparation(config, definitions, readiness)
     }
+    /// Test-only source-worker hold through the same reserved domain custody.
+    #[cfg(feature = "stream-test-support")]
+    pub fn begin_audio_candidate_domain_preparation_with_gate(
+        &mut self,
+        config: hex_stream::StreamConfig,
+        definitions: Vec<hex_stream::SourceDefinition>,
+        readiness: hex_stream::StreamReadinessReservation,
+        gate: hex_stream::test_support::PageGate,
+    ) -> Result<crate::AudioCandidateDomainToken, crate::AudioCandidateDomainStartError> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err(crate::AudioCandidateDomainStartError::Busy(
+                "candidate native custody unavailable",
+            ));
+        }
+        self.candidate_root
+            .begin_domain_preparation_with_gate(config, definitions, readiness, gate)
+    }
     /// Poll on the publication worker. Reserve the actual queue entry before
     /// sealing; a ready endpoint cannot escape or be dropped on queue refusal.
     pub fn poll_audio_candidate_domain_preparation(
@@ -578,6 +595,12 @@ impl Callback {
                             ticket,
                             PlaybackActionRejection::SessionNotPrepared,
                         );
+                        self.stage_stream_outcome(
+                            ticket,
+                            action_outcomes::Outcome::Rejected(
+                                PlaybackActionRejection::SessionNotPrepared,
+                            ),
+                        );
                         self.status
                             .stream_applied_command_prefix
                             .store(self.stream_prefix, Release);
@@ -614,9 +637,14 @@ impl Callback {
                     self.finish_pending_stream_play();
                     self.status.stream_buffering.store(false, Release);
                     self.publish_active_routes(true);
+                    self.recovery_seek_pending = None;
+                    if !self.status.device_fault.load(Acquire) {
+                        self.recovery_position_frozen = false;
+                    }
                     self.publish_transport();
                     self.status.render_fault_record.clear();
                     self.status.render_fault.store(false, Release);
+                    self.status.stream_source_changed.store(false, Release);
                     self.status
                         .applied_source
                         .publish(match self.active.as_ref() {

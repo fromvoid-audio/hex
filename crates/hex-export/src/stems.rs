@@ -350,13 +350,19 @@ mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor};
 
-    fn fixture() -> (Arc<PreparedRevision>, Stem) {
+    fn fixture() -> (Arc<PreparedRevision>, [Stem; 2]) {
         let mut editor = Editor::new(hex_project::Project::new(48000).unwrap(), 8).unwrap();
         let Created::Track(track) = editor
             .execute(Command::AddTrack { name: "dry".into() })
             .unwrap()
         else {
             panic!("track")
+        };
+        let Created::Track(second) = editor
+            .execute(Command::AddTrack { name: "wet".into() })
+            .unwrap()
+        else {
+            panic!("second track")
         };
         let revision = Arc::new(
             PreparedRevision::prepare(
@@ -369,10 +375,16 @@ mod tests {
         );
         (
             revision,
-            Stem {
-                id: OutputCaptureId::Track(track),
-                name: "dry".into(),
-            },
+            [
+                Stem {
+                    id: OutputCaptureId::Track(track),
+                    name: "dry".into(),
+                },
+                Stem {
+                    id: OutputCaptureId::Track(second),
+                    name: "wet".into(),
+                },
+            ],
         )
     }
 
@@ -385,27 +397,57 @@ mod tests {
         ));
         fs::create_dir(&parent).unwrap();
         let path = parent.join("batch");
-        let (revision, stem) = fixture();
+        let neighbor = parent.join("unrelated");
+        fs::write(&neighbor, b"preserve").unwrap();
+        let (revision, stems) = fixture();
         let control = ExportControl::default();
         let result = render_stems_with_hook(
             &path,
             Arc::clone(&revision),
             0,
             257,
-            std::slice::from_ref(&stem),
+            &stems,
             &control,
             || {
-                control.cancel();
+                assert!(!path.exists());
+                let stages: Vec<_> = fs::read_dir(&parent)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .filter(|entry| entry.is_dir())
+                    .collect();
+                assert_eq!(stages.len(), 1);
+                let files: Vec<_> = fs::read_dir(&stages[0])
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect();
+                assert_eq!(files.len(), 2);
+                for stem in &stems {
+                    let staged = stages[0].join(filename(stem));
+                    assert!(files.contains(&staged));
+                    let bytes = fs::read(staged).unwrap();
+                    assert_eq!(bytes.len(), 44 + 257 * 4);
+                    assert_eq!(&bytes[..4], b"RIFF");
+                    assert_eq!(&bytes[8..12], b"WAVE");
+                    assert_eq!(&bytes[36..40], b"data");
+                    assert_eq!(
+                        u32::from_le_bytes(bytes[40..44].try_into().unwrap()),
+                        257 * 4
+                    );
+                    assert!(bytes[44..].iter().all(|byte| *byte == 0));
+                }
+                assert!(control.cancel());
             },
         );
         assert!(matches!(result, Err(ExportError::Cancelled)));
-        assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
+        assert!(!path.exists());
+        assert_eq!(fs::read(&neighbor).unwrap(), b"preserve");
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
         let result = render_stems_with_hook(
             &path,
             revision,
             0,
             257,
-            &[stem],
+            &stems,
             &ExportControl::default(),
             || {
                 fs::create_dir(&path).unwrap();
@@ -413,8 +455,82 @@ mod tests {
             },
         );
         assert!(result.is_err());
-        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 2);
         assert_eq!(fs::read(path.join("unrelated")).unwrap(), b"preserve");
+        assert_eq!(fs::read(&neighbor).unwrap(), b"preserve");
         fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn file_size_limit_cleans_all_staged_stems_without_publishing_a_batch() {
+        const CHILD: &str = "HEX_STEMS_FILE_LIMIT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let parent = std::env::temp_dir().join(format!(
+                "hex-stems-limit-{}-{}",
+                std::process::id(),
+                NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&parent).unwrap();
+            let neighbor = parent.join("unrelated");
+            fs::write(&neighbor, b"preserve").unwrap();
+            let path = parent.join("batch");
+            let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+            let mut stems = Vec::new();
+            for name in ["first", "second"] {
+                let Created::Track(track) = editor
+                    .execute(Command::AddTrack { name: name.into() })
+                    .unwrap()
+                else {
+                    panic!("track")
+                };
+                stems.push(Stem {
+                    id: OutputCaptureId::Track(track),
+                    name: name.into(),
+                });
+            }
+            let revision = Arc::new(
+                PreparedRevision::prepare(
+                    editor.project(),
+                    &std::collections::BTreeMap::new(),
+                    Arc::new(hex_engine::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            let error =
+                render_stems_new(&path, revision, 0, 4096, &stems, &ExportControl::default())
+                    .unwrap_err();
+            assert!(
+                matches!(error, ExportError::Io { operation: "write staged stem samples", source }
+                if source.kind() == io::ErrorKind::FileTooLarge)
+            );
+            assert!(!path.exists());
+            assert_eq!(fs::read(&neighbor).unwrap(), b"preserve");
+            assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+            fs::remove_file(neighbor).unwrap();
+            fs::remove_dir(parent).unwrap();
+            return;
+        }
+
+        // Keep the limit and signal disposition inside the child process.
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", "ulimit -f 1; trap '' XFSZ; exec \"$@\"", "_"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "stems::tests::file_size_limit_cleans_all_staged_stems_without_publishing_a_batch",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
     }
 }

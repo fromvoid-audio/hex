@@ -1241,13 +1241,17 @@ fn actual_startup_deadline_retires_a_held_entry_without_release_or_processing() 
     let setup = case.setup(27);
     let build = build();
     let source = source();
+    // The held entry is observed before asserting timeout and is never released;
+    // a shorter fixture deadline exercises the same supervision and reap path.
+    let mut preparation = options().preparation;
+    preparation.limits.startup = Duration::from_millis(500);
     let result = case.after_stage(
         8,
         move || {
             Pending::prepare(
                 &build,
                 source,
-                options().preparation,
+                preparation,
                 PreparationCancellation::new_on_control().unwrap(),
                 setup,
             )
@@ -1457,13 +1461,19 @@ fn actual_restore_hangs_cancel_or_time_out_with_direct_reap_and_preserve_another
         let saved = startup_state(&selected, true, 3);
         let build = build();
         let setup = case.setup_restore(variant);
+        let mut preparation = options().preparation;
+        if timeout {
+            // The barrier deliberately holds the SDK indefinitely; a shorter
+            // fixture deadline exercises the same timeout and direct reap.
+            preparation.limits.startup = Duration::from_millis(500);
+        }
         let result = case.after_stage(
             stage,
             move || {
                 Pending::prepare_with_restore(
                     &build,
                     selected,
-                    options().preparation,
+                    preparation,
                     Some(saved),
                     context,
                     setup,

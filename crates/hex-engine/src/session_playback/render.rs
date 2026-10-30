@@ -706,6 +706,10 @@ impl SessionPlayback {
         // Keep the next deadline for this render transaction so compensated
         // graphs do not rescan every track several times for every sample.
         let mut next_route = next_pending_frame(&self.route_scratch);
+        let mut resident_source_index = 0;
+        let mut resident_source_end = 0;
+        let mut resident_source_eligible = [false; MAX_TRACKS];
+        let mut resident_analytic_eligible = [false; MAX_TRACKS];
 
         while output_offset < output.len() {
             if let Some(region) = region {
@@ -735,6 +739,39 @@ impl SessionPlayback {
                 .compensation
                 .as_ref()
                 .is_some_and(|runtime| runtime.graph.needs_upstream_frame_routing());
+            let use_resident_sources = upstream_frame_routing
+                && self.playing
+                && !self.resident_source_scratch.is_empty()
+                && self.computer_keyboard.is_none()
+                && self.current_sampler_keyboards.is_empty()
+                && !self.current_sampler_console;
+            if use_resident_sources && resident_source_index == resident_source_end {
+                let mut count = (output.len() - output_offset).min(256);
+                if let Some(next) = next_route.filter(|next| *next > performance_frame) {
+                    count =
+                        count.min(usize::try_from(next - performance_frame).unwrap_or(usize::MAX));
+                }
+                if let Some(region) = region {
+                    let until = if arrangement_frame < region.start() {
+                        region.start() - arrangement_frame
+                    } else {
+                        region.end() - arrangement_frame
+                    };
+                    count = count.min(usize::try_from(until).unwrap_or(usize::MAX));
+                }
+                if count == 0 {
+                    return Err(SessionPlaybackError::ArithmeticOverflow);
+                }
+                self.prepare_resident_sources(
+                    performance_frame,
+                    arrangement_frame,
+                    count,
+                    &mut resident_source_eligible,
+                    &mut resident_analytic_eligible,
+                )?;
+                resident_source_index = 0;
+                resident_source_end = count;
+            }
             let mut chunk_frames =
                 (output.len() - output_offset).min(if upstream_frame_routing { 1 } else { 256 });
             if let Some(keyboard) = self.computer_keyboard.as_ref() {
@@ -842,7 +879,15 @@ impl SessionPlayback {
                     sources,
                     foreign,
                     external,
+                    use_resident_sources.then_some(compensated::BatchedSources {
+                        index: resident_source_index,
+                        audio: &resident_source_eligible,
+                        analytic: &resident_analytic_eligible,
+                    }),
                 )?;
+                if use_resident_sources {
+                    resident_source_index += 1;
+                }
             } else {
                 self.render_route_chunk(
                     performance_frame,
@@ -2641,6 +2686,40 @@ enum SourceStage {
     Instrument,
 }
 
+fn render_resident_session_audio(
+    prepared: &crate::session_inventory::PreparedSessionAudioClip,
+    audio: &crate::Audio,
+    launch_frame: u64,
+    performance_frame: u64,
+    output: &mut [Frame],
+    source_mix: crate::PreparedTrackMix,
+) -> Result<(), SessionPlaybackError> {
+    let frames = audio.frames();
+    for (offset, frame) in output.iter_mut().enumerate() {
+        let offset = u64::try_from(offset).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
+        let absolute = performance_frame
+            .checked_add(offset)
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        let Some(elapsed) = absolute.checked_sub(launch_frame) else {
+            continue;
+        };
+        let Some(source_frame) = prepared.source_frame(elapsed) else {
+            continue;
+        };
+        let source_index =
+            usize::try_from(source_frame).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
+        let mut sample = *frames
+            .get(source_index)
+            .ok_or(SessionPlaybackError::UnknownClip)?;
+        if prepared.gain != 1.0 {
+            sample[0] *= prepared.gain;
+            sample[1] *= prepared.gain;
+        }
+        source_mix.add_frame(frame, sample);
+    }
+    Ok(())
+}
+
 fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::MidiTempoBreaks>(
     context: RouteSourceContext<'_, T>,
     spans: &mut MidiSpanBuffer,
@@ -2797,30 +2876,14 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::M
             }
             match prepared.source() {
                 PreparedAudioSource::Resident(audio) => {
-                    let frames = audio.frames();
-                    for (offset, frame) in output.iter_mut().enumerate() {
-                        let offset = u64::try_from(offset)
-                            .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
-                        let absolute = performance_frame
-                            .checked_add(offset)
-                            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-                        let Some(elapsed) = absolute.checked_sub(launch_frame) else {
-                            continue;
-                        };
-                        let Some(source_frame) = prepared.source_frame(elapsed) else {
-                            continue;
-                        };
-                        let source_index = usize::try_from(source_frame)
-                            .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
-                        let mut sample = *frames
-                            .get(source_index)
-                            .ok_or(SessionPlaybackError::UnknownClip)?;
-                        if prepared.gain != 1.0 {
-                            sample[0] *= prepared.gain;
-                            sample[1] *= prepared.gain;
-                        }
-                        source_mix.add_frame(frame, sample);
-                    }
+                    render_resident_session_audio(
+                        prepared,
+                        audio,
+                        launch_frame,
+                        performance_frame,
+                        output,
+                        source_mix,
+                    )?;
                 }
                 PreparedAudioSource::Streamed(source) => {
                     let page_provider = pages.ok_or(SessionPlaybackError::MediaPagesUnavailable)?;

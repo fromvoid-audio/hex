@@ -49,6 +49,17 @@ sh scripts/bundle-macos.sh \
   --checklist artifacts/USER-TEST.md
 ```
 
+Use the shared user-edited `/Users/portalsurfer/dev/hex/artifacts/USER-TESTS.md`
+as the source of applicable pending interaction and listening checks. It is a
+reusable file in
+the primary checkout's ignored `artifacts/` directory, shared across worktrees;
+it is not a source-tracked backlog. Prepare the candidate's finite checklist
+from the current shared entries, with exact build provenance and explicit scope,
+and supply that snapshot to `--checklist`. The user checks each successful item
+and marks its Pulse issue done after all checks for it are complete. On a later
+edit, agents remove a fully checked group only after confirming its issue is
+done; partial checks and user notes remain. See `AGENTS.md` for the full contract.
+
 Use `sh scripts/bundle-macos.sh --help` for supported options. Only an explicitly
 requested development delivery may use `--dev-profile` with its resolved scoped
 merge report; identify it as scoped development evidence, not full qualification.

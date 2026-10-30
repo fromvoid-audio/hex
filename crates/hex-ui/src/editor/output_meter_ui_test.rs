@@ -7,6 +7,81 @@ use std::sync::{Arc, atomic::Ordering::Relaxed};
 use std::time::Instant;
 
 #[gpui::test]
+fn changed_stream_media_status_reaches_editor_error(cx: &mut TestAppContext) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let (_, editor) = editor_window(
+        cx,
+        Project::new(48_000).unwrap(),
+        Arc::new(Default::default()),
+    );
+    editor.update(cx, |view, cx| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test output".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::VerifiedStreaming,
+        });
+        view.tick(cx);
+        assert!(
+            !view
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("original media changed"))
+        );
+        view.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .stream_source_changed
+            .store(true, Relaxed);
+        view.tick(cx);
+        assert_eq!(
+            view.error.as_deref(),
+            Some("original media changed · reopen or relink it")
+        );
+        assert_eq!(view.status, "streamed media unavailable");
+        view.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .stream_source_changed
+            .store(false, Relaxed);
+        view.tick(cx);
+        assert_eq!(view.status, "audio ready");
+        assert_eq!(view.error.as_deref(), None);
+        view.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .stream_source_changed
+            .store(true, Relaxed);
+        view.tick(cx);
+        view.status = "saving project".into();
+        view.error = Some("another error".into());
+        view.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .stream_source_changed
+            .store(false, Relaxed);
+        view.tick(cx);
+        assert_eq!(view.status, "saving project");
+        assert_eq!(view.error.as_deref(), Some("another error"));
+        view.audio.take().unwrap().control.close();
+    });
+    drop(output);
+    backend.close();
+}
+
+#[gpui::test]
 fn output_meter_status_snapshot_reaches_actual_editor_at_minimum_size(cx: &mut TestAppContext) {
     let (handle, editor) = editor_window(
         cx,

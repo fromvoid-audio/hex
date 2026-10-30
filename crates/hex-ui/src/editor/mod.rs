@@ -7,6 +7,8 @@
 //! acknowledgment are separate states; do not claim current playback from a submitted revision
 //! alone. Native keyboard/pointer delivery uses the pinned excluded GPUI dependency boundary, with
 //! no unsafe workspace bridge.
+#[cfg(all(test, feature = "ui-test-support"))]
+mod action_outcome_ui_tests;
 mod arrangement;
 mod arrangement_audio_panel;
 mod arrangement_device_drop;
@@ -51,6 +53,7 @@ mod project_recovery_ui_test;
 mod section_launch;
 mod track_header;
 mod track_header_device_drop;
+mod track_hierarchy_indent;
 mod track_meters;
 mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -85,6 +88,9 @@ mod close;
 mod computer_keyboard;
 mod console_columns;
 mod console_drop;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod console_selection_ui_test;
+mod console_track_page;
 mod context_menu;
 mod controller;
 mod controller_input;
@@ -132,6 +138,8 @@ mod midi_note_overwrite;
 mod midi_pan;
 mod midi_pitch_zoom;
 mod midi_recording;
+#[cfg(feature = "ui-test-support")]
+pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
 mod midi_ruler;
 mod midi_scene;
 mod midi_selection;
@@ -174,6 +182,8 @@ mod session_navigation;
 mod session_navigation_ui_test;
 mod session_route_view;
 #[cfg(all(test, feature = "ui-test-support"))]
+mod session_track_reorder_ui_test;
+#[cfg(all(test, feature = "ui-test-support"))]
 mod snap_nudge_ui_test;
 mod tempo_input;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -195,6 +205,8 @@ mod track_compact_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_creation_ui_tests;
 mod track_gain;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_group_delete_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_keyboard_ui_test;
 mod track_layout;
@@ -715,6 +727,8 @@ pub(super) struct EditorView {
     service: Service,
     transport_trace: Option<crate::diagnostics::TransportTrace>,
     audio: Option<crate::EditorAudio>,
+    retired_action_outcomes: Option<hex_audio::prepared::ActionOutcomeReader>,
+    retired_action_message: Option<String>,
     audio_events: std::sync::mpsc::Receiver<crate::EditorAudioEvent>,
     source_reservation: Option<hex_session::SourcePlanReservation>,
     restart_request_id: u64,
@@ -854,6 +868,7 @@ pub(super) struct EditorView {
     preset_dialog_open: bool,
     status: String,
     pub(in crate::editor) error: Option<display_error::DisplayError>,
+    stream_source_warning: bool,
     recovery_failure: Option<Arc<hex_session::service::RecoveryFailure>>,
     recovery_prompt_open: bool,
     computer_keyboard: computer_keyboard::ComputerKeyboard,
@@ -869,6 +884,7 @@ pub(super) struct EditorView {
     track_scroll: track_layout::TrackScroll,
     track_layout: track_layout::TrackLayout,
     arrangement_focus: arrangement_focus::State,
+    track_hierarchy_indent: track_hierarchy_indent::HierarchyIndent,
     track_reorder: track_reorder::TrackReorder,
     #[cfg(all(test, feature = "ui-test-support"))]
     track_row_builds: usize,
@@ -1435,6 +1451,8 @@ impl EditorView {
             transport_trace: crate::diagnostics::TransportTrace::from_app(cx),
             service,
             audio,
+            retired_action_outcomes: None,
+            retired_action_message: None,
             audio_events: std::sync::mpsc::channel().1,
             source_reservation: None,
             restart_request_id: 0,
@@ -1569,6 +1587,7 @@ impl EditorView {
             preset_dialog_open: false,
             status,
             error: None,
+            stream_source_warning: false,
             recovery_failure: None,
             recovery_prompt_open: false,
             computer_keyboard: computer_keyboard::ComputerKeyboard::default(),
@@ -1584,6 +1603,7 @@ impl EditorView {
             track_scroll: track_layout::TrackScroll::new(),
             track_layout: track_layout::TrackLayout::default(),
             arrangement_focus: arrangement_focus::State::default(),
+            track_hierarchy_indent: track_hierarchy_indent::HierarchyIndent::default(),
             track_reorder: track_reorder::TrackReorder::default(),
             #[cfg(all(test, feature = "ui-test-support"))]
             track_row_builds: 0,
@@ -1830,7 +1850,10 @@ impl EditorView {
         if self.opening_project || self.close_prompt_open {
             return;
         }
-        let choice = if self.mode == EditorMode::Arrangement && self.arrangement_focus.enabled {
+        let choice = if self.mode == EditorMode::Arrangement
+            && (self.arrangement_focus.projection.enabled
+                || self.arrangement_focus.projection.filtering())
+        {
             self.focused_neighbor_track(forward)
         } else {
             self.state
@@ -1844,7 +1867,10 @@ impl EditorView {
             {
                 self.selected_clip = Some(clip);
             }
-            let row = if self.mode == EditorMode::Arrangement && self.arrangement_focus.enabled {
+            let row = if self.mode == EditorMode::Arrangement
+                && (self.arrangement_focus.projection.enabled
+                    || self.arrangement_focus.projection.filtering())
+            {
                 Some(index)
             } else {
                 self.arrangement_row_index(index)
