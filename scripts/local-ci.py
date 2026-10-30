@@ -260,14 +260,17 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
             del argv[index - 1:index + 1]
         steps.append(Step(step.step_id, tuple(argv)))
     for package in inventory:
-        if package["name"] not in affected or boundary["kind"] == "compressor":
+        if package["name"] not in affected:
             continue
         extra = set(package["features"]) - {"default"} - covered_features.get(package["name"], set())
         # Preserve each declared configuration; all-features alone can mask
         # mutually exclusive cfg branches. Feature interaction contracts still
         # need reviewed configuration rules rather than a guessed power set.
+        # Compressor plans run reviewed contract tests, but still lint every
+        # extra configuration so an unexercised cfg branch cannot stop compiling.
+        commands = ("clippy",) if boundary["kind"] == "compressor" else ("test", "clippy")
         for index, feature in enumerate(sorted(extra)):
-            for command in ("test", "clippy"):
+            for command in commands:
                 steps.append(Step(f"feature-{command}-{package['name']}-{index}",
                                   ("cargo", command, "-p", package["name"], "--features", feature, "--all-targets", "--locked",
                                    *(("--", "-D", "warnings") if command == "clippy" else ()))))
