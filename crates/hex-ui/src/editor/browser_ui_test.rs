@@ -5364,6 +5364,9 @@ mod divider_paint;
 #[path = "browser_instrument_enter_ui_test.rs"]
 mod instrument_enter;
 
+#[path = "browser_sampler_drop_ui_test.rs"]
+mod sampler_drop;
+
 #[gpui::test]
 fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_load(
     cx: &mut TestAppContext,

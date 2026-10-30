@@ -1142,6 +1142,8 @@ fn render_track(
                 next: device_ids.get(index + 1).copied(),
                 first: first_device,
                 visible_chain_bounds: visible_chain_bounds.clone(),
+                is_sampler: class == NativeDeviceClass::Instrument
+                    && device.state().type_id().as_str() == Ok("hex.instrument.sampler"),
             },
             rendered,
         )
@@ -1228,6 +1230,8 @@ struct DeviceCardDropGeometry {
     next: Option<DeviceId>,
     first: Option<DeviceId>,
     visible_chain_bounds: std::rc::Rc<std::cell::RefCell<Option<Bounds<Pixels>>>>,
+    /// Accepts browser sample drops that load or replace its sample.
+    is_sampler: bool,
 }
 
 /// Keep only previews belonging to live effects of the matching registered type.
@@ -1300,6 +1304,7 @@ fn render_device_card_target(
         next,
         first,
         visible_chain_bounds,
+        is_sampler,
     } = geometry;
     let active = view
         .active_native_device_drag
@@ -1397,6 +1402,19 @@ fn render_device_card_target(
             }),
         )
         .child(rendered);
+    if is_sampler {
+        wrapper = wrapper
+            .drag_over::<drag::BrowserAudioDrag>(|style, _, _, _| {
+                style
+                    .border_1()
+                    .border_color(rgb(theme::color(theme::PaletteRole::Secondary)))
+            })
+            .on_drop(
+                cx.listener(move |view, payload: &drag::BrowserAudioDrag, _, cx| {
+                    view.drop_browser_sample_on_sampler(payload, track, device, cx);
+                }),
+            );
+    }
     if active_left {
         wrapper = wrapper.child(
             div()
