@@ -228,6 +228,28 @@ pub fn open_with_reliable_action_outcomes(
     crate::device::headless_worker_output_with_outcomes(rate, true)
 }
 
+/// Open a headless worker once a previous output's lease has retired.
+/// The lifecycle service releases the process-wide lease asynchronously after
+/// close, so a test following another may briefly observe it as busy. Waits
+/// at most two seconds, so a leaked lease still fails the caller.
+pub fn open_after_retirement(
+    rate: u32,
+    reliable_action_outcomes: bool,
+) -> Result<(crate::WorkerPreparedOutput, HeadlessBackend), String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match crate::device::headless_worker_output_with_outcomes(rate, reliable_action_outcomes) {
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::yield_now();
+            }
+            result => return result,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,7 +259,7 @@ mod tests {
         use hex_engine::{Audio, Clip, PlaybackCommand, Project, Track, playback::Playback};
         use std::sync::Arc;
         let _serial = crate::prepared::candidate_tests::serial();
-        let (mut output, mut backend) = open_with_reliable_action_outcomes(48_000).unwrap();
+        let (mut output, mut backend) = open_after_retirement(48_000, true).unwrap();
         let reader = output
             .take_action_outcomes()
             .expect("reliable output reader");
@@ -323,7 +345,7 @@ mod tests {
         use std::sync::{Arc, atomic::Ordering::Acquire};
 
         let _serial = crate::prepared::candidate_tests::serial();
-        let (mut output, mut backend) = open(48_000).unwrap();
+        let (mut output, mut backend) = open_after_retirement(48_000, false).unwrap();
         let audio = Audio::new(48_000, vec![[0.25; 2]; 64]).unwrap();
         let project = Arc::new(
             Project::new(
@@ -453,7 +475,7 @@ mod tests {
         use crate::sample_preview::Phase;
         use std::sync::atomic::Ordering::Acquire;
         let _serial = crate::prepared::candidate_tests::serial();
-        let (mut output, mut backend) = open(48_000).unwrap();
+        let (mut output, mut backend) = open_after_retirement(48_000, false).unwrap();
         let mut client = output.take_client().unwrap();
         let pcm = |frames| hex_engine::Audio::new(48_000, vec![[0.5; 2]; frames]).unwrap();
         let token = client.preview_request().unwrap();
@@ -501,7 +523,7 @@ mod tests {
     #[test]
     fn headless_direct_sink_validates_extent_and_copies_stereo_without_callback_allocation() {
         let _serial = crate::prepared::candidate_tests::serial();
-        let (mut output, mut backend) = open(48_000).unwrap();
+        let (mut output, mut backend) = open_after_retirement(48_000, false).unwrap();
         let mut client = output.take_client().unwrap();
         let token = client.preview_request().unwrap();
         client
@@ -545,7 +567,7 @@ mod tests {
     #[test]
     fn actual_worker_endpoints_keep_lease_until_client_and_both_callback_carriers_close() {
         let _serial = crate::prepared::candidate_tests::serial();
-        let (mut output, mut backend) = open(48000).unwrap();
+        let (mut output, mut backend) = open_after_retirement(48_000, false).unwrap();
         let client = output.take_client().unwrap();
         let mut silence = [[1.0; 2]; 8];
         backend.render(&mut silence).unwrap();
