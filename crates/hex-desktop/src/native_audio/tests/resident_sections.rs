@@ -1397,6 +1397,80 @@ fn offline_metadata_edits_and_history_do_not_require_an_applied_loop_witness() {
     assert!(h.submitted.is_none());
 }
 
+/// Submit an immediate section launch and leave it unapplied by the callback.
+fn submit_pending_launch(h: &mut ResidentHarness, request_id: u64, revision: u64) {
+    let mut intent = h.seek_intent(request_id, revision, None, None);
+    intent.destination_frame = 0;
+    intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+        region: hex_project::LoopRegion::new(0, 24_000, true).unwrap(),
+        quantization: hex_engine::LaunchQuantization::Immediate,
+    });
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    assert!(h.next().error.is_none());
+    assert!(h.seek_result().result.is_ok()); // Submitted, deliberately not applied.
+}
+
+#[test]
+fn pending_launch_refuses_undo_and_redo_without_losing_either_history_stack() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let MetadataLoop {
+        mut h,
+        event,
+        intro,
+        mut applied,
+        ..
+    } = metadata_loop_fixture();
+    let original = event.state.project.snapshot();
+    let renamed = h.run(section_request(
+        event.state.revision,
+        Command::RenameArrangementSection {
+            section: intro,
+            name: "history target".into(),
+        },
+    ));
+    (applied, _) = h.applied(applied);
+    let after = renamed.state.project.snapshot();
+
+    submit_pending_launch(&mut h, 2, renamed.state.revision);
+    h.service.submit(Request::Undo).unwrap();
+    let refused = h.next();
+    assert!(
+        refused
+            .error
+            .as_ref()
+            .is_some_and(|e| e.contains("publication already pending")),
+        "{:?}",
+        refused.error
+    );
+    assert_eq!(refused.state.revision, renamed.state.revision);
+    assert_eq!(refused.state.project.snapshot(), after);
+    assert!(refused.state.can_undo);
+    (applied, _) = h.applied(applied);
+    let undone = h.run(Request::Undo);
+    (applied, _) = h.applied(applied);
+    assert_eq!(undone.state.project.snapshot(), original);
+    assert!(undone.state.can_redo);
+
+    submit_pending_launch(&mut h, 3, undone.state.revision);
+    h.service.submit(Request::Redo).unwrap();
+    let refused = h.next();
+    assert!(
+        refused
+            .error
+            .as_ref()
+            .is_some_and(|e| e.contains("publication already pending")),
+        "{:?}",
+        refused.error
+    );
+    assert_eq!(refused.state.revision, undone.state.revision);
+    assert_eq!(refused.state.project.snapshot(), original);
+    assert!(refused.state.can_redo);
+    (applied, _) = h.applied(applied);
+    let redone = h.run(Request::Redo);
+    h.applied(applied);
+    assert_eq!(redone.state.project.snapshot(), after);
+}
+
 #[test]
 fn pending_launch_refuses_metadata_and_stop_cancellation_keeps_the_actual_loop() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
