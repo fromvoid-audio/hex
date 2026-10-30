@@ -119,6 +119,8 @@ pub(super) struct DevicePanelState {
     pub(super) selected_device: Option<DeviceId>,
     selected_others: HashSet<DeviceId>,
     selection_anchor: Option<DeviceId>,
+    /// View-only chain gap chosen for paste; exclusive with device selection.
+    insertion: Option<InsertionPoint>,
     pub(super) drag_copy: Option<DeviceDragCopy>,
     controls: HashMap<ParameterKey, ParameterControl>,
     meter_states: HashMap<DeviceId, gain_meters::MeterState>,
@@ -184,6 +186,12 @@ pub(super) struct DeviceDragCopy {
     selected: hex_project::DeviceSelectionIds,
 }
 
+/// A gap in the current owner's chain; `before: None` is the chain end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InsertionPoint {
+    before: Option<DeviceId>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DevicePanelOwner {
     Main,
@@ -196,6 +204,45 @@ impl DevicePanelState {
         self.selected_device = device;
         self.selected_others.clear();
         self.selection_anchor = device;
+        self.insertion = None;
+    }
+
+    fn select_insertion(&mut self, before: Option<DeviceId>) {
+        self.select_only(None);
+        self.insertion = Some(InsertionPoint { before });
+    }
+
+    fn insertion_is(&self, before: Option<DeviceId>) -> bool {
+        self.insertion == Some(InsertionPoint { before })
+    }
+
+    /// The insertion point's `before` while it still names a gap in `order`.
+    fn insertion_before(&self, order: &[DeviceId]) -> Option<Option<DeviceId>> {
+        self.insertion
+            .map(|point| point.before)
+            .filter(|before| before.is_none_or(|id| order.contains(&id)))
+    }
+
+    /// Arrow-key target: the neighbor of the primary selection or of the
+    /// insertion gap. With neither, the chain is entered from its near end.
+    fn step_target(&self, order: &[DeviceId], forward: bool) -> Option<DeviceId> {
+        let position = |id: DeviceId| order.iter().position(|item| *item == id);
+        let index = if let Some(before) = self.insertion_before(order) {
+            // The device after the gap, or one past the end.
+            let next = before.map_or(Some(order.len()), position)?;
+            if forward { next } else { next.checked_sub(1)? }
+        } else if let Some(current) = self.selected_device.and_then(position) {
+            if forward {
+                current + 1
+            } else {
+                current.checked_sub(1)?
+            }
+        } else if forward {
+            0
+        } else {
+            order.len().checked_sub(1)?
+        };
+        order.get(index).copied()
     }
 
     fn is_selected(&self, device: DeviceId) -> bool {
@@ -203,6 +250,9 @@ impl DevicePanelState {
     }
 
     fn reconcile_selection(&mut self, alive: &HashSet<DeviceId>) {
+        self.insertion = self
+            .insertion
+            .filter(|point| point.before.is_none_or(|id| alive.contains(&id)));
         self.selected_device = self.selected_device.filter(|id| alive.contains(id));
         self.selected_others.retain(|id| alive.contains(id));
         self.selection_anchor = self.selection_anchor.filter(|id| alive.contains(id));
@@ -225,6 +275,7 @@ impl DevicePanelState {
         if !order.contains(&device) {
             return;
         }
+        self.insertion = None;
         if modifiers.shift {
             let anchor = self
                 .selection_anchor
@@ -1401,7 +1452,8 @@ fn render_device_card_target(
                 view.drop_native_device(payload, target, window, cx);
             }),
         )
-        .child(rendered);
+        .child(rendered)
+        .child(insertion_gap(cx, device));
     if is_sampler {
         wrapper = wrapper
             .drag_over::<drag::BrowserAudioDrag>(|style, _, _, _| {
@@ -1415,7 +1467,7 @@ fn render_device_card_target(
                 }),
             );
     }
-    if active_left {
+    if active_left || view.device_panel.insertion_is(Some(device)) {
         wrapper = wrapper.child(
             div()
                 .absolute()
@@ -1452,6 +1504,37 @@ fn render_device_card_target(
     wrapper
 }
 
+/// Click target over the chain gap left of `before`'s card. It selects that
+/// gap for paste and returns keys to the neutral rail.
+fn insertion_gap(cx: &Context<EditorView>, before: DeviceId) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(
+            format!("device-insert-{}", before.value()).into(),
+        ))
+        .debug_selector(move || format!("device-insert-{}", before.value()))
+        .absolute()
+        .top_0()
+        .left(px(-DEVICE_CHAIN_PADDING))
+        .w(px(DEVICE_CHAIN_PADDING))
+        .h(px(DEVICE_FRAME_HEIGHT))
+        .cursor(gpui::CursorStyle::IBeam)
+        .on_mouse_down(MouseButton::Left, select_insertion(cx, Some(before)))
+}
+
+fn select_insertion(
+    cx: &Context<EditorView>,
+    before: Option<DeviceId>,
+) -> impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static {
+    cx.listener(move |view, _: &gpui::MouseDownEvent, window, cx| {
+        view.device_panel.select_insertion(before);
+        view.device_panel
+            .chain_window
+            .selection_focus(cx)
+            .focus(window);
+        cx.notify();
+    })
+}
+
 fn render_device_end_target(
     view: &EditorView,
     cx: &mut Context<EditorView>,
@@ -1485,17 +1568,7 @@ fn render_device_end_target(
         .min_w(px(40.0))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex_shrink_0()
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|view, _, window, cx| {
-                view.device_panel.select_only(None);
-                view.device_panel
-                    .chain_window
-                    .selection_focus(cx)
-                    .focus(window);
-                cx.notify();
-            }),
-        )
+        .on_mouse_down(MouseButton::Left, select_insertion(cx, None))
         .bg(rgb(if active {
             theme::color(theme::PaletteRole::Hover)
         } else {
@@ -1547,7 +1620,7 @@ fn render_device_end_target(
                 view.drop_native_device(payload, target, window, cx);
             }),
         );
-    if active {
+    if active || view.device_panel.insertion_is(None) {
         receiver = receiver.child(
             div()
                 .absolute()
