@@ -257,11 +257,9 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
     }
 }
 
-// A start queued before an output fault must not revive that output, even
-// if graph recovery clears the fault before the command reaches the callback.
-fn stale_output_start(status: &Status, queued: QueuedCommand) -> bool {
+fn starts_playback(action: PlaybackAction) -> bool {
     matches!(
-        queued.action,
+        action,
         PlaybackAction::Transport(PlaybackCommand::Play | PlaybackCommand::PlayFrom(_))
             | PlaybackAction::Session(
                 hex_engine::SessionPlaybackCommand::Play
@@ -270,7 +268,23 @@ fn stale_output_start(status: &Status, queued: QueuedCommand) -> bool {
                     | hex_engine::SessionPlaybackCommand::CueMidiClip { .. }
             )
             | PlaybackAction::LaunchAndPlay(_)
-    ) && queued.transport_epoch <= status.last_output_fault_epoch.load(Acquire)
+    )
+}
+
+// A start queued before an output fault must not revive that output, even
+// if graph recovery clears the fault before the command reaches the callback.
+fn stale_output_start(status: &Status, queued: QueuedCommand) -> bool {
+    starts_playback(queued.action)
+        && queued.transport_epoch <= status.last_output_fault_epoch.load(Acquire)
+}
+
+// A refused PlayFrom keeps its frame as recovery cursor intent. Seek is not
+// a start: it still applies to the stopped graph while a render fault is latched.
+fn fault_cursor_intent(action: PlaybackAction) -> Option<u64> {
+    match action {
+        PlaybackAction::Transport(PlaybackCommand::PlayFrom(frame)) => Some(frame),
+        _ => None,
+    }
 }
 
 fn recovery_cursor_action(action: PlaybackAction) -> bool {
@@ -489,6 +503,7 @@ pub struct FreshRuntimeFence {
     expected_active_revision: u64,
     route_state_generation: u64,
     admitted_command_ticket: u64,
+    output_fault_epoch: u64,
 }
 
 impl FreshRuntimeFence {
@@ -502,6 +517,10 @@ impl FreshRuntimeFence {
 
     pub const fn admitted_command_ticket(self) -> u64 {
         self.admitted_command_ticket
+    }
+
+    pub const fn output_fault_epoch(self) -> u64 {
+        self.output_fault_epoch
     }
 }
 
@@ -1467,12 +1486,23 @@ pub fn channel_with_spectrum(
 }
 
 fn capture_runtime_fence(status: &Status) -> Option<FreshRuntimeFence> {
+    if status.render_fault.load(Acquire) || status.device_fault.load(Acquire) {
+        return None;
+    }
+    let output_fault_epoch = status.last_output_fault_epoch.load(Acquire);
     let mut routes = [SessionRouteEntry::default(); SESSION_ROUTE_CAPACITY];
     let snapshot = status.session_routes(&mut routes)?;
+    if status.render_fault.load(Acquire)
+        || status.device_fault.load(Acquire)
+        || status.last_output_fault_epoch.load(Acquire) != output_fault_epoch
+    {
+        return None;
+    }
     Some(FreshRuntimeFence {
         expected_active_revision: snapshot.audio_revision,
         route_state_generation: snapshot.route_state_generation,
         admitted_command_ticket: status.admitted_ticket.load(Acquire),
+        output_fault_epoch,
     })
 }
 
@@ -2127,6 +2157,11 @@ impl Control {
     /// receive `OutputFailed`, even if a replacement has cleared the fault.
     /// Priority Stop can supersede them; later user commands and explicit
     /// seek/stop retain their ordinary ordering.
+    /// While a render fault remains latched, starts receive `OutputFailed`
+    /// and the failed graph is not rendered; a refused PlayFrom still updates
+    /// the recovery cursor unless a later priority Stop supersedes it. Seek
+    /// and Stop keep their ordinary semantics. A replacement must clear the
+    /// fault before a new start can run the graph.
     pub fn command_with_ticket(
         &mut self,
         command: PlaybackCommand,
@@ -3116,6 +3151,10 @@ impl Callback {
                     (active_revision != fence.expected_active_revision
                         || active_route_generation != fence.route_state_generation
                         || admitted_ticket != fence.admitted_command_ticket
+                        || self.status.last_output_fault_epoch.load(Acquire)
+                            != fence.output_fault_epoch
+                        || self.status.render_fault.load(Acquire)
+                        || self.status.device_fault.load(Acquire)
                         || stop_pending)
                         .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
@@ -3816,6 +3855,23 @@ impl Callback {
                 ));
                 continue;
             }
+            if self.status.render_fault.load(Acquire) && starts_playback(queued.action) {
+                if cut.stop_through.is_none_or(|stop| queued.ticket > stop)
+                    && let Some(frame) = fault_cursor_intent(queued.action)
+                {
+                    self.status.recovery_position.store(frame, Release);
+                    // An earlier applied Seek unfroze the cursor; keep this intent
+                    // from being overwritten by the stopped graph's position.
+                    self.recovery_position_frozen = true;
+                }
+                self.status
+                    .publish_rejected_action(queued.ticket, PlaybackActionRejection::OutputFailed);
+                *staged = Some((
+                    queued.ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::OutputFailed),
+                ));
+                continue;
+            }
             if !self.status.sampler_edit.permits(queued) {
                 self.status.publish_rejected_action(
                     queued.ticket,
@@ -4038,6 +4094,18 @@ impl Callback {
         }
         if !output.is_empty() {
             self.prepare_midi_recording_quantum(output.len());
+        }
+        // A replacement may clear the fault above. Until then, no failed graph
+        // or its device chain is rendered, including while transport is stopped.
+        // Take and live-input quanta still run so a racing take or gesture
+        // receives its `OutputFailed` terminal instead of waiting on silence.
+        if self.status.render_fault.load(Acquire) {
+            if !output.is_empty() {
+                self.prepare_gain_recording_quantum();
+                self.prepare_native_parameter_quantum();
+            }
+            output.fill([0.0; 2]);
+            return Ok(());
         }
         if self.status.closing.load(Acquire) || !self.render_section_launch(output)? {
             self.render_project(output)?;
@@ -7067,14 +7135,51 @@ mod tests {
         let ticket = control
             .command_with_ticket(PlaybackCommand::PlayFrom(45))
             .unwrap();
-        callback.begin_block();
-        assert!(control.status.playing.load(Acquire));
-        assert_eq!(control.status.position.load(Acquire), 45);
-        assert_eq!(control.status.recovery_position(), 45);
-        assert_ne!(
-            control.status.rejected_action().map(|rejected| rejected.0),
-            Some(ticket)
+        let mut output = [[1.0; 2]; 16];
+        #[cfg(feature = "allocation-probe")]
+        let measured = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        }
+        #[cfg(feature = "allocation-probe")]
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
         );
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(control.status.recovery_position(), 45);
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((ticket, PlaybackActionRejection::OutputFailed))
+        );
+        assert_eq!(output, [[0.0; 2]; 16]);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[test]
+    fn priority_stop_preserves_zero_cursor_over_post_fault_play_from() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let (playback, _) = spectrum_eq8_graph();
+        control.publish(playback).unwrap();
+        callback.begin_block();
+        callback.report_render_fault(Some(&Invalid("injected failure")), 32);
+        control.command(PlaybackCommand::PlayFrom(45)).unwrap();
+        control.stop();
+        callback.begin_block();
+        assert!(!control.status.playing.load(Acquire));
+        assert_eq!(control.status.recovery_position(), 0);
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
@@ -8027,6 +8132,57 @@ mod tests {
         control.request_shutdown();
         callback.begin_block();
         control.reclaim();
+    }
+
+    #[test]
+    fn fault_invalidates_prepared_playing_runtime_fence() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let (mut prepared, _) = fresh_spectrum_eq8_graph();
+        prepared.apply(PlaybackCommand::Play);
+        let revision = control
+            .publish_with_policy(
+                prepared,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        callback.report_render_fault(Some(&Invalid("injected failure")), 32);
+        callback.begin_block();
+        assert_eq!(
+            control.status.rejected_revision(),
+            Some((revision, PlaybackHandoffRejection::RuntimeFenceChanged))
+        );
+        assert!(!control.status.playing.load(Acquire));
+    }
+
+    #[test]
+    fn latched_fault_refuses_prepared_runtime_even_after_epoch_exhaustion() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(graph().0).unwrap();
+        callback.begin_block();
+        control.status.transport_epoch.store(u64::MAX, Release);
+        control
+            .status
+            .last_output_fault_epoch
+            .store(u64::MAX, Release);
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        let (mut prepared, _) = fresh_spectrum_eq8_graph();
+        prepared.apply(PlaybackCommand::Play);
+        let revision = control
+            .publish_with_policy(
+                prepared,
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+            )
+            .unwrap();
+        callback.report_render_fault(Some(&Invalid("injected failure")), 32);
+        callback.begin_block();
+        assert_eq!(
+            control.status.rejected_revision(),
+            Some((revision, PlaybackHandoffRejection::RuntimeFenceChanged))
+        );
+        assert!(!control.status.playing.load(Acquire));
     }
 
     #[test]

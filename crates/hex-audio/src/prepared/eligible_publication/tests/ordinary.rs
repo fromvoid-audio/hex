@@ -218,6 +218,36 @@ fn ordinary_streamed_actions_deliver_split_client_outcomes() {
             })
         );
     }
+    data.owner_mut()
+        .unwrap()
+        .run(|callback, _| callback.report_render_fault(Some(&Invalid("second failure")), 0));
+    let seek = client
+        .command_with_ticket(PlaybackCommand::Seek(49))
+        .unwrap();
+    let play_from = client
+        .command_with_ticket(PlaybackCommand::PlayFrom(64))
+        .unwrap();
+    assert_eq!(measured_block(&mut data), [[0.0; 2]; 8]);
+    // Seek keeps its ordinary stopped-graph semantics; only the start is refused.
+    assert_eq!(
+        reader.try_take(),
+        Some(ActionOutcomeReceipt {
+            ticket: seek,
+            outcome: ActionOutcome::Applied
+        })
+    );
+    assert_eq!(
+        reader.try_take(),
+        Some(ActionOutcomeReceipt {
+            ticket: play_from,
+            outcome: ActionOutcome::Rejected(PlaybackActionRejection::OutputFailed)
+        })
+    );
+    assert_eq!(client.status().unwrap().recovery_position(), 64);
+    assert!(!client.status().unwrap().playing.load(Acquire));
+    client.stop();
+    assert_eq!(measured_block(&mut data), [[0.0; 2]; 8]);
+    assert_eq!(client.status().unwrap().recovery_position(), 0);
     assert_eq!(reader.failure(), None);
     let mut backend = Some(());
     let mut pending = false;
@@ -695,10 +725,9 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
             Some((stale, PlaybackActionRejection::OutputFailed))
         );
         assert_eq!(control.status.recovery_position(), 0);
-        play = control.command_with_ticket(PlaybackCommand::Play).unwrap();
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let output = loop {
+    let mut output = loop {
         let output = measured_block(&mut data);
         if control.status.applied_revision.load(Acquire) == revision {
             break output;
@@ -708,6 +737,20 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
     };
+    if !keyboard && !sampler {
+        // The pre-fault start failed. A fresh user start is admitted only
+        // after this replacement has actually cleared the render fault.
+        assert!(!control.status.render_fault.load(Acquire));
+        play = control.command_with_ticket(PlaybackCommand::Play).unwrap();
+        loop {
+            output = measured_block(&mut data);
+            if control.status.playing.load(Acquire) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
     assert_eq!(output, expected);
     if stop_restart {
         assert!(
@@ -921,11 +964,17 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
         data.owner_mut()
             .unwrap()
             .run(|callback, _| callback.report_render_fault(None, last_position));
-        control.command(PlaybackCommand::PlayFrom(2)).unwrap();
+        let refused = control
+            .command_with_ticket(PlaybackCommand::PlayFrom(2))
+            .unwrap();
         data.owner_mut()
             .unwrap()
             .run(|callback, _| callback.begin_block());
-        assert_eq!(control.status.recovery_position(), last_position);
+        assert_eq!(control.status.recovery_position(), 2);
+        assert_eq!(
+            control.status.rejected_action(),
+            Some((refused, PlaybackActionRejection::OutputFailed))
+        );
         control.stop();
         assert_eq!(control.status.recovery_position(), 0);
         measured_block(&mut data);
@@ -944,10 +993,10 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
             assert!(std::time::Instant::now() < deadline);
             std::thread::yield_now();
         }
-        assert_ne!(control.status.recovery_position(), last_position);
+        assert_eq!(control.status.recovery_position(), 2);
         assert_eq!(
-            control.status.recovery_position(),
-            control.status.position.load(Acquire)
+            control.status.rejected_action(),
+            Some((seek, PlaybackActionRejection::OutputFailed))
         );
     }
     if stop_restart {
@@ -985,6 +1034,21 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
         assert_eq!(control.status.recovery_position(), 0);
     }
     if !sampler {
+        control.reclaim();
+        let restored = control
+            .publish_with_admission_and_source_on_control(
+                compile(metadata.clone()),
+                PublicationPolicy::InstallFreshRuntime,
+                context,
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while control.status.applied_revision.load(Acquire) != restored {
+            measured_block(&mut data);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
         let cursor = control.status.recovery_position();
         let pending = control
             .command_with_ticket(PlaybackCommand::PlayFrom(1))
@@ -1014,6 +1078,21 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
         );
     }
     if !sampler {
+        control.reclaim();
+        let restored = control
+            .publish_with_admission_and_source_on_control(
+                compile(metadata.clone()),
+                PublicationPolicy::InstallFreshRuntime,
+                context,
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while control.status.applied_revision.load(Acquire) != restored {
+            measured_block(&mut data);
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
         let cursor = control.status.recovery_position();
         let pending = control
             .command_with_ticket(PlaybackCommand::PlayFrom(1))

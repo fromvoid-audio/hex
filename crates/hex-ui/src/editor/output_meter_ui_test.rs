@@ -8,7 +8,9 @@ use std::time::Instant;
 
 #[gpui::test]
 fn changed_stream_media_status_reaches_editor_error(cx: &mut TestAppContext) {
-    let (mut output, mut backend) = hex_audio::worker_fixture::open(48_000).unwrap();
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
     let client = output.take_client().unwrap();
     let (_, editor) = editor_window(
         cx,

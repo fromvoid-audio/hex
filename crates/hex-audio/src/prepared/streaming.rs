@@ -405,6 +405,21 @@ impl Callback {
                 );
                 continue;
             }
+            if self.status.render_fault.load(Acquire) && starts_playback(queued.action) {
+                if let Some(frame) = fault_cursor_intent(queued.action) {
+                    self.status.recovery_position.store(frame, Release);
+                    // An earlier applied Seek unfroze the cursor; keep this intent
+                    // from being overwritten by the stopped graph's position.
+                    self.recovery_position_frozen = true;
+                }
+                self.status
+                    .publish_rejected_action(queued.ticket, PlaybackActionRejection::OutputFailed);
+                self.stage_stream_outcome(
+                    queued.ticket,
+                    action_outcomes::Outcome::Rejected(PlaybackActionRejection::OutputFailed),
+                );
+                continue;
+            }
             if !self.status.sampler_edit.permits(queued) {
                 self.status.publish_rejected_action(
                     queued.ticket,
