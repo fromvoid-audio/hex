@@ -5,9 +5,9 @@
 //! inline boundary, with mixed UTF-8, so a storage change cannot drop, reorder or
 //! fail to paint any styled span.
 use gpui::{
-    AppContext, Bounds, Context, Hsla, IntoElement, ParentElement, Render, SharedString,
-    StrikethroughStyle, Styled, TestAppContext, TextRun, UnderlineStyle, VisualTestContext, Window,
-    canvas, div, font, point, px, size,
+    Bounds, Context, Hsla, IntoElement, ParentElement, Render, SharedString, StrikethroughStyle,
+    Styled, TestAppContext, TextRun, UnderlineStyle, VisualTestContext, Window, canvas, div, font,
+    point, px, size,
 };
 
 const RUN_COUNTS: [usize; 6] = [1, 4, 5, 32, 33, 80];
