@@ -2285,6 +2285,27 @@ impl SessionPlayback {
         self.inherit_state(previous)
     }
 
+    /// The live publication handoff: as `try_inherit_state_from`, except an
+    /// unproven mutable chase restarts audio at the cursor instead of
+    /// refusing (Pulse #3770). Allocation-free; nothing is committed before
+    /// the strict planner's refusal.
+    pub fn try_inherit_state_live_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.midi_capture_active()
+            || previous.midi_capture_active()
+            || self.linear_arrangement_export
+            || previous.linear_arrangement_export
+            || self.current_sampler_console
+            || previous.current_sampler_console
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.require_fresh_candidate()?;
+        self.inherit_state_live(previous, None)
+    }
+
     pub(crate) fn inherit_candidate_groups(
         &mut self,
         previous: &mut Self,
@@ -2300,7 +2321,7 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.require_fresh_candidate()?;
-        self.inherit_state_with_groups(previous, Some(groups))
+        self.inherit_state_live(previous, Some(groups))
     }
 
     pub(super) fn require_fresh_candidate(&self) -> Result<(), SessionPlaybackError> {
