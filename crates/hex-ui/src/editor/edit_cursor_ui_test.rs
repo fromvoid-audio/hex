@@ -2405,3 +2405,142 @@ fn transport_split_vector_dispatches_the_edit_cursor_command(cx: &mut TestAppCon
         assert!(matches!(view.last_enqueued_edit, Some(Command::SplitClip { clip: id, frame: position }) if id == clip && position == frame));
     });
 }
+
+#[gpui::test]
+fn selected_clips_hide_the_point_cursor_and_supply_the_earliest_play_start(
+    cx: &mut TestAppContext,
+) {
+    use hex_engine::playback::PlaybackCommand::PlayFrom;
+    cx.update(super::bind_editor_keys);
+    let (project, source, target, audio) = audio_project();
+    let mut model = Editor::new(project, 8).unwrap();
+    model
+        .execute(Command::MoveClip {
+            clip: audio,
+            track: source,
+            start: 60_000,
+        })
+        .unwrap();
+    model
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    let Created::Clip(midi) = model
+        .execute(Command::PlaceMidiClip {
+            track: target,
+            start: BeatTime::ONE,
+            length: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("midi clip");
+    };
+    let midi_frame = model
+        .project()
+        .tempo_map()
+        .beat_to_frame(BeatTime::ONE)
+        .unwrap();
+    assert!(midi_frame < 60_000 && midi_frame != BeatTime::ONE.raw());
+    let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let play = |visual: &mut VisualTestContext| {
+        visual.update(|window, cx| {
+            editor.update(cx, |view, _| {
+                view.last_transport_command = None;
+                window.focus(&view.focus);
+            })
+        });
+        visual.simulate_keystrokes("space");
+        visual.run_until_parked();
+        let cursor_shown = visual.debug_bounds("edit-cursor-layer").is_some();
+        let command = editor.read_with(visual, |view, _| view.last_transport_command);
+        (command, cursor_shown)
+    };
+
+    visual.update(|_, cx| {
+        editor.update(cx, |view, _| {
+            view.edit_cursor = Some(super::edit_cursor::EditCursor {
+                track: source,
+                frame: 73_000,
+                generation: view.project_generation,
+                pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
+                pulse_started: Instant::now(),
+            });
+        })
+    });
+    assert_eq!(
+        play(&mut visual),
+        (Some(PlayFrom(73_000)), true),
+        "no clip selection plays from the visible cursor"
+    );
+
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.select_clip_header(source, audio, Modifiers::default(), window, cx)
+        })
+    });
+    assert_eq!(
+        play(&mut visual),
+        (Some(PlayFrom(60_000)), false),
+        "one selected clip hides the cursor and plays from its start"
+    );
+
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.select_clip_header(target, midi, Modifiers::command(), window, cx)
+        })
+    });
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_clip_ids().len(), 2);
+    });
+    assert_eq!(
+        play(&mut visual),
+        (Some(PlayFrom(midi_frame)), false),
+        "the earliest start wins across tracks, converting MIDI beats through the tempo map"
+    );
+
+    visual.update(|_, cx| {
+        editor.update(cx, |view, _| {
+            view.time_selection = Some(super::time_selection::TimeSelection {
+                anchor_track: source,
+                end_track: source,
+                anchor_frame: 90_000,
+                end_frame: 80_000,
+            });
+        })
+    });
+    assert_eq!(
+        play(&mut visual).0,
+        Some(PlayFrom(80_000)),
+        "a time selection keeps its normalized start over selected clips"
+    );
+
+    visual.update(|_, cx| {
+        editor.update(cx, |view, _| {
+            view.time_selection = None;
+            view.edit_cursor_in_selected_clip = view.selected_clip;
+        })
+    });
+    assert_eq!(
+        play(&mut visual),
+        (Some(PlayFrom(73_000)), true),
+        "a cursor placed inside the selected clip stays visible and keeps its frame"
+    );
+
+    visual.update(|_, cx| {
+        editor.update(cx, |view, _| {
+            view.edit_cursor_in_selected_clip = None;
+            view.selected_clip = None;
+            view.reconcile_clip_selection();
+        })
+    });
+    assert_eq!(
+        play(&mut visual),
+        (Some(PlayFrom(73_000)), true),
+        "clearing the clip selection restores the cursor and its play start"
+    );
+}

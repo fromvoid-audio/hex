@@ -1383,6 +1383,7 @@ mod tests {
         let frame = SpectrumFrame {
             sample_rate_hz: 48_000,
             bins_dbfs: [-36.0; hex_audio::spectrum::SPECTRUM_BANDS],
+            peak_dbfs: [-36.0; hex_audio::spectrum::SPECTRUM_BANDS],
         };
         let pair = PublishedSpectra {
             input: Some(frame.clone()),

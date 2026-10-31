@@ -62,9 +62,11 @@ pub(super) struct GridBand {
     pub(super) alternate: bool,
 }
 
-/// Build alternating background bands spanning four adaptive grid units.
-/// Band indices are anchored to each meter segment's musical origin, so panning
-/// changes the visible subset without moving the pattern.
+/// Build alternating background bands spanning at least four adaptive grid
+/// units, widened to the next musical level (see [`stable_band_span`]) so the
+/// zebra changes only every few zoom steps. Band indices are anchored to each
+/// meter segment's musical origin, so panning changes the visible subset
+/// without moving the pattern.
 #[cfg(test)]
 pub(super) fn adaptive_grid_bands(
     project: &Project,
@@ -121,7 +123,13 @@ pub(super) fn adaptive_grid_bands_for_grid(
         }
         let beat_length = (4_u64 * BeatTime::ONE.raw()) / u64::from(point.meter().denominator());
         let step = resolution.step(point.beat(), beat_length);
-        let Some(band_span) = step.checked_mul(4).filter(|span| *span > 0) else {
+        let Some(band_span) = step
+            .checked_mul(4)
+            .and_then(|span| {
+                stable_band_span(span, beat_length, u64::from(point.meter().numerator()))
+            })
+            .filter(|span| *span > 0)
+        else {
             continue;
         };
         let first = first_visible_beat.raw().max(origin).saturating_sub(origin) / band_span;
@@ -169,6 +177,25 @@ pub(super) fn adaptive_grid_bands_for_grid(
         }
     }
     bands
+}
+
+/// Quantize a zebra band to the smallest musical level that holds `span`:
+/// one beat (the minimum, even at extreme zoom), one bar, then four times the
+/// previous level (4, 16, 64 … bars). In 4/4 each level is four times the
+/// last, so the pattern holds through two adaptive-grid doublings before it
+/// changes, instead of changing at every grid step.
+fn stable_band_span(span: u64, beat_length: u64, beats_per_bar: u64) -> Option<u64> {
+    if beat_length == 0 {
+        return None;
+    }
+    if span <= beat_length {
+        return Some(beat_length);
+    }
+    let mut level = beat_length.checked_mul(beats_per_bar.max(1))?;
+    while level < span {
+        level = level.checked_mul(4)?;
+    }
+    Some(level)
 }
 
 fn bounded_band_indices(first: u64, last: u64, budget: usize) -> impl Iterator<Item = u64> {
@@ -1982,20 +2009,34 @@ mod tests {
             })
             .expect("panning retains at least one shared anchored band");
         assert_eq!(shared.0.alternate, shared.1.alternate);
-        let zoomed = adaptive_grid_bands(
-            &project,
-            Viewport {
-                start: 0,
-                length: 192_000,
-            },
-            640.0,
+    }
+
+    #[test]
+    fn zebra_bands_hold_musical_levels_across_zoom_with_a_one_beat_minimum() {
+        // 120 bpm at 48 kHz: one quarter-note beat is 24 000 frames.
+        let project = Project::new(48_000).expect("project");
+        let beat = 24_000;
+        let width = |length: u64| {
+            let bands = adaptive_grid_bands(&project, Viewport { start: 0, length }, 640.0);
+            assert_eq!(bands.first().map(|band| band.start_frame), Some(0));
+            bands[0].end_frame - bands[0].start_frame
+        };
+        assert_eq!(width(100), beat, "extreme zoom keeps a one-beat minimum");
+        assert_eq!(width(beat / 4), beat);
+        let widths: Vec<_> = (0..12).map(|doubling| width(12_000 << doubling)).collect();
+        let mut changes = 0;
+        for pair in widths.windows(2) {
+            assert!(
+                pair[1] == pair[0] || pair[1] == pair[0] * 4,
+                "levels step beat, bar, 4 bars, 16 bars…: {widths:?}"
+            );
+            changes += usize::from(pair[1] != pair[0]);
+        }
+        assert!(
+            (1..=6).contains(&changes),
+            "eleven zoom doublings change the zebra at most every other step: {widths:?}"
         );
-        assert_eq!(zoomed.first().map(|band| band.start_frame), Some(0));
-        assert_ne!(
-            zoomed.first().map(|band| band.end_frame),
-            first.first().map(|band| band.end_frame),
-            "zoom changes the four adaptive-grid-unit band width"
-        );
+        assert!(widths.iter().all(|w| *w == beat || *w % (4 * beat) == 0));
     }
 
     #[test]

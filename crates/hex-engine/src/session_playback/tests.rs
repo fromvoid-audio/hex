@@ -12773,8 +12773,8 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
         assert_eq!(track_meter.take_track_output(), output_peak);
         assert_eq!(track_meter.take_track_output(), 0.0);
         let peaks = meter.take_peaks();
-        assert_eq!(peaks[0], 0.0);
-        assert!(peaks[1] > 0.0);
+        assert_eq!(peaks.input, 0.0);
+        assert!(peaks.output.iter().any(|peak| *peak > 0.0));
         let mut snapshot = project.snapshot();
         let instrument = snapshot.tracks[0].instrument.as_mut().unwrap();
         instrument.state = if input {
