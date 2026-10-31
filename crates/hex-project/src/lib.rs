@@ -61,6 +61,7 @@ mod clip_alias_edit;
 pub use clip_alias::{
     AliasContentSnapshot, AliasMemberSnapshot, AliasSourceSnapshot, ClipAliasesSnapshot,
 };
+mod clip_fade_split;
 mod clip_fade_trim;
 mod clip_name;
 mod clip_selection_edit;
