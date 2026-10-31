@@ -81,6 +81,11 @@ saved project.
   sample rate equal the saved recording. when several files match, pick one;
   a file that differs is shown as a mismatch and is not used. you can cancel a
   search at any time.
+- **open with missing offline** opens the project now. clips that use a missing
+  file stay in place but play silence, and **missing files: n** shows in the
+  status bar. saving keeps their original locations, so you can restore the
+  files and reopen. a missing sampler or other device sample, or a missing
+  file used by a session clip, still has to be found before the project opens.
 - **open** becomes available once every file is found. the project then opens
   with the new locations as unsaved changes; your project file stays unchanged
   until you save. **cancel** keeps the current project.
