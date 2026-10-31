@@ -246,6 +246,13 @@ original clip's start and length; drag its right edge out to reveal the tail. a 
 exactly its start-to-end interval, retaining earlier state needed for sound inside
 that interval. press **escape** to cancel; one undo restores the entire operation.
 
+while dragging arrangement clips, hold **b** as you release to drop a bounce of them
+at the drop position instead of moving them. the dragged clips stay where they were,
+the bounced clips keep their original lengths with the tail in the file, and one undo
+removes the drop. the drop shows as pending until rendering finishes. let go of **b**
+before releasing to move normally. a bounce drop that would overlap its own source, or
+that lands between tracks, is refused.
+
 stop playback and disable live midi input or audition before bouncing in place. hex keeps the stopped cursor and installs
 a fresh playback state so live release voices cannot duplicate the baked tails.
 undo and redo of an in-place bounce use the same stopped-edit rule.
@@ -834,6 +841,7 @@ the complete edit.
 | settings | command+, |
 | bounce selected material to a new track | b |
 | bounce to a new track and deactivate the sources | command+b |
+| drop a bounce of dragged clips | hold b while releasing a clip drag |
 | arrangement automation view | a / toolbar a control |
 | contextual activation | c / 0 |
 | export | command+shift+e |

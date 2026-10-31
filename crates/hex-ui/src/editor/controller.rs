@@ -2367,6 +2367,11 @@ impl EditorView {
         {
             control.cancel();
         }
+        // A bounce drop's ghost retires with its job's terminal, in the same
+        // receive that installs the adopted (or unchanged, refused) state.
+        if self.bounce_control.is_none() {
+            self.pending_bounce_drop = None;
+        }
         if event.save_complete {
             self.saving_project = false;
         }
