@@ -52,6 +52,7 @@ pub(crate) use plugin_effect::fixture_view as plugin_effect_fixture_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
 mod section_launch;
+mod section_layout_preview;
 mod track_header;
 mod track_header_device_drop;
 mod track_hierarchy_indent;

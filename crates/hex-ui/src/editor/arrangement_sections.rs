@@ -14,7 +14,7 @@
 //! section edits; ordinary lower-body drags use Main's all-track range owner,
 //! including tracks hidden by section focus.
 use super::{
-    EditorMode, EditorView,
+    EditorMode, EditorView, ViewState,
     musical_time::SnapGrid,
     pending_edit::{Disposition, Receipt},
     viewport::Viewport,
@@ -33,6 +33,7 @@ use hex_widgets::{
     RectangleCapture, RectangleEdges, RectanglePart, RectangleSelection, RectangleSelectionPolicy,
     TextInput,
 };
+use std::sync::Arc;
 
 const INNER_EDGE_WIDTH: f32 = 5.0;
 const SHARED_EDGE_RADIUS: f32 = 1.0;
@@ -130,6 +131,9 @@ struct Pending {
     revision: u64,
     command: Command,
     display: Display,
+    // Clip rows for structural edits, built once at submission and retired
+    // with the receipt in the same receive as the canonical installation.
+    layout: Option<Arc<ViewState>>,
     receipt: Receipt,
     selection_intent_epoch: Option<u64>,
 }
@@ -421,6 +425,17 @@ impl EditorView {
         Ok(Some((start, end)))
     }
 
+    /// Arrangement clip rows: the frozen structural layout until its receipt's
+    /// exact terminal (like the marker display), otherwise canonical state.
+    pub(super) fn arrangement_rows_state(&self) -> Option<Arc<ViewState>> {
+        let state = self.state.as_ref()?;
+        self.sections
+            .pending
+            .as_ref()
+            .filter(|p| p.generation == self.project_generation)
+            .and_then(|p| p.layout.clone())
+            .or_else(|| Some(Arc::clone(state)))
+    }
     pub(super) fn section_install_pending(&self) -> bool {
         self.sections.pending.as_ref().is_some_and(|pending| {
             matches!(
@@ -1119,11 +1134,17 @@ impl EditorView {
         generation: u64,
         revision: u64,
     ) {
+        let layout = self
+            .state
+            .as_ref()
+            .filter(|state| state.revision == revision)
+            .and_then(|state| super::section_layout_preview::build(state, &command));
         self.sections.pending = Some(Pending {
             generation,
             revision,
             command: command.clone(),
             display,
+            layout,
             receipt: Receipt::new(generation),
             selection_intent_epoch: self.selection_intent_epoch,
         });
@@ -3479,6 +3500,7 @@ mod tests {
                 revision: g.revision,
                 command,
                 display: g.display,
+                layout: None,
                 receipt,
             });
             v.worker_requests_pending = 2;
@@ -3528,6 +3550,87 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("section-insertion-preview").is_none());
         editor.read_with(cx, |v, _| assert!(v.sections.pending.is_none()));
+    }
+    fn midi_clip_bounds(
+        visual: &mut VisualTestContext,
+        project: &hex_project::Project,
+    ) -> Vec<(u64, gpui::Bounds<gpui::Pixels>)> {
+        project.tracks()[0]
+            .midi_clips()
+            .iter()
+            .map(|clip| {
+                let id = clip.id().value();
+                let selector = Box::leak(format!("midi-clip-visual-{id}").into_boxed_str());
+                (id, visual.debug_bounds(selector).expect("painted clip"))
+            })
+            .collect()
+    }
+    #[gpui::test]
+    fn pending_reorder_draws_final_clips_until_exact_terminal_and_refusal_restores(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let canonical = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
+        let original = midi_clip_bounds(&mut visual, &canonical);
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 2)));
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let terminal = editor.update(cx, |v, _| {
+            assert!(v.sections.pending.as_ref().unwrap().layout.is_some());
+            next(&v.service)
+        });
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        let committed = std::sync::Arc::clone(&terminal.state.project);
+        assert_ne!(*committed, *canonical, "reorder moves clip content");
+        // Delayed ACK: every completed repaint already shows the final clips.
+        let mut released = Vec::new();
+        for _ in 0..3 {
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+            released = midi_clip_bounds(&mut visual, &committed);
+            assert_ne!(released, original);
+        }
+        editor.update(cx, |v, cx| {
+            v.receive(terminal);
+            assert!(v.sections.pending.is_none());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(midi_clip_bounds(&mut visual, &committed), released);
+
+        // A stale stamp previews the move, then its refusal restores canonical clips.
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let renamed = editor.update(cx, |v, _| {
+            v.service
+                .submit(Request::Edit(Command::RenameTrack {
+                    track: committed.tracks()[0].id(),
+                    name: "renamed".into(),
+                }))
+                .unwrap();
+            next(&v.service)
+        });
+        assert!(renamed.error.is_none(), "{:?}", renamed.error);
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let refused = editor.update(cx, |v, _| next(&v.service));
+        assert!(refused.error.is_some(), "stale section stamp");
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        assert_ne!(midi_clip_bounds(&mut visual, &committed), released);
+        editor.update(cx, |v, cx| {
+            // The refusal carries the newer canonical state (the rename).
+            v.receive(refused);
+            assert!(v.sections.pending.is_none());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(midi_clip_bounds(&mut visual, &committed), released);
     }
     #[gpui::test]
     fn section_name_palette_delete_and_text_focus_are_guarded(cx: &mut TestAppContext) {
