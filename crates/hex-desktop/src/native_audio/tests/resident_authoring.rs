@@ -6,7 +6,7 @@ use hex_project::{BeatTime, Command, Created, TrimEdge};
 use hex_session::service::ResidentPublicationAcceptance;
 
 #[test]
-fn active_source_provider_change_applies_while_playing() {
+fn active_source_provider_change_reports_why_and_recovers_after_stop() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     let file = Files::new();
     let mut h = ResidentHarness::with_frame_limit(32_768);
@@ -71,39 +71,65 @@ fn active_source_provider_change_applies_while_playing() {
         device: sampler.id(),
         state: vector,
     }));
-    // Replacing the sounding sampler's source provider while playing used to
-    // refuse with SourceHistoryUnavailable until Stop. It now restarts audio
-    // at the cursor (Pulse #3784): the edit applies and playback continues.
-    (applied, _) = h.applied(applied);
-    let status = h.audio.as_ref().unwrap().status().unwrap();
-    assert!(status.playing.load(Acquire));
-    assert!(status.rejected_revision().is_none());
-    assert_ne!(
-        replaced.state.project.track(track).unwrap().instrument(),
-        Some(&sampler)
-    );
-    assert!(
-        (0..8).any(|_| h.render().iter().flatten().any(|sample| *sample != 0.0)),
-        "the replacement instrument sounds after the restart"
-    );
-    let undone = h.run(Request::Undo);
-    h.applied(applied);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let rejected = loop {
+        h.pump();
+        let audio = h.render();
+        if let Some((revision, reason)) = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .rejected_revision()
+            && revision > applied
+        {
+            assert_eq!(
+                reason,
+                hex_engine::PlaybackHandoffRejection::SourceHistoryUnavailable
+            );
+            assert_eq!(
+                hex_engine::PlaybackHandoffRejection::from_code(reason as u32),
+                Some(reason)
+            );
+            assert!(
+                reason.message().contains("previous audio continues"),
+                "wrong refusal: {reason:?}"
+            );
+            assert!(
+                audio.iter().flatten().any(|sample| *sample != 0.0),
+                "donor became silent"
+            );
+            break revision;
+        }
+        assert!(Instant::now() < deadline, "source change did not refuse");
+        std::thread::yield_now();
+    };
     assert_eq!(
-        undone.state.project.track(track).unwrap().instrument(),
-        Some(&sampler)
-    );
-    assert!(
         h.audio
             .as_ref()
             .unwrap()
             .status()
             .unwrap()
-            .playing
-            .load(Acquire)
+            .applied_revision
+            .load(Acquire),
+        applied
     );
-    assert!(
-        (0..8).any(|_| h.render().iter().flatten().any(|sample| *sample != 0.0)),
-        "the restored sampler sounds after Undo"
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Stop)
+        .unwrap();
+    h.render();
+    let restored = h.run(Request::RestoreStoppedPlayback);
+    assert_eq!(restored.state.project, replaced.state.project);
+    (applied, _) = h.applied(rejected);
+    let undone = h.run(Request::Undo);
+    h.applied(applied);
+    assert_eq!(
+        undone.state.project.track(track).unwrap().instrument(),
+        Some(&sampler)
     );
 }
 

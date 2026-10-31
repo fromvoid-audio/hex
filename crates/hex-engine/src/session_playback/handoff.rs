@@ -4657,8 +4657,7 @@ fn restartable(error: SessionPlaybackError) -> bool {
         SessionPlaybackError::LatencyLayoutChanged
         | SessionPlaybackError::MutableInstrumentChase
         | SessionPlaybackError::MutableInstrumentActive
-        | SessionPlaybackError::MutableInstrumentLoopBoundsActive
-        | SessionPlaybackError::SourceHistoryUnavailable => true,
+        | SessionPlaybackError::MutableInstrumentLoopBoundsActive => true,
         SessionPlaybackError::Arrangement(message) => [
             MIDI_SOURCE_LAYOUT_CHANGED,
             COMPENSATED_TIMING_CHANGED,
