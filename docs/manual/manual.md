@@ -98,7 +98,9 @@ soloed; turning solo off restores its muted state. solo does not change the stor
 track activator setting.
 
 in arrange, select a track or clip before editing it. drag a clip to move it and
-use its edges to adjust its extent. work at a zoom level where the intended edge
+drag its left or right edge within the clip header (the top third) to adjust its
+extent; lower down, the edge belongs to the clip body, fades and the loop corner.
+work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
@@ -361,11 +363,14 @@ keyboard keep their own input.
 in the focused midi editor, **c** or **0** toggles the selected notes. inactive
 notes remain editable and are silent during playback; copies retain their state.
 
-click a curve to add a point, drag a point to change its time or value, and
-release to apply the edit. editing another track's curve keeps the background
-clip selection. **command** gives free beat placement. **escape**
-cancels a held edit; **backspace** removes the selected automation point.
-one undo restores a completed change. background clip edits are unavailable
+click empty space in a lane to add a point, drag a point to change its time or
+value, and release to apply the edit. drag across empty space to draw a
+selection rectangle around several points; hold **shift** to add to the
+selection or **command** to toggle points in and out of it. dragging any
+selected point moves the whole selection, and **backspace** removes every
+selected point. editing another track's curve keeps the background clip
+selection. **command** gives free beat placement while dragging a point.
+**escape** cancels a held edit or rectangle. one undo restores a completed change. background clip edits are unavailable
 while the automation lanes own arrangement focus.
 
 right-click a supported device parameter and choose **show automation** to use
@@ -418,8 +423,9 @@ the audible pitch while the stored transpose value is retained.
 
 ## clip loop resizing
 
-hover the lower part of a clip's right edge to show the circular-arrow cursor, then drag
-to repeat its source. the rest of the edge keeps ordinary trimming. audio and
+hover the bottom corner of a clip's right edge to show the circular-arrow cursor, then drag
+to repeat its source. the lower fade handle sits just inside that corner, and
+ordinary trimming stays in the clip header. audio and
 midi clips use the same gesture; no loop icon is painted inside the clip. looped
 clips have rounded bottom corners. the first repeat boundary uses left/right
 arrows; drag it to change the cycle while keeping the outer duration; directed clips retain only the outer
@@ -709,10 +715,17 @@ in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes
 priority. a small curve beside the crosshair shows the shape before pressing.
-keep the button held to position the new band and hear its effect during playback.
-release to keep the band as one undoable edit. vertical movement changes q for a
-cut or notch, or the gain of a bell. existing
-nodes keep their own selection and drag targets. press **escape** to cancel.
+hold **option** while pressing empty space to keep the button held, position the
+new band and hear its effect during playback; release to keep the band as one
+undoable edit. vertical movement changes q for a cut or notch, or the gain of a
+bell. existing nodes keep their own selection and drag targets. press
+**escape** to cancel.
+
+drag across empty space in the eq graph to select every node inside the
+rectangle; **shift** adds to the selection and **command** toggles nodes.
+dragging a selected node moves the whole selection, keeping each node's
+spacing, and **backspace** or **remove** deletes every selected node with its
+automation. one undo restores either edit.
 
 each visible eq has its own live spectrum, including eqs on return and main
 tracks. selecting another device keeps these spectra running. use **spectrum**
