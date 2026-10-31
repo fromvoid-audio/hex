@@ -1407,7 +1407,7 @@ fn eq_created_node_retains_released_position_through_exact_worker_terminal(
     });
     let start = plot(&mut visual, device, 0.8, 0.8);
     let end = plot(&mut visual, device, 0.72, 0.75);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
     let held = graph.read_with(&visual, |graph, _| {
@@ -1495,7 +1495,7 @@ fn eq_new_node_reaches_worker_playback_preview_while_pointer_is_held(cx: &mut Te
     });
     let start = plot(&mut visual, device, 0.78, 0.8);
     let end = plot(&mut visual, device, 0.66, 0.75);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, OPTION_CREATE);
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     pump_until(&editor, cx, |view| {
         view.resident_device_preview

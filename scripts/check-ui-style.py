@@ -19,7 +19,9 @@ widgets = (
     # Clip name components normalize labels or render a native text-input entity.
     'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     # Waveform body wrappers contain view elements; preview titles normalize text.
-    'clip_waveform_body(', 'self.clip_name_preview_header(',
+    'clip_waveform_body(', 'super::tracks::clip_waveform_body(', 'self.clip_name_preview_header(',
+    # Fitted MIDI note columns paint one text-free canvas rectangle each.
+    'super::midi_thumbnail::note_column(',
     # Timeline boundary shell contains a previously constructed view and paint edges.
     'clip_boundary_shell(',
     # Loop body wrappers contain native views; marker glyphs use theme::text.
