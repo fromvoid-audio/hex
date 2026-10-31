@@ -308,7 +308,9 @@ impl ResponseGraph {
     /// [`ResponseGraphMarqueeEvent`]s; a blank click without movement emits
     /// Create on release when creation is enabled, otherwise a Commit with an
     /// empty set (Replace mode only) so the owner clears its selection. While
-    /// enabled, marquee supersedes creation dragging. Node presses keep their
+    /// enabled, marquee supersedes plain creation dragging: a creating click on
+    /// a creation-drag owner emits Create then a node-zero Release at the press,
+    /// and an Option blank press keeps that owner's held creation stream. Node presses keep their
     /// select/drag stream: owners moving a multi-selection apply the dragged
     /// node's delta to the other selected nodes in one edit.
     pub fn set_marquee_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -521,7 +523,8 @@ impl ResponseGraph {
             {
                 return;
             }
-            if self.marquee_enabled {
+            // Creation-drag owners keep their held create-and-shape on Option.
+            if self.marquee_enabled && !(self.creation_drag_enabled && event.modifiers.alt) {
                 self.begin_marquee(event, position, window, cx);
                 return;
             }
@@ -701,6 +704,15 @@ impl ResponseGraph {
                 position: press.position,
                 modifiers: press.modifiers,
             });
+            if self.creation_drag_enabled {
+                // Close the node-zero stream that creation-drag owners expect.
+                cx.emit(ResponseGraphEvent {
+                    phase: ResponseGraphPhase::Release,
+                    node_id: 0,
+                    position: press.position,
+                    modifiers: press.modifiers,
+                });
+            }
         } else if press.mode == MarqueeMode::Replace && !press.base.is_empty() {
             cx.emit(ResponseGraphMarqueeEvent {
                 phase: ResponseGraphMarqueePhase::Commit,
