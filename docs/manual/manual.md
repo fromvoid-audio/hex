@@ -67,10 +67,28 @@ not convert it. compatibility with every historical alpha file is not implied.
 
 ## missing media
 
-use **file → open and relink media…** when audio files have moved. follow the
-**locate missing media** prompt and select the corresponding original recording.
-check the loaded clips before saving a new copy. do not replace a missing file
-with unrelated audio merely to dismiss the prompt.
+when you open a project whose audio files have moved, hex shows the
+**missing files** panel instead of an error. each row lists the file name, its
+last known location and where the project uses it (clips, scenes, sampler and
+other devices). **file → open and relink media…** opens the same panel for any
+saved project.
+
+- **locate…** picks the file for one row. other missing files from the same old
+  folder are found automatically when they exist at the same relative location
+  under the new folder.
+- **search folders…** searches the folders you choose, including subfolders,
+  for files with the same name. a file is accepted only when its length and
+  sample rate equal the saved recording. when several files match, pick one;
+  a file that differs is shown as a mismatch and is not used. you can cancel a
+  search at any time.
+- **open** becomes available once every file is found. the project then opens
+  with the new locations as unsaved changes; your project file stays unchanged
+  until you save. **cancel** keeps the current project.
+
+hex only reads your sample files; it never moves, renames or deletes them.
+matching uses the file name, length and sample rate, so check the loaded clips
+before saving: two different recordings with the same name, length and rate
+cannot be told apart yet.
 
 ## recover work
 
@@ -235,13 +253,23 @@ a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
 corner and stays visible after release.
 
-with the arrange timeline focused, **command+b** keeps the originals and inserts
+with the arrange timeline focused, **b** keeps the originals and inserts
 bounced audio on a new track below
-each source track. a nonempty time selection takes precedence over selected clips.
+each source track. **command+b** does the same and then deactivates the bounced
+source clips or time selection, exactly as **c** or **0** would; one undo restores
+both the bounce and the sources' activation. a nonempty time selection takes precedence over selected clips.
 each selected track produces one audio clip spanning its selected clips and gaps.
-clip bounces include instrument and effect release tails. a time selection renders
+clip bounces render instrument and effect release tails, but the new clip keeps the
+original clip's start and length; drag its right edge out to reveal the tail. a time selection renders
 exactly its start-to-end interval, retaining earlier state needed for sound inside
 that interval. press **escape** to cancel; one undo restores the entire operation.
+
+while dragging arrangement clips, hold **b** as you release to drop a bounce of them
+at the drop position instead of moving them. the dragged clips stay where they were,
+the bounced clips keep their original lengths with the tail in the file, and one undo
+removes the drop. the drop shows as pending until rendering finishes. let go of **b**
+before releasing to move normally. a bounce drop that would overlap its own source, or
+that lands between tracks, is refused.
 
 stop playback and disable live midi input or audition before bouncing in place. hex keeps the stopped cursor and installs
 a fresh playback state so live release voices cannot duplicate the baked tails.
@@ -252,7 +280,7 @@ and main processing remain live. only the track-header **bounce in place** actio
 removes the track's devices. it covers the entire track, regardless of a smaller
 clip or time selection. for clip and time-selection editing, use **g** to group
 material instead; grouping retains its existing source and processing behavior.
-**b** has no arrange bounce action. routed inputs, verified streaming and nonzero-latency device
+in the focused midi editor, **b** keeps toggling draw mode. routed inputs, verified streaming and nonzero-latency device
 paths currently refuse. clip bounces keep up to 30 seconds of release after the
 selected span. if the tail is still sounding then, hex cuts it at that limit and
 finishes the bounce. a noise floor at or below -80 dbfs peak in both channels
@@ -401,7 +429,7 @@ and are retained when saving, reopening and rendering the project. clicking a
 control without editing it leaves automation running.
 
 supported device controls are utility's parameters, saturator's four parameters,
-and auto pan's amount, rate, phase and waveform. native effects on tracks, main
+auto pan's amount, rate, phase and waveform, and rattle's drive. native effects on tracks, main
 and returns also offer host **input gain** and **output gain** lanes. instrument
 and source-owned effect lanes, other device controls and vst lanes are not yet
 available. recording device movements and shared modulator assignments are not
@@ -717,6 +745,13 @@ distortion, **tone** adjusts its brightness, and **dynamics** restores more of t
 input's level changes as it increases. **dry/wet** blends the original signal with
 the processed sound. the effect is available on track, return and main chains.
 
+rattle is a one-knob drive. at **drive** 0 it passes audio unchanged; raising
+**drive** blends in a progressively harder, grittier and noisier saturation whose
+level is compensated for typical programme, so it gets dirtier rather than much
+louder. rattle processes at twice the sample rate and reports 11 samples of
+latency, which hex compensates. drive changes glide over about 20 ms and can be
+automated. bypass passes audio unchanged while keeping its history warm.
+
 in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes
@@ -822,7 +857,9 @@ the complete edit.
 | selection fades / browser search outside audio selection | command+f |
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
-| bounce selected material to a new track | command+b |
+| bounce selected material to a new track | b |
+| bounce to a new track and deactivate the sources | command+b |
+| drop a bounce of dragged clips | hold b while releasing a clip drag |
 | arrangement automation view | a / toolbar a control |
 | contextual activation | c / 0 |
 | export | command+shift+e |

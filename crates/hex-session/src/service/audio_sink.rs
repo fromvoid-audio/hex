@@ -510,6 +510,9 @@ pub(super) struct WorkerEvents {
     sender: DiagnosticEventSender,
     diagnostics: Arc<super::diagnostics::Hooks>,
     diagnostic: Option<super::diagnostics::DiagnosticRequest>,
+    // Observed-request timing only; absent without an installed observer.
+    diagnostic_started: Option<std::time::Instant>,
+    section_phases: Option<super::diagnostics::SectionPhases>,
     shutdown: Arc<AtomicBool>,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
@@ -519,6 +522,9 @@ pub(super) struct WorkerEvents {
     startup_error: Option<String>,
 }
 impl WorkerEvents {
+    pub(super) fn legacy_reader_limit(&self) -> usize {
+        self.diagnostics.legacy_reader_limit()
+    }
     pub(super) fn begin_diagnostics(
         &mut self,
         queued: &QueuedRequest,
@@ -530,6 +536,8 @@ impl WorkerEvents {
                 .begin_at_worker(&queued.request, queued.diagnostic_origin)
         });
         self.diagnostic = request;
+        self.diagnostic_started = request.map(|_| std::time::Instant::now());
+        self.section_phases = None;
         self.diagnostics.emit(
             request,
             super::diagnostics::DiagnosticStage::WorkerBegin {
@@ -538,6 +546,12 @@ impl WorkerEvents {
             },
             None,
         );
+    }
+    /// Attach section phases to this request's OutcomeReady observation.
+    pub(super) fn record_section_phases(&mut self, phases: super::diagnostics::SectionPhases) {
+        if self.diagnostic.is_some() {
+            self.section_phases = Some(phases);
+        }
     }
     pub(super) fn begin_request(
         &mut self,
@@ -594,6 +608,8 @@ impl WorkerEvents {
             sender,
             diagnostics,
             diagnostic: None,
+            diagnostic_started: None,
+            section_phases: None,
             shutdown,
             audio,
             last_context: None,
@@ -717,7 +733,10 @@ impl WorkerEvents {
             })
             .map(|active| (active.key, active.sequence));
         let diagnostic = self.diagnostic.take();
-        self.diagnostics.outcome(diagnostic, &event, false);
+        let worker = self.diagnostic_started.take().map(|start| start.elapsed());
+        let section = self.section_phases.take();
+        self.diagnostics
+            .outcome(diagnostic, &event, false, worker, section);
         let mut reported_backpressure = false;
         loop {
             if self.shutdown.load(Ordering::Acquire) {

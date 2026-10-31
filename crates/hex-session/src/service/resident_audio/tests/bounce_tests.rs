@@ -188,6 +188,7 @@ fn arrangement_bounce_publication_case(whole_track: bool) {
                 revision: revision + u64::from(stale),
                 target: hex_project::BounceTarget::Track(original.state.project.tracks()[0].id()),
                 in_place: true,
+                adoption: hex_project::BounceAdoption::NewTracks,
                 control: control.clone(),
             })
             .unwrap();
@@ -474,6 +475,7 @@ fn resident_sampler_console_bounce_case(whole_track: bool) {
                 session,
                 hex_project::BounceTarget::Track(track),
                 true,
+                hex_project::BounceAdoption::NewTracks,
                 files.source().parent().unwrap(),
                 &hex_export::ExportControl::default(),
                 context(bounce_revision),

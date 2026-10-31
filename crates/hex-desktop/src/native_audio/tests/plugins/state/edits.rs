@@ -84,7 +84,7 @@ fn graph_publication_ready(h: &mut ResidentHarness, ready: &mpsc::Receiver<()>) 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_repeated_state_history_reclaims_superseded_instances() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for playing in [false, true] {
         repeated_state_history(playing);
     }
@@ -149,7 +149,7 @@ fn repeated_state_history(playing: bool) {
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_state_replacement_preserves_device_and_one_history_edge() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let (mut h, files, saved) = fixture(Start::Saved);
     let original = &saved.project.main_devices()[0];
     let device = original.id();
@@ -250,7 +250,7 @@ fn native_effect_state_replacement_preserves_device_and_one_history_edge() {
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_reused_graph_document_cancellation_respects_admission() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for cancel_before_admission in [true, false] {
         let (mut h, files, before) = fixture(Start::Saved);
         let original = fs::read(files.0.join("effect.hex")).unwrap();
@@ -310,7 +310,7 @@ fn native_effect_reused_graph_document_cancellation_respects_admission() {
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_graph_contention_keeps_exact_insertion_admission_cutoff() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for cancel_before_admission in [true, false] {
         let mut h = ResidentHarness::with_plugins(
             host(),
@@ -361,7 +361,7 @@ fn native_effect_graph_contention_keeps_exact_insertion_admission_cutoff() {
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_pending_state_edit_keeps_fifo_save_and_document_cancellation() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for cancel in [false, true] {
         let (mut h, files, saved) = fixture(Start::Saved);
         let original = &saved.project.main_devices()[0];
@@ -429,7 +429,7 @@ fn native_effect_pending_state_edit_keeps_fifo_save_and_document_cancellation() 
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_contended_admission_retries_or_cancels_the_exact_insertion() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for cancel in [false, true] {
         let mut h = ResidentHarness::with_plugins(
             host(),
@@ -514,7 +514,7 @@ fn native_effect_contended_admission_retries_or_cancels_the_exact_insertion() {
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_failed_state_restore_preserves_last_confirmed_state_and_history() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let (mut h, files, saved) = fixture(Start::Saved);
     let original = &saved.project.main_devices()[0];
     let decoded = hex_plugin_state::decode(original.state()).unwrap();
@@ -561,7 +561,7 @@ fn native_effect_failed_state_restore_preserves_last_confirmed_state_and_history
 #[test]
 #[ignore = "explicit original SDK helper and source receipts required"]
 fn native_effect_track_group_duplicate_has_independent_instances_and_one_undo_redo() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let wave = files.wav(48_000, 2048);
     let bytes = fs::read(&wave).unwrap();

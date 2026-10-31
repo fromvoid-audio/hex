@@ -258,9 +258,12 @@ pub(super) fn command(value: &Command) -> Description {
             describe!("duplicate_tracks"; ["tracks_count" => tracks.ids().len(), "tracks_first_ids" => FirstIds(tracks.ids()), "without_clips" => without_clips]; omitted="")
         }
         Command::CommitArrangementBounce {
-            in_place, files, ..
+            in_place,
+            adoption,
+            files,
+            ..
         } => {
-            describe!("commit_arrangement_bounce"; ["in_place" => in_place, "files_count" => files.len()]; omitted="target")
+            describe!("commit_arrangement_bounce"; ["in_place" => in_place, "adoption" => adoption, "files_count" => files.len()]; omitted="target")
         }
         Command::SetClipActive { clip, active } => {
             describe!("set_clip_active"; ["clip" => clip.value(), "active" => active]; omitted="")
@@ -1530,9 +1533,10 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             in_place,
+            adoption,
             ..
         } => {
-            describe!("bounce_arrangement"; ["project_generation" => project_generation, "revision" => revision, "in_place" => in_place]; omitted="target,control")
+            describe!("bounce_arrangement"; ["project_generation" => project_generation, "revision" => revision, "in_place" => in_place, "adoption" => adoption]; omitted="target,control")
         }
         Request::ConvertClip {
             project_generation,
