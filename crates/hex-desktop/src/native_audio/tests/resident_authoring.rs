@@ -93,7 +93,7 @@ fn active_source_provider_change_reports_why_and_recovers_after_stop() {
                 Some(reason)
             );
             assert!(
-                reason.message().contains("stop transport"),
+                reason.message().contains("previous audio continues"),
                 "wrong refusal: {reason:?}"
             );
             assert!(
