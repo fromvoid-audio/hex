@@ -9,7 +9,9 @@
 //! active Arrangement clips and every Console cell on one ordinary root track,
 //! independent of selection. Inactive Arrangement clips, hierarchy and external
 //! routing refuse; Console activation is retained on independently rendered cells.
-//! Clip and whole-track bakes retain the bounded release-tail policy.
+//! Clip and whole-track bakes retain the bounded release-tail policy. New-track
+//! clip bounces keep the selected span as the clip view; the tail stays in the
+//! rendered file beyond the view end.
 use crate::{ClipId, Command, Created, Invalid, Project, SessionCellContent, TimeRange, TrackId};
 use std::{collections::BTreeSet, path::PathBuf};
 
@@ -407,6 +409,18 @@ pub(crate) fn commit(
         else {
             return Err(Invalid("bounce output was not adopted"));
         };
+        // A new-track clip bounce keeps the selected span; the rendered release
+        // tail stays in the file beyond the view end, revealed by extending it.
+        let span = item.end - item.start;
+        if !in_place && matches!(target, BounceTarget::Clips(_)) && file.frames > span {
+            project.apply(Command::TrimClip {
+                clip,
+                start: file.start,
+                duration: span,
+                source_offset: 0,
+                source_length: span,
+            })?;
+        }
         first.get_or_insert(clip);
         last = Some(clip);
     }
@@ -611,7 +625,22 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(editor.project().tracks()[0], original.tracks()[0]);
-        assert_eq!(editor.project().tracks()[1].clips()[0].duration(), 150);
+        // The view keeps the selected span; the 50-frame tail stays in the file.
+        let bounced = &editor.project().tracks()[1].clips()[0];
+        assert_eq!((bounced.duration(), bounced.source_length()), (100, 100));
+        let asset = editor.project().asset(bounced.asset()).unwrap();
+        assert_eq!(asset.playback_frames(), 150);
+        let bounced = bounced.id();
+        editor
+            .execute(Command::TrimClipEdge {
+                clip: bounced,
+                edge: crate::TrimEdge::Right,
+                frame: 150,
+            })
+            .unwrap();
+        let extended = editor.project().clip(bounced).unwrap();
+        assert_eq!((extended.duration(), extended.source_length()), (150, 150));
+        assert!(editor.undo());
         assert!(editor.undo());
         assert_eq!(
             editor.project().snapshot().tracks,
