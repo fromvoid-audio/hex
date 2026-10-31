@@ -71,6 +71,10 @@ struct Display {
     // Owned gesture feedback, frozen with the exact released display. Ordinary
     // hover resumes elsewhere without repainting this receipt's final fill.
     pointer_hover: Option<BeatTime>,
+    // Sections under the held edge or body keep one hovered fill for the whole
+    // gesture and its receipt; a snapped edge crossing the pointer must not
+    // toggle it.
+    held: [Option<SectionId>; 2],
 }
 impl Display {
     fn pointer_hover_at(
@@ -111,6 +115,20 @@ enum Mode {
     },
     ContentStart(SectionId),
     ContentEnd(SectionId),
+}
+impl Mode {
+    fn held(self) -> [Option<SectionId>; 2] {
+        match self {
+            Mode::Paint => [None; 2],
+            Mode::Shared { left, right, .. } => [Some(left), Some(right)],
+            Mode::Start(id)
+            | Mode::End(id)
+            | Mode::Move(id)
+            | Mode::Reorder(id)
+            | Mode::ContentStart(id)
+            | Mode::ContentEnd(id) => [Some(id), None],
+        }
+    }
 }
 struct Gesture {
     launch_eligible: bool,
@@ -834,6 +852,7 @@ impl EditorView {
                 .collect(),
             tempo: state.project.tempo_map().clone(),
             pointer_hover: None,
+            held: [None; 2],
         };
         let part = match edge {
             Some(SectionEdge::Shared(..)) => RectanglePart::Seam,
@@ -935,6 +954,7 @@ impl EditorView {
                 .collect(),
             tempo: state.project.tempo_map().clone(),
             pointer_hover: None,
+            held: [None; 2],
         };
         match g.mode {
             Mode::Reorder(id) => {
@@ -1150,6 +1170,7 @@ impl EditorView {
         g.display.pointer_hover = g
             .display
             .pointer_hover_at(g.viewport, g.layout, g.last_pointer);
+        g.display.held = g.mode.held();
         self.sections.gesture = Some(g);
         true
     }
@@ -1623,6 +1644,7 @@ impl EditorView {
                 .collect(),
             tempo: state.project.tempo_map().clone(),
             pointer_hover: None,
+            held: [None; 2],
         };
         match &command {
             Command::RenameArrangementSection { section, name } => {
@@ -1826,6 +1848,7 @@ impl EditorView {
                     .collect(),
                 tempo: state.project.tempo_map().clone(),
                 pointer_hover: None,
+                held: [None; 2],
             };
             &canonical
         };
@@ -1869,9 +1892,10 @@ impl EditorView {
                     && m.id.is_some_and(|id| {
                         self.sections.selection.contains(&id) || self.sections.selected == Some(id)
                     }));
-            let owned_hover = display
-                .pointer_hover
-                .is_some_and(|beat| m.start <= beat && beat <= m.end);
+            let owned_hover = m.id.is_some_and(|id| display.held.contains(&Some(id)))
+                || display
+                    .pointer_hover
+                    .is_some_and(|beat| m.start <= beat && beat <= m.end);
             let colors = theme::section_colors(m.color, selected, owned_hover);
             let hover = theme::section_colors(m.color, selected, true);
             let border = colors.2;
@@ -5211,5 +5235,112 @@ mod tests {
             assert!(v.sections.gesture.is_none());
         });
         settle(&editor, &mut visual);
+    }
+    #[gpui::test]
+    fn resize_keeps_one_selected_surface_every_frame_through_delayed_ack(cx: &mut TestAppContext) {
+        let platform = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        // (touching seam, modifiers, release quarter)
+        for (seam, modifiers, end) in [
+            (false, Modifiers::default(), 7),
+            (false, platform, 7),
+            (false, alt, 7),
+            (true, Modifiers::default(), 6),
+            (true, platform, 6),
+        ] {
+            let (handle, editor, ids) = if seam {
+                touching_fixture(cx)
+            } else {
+                fixture(cx)
+            };
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+            let edge = bounds(&mut visual, 0);
+            let down = point(
+                if seam {
+                    edge.right()
+                } else {
+                    edge.right() - px(1.0)
+                },
+                edge.origin.y + px(12.0),
+            );
+            let to = editor.read_with(cx, |v, _| position(v, end));
+            visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+            let mut frames = Vec::new();
+            // Sub-grid steps cross snap points, so the pointer alternates
+            // between inside and outside the snapped preview edge.
+            for step in 1..=8 {
+                let x = down.x + (to.x - down.x) * (step as f32 / 8.0);
+                visual.simulate_mouse_move(point(x, down.y), MouseButton::Left, modifiers);
+                visual.run_until_parked();
+                assert!(
+                    visual
+                        .debug_bounds("arrangement-section-selected-trailing-0")
+                        .is_some(),
+                    "seam {seam} {modifiers:?} step {step}: section lost its selected edge"
+                );
+                editor.read_with(cx, |v, _| {
+                    assert_eq!(v.sections.selected, Some(ids[0]));
+                    assert!(v.sections.gesture.is_some());
+                });
+                frames.push((
+                    visual.rendered_background("arrangement-section-0"),
+                    visual.rendered_background("arrangement-section-header-0"),
+                ));
+            }
+            visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
+            let event = editor.update(cx, |v, _| next(&v.service));
+            assert!(event.error.is_none(), "{:?}", event.error);
+            // Delayed acknowledgement: completed repaints keep the frozen look.
+            for _ in 0..3 {
+                visual.update(|window, _| window.refresh());
+                visual.run_until_parked();
+                assert!(
+                    visual
+                        .debug_bounds("arrangement-section-selected-trailing-0")
+                        .is_some()
+                );
+                frames.push((
+                    visual.rendered_background("arrangement-section-0"),
+                    visual.rendered_background("arrangement-section-header-0"),
+                ));
+            }
+            assert!(frames[0].0.is_some() && frames[0].1.is_some());
+            for (index, frame) in frames.iter().enumerate() {
+                assert_eq!(
+                    frame, &frames[0],
+                    "seam {seam} {modifiers:?} frame {index}: selected surface changed"
+                );
+            }
+            editor.update(cx, |v, cx| {
+                v.receive(event);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds("arrangement-section-selected-trailing-0")
+                    .is_some()
+            );
+            editor.read_with(cx, |v, _| {
+                assert_eq!(v.sections.selected, Some(ids[0]));
+                assert_eq!(
+                    v.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .arrangement_section(ids[0])
+                        .unwrap()
+                        .end(),
+                    BeatTime::from_quarters(end).unwrap()
+                );
+            });
+        }
     }
 }
