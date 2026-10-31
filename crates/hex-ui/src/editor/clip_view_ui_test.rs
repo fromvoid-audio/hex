@@ -1103,7 +1103,15 @@ fn explicit_main_focus_keeps_deselected_audio_and_midi_detail_empty(cx: &mut Tes
             visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
-                assert!(v.detail_clip_id().is_none());
+                assert!(
+                    v.selected_clip.is_none(),
+                    "a range press is not a clip selection"
+                );
+                assert_eq!(
+                    v.detail_clip_id(),
+                    Some(clip),
+                    "the pressed clip stays the clip editor subject"
+                );
             });
             let main = visual.debug_bounds("main-track-header").unwrap();
             visual.simulate_click(
