@@ -304,6 +304,14 @@ fn f_exposes_editable_handles_for_a_split_whose_retained_fades_are_outside_the_c
             fade_out: 1000,
         })
         .unwrap();
+    // One-shot cuts reanchor fades into each part; a looped clip still keeps
+    // the retained split domain, as do legacy saved splits.
+    canonical
+        .execute(Command::SetClipLooping {
+            clip,
+            looping: true,
+        })
+        .unwrap();
     let hex_project::Created::Clip(middle) = canonical
         .execute(Command::SplitClip {
             clip,
