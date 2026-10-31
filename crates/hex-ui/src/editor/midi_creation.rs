@@ -1,7 +1,7 @@
 //! Normal-mode held note creation. Preview stays view-owned until one canonical
 //! note edit on release, including source growth if needed. Existing canvas
 //! identity/geometry and grid rules bound the gesture; the dragged end is free
-//! unless cmd/control snaps it (`midi_drag::creation_end_grid`). Released display
+//! unless cmd/control snaps it (`midi_drag::note_end_grid`). Released display
 //! transfers to midi_pending_drag's exact ordinary receipt; it never retains held
 //! input.
 //! The Window left-button lease owns the second double-click press only.
@@ -306,7 +306,7 @@ impl EditorView {
         };
         let start = creation.preview.start.raw();
         let remaining = length.saturating_sub(start);
-        let end_grid = midi_drag::creation_end_grid(current.grid, current.snap_modifier);
+        let end_grid = midi_drag::note_end_grid(current.grid, current.snap_modifier);
         let minimum = end_grid
             .minimum_gate()
             .max(creation.minimum_gate)
