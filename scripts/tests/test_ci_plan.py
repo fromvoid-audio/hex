@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -820,6 +821,42 @@ class ScopeTests(unittest.TestCase):
             self.assertEqual(result["status"], "passed")
 
 
+class TestShardTests(unittest.TestCase):
+    shards = module("test_shards_fixture", "test_shards.py")
+
+    def test_partition_is_disjoint_complete_and_deterministic(self):
+        names = [f"t{i:02d}" for i in range(11)]
+        groups = self.shards.partition(names, 4)
+        self.assertEqual(sorted(n for g in groups for n in g), names)
+        self.assertEqual(len(groups), 4)
+        self.assertEqual(groups, self.shards.partition(names, 4))
+        self.assertEqual(self.shards.partition(["only"], 4), [["only"]])
+        for argv in (["--shards", "0", "--", "cargo", "test"], ["--shards", "2", "--", "cargo", "build"],
+                     ["--shards", "2", "--", "cargo", "test", "--", "--ignored"]):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit):
+                self.shards.main(argv)
+
+    def test_real_cargo_shards_run_every_test_once_and_fail_on_any_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir()
+            (root / "Cargo.toml").write_text('[package]\nname = "shardfixture"\nversion = "0.1.0"\nedition = "2021"\n')
+            tests = "".join(f"#[test] fn case_{i}() {{ assert!(std::path::Path::new(\"Cargo.toml\").exists()); }}\n"
+                            for i in range(5))
+            (root / "src/lib.rs").write_text("#[cfg(test)] mod tests {\n" + tests + "}\n")
+            env = {**os.environ, "CARGO_TARGET_DIR": str(root / "target")}
+            command = [sys.executable, str(SCRIPTS / "test_shards.py"), "--shards", "3", "--",
+                       "cargo", "test", "--offline"]
+            run = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            passed = [int(n) for n in re.findall(r"test result: ok\. (\d+) passed;", run.stdout)]
+            self.assertEqual((len(passed), sum(passed)), (3, 5))  # cwd is the package directory
+            (root / "src/lib.rs").write_text("#[cfg(test)] mod tests {\n" + tests + "#[test] fn broken() { panic!() }\n}\n")
+            failed = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(failed.returncode, 1)
+            self.assertIn("broken", failed.stdout)
+
+
 class TestOnlyScopeTests(unittest.TestCase):
     FILES = {
         "crates/core/src/lib.rs": ('mod prod;\n#[cfg(test)]\nmod a_tests;\n'
@@ -915,7 +952,8 @@ class SingleRunFeatureTests(unittest.TestCase):
                                     and s.argv[1] == "test" for s in steps.values()))
         # The counting allocator is not additive: hex-desktop keeps both runs.
         self.assertIn("hex-desktop", default)
-        self.assertIn("audio-allocation-probe", steps)
+        self.assertIn("desktop-allocation-probe", steps)
+        self.assertTrue(steps["desktop-allocation-probe"].requires_tests)
         self.assertFalse(steps["single-run-doctests"].requires_tests)
         self.assertTrue(steps["affected-tests"].requires_tests)
 

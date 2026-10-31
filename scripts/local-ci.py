@@ -142,7 +142,11 @@ FULL_STEPS = (
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
     Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--locked")),
     Step("device-gallery-tests", ("cargo", "test", "-p", "hex-ui", "--example", "layout_review", "--features", "ui-test-support", "--locked")),
-    Step("audio-allocation-probe", ("cargo", "test", "-p", "hex-audio", "-p", "hex-desktop", "-p", "hex-plugin-host", "--features", "allocation-probe", "--locked")),
+    Step("audio-allocation-probe", ("cargo", "test", "-p", "hex-audio", "-p", "hex-plugin-host", "--features", "allocation-probe", "--locked")),
+    # Native fixtures serialize on hex-desktop's process-wide output lease;
+    # disjoint test processes each own one, so their chains run concurrently.
+    Step("desktop-allocation-probe", ("python3", "scripts/test_shards.py", "--shards", "4", "--",
+                                      "cargo", "test", "-p", "hex-desktop", "--features", "allocation-probe", "--locked")),
     Step("stream-allocation-probe", ("cargo", "test", "-p", "hex-stream", "--features", "allocation-probe", "--locked")),
     Step("workspace-clippy", ("cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings")),
     Step("prepared-export-instrument-clippy", ("cargo", "clippy", "-p", "hex-export", "--all-targets", "--features", "instrument-test-support", "--locked", "--", "-D", "warnings")),
@@ -151,6 +155,11 @@ FULL_STEPS = (
     Step("stream-feature-clippy", ("cargo", "clippy", "-p", "hex-stream", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
     Step("desktop-build", ("cargo", "build", "-p", "hex-desktop", "--locked")),
 )
+
+
+def runs_rust_tests(argv: tuple[str, ...]) -> bool:
+    """Plain `cargo test` or the same command run through the test sharder."""
+    return argv[:2] == ("cargo", "test") or argv[:2] == ("python3", "scripts/test_shards.py")
 
 
 def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
@@ -261,7 +270,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
             continue
         owners = [step.argv[i + 1] for i, arg in enumerate(step.argv) if arg == "-p"]
         selected = [p for p in owners if p in affected]
-        if not selected or boundary["kind"] == "compressor" and step.argv[1] == "test":
+        if not selected or boundary["kind"] == "compressor" and runs_rust_tests(step.argv):
             continue
         argv = list(step.argv)
         for owner in set(owners) - set(selected):
@@ -341,7 +350,7 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                       ci_plan.python_tests.argv(plan["python_tests"])
                       if s.step_id == "runner-tests" and "python_tests" in plan else s.argv,
                       s.uses_cargo_target,
-                      (s.argv[:2] == ("cargo", "test") and "--doc" not in s.argv)
+                      (runs_rust_tests(s.argv) and "--doc" not in s.argv)
                       or s.step_id == "runner-tests") for s in steps)
 
 
@@ -401,7 +410,7 @@ def carry_decisions(steps: tuple[Step, ...], evidence: dict, basis: dict,
                                   "reason": "; ".join(selection["reasons"])})
             else:
                 decisions.append({"action": "run", "reason": "; ".join(selection["reasons"])})
-        elif step.argv[:1] != ("cargo",) or step.argv[1:2] == ("fmt",):
+        elif (step.argv[:1] != ("cargo",) or step.argv[1:2] == ("fmt",)) and not runs_rust_tests(step.argv):
             decisions.append({"action": "run", "reason": "guard steps always rerun"})
         else:
             packages = [step.argv[i + 1] for i, arg in enumerate(step.argv[:-1]) if arg == "-p"]

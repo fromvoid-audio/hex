@@ -26,6 +26,7 @@ TOOLING = {
     "launch", "scripts/launch-restart.py", "scripts/hex-test-build.py",
     "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
     "scripts/ci_plan.py", "scripts/local-ci.py", "scripts/python_test_plan.py", "scripts/ci_checkpoint.py", "scripts/ci_target_storage.py",
+    "scripts/test_shards.py",
 }
 
 
