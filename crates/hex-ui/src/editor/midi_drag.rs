@@ -70,6 +70,17 @@ pub(super) const fn effective_grid(grid: MidiGrid, invert_snap: bool) -> MidiGri
     }
 }
 
+/// A held creation's dragged end is free by default; the snap modifier
+/// temporarily snaps it to the grid (1/16 when the grid is off). Creation
+/// starts and existing-note resizes keep `effective_grid`'s inversion.
+pub(super) const fn creation_end_grid(grid: MidiGrid, snap_modifier: bool) -> MidiGrid {
+    match (snap_modifier, grid) {
+        (false, _) => MidiGrid::Off,
+        (true, MidiGrid::Off) => MidiGrid::Sixteenth,
+        (true, grid) => grid,
+    }
+}
+
 pub(super) const fn default_gate_raw(remaining: u64, grid: MidiGrid) -> u64 {
     let desired = match grid.step_raw() {
         Some(step) => step,

@@ -1040,7 +1040,7 @@ fn render_partitioned_shared_oracle(
 }
 
 #[test]
-fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_free()
+fn unchanged_mutable_arrangement_handoff_and_chase_restart_are_callback_allocation_free()
 -> Result<(), Box<dyn Error>> {
     let definition = MutableFixtureDefinition;
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
@@ -1139,8 +1139,8 @@ fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_fre
     assert!(retirement.bytes_current < 0);
 
     // A source edit changes the exact descriptor while the old occurrence is
-    // still held. The callback rejects the candidate and continues the old
-    // graph without allocation or a signed-net allocation change.
+    // still held. The callback cannot prove the chase, so it restarts audio at
+    // the cursor (Pulse #3770) instead of rejecting, still without allocation.
     editor.execute(Command::UpdateMidiNote {
         note,
         start: BeatTime::ZERO,
@@ -1161,16 +1161,17 @@ fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_fre
         .publish(changed_playback)
         .map_err(|_| "changed-source candidate publication failed")?;
     measured_block(&mut callback, &mut output);
+    measured_block(&mut callback, &mut output);
     assert!(output.iter().flatten().any(|sample| *sample > 0.0));
-    assert!(control.status.rejected_revision().is_some());
-    let rejected = measure(|| reclaimed = control.reclaim());
+    assert!(control.status.rejected_revision().is_none());
+    let restarted = measure(|| reclaimed = control.reclaim());
     assert!(
         reclaimed > 0,
-        "rejected candidate returns for control retirement"
+        "the replaced graph returns for control retirement"
     );
-    assert_eq!(rejected.count_total, 0);
-    assert!(rejected.count_current < 0);
-    assert!(rejected.bytes_current < 0);
+    assert_eq!(restarted.count_total, 0);
+    assert!(restarted.count_current < 0);
+    assert!(restarted.bytes_current < 0);
 
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut output);

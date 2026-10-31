@@ -279,12 +279,38 @@ impl SessionPlayback {
         self.arrangement_loop_pass = 0;
         self.anchor = None;
         self.interactive_start_frame = None;
+        self.historical_floor = None;
+        self.route_historical_floors.fill(None);
+        self.restart_audio_history();
+        for route in &mut self.routes {
+            route.pending = None;
+            if let RouteOwner::Session { clip, .. } = route.owner {
+                route.owner = RouteOwner::Session {
+                    clip,
+                    origin: SessionMidiOrigin::launch(beat),
+                };
+            }
+            if let RouteOwner::SessionAudio { clip, .. } = route.owner {
+                route.owner = RouteOwner::SessionAudio {
+                    clip,
+                    launch_frame: frame,
+                };
+            }
+        }
+        if changed {
+            self.advance_route_state_generation();
+        }
+    }
+
+    /// The seek law's audio cut without moving the transport: analytic
+    /// releases/continuations, device chains, return/effect tails, the
+    /// compensation epoch and mutable voices start empty. Allocation-free:
+    /// existing owners are cleared or reset in place.
+    pub(super) fn restart_audio_history(&mut self) {
         self.analytic_continuations.fill(None);
         self.analytic_continuation_scratch.fill(None);
         self.releases.clear();
         self.suppressions.clear();
-        self.historical_floor = None;
-        self.route_historical_floors.fill(None);
         self.release_order = 0;
         self.main_chain.reset();
         for chain in &mut self.device_chains {
@@ -307,24 +333,6 @@ impl SessionPlayback {
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
             tail.runtime.reset();
-        }
-        for route in &mut self.routes {
-            route.pending = None;
-            if let RouteOwner::Session { clip, .. } = route.owner {
-                route.owner = RouteOwner::Session {
-                    clip,
-                    origin: SessionMidiOrigin::launch(beat),
-                };
-            }
-            if let RouteOwner::SessionAudio { clip, .. } = route.owner {
-                route.owner = RouteOwner::SessionAudio {
-                    clip,
-                    launch_frame: frame,
-                };
-            }
-        }
-        if changed {
-            self.advance_route_state_generation();
         }
     }
 
