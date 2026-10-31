@@ -1067,3 +1067,106 @@ fn sample_zoomed_short_curves_follow_subframe_pointer_motion(cx: &mut TestAppCon
         assert_eq!(model.project().clip(clip).unwrap().retained_fade(), preview);
     }
 }
+
+#[gpui::test]
+fn hover_reveals_only_that_clips_handles_and_held_f_reveals_every_clip(cx: &mut TestAppContext) {
+    let (project, _, _, first) = super::super::clip_drag_ui_test::audio_project();
+    let mut canonical = hex_project::Editor::new(project, 16).unwrap();
+    let hex_project::Created::Clip(second) = canonical
+        .execute(Command::SplitClip {
+            clip: first,
+            frame: 48_000,
+        })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    let (handle, _) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        canonical.project().clone(),
+        Arc::default(),
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let shown = |visual: &mut VisualTestContext, clip: ClipId| {
+        visual.run_until_parked();
+        visual
+            .debug_bounds(Box::leak(
+                format!("fade-in-top-{}", clip.value()).into_boxed_str(),
+            ))
+            .is_some()
+    };
+    assert!(!shown(&mut visual, first) && !shown(&mut visual, second));
+    hover_clip(&mut visual, first);
+    assert!(
+        shown(&mut visual, first) && !shown(&mut visual, second),
+        "hover reveals the fade-free hovered clip only"
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("fade-out-bottom-{}", first.value()).into_boxed_str(),
+            ))
+            .is_none(),
+        "fade-free lower corners stay with trim and loop gestures on hover"
+    );
+    hover_clip(&mut visual, second);
+    assert!(!shown(&mut visual, first) && shown(&mut visual, second));
+    visual.simulate_mouse_move(point(px(5.0), px(5.0)), None, Modifiers::default());
+    assert!(!shown(&mut visual, first) && !shown(&mut visual, second));
+    key(&mut visual, true, "f");
+    assert!(shown(&mut visual, first) && shown(&mut visual, second));
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("fade-out-bottom-{}", second.value()).into_boxed_str(),
+            ))
+            .is_some()
+    );
+    key(&mut visual, false, "f");
+    assert!(!shown(&mut visual, first) && !shown(&mut visual, second));
+}
+
+#[gpui::test]
+fn hover_revealed_handle_on_a_fade_free_clip_drags_one_fade_without_moving_clip(
+    cx: &mut TestAppContext,
+) {
+    let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let original = project.clip(clip).unwrap().clone();
+    assert!(original.retained_fade().is_neutral());
+    let (handle, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    hover_clip(&mut visual, clip);
+    let target = visual
+        .debug_bounds(Box::leak(
+            format!("fade-out-top-{}", clip.value()).into_boxed_str(),
+        ))
+        .expect("hover reveals the fade-free clip's handle")
+        .center();
+    visual.simulate_mouse_move(target, None, Modifiers::default());
+    visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+    let to = point(target.x - px(30.0), target.y);
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.active_fade_drag.as_ref().unwrap().preview.fade_out() > 0);
+        assert!(view.active_clip_drag.is_none() && view.active_trim_drag.is_none());
+    });
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    let edit = editor.read_with(&visual, |view, _| {
+        assert!(view.active_fade_drag.is_none());
+        view.last_enqueued_edit.clone().expect("one fade edit")
+    });
+    let mut canonical = hex_project::Editor::new(
+        editor.read_with(&visual, |v, _| (*v.state.as_ref().unwrap().project).clone()),
+        8,
+    )
+    .unwrap();
+    canonical.execute(edit).unwrap();
+    let changed = canonical.project().clip(clip).unwrap();
+    assert_eq!(
+        (changed.start(), changed.duration()),
+        (original.start(), original.duration())
+    );
+    assert!(changed.fade().fade_out() > 0 && changed.fade().fade_in() == 0);
+}
