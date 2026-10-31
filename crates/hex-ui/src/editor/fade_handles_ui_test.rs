@@ -752,8 +752,12 @@ fn two_axis_curve_drags_change_pcm_keep_endpoints_and_bound_vertical_travel(
                         Box::leak(format!("{}-{}", h.name(), clip.value()).into_boxed_str());
                     f32::from(visual.debug_bounds(name).unwrap().center().x)
                 });
+                // The lower fade-out handle sits just inside the loop corner,
+                // so the diamond's right edge is that loop width further out.
                 let edge = if dx < 0.0 {
                     positions[0].min(positions[1])
+                } else if out {
+                    positions[0].max(positions[1]) + super::super::trim::loop_handles::WIDTH
                 } else {
                     positions[0].max(positions[1])
                 };
