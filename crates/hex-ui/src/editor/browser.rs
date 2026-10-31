@@ -1667,7 +1667,7 @@ impl EditorView {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn test_replace_sample_catalog(
         &mut self,
         catalog: hex_library::catalog::SampleCatalog,
