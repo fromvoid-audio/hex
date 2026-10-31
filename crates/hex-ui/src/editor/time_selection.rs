@@ -1316,7 +1316,7 @@ impl EditorView {
                     div()
                         .absolute()
                         .inset_0()
-                        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                        .bg(rgb(theme::time_selection_fill()))
                         .opacity(theme::TIME_SELECTION_OPACITY)
                         .child(
                             div()
@@ -1404,7 +1404,7 @@ impl EditorView {
                     div()
                         .absolute()
                         .inset_0()
-                        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                        .bg(rgb(theme::time_selection_fill()))
                         .opacity(theme::TIME_SELECTION_OPACITY)
                         .child(
                             div()
@@ -1456,8 +1456,8 @@ impl EditorView {
                 .bottom_0()
                 .left(relative(left as f32))
                 .w(relative(width as f32))
-                .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(0.12)
+                .bg(rgb(theme::time_selection_fill()))
+                .opacity(theme::TIME_SELECTION_PREVIEW_OPACITY)
                 .cursor(if preview.copy_modifier {
                     CursorStyle::DragCopy
                 } else {
