@@ -1065,7 +1065,13 @@ impl EditorView {
                         (event.save_complete && event.error.is_none() && !event.state.unsaved)
                             .then(|| event.state.document_path.clone())
                             .flatten();
-                    if let Some(path) = self.receive(event) {
+                    let install = crate::diagnostics::actions_enabled(cx)
+                        .then(|| (event.state.revision, std::time::Instant::now()));
+                    let opened = self.receive(event);
+                    if let Some((revision, started)) = install {
+                        crate::diagnostics::record_ui_install(cx, revision, started.elapsed());
+                    }
+                    if let Some(path) = opened {
                         self.record_opened_project(path.clone(), cx);
                         self.record_project_directory(path, cx);
                     } else if let Some(path) = saved_project_path {

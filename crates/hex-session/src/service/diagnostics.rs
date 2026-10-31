@@ -21,6 +21,7 @@ use std::{
         Arc, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 const MAX_DETAILS_BYTES: usize = 1024;
@@ -122,6 +123,21 @@ impl Drop for DiagnosticActionScope {
     fn drop(&mut self) {
         ACTIVE_UI.with(|active| active.set(self.previous));
     }
+}
+
+/// Control-worker phases of one structural section edit or its history step,
+/// timed with `Instant` on the worker only (never inside the audio callback).
+/// `fence` is the callback-observed `stopped_arrangement` lease, `edit` the
+/// canonical apply/commit around preparation, `prepare` the resident
+/// `prepare_transition`, `publish` the handoff to the native sink and `finish`
+/// the sink's edit terminal. Reported on `OutcomeReady` as `section_*_us`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SectionPhases {
+    pub fence: Duration,
+    pub edit: Duration,
+    pub prepare: Duration,
+    pub publish: Duration,
+    pub finish: Duration,
 }
 
 pub(super) struct Hooks {
@@ -233,7 +249,16 @@ impl Hooks {
             details_truncated,
         });
     }
-    pub fn outcome(&self, request: Option<DiagnosticRequest>, event: &Event, received: bool) {
+    /// `worker` (WorkerBegin to OutcomeReady) and `section` phases are worker
+    /// observations; client receipt reports neither.
+    pub fn outcome(
+        &self,
+        request: Option<DiagnosticRequest>,
+        event: &Event,
+        received: bool,
+        worker: Option<Duration>,
+        section: Option<SectionPhases>,
+    ) {
         if self.observer.get().is_none() {
             return;
         }
@@ -258,6 +283,20 @@ impl Hooks {
             }
         };
         let mut description = Description::new("outcome");
+        if let Some(worker) = worker {
+            description.field("worker_us", format_args!("{}", worker.as_micros()));
+        }
+        if let Some(phases) = section {
+            for (name, value) in [
+                ("section_fence_us", phases.fence),
+                ("section_edit_us", phases.edit),
+                ("section_prepare_us", phases.prepare),
+                ("section_publish_us", phases.publish),
+                ("section_finish_us", phases.finish),
+            ] {
+                description.field(name, format_args!("{}", value.as_micros()));
+            }
+        }
         if let Some(ack) = &event.gesture_ack {
             description.field("gesture_generation", format_args!("{}", ack.key.generation));
             description.field("gesture_token", format_args!("{}", ack.key.token));
@@ -315,7 +354,7 @@ impl EventReceiver {
     }
     fn received(&self, observed: ObservedEvent) -> Event {
         self.diagnostics
-            .outcome(observed.request, &observed.event, true);
+            .outcome(observed.request, &observed.event, true, None, None);
         observed.event
     }
     pub fn try_recv(&self) -> Result<Event, std::sync::mpsc::TryRecvError> {

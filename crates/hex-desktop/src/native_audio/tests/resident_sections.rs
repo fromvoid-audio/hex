@@ -1641,3 +1641,64 @@ fn stopped_section_edits_reset_device_tails_at_a_late_cursor_without_replay() {
     assert!(play_energy(&mut h) > 1e-6, "duplicated audio plays");
     // Every h.render above checks both total and signed-net allocations/bytes.
 }
+
+/// Section requests report their worker phases on the `OutcomeReady`
+/// observation (#3819): marker-only edits have no callback fence, structural
+/// edits and their history wait for one.
+#[test]
+fn section_outcomes_report_worker_phases() {
+    use hex_session::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::new();
+    let outcomes = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&outcomes);
+    h.service
+        .set_diagnostic_observer(Arc::new(DiagnosticObserver::new(move |event| {
+            if matches!(event.stage, DiagnosticStage::OutcomeReady { .. }) {
+                sink.lock().unwrap().push(event.details.clone());
+            }
+        })))
+        .unwrap();
+    let initial = h.next();
+    assert!(initial.error.is_none());
+    let (applied, _) = h.applied(0);
+    let phases = |details: &str, name: &str| -> u64 {
+        details
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(name)?.strip_prefix('=')?.parse().ok())
+            .unwrap_or_else(|| panic!("{name} missing from {details:?}"))
+    };
+    outcomes.lock().unwrap().clear();
+    let (added, intro) = add(&mut h, initial.state.revision, "intro", 0, 4);
+    h.applied(applied);
+    let details = outcomes.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(phases(&details, "section_fence_us"), 0, "marker-only edit");
+    assert!(phases(&details, "worker_us") >= phases(&details, "section_prepare_us"));
+    for request in [
+        section_request(
+            added.state.revision,
+            Command::DuplicateArrangementSection(intro),
+        ),
+        Request::Undo,
+    ] {
+        outcomes.lock().unwrap().clear();
+        let event = run_callback(&mut h, request);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        let details = outcomes.lock().unwrap().last().cloned().unwrap();
+        let worker = phases(&details, "worker_us");
+        let measured: u64 = [
+            "section_fence_us",
+            "section_edit_us",
+            "section_prepare_us",
+            "section_publish_us",
+            "section_finish_us",
+        ]
+        .iter()
+        .map(|name| phases(&details, name))
+        .sum();
+        assert!(
+            measured <= worker,
+            "phases {measured} within worker {worker}"
+        );
+    }
+}
