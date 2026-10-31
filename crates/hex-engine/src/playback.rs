@@ -302,10 +302,10 @@ impl PlaybackHandoffRejection {
             Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
             Self::StreamSourceChanged => "original media changed · reopen or relink it",
             Self::LatencyLayoutChanged => {
-                "latency layout changed · pause or stop transport to apply this revision"
+                "latency layout could not change live · previous audio continues"
             }
             Self::SourceHistoryUnavailable => {
-                "source history cannot transfer · stop transport before applying this revision"
+                "source history cannot transfer live · previous audio continues"
             }
         }
     }

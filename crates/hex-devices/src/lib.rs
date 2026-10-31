@@ -23,6 +23,7 @@ pub mod operator_envelope;
 pub mod operator_state;
 pub mod operator_waveform;
 pub mod overdrive;
+pub mod rattle;
 pub mod reverb;
 pub mod sampler;
 pub mod saturator;
@@ -46,7 +47,7 @@ use hex_lattice_contract::{
 };
 use std::sync::OnceLock;
 
-static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 11] = [
+static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 12] = [
     &utility::UTILITY_DEFINITION,
     &eq8::EQ8_DEFINITION,
     &eq::EQ_DEFINITION,
@@ -58,6 +59,7 @@ static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 11] = 
     &reverb::REVERB_DEFINITION,
     &overdrive::OVERDRIVE_DEFINITION,
     &delay::DEFINITION,
+    &rattle::RATTLE_DEFINITION,
 ];
 static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 4] = [
     &SINE_INSTRUMENT,

@@ -1237,7 +1237,8 @@ fn rendered_sampler_save_open(
                 );
             }
             ControlsFixture::Scalar => {
-                controls::exercise(cx, &mut visual, &mut h, window, end, track, &saved)
+                let step = h.wait;
+                controls::exercise(cx, &mut visual, &mut h, window, step, track, &saved)
             }
             ControlsFixture::TriggerOneShot | ControlsFixture::TriggerSlice => {
                 envelope::trigger_release(cx, &mut visual, &mut h, track, &open_path);

@@ -648,6 +648,10 @@ impl Render for EditorView {
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
                     view.tuning.shift = event.modifiers.shift;
+                    if view.option_held != event.modifiers.alt {
+                        view.option_held = event.modifiers.alt;
+                        cx.notify();
+                    }
                     if view.active_native_device_drag.as_ref().is_some_and(|drag| {
                         matches!(
                             drag.source,
@@ -763,6 +767,9 @@ impl Render for EditorView {
                 }
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, window, cx| {
+                if view.drag_bounce_key_up(event) {
+                    cx.notify();
+                }
                 if view.time_selection_key_up(event, cx) {
                     cx.stop_propagation();
                 }
@@ -1412,9 +1419,17 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &super::BounceToNewTracks, window, cx| {
-                view.bounce_arrangement_selection(window);
+                if !view.arm_drag_bounce() {
+                    view.bounce_arrangement_selection(window, false);
+                }
                 cx.notify();
             }))
+            .on_action(
+                cx.trace(|view, _: &super::BounceAndMuteSources, window, cx| {
+                    view.bounce_arrangement_selection(window, true);
+                    cx.notify();
+                }),
+            )
             .on_action(cx.trace(|view, _: &LoopSelection, window, cx| {
                 view.loop_selection_key(window, cx);
                 cx.notify();
@@ -1578,6 +1593,7 @@ impl Render for EditorView {
             .children(super::theme_settings::overlay(self, cx))
             .children(self.tuning_overlay(cx))
             .children(self.changelog_overlay(cx))
+            .children(self.missing_media_overlay(cx))
             .when(self.update_preparing(), |root| {
                 root.child(
                     div()

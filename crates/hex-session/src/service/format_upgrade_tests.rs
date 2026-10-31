@@ -175,14 +175,13 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
 #[test]
 fn growing_current_document_requires_consent_only_when_crossing_older_reader_limit() {
     use hex_project::{BeatTime, TrackContentSnapshot};
+    // The consent flow, not the byte count, is this boundary's contract: the
+    // service's older-reader ceiling sits just above the original document, so
+    // duplicating its clips crosses it. hex-storage's provenance tests own the
+    // real 8 MiB LEGACY_READER_DOCUMENT_BYTES threshold.
     fn large_request(service: &Service, request: Request) -> Event {
         service.submit(request).unwrap();
-        // Real 8k-clip validation/compilation runs in debug, outside a realtime
-        // callback. Keep a finite deadline without using the tiny-fixture budget.
-        service
-            .events
-            .recv_timeout(Duration::from_secs(60))
-            .unwrap()
+        next(service)
     }
     let files = Files::new();
     let path = files.0.join("growing.hex");
@@ -210,7 +209,7 @@ fn growing_current_document_requires_consent_only_when_crossing_older_reader_lim
         panic!("midi")
     };
     let seed = clips[0].clone();
-    *clips = (0..4096)
+    *clips = (0..64)
         .map(|index| {
             let mut clip = seed.clone();
             clip.id = index + 10;
@@ -219,12 +218,14 @@ fn growing_current_document_requires_consent_only_when_crossing_older_reader_lim
             clip
         })
         .collect();
-    snapshot.next_id = 4106;
+    snapshot.next_id = 74;
     let small = Project::from_snapshot(snapshot).unwrap();
     hex_storage::save_new(&path, &small).unwrap();
     let original = fs::read(&path).unwrap();
-    assert!(original.len() < hex_storage::LEGACY_READER_DOCUMENT_BYTES);
+    let limit = original.len() + 1024;
+    assert!(limit < hex_storage::LEGACY_READER_DOCUMENT_BYTES);
     let service = Service::new(48_000, 4, 8_000_000).unwrap();
+    service.diagnostics.set_legacy_reader_limit(limit as u64);
     next(&service);
     let opened = large_request(&service, Request::Open(path.clone()));
     assert!(opened.error.is_none(), "{:?}", opened.error);
@@ -242,10 +243,7 @@ fn growing_current_document_requires_consent_only_when_crossing_older_reader_lim
         },
     );
     assert!(grown.error.is_none(), "{:?}", grown.error);
-    assert!(
-        hex_storage::encode(&grown.state.project).unwrap().len()
-            > hex_storage::LEGACY_READER_DOCUMENT_BYTES
-    );
+    assert!(hex_storage::encode(&grown.state.project).unwrap().len() > limit);
     let refused = large_request(&service, Request::SaveCurrent);
     assert!(refused.save_complete && refused.save_confirmation_required);
     assert!(refused.error.is_some());
