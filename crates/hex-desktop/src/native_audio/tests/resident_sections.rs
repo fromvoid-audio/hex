@@ -367,7 +367,7 @@ fn stateless_section_reorder_retains_late_and_outside_loop_stopped_positions() {
 }
 
 #[test]
-fn structural_section_splices_use_stopped_publication_and_preserve_failed_history() {
+fn structural_section_splices_apply_live_or_stopped_and_preserve_failed_history() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     for kind in [0, 1, 3, 4] {
         let mut h = ResidentHarness::new();
@@ -425,16 +425,29 @@ fn structural_section_splices_use_stopped_publication_and_preserve_failed_histor
             .command(PlaybackCommand::Play)
             .unwrap();
         h.render();
-        let refused = run_callback(&mut h, section_request(revision, command.clone()));
+        // Structural section edits apply while playing (Pulse #3784); the
+        // transport keeps running and Undo applies live too.
+        let live = run_callback(&mut h, section_request(revision, command.clone()));
+        assert!(live.error.is_none(), "kind={kind}: {:?}", live.error);
+        assert_ne!(live.state.project.snapshot(), before);
+        (applied, _) = h.applied(applied);
         assert!(
-            refused
-                .error
+            h.audio
                 .as_ref()
-                .is_some_and(|e| e.contains("stop playback")),
-            "{:?}",
-            refused.error
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
         );
-        assert_eq!(refused.state.project.snapshot(), before);
+        let live_undo = run_callback(&mut h, Request::Undo);
+        assert!(live_undo.error.is_none(), "{:?}", live_undo.error);
+        (applied, _) = h.applied(applied);
+        let mut live_restored = live_undo.state.project.snapshot();
+        live_restored.next_id = before.next_id;
+        assert_eq!(live_restored, before);
+        let before = live_undo.state.project.snapshot();
+        let revision = live_undo.state.revision;
         h.audio
             .as_mut()
             .unwrap()
