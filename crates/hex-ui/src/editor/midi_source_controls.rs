@@ -69,7 +69,30 @@ pub(super) fn edit_command(
     clip: hex_project::ClipId,
     values: SourceValues,
 ) -> Option<hex_project::Command> {
-    if project.midi_clip(clip).is_some() {
+    if let Some(arrangement) = project.midi_clip(clip) {
+        // A forward one-shot's start marker moves its region, keeping notes at
+        // their song beats; every other source edit replaces the source fields.
+        let current = SourceValues::from_source(
+            project.midi_source(clip)?,
+            arrangement.start().raw(),
+            arrangement.length().raw(),
+        );
+        if !arrangement.looping()
+            && arrangement.content_view().is_none()
+            && values.source_start != current.source_start
+            && values
+                == (SourceValues {
+                    source_start: values.source_start,
+                    ..current
+                })
+        {
+            return Some(hex_project::Command::ResizeMidiClipView {
+                clip,
+                operation: hex_project::MidiViewResizeOperation::PlayStart {
+                    source_start: hex_project::BeatTime::from_raw(values.source_start),
+                },
+            });
+        }
         Some(hex_project::Command::SetMidiClipSource {
             clip,
             source_length: hex_project::BeatTime::from_raw(values.source_length),
