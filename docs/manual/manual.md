@@ -83,8 +83,10 @@ saved project.
   search at any time.
 - **open with missing offline** opens the project now. clips that use a missing
   file stay in place but play silence, and **missing files: n** shows in the
-  status bar. saving keeps their original locations, so you can restore the
-  files and reopen. a missing sampler or other device sample, or a missing
+  status bar. saving keeps their original locations. click **missing files: n**
+  to open the same panel for the open project: find the files with **locate…**
+  or **search folders…**, then **relink**. relinking is one edit, so **undo**
+  makes those clips silent again; files you have not found stay offline. a missing sampler or other device sample, or a missing
   file used by a session clip, still has to be found before the project opens.
 - **relink all found** appears when the browser's scanned sample folders
   contain files with the same names. it applies only when you click it: files

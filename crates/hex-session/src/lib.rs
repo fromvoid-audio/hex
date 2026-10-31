@@ -39,6 +39,7 @@ mod source_overview;
 #[cfg(feature = "source-overview-test-support")]
 pub use source_overview::test_support as source_overview_test_support;
 pub use source_overview::{OriginalSourceOverview, OriginalSourceOverviews, SourceOverviewUsage};
+mod media_relink;
 mod resident_pcm;
 pub use native_assets::ResidentNativeReservation;
 mod verified_import;

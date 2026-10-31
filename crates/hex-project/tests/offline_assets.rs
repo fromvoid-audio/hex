@@ -92,3 +92,47 @@ fn offline_marking_refuses_unknown_assets_without_partial_changes() {
     editor.execute(Command::RemoveAsset(unused)).unwrap();
     assert_eq!(editor.project().offline_assets().count(), 0);
 }
+
+#[test]
+fn relinking_offline_media_is_one_undoable_step_and_refuses_bad_targets() {
+    let (project, kick, snare) = imported();
+    let offline = project.with_offline_assets([kick]).unwrap();
+    let mut editor = Editor::new(offline.clone(), 8).unwrap();
+    let found = PathBuf::from("/found/kick.wav");
+    for bad in [
+        vec![],
+        vec![(snare, PathBuf::from("/found/snare.wav"))],
+        vec![(kick, PathBuf::from("relative/kick.wav"))],
+        vec![(kick, found.clone()), (kick, found.clone())],
+    ] {
+        assert!(editor.execute(Command::RelinkAssets(bad)).is_err());
+        assert_eq!(
+            editor.project(),
+            &offline,
+            "refusal leaves the project intact"
+        );
+    }
+    editor
+        .execute(Command::RelinkAssets(vec![(kick, found.clone())]))
+        .unwrap();
+    assert!(!editor.project().asset_offline(kick));
+    assert_eq!(editor.project().asset(kick).unwrap().path(), found);
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &offline);
+    assert!(editor.project().asset_offline(kick));
+    assert!(editor.redo());
+    assert!(!editor.project().asset_offline(kick));
+    assert_eq!(editor.project().asset(kick).unwrap().path(), found);
+    // Relinked paths are saved like any other asset path.
+    assert_eq!(
+        editor
+            .project()
+            .snapshot()
+            .assets
+            .iter()
+            .find(|a| a.id == kick.value())
+            .unwrap()
+            .path,
+        found
+    );
+}

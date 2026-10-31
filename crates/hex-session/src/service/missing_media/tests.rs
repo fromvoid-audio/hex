@@ -408,3 +408,63 @@ fn missing_media_opens_offline_keeps_clips_and_saves_original_paths() {
     assert_eq!(clips(&reopened.state.project), clip_count);
     assert!(!kick.exists(), "opening never recreates missing media");
 }
+
+#[test]
+fn offline_media_relinks_in_place_as_one_undo_step_and_saves_new_paths() {
+    let files = Files::new();
+    let kick = files.wav("old/kick.wav", 48_000, 256);
+    let service = Service::new(48_000, 16, 1 << 20).unwrap();
+    let _ = next(&service);
+    let imported = run(&service, Request::Import(kick.clone()));
+    let asset = imported.state.project.assets().next().unwrap().id();
+    let saved = files.0.join("song.hex");
+    run(&service, Request::SaveNew(saved.clone()));
+    let moved = files.0.join("new/kick.wav");
+    fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    fs::rename(&kick, &moved).unwrap();
+    let wrong = files.wav("new/short.wav", 48_000, 100);
+
+    let opened = run(&service, Request::Open(saved.clone()));
+    assert!(opened.state.project.asset_offline(asset));
+    let offline_project = opened.state.project.clone();
+
+    // A file whose length differs is refused and changes nothing.
+    service
+        .submit(Request::RelinkMedia(BTreeMap::from([(asset, wrong)])))
+        .unwrap();
+    let refused = next(&service);
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("rate or frame count")),
+        "{:?}",
+        refused.error
+    );
+    assert_eq!(refused.state.project, offline_project);
+
+    let relinked = run(
+        &service,
+        Request::RelinkMedia(BTreeMap::from([(asset, moved.clone())])),
+    );
+    assert!(relinked.state.unsaved);
+    assert!(!relinked.state.project.asset_offline(asset));
+    assert_eq!(relinked.state.project.asset(asset).unwrap().path(), moved);
+
+    let undone = run(&service, Request::Undo);
+    assert!(undone.state.project.asset_offline(asset));
+    assert_eq!(undone.state.project.asset(asset).unwrap().path(), kick);
+    let redone = run(&service, Request::Redo);
+    assert!(!redone.state.project.asset_offline(asset));
+    assert_eq!(redone.state.project.asset(asset).unwrap().path(), moved);
+
+    run(&service, Request::SaveCurrent);
+    assert!(
+        missing_media_report(&ProjectSource::Saved(saved.clone()))
+            .unwrap()
+            .is_empty()
+    );
+    let reopened = run(&service, Request::Open(saved));
+    assert!(!reopened.state.project.asset_offline(asset));
+    assert_eq!(reopened.state.project.asset(asset).unwrap().path(), moved);
+}

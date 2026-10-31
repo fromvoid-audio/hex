@@ -1083,6 +1083,78 @@ pub(super) fn import_file(
     Ok(prepared)
 }
 
+/// Decode found files for an in-place relink. Each is resampled like an import;
+/// the session transaction then checks them against the saved asset metadata.
+pub(super) fn decode_relinks(
+    session: &Session,
+    relinks: BTreeMap<hex_project::AssetId, PathBuf>,
+    allowance: u64,
+) -> Result<Vec<(hex_project::AssetId, PreparedImport)>, SessionError> {
+    if session.audio_mode() != DocumentAudioMode::Resident {
+        return Err(SessionError::Invalid(
+            "relinking in place needs resident audio · reopen the project to relink",
+        ));
+    }
+    let output_limit = usize::try_from(allowance)
+        .map_err(|_| SessionError::Invalid("resident frame limit exceeds addressable range"))?;
+    if output_limit == 0 {
+        return Err(SessionError::Invalid("resident audio frame limit reached"));
+    }
+    let mut prepared = Vec::new();
+    prepared
+        .try_reserve_exact(relinks.len())
+        .map_err(|_| SessionError::Allocation)?;
+    for (asset, path) in relinks {
+        if session.shutdown.load(Ordering::Acquire) {
+            return Err(SessionError::Invalid("relink cancelled"));
+        }
+        let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
+        let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
+        prepared.push((
+            asset,
+            PreparedImport::at_rate(
+                decoded,
+                session.project().sample_rate(),
+                ResampleLimits {
+                    max_source_frames: IMPORT_FRAME_LIMIT,
+                    max_output_frames: output_limit,
+                },
+            )?,
+        ));
+    }
+    Ok(prepared)
+}
+
+/// Relink offline media through the resident native publication path.
+pub(super) fn relink_files(
+    session: &mut Session,
+    relinks: BTreeMap<hex_project::AssetId, PathBuf>,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    current: &mut Option<Snapshot>,
+) -> Result<Arc<PreparedRevision>, SessionError> {
+    let allowance = import_frame_allowance(session, sink, admission, current.as_ref())?;
+    let prepared = decode_relinks(session, relinks, allowance)?;
+    let expected = session.project().clone();
+    let mut accepted = None;
+    let revision = session.relink_offline_media_revision_using(
+        prepared,
+        &expected,
+        current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
+        || Ok(()),
+        |input, admit| {
+            let snapshot =
+                prepare_import(input, context, sink, admission, current.as_ref(), admit)?;
+            let prepared = Arc::clone(&snapshot.prepared);
+            accepted = Some(snapshot);
+            Ok(prepared)
+        },
+    )?;
+    *current = accepted;
+    Ok(revision)
+}
+
 enum Transition {
     Command(Box<Command>),
     PluginEffect {

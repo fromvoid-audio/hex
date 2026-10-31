@@ -625,6 +625,7 @@ impl Command {
             | Self::ImportDeviceAssetIntoEmptyInstrument { .. }
             | Self::ImportDeviceAssetReplacingInstrument { .. }
             | Self::RemoveAsset(..)
+            | Self::RelinkAssets(..)
             | Self::PlaceClip { .. }
             | Self::GainBy { .. }
             | Self::BalanceBy { .. }
