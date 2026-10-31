@@ -61,6 +61,26 @@ pub(super) fn command(
     if !structural {
         // Marker-only edits take no callback lease; fence stays zero.
         let mut phases = SectionPhases::default();
+        if session.audio_mode() == DocumentAudioMode::Resident
+            && let Some(sink) = events.resident_audio()
+            && let Some(current) = resident.as_mut()
+        {
+            let result = session
+                .section_marker_transition(
+                    Some(command),
+                    false,
+                    context,
+                    sink,
+                    admission,
+                    current,
+                    &mut phases,
+                )
+                .and_then(|result| {
+                    result.ok_or(SessionError::Invalid("section edit produced no candidate"))
+                });
+            events.record_section_phases(phases);
+            return result;
+        }
         let result = resident_audio::execute_command_timed(
             session,
             command,
@@ -118,6 +138,34 @@ pub(super) fn history(
         fenced_transition(session, None, redo, context, events, resident, admission)?
             .map(|(_, prepared)| prepared),
     )
+}
+/// Undo/Redo of a marker-only section step: republish without preparation.
+pub(super) fn marker_history(
+    session: &mut Session,
+    redo: bool,
+    context: hex_engine::AudioSourceContext,
+    events: &mut WorkerEvents,
+    resident: &mut Option<resident_audio::Snapshot>,
+    admission: sampler_export::Admission<'_>,
+) -> Result<Option<Arc<PreparedRevision>>, SessionError> {
+    let sink = events
+        .resident_audio()
+        .ok_or(SessionError::Invalid("native worker unavailable"))?;
+    let current = resident
+        .as_mut()
+        .ok_or(SessionError::Invalid("resident audio unavailable"))?;
+    let mut phases = SectionPhases::default();
+    let result = session.section_marker_transition(
+        None,
+        redo,
+        context,
+        sink,
+        admission,
+        current,
+        &mut phases,
+    );
+    events.record_section_phases(phases);
+    Ok(result?.map(|(_, prepared)| prepared))
 }
 /// One callback-fenced resident transition for an edit or its history step.
 /// The lease is cancelled unless a candidate commits; worker phases are

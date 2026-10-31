@@ -1727,6 +1727,86 @@ impl Session {
             })
     }
 
+    /// The next Undo/Redo step changes only section markers (Pulse #3823).
+    pub(super) fn section_history_marker_only(&self, redo: bool) -> bool {
+        !self.editor.next_section_history_requires_publication(redo)
+            && self
+                .editor
+                .inspect_history(redo, |source, target| {
+                    source.arrangement_sections() != target.arrangement_sections()
+                        && source.differs_only_in_arrangement_sections(target)
+                })
+                .unwrap_or(false)
+    }
+    /// Marker-only section edits and their history steps change no playback
+    /// input (Pulse #3823). Commit canonically and republish the current
+    /// resident preparation under the new editor revision. Publication still
+    /// runs because the native source context must follow the revision; only
+    /// `prepare_transition` is skipped. A failed publication leaves the current
+    /// snapshot and history unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn section_marker_transition(
+        &mut self,
+        command: Option<Command>,
+        redo: bool,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: &mut Snapshot,
+        phases: &mut super::diagnostics::SectionPhases,
+    ) -> Result<Option<(Created, Arc<PreparedRevision>)>, SessionError> {
+        let started = Instant::now();
+        let mut publish_time = Duration::ZERO;
+        let inputs = Inputs {
+            plugin_effect: None,
+            restoring_plugin_state: false,
+            preparing_edit: false,
+            predecessor: None,
+            native: NativeSamplerSources::Committed(&self.native_assets),
+            limits: self.native_reservation.ok_or(SessionError::Invalid(
+                "resident resource reservation unavailable",
+            ))?,
+            max_frames: self.max_resident_frames,
+            shutdown: &self.shutdown,
+            cancel: None,
+            admission,
+            current: None,
+            legacy: self
+                .media
+                .values()
+                .flat_map(|m| [&m.source_audio, &m.audio])
+                .collect(),
+        };
+        let publish = |source: &Project, project: &Project| {
+            if !source.differs_only_in_arrangement_sections(project) {
+                return Err(SessionError::Invalid(
+                    "section marker edit changed playback input",
+                ));
+            }
+            let publish_started = Instant::now();
+            inputs.publish(current, project, sink, context)?;
+            publish_time = publish_started.elapsed();
+            Ok(Arc::clone(&current.prepared))
+        };
+        let result = match command {
+            Some(command) => self
+                .editor
+                .execute_prepared_transition(command, publish)
+                .map(Some),
+            None => if redo {
+                self.editor.redo_prepared_transition(publish)
+            } else {
+                self.editor.undo_prepared_transition(publish)
+            }
+            .map(|prepared| prepared.map(|prepared| (Created::None, prepared))),
+        };
+        let finish_started = Instant::now();
+        sink.finish_resident_effect_edit(context, result.is_ok());
+        phases.finish = finish_started.elapsed();
+        phases.publish = publish_time;
+        phases.edit = (finish_started - started).saturating_sub(publish_time);
+        result
+    }
     pub(super) fn section_history_requires_publication(&self, redo: bool) -> bool {
         self.editor.next_section_history_requires_publication(redo)
             || self
