@@ -1351,7 +1351,8 @@ fn event_fade_single_sample_can_author_both_ends_after_zoom(cx: &mut TestAppCont
             .events[0]
             .fade
             .unwrap();
-        assert_eq!((fade.shape().fade_in(), fade.shape().fade_out()), (1, 1));
+        // Top handles push each other: the fade in takes the single sample.
+        assert_eq!((fade.shape().fade_in(), fade.shape().fade_out()), (1, 0));
     });
     fade_key(&mut visual, false);
     assert!(visual.debug_bounds("audio-event-fade-in-top-1").is_some());
