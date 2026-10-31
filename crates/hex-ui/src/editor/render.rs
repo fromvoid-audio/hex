@@ -1593,6 +1593,7 @@ impl Render for EditorView {
             .children(super::theme_settings::overlay(self, cx))
             .children(self.tuning_overlay(cx))
             .children(self.changelog_overlay(cx))
+            .children(self.missing_media_overlay(cx))
             .when(self.update_preparing(), |root| {
                 root.child(
                     div()

@@ -67,10 +67,28 @@ not convert it. compatibility with every historical alpha file is not implied.
 
 ## missing media
 
-use **file → open and relink media…** when audio files have moved. follow the
-**locate missing media** prompt and select the corresponding original recording.
-check the loaded clips before saving a new copy. do not replace a missing file
-with unrelated audio merely to dismiss the prompt.
+when you open a project whose audio files have moved, hex shows the
+**missing files** panel instead of an error. each row lists the file name, its
+last known location and where the project uses it (clips, scenes, sampler and
+other devices). **file → open and relink media…** opens the same panel for any
+saved project.
+
+- **locate…** picks the file for one row. other missing files from the same old
+  folder are found automatically when they exist at the same relative location
+  under the new folder.
+- **search folders…** searches the folders you choose, including subfolders,
+  for files with the same name. a file is accepted only when its length and
+  sample rate equal the saved recording. when several files match, pick one;
+  a file that differs is shown as a mismatch and is not used. you can cancel a
+  search at any time.
+- **open** becomes available once every file is found. the project then opens
+  with the new locations as unsaved changes; your project file stays unchanged
+  until you save. **cancel** keeps the current project.
+
+hex only reads your sample files; it never moves, renames or deletes them.
+matching uses the file name, length and sample rate, so check the loaded clips
+before saving: two different recordings with the same name, length and rate
+cannot be told apart yet.
 
 ## recover work
 
