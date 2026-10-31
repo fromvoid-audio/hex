@@ -336,9 +336,15 @@ fn grouping_final_preparation_failure_removes_unpublished_render_and_preserves_c
         },
         |session, prepared, files| {
             session
-                .adopt_arrangement_bounce_using(captured, true, files, prepared, None, |_| {
-                    Err::<(), _>(SessionError::Invalid("injected final refusal"))
-                })
+                .adopt_arrangement_bounce_using(
+                    captured,
+                    true,
+                    false,
+                    files,
+                    prepared,
+                    None,
+                    |_| Err::<(), _>(SessionError::Invalid("injected final refusal")),
+                )
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         },
