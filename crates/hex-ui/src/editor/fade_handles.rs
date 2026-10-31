@@ -616,16 +616,7 @@ impl EditorView {
                 continue;
             }
             let inset = (4.0_f32).min(pixel_width / 2.0);
-            // The outer loop corner owns the bottom-right hit box; the lower
-            // fade-out handle sits just inside it instead of covering it.
-            let right_inset = if matches!(handle, Handle::OutBottom) {
-                super::trim::loop_handles::WIDTH + 4.0
-            } else {
-                4.0
-            };
-            let fraction = (fraction * pixel_width)
-                .clamp(inset, (pixel_width - right_inset).max(inset))
-                / pixel_width;
+            let fraction = (fraction * pixel_width).clamp(inset, pixel_width - inset) / pixel_width;
             let name_height = super::clip_name::CLIP_NAME_HEIGHT;
             let body_height = (lane.height - name_height).max(8.0);
             let vertical_inset = (4.0 / body_height).min(0.5);
