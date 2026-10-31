@@ -113,7 +113,7 @@ impl EditorView {
 
 /// Clip-elapsed quarter-note beats at an Arrangement frame, mapped through the
 /// tempo map; none outside the placement's half-open `start..start + length`.
-fn arrangement_elapsed(
+pub(super) fn arrangement_elapsed(
     tempo: &hex_project::TempoMap,
     start: BeatTime,
     length: BeatTime,
