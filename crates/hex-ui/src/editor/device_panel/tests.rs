@@ -1312,7 +1312,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     let card = visual.debug_bounds(card_selector).expect("instrument card");
     assert_eq!(
         card.size.width,
-        px(DEVICE_FRAME_WIDTH + gain_meters::WIDTH + DEVICE_CHAIN_PADDING)
+        px(DEVICE_FRAME_WIDTH + device_meter::WIDTH + DEVICE_CHAIN_PADDING)
     );
     let painted_card = visual
         .debug_bounds(Box::leak(
@@ -1321,7 +1321,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
         .expect("painted instrument card");
     assert_eq!(
         painted_card.size.width,
-        px(DEVICE_FRAME_WIDTH + gain_meters::WIDTH)
+        px(DEVICE_FRAME_WIDTH + device_meter::WIDTH)
     );
     let down = source.center();
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
@@ -1395,7 +1395,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
         .expect("wide Operator card");
     assert_eq!(
         operator_card.size.width,
-        px(operator_panel::OPERATOR_FRAME_WIDTH + gain_meters::WIDTH + DEVICE_CHAIN_PADDING)
+        px(operator_panel::OPERATOR_FRAME_WIDTH + device_meter::WIDTH + DEVICE_CHAIN_PADDING)
     );
     let right_side = point(
         operator_card.origin.x + operator_card.size.width - px(16.0),
@@ -1453,7 +1453,7 @@ fn browser_instrument_dropped_on_instrument_card_replaces_in_place_and_retires_o
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.device_panel.has_only_host_control_for(instrument));
+        assert!(!view.device_panel.has_control_for(instrument));
         assert!(
             !view
                 .device_panel
@@ -1629,89 +1629,6 @@ fn eq8_panel_renders_on_regular_and_return_tracks_and_retires_on_owner_switch(
 }
 
 #[gpui::test]
-fn protruding_meter_gain_handle_uses_canonical_gesture_and_one_history_step(
-    cx: &mut TestAppContext,
-) {
-    let (service, state, track, device, _, _) = actor_utility_fixture();
-    let revision = state.revision;
-    let gain = state
-        .project
-        .device(device)
-        .unwrap()
-        .state()
-        .input_gain_db();
-    let (window, editor) = actor_editor_window(cx, service, state, track);
-    let mut visual = VisualTestContext::from_window(window, cx);
-    visual.simulate_resize(size(px(880.0), px(540.0)));
-    visual.run_until_parked();
-    let well_selector = Box::leak(
-        format!(
-            "device-{}-parameter-{}-input-meter",
-            device.value(),
-            hex_engine::DEVICE_INPUT_GAIN.id.value()
-        )
-        .into_boxed_str(),
-    );
-    let handle_selector = Box::leak(format!("{well_selector}-gain-handle").into_boxed_str());
-    let well = visual.debug_bounds(well_selector).unwrap();
-    let handle = visual.debug_bounds(handle_selector).unwrap();
-    let start = point(well.right() + px(1.0), handle.center().y);
-    let moved = point(start.x, start.y - px(24.0));
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert!(view.device_gesture.snapshot().is_some());
-        assert_eq!(
-            view.state
-                .as_ref()
-                .unwrap()
-                .project
-                .device(device)
-                .unwrap()
-                .state()
-                .input_gain_db(),
-            gain
-        );
-    });
-    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
-    pump_until(&editor, cx, |view| {
-        view.worker_requests_pending == 0
-            && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
-            && view.state.as_ref().is_some_and(|state| {
-                state.revision == revision + 1
-                    && state
-                        .project
-                        .device(device)
-                        .unwrap()
-                        .state()
-                        .input_gain_db()
-                        > gain
-            })
-    });
-    editor.update(cx, |view, cx| {
-        assert!(view.enqueue(Request::Undo));
-        cx.notify();
-    });
-    pump_until(&editor, cx, |view| {
-        view.worker_requests_pending == 0
-            && view.pending_requests.is_empty()
-            && view.state.as_ref().is_some_and(|state| {
-                state
-                    .project
-                    .device(device)
-                    .unwrap()
-                    .state()
-                    .input_gain_db()
-                    == gain
-            })
-    });
-    visual.run_until_parked();
-    let handle = visual.debug_bounds(handle_selector).unwrap();
-    assert!(handle.right() > well.right());
-}
-
-#[gpui::test]
 fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_pages(
     cx: &mut TestAppContext,
 ) {
@@ -1775,31 +1692,28 @@ fn operator_panel_exposes_shared_controls_across_operator_envelope_and_routing_p
     let frame = visual.debug_bounds(frame_selector).expect("Operator frame");
     assert_eq!(
         frame.size.width,
-        px(operator_panel::OPERATOR_FRAME_WIDTH + gain_meters::WIDTH)
+        px(operator_panel::OPERATOR_FRAME_WIDTH + device_meter::WIDTH)
     );
     assert_eq!(frame.size.height, px(184.0));
+    // One passive stereo meter follows the device: left and right bars, no gain handles.
+    let meter_selector =
+        Box::leak(format!("device-{}-output-meter", instrument_id.value()).into_boxed_str());
+    assert!(visual.debug_bounds(meter_selector).is_some());
+    for side in ["left", "right"] {
+        let selector = Box::leak(format!("{meter_selector}-{side}").into_boxed_str());
+        let bar = visual.debug_bounds(selector).expect("channel bar");
+        assert_eq!(bar.size.width, px(hex_widgets::STEREO_PEAK_BAR_WIDTH));
+        assert!(bar.origin.x >= frame.origin.x + px(operator_panel::OPERATOR_FRAME_WIDTH));
+        assert!(bar.right() <= frame.right());
+    }
     for side in ["input", "output"] {
-        let selector = Box::leak(
-            format!(
-                "device-{}-parameter-{}-{side}-meter",
-                instrument_id.value(),
-                if side == "input" {
-                    hex_engine::DEVICE_INPUT_GAIN.id.value()
-                } else {
-                    hex_engine::DEVICE_OUTPUT_GAIN.id.value()
-                }
-            )
-            .into_boxed_str(),
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("{meter_selector}-{side}-meter-gain-handle").into_boxed_str()
+                ))
+                .is_none()
         );
-        let meter = visual.debug_bounds(selector).expect("device meter well");
-        assert_eq!(meter.size.width, px(8.0));
-        assert!(meter.origin.x >= frame.origin.x + px(operator_panel::OPERATOR_FRAME_WIDTH));
-        assert!(meter.origin.x + meter.size.width <= frame.origin.x + frame.size.width);
-        let handle_selector = Box::leak(format!("{selector}-gain-handle").into_boxed_str());
-        let handle = visual.debug_bounds(handle_selector).expect("gain handle");
-        assert_eq!(handle.right(), meter.right() + px(2.0));
-        assert!(handle.right() <= frame.right());
-        assert!(handle.top() >= meter.top() && handle.bottom() <= meter.bottom());
     }
     let body_selector =
         Box::leak(format!("operator-body-{}", instrument_id.value()).into_boxed_str());
@@ -3256,7 +3170,7 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
     assert_eq!(panel.size.height, px(213.0));
     let frame_selector = Box::leak(format!("effect-device-{}", device.value()).into_boxed_str());
     let frame = visual.debug_bounds(frame_selector).expect("utility frame");
-    assert_eq!(frame.size.width, px(144.0 + gain_meters::WIDTH));
+    assert_eq!(frame.size.width, px(144.0 + device_meter::WIDTH));
     assert_eq!(frame.size.height, px(184.0));
     let input_selector = Box::leak(format!("utility-input-{}", device.value()).into_boxed_str());
     let output_selector = Box::leak(format!("utility-output-{}", device.value()).into_boxed_str());
@@ -3740,7 +3654,7 @@ fn return_track_reuses_compact_utility_panel(cx: &mut TestAppContext) {
             format!("effect-device-{}", device.value()).into_boxed_str(),
         ))
         .expect("return Utility frame");
-    assert_eq!(frame.size.width, px(144.0 + gain_meters::WIDTH));
+    assert_eq!(frame.size.width, px(144.0 + device_meter::WIDTH));
     assert_eq!(frame.size.height, px(184.0));
     let body = visual
         .debug_bounds(Box::leak(

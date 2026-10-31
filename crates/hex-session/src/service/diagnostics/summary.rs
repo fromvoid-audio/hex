@@ -373,6 +373,14 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("insert_track_with_device"; ["name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="slot")
         }
+        Command::InsertDefaultTrackWithDevice {
+            before_track,
+            state,
+            device_name,
+            ..
+        } => {
+            describe!("insert_default_track_with_device"; ["before_track" => before_track.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len(), "device_name_redacted_bytes" => device_name.len()]; omitted="slot")
+        }
         Command::SpliceGainTouch {
             track,
             expected_epoch,
@@ -435,6 +443,14 @@ pub(super) fn command(value: &Command) -> Description {
             state,
         } => {
             describe!("insert_device"; ["track" => track.value(), "before" => before.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
+        Command::LoadInstrument {
+            track,
+            replacing,
+            state,
+            device_name,
+        } => {
+            describe!("load_instrument"; ["track" => track.value(), "replacing" => replacing.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len(), "device_name_redacted_bytes" => device_name.len()]; omitted="")
         }
         Command::InsertInstrument { track, state } => {
             describe!("insert_instrument"; ["track" => track.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
@@ -587,6 +603,9 @@ pub(super) fn command(value: &Command) -> Description {
         }
         Command::AddTrack { name } => {
             describe!("add_track"; ["name_redacted_bytes" => name.len()]; omitted="")
+        }
+        Command::InsertDefaultTrack { before_track } => {
+            describe!("insert_default_track"; ["before_track" => before_track.map(|id| id.value())]; omitted="")
         }
         Command::InsertTrack { name, before_track } => {
             describe!("insert_track"; ["name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value())]; omitted="")
@@ -1549,6 +1568,7 @@ pub(super) fn request(value: &Request) -> Description {
         Request::RestorePlayback { generation } => {
             describe!("restore_playback"; ["generation" => generation]; omitted="")
         }
+        Request::RepublishPausedPlayback => describe!("republish_paused_playback"; []; omitted=""),
         Request::RestoreStoppedPlayback => describe!("restore_stopped_playback"; []; omitted=""),
         Request::ContinueStoppedPlaybackRestore => {
             describe!("continue_stopped_playback_restore"; []; omitted="")

@@ -56,7 +56,7 @@ pub(super) fn render_body(
             ParameterValue::Choice(routing) => Some(routing),
             _ => None,
         });
-    let reading = gain_meters::dynamics(view, device, audible_routing)
+    let reading = device_meter::dynamics(view, device, audible_routing)
         .filter(|_| audible_routing == Some(u32::from(mid_side)));
     let input_level = reading.map_or(0.0, |reading| reading.post_input_peak);
     let identity = DeviceControlIdentity {
@@ -123,10 +123,9 @@ pub(super) fn render_body(
         entity.update(cx, |control, cx| {
             control.set_meter_readout(
                 hex_widgets::DeviceMeterReadout {
-                    levels: [input_level, 0.0],
+                    level: input_level,
                     signal: colors.signal,
                     clipping: colors.clipping,
-                    ..Default::default()
                 },
                 cx,
             )

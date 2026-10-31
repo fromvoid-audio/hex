@@ -476,6 +476,7 @@ impl EditorView {
                                 );
                                 if started {
                                     view.focus.focus(window);
+                                    view.focus_detail_context(window, cx);
                                     cx.notify();
                                 }
                                 return (started, false);
@@ -527,6 +528,7 @@ impl EditorView {
                             if started {
                                 view.focus.focus(window);
                                 if !move_started {
+                                    view.focus_detail_context(window, cx);
                                     cx.notify();
                                 }
                             }

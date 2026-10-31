@@ -39,7 +39,7 @@ impl NumericControl {
                     .border_1()
                     .border_color(rgb(style.border))
                     .when(meter, |rail| {
-                        let amplitude = self.meter_readout.levels[0];
+                        let amplitude = self.meter_readout.level;
                         let fraction = if amplitude.is_finite() && amplitude > 0.0 {
                             {
                                 let (min, max) = self.spec.bounds();

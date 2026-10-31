@@ -4207,9 +4207,36 @@ impl EditorView {
                 {
                     return false;
                 }
+                let Some(playing) = self
+                    .audio
+                    .as_ref()
+                    .and_then(|audio| audio.control.status())
+                    .map(|status| status.playing.load(Acquire))
+                else {
+                    return false;
+                };
+                if self.applied_project_revision == Some(project.revision) {
+                    self.latency_rebuild = None;
+                    return false;
+                }
+                if !playing {
+                    // Paused: the callback applies the new latency layout at
+                    // the kept cursor. Republish the refused current revision
+                    // once rather than leaving audio on the old graph.
+                    self.latency_rebuild = None;
+                    if self.enqueue(Request::RepublishPausedPlayback) {
+                        self.status = "applying latency change at the paused cursor".into();
+                    }
+                    return true;
+                }
+                // A requested pause has not reached the callback yet; republish
+                // once it reports paused.
+                if !self.play_intent.desired_playing(true) {
+                    return false;
+                }
                 // A fresh runtime cuts mutable voices. Until their live-input
-                // custody can be restored explicitly, leave MIDI projects on
-                // the normal stopped-recovery path instead of dropping notes.
+                // custody can be restored explicitly, MIDI projects wait for
+                // Pause (republish above) or Stop instead of dropping notes.
                 if self.state.as_ref().is_some_and(|state| {
                     state
                         .project
@@ -4217,22 +4244,12 @@ impl EditorView {
                         .iter()
                         .any(|track| track.instrument().is_some() || !track.midi_clips().is_empty())
                 }) {
-                    self.latency_rebuild = None;
                     return false;
                 }
-                let Some(audio) = self.audio.as_ref() else {
+                let Some(status) = self.audio.as_ref().and_then(|audio| audio.control.status())
+                else {
                     return false;
                 };
-                let Some(status) = audio.control.status() else {
-                    return false;
-                };
-                if !status.playing.load(Acquire)
-                    || !self.play_intent.desired_playing(true)
-                    || self.applied_project_revision == Some(project.revision)
-                {
-                    self.latency_rebuild = None;
-                    return false;
-                }
                 // Stop would discard Session launches. Only rebuild when a
                 // fresh route snapshot proves that every track is in Arrangement.
                 let mut routes = [hex_audio::prepared::SessionRouteEntry::default();

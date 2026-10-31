@@ -752,8 +752,12 @@ fn two_axis_curve_drags_change_pcm_keep_endpoints_and_bound_vertical_travel(
                         Box::leak(format!("{}-{}", h.name(), clip.value()).into_boxed_str());
                     f32::from(visual.debug_bounds(name).unwrap().center().x)
                 });
+                // The lower fade-out handle sits just inside the loop corner,
+                // so the diamond's right edge is that loop width further out.
                 let edge = if dx < 0.0 {
                     positions[0].min(positions[1])
+                } else if out {
+                    positions[0].max(positions[1]) + super::super::trim::loop_handles::WIDTH
                 } else {
                     positions[0].max(positions[1])
                 };
@@ -1069,7 +1073,7 @@ fn sample_zoomed_short_curves_follow_subframe_pointer_motion(cx: &mut TestAppCon
 }
 
 #[gpui::test]
-fn hover_reveals_only_that_clips_handles_and_held_f_reveals_every_clip(cx: &mut TestAppContext) {
+fn hover_reveals_the_held_f_handle_set_on_the_hovered_clip_only(cx: &mut TestAppContext) {
     let (project, _, _, first) = super::super::clip_drag_ui_test::audio_project();
     let mut canonical = hex_project::Editor::new(project, 16).unwrap();
     let hex_project::Created::Clip(second) = canonical
@@ -1081,49 +1085,58 @@ fn hover_reveals_only_that_clips_handles_and_held_f_reveals_every_clip(cx: &mut 
     else {
         panic!("split")
     };
+    // One authored clip (curve handles too) and one fade-free clip.
+    canonical
+        .execute(Command::SetClipFadeEnvelope {
+            clip: first,
+            fade: ClipFade::new(48_000, 0, 12_000, 12_000).unwrap(),
+        })
+        .unwrap();
     let (handle, _) = super::super::clip_drag_ui_test::editor_window(
         cx,
         canonical.project().clone(),
         Arc::default(),
     );
     let mut visual = VisualTestContext::from_window(handle, cx);
-    let shown = |visual: &mut VisualTestContext, clip: ClipId| {
+    let handles = |visual: &mut VisualTestContext, clip: ClipId| {
         visual.run_until_parked();
-        visual
-            .debug_bounds(Box::leak(
-                format!("fade-in-top-{}", clip.value()).into_boxed_str(),
+        [
+            Handle::InTop,
+            Handle::InBottom,
+            Handle::InCurve,
+            Handle::OutTop,
+            Handle::OutBottom,
+            Handle::OutCurve,
+        ]
+        .map(|kind| {
+            visual.debug_bounds(Box::leak(
+                format!("{}-{}", kind.name(), clip.value()).into_boxed_str(),
             ))
-            .is_some()
+        })
     };
-    assert!(!shown(&mut visual, first) && !shown(&mut visual, second));
-    hover_clip(&mut visual, first);
-    assert!(
-        shown(&mut visual, first) && !shown(&mut visual, second),
-        "hover reveals the fade-free hovered clip only"
-    );
-    assert!(
-        visual
-            .debug_bounds(Box::leak(
-                format!("fade-out-bottom-{}", first.value()).into_boxed_str(),
-            ))
-            .is_none(),
-        "fade-free lower corners stay with trim and loop gestures on hover"
-    );
-    hover_clip(&mut visual, second);
-    assert!(!shown(&mut visual, first) && shown(&mut visual, second));
-    visual.simulate_mouse_move(point(px(5.0), px(5.0)), None, Modifiers::default());
-    assert!(!shown(&mut visual, first) && !shown(&mut visual, second));
-    key(&mut visual, true, "f");
-    assert!(shown(&mut visual, first) && shown(&mut visual, second));
-    assert!(
-        visual
-            .debug_bounds(Box::leak(
-                format!("fade-out-bottom-{}", second.value()).into_boxed_str(),
-            ))
-            .is_some()
-    );
-    key(&mut visual, false, "f");
-    assert!(!shown(&mut visual, first) && !shown(&mut visual, second));
+    let away = |visual: &mut VisualTestContext| {
+        visual.simulate_mouse_move(point(px(5.0), px(5.0)), None, Modifiers::default());
+    };
+    let none = [None; 6];
+    assert_eq!(handles(&mut visual, first), none);
+    assert_eq!(handles(&mut visual, second), none);
+    for (clip, other, authored) in [(first, second, true), (second, first, false)] {
+        away(&mut visual);
+        key(&mut visual, true, "f");
+        let held = handles(&mut visual, clip);
+        assert!(held.iter().filter(|b| b.is_some()).count() == if authored { 6 } else { 4 });
+        key(&mut visual, false, "f");
+        hover_clip(&mut visual, clip);
+        assert_eq!(
+            handles(&mut visual, clip),
+            held,
+            "hover shows the same handles at the same corners as held f"
+        );
+        assert_eq!(handles(&mut visual, other), none, "only the hovered clip");
+    }
+    away(&mut visual);
+    assert_eq!(handles(&mut visual, first), none);
+    assert_eq!(handles(&mut visual, second), none);
 }
 
 #[gpui::test]
