@@ -30,7 +30,10 @@ mod dial;
 mod discrete;
 mod focus_marker;
 mod frame;
-pub use device_meters::DeviceMeterReadout;
+pub use device_meters::{
+    DeviceMeterReadout, STEREO_PEAK_BAR_GAP, STEREO_PEAK_BAR_WIDTH, StereoPeakMeter,
+    stereo_peak_meter,
+};
 mod numeric;
 mod numeric_control;
 mod numeric_text;
@@ -83,8 +86,9 @@ pub use numeric_control::{
 };
 pub use response_graph::{
     ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphCreationHint,
-    ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase,
-    ResponseGraphScrollEvent, ResponseGraphScrollPhase, bind_response_graph_keys,
+    ResponseGraphEvent, ResponseGraphMarqueeEvent, ResponseGraphMarqueePhase, ResponseGraphModel,
+    ResponseGraphNode, ResponseGraphPhase, ResponseGraphScrollEvent, ResponseGraphScrollPhase,
+    bind_response_graph_keys,
 };
 pub use style::{
     ActionStyle, CONTROL_CORNER_RADIUS, ControlAvailability, ControlStyle, DEVICE_CORNER_RADIUS,
@@ -103,6 +107,9 @@ pub use text_input::{
     TextInputConfig, TextInputKind, TextLeft, TextPaste, TextRight, TextSelectAll, TextSelectLeft,
     TextSelectRight, bind_text_input_keys,
 };
+
+mod marquee;
+pub use marquee::{MARQUEE_DRAG_THRESHOLD, Marquee, MarqueeMode};
 
 mod level_meter;
 mod meter_clip;

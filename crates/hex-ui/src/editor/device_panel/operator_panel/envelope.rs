@@ -157,6 +157,7 @@ fn graph_model(values: [f32; 6], selected: u32) -> ResponseGraphModel {
         secondary: points,
         analyzer: None,
         input_analyzer: None,
+        analyzer_peak: None,
         nodes: vec![
             node(0, [0.0, initial], selected),
             node(1, [x_attack, peak], selected),

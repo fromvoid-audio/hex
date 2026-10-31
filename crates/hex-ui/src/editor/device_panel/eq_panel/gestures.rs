@@ -151,6 +151,129 @@ pub(super) fn paired_event(
     }
 }
 
+/// One grouped-node drag: every node keeps its press-time position plus the
+/// pointer delta. Frequency and the vertical field (gain, or Q for cut/notch)
+/// travel in one keyed parameter-snapshot gesture, so one Undo reverts it.
+#[derive(Clone)]
+pub(in crate::editor::device_panel) struct GroupDrag {
+    key: GestureKey,
+    origin: [f32; 2],
+    nodes: Vec<(Node, [f32; 2])>,
+}
+
+fn group_snapshot(
+    nodes: &[(Node, [f32; 2])],
+    delta: [f32; 2],
+    rate: u32,
+) -> Result<hex_lattice_contract::DeviceParameterSnapshot, &'static str> {
+    let mut entries = Vec::with_capacity(nodes.len() * 2);
+    for (node, origin) in nodes {
+        let x = (origin[0] + delta[0]).clamp(0.0, 1.0);
+        let y = (origin[1] + delta[1]).clamp(0.0, 1.0);
+        let (field, value) = if edits_q(node.kind) {
+            (NodeParameter::Q, q_from_y(y))
+        } else {
+            (NodeParameter::Gain, y * 48.0 - 24.0)
+        };
+        let frequency = node
+            .id
+            .parameter(NodeParameter::Frequency)
+            .map_err(|_| "eq group node is invalid")?;
+        let second = node
+            .id
+            .parameter(field)
+            .map_err(|_| "eq group node is invalid")?;
+        entries.push((frequency, ParameterValue::Float(frequency_from_x(x, rate))));
+        entries.push((second, ParameterValue::Float(value)));
+    }
+    hex_lattice_contract::DeviceParameterSnapshot::new(&entries)
+        .map_err(|_| "eq group move is limited to 32 nodes")
+}
+
+pub(super) fn group_event(
+    view: &mut EditorView,
+    device: DeviceId,
+    group: &[NodeId],
+    event: ResponseGraphEvent,
+) {
+    let rate = view
+        .state
+        .as_ref()
+        .map_or(48_000, |state| state.project.sample_rate());
+    if event.phase == ResponseGraphPhase::Begin {
+        if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+            panel.group_drag = None;
+        }
+        if view.device_gesture.snapshot().is_some() {
+            view.device_panel.message = Some("wait for the current device edit, then retry".into());
+            return;
+        }
+        let Some(state) = current(view, device).and_then(|state| EqState::decode(&state).ok())
+        else {
+            return;
+        };
+        let nodes: Vec<_> = group
+            .iter()
+            .filter_map(|id| state.node(*id).ok().copied())
+            .map(|node| (node, node_position(&node, rate)))
+            .collect();
+        let result = group_snapshot(&nodes, [0.0, 0.0], rate).and_then(|initial| {
+            view.device_gesture
+                .begin_snapshot(view.project_generation, device, initial)
+        });
+        match result {
+            Ok(key) => {
+                if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+                    panel.group_drag = Some(GroupDrag {
+                        key,
+                        origin: event.position,
+                        nodes,
+                    });
+                }
+            }
+            Err(error) => view.device_panel.message = Some(error.into()),
+        }
+        return;
+    }
+    let Some(plan) = view
+        .device_panel
+        .eq_panels
+        .get_mut(&device)
+        .and_then(|panel| panel.group_drag.take())
+    else {
+        return;
+    };
+    let owned = view.device_gesture.snapshot().is_some_and(|snapshot| {
+        snapshot.key == plan.key
+            && snapshot.key.generation == view.project_generation
+            && snapshot.target == GestureTarget::DeviceParameterSnapshot { device }
+    }) && !view.device_gesture.has_pending_terminal();
+    if !owned {
+        return;
+    }
+    let delta = [
+        event.position[0] - plan.origin[0],
+        event.position[1] - plan.origin[1],
+    ];
+    let result = match event.phase {
+        ResponseGraphPhase::Cancel => view.cancel_device_gesture(),
+        ResponseGraphPhase::Commit => group_snapshot(&plan.nodes, delta, rate)
+            .and_then(|values| view.device_gesture.finish_snapshot(values)),
+        ResponseGraphPhase::Change => {
+            let result = group_snapshot(&plan.nodes, delta, rate)
+                .and_then(|values| view.device_gesture.change_snapshot(values).map(|_| ()));
+            if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
+                panel.group_drag = Some(plan);
+            }
+            result
+        }
+        _ => Ok(()),
+    };
+    if let Err(error) = result {
+        view.device_panel.message = Some(error.into());
+    }
+}
+
 fn option_q(initial: f32, displacement: f32) -> f32 {
     (initial * ((18.0_f32 / 0.1).ln() * displacement).exp()).clamp(0.1, 18.0)
 }

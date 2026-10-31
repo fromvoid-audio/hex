@@ -231,12 +231,6 @@ pub(super) fn inventory() -> Vec<Item> {
             Scale::Linear,
         ),
         (
-            "device meters",
-            Appearance::DeviceMeters,
-            DialLayout::ReadoutGap,
-            Scale::LinearAmplitudeDecibels,
-        ),
-        (
             "bottom gap dial",
             Appearance::CompactDial,
             DialLayout::BottomGap,

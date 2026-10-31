@@ -19,7 +19,9 @@ widgets = (
     # Clip name components normalize labels or render a native text-input entity.
     'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     # Waveform body wrappers contain view elements; preview titles normalize text.
-    'clip_waveform_body(', 'self.clip_name_preview_header(',
+    'clip_waveform_body(', 'super::tracks::clip_waveform_body(', 'self.clip_name_preview_header(',
+    # Fitted MIDI note columns paint one text-free canvas rectangle each.
+    'super::midi_thumbnail::note_column(',
     # Timeline boundary shell contains a previously constructed view and paint edges.
     'clip_boundary_shell(',
     # Loop body wrappers contain native views; marker glyphs use theme::text.
@@ -138,8 +140,8 @@ widgets = (
     'gate_column(',
     # Device-chain navigator is a typed view component; labels use theme::text.
     'super::device_panel::bottom_bar(', 'overview)',
-    # Shared host meter strip supplies lowercase tooltip text through theme::text.
-    'gain_meters::render(', 'super::gain_meters::render(',
+    # The passive post-device stereo meter supplies lowercase tooltip text through theme::text.
+    'device_meter::render(', 'super::device_meter::render(', 'hex_widgets::stereo_peak_meter(',
     # Typed routing/recording components normalize their labels at the boundary.
     'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
     # Retained recording controls route all captions through theme::text internally.

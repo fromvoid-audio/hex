@@ -129,7 +129,10 @@ from the edit cursor and saved play-start marker. it stays at the accepted
 position when paused and hides outside the clip or while its current audio
 mapping is unavailable. the audio source tab shows the corresponding original
 source position; the piano roll follows the midi source position. zooming and
-scrolling change the visible window without moving playback.
+scrolling change the visible window without moving playback. in the console,
+the piano roll and the audio cell's waveform show the same line while that
+launched cell owns its track, wrapping with the cell's loop; it hides when the
+cell stops, ends or another clip takes the track.
 
 hover the saved play-start marker to highlight its grab target. drag the audio
 arrow or midi ruler triangle to choose where playback starts, keeping the clip's
@@ -358,11 +361,14 @@ keyboard keep their own input.
 in the focused midi editor, **c** or **0** toggles the selected notes. inactive
 notes remain editable and are silent during playback; copies retain their state.
 
-click a curve to add a point, drag a point to change its time or value, and
-release to apply the edit. editing another track's curve keeps the background
-clip selection. **command** gives free beat placement. **escape**
-cancels a held edit; **backspace** removes the selected automation point.
-one undo restores a completed change. background clip edits are unavailable
+click empty space in a lane to add a point, drag a point to change its time or
+value, and release to apply the edit. drag across empty space to draw a
+selection rectangle around several points; hold **shift** to add to the
+selection or **command** to toggle points in and out of it. dragging any
+selected point moves the whole selection, and **backspace** removes every
+selected point. editing another track's curve keeps the background clip
+selection. **command** gives free beat placement while dragging a point.
+**escape** cancels a held edit or rectangle. one undo restores a completed change. background clip edits are unavailable
 while the automation lanes own arrangement focus.
 
 right-click a supported device parameter and choose **show automation** to use
@@ -706,15 +712,31 @@ in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes
 priority. a small curve beside the crosshair shows the shape before pressing.
-keep the button held to position the new band and hear its effect during playback.
-release to keep the band as one undoable edit. vertical movement changes q for a
-cut or notch, or the gain of a bell. existing
-nodes keep their own selection and drag targets. press **escape** to cancel.
+hold **option** while pressing empty space to keep the button held, position the
+new band and hear its effect during playback; release to keep the band as one
+undoable edit. vertical movement changes q for a cut or notch, or the gain of a
+bell. existing nodes keep their own selection and drag targets. press
+**escape** to cancel.
+
+drag across empty space in the eq graph to select every node inside the
+rectangle; **shift** adds to the selection and **command** toggles nodes.
+dragging a selected node moves the whole selection, keeping each node's
+spacing, and **backspace** or **remove** deletes every selected node with its
+automation. one undo restores either edit.
 
 each visible eq has its own live spectrum, including eqs on return and main
 tracks. selecting another device keeps these spectra running. use **spectrum**
 on an eq to turn only its analyzer off or on. a hidden device panel stops its
 analyzer; missing or stale audio clears the live curve.
+
+every spectrum view in hex, the eq backgrounds and the project spectrum, uses
+the same analyzer. a sine reads at its true level, so a full-scale tone at 1 khz
+touches 0 dbfs. the curve is tilted by 4.5 db per octave around 1 khz, so a
+typical mix looks roughly level instead of sloping down to the highs. the curve
+is smoothed over 1/12 octave, rises at once on new audio and falls over about a
+quarter of a second. a thin, fainter line above it holds recent peaks for one
+second and then sinks slowly. the project spectrum shows this peak line for the
+main output only.
 
 the beta release command packages the default desktop application. optional
 native vst3 helper profiles are not included by that command, and this manual

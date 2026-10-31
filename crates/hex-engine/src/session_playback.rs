@@ -97,6 +97,9 @@ pub struct SessionRouteStatus {
     pub owner: SessionPlaybackOwner,
     /// Present only for a Session MIDI owner; both coordinates remain global/cued as typed.
     pub active_origin: Option<SessionMidiOrigin>,
+    /// Present only for a Session audio owner: the performance frame at which
+    /// its source elapsed time is zero (a launch or legacy seed, not a cursor).
+    pub audio_launch_frame: Option<u64>,
     pub pending: Option<SessionPendingRouteStatus>,
 }
 
@@ -171,7 +174,7 @@ impl SessionPlaybackError {
             Self::ReleaseBankFull => "session playback outgoing release bank is full",
             Self::DeviceRuntime => "session playback native device runtime is unavailable",
             Self::LatencyLayoutChanged => {
-                "latency layout changed · stop transport before applying this revision"
+                "latency layout changed · pause or stop transport to apply this revision"
             }
             Self::SourceHistoryUnavailable => {
                 "source history cannot transfer · stop transport before applying this revision"
@@ -2077,13 +2080,17 @@ impl SessionPlayback {
     /// Read one route without allocation. `None` means the index is out of range.
     pub fn route_status(&self, index: usize) -> Option<SessionRouteStatus> {
         let route = self.routes.get(index)?;
-        let (owner, active_origin) = match route.owner {
-            RouteOwner::Arrangement => (SessionPlaybackOwner::Arrangement, None),
+        let (owner, active_origin, audio_launch_frame) = match route.owner {
+            RouteOwner::Arrangement => (SessionPlaybackOwner::Arrangement, None, None),
             RouteOwner::Session { clip, origin } => {
-                (SessionPlaybackOwner::Session { clip }, Some(origin))
+                (SessionPlaybackOwner::Session { clip }, Some(origin), None)
             }
-            RouteOwner::SessionAudio { clip, .. } => (SessionPlaybackOwner::Session { clip }, None),
-            RouteOwner::Silence => (SessionPlaybackOwner::Silence, None),
+            RouteOwner::SessionAudio { clip, launch_frame } => (
+                SessionPlaybackOwner::Session { clip },
+                None,
+                Some(launch_frame),
+            ),
+            RouteOwner::Silence => (SessionPlaybackOwner::Silence, None, None),
         };
         let pending = route.pending.map(|pending| SessionPendingRouteStatus {
             target: match pending.target {
@@ -2098,6 +2105,7 @@ impl SessionPlayback {
             track: route.id,
             owner,
             active_origin,
+            audio_launch_frame,
             pending,
         })
     }
