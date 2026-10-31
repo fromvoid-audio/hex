@@ -129,7 +129,10 @@ from the edit cursor and saved play-start marker. it stays at the accepted
 position when paused and hides outside the clip or while its current audio
 mapping is unavailable. the audio source tab shows the corresponding original
 source position; the piano roll follows the midi source position. zooming and
-scrolling change the visible window without moving playback.
+scrolling change the visible window without moving playback. in the console,
+the piano roll and the audio cell's waveform show the same line while that
+launched cell owns its track, wrapping with the cell's loop; it hides when the
+cell stops, ends or another clip takes the track.
 
 hover the saved play-start marker to highlight its grab target. drag the audio
 arrow or midi ruler triangle to choose where playback starts, keeping the clip's
@@ -715,6 +718,15 @@ each visible eq has its own live spectrum, including eqs on return and main
 tracks. selecting another device keeps these spectra running. use **spectrum**
 on an eq to turn only its analyzer off or on. a hidden device panel stops its
 analyzer; missing or stale audio clears the live curve.
+
+every spectrum view in hex, the eq backgrounds and the project spectrum, uses
+the same analyzer. a sine reads at its true level, so a full-scale tone at 1 khz
+touches 0 dbfs. the curve is tilted by 4.5 db per octave around 1 khz, so a
+typical mix looks roughly level instead of sloping down to the highs. the curve
+is smoothed over 1/12 octave, rises at once on new audio and falls over about a
+quarter of a second. a thin, fainter line above it holds recent peaks for one
+second and then sinks slowly. the project spectrum shows this peak line for the
+main output only.
 
 the beta release command packages the default desktop application. optional
 native vst3 helper profiles are not included by that command, and this manual

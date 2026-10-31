@@ -78,9 +78,10 @@ fn command_t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppC
     visual.run_until_parked();
     visual.simulate_keystrokes("cmd-t");
     let command = editor.read_with(&visual, |view, _| {
-        assert!(
-            matches!(&view.last_enqueued_edit, Some(Command::InsertTrack {name, before_track: None}) if name == "audio 3")
-        );
+        assert!(matches!(
+            &view.last_enqueued_edit,
+            Some(Command::InsertDefaultTrack { before_track: None })
+        ));
         view.last_enqueued_edit.clone().unwrap()
     });
     let mut canonical = Editor::new(original.clone(), 8).unwrap();
@@ -88,7 +89,8 @@ fn command_t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppC
         panic!("track result")
     };
     assert_eq!(canonical.project().tracks().len(), 3);
-    assert_eq!(canonical.project().track(id).unwrap().name(), "audio 3");
+    assert_eq!(canonical.project().track(id).unwrap().name(), "track 3");
+    assert!(canonical.project().track(id).unwrap().name_is_automatic());
     let created = canonical.project().track(id).unwrap();
     assert!(created.instrument().is_none());
     assert!(created.devices().is_empty());
@@ -138,7 +140,7 @@ fn command_t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppC
     assert_eq!(canonical.project().snapshot(), expected);
     assert!(!canonical.undo());
     assert!(canonical.redo());
-    assert_eq!(canonical.project().track(id).unwrap().name(), "audio 3");
+    assert_eq!(canonical.project().track(id).unwrap().name(), "track 3");
 }
 
 #[gpui::test]

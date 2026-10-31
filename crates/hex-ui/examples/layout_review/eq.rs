@@ -194,6 +194,7 @@ pub(super) fn model(fixture: &Fixture, cx: &gpui::App) -> Option<ResponseGraphMo
         secondary: curve(1),
         analyzer: None,
         input_analyzer: None,
+        analyzer_peak: None,
         nodes: vec![hex_widgets::ResponseGraphNode {
             id: 1,
             position: [

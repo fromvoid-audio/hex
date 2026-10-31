@@ -138,6 +138,7 @@ fn model(nodes: Vec<ResponseGraphNode>) -> ResponseGraphModel {
         secondary,
         analyzer: None,
         input_analyzer: None,
+        analyzer_peak: None,
         nodes,
     }
 }
