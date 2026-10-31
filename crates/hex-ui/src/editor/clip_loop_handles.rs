@@ -2,12 +2,17 @@
 //! comes from project queries; ordinary trim/warp/fade policies stay with owners.
 //! First-boundary handles use horizontal arrows; outer repeat handles retain
 //! the circular-arrow cursor. GPUI typed drags inherit that same handle style.
+//! Ordinary edge trimming only starts in the clip's header rail
+//! ([`super::edge_trim_height`]); the lower edge belongs to the body,
+//! the fade handles and the outer loop corner, which owns its own hit box.
 use super::*;
 use crate::theme;
 use gpui::{CursorStyle, relative, rgb};
 
 pub(in crate::editor) const BOTTOM_RADIUS: f32 = 8.0;
-const WIDTH: f32 = 8.0;
+/// Width of the outer loop corner and first-boundary hit boxes. The lower-right
+/// fade handle sits just inside the corner so the two never overlap.
+pub(in crate::editor) const WIDTH: f32 = 8.0;
 
 #[derive(Clone, Copy)]
 pub(super) struct LoopControl {
@@ -163,7 +168,13 @@ pub(in crate::editor) fn midi_controls(
     )
 }
 
-pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>, scale: f32) -> Div {
+pub(super) fn base(
+    edge: TrimEdge,
+    width: f32,
+    lane_height: f32,
+    control: Option<LoopControl>,
+    scale: f32,
+) -> Div {
     let border = hex_widgets::rectangle_border_width(width);
     let left_border = if border > 0.0 {
         1.0 / scale.max(1.0)
@@ -172,10 +183,12 @@ pub(super) fn base(edge: TrimEdge, width: f32, control: Option<LoopControl>, sca
     };
     let Some(control) = control else {
         let part = super::super::drag::rectangle_part(Some(edge));
+        // Edge trimming is limited to the header rail, sharing its height with
+        // pointer arbitration in `clip_pointer_handles`.
         return div()
             .absolute()
             .top(px(-border))
-            .bottom(px(-border))
+            .h(px(super::edge_trim_height(lane_height)))
             .w(px(handle_width(width)))
             .cursor(part.cursor())
             .when(edge == TrimEdge::Left, |d| d.left(px(-left_border)))

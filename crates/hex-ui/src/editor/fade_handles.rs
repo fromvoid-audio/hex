@@ -31,11 +31,6 @@ impl Handle {
         }
     }
 }
-/// Minimum visible clip width for hover to reveal handles on a fade-free clip.
-const HOVER_REVEAL_MIN_WIDTH: f32 = 28.0;
-/// Handle-centre inset that keeps a hover-revealed 8px handle off the 4px trim strip.
-const HOVER_REVEAL_EDGE_INSET: f32 = 9.0;
-
 struct FadeControls {
     lane: LaneBounds,
     local_fade: ClipFade,
@@ -561,7 +556,6 @@ impl EditorView {
 
     fn fade_controls(
         &self,
-        state: &ViewState,
         track: TrackId,
         clip: &Clip,
         visible: (u64, u64),
@@ -593,60 +587,23 @@ impl EditorView {
         {
             return None;
         }
-        let unauthored = fade.is_neutral() && !fade.has_shape();
-        // Hover alone on a fade-free clip reveals only the upper handles that
-        // author fades. Its lower handles merely resize, so trim strips and the
-        // loop corner keep those gestures; narrow clips stay free to move.
-        // A pressed handle keeps this geometry until its preview authors a fade.
-        let hover_unauthored = unauthored && !self.fade_key_held;
-        if hover_unauthored
-            && !active
-            && lane.width * ((visible.1 - visible.0) as f32 / viewport.length as f32)
-                < HOVER_REVEAL_MIN_WIDTH
-        {
-            return None;
-        }
-        let local_fade = fade.reanchor(clip.duration()).ok()?;
-        let local_controls = self.fade_key_held || preview.is_some() || active || unauthored;
-        let controls = if local_controls { local_fade } else { fade };
+        // Hover and held `f` share these local controls, so the hovered clip
+        // shows exactly the handle set and corner positions that `f` shows.
+        let controls = fade.reanchor(clip.duration()).ok()?;
         let reanchors =
             clip.audio_edit().is_some() || fade.offset() != 0 || fade.span() != clip.duration();
         let mut positions = Vec::with_capacity(6);
         for (handle, (domain_frame, subframe), gain) in knots(controls) {
             if matches!(handle, Handle::InCurve) && controls.fade_in() < 3
                 || matches!(handle, Handle::OutCurve) && controls.fade_out() < 3
-                || hover_unauthored && matches!(handle, Handle::InBottom | Handle::OutBottom)
             {
                 continue;
             }
-            let local_frame = |position: u64| -> Option<i128> {
-                if local_controls {
-                    Some(i128::from(position))
-                } else if let Some(edit) = clip.audio_edit() {
-                    edit.projected_fade(state.project.tempo_map())
-                        .and_then(|projection| projection.frame_at_domain_position(position))
-                        .ok()
-                        .flatten()
-                        .zip(edit.projected_domain(state.project.tempo_map()).ok())
-                        .map(|(root, (_, _, start, _))| i128::from(root) - i128::from(start))
-                } else {
-                    Some(i128::from(position) - i128::from(fade.offset()))
-                }
-            };
-            let Some(first) = local_frame(domain_frame) else {
-                continue;
-            };
-            let subframe_offset = if subframe > 0.0 {
-                let Some(next) = domain_frame.checked_add(1).and_then(local_frame) else {
-                    continue;
-                };
-                (next - first) as f64 * subframe
-            } else {
-                0.0
-            };
             // Subtract integer origins before conversion, preserving short-clip
-            // precision even near the maximum absolute project frame.
-            let relative = (first - i128::from(visible.0 - clip.start())) as f64 + subframe_offset;
+            // precision even near the maximum absolute project frame. Local
+            // knots are clip frames, so a subframe is already a frame fraction.
+            let relative = (i128::from(domain_frame) - i128::from(visible.0 - clip.start())) as f64
+                + subframe.max(0.0);
             if !relative.is_finite() || relative < 0.0 || relative >= (visible.1 - visible.0) as f64
             {
                 continue;
@@ -658,14 +615,17 @@ impl EditorView {
             if !pixel_width.is_finite() {
                 continue;
             }
-            // Hover-only handles also clear the edge trim strip.
-            let edge_inset = if hover_unauthored {
-                HOVER_REVEAL_EDGE_INSET
+            let inset = (4.0_f32).min(pixel_width / 2.0);
+            // The outer loop corner owns the bottom-right hit box; the lower
+            // fade-out handle sits just inside it instead of covering it.
+            let right_inset = if matches!(handle, Handle::OutBottom) {
+                super::trim::loop_handles::WIDTH + 4.0
             } else {
                 4.0
             };
-            let inset = edge_inset.min(pixel_width / 2.0);
-            let fraction = (fraction * pixel_width).clamp(inset, pixel_width - inset) / pixel_width;
+            let fraction = (fraction * pixel_width)
+                .clamp(inset, (pixel_width - right_inset).max(inset))
+                / pixel_width;
             let name_height = super::clip_name::CLIP_NAME_HEIGHT;
             let body_height = (lane.height - name_height).max(8.0);
             let vertical_inset = (4.0 / body_height).min(0.5);
@@ -681,14 +641,13 @@ impl EditorView {
         }
         Some(FadeControls {
             lane,
-            local_fade,
+            local_fade: controls,
             reanchors,
             positions,
         })
     }
     pub(super) fn fade_handle_hit(
         &self,
-        state: &ViewState,
         track: TrackId,
         clip: &Clip,
         x: f32,
@@ -702,7 +661,7 @@ impl EditorView {
             return false;
         };
         let visible = (clip.start().max(viewport.start), end.min(viewport_end));
-        let Some(controls) = self.fade_controls(state, track, clip, visible, viewport) else {
+        let Some(controls) = self.fade_controls(track, clip, visible, viewport) else {
             return false;
         };
         let left = controls.lane.left
@@ -727,7 +686,7 @@ impl EditorView {
         viewport: Viewport,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::Stateful<Div>> {
-        let Some(controls) = self.fade_controls(state, track, clip, visible, viewport) else {
+        let Some(controls) = self.fade_controls(track, clip, visible, viewport) else {
             return Vec::new();
         };
         let lane = controls.lane;

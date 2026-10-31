@@ -123,7 +123,9 @@ mod tests {
         visual.run_until_parked();
         let selector: &'static str =
             Box::leak(format!("clip-trim-left-{}", audio.value()).into_boxed_str());
-        let down = visual.debug_bounds(selector).unwrap().center();
+        let down = crate::editor::clip_drag_ui_test::trim_grab_point(
+            visual.debug_bounds(selector).unwrap(),
+        );
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(
             point(down.x + px(4.0), down.y),
@@ -146,7 +148,9 @@ mod tests {
             assert_eq!(p.waveform.source_frames as u64, c.duration());
             std::sync::Arc::clone(&p.waveform)
         });
-        let down = visual.debug_bounds(selector).unwrap().center();
+        let down = crate::editor::clip_drag_ui_test::trim_grab_point(
+            visual.debug_bounds(selector).unwrap(),
+        );
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(
             point(down.x + px(3.0), down.y),

@@ -297,6 +297,7 @@ mod tests {
             track_id,
             owner,
             active_origin: None,
+            audio_launch_frame: None,
             pending: None,
         }
     }

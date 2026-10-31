@@ -538,8 +538,9 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         .expect("effect card");
     assert_eq!(instrument_card.size.height, chain.size.height - px(6.0));
     assert_eq!(effect_card.size.height, instrument_card.size.height);
-    assert_eq!(instrument_card.size.width, px(286.0 + 25.0));
-    assert_eq!(effect_card.size.width, px(144.0 + 25.0));
+    // Each card ends in the 11px passive stereo output meter.
+    assert_eq!(instrument_card.size.width, px(286.0 + 11.0));
+    assert_eq!(effect_card.size.width, px(144.0 + 11.0));
     assert!(
         instrument_card.origin.x < effect_card.origin.x,
         "instrument is first"
@@ -568,8 +569,8 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     );
     editor.read_with(cx, |view, _| {
         assert!(
-            view.device_panel.has_only_host_control_for(instrument_id),
-            "the analytic sine instrument exposes only its host output trim"
+            !view.device_panel.has_control_for(instrument_id),
+            "the analytic sine instrument exposes no parameter controls"
         );
     });
     let parameter_selector = Box::leak(
@@ -1103,7 +1104,15 @@ fn explicit_main_focus_keeps_deselected_audio_and_midi_detail_empty(cx: &mut Tes
             visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
-                assert!(v.detail_clip_id().is_none());
+                assert!(
+                    v.selected_clip.is_none(),
+                    "a range press is not a clip selection"
+                );
+                assert_eq!(
+                    v.detail_clip_id(),
+                    Some(clip),
+                    "the pressed clip stays the clip editor subject"
+                );
             });
             let main = visual.debug_bounds("main-track-header").unwrap();
             visual.simulate_click(

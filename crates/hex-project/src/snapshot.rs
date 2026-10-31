@@ -19,6 +19,10 @@ pub struct Snapshot {
     pub arrangement_sections: Vec<crate::ArrangementSectionSnapshot>,
     pub tuning: hex_tuning::ProjectTuning,
     pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
+    /// Strictly ascending IDs of tracks whose name is automatic (hex-generated
+    /// default or device-derived). Every listed ID must name a track; omitted
+    /// tracks carry user-set names.
+    pub automatic_track_names: Vec<u64>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
     pub midi_routes: Vec<crate::MidiRouteSnapshot>,
     pub import_provenance: Option<crate::ImportProvenance>,
@@ -280,6 +284,14 @@ impl Project {
                     destination: feed.destination.value(),
                     gain: feed.gain,
                 })
+                .collect(),
+            automatic_track_names: self
+                .tracks
+                .iter()
+                .filter(|track| track.automatic_name)
+                .map(|track| track.id.0)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
                 .collect(),
             import_provenance: self.import_provenance.clone(),
             sample_rate: self.sample_rate,
@@ -678,6 +690,17 @@ impl Project {
         let return_feeds = std::mem::take(&mut snapshot.return_feeds);
         let audio_feeds = std::mem::take(&mut snapshot.audio_feeds);
         let midi_routes = std::mem::take(&mut snapshot.midi_routes);
+        let automatic_track_names = std::mem::take(&mut snapshot.automatic_track_names);
+        if automatic_track_names.len() > MAX_TRACKS
+            || automatic_track_names
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(Invalid(
+                "automatic track names must be unique ascending track ids",
+            ));
+        }
+        let mut automatic_track_names: BTreeSet<u64> = automatic_track_names.into_iter().collect();
         let mut project = Project::new(snapshot.sample_rate)?;
         project.tuning = snapshot.tuning;
         project.import_provenance = snapshot.import_provenance;
@@ -1079,6 +1102,7 @@ impl Project {
                 )?,
                 id: TrackId(track.id),
                 name: track.name,
+                automatic_name: automatic_track_names.remove(&track.id),
                 gain: track.gain,
                 balance: track.balance,
                 muted: track.muted,
@@ -1091,6 +1115,9 @@ impl Project {
             });
         }
 
+        if !automatic_track_names.is_empty() {
+            return Err(Invalid("automatic track name owner is missing"));
+        }
         let mut scenes = Vec::with_capacity(snapshot.session.scenes.len());
         let mut scene_ids = BTreeSet::new();
         for scene in snapshot.session.scenes {
