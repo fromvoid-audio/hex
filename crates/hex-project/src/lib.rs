@@ -61,6 +61,7 @@ mod clip_alias_edit;
 pub use clip_alias::{
     AliasContentSnapshot, AliasMemberSnapshot, AliasSourceSnapshot, ClipAliasesSnapshot,
 };
+mod audio_event_timeline;
 mod clip_fade_trim;
 mod clip_name;
 mod clip_selection_edit;
