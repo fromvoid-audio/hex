@@ -302,10 +302,10 @@ impl PlaybackHandoffRejection {
             Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
             Self::StreamSourceChanged => "original media changed · reopen or relink it",
             Self::LatencyLayoutChanged => {
-                "latency layout changed · pause or stop transport to apply this revision"
+                "latency layout could not change live · previous audio continues"
             }
             Self::SourceHistoryUnavailable => {
-                "source history cannot transfer · stop transport before applying this revision"
+                "source history cannot transfer live · previous audio continues"
             }
         }
     }
@@ -467,12 +467,6 @@ impl Playback {
             .as_ref()
             .is_some_and(|runtime| runtime.live_expression_supported_on_control(track))
     }
-    /// Existing monitor-latency capability of this actual constructed graph.
-    pub fn computer_keyboard_latency_supported_on_control(&self) -> bool {
-        self.session_runtime
-            .as_ref()
-            .is_some_and(|runtime| runtime.computer_keyboard_latency_supported())
-    }
     /// Control-side attachment validated against the exact compiled instrument instance.
     pub fn prepare_live_expression(
         &mut self,
@@ -585,11 +579,6 @@ impl Playback {
         let runtime = self.session_runtime.as_mut().ok_or(Invalid(
             "computer keyboard requires prepared session playback",
         ))?;
-        if !runtime.computer_keyboard_latency_supported() {
-            return Err(Invalid(
-                "computer keyboard monitoring is unavailable with positive latency devices",
-            ));
-        }
         let family = self
             .prepared_revision
             .as_ref()
@@ -1787,7 +1776,7 @@ impl Playback {
         };
         match (&mut self.session_runtime, &mut previous.session_runtime) {
             (Some(next), Some(old)) => next
-                .try_inherit_state_from(old)
+                .try_inherit_state_live_from(old)
                 .map(|_| ())
                 .map_err(PlaybackHandoffError::Session)?,
             (Some(next), None) => {

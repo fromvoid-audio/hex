@@ -37,6 +37,7 @@ mod clip_gain;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_gain_ui_tests;
 mod clip_name;
+mod clip_range_fit;
 mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
@@ -926,6 +927,8 @@ pub(super) struct EditorView {
     active_trim_drag: Option<trim::TrimDrag>,
     pending_trim: Option<trim::PendingTrim>,
     fade_key_held: bool,
+    /// Option held: the right clip header edge offers repeat-extend.
+    option_held: bool,
     time_selection_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
     pending_fade: Option<fade_handles::PendingFade>,
@@ -1652,6 +1655,7 @@ impl EditorView {
             active_trim_drag: None,
             pending_trim: None,
             fade_key_held: false,
+            option_held: false,
             time_selection_key_held: false,
             active_fade_drag: None,
             pending_fade: None,

@@ -240,7 +240,7 @@ fn main_limiter_quiet_timing_changes_publish_and_render_the_new_delay() {
 }
 
 #[test]
-fn changing_existing_latency_reports_stop_and_restores_current_project() {
+fn changing_existing_latency_while_playing_applies_without_stopping() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(131_072);
@@ -266,79 +266,41 @@ fn changing_existing_latency_reports_stop_and_restores_current_project() {
     for _ in 0..12 {
         h.render();
     }
+    // A second limiter changes the latency layout while playing. It applies
+    // at a block boundary (audio restarts there) and the transport keeps
+    // running; no stop, pause or rebuild is needed.
     let added = h.run(limiter());
     let device = added.state.project.track(track).unwrap().devices()[1].id();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let rejected = loop {
-        h.pump();
-        h.render();
-        if let Some((revision, reason)) = h
-            .audio
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .rejected_revision()
-            && revision > applied
-        {
-            assert_eq!(
-                reason,
-                hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged
-            );
-            assert_eq!(
-                hex_engine::PlaybackHandoffRejection::from_code(reason as u32),
-                Some(reason)
-            );
-            assert!(reason.message().contains("stop transport"));
-            break revision;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "latency refusal was not reported"
-        );
-        std::thread::yield_now();
-    };
-    assert_eq!(
-        h.audio
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .applied_revision
-            .load(Acquire),
-        applied
-    );
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Stop)
-        .unwrap();
-    h.render();
-    let restored = h.run(Request::RestoreStoppedPlayback);
-    assert_eq!(restored.state.project, added.state.project);
-    (applied, _) = h.applied(rejected);
+    (applied, _) = h.applied(applied);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Acquire));
+    assert!(status.position.load(Acquire) > 0);
     h.run(Request::SetDeviceParameter {
         device,
         parameter: ParameterId::from_static(2),
         value: ParameterValue::Float(-18.0),
     });
     h.applied(applied);
-    h.audio
-        .as_mut()
-        .unwrap()
-        .control
-        .command(PlaybackCommand::Play)
-        .unwrap();
     for _ in 0..20 {
         h.render();
     }
     let ceiling = 10.0_f32.powf(-18.0 / 20.0);
+    let output = h.render();
+    assert!(output.iter().flatten().any(|sample| *sample != 0.0));
     assert!(
-        h.render()
+        output
             .iter()
             .flatten()
             .all(|sample| *sample <= ceiling + 1e-5)
+    );
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
     );
 }
 
@@ -567,6 +529,17 @@ fn paused_latency_change_then_new_instrument_track_applies_and_binds_live_input(
         bound.live_expression_complete.as_ref().unwrap(),
         &input
     ));
+    (applied, _) = h.applied(applied);
+    // Pulse #3772: the limiter's PDC latency no longer disables the computer
+    // keyboard on another track.
+    let keyboard = h.run(Request::PrepareComputerKeyboard {
+        project_generation: 0,
+        revision: added.state.revision,
+        request_id: 1,
+        track: keys,
+        input: Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default()),
+    });
+    assert_eq!(keyboard.computer_keyboard_complete, Some(1));
     h.applied(applied);
     let status = h.audio.as_ref().unwrap().status().unwrap();
     assert_eq!(
@@ -574,76 +547,5 @@ fn paused_latency_change_then_new_instrument_track_applies_and_binds_live_input(
         paused,
         "paused cursor is kept"
     );
-    assert!(!status.playing.load(Acquire));
-}
-
-/// A latency change refused while playing applies once the transport pauses:
-/// the editor republishes the current revision, which installs at the cursor.
-#[test]
-fn latency_change_refused_while_playing_applies_after_pause_republish() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
-    let files = Files::new();
-    let mut h = ResidentHarness::with_frame_limit(131_072);
-    assert!(h.next().error.is_none());
-    let (mut applied, _) = h.applied(0);
-    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
-    let track = imported.state.project.tracks()[0].id();
-    (applied, _) = h.applied(applied);
-    let limiter = || Request::AddNativeDevice {
-        track,
-        class: hex_engine::NativeDeviceClass::Effect,
-        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
-        before: None,
-    };
-    h.run(limiter());
-    (applied, _) = h.applied(applied);
-    let control = |h: &mut ResidentHarness, command| {
-        h.audio.as_mut().unwrap().control.command(command).unwrap();
-    };
-    control(&mut h, PlaybackCommand::Play);
-    for _ in 0..12 {
-        h.render();
-    }
-    h.run(limiter());
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let rejected = loop {
-        h.pump();
-        h.render();
-        if let Some((revision, reason)) = h
-            .audio
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .rejected_revision()
-            && revision > applied
-        {
-            assert_eq!(
-                reason,
-                hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged
-            );
-            break revision;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "latency refusal was not reported"
-        );
-        std::thread::yield_now();
-    };
-    control(&mut h, PlaybackCommand::Pause);
-    h.render();
-    let paused = h
-        .audio
-        .as_ref()
-        .unwrap()
-        .status()
-        .unwrap()
-        .position
-        .load(Acquire);
-    assert!(paused > 0);
-    h.run(Request::RepublishPausedPlayback);
-    h.applied(rejected);
-    let status = h.audio.as_ref().unwrap().status().unwrap();
-    assert_eq!(status.position.load(Acquire), paused);
     assert!(!status.playing.load(Acquire));
 }
