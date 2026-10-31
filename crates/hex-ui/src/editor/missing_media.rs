@@ -459,13 +459,9 @@ impl EditorView {
                                 .child(theme::text(media.file_name())),
                         )
                         .child(div().text_color(muted).child(theme::text(status)))
-                        .child(
-                            small_button(("missing-media-locate", index), "locate…").on_click(
-                                cx.listener(move |view, _, _, cx| {
-                                    view.missing_media_locate(index, cx)
-                                }),
-                            ),
-                        ),
+                        .child(button(("missing-media-locate", index), "locate…").on_click(
+                            cx.listener(move |view, _, _, cx| view.missing_media_locate(index, cx)),
+                        )),
                 )
                 .child(
                     div()
@@ -505,7 +501,7 @@ impl EditorView {
                     );
                 }
             }
-            list = list.child(entry);
+            list = list.children([entry]);
         }
         let found = panel
             .rows
@@ -520,7 +516,7 @@ impl EditorView {
             None => panel.note.clone(),
         };
         let search_button = if panel.search.is_some() {
-            small_button("missing-media-cancel-search", "cancel search").on_click(cx.listener(
+            button("missing-media-cancel-search", "cancel search").on_click(cx.listener(
                 |view, _, _, cx| {
                     if let Some(search) =
                         view.missing_media.as_ref().and_then(|p| p.search.as_ref())
@@ -531,11 +527,11 @@ impl EditorView {
                 },
             ))
         } else {
-            small_button("missing-media-search", "search folders…")
+            button("missing-media-search", "search folders…")
                 .on_click(cx.listener(|view, _, _, cx| view.missing_media_search(cx)))
         };
         let can_open = panel.complete() && panel.search.is_none();
-        let open_button = small_button("missing-media-open", "open")
+        let open_button = button("missing-media-open", "open")
             .when(!can_open, |button| {
                 button.text_color(muted).cursor_default()
             })
@@ -579,13 +575,13 @@ impl EditorView {
                                     theme::text("the project opens once every file is found"),
                                 )),
                         )
-                        .child(list)
+                        .children([list])
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .gap_2()
-                                .child(search_button)
+                                .children([search_button])
                                 .child(
                                     div()
                                         .flex_1()
@@ -595,10 +591,10 @@ impl EditorView {
                                         .text_color(muted)
                                         .children(footer_note.map(theme::text)),
                                 )
-                                .child(small_button("missing-media-dismiss", "cancel").on_click(
+                                .child(button("missing-media-dismiss", "cancel").on_click(
                                     cx.listener(|view, _, _, cx| view.missing_media_dismiss(cx)),
                                 ))
-                                .child(open_button),
+                                .children([open_button]),
                         ),
                 ),
         )
@@ -622,7 +618,7 @@ fn open_request(
     }
 }
 
-fn small_button(id: impl Into<gpui::ElementId>, label: &'static str) -> Stateful<Div> {
+fn button(id: impl Into<gpui::ElementId>, label: &'static str) -> Stateful<Div> {
     div()
         .id(id)
         .flex_shrink_0()
