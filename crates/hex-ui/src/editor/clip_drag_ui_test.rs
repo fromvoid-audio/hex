@@ -768,8 +768,10 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
     let original_bounds = visual
         .debug_bounds(clip_selector)
         .expect("painted audio clip");
+    // Edge trimming covers only the header rail at the top of the clip.
     assert_eq!(handle_bounds.origin.y, original_bounds.origin.y);
-    assert_eq!(handle_bounds.size.height, original_bounds.size.height);
+    let header = super::trim::edge_trim_height(f32::from(original_bounds.size.height));
+    assert!((f32::from(handle_bounds.size.height) - header).abs() <= 1.0);
     let move_bounds = visual
         .debug_bounds(Box::leak(
             format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
