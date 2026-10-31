@@ -104,6 +104,8 @@ pub struct ResponseGraphModel {
     pub analyzer: Option<Vec<[f32; 2]>>,
     /// Optional aligned input spectrum, independently hidden by its owner.
     pub input_analyzer: Option<Vec<[f32; 2]>>,
+    /// Optional held-peak curve for the output analyzer, drawn as a thin line.
+    pub analyzer_peak: Option<Vec<[f32; 2]>>,
     pub nodes: Vec<ResponseGraphNode>,
 }
 
@@ -116,6 +118,9 @@ impl ResponseGraphModel {
                 curve.len() < 2 || curve.len() > MAX_ANALYZER_POINTS || !valid_curve(curve)
             })
             || self.input_analyzer.as_ref().is_some_and(|curve| {
+                curve.len() < 2 || curve.len() > MAX_ANALYZER_POINTS || !valid_curve(curve)
+            })
+            || self.analyzer_peak.as_ref().is_some_and(|curve| {
                 curve.len() < 2 || curve.len() > MAX_ANALYZER_POINTS || !valid_curve(curve)
             })
             || self.nodes.len() > MAX_NODES
@@ -229,6 +234,7 @@ impl ResponseGraph {
             secondary: vec![[0.0, 0.5], [1.0, 0.5]],
             analyzer: None,
             input_analyzer: None,
+            analyzer_peak: None,
             nodes: Vec::new(),
         };
         Self {
@@ -383,6 +389,7 @@ impl ResponseGraph {
             || self.model.secondary != model.secondary
             || self.model.analyzer != model.analyzer
             || self.model.input_analyzer != model.input_analyzer
+            || self.model.analyzer_peak != model.analyzer_peak
             || self.model.nodes != model.nodes
             || self.style != style
         {
@@ -1139,6 +1146,7 @@ impl gpui::Render for ResponseGraph {
         let secondary = self.model.secondary.clone();
         let analyzer = self.model.analyzer.clone();
         let input_analyzer = self.model.input_analyzer.clone();
+        let analyzer_peak = self.model.analyzer_peak.clone();
         let analyzer_style = self.analyzer_style.unwrap_or(ResponseGraphAnalyzerStyle {
             input: self.style.muted,
             output: self.style.muted,
@@ -1216,6 +1224,7 @@ impl gpui::Render for ResponseGraph {
                             &secondary,
                             analyzer.as_deref(),
                             input_analyzer.as_deref(),
+                            analyzer_peak.as_deref(),
                             analyzer_style,
                             &nodes,
                             style,
@@ -1254,6 +1263,7 @@ fn paint_graph(
     secondary: &[[f32; 2]],
     analyzer: Option<&[[f32; 2]]>,
     input_analyzer: Option<&[[f32; 2]]>,
+    analyzer_peak: Option<&[[f32; 2]]>,
     analyzer_style: ResponseGraphAnalyzerStyle,
     nodes: &[ResponseGraphNode],
     style: ControlStyle,
@@ -1270,13 +1280,15 @@ fn paint_graph(
     let spectra = [
         input_analyzer.map(|points| SpectrumLayer {
             points,
+            peak: None,
             color: analyzer_style.input,
-            stroke_width: px(0.7),
+            stroke_width: spectrum_painter::SECONDARY_TRACE_WIDTH,
         }),
         analyzer.map(|points| SpectrumLayer {
             points,
+            peak: analyzer_peak,
             color: analyzer_style.output,
-            stroke_width: px(0.9),
+            stroke_width: spectrum_painter::PRIMARY_TRACE_WIDTH,
         }),
     ]
     .into_iter()
@@ -1309,6 +1321,7 @@ fn paint_graph(
     if let Ok(grid) = grid.build() {
         window.paint_path(grid, rgb(style.rail));
     }
+    spectrum_painter::paint(plot, spectra.clone(), SpectrumPass::Peak, window);
     spectrum_painter::paint(plot, spectra, SpectrumPass::Trace, window);
     paint_curve(
         origin,
@@ -1498,6 +1511,7 @@ mod tests {
             secondary: vec![[0.0, 0.1], [0.5, 0.5], [1.0, 0.1]],
             analyzer: None,
             input_analyzer: None,
+            analyzer_peak: None,
             nodes: vec![ResponseGraphNode {
                 id: 3,
                 position: [0.5, 0.5],

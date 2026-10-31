@@ -240,6 +240,7 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
 fn midi_note_body(
     clip: hex_project::ClipId,
     shapes: impl IntoIterator<Item = (f32, f32, u8)>,
+    fit: super::midi_thumbnail::PitchFit,
     dragging: bool,
 ) -> (Div, usize) {
     // These samples are display-only. One canvas preserves every prepared note
@@ -271,6 +272,7 @@ fn midi_note_body(
                                 x,
                                 width,
                                 pitch,
+                                fit,
                                 window.scale_factor(),
                             ) {
                                 window.paint_quad(gpui::fill(note, rgb(0x000000)));
@@ -813,18 +815,28 @@ impl EditorView {
                             visible_start,
                             visible_end,
                         );
+                        // Keep the resting clip's zoom so the drag doesn't
+                        // change note thickness.
+                        let fit = super::midi_thumbnail::PitchFit::from_pitches(
+                            state.midi_preview.get(clip.id()).map_or_else(
+                                || clip.notes().iter().map(|note| note.pitch()).collect(),
+                                |preview| {
+                                    preview
+                                        .samples
+                                        .iter()
+                                        .take(hex_engine::MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP)
+                                        .map(|sample| sample.pitch)
+                                        .collect::<Vec<_>>()
+                                },
+                            ),
+                        );
                         let mut notes = div().absolute().inset_0();
                         for (x, shape_width, pitch) in shapes {
-                            let top = f32::from(127_u8.saturating_sub(pitch)) / 128.0;
                             notes = notes.child(
-                                div()
-                                    .debug_selector(|| format!("midi-trim-preview-note-{pitch}"))
-                                    .absolute()
-                                    .left(relative(x))
-                                    .top(relative(top))
-                                    .w(relative(shape_width))
-                                    .h(px(2.0))
-                                    .bg(rgb(0x000000)),
+                                super::midi_thumbnail::note_column(x, shape_width, pitch, fit)
+                                    .debug_selector(move || {
+                                        format!("midi-trim-preview-note-{pitch}")
+                                    }),
                             );
                         }
                         overlay =
@@ -2274,7 +2286,14 @@ impl EditorView {
                     )
                     .map(|grid| loop_handles::body(grid, clip.looping())),
                 );
-                let (notes, shown) = midi_note_body(midi_clip_id, note_shapes, false);
+                let fit = super::midi_thumbnail::PitchFit::from_pitches(
+                    preview
+                        .samples
+                        .iter()
+                        .take(hex_engine::MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP)
+                        .map(|sample| sample.pitch),
+                );
+                let (notes, shown) = midi_note_body(midi_clip_id, note_shapes, fit, false);
                 midi = midi.child(loop_handles::body(
                     clip_waveform_body(notes),
                     clip.looping(),
@@ -2452,7 +2471,14 @@ impl EditorView {
                         )
                     })
                     .take(*note_budget);
-                let (notes, shown) = midi_note_body(id, shapes, true);
+                let fit = super::midi_thumbnail::PitchFit::from_pitches(
+                    preview
+                        .samples
+                        .iter()
+                        .take(hex_engine::MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP)
+                        .map(|sample| sample.pitch),
+                );
+                let (notes, shown) = midi_note_body(id, shapes, fit, true);
                 *note_budget = note_budget.saturating_sub(shown);
                 content = content.child(clip_waveform_body(notes));
             }
@@ -3298,21 +3324,25 @@ mod overlap_tests {
     struct ThumbnailOracle(hex_project::ClipId);
     impl gpui::Render for ThumbnailOracle {
         fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
+            // A five-row fitted range: thick rows, top and bottom at the body edges.
             let shapes = [
-                (0.0, 0.1, 127),
+                (0.0, 0.1, 64),
                 (0.13, 0.31, 60),
-                (0.57, 0.005, 72),
-                (0.9, 0.1, 0),
+                (0.57, 0.005, 62),
+                (0.9, 0.1, 60),
             ];
+            let fit = super::super::midi_thumbnail::PitchFit::from_pitches([64, 60, 62]);
             let mut legacy = div().absolute().inset_0();
             for (x, width, pitch) in shapes {
+                let (top, height) =
+                    super::super::midi_thumbnail::note_rows(fit, pitch, 73.25).unwrap();
                 legacy = legacy.child(
                     div()
                         .absolute()
                         .left(relative(x))
-                        .top(relative(f32::from(127 - pitch) / 128.0))
+                        .top(px(top))
                         .w(relative(width))
-                        .h(px(2.0))
+                        .h(px(height))
                         .bg(rgb(0x00ff00)),
                 );
             }
@@ -3325,13 +3355,13 @@ mod overlap_tests {
                     .w(px(193.25))
                     .h(px(73.25))
                     .overflow_hidden()
-                    .children([legacy, midi_note_body(self.0, shapes, false).0]),
+                    .children([legacy, midi_note_body(self.0, shapes, fit, false).0]),
             )
         }
     }
 
     #[gpui::test]
-    fn batched_note_quads_preserve_legacy_extent_pitch_and_body_clipping(
+    fn batched_note_quads_match_fitted_layout_rows_and_body_clipping(
         cx: &mut gpui::TestAppContext,
     ) {
         let clip = audio_project().3;

@@ -751,44 +751,38 @@ fn response_model(
         .eq_panels
         .get(&device)
         .is_some_and(|panel| panel.show_input);
-    let (analyzer, input_analyzer) = spectrum_layers(spectra, show_input, upper);
+    let (analyzer, input_analyzer, analyzer_peak) = spectrum_layers(spectra, show_input, upper);
     Some(ResponseGraphModel {
         primary,
         secondary,
         analyzer,
         input_analyzer,
+        analyzer_peak,
         nodes,
     })
 }
 type SpectrumCurve = Vec<[f32; 2]>;
 
+/// Output level, optional input level and output held-peak curves.
 fn spectrum_layers(
     spectra: Option<&hex_audio::spectrum_worker::PublishedSpectra>,
     show_input: bool,
     upper: f32,
-) -> (Option<SpectrumCurve>, Option<SpectrumCurve>) {
-    let curve = |frame: &hex_audio::spectrum::SpectrumFrame| {
-        frame
-            .bins_dbfs
-            .iter()
-            .enumerate()
-            .map(|(index, db)| {
-                let (low, high) = hex_audio::spectrum::band_bounds_hz(frame.sample_rate_hz, index)
-                    .unwrap_or((20.0, 20000.0));
-                [
-                    axes::x_with_upper((low * high).sqrt(), upper),
-                    super::spectrum_display::level(*db),
-                ]
-            })
-            .collect()
-    };
-    (
-        spectra.map(|pair| curve(&pair.output.frame)),
-        spectra
-            .and_then(|pair| pair.input.as_ref())
-            .filter(|_| show_input)
-            .map(curve),
-    )
+) -> (
+    Option<SpectrumCurve>,
+    Option<SpectrumCurve>,
+    Option<SpectrumCurve>,
+) {
+    let x = |hz| axes::x_with_upper(hz, upper);
+    let output = spectra.map(|pair| super::spectrum_display::curves(&pair.output.frame, x));
+    let input = spectra
+        .and_then(|pair| pair.input.as_ref())
+        .filter(|_| show_input)
+        .map(|frame| super::spectrum_display::curves(frame, x).level);
+    match output {
+        Some(curves) => (Some(curves.level), input, Some(curves.peak)),
+        None => (None, input, None),
+    }
 }
 
 fn audition(view: &mut EditorView, device: DeviceId, id: NodeId) {
@@ -1528,7 +1522,8 @@ mod tests {
         let hidden = spectrum_layers(Some(&pair), false, 20_000.0);
         assert_eq!(hidden.0, shown.0, "input visibility cannot hide output");
         assert!(hidden.1.is_none());
-        assert_eq!(spectrum_layers(None, true, 20_000.0), (None, None));
+        assert_eq!(hidden.2, shown.2, "the held peak follows the output");
+        assert_eq!(spectrum_layers(None, true, 20_000.0), (None, None, None));
     }
 
     #[test]

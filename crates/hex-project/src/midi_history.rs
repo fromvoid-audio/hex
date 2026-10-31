@@ -1121,6 +1121,7 @@ fn same_shell(
             gain_lane,
             id,
             name,
+            automatic_name,
             gain,
             balance,
             muted,
@@ -1145,6 +1146,7 @@ fn same_shell(
             && color == &b.color
             && id == &b.id
             && name == &b.name
+            && automatic_name == &b.automatic_name
             && gain == &b.gain
             && balance == &b.balance
             && muted == &b.muted

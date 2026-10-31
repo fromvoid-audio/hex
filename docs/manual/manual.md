@@ -729,6 +729,15 @@ tracks. selecting another device keeps these spectra running. use **spectrum**
 on an eq to turn only its analyzer off or on. a hidden device panel stops its
 analyzer; missing or stale audio clears the live curve.
 
+every spectrum view in hex, the eq backgrounds and the project spectrum, uses
+the same analyzer. a sine reads at its true level, so a full-scale tone at 1 khz
+touches 0 dbfs. the curve is tilted by 4.5 db per octave around 1 khz, so a
+typical mix looks roughly level instead of sloping down to the highs. the curve
+is smoothed over 1/12 octave, rises at once on new audio and falls over about a
+quarter of a second. a thin, fainter line above it holds recent peaks for one
+second and then sinks slowly. the project spectrum shows this peak line for the
+main output only.
+
 the beta release command packages the default desktop application. optional
 native vst3 helper profiles are not included by that command, and this manual
 does not promise a complete third-party plugin-hosting workflow.

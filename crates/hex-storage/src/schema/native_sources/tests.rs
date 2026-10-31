@@ -129,6 +129,7 @@ fn current_source_roundtrip_preserves_complete_chain_host_metadata_comparison_an
         "nested_audio",
         "audio_event_gains",
         "midi_clip_gains",
+        "automatic_track_names",
     ] {
         assert!(
             schema46
@@ -565,6 +566,7 @@ fn schema49_shared_source_roundtrips_and_schema46_migration_is_single_binding_on
         "nested_audio",
         "audio_event_gains",
         "midi_clip_gains",
+        "automatic_track_names",
     ] {
         assert!(
             old46

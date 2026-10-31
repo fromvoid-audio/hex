@@ -46,7 +46,8 @@ fn browser_enter_worker_selected_defaults_created_track_and_one_undo_redo() {
         assert!(added.error.is_none(), "{:?}", added.error);
         let track = &added.state.project.tracks()[0];
         assert!(matches!(added.created, Some(hex_project::Created::Track(id)) if id == track.id()));
-        assert_eq!(track.name(), "track 1");
+        assert_eq!(track.name(), kind.trim_start_matches("hex.instrument."));
+        assert!(track.name_is_automatic());
         assert_eq!(track.ordered_device_chain().count(), 1);
         assert_eq!(
             track.instrument().unwrap().state(),
@@ -188,5 +189,58 @@ fn browser_enter_worker_refusal_preserves_active_gesture_and_history() {
     assert_eq!(
         event(&service).state.project.tracks(),
         initial.project.tracks()
+    );
+}
+
+#[test]
+fn existing_track_drops_rename_automatic_names_with_instruments_only() {
+    use hex_engine::NativeDeviceClass::{Effect, Instrument};
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    let drop = |editor: &mut hex_project::Editor, track, class, kind: &'static str| {
+        let instrument = editor
+            .project()
+            .track(track)
+            .and_then(hex_project::Track::instrument)
+            .map(hex_project::Device::id);
+        let command = arrangement_device_command(
+            editor.project(),
+            class,
+            DeviceTypeId::from_static(kind),
+            ArrangementDeviceDestination::ExistingTrack { track, instrument },
+        )
+        .unwrap();
+        if class == Effect {
+            assert!(matches!(command, Command::InsertDevice { .. }));
+        }
+        editor.execute(command).unwrap();
+        let track = editor.project().track(track).unwrap();
+        (track.name().to_owned(), track.name_is_automatic())
+    };
+    let Ok(hex_project::Created::Track(default)) =
+        editor.execute(Command::InsertDefaultTrack { before_track: None })
+    else {
+        panic!("default track")
+    };
+    assert_eq!(
+        drop(&mut editor, default, Effect, "hex.utility"),
+        ("track 1".into(), true)
+    );
+    assert_eq!(
+        drop(&mut editor, default, Instrument, "hex.instrument.sampler"),
+        ("sampler".into(), true)
+    );
+    assert_eq!(
+        drop(&mut editor, default, Instrument, "hex.instrument.sine"),
+        ("sine".into(), true)
+    );
+    let Ok(hex_project::Created::Track(custom)) = editor.execute(Command::AddTrack {
+        name: "track 2".into(),
+    }) else {
+        panic!("custom track")
+    };
+    assert_eq!(
+        drop(&mut editor, custom, Instrument, "hex.instrument.sampler"),
+        ("track 2".into(), false)
     );
 }
