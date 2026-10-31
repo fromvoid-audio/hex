@@ -986,6 +986,9 @@ pub(super) struct EditorView {
     tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
+    /// The selected clip a point cursor was deliberately placed inside; that
+    /// cursor then outranks the clip's play start (see `selected_clip_play_start`).
+    edit_cursor_in_selected_clip: Option<ClipId>,
     clip_paint_gesture: Option<clip_paint::ClipPaintGesture>,
     time_selection: Option<time_selection::TimeSelection>,
     time_selection_project_scope: bool,
@@ -1699,6 +1702,7 @@ impl EditorView {
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
             edit_cursor: None,
+            edit_cursor_in_selected_clip: None,
             clip_paint_gesture: None,
             time_selection: None,
             time_selection_project_scope: false,
@@ -1817,8 +1821,12 @@ impl EditorView {
     fn playback_start_frame(&self) -> u64 {
         // The user's placed position wins, even outside an enabled loop; the
         // acknowledged canonical loop only supplies a start when none is placed.
+        // A whole-clip selection replaces the point cursor, not a time range.
         if let Some(selection) = self.normalized_time_selection() {
             return selection.start();
+        }
+        if let Some(frame) = self.selected_clip_play_start() {
+            return frame;
         }
         if let Some(cursor) = self
             .edit_cursor

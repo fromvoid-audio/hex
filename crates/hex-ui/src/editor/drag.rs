@@ -1328,7 +1328,9 @@ impl super::EditorView {
                 start,
             },
         };
-        self.enqueue(request);
+        if self.enqueue(request) {
+            self.stop_browser_preview_for_drop();
+        }
         self.status = "importing sample to arrangement".into();
         self.active_browser_audio_drag = None;
         cx.notify();
