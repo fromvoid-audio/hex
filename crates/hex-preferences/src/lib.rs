@@ -226,6 +226,49 @@ impl BrowserPlaces {
         &self.additional
     }
 
+    /// Point an existing place at a moved folder, keeping its position, icon and
+    /// hidden state. Refuses an unknown source or a destination that is already a
+    /// place so two entries never alias one folder.
+    pub fn relocate(&mut self, old: &Path, new: PathBuf) -> Result<(), PreferencesError> {
+        if new.as_os_str().is_empty() {
+            return Err(PreferencesError::EmptyPath);
+        }
+        validate_path_length(&new)?;
+        if self.additional.contains(&new) {
+            return Err(PreferencesError::InvalidDocument(
+                "relocated folder is already a place".into(),
+            ));
+        }
+        let index = self
+            .additional
+            .iter()
+            .position(|place| place == old)
+            .ok_or_else(|| {
+                PreferencesError::InvalidDocument("relocated source has no matching place".into())
+            })?;
+        let total = self
+            .additional
+            .iter()
+            .enumerate()
+            .filter(|(position, _)| *position != index)
+            .try_fold(native_path_len(&new), |total, (_, path)| {
+                total.checked_add(native_path_len(path))
+            });
+        if total.is_none_or(|total| total > MAX_TOTAL_PATH_BYTES) {
+            return Err(PreferencesError::DocumentTooLarge {
+                maximum: MAX_DOCUMENT_BYTES,
+            });
+        }
+        if let Some(icon) = self.icons.remove(old) {
+            self.icons.insert(new.clone(), icon);
+        }
+        if self.hidden_places.remove(old) {
+            self.hidden_places.insert(new.clone());
+        }
+        self.additional[index] = new;
+        Ok(())
+    }
+
     /// A bounded opaque bundled-icon identifier, keyed by the original native path.
     /// Unknown identifiers survive a save; the UI owns their visible fallback.
     pub fn icon(&self, path: &Path) -> Option<&str> {
@@ -1234,6 +1277,39 @@ mod tests {
             !first.exists() && !second.exists(),
             "preferences must not create source folders"
         );
+    }
+
+    #[test]
+    fn relocating_a_place_keeps_order_icon_and_hidden_state_and_refuses_aliases() {
+        let directory = TestDirectory::new();
+        let config = directory.0.join("browser.json");
+        let [first, moved, last, new] =
+            ["first", "old/samples", "last", "new/samples"].map(|name| directory.0.join(name));
+        let mut places = BrowserPlaces::new([first.clone(), moved.clone(), last.clone()]).unwrap();
+        places.set_icon(&moved, Some("samples")).unwrap();
+        places.set_place_hidden(&moved, true).unwrap();
+        places.relocate(&moved, new.clone()).unwrap();
+        assert_eq!(
+            places.additional(),
+            &[first.clone(), new.clone(), last.clone()]
+        );
+        assert_eq!(places.icon(&new), Some("samples"));
+        assert_eq!(places.icon(&moved), None);
+        assert!(places.place_hidden(&new) && !places.place_hidden(&moved));
+        save(&config, &places).unwrap();
+        assert_eq!(load(&config).unwrap(), places);
+
+        let unchanged = places.clone();
+        assert!(places.relocate(&new, last.clone()).is_err());
+        assert!(places.relocate(&moved, directory.0.join("other")).is_err());
+        assert!(places.relocate(&new, PathBuf::new()).is_err());
+        assert!(
+            places
+                .relocate(&new, PathBuf::from("/".repeat(MAX_PATH_BYTES + 1)))
+                .is_err()
+        );
+        assert_eq!(places, unchanged, "refused relocation leaves places intact");
+        assert!(!new.exists(), "preferences never create or move folders");
     }
 
     #[test]

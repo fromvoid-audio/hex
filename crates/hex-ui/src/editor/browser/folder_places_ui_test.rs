@@ -686,3 +686,109 @@ fn folder_validation_job_retains_root_after_view_and_caller_drop(cx: &mut TestAp
     visual.run_until_parked();
     assert!(!root.exists());
 }
+
+fn settle_catalog(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        settle(editor, visual);
+        if editor.read_with(visual, |view, _| !view.browser.samples.history_loading()) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "sample catalog did not settle"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[gpui::test]
+fn moved_place_shows_missing_and_relocates_with_icon_order_and_samples(cx: &mut TestAppContext) {
+    let (handle, editor, environment, samples) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    let old = environment.root().join("library/drums");
+    let new = environment.root().join("moved/drums");
+    std::fs::create_dir_all(old.join("kicks")).unwrap();
+    std::fs::copy(samples.join("file.wav"), old.join("kicks/kick.wav")).unwrap();
+    settle_catalog(&editor, visual);
+    editor.update(visual, |view, cx| {
+        view.browser.places.push(old.clone());
+        view.queue_browser_places_save(cx);
+        view.refresh_sample_catalog(cx);
+    });
+    settle_catalog(&editor, visual);
+    editor.update(visual, |view, cx| {
+        view.set_browser_place_icon(old.clone(), Some("waveform"), cx);
+        view.select_browser_source(BrowserSection::Place(old.clone()), cx);
+    });
+    settle_catalog(&editor, visual);
+    let index = editor.read_with(visual, |view, _| {
+        assert!(!view.browser_place_missing(&old));
+        assert!(
+            view.browser
+                .samples
+                .catalog
+                .record(&old.join("kicks/kick.wav"))
+                .is_some_and(|record| record.fingerprint.is_some())
+        );
+        view.browser
+            .places
+            .iter()
+            .position(|place| *place == old)
+            .unwrap()
+    });
+
+    std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+    std::fs::rename(&old, &new).unwrap();
+    editor.update(visual, |view, cx| view.refresh_sample_catalog(cx));
+    settle_catalog(&editor, visual);
+    editor.read_with(visual, |view, _| assert!(view.browser_place_missing(&old)));
+    let labels = visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.open_browser_place_icons(old.clone(), point(px(10.0), px(10.0)), window, cx);
+            view.context_menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .map(|item| item.label)
+                .collect::<Vec<_>>()
+        })
+    });
+    assert!(labels.contains(&"relocate…"));
+    editor.update(visual, |view, cx| {
+        view.context_menu = None;
+        // Relocating onto an existing place is refused without changes.
+        view.relocate_browser_place(old.clone(), samples.clone(), cx);
+        assert_eq!(view.browser.places[index], old);
+        view.relocate_browser_place(old.clone(), new.clone(), cx);
+    });
+    settle_catalog(&editor, visual);
+    editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.places[index], new);
+        assert!(!view.browser.places.contains(&old));
+        assert_eq!(
+            view.browser.place_icons.get(&new).map(String::as_str),
+            Some("waveform")
+        );
+        assert_eq!(view.browser.section, BrowserSection::Place(new.clone()));
+        assert!(!view.browser_place_missing(&new) && !view.browser_place_missing(&old));
+        let moved = new.join("kicks/kick.wav");
+        assert!(view.browser.samples.catalog.record(&moved).is_some());
+        assert!(
+            view.browser
+                .samples
+                .catalog
+                .entries()
+                .iter()
+                .all(|entry| !entry.path.starts_with(&old))
+        );
+    });
+    let saved = hex_preferences::load(&environment.root().join("config/browser.json")).unwrap();
+    assert!(saved.additional().contains(&new) && !saved.additional().contains(&old));
+    assert_eq!(saved.icon(&new), Some("waveform"));
+    assert!(
+        new.join("kicks/kick.wav").is_file() && !old.exists(),
+        "relocation never moves sample files"
+    );
+}
