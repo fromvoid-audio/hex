@@ -350,6 +350,7 @@ impl Session {
 
     /// Reserved complete media adoption. The caller's last preparation hook
     /// rechecks cancellation and seals/enqueues only as its last fallible action.
+    #[allow(clippy::too_many_arguments)] // One captured adoption intent per field.
     pub(crate) fn adopt_arrangement_bounce_using<T>(
         &mut self,
         target: BounceTarget,
