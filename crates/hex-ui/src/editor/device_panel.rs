@@ -27,11 +27,11 @@ mod auto_pan_panel;
 mod bindings;
 mod delay_panel;
 mod overdrive_panel;
-pub(super) use bindings::effective_parameter_value;
 use bindings::{
     ControlPresentation, ControlText, ParameterControl, cancel_control,
     parameter_control_matches_identity,
 };
+pub(super) use bindings::{effective_parameter_value, parameter_display_override};
 mod gesture_adapter;
 pub(super) use gesture_adapter::{
     NumericGestureLease, commit_owned_numeric_edit, dispatch_bound_numeric_gesture,

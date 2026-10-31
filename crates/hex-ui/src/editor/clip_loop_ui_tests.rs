@@ -99,12 +99,18 @@ fn selector(f: &Fixture, kind: &str) -> &'static str {
         .into_boxed_str(),
     )
 }
+// A hovered clip's lower-right fade handle covers the outer corner below its
+// top band (Pulse #3736); grab loop controls in that exposed band.
+fn grab(bounds: gpui::Bounds<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
+    point(bounds.center().x, bounds.top() + px(2.0))
+}
+
 fn drag(f: &mut Fixture, kind: &str, dx: f32, modifiers: Modifiers) -> gpui::Point<gpui::Pixels> {
-    let down = f
-        .visual
-        .debug_bounds(selector(f, kind))
-        .expect("loop handle")
-        .center();
+    let down = grab(
+        f.visual
+            .debug_bounds(selector(f, kind))
+            .expect("loop handle"),
+    );
     f.visual
         .simulate_mouse_down(down, MouseButton::Left, modifiers);
     f.visual.simulate_mouse_move(
@@ -187,7 +193,7 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
         assert!((handle.bottom() - trim.bottom()).abs() <= px(1.0));
         assert!(handle.size.height < trim.size.height);
         f.visual
-            .simulate_mouse_move(handle.center(), None, Modifiers::default());
+            .simulate_mouse_move(grab(handle), None, Modifiers::default());
         f.visual.run_until_parked();
         assert_eq!(
             f.visual.rendered_cursor_style(),
