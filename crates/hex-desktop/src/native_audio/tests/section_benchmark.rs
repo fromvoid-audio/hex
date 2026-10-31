@@ -11,11 +11,14 @@
 //!
 //! ```text
 //! HEX_SECTION_BENCH_PROJECT=/path/to/project.hex [HEX_SECTION_BENCH_REPS=5] \
+//!   [HEX_SECTION_BENCH_MEDIA_REMAP=/old/media/root=/new/media/root] \
 //!   cargo test --release -p hex-desktop --features allocation-probe --bin hex-desktop \
 //!   section_edit_benchmark -- --ignored --nocapture
 //! ```
 //!
 //! The project needs at least two song sections; the original is only read.
+//! `HEX_SECTION_BENCH_MEDIA_REMAP` rewrites one absolute media-path prefix in
+//! the temporary copy when the project's library has moved.
 use super::resident_preview::ResidentHarness;
 use super::resident_sections::run_callback;
 use super::*;
@@ -64,42 +67,85 @@ fn open_copy(h: &mut ResidentHarness, path: PathBuf) -> Event {
     let until = Instant::now() + Duration::from_secs(300);
     loop {
         h.pump();
-        if let Ok(event) = h.service.try_event()
-            && event.project_replaced
-        {
-            assert!(event.error.is_none(), "{:?}", event.error);
-            return event;
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "open refused: {:?}", event.error);
+            assert!(
+                event.recovery_failure.is_none(),
+                "open needs recovery: {:?}",
+                event.recovery_failure
+            );
+            if event.project_replaced {
+                return event;
+            }
         }
         assert!(Instant::now() < until, "project open timed out");
         std::thread::sleep(Duration::from_millis(1));
     }
 }
 
-fn wait_applied(h: &mut ResidentHarness) {
-    let until = Instant::now() + Duration::from_secs(300);
+fn wait_applied(h: &mut ResidentHarness, after: u64) {
+    let until = Instant::now() + Duration::from_secs(120);
     loop {
         h.pump();
-        if h.audio
-            .as_ref()
-            .and_then(EditorAudio::status)
-            .is_some_and(|status| status.applied_revision.load(Acquire) > 0)
-        {
+        let status = h.audio.as_ref().and_then(EditorAudio::status);
+        if let Some((rejected, reason)) = status.and_then(|s| s.rejected_revision()) {
+            panic!("resident graph rejected revision {rejected}: {reason:?}");
+        }
+        if h.submitted.is_some_and(|(submitted, _)| {
+            submitted > after
+                && status.is_some_and(|s| s.applied_revision.load(Acquire) == submitted)
+        }) {
             return;
         }
         if h.callback.lock().unwrap().is_some() {
             h.render();
         }
-        assert!(Instant::now() < until, "resident project never applied");
+        if let Ok(event) = h.service.try_event() {
+            assert!(event.error.is_none(), "{:?}", event.error);
+        }
+        assert!(
+            Instant::now() < until,
+            "resident project after {after} never applied: audio={} submitted={:?} applied={:?} unavailable={:?} refused={:?}",
+            h.audio.is_some(),
+            h.submitted.as_ref().map(|(r, _)| *r),
+            status.map(|s| s.applied_revision.load(Acquire)),
+            h.unavailable,
+            h.publication_refusals,
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
 }
 
+fn applied(h: &ResidentHarness) -> u64 {
+    h.audio
+        .as_ref()
+        .and_then(EditorAudio::status)
+        .map_or(0, |status| status.applied_revision.load(Acquire))
+}
+
+/// Queue one transport command, rendering until the bounded queue accepts it.
+fn command(h: &mut ResidentHarness, command: PlaybackCommand) {
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        let control = &mut h.audio.as_mut().unwrap().control;
+        // The app's UI drains action receipts; the bounded ledger refuses
+        // new commands while its 32 receipts are unread.
+        if let Some(reader) = control.action_outcomes_mut() {
+            while reader.try_take().is_some() {}
+        }
+        if control.command(command).is_ok() {
+            return;
+        }
+        h.render();
+        assert!(Instant::now() < until, "transport queue stayed full");
+    }
+}
+
 fn position(h: &mut ResidentHarness, frame: u64, playing: bool) {
-    let audio = h.audio.as_mut().unwrap();
-    audio.control.command(PlaybackCommand::Pause).unwrap();
-    audio.control.command(PlaybackCommand::Seek(frame)).unwrap();
+    command(h, PlaybackCommand::Pause);
+    command(h, PlaybackCommand::Seek(frame));
     if playing {
-        audio.control.command(PlaybackCommand::Play).unwrap();
+        command(h, PlaybackCommand::Play);
     }
     for _ in 0..16 {
         h.render();
@@ -178,7 +224,12 @@ fn section_edit_benchmark() {
     let directory = std::env::temp_dir().join(format!("hex-section-bench-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();
     let copy = directory.join("project.hex");
-    fs::copy(&original, &copy).unwrap();
+    let mut text = fs::read_to_string(&original).unwrap();
+    if let Some(remap) = std::env::var("HEX_SECTION_BENCH_MEDIA_REMAP").ok() {
+        let (from, to) = remap.split_once('=').expect("remap is FROM=TO");
+        text = text.replace(&format!("\"{from}"), &format!("\"{to}"));
+    }
+    fs::write(&copy, text).unwrap();
     let mut permissions = fs::metadata(&copy).unwrap().permissions();
     permissions.set_readonly(true);
     fs::set_permissions(&copy, permissions).unwrap();
@@ -194,9 +245,15 @@ fn section_edit_benchmark() {
         })))
         .unwrap();
     assert!(h.next().error.is_none());
+    h.applied(0);
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let loaded = Instant::now();
     let mut event = open_copy(&mut h, copy.clone());
-    wait_applied(&mut h);
+    // Opening replaces the document's output: release the old callback, then
+    // wait for the fresh output to apply the opened project.
+    h.release_relinquished_output();
+    h.wait_fresh_output(old_output);
+    wait_applied(&mut h, 0);
     let song = sections(&event);
     assert!(song.len() >= 2, "benchmark needs at least two sections");
     let tempo = event.state.project.tempo_map().clone();
@@ -271,6 +328,7 @@ fn section_edit_benchmark() {
                         revision: event.state.revision,
                         command: command.clone(),
                     };
+                    let before = applied(&h);
                     let edit = match timed(&mut h, &outcomes, request) {
                         Ok(edit) => edit,
                         Err(error) => {
@@ -278,8 +336,12 @@ fn section_edit_benchmark() {
                             break;
                         }
                     };
+                    // The next request needs the callback to have installed this one.
+                    wait_applied(&mut h, before);
+                    let before = applied(&h);
                     let undo = timed(&mut h, &outcomes, Request::Undo).expect("undo");
                     assert_eq!(sections(&undo.0), song, "undo restores the song");
+                    wait_applied(&mut h, before);
                     event = undo.0;
                     if rep > 0 {
                         edits.push(edit.1);
@@ -296,8 +358,7 @@ fn section_edit_benchmark() {
             }
         }
     }
-    let audio = h.audio.as_mut().unwrap();
-    audio.control.command(PlaybackCommand::Stop).unwrap();
+    command(&mut h, PlaybackCommand::Stop);
     h.render();
     let mut permissions = fs::metadata(&copy).unwrap().permissions();
     #[allow(clippy::permissions_set_readonly_false)]
