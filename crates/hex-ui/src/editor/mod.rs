@@ -1921,12 +1921,7 @@ impl EditorView {
     }
 
     pub(super) fn add_track(&mut self) {
-        let count = self
-            .state
-            .as_ref()
-            .map_or(0, |state| state.project.tracks().len());
-        self.enqueue(Request::Edit(Command::InsertTrack {
-            name: format!("audio {}", count + 1),
+        self.enqueue(Request::Edit(Command::InsertDefaultTrack {
             before_track: self.new_track_insertion_anchor(),
         }));
     }

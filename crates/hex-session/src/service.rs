@@ -817,6 +817,11 @@ pub enum Request {
     RestorePlayback {
         generation: u64,
     },
+    /// Republish the current canonical sound through ordinary inheritance after
+    /// the callback refused it while playing (a latency-layout change). The
+    /// caller sends it once the transport is paused, where the engine applies
+    /// the new layout at the kept cursor. It is not part of output recovery.
+    RepublishPausedPlayback,
     /// Reprepare the current canonical sound after the caller explicitly stops.
     RestoreStoppedPlayback,
     /// Worker-local continuation of the existing stopped restoration request.
@@ -2556,13 +2561,15 @@ fn run_worker(
                     Err("browser selection is not an instrument".into())
                 } else {
                     hex_engine::default_native_device_state_for_class(*class, *type_id)
-                        .map(|state| Command::InsertTrackWithDevice {
-                            name: format!("track {}", session.project().tracks().len() + 1),
-                            before_track: None,
-                            slot: hex_project::TrackDeviceSlot::Instrument,
-                            state,
-                        })
                         .map_err(|reason| reason.to_string().to_lowercase())
+                        .and_then(|state| {
+                            Ok(Command::InsertDefaultTrackWithDevice {
+                                before_track: None,
+                                slot: hex_project::TrackDeviceSlot::Instrument,
+                                state,
+                                device_name: native_device_name(*class, *type_id)?,
+                            })
+                        })
                 },
             ),
             Request::InsertEffectBusDevice {
@@ -3761,15 +3768,15 @@ fn run_worker(
                                             if instrument.id() != replacement {
                                                 return Err("instrument replacement target changed".into());
                                             }
-                                            Ok(Command::ReplaceDeviceState {
-                                                device: replacement,
-                                                state,
-                                            })
                                         } else if target.instrument().is_some() {
-                                            Err("instrument slot is already occupied".into())
-                                        } else {
-                                            Ok(Command::InsertInstrument { track, state })
+                                            return Err("instrument slot is already occupied".into());
                                         }
+                                        Ok(Command::LoadInstrument {
+                                            track,
+                                            replacing: replace,
+                                            state,
+                                            device_name: native_device_name(class, type_id)?,
+                                        })
                                     }),
                             },
                             NativeDeviceDropSource::Existing {
@@ -4874,10 +4881,16 @@ fn run_worker(
                                         "instrument slot is already occupied",
                                     ));
                                 }
+                                let device_name =
+                                    native_device_name(class, *type_id).map_err(|_| {
+                                        hex_engine::Invalid("native device is not registered")
+                                    })?;
                                 hex_engine::default_native_device_state_for_class(class, *type_id)
-                                    .map(|state| Command::InsertInstrument {
+                                    .map(|state| Command::LoadInstrument {
                                         track: track_id,
+                                        replacing: None,
                                         state,
+                                        device_name,
                                     })
                             }),
                     };
@@ -6573,8 +6586,11 @@ fn run_worker(
                             Some("computer keyboard requires a compiled project revision".into());
                     }
                 }
-                Request::RestorePlayback { generation } => {
-                    restore_complete = Some(generation);
+                request @ (Request::RestorePlayback { .. } | Request::RepublishPausedPlayback) => {
+                    if let Request::RestorePlayback { generation } = &request {
+                        restore_complete = Some(*generation);
+                    }
+                    let republish = matches!(&request, Request::RepublishPausedPlayback);
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident
                     {
@@ -6606,7 +6622,14 @@ fn run_worker(
                         match result {
                             Ok(hint) => {
                                 keyboard_tuning_hint = hint;
-                                status = Some("playback restored".into());
+                                status = Some(
+                                    if republish {
+                                        "paused audio updated · effect tails reset"
+                                    } else {
+                                        "playback restored"
+                                    }
+                                    .into(),
+                                );
                             }
                             Err(reason) => error = Some(reason.to_string()),
                         }
@@ -7611,6 +7634,28 @@ fn import_to_session(
         .map_err(|error| error.to_string().to_lowercase())
 }
 
+/// Registered presentation name, offered as the automatic track name on device
+/// loads; `hex_project::track_name` owns whether the track adopts it.
+fn native_device_name(
+    class: hex_engine::NativeDeviceClass,
+    type_id: hex_lattice_contract::DeviceTypeId,
+) -> Result<String, String> {
+    hex_engine::native_device_catalog_for_class(class)
+        .map_err(|error| error.to_string().to_lowercase())?
+        .into_iter()
+        .find(|entry| entry.type_id == type_id)
+        .map_or_else(
+            // Unlisted definitions present their type identifier, as device views do.
+            || {
+                type_id
+                    .as_str()
+                    .map(str::to_owned)
+                    .map_err(|_| "native device type identifier is invalid".to_owned())
+            },
+            |entry| Ok(entry.name),
+        )
+}
+
 fn arrangement_device_command(
     project: &hex_project::Project,
     class: hex_engine::NativeDeviceClass,
@@ -7622,14 +7667,14 @@ fn arrangement_device_command(
         .map_err(|error| error.to_string().to_lowercase())?;
     match destination {
         ArrangementDeviceDestination::NewTrack { before_track } => {
-            Ok(Command::InsertTrackWithDevice {
-                name: "new track".into(),
+            Ok(Command::InsertDefaultTrackWithDevice {
                 before_track,
                 slot: match class {
                     NativeDeviceClass::Instrument => hex_project::TrackDeviceSlot::Instrument,
                     NativeDeviceClass::Effect => hex_project::TrackDeviceSlot::Effect,
                 },
                 state,
+                device_name: native_device_name(class, type_id)?,
             })
         }
         ArrangementDeviceDestination::ExistingTrack { track, instrument } => {
@@ -7645,9 +7690,11 @@ fn arrangement_device_command(
                     before: None,
                     state,
                 },
-                NativeDeviceClass::Instrument => match instrument {
-                    Some(device) => Command::ReplaceDeviceState { device, state },
-                    None => Command::InsertInstrument { track, state },
+                NativeDeviceClass::Instrument => Command::LoadInstrument {
+                    track,
+                    replacing: instrument,
+                    state,
+                    device_name: native_device_name(class, type_id)?,
                 },
             })
         }

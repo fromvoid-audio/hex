@@ -157,8 +157,9 @@ fn foreign_nodes_borrow_exact_configuration_and_route_segments_for_all_chain_own
             }
             chain.commit_block();
             let peaks = meter.take_peaks();
-            assert_eq!(peaks[0], 10.0);
-            assert!((peaks[1] - if bypassed { 1.0 } else { 0.25 }).abs() < 1.0e-6);
+            assert_eq!(peaks.input, 10.0);
+            let output = peaks.output[0].max(peaks.output[1]);
+            assert!((output - if bypassed { 1.0 } else { 0.25 }).abs() < 1.0e-6);
             assert_eq!(foreign.first_input, Some([1.0, -0.5]));
             assert_eq!(
                 (foreign.segments, foreign.next, foreign.rejections),

@@ -4,7 +4,7 @@
 use super::tracks::aligned_clip_grid_layer;
 use super::viewport::Viewport;
 use crate::theme;
-use gpui::{AnyElement, Div, div, prelude::*, px, relative, rgb};
+use gpui::{AnyElement, Div, div, prelude::*, px, rgb};
 use hex_project::Clip;
 
 pub(super) fn move_exclusions(
@@ -237,6 +237,13 @@ pub(super) fn passive_midi_fragment(
         stroke,
         has_border,
     ));
+    let fit = super::midi_thumbnail::PitchFit::from_pitches(
+        samples
+            .iter()
+            .take(hex_engine::MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP)
+            .map(|sample| sample.pitch),
+    );
+    let mut notes = div().absolute().inset_0();
     let mut shown = 0;
     for sample in samples
         .iter()
@@ -269,18 +276,12 @@ pub(super) fn passive_midi_fragment(
         ) else {
             continue;
         };
-        let top = f32::from(127_u8.saturating_sub(pitch)) / 128.0;
-        content = content.child(
-            div()
-                .absolute()
-                .left(relative(x))
-                .top(relative(top))
-                .w(relative(note_width))
-                .h(px(2.0))
-                .bg(rgb(0x000000)),
-        );
+        notes = notes.child(super::midi_thumbnail::note_column(
+            x, note_width, pitch, fit,
+        ));
         shown += 1;
     }
+    content = content.child(super::tracks::clip_waveform_body(notes));
     (
         Some(super::tracks::clip_boundary_shell(
             content,
