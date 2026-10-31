@@ -269,7 +269,7 @@ fn bounce_failure_case(whole_track: bool) {
     let result = session.adopt_arrangement_bounce_using(
         target.clone(),
         whole_track,
-        false,
+        hex_project::BounceAdoption::NewTracks,
         vec![BounceFile {
             source: hex_project::BounceSource::Arrangement,
             track: item.track,
@@ -1362,7 +1362,7 @@ fn whole_track_console_second_output_cancel_and_final_publication_fail_without_p
                     .adopt_arrangement_bounce_using(
                         target,
                         true,
-                        false,
+                        hex_project::BounceAdoption::NewTracks,
                         files,
                         prepared,
                         None,
@@ -1490,4 +1490,27 @@ fn retired_clip_and_range_in_place_intents_refuse_before_render_or_media_work() 
         assert_eq!((session.can_undo(), session.can_redo()), history);
         assert_eq!(std::fs::read_dir(&folder.0).unwrap().count(), 0);
     }
+}
+
+#[test]
+fn isolated_bounce_admits_projects_with_automatic_names_on_dropped_tracks() {
+    let (mut session, track, clip) = fixture();
+    let Created::Track(other) = session
+        .command(Command::InsertDefaultTrack { before_track: None })
+        .unwrap()
+    else {
+        panic!("default track")
+    };
+    let original = session.project().clone();
+    assert!(original.track(other).unwrap().name_is_automatic());
+    for target in [
+        BounceTarget::Clips(vec![clip]),
+        BounceTarget::Range(hex_project::TimeRange::new(vec![track], 30_013, 50_007).unwrap()),
+    ] {
+        let plan = original.plan_arrangement_bounce(&target, false).unwrap();
+        let projected = isolated(&original, &target, &plan[0]).unwrap();
+        assert!(projected.track(other).is_none());
+        assert!(projected.snapshot().automatic_track_names.is_empty());
+    }
+    assert_eq!(session.project(), &original);
 }

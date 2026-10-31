@@ -83,7 +83,8 @@ mod bounce;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
 pub use bounce::{
-    BounceFile, BounceSource, BounceTarget, BounceTrack, MAX_ARRANGEMENT_BOUNCE_FRAMES,
+    BounceAdoption, BounceDrop, BounceFile, BounceSource, BounceTarget, BounceTrack,
+    MAX_ARRANGEMENT_BOUNCE_FRAMES,
 };
 pub use clip_conversion::AUDIO_TO_MIDI_UNSUPPORTED;
 mod track_clipboard;

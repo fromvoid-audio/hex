@@ -339,7 +339,7 @@ fn grouping_final_preparation_failure_removes_unpublished_render_and_preserves_c
                 .adopt_arrangement_bounce_using(
                     captured,
                     true,
-                    false,
+                    hex_project::BounceAdoption::NewTracks,
                     files,
                     prepared,
                     None,

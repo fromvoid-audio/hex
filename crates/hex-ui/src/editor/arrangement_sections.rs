@@ -10,11 +10,12 @@
 //! while released preview custody remains independent of input capture.
 //! Five-pixel inner edges resize one section; a touching seam resizes both, or
 //! the left marker's end under Command. Paint and input share native bracket cursors.
-//! Shift-click toggles section membership throughout the lane. Header drags own
+//! Shift-click selects the song-order range from the last plain-clicked anchor;
+//! Command+Shift-click toggles membership and moves the anchor. Header drags own
 //! section edits; ordinary lower-body drags use Main's all-track range owner,
 //! including tracks hidden by section focus.
 use super::{
-    EditorMode, EditorView,
+    EditorMode, EditorView, ViewState,
     musical_time::SnapGrid,
     pending_edit::{Disposition, Receipt},
     viewport::Viewport,
@@ -33,6 +34,7 @@ use hex_widgets::{
     RectangleCapture, RectangleEdges, RectanglePart, RectangleSelection, RectangleSelectionPolicy,
     TextInput,
 };
+use std::sync::Arc;
 
 const INNER_EDGE_WIDTH: f32 = 5.0;
 const SHARED_EDGE_RADIUS: f32 = 1.0;
@@ -130,6 +132,9 @@ struct Pending {
     revision: u64,
     command: Command,
     display: Display,
+    // Clip rows for structural edits, built once at submission and retired
+    // with the receipt in the same receive as the canonical installation.
+    layout: Option<Arc<ViewState>>,
     receipt: Receipt,
     selection_intent_epoch: Option<u64>,
 }
@@ -151,6 +156,8 @@ struct SectionCursor {
 pub(super) struct Sections {
     pub(super) selected: Option<SectionId>,
     selection: Vec<SectionId>,
+    // Shift ranges start here; ignored once it leaves the selection.
+    anchor: Option<SectionId>,
     cursor: Option<SectionCursor>,
     gesture: Option<Gesture>,
     pending: Option<Pending>,
@@ -299,7 +306,8 @@ impl EditorView {
                         return;
                     }
                     let captured = down.update(cx, |view, cx| {
-                        if view.gain_numeric_editing(cx)
+                        if view.context_menu.is_some()
+                            || view.gain_numeric_editing(cx)
                             || view.clip_numeric_editing(cx)
                             || view.project_tempo_editing(cx)
                         {
@@ -421,6 +429,17 @@ impl EditorView {
         Ok(Some((start, end)))
     }
 
+    /// Arrangement clip rows: the frozen structural layout until its receipt's
+    /// exact terminal (like the marker display), otherwise canonical state.
+    pub(super) fn arrangement_rows_state(&self) -> Option<Arc<ViewState>> {
+        let state = self.state.as_ref()?;
+        self.sections
+            .pending
+            .as_ref()
+            .filter(|p| p.generation == self.project_generation)
+            .and_then(|p| p.layout.clone())
+            .or_else(|| Some(Arc::clone(state)))
+    }
     pub(super) fn section_install_pending(&self) -> bool {
         self.sections.pending.as_ref().is_some_and(|pending| {
             matches!(
@@ -448,6 +467,7 @@ impl EditorView {
         self.duplicate_intent.cancel_chain();
         self.sections.selected = id;
         self.sections.selection = id.into_iter().collect();
+        self.sections.anchor = id;
         self.selected_track = None;
         self.arrangement_focus.observe_active_track(None);
         self.selected_clip = None;
@@ -563,6 +583,24 @@ impl EditorView {
             .find(|s| s.start() <= beat && beat < s.end())
             .map(|s| s.id())
     }
+    /// Sections from `anchor` through `clicked` in song order, inclusive.
+    fn section_range(&self, anchor: SectionId, clicked: SectionId) -> Vec<SectionId> {
+        let Some(project) = self.state.as_ref().map(|state| &state.project) else {
+            return vec![clicked];
+        };
+        let start = |id| project.arrangement_section(id).map(|s| s.start());
+        let (Some(a), Some(b)) = (start(anchor), start(clicked)) else {
+            return vec![clicked];
+        };
+        let (low, high) = (a.min(b), a.max(b));
+        let mut range: Vec<_> = project
+            .arrangement_sections()
+            .iter()
+            .filter(|s| low <= s.start() && s.start() <= high)
+            .collect();
+        range.sort_by_key(|s| s.start());
+        range.into_iter().map(|s| s.id()).collect()
+    }
     fn section_edge_hit(&self, x: f32) -> Option<SectionEdge> {
         let state = self.state.as_ref()?;
         let viewport = self.visible_viewport(state.timeline_frames);
@@ -625,8 +663,8 @@ impl EditorView {
         modifiers: gpui::Modifiers,
         cx: &Context<Self>,
     ) -> bool {
-        let extend =
-            RectangleSelectionPolicy::Toggle.intent(modifiers) == RectangleSelection::Toggle;
+        let intent = RectangleSelectionPolicy::Section.intent(modifiers);
+        let extend = intent != RectangleSelection::Replace;
         let free = modifiers.control;
         let marker_only = modifiers.platform;
         let launch_eligible =
@@ -661,15 +699,32 @@ impl EditorView {
         // Section membership takes precedence over the lower-body range owner,
         // edge resizing and autoplay; Shift never creates a time rectangle here.
         if extend && let Some(id) = id {
-            let mut selection = self.sections.selection.clone();
+            let previous = self.sections.selected_ids().to_vec();
+            let anchor = self
+                .sections
+                .anchor
+                .filter(|anchor| previous.contains(anchor))
+                .or(self.sections.selected)
+                .unwrap_or(id);
             self.select_section_metadata(Some(id));
-            if selection.contains(&id) {
-                selection.retain(|old| *old != id);
+            let (selection, anchor) = if intent == RectangleSelection::Toggle {
+                let mut selection = previous;
+                if selection.contains(&id) {
+                    selection.retain(|old| *old != id);
+                } else {
+                    selection.push(id);
+                }
+                (selection, id)
             } else {
-                selection.push(id);
-            }
-            self.sections.selected = selection.last().copied();
+                (self.section_range(anchor, id), anchor)
+            };
+            self.sections.selected = if selection.contains(&id) {
+                Some(id)
+            } else {
+                selection.last().copied()
+            };
             self.sections.selection = selection;
+            self.sections.anchor = Some(anchor);
             self.sections.cursor = None;
             self.cancel_section_pointer();
             self.suppress_cursor_click = true;
@@ -1119,11 +1174,17 @@ impl EditorView {
         generation: u64,
         revision: u64,
     ) {
+        let layout = self
+            .state
+            .as_ref()
+            .filter(|state| state.revision == revision)
+            .and_then(|state| super::section_layout_preview::build(state, &command));
         self.sections.pending = Some(Pending {
             generation,
             revision,
             command: command.clone(),
             display,
+            layout,
             receipt: Receipt::new(generation),
             selection_intent_epoch: self.selection_intent_epoch,
         });
@@ -1466,7 +1527,11 @@ impl EditorView {
         if !self.section_has_focus(window) || self.sections.selected.is_none() {
             return false;
         }
-        if self.sections.selection.len() >= 2 {
+        if self.sections.selection.len() < 2 {
+            self.error = Some("shift-click another section to merge a span".into());
+        } else if !self.sections_available() {
+            self.error = Some("applying edit · wait before merging sections".into());
+        } else {
             self.section_metadata(Command::MergeArrangementSections(
                 self.sections.selection.clone(),
             ));
@@ -1763,7 +1828,7 @@ impl EditorView {
                 .text_xs()
                 .tooltip(|_, cx| {
                     cx.new(|_| super::waveform::ClipTooltip { kind: crate::tooltips::Kind::Help,
-                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: copy · command: markers only · control: snap · shift-click: select · g: merge · cmd-d: duplicate · e: split"
+                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: copy · command: markers only · control: snap · shift-click: select range · cmd-shift-click: toggle · g: merge · cmd-d: duplicate · e: split"
                             .into(),
                     })
                     .into()
@@ -3479,6 +3544,7 @@ mod tests {
                 revision: g.revision,
                 command,
                 display: g.display,
+                layout: None,
                 receipt,
             });
             v.worker_requests_pending = 2;
@@ -3528,6 +3594,87 @@ mod tests {
         visual.run_until_parked();
         assert!(visual.debug_bounds("section-insertion-preview").is_none());
         editor.read_with(cx, |v, _| assert!(v.sections.pending.is_none()));
+    }
+    fn midi_clip_bounds(
+        visual: &mut VisualTestContext,
+        project: &hex_project::Project,
+    ) -> Vec<(u64, gpui::Bounds<gpui::Pixels>)> {
+        project.tracks()[0]
+            .midi_clips()
+            .iter()
+            .map(|clip| {
+                let id = clip.id().value();
+                let selector = Box::leak(format!("midi-clip-visual-{id}").into_boxed_str());
+                (id, visual.debug_bounds(selector).expect("painted clip"))
+            })
+            .collect()
+    }
+    #[gpui::test]
+    fn pending_reorder_draws_final_clips_until_exact_terminal_and_refusal_restores(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, editor, _) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let canonical = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
+        let original = midi_clip_bounds(&mut visual, &canonical);
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 2)));
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let terminal = editor.update(cx, |v, _| {
+            assert!(v.sections.pending.as_ref().unwrap().layout.is_some());
+            next(&v.service)
+        });
+        assert!(terminal.error.is_none(), "{:?}", terminal.error);
+        let committed = std::sync::Arc::clone(&terminal.state.project);
+        assert_ne!(*committed, *canonical, "reorder moves clip content");
+        // Delayed ACK: every completed repaint already shows the final clips.
+        let mut released = Vec::new();
+        for _ in 0..3 {
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+            released = midi_clip_bounds(&mut visual, &committed);
+            assert_ne!(released, original);
+        }
+        editor.update(cx, |v, cx| {
+            v.receive(terminal);
+            assert!(v.sections.pending.is_none());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(midi_clip_bounds(&mut visual, &committed), released);
+
+        // A stale stamp previews the move, then its refusal restores canonical clips.
+        let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let renamed = editor.update(cx, |v, _| {
+            v.service
+                .submit(Request::Edit(Command::RenameTrack {
+                    track: committed.tracks()[0].id(),
+                    name: "renamed".into(),
+                }))
+                .unwrap();
+            next(&v.service)
+        });
+        assert!(renamed.error.is_none(), "{:?}", renamed.error);
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let refused = editor.update(cx, |v, _| next(&v.service));
+        assert!(refused.error.is_some(), "stale section stamp");
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        assert_ne!(midi_clip_bounds(&mut visual, &committed), released);
+        editor.update(cx, |v, cx| {
+            // The refusal carries the newer canonical state (the rename).
+            v.receive(refused);
+            assert!(v.sections.pending.is_none());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(midi_clip_bounds(&mut visual, &committed), released);
     }
     #[gpui::test]
     fn section_name_palette_delete_and_text_focus_are_guarded(cx: &mut TestAppContext) {
@@ -4692,7 +4839,7 @@ mod tests {
             editor.read_with(cx, |view, _| {
                 assert!(view.time_selection.is_none());
                 assert!(!view.time_selection_project_scope);
-                assert_eq!(view.sections.selection, vec![ids[1], ids[0]]);
+                assert_eq!(view.sections.selection, vec![ids[0], ids[1]]);
                 assert_eq!(view.sections.selected, Some(ids[0]));
                 assert!(view.selected_clip_ids().is_empty());
                 assert!(
@@ -4719,8 +4866,13 @@ mod tests {
                 );
                 assert_eq!(view.arrangement_focus.projection.enabled, focused);
             });
-            visual.simulate_mouse_down(at, MouseButton::Left, shift);
-            visual.simulate_mouse_up(at, MouseButton::Left, shift);
+            let toggle = Modifiers {
+                shift: true,
+                platform: true,
+                ..Modifiers::default()
+            };
+            visual.simulate_mouse_down(at, MouseButton::Left, toggle);
+            visual.simulate_mouse_up(at, MouseButton::Left, toggle);
             visual.run_until_parked();
             editor.read_with(cx, |view, _| {
                 assert_eq!(view.sections.selection, vec![ids[1]]);
@@ -4728,5 +4880,135 @@ mod tests {
                 assert!(view.time_selection.is_none());
             });
         }
+    }
+    #[gpui::test]
+    fn shift_click_selects_every_section_between_anchor_and_click(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut all = vec![ids[0]];
+        editor.update(cx, |view, cx| {
+            for (start, end, name) in [(4, 8, "Verse"), (12, 16, "Bridge")] {
+                assert!(view.enqueue(Request::EditArrangementSection {
+                    project_generation: view.project_generation,
+                    revision: view.state.as_ref().unwrap().revision,
+                    command: Command::AddArrangementSection {
+                        name: name.into(),
+                        color: ElementColor::Green,
+                        start: BeatTime::from_quarters(start).unwrap(),
+                        end: BeatTime::from_quarters(end).unwrap(),
+                    },
+                }));
+                let event = next(&view.service);
+                assert!(event.error.is_none(), "{:?}", event.error);
+                let Some(Created::ArrangementSection(id)) = event.created else {
+                    panic!("section result")
+                };
+                all.push(id);
+                view.receive(event);
+            }
+            view.section_autoplay = false;
+            cx.notify();
+        });
+        // Song order: intro, verse, chorus, bridge.
+        let all = [all[0], all[1], ids[1], all[2]];
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let mut click = |quarters, modifiers| {
+            let at = editor.read_with(&visual, |view, _| position(view, quarters));
+            visual.simulate_mouse_down(at, MouseButton::Left, modifiers);
+            visual.simulate_mouse_up(at, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert!(view.time_selection.is_none());
+                (
+                    view.sections.selected_ids().to_vec(),
+                    view.sections.selected,
+                )
+            })
+        };
+        click(2, Modifiers::default());
+        assert_eq!(click(14, shift), (all.to_vec(), Some(all[3])));
+        // Same anchor: a shorter range replaces the previous one.
+        assert_eq!(click(10, shift), (all[..3].to_vec(), Some(all[2])));
+        click(14, Modifiers::default());
+        assert_eq!(click(2, shift), (all.to_vec(), Some(all[0])));
+    }
+    #[gpui::test]
+    fn menu_merge_click_over_the_lane_merges_and_undo_restores(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (a, b) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
+        let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
+        visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        // One selected section: g explains instead of silently consuming input.
+        visual.simulate_keystrokes("g");
+        editor.read_with(cx, |v, _| {
+            assert!(v.sections.pending.is_none());
+            assert!(
+                v.error
+                    .as_ref()
+                    .is_some_and(|e| e.contains("shift-click another section to merge a span"))
+            );
+        });
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(b, MouseButton::Left, shift);
+        visual.simulate_mouse_up(b, MouseButton::Left, shift);
+        visual.run_until_parked();
+        let body = editor.read_with(cx, |v, _| {
+            let [_, top, _, height] = v.section_layout().unwrap();
+            point(a.x, px(top + height * 0.75))
+        });
+        visual.simulate_mouse_down(body, MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(body, MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |v, _| {
+            assert_eq!(
+                v.context_menu.as_ref().unwrap().items[0].label,
+                "merge selected span · g"
+            )
+        });
+        // The first row opens at the pointer, above the lane's own capture.
+        let panel = visual.debug_bounds("context-menu-panel").unwrap();
+        let row = point(panel.origin.x + px(20.0), panel.origin.y + px(14.0));
+        visual.simulate_mouse_down(row, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(row, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let event = editor.update(cx, |v, _| {
+            assert!(v.context_menu.is_none());
+            assert!(matches!(
+                v.sections.pending.as_ref().map(|p| &p.command),
+                Some(Command::MergeArrangementSections(_))
+            ));
+            next(&v.service)
+        });
+        assert!(event.error.is_none(), "{:?}", event.error);
+        editor.update(cx, |v, cx| {
+            v.receive(event);
+            let p = &v.state.as_ref().unwrap().project;
+            assert_eq!(p.arrangement_sections().len(), 1);
+            assert_eq!(
+                p.arrangement_section(ids[0]).unwrap().end(),
+                BeatTime::from_quarters(12).unwrap()
+            );
+            assert_eq!(p.tracks(), before.tracks());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-z");
+        let event = editor.update(cx, |v, _| next(&v.service));
+        assert!(event.error.is_none(), "{:?}", event.error);
+        editor.update(cx, |v, _| {
+            v.receive(event);
+            assert_eq!(v.state.as_ref().unwrap().project, before);
+        });
     }
 }
