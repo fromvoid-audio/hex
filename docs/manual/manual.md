@@ -201,8 +201,9 @@ after the edit is accepted. focus shows tracks that intersect the selected
 sections, excluding gaps between them. repeated loop toggles leave focus unchanged;
 press **q** or use the section focus toggle to restore all tracks.
 
-**shift-click** section blocks to add or remove them from the section selection,
-including clicks in their lower body. ordinary lower-body dragging still selects time.
+**shift-click** a section block to select every section from the last clicked one
+through it; **command-shift-click** adds or removes a single section. both work in a
+section's lower body too. ordinary lower-body dragging still selects time.
 drag a section header to move its musical content; hold **option** to insert a copy
 before or after another section, or beside the source. changing option during the drag
 switches between moving and copying. the source stays in place when copying, and
