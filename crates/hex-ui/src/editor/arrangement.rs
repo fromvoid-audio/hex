@@ -244,7 +244,7 @@ impl EditorView {
         let rows = list(self.track_scroll.list.clone(), move |index, _, cx| {
             rows_entity
                 .update(cx, |this, cx| {
-                    let Some(state) = this.state.as_ref().cloned() else {
+                    let Some(state) = this.arrangement_rows_state() else {
                         return div();
                     };
                     let Some(index) = this.arrangement_track_index(index) else {

@@ -165,6 +165,28 @@ fn large_documents_save_replace_recover_and_checkpoint_without_truncation() {
     let (_, small_token) = load_with_token(&path).unwrap();
     assert!(!small_token.requires_save_confirmation(&small).unwrap());
     assert!(small_token.requires_save_confirmation(large).unwrap());
+    // An explicit ceiling uses the same rule: only crossing it from at/below asks.
+    let small_len = fs::read(&path).unwrap().len();
+    assert!(
+        !small_token
+            .requires_save_confirmation_within(&small, small_len)
+            .unwrap()
+    );
+    let mut grown = Editor::new(small.clone(), 1).unwrap();
+    grown
+        .execute(Command::AddTrack { name: "t".into() })
+        .unwrap();
+    assert!(
+        small_token
+            .requires_save_confirmation_within(grown.project(), small_len)
+            .unwrap()
+    );
+    // Already above the ceiling: no new compatibility loss to confirm.
+    assert!(
+        !small_token
+            .requires_save_confirmation_within(large, small_len - 1)
+            .unwrap()
+    );
     replace_existing(&path, &small_token, large).unwrap();
     let (reopened, token) = load_with_token(&path).unwrap();
     assert_eq!(reopened, *large);

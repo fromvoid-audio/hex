@@ -195,6 +195,65 @@ fn section_drag_copies_use_stable_destinations_fresh_identity_and_one_history_st
 }
 
 #[test]
+fn section_clip_layout_preview_matches_the_committed_candidate_without_mutation() {
+    use hex_project::TrimEdge;
+    let (editor, a, c) = fixture();
+    for command in [
+        Command::ReorderSectionAfter {
+            section: a,
+            after: c,
+        },
+        Command::ReorderSectionBefore {
+            section: c,
+            before: a,
+        },
+        Command::ResizeArrangementSection {
+            section: a,
+            edge: TrimEdge::Right,
+            length: b(3),
+        },
+        Command::ResizeArrangementSectionEdge {
+            section: c,
+            edge: TrimEdge::Left,
+            boundary: b(8),
+        },
+        Command::DeleteArrangementSection(a),
+        Command::DuplicateArrangementSection(c),
+        Command::DuplicateArrangementSectionAt {
+            section: c,
+            target: a,
+            after: false,
+        },
+    ] {
+        let before = editor.project().clone();
+        let preview = before.preview_section_layout(&command).unwrap();
+        assert_eq!(editor.project(), &before, "preview must not mutate");
+        let mut committed = Editor::new(before.clone(), 32).unwrap();
+        committed.execute(command.clone()).unwrap();
+        assert_ne!(&preview, &before, "{command:?} must change the layout");
+        assert_eq!(&preview, committed.project(), "{command:?}");
+    }
+    let marker_only = Command::MoveArrangementSectionMarker {
+        section: a,
+        start: b(1),
+    };
+    assert!(
+        editor
+            .project()
+            .preview_section_layout(&marker_only)
+            .is_err()
+    );
+    let mut stale = Editor::new(editor.project().clone(), 32).unwrap();
+    stale.execute(Command::RemoveArrangementSection(a)).unwrap();
+    assert!(
+        stale
+            .project()
+            .preview_section_layout(&Command::DeleteArrangementSection(a))
+            .is_err()
+    );
+}
+
+#[test]
 fn stale_section_copy_destinations_preserve_the_project_and_redo() {
     let (mut editor, source, stale) = fixture();
     editor
