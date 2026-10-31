@@ -1478,6 +1478,9 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("set_device_parameter"; ["device" => device.value(), "parameter" => parameter.value(), "value" => Parameter(value)]; omitted="")
         }
+        Request::RelinkMedia(relinks) => {
+            describe!("relink_media"; ["count" => relinks.len()]; omitted="paths")
+        }
         Request::Import(value0) => {
             describe!("import"; ["value0_redacted_bytes" => value0.as_os_str().len()]; omitted="")
         }

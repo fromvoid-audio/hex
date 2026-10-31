@@ -3438,6 +3438,7 @@ impl EditorView {
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
                 | Request::ImportToSession { .. }
+                | Request::RelinkMedia(_)
                 | Request::Open(_)
                 | Request::OpenWith { .. }
                 | Request::NewWithAudioMode { .. }

@@ -1274,3 +1274,50 @@ fn ordinary_mixed_original_sampler_and_file_sources_save_reopen_without_decoding
         std::thread::yield_now();
     }
 }
+
+#[test]
+fn resident_offline_media_opens_silent_and_relinks_in_place_with_undo() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(32_768);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let source = files.wav(48_000, 8_192);
+    let imported = h.run(Request::Import(source.clone()));
+    let asset = imported.state.project.assets().next().unwrap().id();
+    h.applied(applied);
+    let path = files.0.join("offline.hex");
+    h.run(Request::SaveNew(path.clone()));
+    let moved = files.0.join("moved.wav");
+    std::fs::rename(&source, &moved).unwrap();
+
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let opened = h.run(Request::Open(path));
+    assert!(opened.state.project.asset_offline(asset));
+    let applied = finish_replacement(&mut h, &opened, old_output);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.0; 2]; 64], "offline clips are silent");
+
+    let relinked = h.run(Request::RelinkMedia(std::collections::BTreeMap::from([(
+        asset,
+        moved.clone(),
+    )])));
+    assert!(!relinked.state.project.asset_offline(asset));
+    assert_eq!(relinked.state.project.asset(asset).unwrap().path(), moved);
+    let (applied, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.editor_revision, relinked.state.revision);
+    assert!(
+        h.render().iter().any(|frame| *frame != [0.0; 2]),
+        "relinked media plays once admitted"
+    );
+
+    let undone = h.run(Request::Undo);
+    assert!(undone.state.project.asset_offline(asset));
+    h.applied(applied);
+    assert_eq!(h.render(), [[0.0; 2]; 64], "undo returns the clip to silence");
+}

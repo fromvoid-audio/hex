@@ -49,10 +49,20 @@ struct Search {
     progress: Arc<AtomicUsize>,
 }
 
+/// What the panel resolves files for.
+enum Target {
+    /// Before opening a saved project.
+    Open {
+        source: ProjectSource,
+        mode: DocumentAudioMode,
+        reservation: Option<SourcePlanReservation>,
+    },
+    /// Offline media of the open project, relinked in place as one edit.
+    Relink,
+}
+
 pub(super) struct Panel {
-    source: ProjectSource,
-    mode: DocumentAudioMode,
-    reservation: Option<SourcePlanReservation>,
+    target: Target,
     generation: u64,
     revision: u64,
     pub(super) rows: Vec<Row>,
@@ -183,9 +193,11 @@ impl EditorView {
                     }
                     Ok(missing) => {
                         view.missing_media = Some(Panel {
-                            source,
-                            mode,
-                            reservation,
+                            target: Target::Open {
+                                source,
+                                mode,
+                                reservation,
+                            },
                             generation: view.project_generation,
                             revision: view.state.as_ref().map_or(0, |state| state.revision),
                             rows: missing
@@ -363,10 +375,73 @@ impl EditorView {
             if let Some(search) = panel.search {
                 search.cancel.store(true, Ordering::Relaxed);
             }
-            self.opening_project = false;
-            self.status = "open cancelled".into();
+            if matches!(panel.target, Target::Open { .. }) {
+                self.opening_project = false;
+                self.status = "open cancelled".into();
+            }
             cx.notify();
         }
+    }
+
+    /// Shows the panel for the open project's offline media (from the status
+    /// bar indicator). Nothing is read until the user locates or searches.
+    pub(super) fn missing_media_show_offline(&mut self, cx: &mut Context<Self>) {
+        if self.missing_media.is_some() || self.opening_project {
+            return;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let base = state
+            .document_path
+            .as_deref()
+            .and_then(std::path::Path::parent);
+        let rows: Vec<_> = missing_media::offline_media_report(&state.project, base)
+            .into_iter()
+            .map(|media| Row {
+                media,
+                resolution: Resolution::Missing,
+            })
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        self.missing_media = Some(Panel {
+            target: Target::Relink,
+            generation: self.project_generation,
+            revision: state.revision,
+            rows,
+            search: None,
+            note: None,
+        });
+        cx.notify();
+    }
+
+    /// Relinks the files found so far as one undoable edit; the rest stay offline.
+    pub(super) fn missing_media_relink(&mut self, cx: &mut Context<Self>) {
+        let Some(panel) = self.missing_media.as_ref() else {
+            return;
+        };
+        if !matches!(panel.target, Target::Relink)
+            || panel.search.is_some()
+            || panel.resolved().is_empty()
+        {
+            return;
+        }
+        let Some(panel) = self.missing_media.take() else {
+            return;
+        };
+        if panel.generation != self.project_generation
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|state| state.revision != panel.revision)
+        {
+            self.error = Some("project changed · relink cancelled".into());
+        } else {
+            self.enqueue(Request::RelinkMedia(panel.resolved()));
+        }
+        cx.notify();
     }
 
     fn missing_media_open(&mut self, cx: &mut Context<Self>) {
@@ -379,7 +454,10 @@ impl EditorView {
         let Some(panel) = self.missing_media.as_ref() else {
             return;
         };
-        if (!offline && !panel.complete()) || panel.search.is_some() {
+        if (!offline && !panel.complete())
+            || panel.search.is_some()
+            || !matches!(panel.target, Target::Open { .. })
+        {
             return;
         }
         let Some(panel) = self.missing_media.take() else {
@@ -395,12 +473,14 @@ impl EditorView {
             self.error = Some("project changed · open cancelled".into());
         } else {
             let relinks = panel.resolved();
-            self.begin_open_request(open_request(
-                panel.source,
-                relinks,
-                panel.mode,
-                panel.reservation,
-            ));
+            if let Target::Open {
+                source,
+                mode,
+                reservation,
+            } = panel.target
+            {
+                self.begin_open_request(open_request(source, relinks, mode, reservation));
+            }
         }
         cx.notify();
     }
@@ -537,16 +617,32 @@ impl EditorView {
             button("missing-media-search", "search folders…")
                 .on_click(cx.listener(|view, _, _, cx| view.missing_media_search(cx)))
         };
+        let relinking = matches!(panel.target, Target::Relink);
         let can_open = panel.complete() && panel.search.is_none();
-        let offline_button = (!panel.complete() && panel.search.is_none()).then(|| {
-            button("missing-media-open-offline", "open with missing offline")
-                .on_click(cx.listener(|view, _, _, cx| view.missing_media_open_with(true, cx)))
-        });
-        let open_button = button("missing-media-open", "open")
-            .when(!can_open, |button| {
-                button.text_color(muted).cursor_default()
-            })
-            .on_click(cx.listener(|view, _, _, cx| view.missing_media_open(cx)));
+        let offline_button =
+            (!relinking && !panel.complete() && panel.search.is_none()).then(|| {
+                button("missing-media-open-offline", "open with missing offline")
+                    .on_click(cx.listener(|view, _, _, cx| view.missing_media_open_with(true, cx)))
+            });
+        let open_button = if relinking {
+            let can_relink = found > 0 && panel.search.is_none();
+            button("missing-media-relink", "relink")
+                .when(!can_relink, |button| {
+                    button.text_color(muted).cursor_default()
+                })
+                .on_click(cx.listener(|view, _, _, cx| view.missing_media_relink(cx)))
+        } else {
+            button("missing-media-open", "open")
+                .when(!can_open, |button| {
+                    button.text_color(muted).cursor_default()
+                })
+                .on_click(cx.listener(|view, _, _, cx| view.missing_media_open(cx)))
+        };
+        let hint = if relinking {
+            "relink found files as one undoable edit; the rest stay offline"
+        } else {
+            "open once every file is found, or open with missing files offline"
+        };
         Some(
             div()
                 .id("missing-media-overlay")
@@ -582,11 +678,13 @@ impl EditorView {
                                         panel.rows.len() - found
                                     )),
                                 ))
-                                .child(div().flex_1().text_xs().text_color(muted).child(
-                                    theme::text(
-                                        "open once every file is found, or open with missing files offline",
-                                    ),
-                                )),
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child(theme::text(hint)),
+                                ),
                         )
                         .children([list])
                         .child(
@@ -604,9 +702,17 @@ impl EditorView {
                                         .text_color(muted)
                                         .children(footer_note.map(theme::text)),
                                 )
-                                .child(button("missing-media-dismiss", "cancel").on_click(
-                                    cx.listener(|view, _, _, cx| view.missing_media_dismiss(cx)),
-                                ))
+                                .child(
+                                    button(
+                                        "missing-media-dismiss",
+                                        if relinking { "close" } else { "cancel" },
+                                    )
+                                    .on_click(
+                                        cx.listener(|view, _, _, cx| {
+                                            view.missing_media_dismiss(cx)
+                                        }),
+                                    ),
+                                )
                                 .children(offline_button)
                                 .children([open_button]),
                         ),

@@ -213,13 +213,15 @@ impl EditorView {
                     .debug_selector(|| "missing-media-indicator".into())
                     .px_1()
                     .flex_shrink_0()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|view, _, _, cx| view.missing_media_show_offline(cx)))
                     .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
                     .tooltip(|_, cx| {
                         cx.new(|_| super::transport::MiniTooltip {
                             kind: crate::tooltips::Kind::Identification,
                             description: theme::text(
                                 "these files were missing when the project opened; \
-                                 their clips play silence. restore them and reopen",
+                                 their clips play silence. click to relink them",
                             ),
                         })
                         .into()
