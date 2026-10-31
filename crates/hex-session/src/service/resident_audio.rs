@@ -339,6 +339,11 @@ impl Inputs<'_> {
         };
         self.publish_tagged(snapshot, project, sink, metadata)
     }
+    /// Stopped section edits (and their Undo/Redo) keep the raw cursor but start
+    /// every device, effect tail, compensation delay and instrument empty there:
+    /// the song prefix is not replayed, so latency is independent of the cursor.
+    /// Only a mutable instrument the strict Seek refuses to reset (an active or
+    /// chased note) falls back to exact replay, rather than dropping that note.
     fn publish_stopped_section(
         &self,
         snapshot: &mut Snapshot,
@@ -347,12 +352,13 @@ impl Inputs<'_> {
         context: hex_engine::AudioSourceContext,
         cursor: hex_project::BeatTime,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        self.publish_stopped_at_frame(
+        self.publish_stopped_at_frame_with(
             snapshot,
             project,
             sink,
             context,
             project.tempo_map().beat_to_frame(cursor)?,
+            StoppedDeviceState::ResetAtCursor,
         )
     }
     fn publish_stopped_at_frame(
@@ -363,32 +369,65 @@ impl Inputs<'_> {
         context: hex_engine::AudioSourceContext,
         destination: u64,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let mut playback = if snapshot.prepared.arrangement_seek_requires_preroll() {
-            let runtime = hex_engine::SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
-                Arc::clone(&snapshot.prepared), &snapshot.resources, destination,
-                hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES, false, self.shutdown,
-            ).map_err(|error| SessionError::NativeAudio(format!("stopped arrangement preparation refused: {error:?}")))?;
-            Playback::from_interactive_arrangement_preroll(runtime).map_err(|error| {
-                SessionError::NativeAudio(format!("stopped arrangement runtime refused: {error:?}"))
-            })?
+        self.publish_stopped_at_frame_with(
+            snapshot,
+            project,
+            sink,
+            context,
+            destination,
+            StoppedDeviceState::ExactReplay,
+        )
+    }
+    fn publish_stopped_at_frame_with(
+        &self,
+        snapshot: &mut Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        context: hex_engine::AudioSourceContext,
+        destination: u64,
+        device_state: StoppedDeviceState,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        let requires_preroll = snapshot.prepared.arrangement_seek_requires_preroll();
+        let direct = if requires_preroll && device_state == StoppedDeviceState::ExactReplay {
+            None
         } else {
-            // Stateless arrangements need no replay. Preserve the raw stopped
-            // cursor, including late positions and positions outside an enabled loop.
+            // Stateless arrangements need no replay; a reset section edit chooses
+            // none. Preserve the raw stopped cursor, including late positions and
+            // positions outside an enabled loop.
             let mut playback = Playback::try_from_prepared_with_device_resources(
                 Arc::clone(&snapshot.prepared),
                 &snapshot.resources,
             )
             .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
-            playback
-                .try_apply_action(hex_engine::PlaybackAction::Transport(
-                    hex_engine::PlaybackCommand::Seek(destination),
-                ))
-                .map_err(|error| {
-                    SessionError::NativeAudio(format!(
+            match playback.try_apply_action(hex_engine::PlaybackAction::Transport(
+                hex_engine::PlaybackCommand::Seek(destination),
+            )) {
+                Ok(()) => Some(playback),
+                Err(hex_engine::PlaybackActionError::Session(
+                    hex_engine::SessionPlaybackError::MutableInstrumentActive
+                    | hex_engine::SessionPlaybackError::MutableInstrumentChase
+                    | hex_engine::SessionPlaybackError::MutableInstrumentDiagnostic(_),
+                )) if requires_preroll => None,
+                Err(error) => {
+                    return Err(SessionError::NativeAudio(format!(
                         "stopped arrangement positioning refused: {error:?}"
+                    )));
+                }
+            }
+        };
+        let mut playback = match direct {
+            Some(playback) => playback,
+            None => {
+                let runtime = hex_engine::SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
+                    Arc::clone(&snapshot.prepared), &snapshot.resources, destination,
+                    hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES, false, self.shutdown,
+                ).map_err(|error| SessionError::NativeAudio(format!("stopped arrangement preparation refused: {error:?}")))?;
+                Playback::from_interactive_arrangement_preroll(runtime).map_err(|error| {
+                    SessionError::NativeAudio(format!(
+                        "stopped arrangement runtime refused: {error:?}"
                     ))
-                })?;
-            playback
+                })?
+            }
         };
         if playback.position() != destination || playback.playing() {
             return Err(SessionError::Invalid(
@@ -1040,6 +1079,15 @@ pub(super) fn import_file(
     )?;
     *current = accepted;
     Ok(prepared)
+}
+
+/// Device history installed with a stopped-cursor publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StoppedDeviceState {
+    /// Replay the song prefix so stateful devices sound as if played up to the cursor.
+    ExactReplay,
+    /// Reset device/instrument state at the cursor; replay only for mutable-instrument refusal.
+    ResetAtCursor,
 }
 
 enum Transition {
