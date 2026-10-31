@@ -804,3 +804,95 @@ fn edge_trim_starts_only_in_the_header_and_loop_corner_and_fade_handle_stay_apar
         "fade handle drags"
     );
 }
+
+#[gpui::test]
+fn warped_looping_clip_right_edge_extends_by_repeats_instead_of_cancelling(
+    cx: &mut TestAppContext,
+) {
+    // Reported: warp + looping from the clip panel, then dragging the right
+    // edge submitted nothing. A warped trim cannot grow past its retained
+    // audio, so the edge of a repeating clip must use the outer repeat.
+    for dx in [40.0, 250.0] {
+        let mut f = fixture(cx, false);
+        let clip = f.clip;
+        f.editor.update(&mut f.visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            let settings = hex_project::default_audio_warp(
+                state.project.clip(clip).unwrap(),
+                state.project.tempo_map(),
+                hex_project::WarpMode::RePitch,
+            )
+            .unwrap();
+            assert!(v.enqueue(Request::Edit(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings)
+            })));
+        });
+        pump(&f.editor, &mut f.visual);
+        f.editor.update(&mut f.visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::SetClipLooping {
+                clip,
+                looping: true
+            })));
+        });
+        pump(&f.editor, &mut f.visual);
+        f.visual.run_until_parked();
+        let (end, rate) = f.editor.read_with(&f.visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            let clip = state.project.clip(clip).unwrap();
+            (clip.start() + clip.duration(), state.project.sample_rate())
+        });
+        let edge = f
+            .visual
+            .debug_bounds(Box::leak(
+                format!("clip-trim-right-{}", clip.value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        f.visual
+            .simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
+        f.visual.simulate_mouse_move(
+            point(edge.x + px(12.0), edge.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        f.visual.run_until_parked();
+        let target = point(edge.x + px(dx), edge.y);
+        f.visual
+            .simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        f.visual.run_until_parked();
+        f.editor.read_with(&f.visual, |v, _| {
+            let drag = v.active_trim_drag.as_ref().expect("held edge");
+            let preview = drag.preview.borrow();
+            let preview = preview
+                .as_ref()
+                .expect("a growing repeat preview, not none");
+            assert!(preview.clip.start() + preview.clip.duration() > end);
+        });
+        f.visual
+            .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        f.visual.run_until_parked();
+        let edit = f
+            .editor
+            .read_with(&f.visual, |v, _| v.last_enqueued_edit.clone());
+        let Some(Command::ResizeAudioClipView {
+            clip: edited,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame },
+        }) = edit
+        else {
+            panic!("expected one outer repeat edit, got {edit:?}")
+        };
+        assert_eq!(edited, clip);
+        assert!(
+            project_frame > end + u64::from(rate) / 100,
+            "{project_frame} vs {end}"
+        );
+        pump(&f.editor, &mut f.visual);
+        f.editor.read_with(&f.visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            let canonical = state.project.clip(clip).unwrap();
+            assert_eq!(canonical.start() + canonical.duration(), project_frame);
+            assert!(loop_handles::audio_repeats(canonical));
+        });
+    }
+}

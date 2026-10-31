@@ -423,7 +423,7 @@ the audible pitch while the stored transpose value is retained.
 
 ## clip loop resizing
 
-hover the bottom corner of a clip's right edge to show the circular-arrow cursor, then drag
+hover the bottom corner of a clip's right edge to show the circle cursor, then drag
 to repeat its source. the lower fade handle sits just inside that corner, and
 ordinary trimming stays in the clip header. audio and
 midi clips use the same gesture; no loop icon is painted inside the clip. looped

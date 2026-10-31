@@ -1787,7 +1787,7 @@ impl Playback {
         };
         match (&mut self.session_runtime, &mut previous.session_runtime) {
             (Some(next), Some(old)) => next
-                .try_inherit_state_from(old)
+                .try_inherit_state_live_from(old)
                 .map(|_| ())
                 .map_err(PlaybackHandoffError::Session)?,
             (Some(next), None) => {
