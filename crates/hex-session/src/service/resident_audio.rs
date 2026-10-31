@@ -342,8 +342,6 @@ impl Inputs<'_> {
     /// Stopped section edits (and their Undo/Redo) keep the raw cursor but start
     /// every device, effect tail, compensation delay and instrument empty there:
     /// the song prefix is not replayed, so latency is independent of the cursor.
-    /// Only a mutable instrument the strict Seek refuses to reset (an active or
-    /// chased note) falls back to exact replay, rather than dropping that note.
     fn publish_stopped_section(
         &self,
         snapshot: &mut Snapshot,
@@ -352,15 +350,19 @@ impl Inputs<'_> {
         context: hex_engine::AudioSourceContext,
         cursor: hex_project::BeatTime,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        self.publish_stopped_at_frame_with(
+        self.publish_stopped_at_frame(
             snapshot,
             project,
             sink,
             context,
             project.tempo_map().beat_to_frame(cursor)?,
-            StoppedDeviceState::ResetAtCursor,
         )
     }
+    /// Publish a stopped runtime at `destination` with empty device history
+    /// (the interactive seek law). Preserve the raw stopped cursor, including
+    /// late positions and positions outside an enabled loop. A mutable
+    /// instrument the strict Seek refuses (an active or chased note) uses the
+    /// interactive seek candidate, which keeps that note's chase for Play.
     fn publish_stopped_at_frame(
         &self,
         snapshot: &mut Snapshot,
@@ -369,31 +371,8 @@ impl Inputs<'_> {
         context: hex_engine::AudioSourceContext,
         destination: u64,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        self.publish_stopped_at_frame_with(
-            snapshot,
-            project,
-            sink,
-            context,
-            destination,
-            StoppedDeviceState::ExactReplay,
-        )
-    }
-    fn publish_stopped_at_frame_with(
-        &self,
-        snapshot: &mut Snapshot,
-        project: &Project,
-        sink: &mut dyn WorkerAudioSink,
-        context: hex_engine::AudioSourceContext,
-        destination: u64,
-        device_state: StoppedDeviceState,
-    ) -> Result<ResidentPublicationAcceptance, SessionError> {
         let requires_preroll = snapshot.prepared.arrangement_seek_requires_preroll();
-        let direct = if requires_preroll && device_state == StoppedDeviceState::ExactReplay {
-            None
-        } else {
-            // Stateless arrangements need no replay; a reset section edit chooses
-            // none. Preserve the raw stopped cursor, including late positions and
-            // positions outside an enabled loop.
+        let direct = {
             let mut playback = Playback::try_from_prepared_with_device_resources(
                 Arc::clone(&snapshot.prepared),
                 &snapshot.resources,
@@ -1079,15 +1058,6 @@ pub(super) fn import_file(
     )?;
     *current = accepted;
     Ok(prepared)
-}
-
-/// Device history installed with a stopped-cursor publication.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StoppedDeviceState {
-    /// Replay the song prefix so stateful devices sound as if played up to the cursor.
-    ExactReplay,
-    /// Reset device/instrument state at the cursor; replay only for mutable-instrument refusal.
-    ResetAtCursor,
 }
 
 enum Transition {

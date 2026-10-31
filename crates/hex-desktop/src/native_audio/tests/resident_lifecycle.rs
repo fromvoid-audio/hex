@@ -1025,7 +1025,7 @@ fn ordinary_default_drop_grows_beyond_pcm_allowance_and_reaches_real_native_publ
 }
 
 #[test]
-fn ordinary_file_backed_seek_reconstructs_history_and_publishes_exact_native_pcm() {
+fn ordinary_file_backed_seek_publishes_exact_native_pcm() {
     let _native = NATIVE_FIXTURE.lock().unwrap();
     for (sampler, section) in [(false, false), (true, false), (true, true)] {
         ordinary_file_seek_case(sampler, section);
