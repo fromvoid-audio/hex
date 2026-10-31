@@ -1319,5 +1319,9 @@ fn resident_offline_media_opens_silent_and_relinks_in_place_with_undo() {
     let undone = h.run(Request::Undo);
     assert!(undone.state.project.asset_offline(asset));
     h.applied(applied);
-    assert_eq!(h.render(), [[0.0; 2]; 64], "undo returns the clip to silence");
+    assert_eq!(
+        h.render(),
+        [[0.0; 2]; 64],
+        "undo returns the clip to silence"
+    );
 }

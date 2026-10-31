@@ -338,7 +338,9 @@ fn offline_media_relinks_in_place_from_the_indicator_and_undoes(cx: &mut TestApp
         cx.notify();
     });
     pump(&editor, &mut visual);
-    editor.update(&mut visual, |view, cx| view.missing_media_open_with(true, cx));
+    editor.update(&mut visual, |view, cx| {
+        view.missing_media_open_with(true, cx)
+    });
     pump(&editor, &mut visual);
     visual.run_until_parked();
     let indicator = visual.debug_bounds("missing-media-indicator").unwrap();

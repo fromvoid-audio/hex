@@ -1144,7 +1144,8 @@ pub(super) fn relink_files(
         current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
         || Ok(()),
         |input, admit| {
-            let snapshot = prepare_import(input, context, sink, admission, current.as_ref(), admit)?;
+            let snapshot =
+                prepare_import(input, context, sink, admission, current.as_ref(), admit)?;
             let prepared = Arc::clone(&snapshot.prepared);
             accepted = Some(snapshot);
             Ok(prepared)
