@@ -11,6 +11,12 @@ use std::sync::Arc;
 
 const TIMELINE_FRAMES: u64 = 384_000;
 
+/// Edge-trim grab point in the clip-name band. A hovered clip shows its
+/// corner fade handles over the rest of the edge, and those take precedence.
+pub(super) fn trim_grab_point(bounds: gpui::Bounds<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
+    gpui::point(bounds.center().x, bounds.top() + bounds.size.height / 6.0)
+}
+
 pub(super) fn audio_project() -> (
     Project,
     hex_project::TrackId,
@@ -803,10 +809,7 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
             ))
             .is_some()
     );
-    let down = point(
-        handle_bounds.origin.x + handle_bounds.size.width / 2.0,
-        handle_bounds.origin.y + handle_bounds.size.height / 2.0,
-    );
+    let down = trim_grab_point(handle_bounds);
     visual.simulate_mouse_move(down, None, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
@@ -1304,10 +1307,7 @@ fn rendered_midi_trim_previews_note_geometry_and_commits_release_snap(cx: &mut T
     assert_eq!(original_bounds.origin.y, lane.origin.y);
     assert_eq!(original_bounds.size.height, lane.size.height);
     assert!(visual.debug_bounds("clip-musical-grid").is_some());
-    let down = point(
-        handle_bounds.origin.x + handle_bounds.size.width / 2.0,
-        handle_bounds.origin.y + handle_bounds.size.height / 2.0,
-    );
+    let down = trim_grab_point(handle_bounds);
     visual.simulate_mouse_move(down, None, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
@@ -1429,10 +1429,7 @@ fn rendered_midi_left_trim_keeps_source_note_timeline_position(cx: &mut TestAppC
             format!("arrangement-lane-{}", source.value()).into_boxed_str(),
         ))
         .expect("source lane");
-    let down = point(
-        handle_bounds.origin.x + handle_bounds.size.width / 2.0,
-        handle_bounds.origin.y + handle_bounds.size.height / 2.0,
-    );
+    let down = trim_grab_point(handle_bounds);
     visual.simulate_mouse_move(down, None, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(

@@ -221,6 +221,15 @@ pub(crate) fn effective_parameter_value(
     key: ParameterKey,
     canonical_value: ParameterValue,
 ) -> ParameterValue {
+    parameter_display_override(view, key).unwrap_or(canonical_value)
+}
+
+/// The in-flight gesture value, else the admitted manual value awaiting its
+/// barrier. Bound controls and automation lanes share this display source.
+pub(crate) fn parameter_display_override(
+    view: &mut EditorView,
+    key: ParameterKey,
+) -> Option<ParameterValue> {
     let gesture_value = view
         .device_gesture
         .snapshot()
@@ -262,13 +271,7 @@ pub(crate) fn effective_parameter_value(
     {
         view.device_panel.pending_values.remove(&key);
     }
-    gesture_value.unwrap_or_else(|| {
-        view.device_panel
-            .pending_values
-            .get(&key)
-            .copied()
-            .unwrap_or(canonical_value)
-    })
+    gesture_value.or_else(|| view.device_panel.pending_values.get(&key).copied())
 }
 
 pub(super) fn render_parameter(

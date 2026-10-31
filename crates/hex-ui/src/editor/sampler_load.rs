@@ -212,6 +212,11 @@ impl EditorView {
                     .is_some_and(|(id, _)| *id == device) =>
             {
                 self.load_first_sampler(target, cx);
+                if self.sampler_load.pending.is_some()
+                    || self.sampler_replacement_pending_id().is_some()
+                {
+                    self.stop_browser_preview_for_drop();
+                }
             }
             Ok(_) => {
                 self.error = Some("sample drop canceled · sampler changed".into());

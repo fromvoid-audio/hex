@@ -303,6 +303,22 @@ impl Entry {
             self.target.kind,
         )
     }
+    /// Lane position of a control-space value; host gains travel in decibels.
+    fn normalized(&self, value: ParameterValue) -> Option<f32> {
+        match (self.metadata, value) {
+            (EntryMetadata::HostGain, ParameterValue::Float(db)) => {
+                HostGain::from_db(db).ok().map(HostGain::normalized)
+            }
+            (EntryMetadata::HostGain, _) => None,
+            (
+                EntryMetadata::Provider {
+                    descriptor,
+                    semantics,
+                },
+                value,
+            ) => semantics.normalization.normalize(descriptor, value).ok(),
+        }
+    }
     fn is_discrete(&self) -> bool {
         matches!(
             self.metadata,
@@ -451,6 +467,25 @@ impl Lanes {
 }
 
 impl EditorView {
+    /// Unautomated lanes follow the bound control frame by frame: the in-flight
+    /// gesture, then the admitted manual value, then canonical `base`. Released
+    /// gestures keep their snapshot until the exact terminal installs canonical
+    /// state, so the line never snaps back. Authored envelopes ignore this value.
+    pub(super) fn live_device_automation_base(&mut self, entry: &Entry) -> f32 {
+        let parameter = match entry.target.kind {
+            DeviceAutomationTarget::Parameter(parameter) => parameter,
+            DeviceAutomationTarget::HostInputGain => hex_engine::DEVICE_INPUT_GAIN.id,
+            DeviceAutomationTarget::HostOutputGain => hex_engine::DEVICE_OUTPUT_GAIN.id,
+        };
+        let key = super::device_panel::ParameterKey {
+            device: entry.target.device,
+            parameter,
+        };
+        super::device_panel::parameter_display_override(self, key)
+            .and_then(|value| entry.normalized(value))
+            .unwrap_or(entry.base)
+    }
+
     pub(super) fn remember_automation_parameter(
         &mut self,
         device: DeviceId,
