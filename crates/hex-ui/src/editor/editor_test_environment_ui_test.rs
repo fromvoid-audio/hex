@@ -284,7 +284,7 @@ fn browser_test_environment_actual_catalog_save_keeps_root_after_view_drop_then_
         weak.upgrade().is_none(),
         "no editor/FS-job guards left after actual save"
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(
             std::time::Instant::now() < deadline,

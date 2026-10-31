@@ -12,6 +12,7 @@ use hex_plugin_host::native::{
 };
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
 
+mod capture;
 mod completion;
 mod definition;
 mod effect;
@@ -176,6 +177,10 @@ pub(super) struct Bank {
     resources: Option<resources::PoolResources>,
 }
 impl Bank {
+    pub(super) fn cleanup_failed(&self) -> bool {
+        self.slots.iter().any(|s| s.phase == Phase::Failed)
+    }
+
     pub(super) fn occupied(&self) -> bool {
         self.slots.iter().any(|s| s.phase != Phase::Vacant)
     }

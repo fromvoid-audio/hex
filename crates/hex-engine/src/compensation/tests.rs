@@ -302,6 +302,48 @@ fn transport_origins_preserve_loop_identity_and_rollback_long_requests() {
 }
 
 #[test]
+fn stage_origin_preview_matches_actual_pushes_and_rollback() {
+    let graph = plan(&[node(1, 3), node(2, 2)], &[edge(1, 1, 2)]);
+    let mut runtime = CompensationRuntime::new(graph, CompensationLimits::default()).unwrap();
+    let preview = |runtime: &CompensationRuntime, delay, offset, start| {
+        CompensationRuntime::preview_stage_frame(Some(runtime), delay, offset, |i| {
+            Ok::<_, ()>(Some(stamp((start + i) as usize).arrangement_frame))
+        })
+        .unwrap()
+    };
+    assert_eq!(preview(&runtime, 5, 0, 0), None);
+    assert_eq!(preview(&runtime, 5, 5, 0), Some(stamp(0).arrangement_frame));
+    runtime.begin_transaction().unwrap();
+    for index in 0..7 {
+        runtime.push_transport_stamp(stamp(index)).unwrap();
+    }
+    runtime.commit_transaction().unwrap();
+    for delay in [0, 3, 5] {
+        let predicted: Vec<_> = (0..9)
+            .map(|offset| preview(&runtime, delay, offset, 7))
+            .collect();
+        runtime.begin_transaction().unwrap();
+        for (offset, expected) in predicted.into_iter().enumerate() {
+            runtime.push_transport_stamp(stamp(7 + offset)).unwrap();
+            assert_eq!(
+                runtime
+                    .stamp_at_delay(delay)
+                    .map(|stamp| stamp.arrangement_frame),
+                expected
+            );
+        }
+        runtime.rollback_transaction().unwrap();
+        assert_eq!(runtime.stamp_at_delay(0), Some(stamp(6)));
+    }
+    runtime.reset_epoch();
+    assert_eq!(preview(&runtime, 3, 0, 100), None);
+    assert_eq!(
+        preview(&runtime, 3, 3, 100),
+        Some(stamp(100).arrangement_frame)
+    );
+}
+
+#[test]
 fn invalid_calls_refuse_before_mutating_ring_state() {
     let mut delayed = pair(2);
     assert_eq!(

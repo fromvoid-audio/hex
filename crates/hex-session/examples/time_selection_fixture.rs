@@ -51,6 +51,7 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
             let mut notes = Vec::new();
             for note in 0..8_u64 {
                 notes.push(MidiNoteSnapshot {
+                    active: true,
                     id: id(),
                     start_raw: BeatTime::from_ratio(note * 3, 16)?.raw(),
                     duration_raw: BeatTime::from_ratio(1, 8)?.raw(),
@@ -105,7 +106,9 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
             },
         });
     }
-    Ok(Project::from_snapshot(Snapshot {
+    Ok(Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),

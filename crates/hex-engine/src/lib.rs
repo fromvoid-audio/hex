@@ -10,6 +10,7 @@
 //! Does not edit canonical projects, open media files/devices, own page-worker queues or infer
 //! physical deadline/Live parity from headless checks. Callback paths borrow prepared data;
 //! control owns preparation and final destruction.
+mod native_effect_storage;
 pub use hex_devices::SineTable;
 pub use hex_devices::auto_pan::{
     AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,
@@ -26,6 +27,7 @@ pub use hex_devices::operator_waveform::builtin_waveform_preview as native_opera
 pub use hex_devices::overdrive::{
     OverdriveFilterResponse, filter_response as native_overdrive_filter_response,
 };
+pub use hex_devices::reverb::{ReverbPreview, preview as native_reverb_preview};
 pub use hex_devices::saturator::{
     SaturatorTransferCurve, transfer_curve as native_saturator_transfer_curve,
 };
@@ -34,6 +36,8 @@ pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
 pub mod compensation;
 pub mod midi_capture;
+mod source_routing;
+pub use source_routing::PreparedSourceRouting;
 
 // Historical analytic/import proofs opt into the shared pre-global kernel.
 #[cfg(test)]
@@ -103,6 +107,14 @@ pub use native_device_view::{
     sampler_replacement_template_on_control, validate_sampler_replacement_on_control,
 };
 
+mod device_automation;
+mod native_parameter_input;
+pub use device_automation::{
+    DEVICE_AUTOMATION_PLAYBACK_UNSUPPORTED, NativeParameterInputTarget,
+    native_device_automation_target_supported, native_parameter_automation_supported,
+    native_parameter_input_target, project_device_automation_target_supported,
+};
+pub use native_parameter_input::NativeParameterApplication;
 mod gain_envelope;
 pub use gain_envelope::{
     GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, GainPreviewSegment,
@@ -111,7 +123,9 @@ pub use gain_envelope::{
 mod return_feed_plan;
 mod signal_graph;
 mod stream_demand;
-pub use stream_demand::{StreamChunkWindow, StreamPageExtent};
+pub use stream_demand::{
+    StreamChunkWindow, StreamPageExtent, StreamResourceExtent, visit_scalar_page_range,
+};
 mod streamed;
 pub use streamed::{
     BorrowedMediaPage, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,
@@ -143,7 +157,7 @@ impl PostNodeIdentity {
     }
 }
 
-pub use hex_lattice::DeviceMeter;
+pub use hex_lattice::{DeviceMeter, DevicePeaks, DynamicsMeter};
 pub use native_device_view::{DEVICE_INPUT_GAIN, DEVICE_OUTPUT_GAIN};
 
 /// Borrowed stereo Main after master gain from a successful engine render.
@@ -797,6 +811,11 @@ impl Clip {
 #[derive(Debug, Clone)]
 pub struct Track {
     track_id: Option<hex_project::TrackId>,
+    source_id: Option<hex_project::SourceId>,
+    source_receiver_index: Option<usize>,
+    source_audio_receiver: bool,
+    source_input_enabled: bool,
+    audio_content_enabled: bool,
     clips: Vec<Clip>,
     mix: PreparedTrackMix,
     source_mix: PreparedTrackMix,
@@ -834,6 +853,102 @@ pub(crate) struct ReturnBus {
     pub muted: bool,
     pub matrix: Option<hex_lattice::StereoMatrix>,
     pub device_chain: std::sync::Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    pub output_meter: std::sync::Arc<hex_lattice::DeviceMeter>,
+}
+
+/// Bounded solo projection for one immutable canonical track inventory. Group
+/// ancestors remain audible, and a soloed group includes its descendants.
+/// Shared-source receiver ancestors are admitted without enabling receiver-local
+/// content. No authored mute or solo flags are changed.
+pub(crate) struct TrackSoloSelection {
+    any: bool,
+    selected: [bool; hex_project::MAX_TRACKS],
+}
+impl TrackSoloSelection {
+    pub(crate) fn prepare(project: &hex_project::Project) -> Self {
+        let tracks = project.tracks();
+        let any = tracks.iter().any(|track| track.soloed());
+        let mut selected = [false; hex_project::MAX_TRACKS];
+        if !any {
+            return Self { any, selected };
+        }
+        // Canonical tracks are bounded and their parent IDs have already been
+        // validated. Resolve indices once before walking at most the inventory.
+        let mut parents = [None; hex_project::MAX_TRACKS];
+        for (index, track) in tracks.iter().enumerate() {
+            parents[index] = track
+                .parent_group()
+                .and_then(|id| tracks.iter().position(|candidate| candidate.id() == id));
+        }
+        for (index, track) in tracks.iter().enumerate() {
+            let mut cursor = Some(index);
+            for _ in 0..tracks.len() {
+                let Some(current) = cursor else {
+                    break;
+                };
+                if tracks[current].soloed() {
+                    selected[index] = true;
+                }
+                if track.soloed() {
+                    selected[current] = true;
+                }
+                cursor = parents[current];
+            }
+        }
+        // Source contributors are ordinary tracks. Their own selected flags
+        // remain unchanged when admitting the receiver's group path.
+        for (index, track) in tracks.iter().enumerate() {
+            if !selected[index] {
+                continue;
+            }
+            let Some(source) = track.source_id() else {
+                continue;
+            };
+            let Some(receiver) = project
+                .native_source(source)
+                .and_then(|source| source.receiver())
+            else {
+                continue;
+            };
+            let Some(receiver_index) = tracks
+                .iter()
+                .position(|candidate| candidate.id() == receiver)
+            else {
+                continue;
+            };
+            let mut cursor = parents[receiver_index];
+            for _ in 0..tracks.len() {
+                let Some(current) = cursor else {
+                    break;
+                };
+                selected[current] = true;
+                cursor = parents[current];
+            }
+        }
+        Self { any, selected }
+    }
+    pub(crate) fn selected(&self, index: usize) -> Result<bool, Invalid> {
+        self.selected
+            .get(index)
+            .copied()
+            .ok_or(Invalid("solo projection track is missing"))
+    }
+    pub(crate) fn muted(&self, index: usize, track: &hex_project::Track) -> Result<bool, Invalid> {
+        let selected = self.selected(index)?;
+        Ok(!track.soloed() && (track.muted() || (self.any && !selected)))
+    }
+    pub(crate) fn source_selected(
+        &self,
+        project: &hex_project::Project,
+        source: hex_project::SourceId,
+    ) -> Result<bool, Invalid> {
+        for (index, contributor) in project.tracks().iter().enumerate() {
+            if contributor.source_id() == Some(source) && self.selected(index)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 
 /// Validated per-track stereo coefficients shared by independent source paths.
@@ -961,6 +1076,11 @@ impl Track {
             instrument_latency: Some(0),
             instrument_runtime_latency: Some(0),
             instrument_meter: Default::default(),
+            source_id: None,
+            source_receiver_index: None,
+            source_audio_receiver: true,
+            source_input_enabled: true,
+            audio_content_enabled: true,
             mutable_instrument: false,
             mutable_looping_source: false,
             midi_source_index: None,
@@ -1012,6 +1132,11 @@ impl Track {
             instrument_latency: Some(0),
             instrument_runtime_latency: Some(0),
             instrument_meter: Default::default(),
+            source_id: None,
+            source_receiver_index: None,
+            source_audio_receiver: true,
+            source_input_enabled: true,
+            audio_content_enabled: true,
             mutable_instrument: false,
             mutable_looping_source: false,
             midi_source_index: None,
@@ -1058,6 +1183,46 @@ impl Track {
             && self.instrument_id == other.instrument_id
             && self.instrument_state == other.instrument_state
             && self.instrument_bypassed == other.instrument_bypassed
+    }
+
+    /// A contributor retains its MIDI bank and local audio/effects, but only the
+    /// selected receiver may render a retained source's generator output.
+    pub(crate) fn with_source_audio_receiver(mut self, receiver: bool) -> Self {
+        self.source_audio_receiver = receiver;
+        self
+    }
+    pub(crate) fn with_source_mix_scope(
+        mut self,
+        input_enabled: bool,
+        audio_enabled: bool,
+    ) -> Self {
+        self.source_input_enabled = input_enabled;
+        self.audio_content_enabled = audio_enabled;
+        self
+    }
+    pub(crate) fn source_input_enabled(&self) -> bool {
+        self.source_input_enabled
+    }
+    pub(crate) fn audio_content_enabled(&self) -> bool {
+        self.audio_content_enabled
+    }
+    pub fn receives_source_audio(&self) -> bool {
+        self.source_audio_receiver
+    }
+    pub(crate) fn with_source_binding(
+        mut self,
+        source: Option<hex_project::SourceId>,
+        receiver_index: Option<usize>,
+    ) -> Self {
+        self.source_id = source;
+        self.source_receiver_index = receiver_index;
+        self
+    }
+    pub fn source_id(&self) -> Option<hex_project::SourceId> {
+        self.source_id
+    }
+    pub(crate) fn source_receiver_index(&self) -> Option<usize> {
+        self.source_receiver_index
     }
 
     pub(crate) fn with_mutable_instrument(mut self, mutable: bool, looping_source: bool) -> Self {
@@ -1202,6 +1367,7 @@ impl Track {
                     .is_some_and(|effects| {
                         effects.iter().any(|effect| {
                             effect.definition.is_some()
+                                || !effect.automation.is_empty()
                                 || effect.matrix.coefficients() != [[1.0, 0.0], [0.0, 1.0]]
                         })
                     })
@@ -2033,12 +2199,22 @@ pub(crate) struct InstrumentTrack {
 
 /// Immutable control-side root/crop view for worker waveform preparation.
 /// Audio retains the same PCM reservation as playback; never build summaries in render.
+/// Without `repeat`, the clip plays `audio[offset..offset + length)` once. With it,
+/// the clip's `length` frames loop `audio[offset..offset + period)` from `phase`.
 #[derive(Debug, Clone)]
 pub struct PreparedAudioClipView {
     pub clip: hex_project::ClipId,
     pub audio: Audio,
     pub offset: u64,
     pub length: u64,
+    pub repeat: Option<PreparedAudioRepeat>,
+}
+
+/// Loop geometry of a prepared clip that plays a shared root instead of outer PCM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreparedAudioRepeat {
+    pub period: u64,
+    pub phase: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -2062,6 +2238,8 @@ pub struct Project {
     main_output_latency_frames: u32,
     audible_end_frame: Option<u64>,
     has_streamed_sources: bool,
+    // A legacy whole-project renderer cannot silently omit recorded parameters.
+    requires_scalar_automation: bool,
     shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
@@ -2179,6 +2357,7 @@ impl Project {
             main_device_chain: Arc::from([]),
             main_output_latency_frames: 0,
             has_streamed_sources,
+            requires_scalar_automation: false,
             shared_contexts: owned_shared::OwnedShared::new_owned(
                 shared_analytic::SharedAnalyticContextTable::default(),
             ),
@@ -2250,6 +2429,58 @@ impl Project {
         self.audible_end_frame
     }
 
+    /// Conservative causal end of source material at pre-Main capture taps.
+    ///
+    /// The graph's pre-Main arrival includes routing compensation but excludes
+    /// serial Main processors. All selected taps may therefore be covered even
+    /// if some finish earlier. Processor residual tails are not included.
+    pub fn untrimmed_capture_source_end_frame(&self) -> Result<Option<u64>, Invalid> {
+        let latency = self
+            .signal_graph
+            .as_ref()
+            .map_or(0, |graph| graph.main_latency());
+        self.audible_end_frame
+            .map(|end| {
+                end.checked_add(u64::from(latency))
+                    .ok_or(Invalid("pre-Main capture range overflow"))
+            })
+            .transpose()
+    }
+
+    /// Conservative causal end for the selected pre-Main outputs, including
+    /// declared residual tails along their contributing graph paths. Unknown,
+    /// over-budget or overflowing tails require an explicit export range.
+    pub fn untrimmed_capture_end_frame(
+        &self,
+        captures: &[OutputCaptureId],
+    ) -> Result<Option<u64>, Invalid> {
+        if captures.len() > MAX_OUTPUT_CAPTURES {
+            return Err(Invalid("too many capture outputs"));
+        }
+        let Some(source_end) = self.untrimmed_capture_source_end_frame()? else {
+            return Ok(None);
+        };
+        let tail = match &self.signal_graph {
+            Some(graph) => graph.output_tail_frames(self, Some(captures))?,
+            None => 0,
+        };
+        self.checked_output_tail_end(source_end, tail).map(Some)
+    }
+
+    fn checked_output_tail_end(&self, source_end: u64, tail: u64) -> Result<u64, Invalid> {
+        let limit = u64::from(self.sample_rate)
+            .checked_mul(session_playback::MAX_FINITE_EFFECT_TAIL_SECONDS)
+            .ok_or(Invalid("automatic output drain overflow"))?;
+        if tail > limit {
+            return Err(Invalid(
+                "automatic output drain exceeds its bounded horizon",
+            ));
+        }
+        source_end
+            .checked_add(tail)
+            .ok_or(Invalid("automatic output range overflow"))
+    }
+
     /// Causal Main output end for an untrimmed, automatically sized offline
     /// range. Ordinary source-length exports trim startup separately and must
     /// continue to use `audible_end_frame`. Explicit ranges never use this bound.
@@ -2257,36 +2488,33 @@ impl Project {
         let Some(source_end) = self.audible_end_frame else {
             return Ok(None);
         };
-        let mut drain = 0_u64;
-        for device in self
-            .main_device_chain
-            .iter()
-            .filter(|device| !device.bypassed)
-        {
-            let tail = device.definition.as_ref().map_or(
-                hex_lattice::OutputTail::Finite { max_tail_frames: 0 },
-                hex_lattice::PreparedProcessorFactory::output_tail,
-            );
-            let hex_lattice::OutputTail::Finite { max_tail_frames } = tail else {
-                return Err(Invalid(
-                    "automatic Main range requires a finite tail; choose an explicit range",
-                ));
-            };
-            drain = drain
-                .checked_add(max_tail_frames)
-                .ok_or(Invalid("Main export drain overflow"))?;
-        }
-        let limit = u64::from(self.sample_rate)
-            .checked_mul(session_playback::MAX_FINITE_EFFECT_TAIL_SECONDS)
-            .ok_or(Invalid("Main export drain overflow"))?;
-        if drain > limit {
-            return Err(Invalid("Main export drain exceeds its bounded horizon"));
-        }
-        source_end
+        let tail = match &self.signal_graph {
+            Some(graph) => graph.output_tail_frames(self, None)?,
+            None => {
+                let mut tail = 0_u64;
+                for device in self
+                    .main_device_chain
+                    .iter()
+                    .filter(|device| !device.bypassed)
+                {
+                    let output = device.definition.as_ref().map_or(
+                        hex_lattice::OutputTail::Finite { max_tail_frames: 0 },
+                        hex_lattice::PreparedProcessorFactory::output_tail,
+                    );
+                    let hex_lattice::OutputTail::Finite { max_tail_frames } = output else {
+                        return Err(Invalid("automatic output tail is unbounded"));
+                    };
+                    tail = tail
+                        .checked_add(max_tail_frames)
+                        .ok_or(Invalid("automatic output tail overflows"))?;
+                }
+                tail
+            }
+        };
+        let causal_end = source_end
             .checked_add(u64::from(self.main_output_latency_frames))
-            .and_then(|end| end.checked_add(drain))
-            .map(Some)
-            .ok_or(Invalid("Main export range overflow"))
+            .ok_or(Invalid("Main export range overflow"))?;
+        self.checked_output_tail_end(causal_end, tail).map(Some)
     }
 
     pub fn device_meter(
@@ -2760,6 +2988,12 @@ impl RendererRuntime {
         mut pages: Option<&mut P>,
         began: &mut bool,
     ) -> Result<(), Invalid> {
+        if project.requires_scalar_automation {
+            output.fill([0.0; 2]);
+            return Err(Invalid(
+                "recorded parameters require shared session playback",
+            ));
+        }
         let volume_clock = project.midi_volume_timing();
         let volume_timing = volume_clock
             .as_ref()
@@ -2836,116 +3070,115 @@ impl RendererRuntime {
         }
         for (index, track) in project.tracks.iter().enumerate() {
             let stateful = track.has_device_chain();
-            if stateful || track.requires_ordered_processing() || track.has_gain_automation() {
-                let mut chain = if stateful {
-                    Some(
+            let ordered = track.requires_ordered_processing();
+            let render_direct_stateless_track = !stateful
+                && !ordered
+                && !track.has_mutable_instrument()
+                && !track.has_gain_automation()
+                && !track.source_id().is_some_and(|source| {
+                    project
+                        .tracks
+                        .iter()
+                        .filter(|candidate| candidate.source_id() == Some(source))
+                        .take(2)
+                        .count()
+                        > 1
+                });
+            if render_direct_stateless_track {
+                // Keep clip/note contributions in the destination mix order;
+                // grouping a track into zeroed scratch changes exact PCM sums.
+                track.render_additive_with_suppressions_and_pages(
+                    block_start,
+                    block_start,
+                    output,
+                    &[],
+                    pages.as_deref_mut(),
+                    &[],
+                    volume_timing,
+                )?;
+                continue;
+            }
+            let mut scratch = [[0.0; 2]; 256];
+            for offset in (0..output.len()).step_by(scratch.len()) {
+                let count = (output.len() - offset).min(scratch.len());
+                let start = block_start
+                    .checked_add(offset as u64)
+                    .ok_or(Invalid("render range overflow"))?;
+                let end = start
+                    .checked_add(count as u64)
+                    .ok_or(Invalid("render range overflow"))?;
+                let target = &mut scratch[..count];
+                target.fill([0.0; 2]);
+                if track.audio_content_enabled() {
+                    render_track_audio_raw(track, start, end, target, pages.as_deref_mut());
+                }
+                let effect_clock = crate::effect_clock::ArrangementEffectClock::canonical(
+                    project.tempo_map.as_ref(),
+                    start,
+                );
+                if ordered {
+                    if stateful {
                         self.device_chains
                             .get_mut(index)
-                            .ok_or(Invalid("native device runtime is unavailable"))?,
-                    )
-                } else {
-                    None
-                };
-                let mut scratch = [[0.0; 2]; 256];
-                let mut offset = 0_usize;
-                while offset < output.len() {
-                    let count = (output.len() - offset).min(scratch.len());
-                    let start = block_start
-                        .checked_add(offset as u64)
-                        .ok_or(Invalid("render range overflow"))?;
-                    let end = start
-                        .checked_add(count as u64)
-                        .ok_or(Invalid("render range overflow"))?;
-                    let target = &mut scratch[..count];
-                    let effect_clock = crate::effect_clock::ArrangementEffectClock::canonical(
-                        project.tempo_map.as_ref(),
-                        start,
-                    );
-                    target.fill([0.0; 2]);
-                    if let Some(page_provider) = pages.as_deref_mut() {
-                        if track.requires_ordered_processing() {
-                            track.render_audio_range_with_pages(start, end, target, page_provider);
-                        } else {
-                            track.render_unmuted_range_with_pages(
-                                start,
-                                end,
+                            .ok_or(Invalid("native device runtime is unavailable"))?
+                            .process_range_with_clock(
+                                0..track.instrument_position(),
                                 target,
-                                None,
-                                page_provider,
-                                volume_timing,
-                            )?;
-                        }
-                    } else {
-                        if track.requires_ordered_processing() {
-                            track.render_audio_range(start, end, target);
-                        } else {
-                            track.render_unmuted_range(start, end, target, None, volume_timing)?;
-                        }
-                    }
-                    if track.requires_ordered_processing() {
-                        if let Some(chain) = chain.as_deref_mut() {
-                            chain
-                                .process_range_with_clock(
-                                    0..track.instrument_position(),
-                                    target,
-                                    Some(&effect_clock),
-                                )
-                                .map_err(|_| Invalid("prepared effect segment is invalid"))?;
-                        } else {
-                            track.apply_ordered_prefix(target);
-                        }
-                        track.apply_instrument_input_gain(target);
-                        track.render_instrument_range(start, end, target, None, volume_timing)?;
-                        track.apply_instrument_output_gain(target);
-                        if let Some(chain) = chain.as_deref_mut() {
-                            let effect_count = chain.len();
-                            chain
-                                .process_range_with_clock(
-                                    track.instrument_position()..effect_count,
-                                    target,
-                                    Some(&effect_clock),
-                                )
-                                .map_err(|_| Invalid("prepared effect segment is invalid"))?;
-                        } else {
-                            track.apply_ordered_suffix(target);
-                        }
-                    } else if let Some(chain) = chain.as_deref_mut() {
-                        chain
-                            .process_range_with_clock(0..chain.len(), target, Some(&effect_clock))
+                                Some(&effect_clock),
+                                Some(&effect_clock),
+                            )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
-                    }
-                    if track.has_gain_automation() {
-                        for (frame_index, (destination, source)) in output[offset..offset + count]
-                            .iter_mut()
-                            .zip(target.iter().copied())
-                            .enumerate()
-                        {
-                            track
-                                .mix_at(start + frame_index as u64)
-                                .add_frame(destination, source);
-                        }
                     } else {
-                        for (destination, source) in output[offset..offset + count]
-                            .iter_mut()
-                            .zip(target.iter().copied())
-                        {
-                            track.mix.add_frame(destination, source);
-                        }
+                        track.apply_ordered_prefix(target);
                     }
-                    offset += count;
+                    track.apply_instrument_input_gain(target);
+                    render_source_generators(project, index, start, end, target, volume_timing)?;
+                    track.apply_instrument_output_gain(target);
+                    if stateful {
+                        let chain = self
+                            .device_chains
+                            .get_mut(index)
+                            .ok_or(Invalid("native device runtime is unavailable"))?;
+                        let effect_count = chain.len();
+                        chain
+                            .process_range_with_clock(
+                                track.instrument_position()..effect_count,
+                                target,
+                                Some(&effect_clock),
+                                Some(&effect_clock),
+                            )
+                            .map_err(|_| Invalid("prepared effect segment is invalid"))?;
+                    } else {
+                        track.apply_ordered_suffix(target);
+                    }
+                } else if stateful {
+                    let chain = self
+                        .device_chains
+                        .get_mut(index)
+                        .ok_or(Invalid("native device runtime is unavailable"))?;
+                    chain
+                        .process_range_with_clock(
+                            0..chain.len(),
+                            target,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                        )
+                        .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                 }
-            } else if !track.mix.muted {
-                if let Some(page_provider) = pages.as_deref_mut() {
-                    track.render_unmuted_range_with_pages(
-                        block_start,
-                        next,
-                        output,
-                        None,
-                        page_provider,
-                        volume_timing,
-                    )?;
-                } else {
-                    track.render_unmuted_range(block_start, next, output, None, volume_timing)?;
+                if !ordered {
+                    render_source_generators(project, index, start, end, target, volume_timing)?;
+                }
+                for (frame_index, (destination, source)) in output[offset..offset + count]
+                    .iter_mut()
+                    .zip(target.iter().copied())
+                    .enumerate()
+                {
+                    let mix = if track.has_gain_automation() {
+                        track.mix_at(start + frame_index as u64)
+                    } else {
+                        track.mix
+                    };
+                    mix.add_frame(destination, source);
                 }
             }
         }
@@ -3001,47 +3234,10 @@ impl RendererRuntime {
             for (track_index, track) in project.tracks.iter().enumerate() {
                 let stateful = track.has_device_chain();
                 let ordered = track.requires_ordered_processing();
-                if !stateful && !ordered && !track.has_gain_automation() && track.sends.is_empty() {
-                    if let Some(provider) = pages.as_deref_mut() {
-                        track.render_unmuted_range_with_pages(
-                            start,
-                            end,
-                            output_chunk,
-                            None,
-                            provider,
-                            volume_timing,
-                        )?;
-                    } else {
-                        track.render_unmuted_range(
-                            start,
-                            end,
-                            output_chunk,
-                            None,
-                            volume_timing,
-                        )?;
-                    }
-                    continue;
-                }
-
                 let mut scratch = [[0.0; 2]; 256];
                 let rendered = &mut scratch[..count];
-                if let Some(provider) = pages.as_deref_mut() {
-                    if ordered {
-                        track.render_audio_range_with_pages(start, end, rendered, provider);
-                    } else {
-                        track.render_unmuted_range_with_pages(
-                            start,
-                            end,
-                            rendered,
-                            None,
-                            provider,
-                            volume_timing,
-                        )?;
-                    }
-                } else if ordered {
-                    track.render_audio_range(start, end, rendered);
-                } else {
-                    track.render_unmuted_range(start, end, rendered, None, volume_timing)?;
+                if track.audio_content_enabled() {
+                    render_track_audio_raw(track, start, end, rendered, pages.as_deref_mut());
                 }
                 if ordered {
                     if stateful {
@@ -3052,13 +3248,21 @@ impl RendererRuntime {
                                 0..track.instrument_position,
                                 rendered,
                                 Some(&effect_clock),
+                                Some(&effect_clock),
                             )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                     } else {
                         track.apply_ordered_prefix(rendered);
                     }
                     track.apply_instrument_input_gain(rendered);
-                    track.render_instrument_range(start, end, rendered, None, volume_timing)?;
+                    render_source_generators(
+                        project,
+                        track_index,
+                        start,
+                        end,
+                        rendered,
+                        volume_timing,
+                    )?;
                     track.apply_instrument_output_gain(rendered);
                     if stateful {
                         let chain = self
@@ -3071,6 +3275,7 @@ impl RendererRuntime {
                                 track.instrument_position..effect_count,
                                 rendered,
                                 Some(&effect_clock),
+                                Some(&effect_clock),
                             )
                             .map_err(|_| Invalid("prepared effect segment is invalid"))?;
                     } else {
@@ -3082,8 +3287,23 @@ impl RendererRuntime {
                         .get_mut(track_index)
                         .ok_or(Invalid("native device runtime is unavailable"))?;
                     chain
-                        .process_range_with_clock(0..chain.len(), rendered, Some(&effect_clock))
+                        .process_range_with_clock(
+                            0..chain.len(),
+                            rendered,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                        )
                         .map_err(|_| Invalid("prepared effect segment is invalid"))?;
+                }
+                if !ordered {
+                    render_source_generators(
+                        project,
+                        track_index,
+                        start,
+                        end,
+                        rendered,
+                        volume_timing,
+                    )?;
                 }
                 for (frame_index, source) in rendered.iter().copied().enumerate() {
                     let mixed = if track.has_gain_automation() {
@@ -3112,7 +3332,12 @@ impl RendererRuntime {
                         .get_mut(index)
                         .ok_or(Invalid("return runtime is unavailable"))?;
                     chain
-                        .process_range_with_clock(0..chain.len(), frames, Some(&effect_clock))
+                        .process_range_with_clock(
+                            0..chain.len(),
+                            frames,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                        )
                         .map_err(|_| Invalid("prepared return segment is invalid"))?;
                     if let Some(matrix) = bus.matrix {
                         matrix.apply_block(frames);
@@ -3146,7 +3371,12 @@ impl RendererRuntime {
                 let frames = &mut bus_frames[..count];
                 if let Some(chain) = self.return_chains.get_mut(index) {
                     chain
-                        .process_range_with_clock(0..chain.len(), frames, Some(&effect_clock))
+                        .process_range_with_clock(
+                            0..chain.len(),
+                            frames,
+                            Some(&effect_clock),
+                            Some(&effect_clock),
+                        )
                         .map_err(|_| Invalid("prepared return segment is invalid"))?;
                 } else {
                     return Err(Invalid("return runtime is unavailable"));
@@ -3164,6 +3394,66 @@ impl RendererRuntime {
         }
         Ok(())
     }
+}
+
+pub(crate) fn render_track_audio_raw<P: MediaPages + ?Sized>(
+    track: &Track,
+    start_frame: u64,
+    end_frame: u64,
+    output: &mut [Frame],
+    pages: Option<&mut P>,
+) {
+    track.render_audio_range_captured_with_mix(
+        start_frame,
+        end_frame,
+        output,
+        pages,
+        None,
+        PreparedTrackMix::identity(),
+    );
+}
+
+/// Add every enabled contributor's generated signal to the chosen receiver's
+/// source slot. The caller places this between local prefix and suffix stages.
+pub(crate) fn render_source_generators(
+    project: &Project,
+    receiver_index: usize,
+    start_frame: u64,
+    end_frame: u64,
+    output: &mut [Frame],
+    timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+) -> Result<(), Invalid> {
+    let receiver = project
+        .tracks
+        .get(receiver_index)
+        .ok_or(Invalid("source receiver track is missing"))?;
+    if !receiver.receives_source_audio() {
+        return Ok(());
+    }
+    for (contributor_index, contributor) in project.tracks.iter().enumerate() {
+        let contributes_to_receiver = match receiver.source_id() {
+            Some(source) => {
+                contributor.source_id() == Some(source)
+                    && contributor.source_receiver_index() == Some(receiver_index)
+            }
+            None => contributor_index == receiver_index && contributor.source_id().is_none(),
+        };
+        if !contributes_to_receiver || !contributor.source_input_enabled() {
+            continue;
+        }
+        contributor.render_instrument_range_with_mix(
+            (start_frame, end_frame),
+            output,
+            None,
+            0,
+            &[],
+            None,
+            &[],
+            PreparedTrackMix::identity(),
+            timing,
+        )?;
+    }
+    Ok(())
 }
 
 pub struct Renderer<'a> {
@@ -3303,6 +3593,18 @@ impl InstrumentTrack {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_tail_end_refuses_overflow_and_excessive_drain() {
+        let project = Project::new(48_000, Vec::new()).unwrap();
+        let limit = 48_000 * session_playback::MAX_FINITE_EFFECT_TAIL_SECONDS;
+        assert_eq!(
+            project.checked_output_tail_end(1, limit).unwrap(),
+            1 + limit
+        );
+        assert!(project.checked_output_tail_end(1, limit + 1).is_err());
+        assert!(project.checked_output_tail_end(u64::MAX, 1).is_err());
+    }
+
     fn project(looping: bool, duration: u64) -> Project {
         let audio = Audio::new(48_000, vec![[1.0, -1.0], [0.5, -0.5]]).unwrap();
         Project::new(
@@ -3448,9 +3750,18 @@ pub mod tuning_audition;
 pub mod compile;
 
 pub mod playback;
+mod scalar_automation;
+pub use scalar_automation::ScalarAutomationBinding;
+mod scalar_streamed;
+pub use scalar_streamed::{
+    BorrowedScalarPage, ScalarFileIdentity, ScalarProjectionIdentity, ScalarSourceKey,
+    ScalarSourceMetadata, ScalarSourceTarget, StreamResourceKey, StreamResourceMetadata,
+    read_scalar_values,
+};
 mod project_output;
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
+    midi_clip_preview,
 };
 pub use midi_template::{
     MIDI_SPAN_BUFFER_CAPACITY, MIDI_TEMPLATE_MAX_EDGES, MIDI_TEMPLATE_MAX_ONSETS,

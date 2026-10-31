@@ -20,7 +20,7 @@ pub(super) fn headless_status_output() -> (
 ) {
     // Drop retires the previous headless carriers on the existing lifecycle
     // worker. Wait only for that bounded teardown, never open an OS backend.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(output) => return output,

@@ -61,7 +61,7 @@ fn overdrive_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut TestA
         .expect("transfer plot");
     assert_eq!(
         card.size.width,
-        px(overdrive_panel::FRAME_WIDTH + gain_meters::WIDTH)
+        px(overdrive_panel::FRAME_WIDTH + device_meter::WIDTH)
     );
     assert_eq!(card.size.height, px(DEVICE_FRAME_HEIGHT));
     assert!(graph.size.height >= px(30.0));

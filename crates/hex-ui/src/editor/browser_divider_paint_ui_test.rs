@@ -254,7 +254,7 @@ fn browser_divider_fixture_catalog_retains_same_music_and_preferences_until_job_
     assert!(gate.root_present_during_save.load(Ordering::Relaxed));
     visual.update(|_, _| {});
     assert!(weak.upgrade().is_none());
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(
             std::time::Instant::now() < until,

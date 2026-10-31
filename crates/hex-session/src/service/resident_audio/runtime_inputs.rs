@@ -120,6 +120,47 @@ impl RuntimeInputs {
                 .is_some_and(|(a, b)| Arc::ptr_eq(a, b)),
         }
     }
+    /// Why `attach` dropped the required input, for an honest refusal.
+    pub(in crate::service) fn unbound_reason(
+        &self,
+        project: &Project,
+        playback: &Playback,
+        required: RequiredInput,
+    ) -> &'static str {
+        match required {
+            RequiredInput::Expression => match &self.expression {
+                None => "controller input was not requested",
+                Some(input) if input.is_cancelled() => "controller input was cancelled",
+                Some(input)
+                    if !project
+                        .track(input.track)
+                        .and_then(hex_project::Track::instrument)
+                        .is_some_and(|device| {
+                            device.id() == input.instrument && !device.bypassed()
+                        }) =>
+                {
+                    "controller input track has no active instrument"
+                }
+                Some(input) if !playback.live_expression_supported_on_control(input.track) => {
+                    "this instrument does not accept live controller input"
+                }
+                Some(_) => "controller input could not bind to the current audio",
+            },
+            RequiredInput::Keyboard => match &self.keyboard {
+                Some((_, input)) if input.is_cancelled() => "computer keyboard input was cancelled",
+                Some((track, _))
+                    if project
+                        .track(*track)
+                        .and_then(hex_project::Track::instrument)
+                        .is_none_or(hex_project::Device::bypassed) =>
+                {
+                    "computer keyboard track has no active instrument"
+                }
+                _ => "computer keyboard input could not bind to the current audio",
+            },
+            RequiredInput::Audition => "tuning audition input was cancelled",
+        }
+    }
     pub(in crate::service) fn attach(
         &mut self,
         project: &Project,
@@ -130,8 +171,7 @@ impl RuntimeInputs {
                 && project
                     .track(*track)
                     .and_then(hex_project::Track::instrument)
-                    .is_some_and(|device| !device.bypassed())
-                && playback.computer_keyboard_latency_supported_on_control();
+                    .is_some_and(|device| !device.bypassed());
             if valid {
                 playback.prepare_computer_keyboard(project, *track, Arc::clone(input))?;
             } else {

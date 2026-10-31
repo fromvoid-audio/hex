@@ -11,6 +11,12 @@ use std::sync::Arc;
 
 const TIMELINE_FRAMES: u64 = 384_000;
 
+/// Edge-trim grab point in the clip-name band. A hovered clip shows its
+/// corner fade handles over the rest of the edge, and those take precedence.
+pub(super) fn trim_grab_point(bounds: gpui::Bounds<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
+    gpui::point(bounds.center().x, bounds.top() + bounds.size.height / 6.0)
+}
+
 pub(super) fn audio_project() -> (
     Project,
     hex_project::TrackId,
@@ -105,6 +111,9 @@ pub(super) fn editor_window(
             });
             install_close_guard(window, cx, editor.downgrade());
             editor.update(cx, |view, cx| {
+                // Geometry fixtures use a fixed frame span, independent of the
+                // application's default trailing navigation allowance.
+                view.viewport = Some(super::viewport::Viewport::fit(TIMELINE_FRAMES));
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
                     comparison_audio: None,
@@ -274,7 +283,7 @@ fn drag_source_to_inserted_track(
     assert_eq!(source_lane.origin.x, body.origin.x);
     assert_eq!(
         source_lane.size.width,
-        body.size.width - px(super::tracks::TRACK_HEADER_WIDTH)
+        body.size.width - editor.read_with(cx, |view, _| px(view.track_header_width()))
     );
 
     let down = point(
@@ -759,8 +768,10 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
     let original_bounds = visual
         .debug_bounds(clip_selector)
         .expect("painted audio clip");
+    // Edge trimming covers only the header rail at the top of the clip.
     assert_eq!(handle_bounds.origin.y, original_bounds.origin.y);
-    assert_eq!(handle_bounds.size.height, original_bounds.size.height);
+    let header = super::trim::edge_trim_height(f32::from(original_bounds.size.height));
+    assert!((f32::from(handle_bounds.size.height) - header).abs() <= 1.0);
     let move_bounds = visual
         .debug_bounds(Box::leak(
             format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
@@ -785,7 +796,7 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
         let viewport = view.visible_viewport(state.timeline_frames);
         let width = view
             .arrangement_bounds
-            .map(|bounds| bounds.width - super::tracks::TRACK_HEADER_WIDTH)
+            .map(|bounds| bounds.width - view.track_header_width())
             .unwrap_or(400.0);
         super::musical_time::grid_lines(&state.project, viewport, width, view.snap_grid)
             .into_iter()
@@ -800,10 +811,7 @@ fn rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_sn
             ))
             .is_some()
     );
-    let down = point(
-        handle_bounds.origin.x + handle_bounds.size.width / 2.0,
-        handle_bounds.origin.y + handle_bounds.size.height / 2.0,
-    );
+    let down = trim_grab_point(handle_bounds);
     visual.simulate_mouse_move(down, None, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
@@ -969,13 +977,16 @@ fn upper_rail_next(service: &Service) -> hex_session::service::Event {
     event
 }
 fn upper_rail_terminal(service: &Service) -> hex_session::service::Event {
-    use std::time::{Duration, Instant};
-    let until = Instant::now() + Duration::from_secs(10);
+    use std::time::Duration;
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "upper_rail_terminal: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -1033,6 +1044,10 @@ pub(super) fn upper_rail_owned_fixture(
             install_close_guard(window, cx, editor.downgrade());
             editor.update(cx, |view, cx| {
                 view.receive(event);
+                // Rail/detail geometry uses an explicit fixture time span.
+                view.viewport = Some(super::viewport::Viewport::fit(
+                    view.state.as_ref().unwrap().timeline_frames,
+                ));
                 view.focus.focus(window);
                 cx.notify();
             });
@@ -1082,9 +1097,9 @@ pub(super) fn upper_rail_owned_fixture(
 fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worker_ack(
     cx: &mut TestAppContext,
 ) {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = crate::test_wait::hang_deadline();
         loop {
             let done = editor.update(&mut *visual, |view, cx| {
                 if view.tick(cx) {
@@ -1097,7 +1112,10 @@ fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worke
                 visual.run_until_parked();
                 return;
             }
-            assert!(Instant::now() < until);
+            assert!(
+                std::time::Instant::now() < until,
+                "pump: hang guard expired"
+            );
             std::thread::sleep(Duration::from_millis(2));
         }
     }
@@ -1195,7 +1213,7 @@ fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worke
         assert!(view.last_enqueued_edit.is_none());
         (preview.command_frame_for_test(), preview.clip.clone())
     });
-    assert!(visual.debug_bounds("trim-live-preview").is_some());
+    let preview_bounds = visual.debug_bounds("trim-live-preview").unwrap();
     visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -1210,7 +1228,20 @@ fn rendered_audio_trim_release_upper_rail_commits_captured_clip_and_actual_worke
         assert_eq!(view.worker_requests_pending, 1);
     });
     assert!(!cx.update(|app| app.has_active_drag()));
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("trim-live-preview"),
+            Some(preview_bounds)
+        );
+    }
     pump(&editor, &mut visual);
+    assert_eq!(
+        visual.debug_bounds(self::selector(format!("clip-visual-{}", clip.value()))),
+        Some(preview_bounds),
+        "one-frame trim keeps identical endpoints through its actual ACK"
+    );
     let committed = editor.read_with(cx, |view, _| {
         let state = view.state.as_ref().unwrap();
         assert_eq!(state.project.clip(clip), Some(&expected_clip));
@@ -1278,10 +1309,7 @@ fn rendered_midi_trim_previews_note_geometry_and_commits_release_snap(cx: &mut T
     assert_eq!(original_bounds.origin.y, lane.origin.y);
     assert_eq!(original_bounds.size.height, lane.size.height);
     assert!(visual.debug_bounds("clip-musical-grid").is_some());
-    let down = point(
-        handle_bounds.origin.x + handle_bounds.size.width / 2.0,
-        handle_bounds.origin.y + handle_bounds.size.height / 2.0,
-    );
+    let down = trim_grab_point(handle_bounds);
     visual.simulate_mouse_move(down, None, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
@@ -1403,10 +1431,7 @@ fn rendered_midi_left_trim_keeps_source_note_timeline_position(cx: &mut TestAppC
             format!("arrangement-lane-{}", source.value()).into_boxed_str(),
         ))
         .expect("source lane");
-    let down = point(
-        handle_bounds.origin.x + handle_bounds.size.width / 2.0,
-        handle_bounds.origin.y + handle_bounds.size.height / 2.0,
-    );
+    let down = trim_grab_point(handle_bounds);
     visual.simulate_mouse_move(down, None, Modifiers::default());
     visual.run_until_parked();
     assert_eq!(
@@ -2463,10 +2488,7 @@ fn shift_edge_stretch_escape_and_focus_loss_cancel_without_release_edit(cx: &mut
 
 #[gpui::test]
 fn upper_rail_fixture_same_root_survives_actual_catalog_job_and_view_drop(cx: &mut TestAppContext) {
-    use std::{
-        sync::atomic::Ordering,
-        time::{Duration, Instant},
-    };
+    use std::{sync::atomic::Ordering, time::Instant};
     let (files, handle, editor) = upper_rail_owned_fixture(cx);
     let root = files.root().to_owned();
     let weak = Arc::downgrade(&files);
@@ -2510,7 +2532,7 @@ fn upper_rail_fixture_same_root_survives_actual_catalog_job_and_view_drop(cx: &m
     assert!(gate.root_present_during_save.load(Ordering::Relaxed));
     visual.update(|_, _| {});
     assert!(weak.upgrade().is_none(), "no leaked fixture/view/job Arc");
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(
             Instant::now() < until,
@@ -2528,7 +2550,7 @@ fn upper_rail_fixture_same_root_survives_actual_catalog_job_and_view_drop(cx: &m
 #[test]
 fn upper_rail_fixture_pre_ack_real_import_refusal_preserves_disk_without_arc_leak() {
     use hex_session::service::Request;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     let files = super::test_environment::Environment::new().unwrap();
     let root = files.root().to_owned();
     let weak = Arc::downgrade(&files);
@@ -2542,12 +2564,15 @@ fn upper_rail_fixture_pre_ack_real_import_refusal_preserves_disk_without_arc_lea
         let service = Service::new(48_000, 32, 8_000_000).unwrap();
         upper_rail_next(&service);
         service.submit(Request::Import(missing.clone())).unwrap();
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = crate::test_wait::hang_deadline();
         let event = loop {
             if let Ok(event) = service.try_event() {
                 break event;
             }
-            assert!(Instant::now() < until);
+            assert!(
+                std::time::Instant::now() < until,
+                "upper_rail_fixture_pre_ack_real_import_refusal_preserves_disk_without_arc_leak: hang guard expired"
+            );
             std::thread::sleep(Duration::from_millis(2));
         };
         assert!(event.request_complete);
@@ -2575,7 +2600,7 @@ fn upper_rail_fixture_pre_ack_real_import_refusal_preserves_disk_without_arc_lea
 /// The test executor leaves the UI poll timer parked: the real worker may finish,
 /// but its ACK is not installed until pump_move explicitly ticks the controller.
 pub(super) fn pump_move(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |view, cx| {
             if view.tick(cx) {
@@ -2588,7 +2613,10 @@ pub(super) fn pump_move(editor: &gpui::Entity<EditorView>, visual: &mut VisualTe
         if done {
             return;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pump_move: hang guard expired"
+        );
         std::thread::yield_now();
     }
 }
@@ -3237,12 +3265,12 @@ fn rendered_move_real_refusal_retires_only_its_matching_fifo_terminal(cx: &mut T
         "unrelated real terminal retains display"
     );
     editor.update(&mut visual, |v, cx| {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = crate::test_wait::hang_deadline();
         let refused = loop {
             if let Ok(event) = v.service.try_event() {
                 break event;
             }
-            assert!(std::time::Instant::now() < deadline);
+            assert!(std::time::Instant::now() < deadline, "rendered_move_real_refusal_retires_only_its_matching_fifo_terminal: hang guard expired");
             std::thread::yield_now();
         };
         assert!(refused.request_complete && refused.error.is_some());

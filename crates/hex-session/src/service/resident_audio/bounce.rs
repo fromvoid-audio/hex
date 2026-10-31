@@ -120,6 +120,7 @@ pub(in crate::service) fn bounce_arrangement(
     session: &mut Session,
     target: hex_project::BounceTarget,
     in_place: bool,
+    adoption: hex_project::BounceAdoption,
     directory: &Path,
     control: &hex_export::ExportControl,
     context: hex_engine::AudioSourceContext,
@@ -127,7 +128,8 @@ pub(in crate::service) fn bounce_arrangement(
     admission: sampler_export::Admission<'_>,
     current: &mut Option<Snapshot>,
 ) -> Result<(Created, Arc<PreparedRevision>), String> {
-    if in_place
+    let replaces_devices = target.bakes_devices(in_place);
+    if replaces_devices
         && current.as_ref().is_some_and(|s| {
             s.inputs.keyboard.is_some()
                 || s.inputs.audition.is_some()
@@ -138,7 +140,7 @@ pub(in crate::service) fn bounce_arrangement(
     }
     // Reuse the native stopped fence, never inherit outgoing voices that are
     // now represented by the baked PCM. Command-B retains original ownership.
-    let stopped = if in_place {
+    let stopped = if replaces_devices {
         Some(
             crate::service::stopped_arrangement::acquire(
                 sink,
@@ -223,6 +225,7 @@ pub(in crate::service) fn bounce_arrangement(
                 .adopt_arrangement_bounce_using(
                     captured,
                     in_place,
+                    adoption,
                     files,
                     prepared,
                     current.as_ref().map(|s| s.prepared.as_ref()),

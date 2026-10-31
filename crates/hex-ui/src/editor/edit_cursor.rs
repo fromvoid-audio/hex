@@ -1,4 +1,5 @@
-//! View-only Arrangement insertion position, distinct from the audio playhead.
+//! View-only Arrangement insertion position and scoped canonical split dispatch.
+//! Selection normalization stays with time_selection; project/session own cuts and history.
 use super::{EditorMode, EditorView, time_selection::TimeSelection};
 use crate::theme;
 use gpui::{Context, Div, Window, div, prelude::*, px};
@@ -98,33 +99,48 @@ impl EditorView {
             end_frame: frame,
         });
         self.time_selection_project_scope = false;
-        let selected_clip_under_pointer = state.project.track(track).is_some_and(|track_data| {
-            track_data.clips().iter().any(|clip| {
-                self.selected_clip == Some(clip.id())
-                    && frame >= clip.start()
-                    && clip
-                        .start()
-                        .checked_add(clip.duration())
-                        .is_some_and(|end| frame < end)
-            }) || {
-                let beat = state.project.tempo_map().frame_to_beat(frame).ok();
-                track_data.midi_clips().iter().any(|clip| {
-                    self.selected_clip == Some(clip.id())
-                        && beat.is_some_and(|beat| {
-                            beat >= clip.start()
-                                && beat.raw()
-                                    < clip.start().raw().saturating_add(clip.length().raw())
-                        })
-                })
-            }
-        });
+        let under_pointer = self.arrangement_clip_at(track, frame, self.selected_clip);
+        let selected_clip_under_pointer =
+            under_pointer.is_some() && under_pointer == self.selected_clip;
         self.select_lane_track(track);
+        self.edit_cursor_in_selected_clip =
+            self.selected_clip.filter(|_| selected_clip_under_pointer);
+        self.loop_start_over_clip = None;
         self.advance_selection_intent();
-        if !selected_clip_under_pointer {
+        if under_pointer.is_none() {
             self.focus_track_details(window);
+        } else if !selected_clip_under_pointer {
+            // A cursor inside a clip keeps it in the clip editor (see detail_context).
+            self.set_detail_context(under_pointer);
+            self.focus_detail_context(window, cx);
         }
         self.focus.focus(window);
         cx.notify();
+    }
+
+    /// An acknowledged loop enable hands the next Play start to the loop start
+    /// by retiring a placed point cursor; a new click overrides it again. Ranges
+    /// keep precedence, and disabling the loop never restores the cursor.
+    pub(super) fn retire_point_cursor_on_loop_enable(&mut self, loop_was_enabled: bool) {
+        let loop_enabled = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.loop_region())
+            .is_some_and(|region| region.enabled());
+        if loop_was_enabled
+            || !loop_enabled
+            || self.edit_cursor.is_none()
+            || self.normalized_time_selection().is_some()
+            || self.time_selection_gesture.is_some()
+            || self.time_range_move_gesture.is_some()
+        {
+            return;
+        }
+        self.loop_start_over_clip = self.edit_cursor_in_selected_clip.take();
+        self.edit_cursor = None;
+        self.time_selection = None;
+        self.time_selection_project_scope = false;
+        self.suppress_cursor_click = false;
     }
 
     pub(super) fn tick_edit_cursor(&mut self, now: Instant) -> bool {
@@ -198,7 +214,13 @@ impl EditorView {
         }
         // A completed range belongs to Arrangement even while Console is shown.
         // Its stale-source checks above still run; hidden point cursors need no pulse.
-        self.mode == EditorMode::Arrangement && cursor.pulse(now)
+        // A point cursor hidden behind a clip play start needs no pulse either.
+        self.mode == EditorMode::Arrangement
+            && self.selected_clip_play_start().is_none()
+            && self
+                .edit_cursor
+                .as_mut()
+                .is_some_and(|cursor| cursor.pulse(now))
     }
 
     /// Paint the same live range bounds above the loop rail and at the bottom
@@ -225,6 +247,9 @@ impl EditorView {
             hex_widgets::TimeMarkerEdge::Top => "top",
             hex_widgets::TimeMarkerEdge::Bottom => "bottom",
         };
+        if start == end && self.selected_clip_play_start().is_some() {
+            return None;
+        }
         let markers = [
             (
                 start,
@@ -275,9 +300,31 @@ impl EditorView {
         )
     }
 
-    pub(super) fn split_at_edit_cursor(&mut self) {
+    pub(super) fn split_arrangement_clips(&mut self, window: &Window, cx: &Context<Self>) {
         if self.mode != EditorMode::Arrangement {
             self.error = Some("split is available in arrangement".into());
+            return;
+        }
+        // Ordinary track headers belong to the same arranger editing scope.
+        let arranger_focused = self.focus.is_focused(window) || self.track_header_focused(window);
+        if (!arranger_focused && !self.midi_focus.is_focused(window))
+            || !self.arrangement_view_change_available(cx)
+            || self.device_panel.has_pending_draft(cx)
+            || (arranger_focused && self.automation_view.enabled)
+        {
+            return;
+        }
+        if arranger_focused
+            && self
+                .time_selection
+                .is_some_and(|s| s.anchor_frame != s.end_frame)
+        {
+            let Some(range) = self.normalized_time_selection() else {
+                self.error = Some("time selection is no longer available".into());
+                return;
+            };
+            self.cancel_duplicate_chain();
+            self.enqueue(Request::Edit(Command::SplitTimeRange { range }));
             return;
         }
         let Some(cursor) = self

@@ -55,6 +55,13 @@ pub(super) fn is_stop(action: PlaybackAction) -> bool {
 impl Fence {
     /// Match the original acknowledged source again at a later callback
     /// frontier; readiness alone may describe an older active publication.
+    #[cfg_attr(
+        not(all(target_os = "macos", target_arch = "aarch64")),
+        expect(
+            dead_code,
+            reason = "ordinary native epochs are admitted only on macos arm64"
+        )
+    )]
     pub(super) fn matches_source(
         &self,
         token: StoppedEditFence,
@@ -70,6 +77,13 @@ impl Fence {
     pub(super) fn native_epoch_active(&self) -> bool {
         self.active() && self.native_epoch.load(SeqCst)
     }
+    #[cfg_attr(
+        not(all(target_os = "macos", target_arch = "aarch64")),
+        expect(
+            dead_code,
+            reason = "ordinary native epochs are admitted only on macos arm64"
+        )
+    )]
     pub(super) fn ordinary_native_epoch_active(&self) -> bool {
         self.native_epoch_active() && self.ordinary_native_epoch.load(SeqCst)
     }
@@ -117,6 +131,13 @@ impl Fence {
             },
         )
     }
+    #[cfg_attr(
+        not(all(target_os = "macos", target_arch = "aarch64")),
+        expect(
+            dead_code,
+            reason = "ordinary native epochs are admitted only on macos arm64"
+        )
+    )]
     pub(super) fn begin_ordinary_native_epoch_source(
         &self,
         source: AppliedAudioSource,
@@ -493,6 +514,7 @@ mod tests {
         QueuedCommand {
             ticket,
             sampler_edit_gate,
+            transport_epoch: 1,
             action: PlaybackAction::Transport(PlaybackCommand::Play),
         }
     }

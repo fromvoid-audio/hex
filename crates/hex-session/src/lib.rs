@@ -4,7 +4,8 @@
 //!
 //! # Dependencies
 //! Uses hex-project, hex-engine, hex-media, hex-storage, hex-export, hex-tuning and neutral
-//! hex-lattice-contract.
+//! hex-lattice-contract. Uses hex-plugin-state's pure codec for captured save
+//! envelope validation; native runtime/ABI custody remains outside this crate.
 //!
 //! # Does not own
 //! Does not own GPUI, CPAL, page endpoints or callback DSP. Typed requests carry captured
@@ -1965,32 +1966,68 @@ fn prepare_with_waveforms_using(
                 .saturating_add(preview_roots)
                 .max(1))
         .clamp(1, 1_024);
-        let mut roots: Vec<(Audio, Arc<Waveform>)> = Vec::new();
+        // A repeated view plays a shared root as a loop; its summary is still in
+        // outer-clip frames, built from the root without materializing PCM.
+        type Shape = Option<(waveform::Repeat, usize)>;
+        let mut roots: Vec<(Audio, Shape, Arc<Waveform>)> = Vec::new();
         let mut next = BTreeMap::new();
         for view in prepared.arrangement().audio_clip_views() {
-            let waveform = if let Some((_, waveform)) = roots
+            let shape: Shape = view
+                .repeat
+                .map(|repeat| {
+                    let size = |n: u64| {
+                        usize::try_from(n).map_err(|_| {
+                            hex_engine::Invalid("repeated waveform exceeds address range")
+                        })
+                    };
+                    Ok::<_, hex_engine::Invalid>((
+                        waveform::Repeat {
+                            offset: size(view.offset)?,
+                            period: size(repeat.period)?,
+                            phase: size(repeat.phase)?,
+                        },
+                        size(view.length)?,
+                    ))
+                })
+                .transpose()?;
+            let waveform = if let Some((_, _, waveform)) = roots
                 .iter()
-                .find(|(audio, _)| audio.shares_pcm_with(&view.audio))
+                .find(|(audio, old, _)| *old == shape && audio.shares_pcm_with(&view.audio))
             {
                 Arc::clone(waveform)
             } else {
                 // Existing summaries retain exact PCM identity for safe cross-revision reuse.
                 let existing = old.values().find(|entry| {
-                    entry.waveform.shares_audio_with(&view.audio)
-                        && entry.waveform.bins.len() <= requested_bins
+                    entry.waveform.bins.len() <= requested_bins
+                        && match shape {
+                            None => entry.waveform.shares_audio_with(&view.audio),
+                            Some((repeat, frames)) => {
+                                entry
+                                    .waveform
+                                    .shares_repeat_with(&view.audio, repeat, frames)
+                            }
+                        }
                 });
-                let waveform =
-                    if let Some(existing) = existing {
-                        Arc::clone(&existing.waveform)
-                    } else {
-                        Arc::new(waveform::summarize(&view.audio, requested_bins).map_err(
-                            |_| hex_engine::Invalid("transformed waveform preparation failed"),
-                        )?)
+                let waveform = if let Some(existing) = existing {
+                    Arc::clone(&existing.waveform)
+                } else {
+                    let summary = match shape {
+                        None => waveform::summarize(&view.audio, requested_bins),
+                        Some((repeat, frames)) => waveform::summarize_repeated(
+                            &view.audio,
+                            repeat,
+                            frames,
+                            requested_bins,
+                        ),
                     };
+                    Arc::new(summary.map_err(|_| {
+                        hex_engine::Invalid("transformed waveform preparation failed")
+                    })?)
+                };
                 roots.try_reserve(1).map_err(|_| {
                     hex_engine::Invalid("audio waveform root index allocation failed")
                 })?;
-                roots.push((view.audio.clone(), Arc::clone(&waveform)));
+                roots.push((view.audio.clone(), shape, Arc::clone(&waveform)));
                 waveform
             };
             let preview_root = if let Some(clip) = project.clip(view.clip)
@@ -2005,8 +2042,10 @@ fn prepare_with_waveforms_using(
                     .map(|root| {
                         let waveform = roots
                             .iter()
-                            .find(|(audio, _)| audio.shares_pcm_with(&root.audio))
-                            .map(|(_, waveform)| Arc::clone(waveform))
+                            .find(|(audio, shape, _)| {
+                                shape.is_none() && audio.shares_pcm_with(&root.audio)
+                            })
+                            .map(|(_, _, waveform)| Arc::clone(waveform))
                             .map(Ok)
                             .unwrap_or_else(|| {
                                 waveform::summarize(&root.audio, requested_bins)
@@ -2028,7 +2067,7 @@ fn prepare_with_waveforms_using(
                 view.clip,
                 service::AudioClipWaveform {
                     waveform,
-                    offset: view.offset,
+                    offset: if shape.is_some() { 0 } else { view.offset },
                     length: view.length,
                     preview_root,
                 },

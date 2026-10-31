@@ -267,3 +267,298 @@ fn project_tempo_blur_commits_valid_text_and_invalid_blur_releases_editor_shortc
         }
     }
 }
+
+#[gpui::test]
+fn playback_vector_controls_follow_actual_transport_status(cx: &mut TestAppContext) {
+    use crate::editor::device_panel::tests::eq_ui_tests::{graph_layout_tests, held_pointer_tests};
+    use crate::editor::midi_canvas::creation_tests::fixture;
+    use std::time::Instant;
+
+    let _guard = graph_layout_tests::status_fixture_guard();
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    let (mut output, mut backend) =
+        held_pointer_tests::attach_actual_output(&editor, cx, &mut visual);
+    visual.run_until_parked();
+    let play = visual.debug_bounds("play or pause · space").unwrap();
+    let stop = visual.debug_bounds("stop · escape").unwrap();
+    assert!(
+        !visual
+            .rendered_monochrome_colors("transport-play-icon")
+            .is_empty()
+    );
+    assert!(
+        !visual
+            .rendered_monochrome_colors("transport-stop-icon")
+            .is_empty()
+    );
+    assert!(visual.debug_bounds("transport-pause-icon").is_none());
+
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+    let original = crate::theme::preferences();
+    let _restore = RestoreTheme(original);
+    for (background, text) in [(0x20, 0xe0), (0xe0, 0x20)] {
+        let mut preferences = original;
+        preferences.background = hex_preferences::RgbColor::new(background, background, background);
+        preferences.text = hex_preferences::RgbColor::new(text, text, text);
+        crate::theme::apply_preferences(preferences);
+        visual.simulate_mouse_move(gpui::point(px(2.0), px(500.0)), None, Modifiers::default());
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let style = crate::theme::action_style();
+        let normal = gpui::Hsla::from(gpui::rgb(style.text));
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-play-icon")
+                .contains(&normal)
+        );
+        visual.simulate_mouse_move(
+            gpui::point(play.origin.x + px(1.0), play.origin.y + px(1.0)),
+            None,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        let hover = gpui::Hsla::from(gpui::rgb(style.hover_text.unwrap_or(style.text)));
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-play-icon")
+                .contains(&hover)
+        );
+    }
+
+    for (button, playing) in [(play, true), (stop, false)] {
+        visual.simulate_click(button.center(), Modifiers::default());
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+            visual.run_until_parked();
+            if editor.read_with(cx, |view, _| {
+                view.audio_status().is_some_and(|status| {
+                    status.playing.load(std::sync::atomic::Ordering::Acquire) == playing
+                })
+            }) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "transport command did not reach the callback"
+            );
+        }
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let (shown, hidden) = if playing {
+            ("transport-pause-icon", "transport-play-icon")
+        } else {
+            ("transport-play-icon", "transport-pause-icon")
+        };
+        assert!(!visual.rendered_monochrome_colors(shown).is_empty());
+        assert!(visual.debug_bounds(hidden).is_none());
+        assert_eq!(visual.debug_bounds("play or pause · space"), Some(play));
+        assert_eq!(visual.debug_bounds("stop · escape"), Some(stop));
+    }
+}
+
+#[gpui::test]
+fn transport_edit_vectors_keep_history_commands_and_theme_colors(cx: &mut TestAppContext) {
+    use crate::editor::midi_canvas::creation_tests::{fixture, pump};
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    visual.run_until_parked();
+    let split = visual
+        .debug_bounds("split selection edges or edit cursor · e")
+        .unwrap();
+    let undo = visual.debug_bounds("undo · cmd+z").unwrap();
+    let redo = visual.debug_bounds("redo · cmd+shift+z").unwrap();
+    for selector in [
+        "transport-split-icon",
+        "transport-undo-icon",
+        "transport-redo-icon",
+    ] {
+        assert!(!visual.rendered_monochrome_colors(selector).is_empty());
+    }
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+    let original = crate::theme::preferences();
+    let _restore = RestoreTheme(original);
+    for (background, text) in [(0x20, 0xe0), (0xe0, 0x20)] {
+        let mut preferences = original;
+        preferences.background = hex_preferences::RgbColor::new(background, background, background);
+        preferences.text = hex_preferences::RgbColor::new(text, text, text);
+        crate::theme::apply_preferences(preferences);
+        visual.simulate_mouse_move(gpui::point(px(2.0), px(500.0)), None, Modifiers::default());
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let style = crate::theme::action_style();
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-split-icon")
+                .contains(&gpui::Hsla::from(gpui::rgb(style.text)))
+        );
+        visual.simulate_mouse_move(
+            gpui::point(split.origin.x + px(1.0), split.origin.y + px(1.0)),
+            None,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-split-icon")
+                .contains(&gpui::Hsla::from(gpui::rgb(
+                    style.hover_text.unwrap_or(style.text)
+                )))
+        );
+    }
+    let count = editor.read_with(cx, |view, _| view.state().unwrap().project.tracks().len());
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            hex_project::Command::AddMidiTrack {
+                name: "history test".into()
+            }
+        )))
+    });
+    pump(&editor, &mut visual);
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.state().unwrap().project.tracks().len()),
+        count + 1
+    );
+    visual.simulate_click(undo.center(), Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.state().unwrap().project.tracks().len()),
+        count
+    );
+    visual.simulate_click(redo.center(), Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.state().unwrap().project.tracks().len()),
+        count + 1
+    );
+    assert_eq!(visual.debug_bounds("undo · cmd+z"), Some(undo));
+    assert_eq!(visual.debug_bounds("redo · cmd+shift+z"), Some(redo));
+    assert_eq!(
+        visual.debug_bounds("split selection edges or edit cursor · e"),
+        Some(split)
+    );
+}
+
+#[gpui::test]
+fn transport_creation_vectors_preserve_track_and_clip_commands(cx: &mut TestAppContext) {
+    use crate::editor::midi_canvas::creation_tests::{fixture, pump};
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.offline_cursor = 96_000;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let add = visual.debug_bounds("add track").unwrap();
+    let midi = visual
+        .debug_bounds("add four-beat midi clip · cmd+shift+m")
+        .unwrap();
+    let remove = visual.debug_bounds("remove selected track").unwrap();
+    for selector in [
+        "transport-add-track-icon",
+        "transport-add-midi-icon",
+        "transport-remove-track-icon",
+    ] {
+        assert!(!visual.rendered_monochrome_colors(selector).is_empty());
+    }
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            crate::theme::apply_preferences(self.0);
+        }
+    }
+    let original = crate::theme::preferences();
+    let _restore = RestoreTheme(original);
+    for (background, text) in [(0x20, 0xe0), (0xe0, 0x20)] {
+        let mut preferences = original;
+        preferences.background = hex_preferences::RgbColor::new(background, background, background);
+        preferences.text = hex_preferences::RgbColor::new(text, text, text);
+        crate::theme::apply_preferences(preferences);
+        visual.simulate_mouse_move(gpui::point(px(2.0), px(500.0)), None, Modifiers::default());
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let style = crate::theme::action_style();
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-add-track-icon")
+                .contains(&gpui::Hsla::from(gpui::rgb(style.text)))
+        );
+        visual.simulate_mouse_move(
+            gpui::point(add.origin.x + px(1.0), add.origin.y + px(1.0)),
+            None,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert!(
+            visual
+                .rendered_monochrome_colors("transport-add-track-icon")
+                .contains(&gpui::Hsla::from(gpui::rgb(
+                    style.hover_text.unwrap_or(style.text)
+                )))
+        );
+    }
+    let (track, tracks, clips) = editor.read_with(cx, |view, _| {
+        let track = view.selected_track.unwrap();
+        (
+            track,
+            view.state().unwrap().project.tracks().len(),
+            view.state()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+        )
+    });
+    visual.simulate_click(midi.center(), Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(
+        editor.read_with(cx, |view, _| view
+            .state()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .midi_clips()
+            .len()),
+        clips + 1
+    );
+    visual.simulate_click(add.center(), Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.state().unwrap().project.tracks().len()),
+        tracks + 1
+    );
+    editor.update(cx, |view, cx| {
+        view.selected_track = view
+            .state()
+            .unwrap()
+            .project
+            .tracks()
+            .iter()
+            .find(|candidate| candidate.id() != track)
+            .map(|candidate| candidate.id());
+        cx.notify();
+    });
+    visual.simulate_click(remove.center(), Modifiers::default());
+    pump(&editor, &mut visual);
+    assert_eq!(
+        editor.read_with(cx, |view, _| view.state().unwrap().project.tracks().len()),
+        tracks
+    );
+    assert_eq!(visual.debug_bounds("add track"), Some(add));
+    assert_eq!(visual.debug_bounds("remove selected track"), Some(remove));
+    assert_eq!(
+        visual.debug_bounds("add four-beat midi clip · cmd+shift+m"),
+        Some(midi)
+    );
+}

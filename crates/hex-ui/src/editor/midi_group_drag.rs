@@ -6,6 +6,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct GroupNote {
     pub(super) id: NoteId,
+    pub(super) active: bool,
     pub(super) start: u64,
     pub(super) duration: u64,
     pub(super) pitch: u8,
@@ -342,9 +343,14 @@ impl GroupGesture {
         else {
             return false;
         };
+        let grid = if self.kind == HitKind::ResizeTrailing {
+            midi_drag::note_end_grid(self.grid, invert_snap)
+        } else {
+            midi_drag::effective_grid(self.grid, invert_snap)
+        };
         let desired_delta = midi_drag::quantize_delta(
             i128::from(pointer_beat) - i128::from(self.pointer_beat),
-            midi_drag::effective_grid(self.grid, invert_snap),
+            grid,
         );
         let resolved = if self.kind == HitKind::Move {
             resolve_common_delta(
@@ -363,7 +369,7 @@ impl GroupGesture {
                 self.clip_length,
                 self.kind,
                 desired_delta,
-                midi_drag::effective_grid(self.grid, invert_snap).minimum_gate(),
+                grid.minimum_gate(),
             )
             .map(|delta| (delta, 0))
         };
@@ -410,6 +416,7 @@ impl GroupGesture {
             .map_err(|_| "could not reserve midi copy preview")?;
         originals.push(GroupNote {
             id: note.note,
+            active: note.active,
             start: note.original.start,
             duration: note.original.duration,
             pitch: note.original.pitch,
@@ -455,6 +462,7 @@ impl GroupGesture {
                 .preview(original.id)
                 .ok_or("midi copy target changed")?;
             result.push(hex_project::MidiNoteInsert {
+                active: original.active,
                 start: BeatTime::from_raw(note.start),
                 duration: BeatTime::from_raw(note.duration),
                 pitch: note.pitch,
@@ -463,6 +471,23 @@ impl GroupGesture {
             });
         }
         Ok(result)
+    }
+
+    /// Immutable admission context; borrowed input identity does not own notes.
+    pub(super) fn captured_context(&self) -> GroupContext {
+        GroupContext {
+            generation: self.generation,
+            revision: self.revision,
+            clip: Some(self.clip),
+            selection_epoch: self.selection_epoch,
+            beat_start: self.beat_start,
+            beat_span: self.beat_span,
+            pitch_low: self.pitch_low,
+            pitch_rows: self.pitch_rows,
+            grid: self.grid,
+            bounds: self.bounds,
+            pending: false,
+        }
     }
 
     pub(super) fn kind(&self) -> HitKind {
@@ -707,6 +732,7 @@ mod tests {
                 };
                 GroupNote {
                     id,
+                    active: true,
                     start,
                     duration,
                     pitch,
@@ -732,9 +758,19 @@ mod tests {
         pointer: [f32; 2],
         pitch_low: u8,
     ) -> GroupGesture {
+        gesture_of_kind(grid, fixture, pointer, pitch_low, super::HitKind::Move)
+    }
+
+    fn gesture_of_kind(
+        grid: MidiGrid,
+        fixture: Fixture,
+        pointer: [f32; 2],
+        pitch_low: u8,
+        kind: super::HitKind,
+    ) -> GroupGesture {
         GroupGesture::begin(GroupStart {
             copy: false,
-            kind: super::HitKind::Move,
+            kind,
             generation: 3,
             revision: 7,
             clip: fixture.clip,
@@ -790,6 +826,47 @@ mod tests {
         assert!(drag.is_noop());
         assert_eq!(drag.preview(first.id).unwrap().start, first.start);
         assert_eq!(drag.preview(edge.id).unwrap().start, edge.start);
+    }
+
+    #[test]
+    fn group_trailing_resize_is_free_by_default_and_snaps_while_cmd_is_held() {
+        let beat = BeatTime::ONE.raw();
+        let fixture = fixture(&[(beat, beat / 2, 60), (2 * beat, beat / 4, 61)]);
+        let first = fixture.notes[0];
+        let second = fixture.notes[1];
+        let mut drag = gesture_of_kind(
+            MidiGrid::Sixteenth,
+            fixture,
+            [250.0, 315.0],
+            48,
+            super::HitKind::ResizeTrailing,
+        );
+        let at = |x| crate::editor::midi_drag::beat_at_point(x, BOUNDS, 0, CLIP).unwrap();
+        let free = at(265.0) - at(250.0); // about 0.15 beat
+        assert!(drag.update([265.0, 315.0], false));
+        assert_eq!(
+            drag.preview(first.id).unwrap().duration,
+            first.duration + free
+        );
+        assert_eq!(
+            drag.preview(second.id).unwrap().duration,
+            second.duration + free
+        );
+        assert_eq!(drag.preview(first.id).unwrap().start, first.start);
+        assert!(drag.update([265.0, 315.0], true));
+        assert_eq!(
+            drag.preview(first.id).unwrap().duration,
+            first.duration + beat / 4
+        );
+        assert_eq!(
+            drag.preview(second.id).unwrap().duration,
+            second.duration + beat / 4
+        );
+        assert!(drag.update([265.0, 315.0], false));
+        assert_eq!(
+            drag.preview(first.id).unwrap().duration,
+            first.duration + free
+        );
     }
 
     #[test]

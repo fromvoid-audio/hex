@@ -1,6 +1,7 @@
 //! Bounded control-side Arrangement seek preparation.
 //!
-//! This worker only constructs a fresh stateful candidate. It does not publish
+//! This worker only constructs a fresh stateful candidate (interactive seeks and
+//! sections start device history empty; linear mode replays). It does not publish
 //! to audio, fence live routes, or mutate the canonical project worker.
 
 use hex_engine::{

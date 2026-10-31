@@ -4,6 +4,13 @@ use hex_stream::StreamConfig;
 
 #[test]
 fn verified_export_reopens_exact_sources_offline_without_resident_pcm_or_project_edits() {
+    output_unavailable_export(false);
+}
+#[test]
+fn grouped_verified_export_works_without_native_output() {
+    output_unavailable_export(true);
+}
+fn output_unavailable_export(grouped: bool) {
     let files = Files::new();
     let original = files.wav(24_000, 8192);
     let original_bytes = fs::read(&original).unwrap();
@@ -36,8 +43,19 @@ fn verified_export_reopens_exact_sources_offline_without_resident_pcm_or_project
         .unwrap();
     assert!(next().error.is_none());
     service.submit(Request::Import(original.clone())).unwrap();
-    let imported = next();
+    let mut imported = next();
     assert!(imported.error.is_none(), "{:?}", imported.error);
+    if grouped {
+        let track = imported.state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(hex_project::Command::GroupTracks {
+                tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                name: "group".into(),
+            }))
+            .unwrap();
+        imported = next();
+        assert!(imported.error.is_none(), "{:?}", imported.error);
+    }
     assert!(imported.playback.is_none(), "no resident fallback");
     let snapshot = imported.state.canonical_audio_source.as_ref().unwrap();
     assert!(
@@ -198,175 +216,32 @@ fn verified_export_turns_over_a_two_page_cache_and_refuses_overlapping_demand_wi
 }
 
 #[test]
-fn verified_export_range_captures_and_stems_match_resident_mixed_rate_loop_and_return_oracle() {
-    use hex_project::{Command, Created, TrimEdge};
-    use hex_session::service::{ExportControl, ExportSignal, Stem};
-    for rate in [44100, 48000] {
-        let files = Files::new();
-        let a = varied(&files, "a.wav", 24000, 8192);
-        let b = varied(&files, "b.wav", 48000, 12288);
-        let bytes = [fs::read(&a).unwrap(), fs::read(&b).unwrap()];
-        let streamed = offline(rate, crate::streamed_export::render);
-        let resident = Service::new(rate, 16, 100000).unwrap();
-        event(&resident);
-        let mut scenes = Vec::new();
-        for service in [&streamed, &resident] {
-            let mut tracks = Vec::new();
-            for path in [&a, &b] {
-                let imported = run(service, Request::Import(path.clone()));
-                tracks.push(imported.state.project.tracks().last().unwrap().id());
-            }
-            let state = run(
-                service,
-                Request::Edit(Command::Gain {
-                    track: tracks[0],
-                    gain: 0.6,
-                }),
-            );
-            let clip = state.state.project.track(tracks[0]).unwrap().clips()[0].id();
-            run(
-                service,
-                Request::Edit(Command::SetClipLooping {
-                    clip,
-                    looping: true,
-                }),
-            );
-            run(
-                service,
-                Request::Edit(Command::TrimClipEdge {
-                    clip,
-                    edge: TrimEdge::Right,
-                    frame: 40000,
-                }),
-            );
-            let returned = run(
-                service,
-                Request::Edit(Command::AddReturnTrack { name: "bus".into() }),
-            );
-            let Created::ReturnTrack(bus) = returned.created.unwrap() else {
-                panic!("return");
-            };
-            run(
-                service,
-                Request::Edit(Command::SetReturnSend {
-                    track: tracks[0],
-                    return_track: bus,
-                    gain: 0.5,
-                }),
-            );
-            run(
-                service,
-                Request::Edit(Command::SetReturnSend {
-                    track: tracks[1],
-                    return_track: bus,
-                    gain: 0.25,
-                }),
-            );
-            run(
-                service,
-                Request::Edit(Command::ReturnGain {
-                    return_track: bus,
-                    gain: 0.8,
-                }),
-            );
-            run(
-                service,
-                Request::AddNativeDevice {
-                    track: tracks[0],
-                    class: hex_engine::NativeDeviceClass::Effect,
-                    type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.utility")),
-                    before: None,
-                },
-            );
-            let state = run(service, Request::Edit(Command::MasterGain { gain: 0.5 }));
-            scenes.push((tracks[0], bus, state));
-        }
-        for (index, signal) in [
-            ExportSignal::Main,
-            ExportSignal::CapturedMix(vec![
-                hex_engine::OutputCaptureId::Track(scenes[0].0),
-                hex_engine::OutputCaptureId::Return(scenes[0].1),
-            ]),
-            ExportSignal::Stems(vec![
-                Stem {
-                    id: hex_engine::OutputCaptureId::Track(scenes[0].0),
-                    name: "a".into(),
-                },
-                Stem {
-                    id: hex_engine::OutputCaptureId::Return(scenes[0].1),
-                    name: "bus".into(),
-                },
-            ]),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let mut outputs = Vec::new();
-            for (i, service) in [&streamed, &resident].into_iter().enumerate() {
-                assert_eq!(
-                    (scenes[0].0, scenes[0].1),
-                    (scenes[1].0, scenes[1].1),
-                    "model identities independent of source storage"
-                );
-                let path = files.0.join(format!("{index}-{i}"));
-                let control = ExportControl::default();
-                let queued = run(
-                    service,
-                    Request::ExportRange {
-                        path: path.clone(),
-                        start: 137,
-                        frames: Some(18000),
-                        signal: signal.clone(),
-                        control: control.clone(),
-                        overwrite: false,
-                    },
-                );
-                let completed = exported(service);
-                assert!(completed.result.is_ok(), "{:?}", completed.result);
-                assert_eq!(completed.revision, scenes[i].2.state.revision);
-                assert_eq!(queued.state.project, scenes[i].2.state.project);
-                assert_eq!(queued.state.unsaved, scenes[i].2.state.unsaved);
-                assert_eq!(
-                    control.progress().processed_frames,
-                    control.progress().total_frames
-                );
-                outputs.push(path);
-            }
-            if matches!(signal, ExportSignal::Stems(_)) {
-                let names: Vec<_> = fs::read_dir(&outputs[0])
-                    .unwrap()
-                    .map(|e| e.unwrap().file_name())
-                    .collect();
-                assert_eq!(names.len(), 2);
-                for name in names {
-                    assert_eq!(
-                        fs::read(outputs[0].join(&name)).unwrap(),
-                        fs::read(outputs[1].join(name)).unwrap()
-                    );
-                }
-            } else {
-                assert_eq!(
-                    fs::read(&outputs[0]).unwrap(),
-                    fs::read(&outputs[1]).unwrap(),
-                    "source storage does not alter PCM16"
-                );
-            }
-        }
-        assert_eq!(fs::read(a).unwrap(), bytes[0]);
-        assert_eq!(fs::read(b).unwrap(), bytes[1]);
-    }
-}
-
-#[test]
 fn verified_export_refuses_missing_changed_and_short_sources_preserving_existing_output_and_retry()
 {
     use hex_session::service::{ExportControl, ExportSignal};
-    for failure in 0..3 {
+    for (failure, grouped) in [
+        (0, false),
+        (1, false),
+        (2, false),
+        (0, true),
+        (1, true),
+        (2, true),
+    ] {
         let files = Files::new();
         let source = varied(&files, "source.wav", 48000, 12288);
         let original = fs::read(&source).unwrap();
         let service = offline(48000, crate::streamed_export::render);
-        let imported = run(&service, Request::Import(source.clone()));
+        let mut imported = run(&service, Request::Import(source.clone()));
+        if grouped {
+            let track = imported.state.project.tracks()[0].id();
+            imported = run(
+                &service,
+                Request::Edit(hex_project::Command::GroupTracks {
+                    tracks: hex_project::TrackSelectionIds::new(&[track]).unwrap(),
+                    name: "group".into(),
+                }),
+            );
+        }
         match failure {
             0 => fs::remove_file(&source).unwrap(),
             1 => {

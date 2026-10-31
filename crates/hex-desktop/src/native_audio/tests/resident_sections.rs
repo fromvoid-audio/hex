@@ -10,7 +10,7 @@ fn section_request(revision: u64, command: Command) -> Request {
         command,
     }
 }
-fn run_callback(h: &mut ResidentHarness, request: Request) -> Event {
+pub(super) fn run_callback(h: &mut ResidentHarness, request: Request) -> Event {
     h.service.submit(request).unwrap();
     let until = Instant::now() + Duration::from_secs(10);
     loop {
@@ -46,7 +46,7 @@ fn add(
 }
 #[test]
 fn resident_sections_reproject_stopped_cursor_and_refuse_stale_or_failed_edits() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::new();
     let initial = h.next();
     assert!(initial.error.is_none());
@@ -208,7 +208,10 @@ fn resident_sections_reproject_stopped_cursor_and_refuse_stale_or_failed_edits()
         .command(PlaybackCommand::Play)
         .unwrap();
     h.render();
-    let tempo_refused = run_callback(
+    // A section reorder that changes the tempo map while playing used to
+    // refuse ("tempo map"). It now applies live, relocating audio to the same
+    // beat under the new map (Pulse #3774); Undo applies live as well.
+    let tempo_moved = run_callback(
         &mut h,
         section_request(
             redone.state.revision,
@@ -218,16 +221,25 @@ fn resident_sections_reproject_stopped_cursor_and_refuse_stale_or_failed_edits()
             },
         ),
     );
+    assert!(tempo_moved.error.is_none(), "{:?}", tempo_moved.error);
+    assert_ne!(tempo_moved.state.project.snapshot(), after);
+    (applied, _) = h.applied(applied);
     assert!(
-        tempo_refused
-            .error
+        h.audio
             .as_ref()
-            .is_some_and(|e| e.contains("tempo map")),
-        "{:?}",
-        tempo_refused.error
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
     );
-    assert_eq!(tempo_refused.state.project.snapshot(), after);
-    assert_eq!(tempo_refused.state.revision, redone.state.revision);
+    let tempo_undone = run_callback(&mut h, Request::Undo);
+    assert!(tempo_undone.error.is_none(), "{:?}", tempo_undone.error);
+    (applied, _) = h.applied(applied);
+    let mut tempo_restored = tempo_undone.state.project.snapshot();
+    tempo_restored.next_id = after.next_id;
+    assert_eq!(tempo_restored, after);
+    let after = tempo_undone.state.project.snapshot();
     h.audio
         .as_mut()
         .unwrap()
@@ -239,7 +251,7 @@ fn resident_sections_reproject_stopped_cursor_and_refuse_stale_or_failed_edits()
     let failed = run_callback(
         &mut h,
         section_request(
-            redone.state.revision,
+            tempo_undone.state.revision,
             Command::ReorderSectionBefore {
                 section: intro,
                 before: chorus,
@@ -248,7 +260,7 @@ fn resident_sections_reproject_stopped_cursor_and_refuse_stale_or_failed_edits()
     );
     assert!(failed.error.is_some());
     assert_eq!(failed.state.project.snapshot(), after);
-    assert_eq!(failed.state.revision, redone.state.revision);
+    assert_eq!(failed.state.revision, tempo_undone.state.revision);
     assert_eq!(
         h.audio
             .as_ref()
@@ -273,7 +285,7 @@ fn resident_sections_reproject_stopped_cursor_and_refuse_stale_or_failed_edits()
 
 #[test]
 fn stateless_section_reorder_retains_late_and_outside_loop_stopped_positions() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for (position, enabled_loop) in [(9_000_000, false), (96_000, true)] {
         let mut h = ResidentHarness::new();
         let initial = h.next();
@@ -355,8 +367,8 @@ fn stateless_section_reorder_retains_late_and_outside_loop_stopped_positions() {
 }
 
 #[test]
-fn structural_section_splices_use_stopped_publication_and_preserve_failed_history() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+fn structural_section_splices_apply_live_or_stopped_and_preserve_failed_history() {
+    let _native = native_fixture();
     for kind in [0, 1, 3, 4] {
         let mut h = ResidentHarness::new();
         let initial = h.next();
@@ -413,16 +425,29 @@ fn structural_section_splices_use_stopped_publication_and_preserve_failed_histor
             .command(PlaybackCommand::Play)
             .unwrap();
         h.render();
-        let refused = run_callback(&mut h, section_request(revision, command.clone()));
+        // Structural section edits apply while playing (Pulse #3784); the
+        // transport keeps running and Undo applies live too.
+        let live = run_callback(&mut h, section_request(revision, command.clone()));
+        assert!(live.error.is_none(), "kind={kind}: {:?}", live.error);
+        assert_ne!(live.state.project.snapshot(), before);
+        (applied, _) = h.applied(applied);
         assert!(
-            refused
-                .error
+            h.audio
                 .as_ref()
-                .is_some_and(|e| e.contains("stop playback")),
-            "{:?}",
-            refused.error
+                .unwrap()
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
         );
-        assert_eq!(refused.state.project.snapshot(), before);
+        let live_undo = run_callback(&mut h, Request::Undo);
+        assert!(live_undo.error.is_none(), "{:?}", live_undo.error);
+        (applied, _) = h.applied(applied);
+        let mut live_restored = live_undo.state.project.snapshot();
+        live_restored.next_id = before.next_id;
+        assert_eq!(live_restored, before);
+        let before = live_undo.state.project.snapshot();
+        let revision = live_undo.state.revision;
         h.audio
             .as_mut()
             .unwrap()
@@ -462,7 +487,7 @@ fn structural_section_splices_use_stopped_publication_and_preserve_failed_histor
 /// Every render also probes zero total and signed-net callback allocations.
 #[test]
 fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_refusal() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(8_000_000);
     let initial = h.next();
@@ -516,6 +541,16 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
             before: chorus,
         },
         Command::DuplicateArrangementSection(intro),
+        Command::DuplicateArrangementSectionAt {
+            section: intro,
+            target: chorus,
+            after: true,
+        },
+        Command::DuplicateArrangementSectionAt {
+            section: intro,
+            target: chorus,
+            after: false,
+        },
     ] {
         let before = event.state.project.snapshot();
         let revision = event.state.revision;
@@ -546,6 +581,30 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
             )
             .unwrap(),
         );
+        if matches!(command, Command::DuplicateArrangementSectionAt { .. }) {
+            let Some(Created::ArrangementSection(copy)) = event.created else {
+                panic!("destination copy identity");
+            };
+            let marker = event.state.project.arrangement_section(copy).unwrap();
+            let start = event
+                .state
+                .project
+                .tempo_map()
+                .beat_to_frame(marker.start())
+                .unwrap();
+            let mut copied = hex_engine::playback::Playback::try_from_prepared_with_session(
+                Arc::clone(&prepared),
+            )
+            .unwrap();
+            copied.apply(PlaybackCommand::Seek(start));
+            copied.apply(PlaybackCommand::Play);
+            let mut literal = [[0.0; 2]; 64];
+            copied.render(&mut literal).unwrap();
+            assert_eq!(
+                literal, [[0.25; 2]; 64],
+                "copy must read the original intro's PCM, not destination music"
+            );
+        }
         let mut oracle =
             hex_engine::playback::Playback::try_from_prepared_with_session(prepared).unwrap();
         oracle.apply(PlaybackCommand::Seek(cursor));
@@ -593,7 +652,11 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
             &mut h,
             section_request(
                 event.state.revision,
-                Command::DuplicateArrangementSection(intro),
+                if matches!(command, Command::DuplicateArrangementSectionAt { .. }) {
+                    command.clone()
+                } else {
+                    Command::DuplicateArrangementSection(intro)
+                },
             ),
         );
         assert!(refused.error.is_some());
@@ -627,8 +690,12 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
 
 #[test]
 fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
-    for micro_bpm in [143_000_000, 180_000_000] {
+    let _native = native_fixture();
+    for (micro_bpm, copy_before_self) in [
+        (143_000_000, false),
+        (180_000_000, false),
+        (143_000_000, true),
+    ] {
         let files = Files::new();
         let mut h = ResidentHarness::with_frame_limit(8_000_000);
         assert!(h.next().error.is_none());
@@ -813,10 +880,6 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                 name: "metadata".into(),
             },
             Command::DuplicateArrangementSection(intro),
-            Command::ReorderSectionAfter {
-                section: intro,
-                after: chorus,
-            },
         ] {
             let before = event.state.project.snapshot();
             let unchanged_prefix = matches!(&command, Command::DuplicateArrangementSection(_))
@@ -915,40 +978,92 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                     "metadata or duplicating later music must retain exact source phase and amplitude at the continuous loop clock: before={before_clock:?}, after={after_clock:?}, loop={loop_frames}"
                 );
             }
+            // A new loop pass dispatches the shortened prefix signature. Undo
+            // must work after this boundary, independently of worker timing.
+            if unchanged_prefix && event.state.project.arrangement_sections().len() > 2 {
+                for _ in 0..loop_frames.div_ceil(64) + 1 {
+                    h.render();
+                }
+            }
             event = run_callback(&mut h, Request::Undo);
             assert!(event.error.is_none(), "{:?}", event.error);
             (applied, _) = h.applied(applied);
             let mut restored = event.state.project.snapshot();
             restored.next_id = before.next_id;
             assert_eq!(restored, before);
+            if unchanged_prefix {
+                let start = h
+                    .audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .position
+                    .load(Acquire);
+                assert_eq!(
+                    h.render(),
+                    expected_from_start(start),
+                    "Undo must preserve the original sampler phase without a second NoteOn"
+                );
+            }
         }
-        for _ in 0..800 {
-            h.render();
-        }
-        assert!(
-            h.audio
-                .as_ref()
-                .unwrap()
-                .status()
-                .unwrap()
-                .position
-                .load(Acquire)
-                < loop_frames
+        let original = event.state.project.snapshot();
+
+        let relocation = if copy_before_self {
+            Command::DuplicateArrangementSectionAt {
+                section: intro,
+                target: intro,
+                after: false,
+            }
+        } else {
+            Command::ReorderSectionAfter {
+                section: intro,
+                after: chorus,
+            }
+        };
+        // Relocating sounding sampler MIDI while playing used to refuse with
+        // "stop playback". It now applies live (Pulse #3774): audio restarts at
+        // the cursor, the launched loop keeps running and the sampler sounds.
+        let moved = run_callback(&mut h, section_request(event.state.revision, relocation));
+        assert!(moved.error.is_none(), "{:?}", moved.error);
+        assert_ne!(moved.state.project.snapshot(), original);
+        (applied, _) = h.applied(applied);
+        let audible_loop = |h: &mut ResidentHarness| {
+            let mut heard = false;
+            for _ in 0..loop_frames.div_ceil(64) + 1 {
+                heard |= h.render().iter().flatten().any(|s| *s != 0.0);
+            }
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            assert!(status.playing.load(Acquire), "transport keeps running");
+            assert!(
+                status.position.load(Acquire) < loop_frames,
+                "launched loop kept"
+            );
+            assert!(status.rejected_revision().is_none());
+            heard
+        };
+        assert!(audible_loop(&mut h));
+        let undone = run_callback(&mut h, Request::Undo);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        (applied, _) = h.applied(applied);
+        let mut restored = undone.state.project.snapshot();
+        restored.next_id = original.next_id;
+        assert_eq!(restored, original);
+        assert!(audible_loop(&mut h));
+        let redone = run_callback(&mut h, Request::Redo);
+        assert!(redone.error.is_none(), "{:?}", redone.error);
+        h.applied(applied);
+        assert_eq!(
+            redone.state.project.snapshot(),
+            moved.state.project.snapshot()
         );
-        assert!(h.render().iter().flatten().any(|s| *s != 0.0));
-        h.audio
-            .as_mut()
-            .unwrap()
-            .control
-            .command(PlaybackCommand::Stop)
-            .unwrap();
-        assert!(h.render().iter().flatten().all(|s| *s == 0.0));
+        assert!(audible_loop(&mut h));
     }
 }
 
 #[test]
 fn empty_section_structural_history_retains_the_launched_loop_while_playing() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::new();
     let initial = h.next();
     let (mut applied, _) = h.applied(0);
@@ -1049,7 +1164,7 @@ fn assert_loop_wraps(h: &ResidentHarness, region: hex_project::LoopRegion) {
 }
 #[test]
 fn ordinary_metadata_and_history_preserve_the_applied_section_loop() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let MetadataLoop {
         mut h,
         mut event,
@@ -1116,7 +1231,7 @@ fn ordinary_metadata_and_history_preserve_the_applied_section_loop() {
 
 #[test]
 fn stale_loop_witnesses_and_admission_refusals_preserve_project_redo_and_playback() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let MetadataLoop {
         mut h,
         event,
@@ -1179,7 +1294,7 @@ fn stale_loop_witnesses_and_admission_refusals_preserve_project_redo_and_playbac
 
 #[test]
 fn offline_metadata_edits_and_history_do_not_require_an_applied_loop_witness() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::with_open_gate(8192, Arc::new(AtomicBool::new(false)));
     let initial = h.next();
     let (added, intro) = add(&mut h, initial.state.revision, "offline", 0, 2);
@@ -1204,9 +1319,83 @@ fn offline_metadata_edits_and_history_do_not_require_an_applied_loop_witness() {
     assert!(h.submitted.is_none());
 }
 
+/// Submit an immediate section launch and leave it unapplied by the callback.
+fn submit_pending_launch(h: &mut ResidentHarness, request_id: u64, revision: u64) {
+    let mut intent = h.seek_intent(request_id, revision, None, None);
+    intent.destination_frame = 0;
+    intent.section = Some(hex_session::arrangement_seek::SectionLaunch {
+        region: hex_project::LoopRegion::new(0, 24_000, true).unwrap(),
+        quantization: hex_engine::LaunchQuantization::Immediate,
+    });
+    h.service.submit_resident_arrangement_seek(intent).unwrap();
+    assert!(h.next().error.is_none());
+    assert!(h.seek_result().result.is_ok()); // Submitted, deliberately not applied.
+}
+
+#[test]
+fn pending_launch_refuses_undo_and_redo_without_losing_either_history_stack() {
+    let _native = native_fixture();
+    let MetadataLoop {
+        mut h,
+        event,
+        intro,
+        mut applied,
+        ..
+    } = metadata_loop_fixture();
+    let original = event.state.project.snapshot();
+    let renamed = h.run(section_request(
+        event.state.revision,
+        Command::RenameArrangementSection {
+            section: intro,
+            name: "history target".into(),
+        },
+    ));
+    (applied, _) = h.applied(applied);
+    let after = renamed.state.project.snapshot();
+
+    submit_pending_launch(&mut h, 2, renamed.state.revision);
+    h.service.submit(Request::Undo).unwrap();
+    let refused = h.next();
+    assert!(
+        refused
+            .error
+            .as_ref()
+            .is_some_and(|e| e.contains("publication already pending")),
+        "{:?}",
+        refused.error
+    );
+    assert_eq!(refused.state.revision, renamed.state.revision);
+    assert_eq!(refused.state.project.snapshot(), after);
+    assert!(refused.state.can_undo);
+    (applied, _) = h.applied(applied);
+    let undone = h.run(Request::Undo);
+    (applied, _) = h.applied(applied);
+    assert_eq!(undone.state.project.snapshot(), original);
+    assert!(undone.state.can_redo);
+
+    submit_pending_launch(&mut h, 3, undone.state.revision);
+    h.service.submit(Request::Redo).unwrap();
+    let refused = h.next();
+    assert!(
+        refused
+            .error
+            .as_ref()
+            .is_some_and(|e| e.contains("publication already pending")),
+        "{:?}",
+        refused.error
+    );
+    assert_eq!(refused.state.revision, undone.state.revision);
+    assert_eq!(refused.state.project.snapshot(), original);
+    assert!(refused.state.can_redo);
+    (applied, _) = h.applied(applied);
+    let redone = h.run(Request::Redo);
+    h.applied(applied);
+    assert_eq!(redone.state.project.snapshot(), after);
+}
+
 #[test]
 fn pending_launch_refuses_metadata_and_stop_cancellation_keeps_the_actual_loop() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let MetadataLoop {
         mut h,
         event,
@@ -1316,7 +1505,7 @@ fn pending_launch_refuses_metadata_and_stop_cancellation_keeps_the_actual_loop()
 
 #[test]
 fn new_document_and_output_do_not_inherit_the_previous_audition_loop() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let MetadataLoop { mut h, region, .. } = metadata_loop_fixture();
     let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let new = h.run(Request::NewWithAudioMode {
@@ -1359,4 +1548,157 @@ fn new_document_and_output_do_not_inherit_the_previous_audition_loop() {
             >= region.end(),
         "new document must play beyond the previous audition loop"
     );
+}
+
+/// Stopped section edits and their history start device tails empty at the raw
+/// cursor instead of replaying the song prefix through stateful devices.
+#[test]
+fn stopped_section_edits_reset_device_tails_at_a_late_cursor_without_replay() {
+    const QUARTER: u64 = 24_000; // 120 bpm at 48 khz.
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(8_000_000);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, QUARTER as u32)));
+    let track = imported.state.project.tracks()[0].id();
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::MoveClip {
+        clip,
+        track,
+        start: 200 * QUARTER,
+    }));
+    (applied, _) = h.applied(applied);
+    let added = h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.reverb")),
+        before: None,
+    });
+    assert!(added.error.is_none(), "{:?}", added.error);
+    (applied, _) = h.applied(applied);
+    let (event, section) = add(&mut h, added.state.revision, "hit", 200, 201);
+    (applied, _) = h.applied(applied);
+    let seek = |h: &mut ResidentHarness, frame: u64| {
+        let audio = h.audio.as_mut().unwrap();
+        audio.control.command(PlaybackCommand::Pause).unwrap();
+        audio.control.command(PlaybackCommand::Seek(frame)).unwrap();
+        h.render();
+    };
+    let position = |h: &ResidentHarness| {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        (status.position.load(Acquire), status.playing.load(Acquire))
+    };
+    // Silence after both the original (ends at 201) and the duplicate (ends at 202).
+    let cursor = 202 * QUARTER + 2_400;
+    seek(&mut h, cursor);
+    let play_energy = |h: &mut ResidentHarness| {
+        let until = Instant::now() + Duration::from_secs(2);
+        while h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .stopped_edit_pending()
+        {
+            h.pump();
+            h.render();
+            assert!(Instant::now() < until, "installed gate did not retire");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let audio = h.audio.as_mut().unwrap();
+        audio.control.command(PlaybackCommand::Play).unwrap();
+        (0..8)
+            .flat_map(|_| h.render())
+            .flatten()
+            .map(|v| f64::from(v).powi(2))
+            .sum::<f64>()
+    };
+    let duplicated = run_callback(
+        &mut h,
+        section_request(
+            event.state.revision,
+            Command::DuplicateArrangementSection(section),
+        ),
+    );
+    assert!(duplicated.error.is_none(), "{:?}", duplicated.error);
+    assert_eq!(duplicated.state.project.arrangement_sections().len(), 2);
+    for step in [None, Some(Request::Undo), Some(Request::Redo)] {
+        if let Some(request) = step {
+            seek(&mut h, cursor);
+            let event = run_callback(&mut h, request);
+            assert!(event.error.is_none(), "{:?}", event.error);
+        }
+        (applied, _) = h.applied(applied);
+        assert_eq!(position(&h), (cursor, false));
+        // An exact prefix replay would leave the hit's reverb decay sounding here.
+        assert_eq!(play_energy(&mut h), 0.0, "device tails start empty");
+    }
+    // Playback renders the edited arrangement: the duplicate now sounds at 201.
+    seek(&mut h, 201 * QUARTER + 2_400);
+    assert!(play_energy(&mut h) > 1e-6, "duplicated audio plays");
+    // Every h.render above checks both total and signed-net allocations/bytes.
+}
+
+/// Section requests report their worker phases on the `OutcomeReady`
+/// observation (#3819): marker-only edits have no callback fence, structural
+/// edits and their history wait for one.
+#[test]
+fn section_outcomes_report_worker_phases() {
+    use hex_session::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::new();
+    let outcomes = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&outcomes);
+    h.service
+        .set_diagnostic_observer(Arc::new(DiagnosticObserver::new(move |event| {
+            if matches!(event.stage, DiagnosticStage::OutcomeReady { .. }) {
+                sink.lock().unwrap().push(event.details.clone());
+            }
+        })))
+        .unwrap();
+    let initial = h.next();
+    assert!(initial.error.is_none());
+    let (applied, _) = h.applied(0);
+    let phases = |details: &str, name: &str| -> u64 {
+        details
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(name)?.strip_prefix('=')?.parse().ok())
+            .unwrap_or_else(|| panic!("{name} missing from {details:?}"))
+    };
+    outcomes.lock().unwrap().clear();
+    let (added, intro) = add(&mut h, initial.state.revision, "intro", 0, 4);
+    h.applied(applied);
+    let details = outcomes.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(phases(&details, "section_fence_us"), 0, "marker-only edit");
+    assert!(phases(&details, "worker_us") >= phases(&details, "section_prepare_us"));
+    for request in [
+        section_request(
+            added.state.revision,
+            Command::DuplicateArrangementSection(intro),
+        ),
+        Request::Undo,
+    ] {
+        outcomes.lock().unwrap().clear();
+        let event = run_callback(&mut h, request);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        let details = outcomes.lock().unwrap().last().cloned().unwrap();
+        let worker = phases(&details, "worker_us");
+        let measured: u64 = [
+            "section_fence_us",
+            "section_edit_us",
+            "section_prepare_us",
+            "section_publish_us",
+            "section_finish_us",
+        ]
+        .iter()
+        .map(|name| phases(&details, name))
+        .sum();
+        assert!(
+            measured <= worker,
+            "phases {measured} within worker {worker}"
+        );
+    }
 }

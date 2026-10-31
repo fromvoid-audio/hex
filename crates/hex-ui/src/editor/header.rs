@@ -397,6 +397,7 @@ mod ui_tests {
     fn compact_toolbar_keeps_names_status_and_controls_visible_in_both_workspaces(
         cx: &mut TestAppContext,
     ) {
+        let _output_fixture_guard = crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
         use super::super::EditorMode;
         use hex_project::InputQuantization::{Adaptive, Off, Sixteenth};
         let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
@@ -407,7 +408,7 @@ mod ui_tests {
         let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
         let mut visual = VisualTestContext::from_window(handle, cx);
         // The existing headless control carrier supplies labels without OS audio.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = crate::test_wait::hang_deadline();
         let (mut output, _backend) = loop {
             match hex_audio::worker_fixture::open(48_000) {
                 Ok(output) => break output,
@@ -546,6 +547,7 @@ mod ui_tests {
                 }
             }
         }
+        editor.update(&mut visual, |view, _| view.audio = None);
     }
     #[gpui::test]
     fn compact_toolbar_startup_loading_and_real_service_ready_keep_both_indicators(
@@ -576,7 +578,7 @@ mod ui_tests {
         let mut ready: Option<Arc<hex_session::service::ViewState>> = None;
         for loading in [true, false] {
             if !loading {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                let deadline = crate::test_wait::hang_deadline();
                 loop {
                     let installed = editor.update(&mut visual, |v, cx| {
                         if v.tick(cx) {

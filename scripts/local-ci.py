@@ -44,6 +44,11 @@ if _CHECKPOINT_SPEC is None or _CHECKPOINT_SPEC.loader is None:
     raise RuntimeError("CI checkpoint helper unavailable")
 ci_checkpoint = importlib.util.module_from_spec(_CHECKPOINT_SPEC)
 _CHECKPOINT_SPEC.loader.exec_module(ci_checkpoint)
+_STORAGE_SPEC = importlib.util.spec_from_file_location("hex_ci_target_storage", Path(__file__).with_name("ci_target_storage.py"))
+if _STORAGE_SPEC is None or _STORAGE_SPEC.loader is None:
+    raise RuntimeError("Cargo target storage helper unavailable")
+ci_target_storage = importlib.util.module_from_spec(_STORAGE_SPEC)
+_STORAGE_SPEC.loader.exec_module(ci_target_storage)
 GIB = 1024 ** 3
 DEFAULT_FULL_MIN_FREE_BYTES = 2 * GIB
 
@@ -137,7 +142,11 @@ FULL_STEPS = (
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
     Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--features", "ui-test-support", "--locked")),
     Step("device-gallery-tests", ("cargo", "test", "-p", "hex-ui", "--example", "layout_review", "--features", "ui-test-support", "--locked")),
-    Step("audio-allocation-probe", ("cargo", "test", "-p", "hex-audio", "-p", "hex-desktop", "-p", "hex-plugin-host", "--features", "allocation-probe", "--locked")),
+    Step("audio-allocation-probe", ("cargo", "test", "-p", "hex-audio", "-p", "hex-plugin-host", "--features", "allocation-probe", "--locked")),
+    # Native fixtures serialize on hex-desktop's process-wide output lease;
+    # disjoint test processes each own one, so their chains run concurrently.
+    Step("desktop-allocation-probe", ("python3", "scripts/test_shards.py", "--shards", "4", "--",
+                                      "cargo", "test", "-p", "hex-desktop", "--features", "allocation-probe", "--locked")),
     Step("stream-allocation-probe", ("cargo", "test", "-p", "hex-stream", "--features", "allocation-probe", "--locked")),
     Step("workspace-clippy", ("cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings")),
     Step("prepared-export-instrument-clippy", ("cargo", "clippy", "-p", "hex-export", "--all-targets", "--features", "instrument-test-support", "--locked", "--", "-D", "warnings")),
@@ -146,6 +155,11 @@ FULL_STEPS = (
     Step("stream-feature-clippy", ("cargo", "clippy", "-p", "hex-stream", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
     Step("desktop-build", ("cargo", "build", "-p", "hex-desktop", "--locked")),
 )
+
+
+def runs_rust_tests(argv: tuple[str, ...]) -> bool:
+    """Plain `cargo test` or the same command run through the test sharder."""
+    return argv[:2] == ("cargo", "test") or argv[:2] == ("python3", "scripts/test_shards.py")
 
 
 def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
@@ -218,7 +232,16 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     if boundary["kind"] == "packages":
         if sorted(boundary["test_packages"]) != sorted(affected) or tests:
             raise ValueError("package boundary must test every affected consumer")
-        steps.append(Step("affected-tests", ("cargo", "test", *packages, "--locked")))
+        # Reviewed additive test features run once, with the feature (below);
+        # their doctests stay here because --all-targets feature runs omit them.
+        single = boundary.get("single_run", {})
+        defaults = tuple(arg for p in affected if p not in single for arg in ("-p", p))
+        if defaults:
+            steps.append(Step("affected-tests", ("cargo", "test", *defaults, "--locked")))
+        if single:
+            steps.append(Step("single-run-doctests", ("cargo", "test", "--doc",
+                                                      *(arg for p in affected if p in single for arg in ("-p", p)),
+                                                      "--locked")))
     elif boundary["kind"] == "compressor":
         if not tests:
             raise ValueError("device boundary has no contract targets")
@@ -247,7 +270,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
             continue
         owners = [step.argv[i + 1] for i, arg in enumerate(step.argv) if arg == "-p"]
         selected = [p for p in owners if p in affected]
-        if not selected or boundary["kind"] == "compressor" and step.argv[1] == "test":
+        if not selected or boundary["kind"] == "compressor" and runs_rust_tests(step.argv):
             continue
         argv = list(step.argv)
         for owner in set(owners) - set(selected):
@@ -255,14 +278,17 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
             del argv[index - 1:index + 1]
         steps.append(Step(step.step_id, tuple(argv)))
     for package in inventory:
-        if package["name"] not in affected or boundary["kind"] == "compressor":
+        if package["name"] not in affected:
             continue
         extra = set(package["features"]) - {"default"} - covered_features.get(package["name"], set())
         # Preserve each declared configuration; all-features alone can mask
         # mutually exclusive cfg branches. Feature interaction contracts still
         # need reviewed configuration rules rather than a guessed power set.
+        # Compressor plans run reviewed contract tests, but still lint every
+        # extra configuration so an unexercised cfg branch cannot stop compiling.
+        commands = ("clippy",) if boundary["kind"] == "compressor" else ("test", "clippy")
         for index, feature in enumerate(sorted(extra)):
-            for command in ("test", "clippy"):
+            for command in commands:
                 steps.append(Step(f"feature-{command}-{package['name']}-{index}",
                                   ("cargo", command, "-p", package["name"], "--features", feature, "--all-targets", "--locked",
                                    *(("--", "-D", "warnings") if command == "clippy" else ()))))
@@ -283,6 +309,20 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                      requires_tests=True),
                 Step("edit-clippy", ("cargo", "clippy", "-p", edit["package"], *feature, "--all-targets", "--locked", "--", "-D", "warnings")),
                 next(s for s in QUICK_STEPS if s.step_id == "format"))
+    if plan.get("health"):
+        health = plan["health"]
+        steps = [next(s for s in QUICK_STEPS if s.step_id == "format")]
+        if health["python"]:
+            steps.append(Step("health-runner-tests", ci_plan.python_tests.COMPREHENSIVE_ARGV, True, True))
+        if health["workspace_inputs"]:
+            steps.append(Step("health-tests", ("cargo", "test", "--workspace", "--locked"), requires_tests=True))
+        elif health["packages"]:
+            steps.append(Step("health-tests", ("cargo", "test", *(a for p in health["packages"] for a in ("-p", p)),
+                                               "--locked"), requires_tests=True))
+        if len(steps) == 1:
+            steps.append(Step("metadata", ("python3", "scripts/ci_plan.py", "--check-metadata",
+                                           "--base", plan["base"], "--source", plan["source"])))
+        return tuple(steps)
     if plan.get("reuse"):
         return (Step("metadata-continuation", ("python3", "scripts/ci_plan.py", "--check-metadata",
                                              "--base", plan["reuse"]["source"], "--source", plan["source"]),
@@ -310,7 +350,8 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                       ci_plan.python_tests.argv(plan["python_tests"])
                       if s.step_id == "runner-tests" and "python_tests" in plan else s.argv,
                       s.uses_cargo_target,
-                      s.argv[:2] == ("cargo", "test") or s.step_id == "runner-tests") for s in steps)
+                      (runs_rust_tests(s.argv) and "--doc" not in s.argv)
+                      or s.step_id == "runner-tests") for s in steps)
 
 
 def utc_now() -> str:
@@ -334,12 +375,67 @@ def reusable_plan(root: Path, plan: dict, report: Path) -> dict:
     return ci_plan.reuse_checks(root, plan, report)
 
 
+def carry_decisions(steps: tuple[Step, ...], evidence: dict, basis: dict,
+                    inventory: list[dict]) -> list[dict]:
+    """Per planned step: carry an identical passed result, narrow, or run.
+
+    A Cargo step carries only when the dependency closure of every package it
+    names excludes each package the base advance changed; workspace-wide steps
+    carry only when no package changed. Cheap guards always rerun. The Python
+    step reruns just the selection the changed paths require. Unknown shapes run.
+    """
+    previous = {}
+    for entry in evidence.get("steps", []):
+        planned = entry.get("carry", {}).get("planned_argv", entry.get("argv"))
+        if entry.get("status") in {"passed", "carried"} and isinstance(planned, list):
+            previous[(entry.get("step_id"), tuple(planned))] = entry
+    owners = set(basis["delta_owners"])
+    decisions = []
+    for step in steps:
+        entry = previous.get((step.step_id, step.argv))
+        results = (entry or {}).get("test_results", {})
+        counted = sum(results.get("rust_passed_by_binary", [])) + sum(
+            results.get("python_executions", [])) - sum(results.get("python_skipped", []))
+        if entry is None:
+            decisions.append({"action": "run", "reason": "no identical passed step in the carried report"})
+        elif step.requires_tests and counted <= 0:
+            decisions.append({"action": "run", "reason": "carried step has no counted passing tests"})
+        elif step.step_id == "runner-tests":
+            selection = basis["python_tests"]
+            if selection["mode"] == "none":
+                decisions.append({"action": "carry", "entry": entry, "reason": "no executable change"})
+            elif selection["mode"] == "shared":
+                decisions.append({"action": "narrow", "entry": entry,
+                                  "argv": ci_plan.python_tests.argv(selection),
+                                  "reason": "; ".join(selection["reasons"])})
+            else:
+                decisions.append({"action": "run", "reason": "; ".join(selection["reasons"])})
+        elif (step.argv[:1] != ("cargo",) or step.argv[1:2] == ("fmt",)) and not runs_rust_tests(step.argv):
+            decisions.append({"action": "run", "reason": "guard steps always rerun"})
+        else:
+            packages = [step.argv[i + 1] for i, arg in enumerate(step.argv[:-1]) if arg == "-p"]
+            if "--workspace" in step.argv or not packages:
+                hit = owners
+            else:
+                hit = ci_plan.dependency_closure(packages, inventory) & owners
+            if hit:
+                decisions.append({"action": "run", "reason": "depends on changed " + ", ".join(sorted(hit))})
+            else:
+                decisions.append({"action": "carry", "entry": entry,
+                                  "reason": "dependency closure excludes " + (", ".join(sorted(owners)) or "nothing")})
+    return decisions
+
+
 def command_output(argv: list[str], cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, check=False)
 
 
 class InterruptedRun(Exception):
     """Raised when a user or supervisor interrupts the pipeline."""
+
+
+class ReportPublicationError(OSError):
+    """The durable report is unavailable; never a successful qualification."""
 
 
 class TargetCacheError(Exception):
@@ -462,6 +558,7 @@ class LocalCiRunner:
         target_state_dir: Path | None = None,
         plan: dict | None = None,
         resume_report: Path | None = None,
+        carry_report: Path | None = None,
     ) -> None:
         self.root = root.resolve()
         default_floor = DEFAULT_FULL_MIN_FREE_BYTES if mode in {"full", "merge", "release"} else 0
@@ -475,6 +572,9 @@ class LocalCiRunner:
         self.mode = mode
         self.plan = plan
         self.resume_report = resume_report
+        self.carry_report = carry_report
+        self._carry: list[dict] | None = None
+        self._carry_dependency_inputs: object = None
         self._resume_evidence = None
         self._checkpoint_inputs = None
         self._checkpoint_target = None
@@ -525,8 +625,25 @@ class LocalCiRunner:
 
     def _write_summary(self) -> None:
         temporary = self.summary_path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(self.summary, indent=2, sort_keys=True) + "\n")
-        temporary.replace(self.summary_path)
+        phase = "writing temporary report"
+        try:
+            temporary.write_text(json.dumps(self.summary, indent=2, sort_keys=True) + "\n")
+            phase = "publishing report"
+            temporary.replace(self.summary_path)
+        except OSError as error:
+            # Preserve the last published bytes and the actual command result.
+            # A later successful diagnostic write must still record this failure.
+            self.summary["report_publication_error"] = f"{phase}: {error}"
+            raise ReportPublicationError(error.errno, str(error)) from error
+
+    def _fail_report_publication(self) -> None:
+        self.summary["verification_status"] = "failed"
+        if self.summary.get("exit_code") not in (None, 0):
+            return  # Keep an existing command/refusal/interruption/stale result.
+        if any(step["status"] == "failed" for step in self.summary["steps"]):
+            self.summary.update(status="failed", exit_code=1)
+        else:
+            self.summary.update(status="incomplete", exit_code=2)
 
     def _capture_repository_state(self, key: str) -> bool:
         try:
@@ -821,6 +938,18 @@ class LocalCiRunner:
         temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temporary.replace(path)
 
+    def _check_target_filesystem(self, target: Path) -> None:
+        try:
+            observation = ci_target_storage.inspect(target, self.env)
+        except ValueError as error:
+            raise TargetCacheError(str(error) + "; target preparation refused before cleanup") from error
+        self.summary["target_filesystem"] = observation
+        if observation.get("filesystem_type") == "exfat":
+            raise TargetCacheError(
+                "macOS ExFAT Cargo targets are unsupported: cleanup can fail on AppleDouble entries "
+                "and test executables have exhibited launch stalls; choose a fresh APFS "
+                "CARGO_TARGET_DIR and rerun normal local CI. The target and previous owner were preserved")
+
     def _prepare_target_cache(self) -> bool:
         if self.cargo_identity is None or self.git_identity is None:
             self.summary["target_cache_error"] = "Cargo or Git identity is unavailable"
@@ -841,6 +970,7 @@ class LocalCiRunner:
             return False
         self.target_lock = lock
         try:
+            self._check_target_filesystem(target)
             malformed_owner = False
             try:
                 owner_record = self._load_target_owner(owner_path, target)
@@ -1288,6 +1418,13 @@ class LocalCiRunner:
         lock.acquire()
         self.target_lock = lock
         try:
+            self._check_target_filesystem(target)
+            # Full Cargo metadata can create .rustc_info.json. Record the target
+            # before that command while holding the same lock used for handoff.
+            initial_identity = self._directory_identity(target)
+            initially_empty = initial_identity is None or not any(target.iterdir())
+            if not initially_empty and not adopt and not os.path.lexists(owner_path):
+                raise TargetCacheError("release ownership is unknown; explicit adoption or an empty target required")
             replacement = expected_recreated_target_identity
             if replacement is not None:
                 if (not adopt or expected_owner_sha256 is None
@@ -1396,8 +1533,19 @@ class LocalCiRunner:
                     raise TargetCacheError("release target identity/repository changed; explicit adoption required")
             # An existing dev marker is NOT evidence of release ownership.
             populated = target.exists() and any(target.iterdir())
-            if record is None and populated and not adopt:
-                raise TargetCacheError("release ownership is unknown; explicit adoption or an empty target required")
+            if record is None and not adopt:
+                if not initially_empty:
+                    raise TargetCacheError("release ownership is unknown; explicit adoption or an empty target required")
+                if target.is_symlink() or (initial_identity is not None and identity != initial_identity):
+                    raise TargetCacheError("fresh release target identity changed during preflight")
+                # Only Cargo's metadata cache may have appeared since the
+                # locked empty-target observation; never accept a symlink or
+                # an unrelated file as evidence of an empty target.
+                entries = list(target.iterdir()) if target.exists() else []
+                if any(p.name != ".rustc_info.json" or not stat.S_ISREG(p.lstat().st_mode)
+                       for p in entries):
+                    raise TargetCacheError("fresh release target changed during preflight")
+                populated = False
             reuse = bool(record and record["state"] == "ready" and not adopt
                          and record.get("target_identity") == identity
                          and record["workspace_owner"] == workspace
@@ -1509,6 +1657,7 @@ class LocalCiRunner:
         return {"path": str(resolved), "sha256": digest.hexdigest()}
 
     def _run_target_cleanup(self, argv: list[str]) -> bool:
+        started = time.monotonic()
         log_path = self.output_dir / "target-handoff-clean.log"
         try:
             with log_path.open("w", encoding="utf-8") as log:
@@ -1525,6 +1674,8 @@ class LocalCiRunner:
             self.summary["target_cache"]["cleanup_error"] = str(error)  # type: ignore[index]
             self.summary["target_cache"]["cleanup_log"] = str(log_path.relative_to(self.root))  # type: ignore[index]
             return False
+        finally:
+            self.summary["target_cache"]["cleanup_duration_seconds"] = round(time.monotonic() - started, 6)
         target_cache = self.summary["target_cache"]
         assert isinstance(target_cache, dict)
         target_cache["cleanup_exit_code"] = result.returncode
@@ -1568,6 +1719,57 @@ class LocalCiRunner:
                 return False
         return True
 
+    def _prepare_carry(self) -> None:
+        """Decide per step from an earlier passed report; any refusal runs everything."""
+        record: dict[str, object] = {"report": str(self.carry_report)}
+        self.summary["carry"] = record
+        try:
+            raw = self.carry_report.read_bytes()
+            evidence = json.loads(raw)
+            record["sha256"] = hashlib.sha256(raw).hexdigest()
+            if not self.plan:
+                raise ValueError("base-advance carry requires a resolved merge plan")
+            basis = ci_plan.carry_basis(self.root, self.plan, evidence, env=self.env)
+            decisions = carry_decisions(self.steps, evidence, basis, self.plan["cargo_inventory"])
+            dependency = evidence.get("target_cache", {}).get("dependency_inputs")
+            if not isinstance(dependency, dict):
+                raise ValueError("carried report lacks guarded toolchain/dependency identity")
+        except (ValueError, OSError, KeyError, TypeError) as error:
+            record["refused"] = f"{error}; every step runs fresh"
+            print(f"carry refused: {record['refused']}", flush=True)
+            return
+        record.update(report_commit=basis["report_commit"], delta_paths=basis["delta_paths"],
+                      delta_owners=basis["delta_owners"],
+                      decisions=[{"step_id": step.step_id, "action": d["action"], "reason": d["reason"]}
+                                 for step, d in zip(self.steps, decisions)])
+        self._carry = decisions
+        self._carry_dependency_inputs = dependency
+        self._carry_report_path = str(self.carry_report.resolve())
+
+    def _drop_carry(self, reason: str) -> None:
+        self._carry = None
+        self.summary["carry"]["refused"] = f"{reason}; remaining steps run fresh"
+        print(f"carry refused: {self.summary['carry']['refused']}", flush=True)
+
+    def _carry_origin(self, entry: dict) -> dict:
+        """The run that actually executed a result, preserved through carry chains."""
+        return entry.get("carried_from") or entry.get("carry", {}).get("carried_remainder_from") or {
+            "report": self._carry_report_path, "commit": self.summary["carry"]["report_commit"],
+            "log": entry.get("log")}
+
+    def _record_carried(self, step: Step, index: int, decision: dict) -> None:
+        entry = decision["entry"]
+        self.summary["steps"].append({
+            "step_id": step.step_id, "argv": list(step.argv), "status": "carried",
+            "started_at": None, "ended_at": None, "start_offset_seconds": None,
+            "duration_seconds": 0.0, "timing_estimates": None, "exit_code": 0,
+            "log": None, "error": None, "execution": "carried",
+            "test_results": entry.get("test_results", {}),
+            "carried_from": self._carry_origin(entry), "carry_reason": decision["reason"],
+        })
+        self._write_summary()
+        print(f"[{index}/{len(self.steps)}] {step.step_id}: carried ({decision['reason']})", flush=True)
+
     def _run_step(self, step: Step, index: int) -> dict[str, object]:
         started = time.monotonic()
         text = None
@@ -1590,7 +1792,12 @@ class LocalCiRunner:
         steps = self.summary["steps"]
         assert isinstance(steps, list)
         steps.append(entry)
-        self._write_summary()
+        try:
+            self._write_summary()
+        except ReportPublicationError:
+            entry.update(status="not_run", started_at=None, start_offset_seconds=None,
+                         log=None, error="report publication failed before command admission")
+            raise
         print(f"[{index}/{len(self.steps)}] {step.step_id}: running", flush=True)
         if step.step_id == "runner-tests" and self.summary.get("plan") and "python_tests" in self.summary["plan"]:
             selection = self.summary["plan"]["python_tests"]
@@ -1683,6 +1890,26 @@ class LocalCiRunner:
         status = self.summary.get("status")
         if status not in {"failed", "interrupted", "stale", "incomplete"}:
             return
+        publication = self.summary.get("report_publication_error")
+        stream = sys.stderr if publication else sys.stdout
+        report_note = (["report publication failed: " + self._diagnostic_text(str(publication))[:2000],
+                        "durable summary is unavailable or incomplete; this run does not qualify"]
+                       if publication else [])
+        preparation = self.summary.get("target_preparation_failure")
+        if preparation:
+            cache = self.summary.get("target_cache", {})
+            log = cache.get("cleanup_log")
+            details = [f"local ci diagnostic: {status}", f"profile: {self.mode}",
+                       "step: cargo-target-preparation (preflight refusal)",
+                       f"before step: {preparation['before_step']}",
+                       f"summary: {self.summary_path}",
+                       f"log: {self.root / log if log else 'no cleanup started; see summary'}",
+                       str(self.summary.get("target_cache_error", "target preparation refused"))]
+            if cache.get("cleanup_argv"):
+                details.append("cleanup command: " + shlex.join(cache["cleanup_argv"])[:2000])
+            details.append("rerun the original local CI invocation after resolving the refusal; prior passing stages are not a complete check set")
+            print(self._diagnostic_text("\n".join(details + report_note)), file=stream, flush=True)
+            return
         executed = [s for s in self.summary["steps"] if s["status"] != "not_run"]
         step = next((s for s in executed if s["status"] in {"failed", "interrupted"}),
                     executed[-1] if executed else None)
@@ -1713,6 +1940,8 @@ class LocalCiRunner:
                         "compiler failure" if re.search(r"error\[E\d+\]|error:.*could not compile|--> .*:\d+:\d+", excerpt) else
                         "test failure" if re.search(r"panicked at|stdout ----|FAIL:|ERROR:|Traceback", excerpt) else
                         "command failure")
+        if publication and (step is None or step["status"] not in {"failed", "interrupted"}):
+            category = "report publication failure"
         result = "stale (source changed; prior results do not qualify)" if status == "stale" else status
         details = [f"local ci diagnostic: {result}", f"profile: {self.mode}",
                    f"step: {step['step_id'] if step else 'not started'} ({category})",
@@ -1723,6 +1952,8 @@ class LocalCiRunner:
             if truncated:
                 command = command[:2000] + " ... [truncated; exact argv retained in summary]"
             details.extend((f"command: {command}", f"cwd: {self.root}"))
+            if publication:
+                details.append(f"command result: {step['status']}; exit code: {step['exit_code']}")
             if step.get("error"):
                 details.append(self._diagnostic_text(str(step["error"]))[:2000])
             if excerpt:
@@ -1736,13 +1967,21 @@ class LocalCiRunner:
                            for key, value in self.summary.items() if key.endswith("_error"))
         if status == "stale":
             details.append("freeze the intended candidate and rerun its required plan before qualification")
-        print(self._diagnostic_text("\n".join(details)), flush=True)
+        print(self._diagnostic_text("\n".join(details + report_note)), file=stream, flush=True)
 
     def run(self) -> int:
         self.summary["native_acceptance_opt_in"] = bool(
             ci_plan.python_tests.native_acceptance_inputs(self.env))
         self.output_dir.mkdir(parents=True, exist_ok=False)
-        self._write_summary()
+        try:
+            self._write_summary()
+        except ReportPublicationError:
+            self._fail_report_publication()
+            try:
+                self._print_failure_details()
+            except (OSError, ValueError):
+                pass  # An unavailable console cannot turn missing evidence into success.
+            return int(self.summary["exit_code"])
         previous_handlers: dict[int, object] = {}
 
         def interrupt_handler(_signum: int, _frame: object) -> None:
@@ -1807,6 +2046,8 @@ class LocalCiRunner:
                     except (ValueError, OSError, KeyError, TypeError) as error:
                         self.summary["resume_error"] = str(error)
                         failed = True
+                if self.carry_report is not None:
+                    self._prepare_carry()
                 self._write_summary()
                 for index, step in enumerate(self.steps, start=1):
                     if failed:
@@ -1821,6 +2062,7 @@ class LocalCiRunner:
                         break
                     if self._uses_cargo_target(step) and self.target_lock is None:
                         if not self._prepare_target_cache():
+                            self.summary["target_preparation_failure"] = {"before_step": step.step_id}
                             print(
                                 self.summary.get("target_cache_error", "could not prepare Cargo target ownership"),
                                 file=sys.stderr,
@@ -1832,7 +2074,21 @@ class LocalCiRunner:
                             self.summary["reuse_error"] = "runtime report toolchain/config/dependency inputs differ"
                             failed = True
                             break
-                    result = self._run_step(step, index)
+                        if self._carry is not None and self._carry_dependency_inputs != self._dependency_inputs:
+                            self._drop_carry("carried report toolchain/config/dependency inputs differ")
+                    decision = self._carry[index - 1] if self._carry is not None else {"action": "run"}
+                    if decision["action"] == "carry" and self.target_lock is not None:
+                        self._record_carried(step, index, decision)
+                        continue
+                    if decision["action"] == "narrow" and self.target_lock is not None:
+                        result = self._run_step(Step(step.step_id, tuple(decision["argv"]),
+                                                     step.uses_cargo_target, step.requires_tests), index)
+                        result["carry"] = {"planned_argv": list(step.argv),
+                                           "carried_remainder_from": self._carry_origin(decision["entry"]),
+                                           "reason": decision["reason"]}
+                        self._write_summary()
+                    else:
+                        result = self._run_step(step, index)
                     if result["status"] != "passed":
                         failed = True
                         break
@@ -1848,6 +2104,8 @@ class LocalCiRunner:
                 self.summary["verification_status"] = "failed" if failed else ("partial" if partial else "passed")
                 self.summary["status"] = self.summary["verification_status"]
                 self.summary["exit_code"] = (2 if "disk_error" in self.summary else 1) if failed else 0
+        except ReportPublicationError:
+            self._fail_report_publication()
         except InterruptedRun:
             self.summary["status"] = "interrupted"
             self.summary["exit_code"] = 130
@@ -1940,7 +2198,12 @@ class LocalCiRunner:
                     except (ValueError, OSError, KeyError, TypeError) as error:
                         if self.summary.get("disk_refusal"):
                             self.summary["checkpoint_unavailable"] = str(error)
-                self._write_summary()
+                if self.summary.get("report_publication_error"):
+                    self._fail_report_publication()
+                try:
+                    self._write_summary()
+                except ReportPublicationError:
+                    self._fail_report_publication()
             finally:
                 # Even an end-snapshot or summary-write exception must restore
                 # the caller's process-wide signal handlers.
@@ -1960,12 +2223,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run architecture/UI/GPUI guards and formatting only; this is not full CI",
     )
-    parser.add_argument("--profile", choices=("edit", "merge", "full", "release"),
+    parser.add_argument("--profile", choices=("edit", "merge", "full", "release", "health"),
                         help="explicit deterministic scope; default remains full audit")
     parser.add_argument("--base", help="immutable integrated comparison base for scoped checks")
     parser.add_argument("--source", help="exact current candidate commit for scoped checks")
     parser.add_argument("--reuse-report", type=Path,
                         help="explicit prior runtime certificate for a prose-only continuation")
+    parser.add_argument("--carry-report", type=Path,
+                        help="after merging a newer base, reuse unaffected steps of this passed merge summary")
     parser.add_argument("--resume-report", type=Path,
                         help="continue an exact-source plan stopped solely by a pre-step disk refusal")
     parser.add_argument("--package", help="explicit workspace package for partial edit feedback")
@@ -1992,6 +2257,9 @@ def main(argv: list[str] | None = None) -> int:
                                     or arguments.quick or arguments.profile == "edit"
                                     or arguments.prepare_changelog):
         parser.error("--resume-report cannot combine reuse/adoption/quick/edit/changelog preparation")
+    if arguments.carry_report and (arguments.reuse_report or arguments.resume_report or arguments.quick
+                                   or arguments.profile != "merge"):
+        parser.error("--carry-report requires --profile merge and cannot combine reuse/resume/quick")
     if arguments.prepare_changelog:
         command = [sys.executable, str(ROOT / "scripts/changelog.py"), "prepare",
                    "--source", arguments.changelog_through]
@@ -2004,7 +2272,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--min-free-gib must be a bounded nonnegative integer")
     mode = "quick" if arguments.quick else "full"
     plan = None
-    if arguments.profile in {"merge", "edit"} or arguments.base or arguments.source:
+    if arguments.profile in {"merge", "edit", "health"} or arguments.base or arguments.source:
         if arguments.quick or not arguments.profile or not arguments.base or not arguments.source:
             parser.error("scoped profiles require --profile, --base and --source; cannot combine --quick")
         try:
@@ -2036,6 +2304,7 @@ def main(argv: list[str] | None = None) -> int:
         adopt_target=arguments.adopt_target,
         plan=plan,
         resume_report=arguments.resume_report,
+        carry_report=arguments.carry_report,
     )
     try:
         exit_code = runner.run()
@@ -2045,7 +2314,15 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as error:
         print(f"local ci could not retain its complete report at {runner.summary_path}: {error}", file=sys.stderr)
         return 2
+    carried = [s for s in runner.summary.get("steps", []) if isinstance(s, dict) and s.get("execution") == "carried"]
+    if carried:
+        print(f"{len(carried)} step(s) carried from {runner.summary['carry']['report']}, not re-executed")
     print(f"local ci {runner.summary['status']}: {runner.summary_path}")
+    if mode == "health" and runner.summary["status"] == "failed":
+        print(f"main is red after merge {plan['source']}: owning checks did not pass; "
+              "fix forward before further merges", file=sys.stderr)
+    if runner.summary["status"] == "passed" and mode == "merge":
+        print(f"if the base advances: merge it, then rerun with --carry-report {runner.summary_path}")
     return exit_code
 
 

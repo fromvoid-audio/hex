@@ -102,6 +102,16 @@ impl ForeignProcessors for NativeEndpointBank {
         frames: &mut [[f32; 2]],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
+        self.process_segment_with_parameters(node, offset, frames, &[], clock)
+    }
+    fn process_segment_with_parameters(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
         let selected = node.prepared.binding().and_then(|binding| {
             self.routing[..self.routing_len]
                 .binary_search_by_key(&Some(binding), |slot| {
@@ -115,7 +125,7 @@ impl ForeignProcessors for NativeEndpointBank {
                 .as_mut()
                 .and_then(|e| e.0.callback.as_mut())
                 .ok_or(DeviceContractError::ForeignProcessingUnavailable)
-                .and_then(|entry| entry.process(extent, node, offset, frames, clock)),
+                .and_then(|entry| entry.process(extent, node, offset, frames, parameters, clock)),
             _ => Err(DeviceContractError::ForeignProcessingUnavailable),
         };
         if result.is_err() {

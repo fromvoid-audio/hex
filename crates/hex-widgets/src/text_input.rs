@@ -3,6 +3,9 @@
 //! preserves source spelling while rendering through that case. Callers own domain
 //! validation, canonical commits and external content. Only search reserves a clear
 //! action slot; its accessibility receipt cannot edit a newer composition.
+//! Pointer selection uses the shared Window lease, independently of content or
+//! canonical edit acknowledgements. Input loss clears only the held anchor;
+//! newer text/IME drafts and the last valid selection remain owned by this field.
 use crate::{ActionStyle, ControlStyle, TextCase, TextClickSelection, action};
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
@@ -553,6 +556,31 @@ impl TextInput {
         if !self.enabled {
             return;
         }
+        let owner = cx.entity().downgrade();
+        let cancelled = owner.clone();
+        if !window.capture_pointer(
+            cx.entity_id(),
+            MouseButton::Left,
+            CursorStyle::IBeam,
+            move |event, window, cx| {
+                let _ = owner.update(cx, |input, cx| {
+                    if let Some(event) = event.downcast_ref::<gpui::MouseMoveEvent>() {
+                        input.mouse_move(event, window, cx);
+                    } else if let Some(event) = event.downcast_ref::<gpui::MouseUpEvent>()
+                        && event.button == MouseButton::Left
+                        && input.mouse_selection.take().is_some()
+                    {
+                        cx.notify();
+                    }
+                });
+            },
+            move |_, cx| {
+                let _ = cancelled.update(cx, |input, cx| input.cancel_mouse_selection(cx));
+            },
+            cx,
+        ) {
+            return;
+        }
         let focused = self.focus.is_focused(window);
         let mut gesture = self.text_click;
         if !focused || event.modifiers.shift {
@@ -597,8 +625,17 @@ impl TextInput {
             origin: event.position,
             dragging: false,
         });
+        // A stationary press still needs a held witness in cached paint.
+        cx.notify();
         // The field owns this click; its browser parent owns non-text clicks.
         cx.stop_propagation();
+    }
+
+    fn cancel_mouse_selection(&mut self, cx: &mut Context<Self>) {
+        if self.mouse_selection.take().is_some() {
+            self.text_click.clear();
+            cx.notify();
+        }
     }
 
     fn mouse_move(
@@ -614,8 +651,7 @@ impl TextInput {
             return;
         };
         if event.pressed_button != Some(MouseButton::Left) || !self.focus.is_focused(window) {
-            self.mouse_selection = None;
-            self.text_click.clear();
+            self.cancel_mouse_selection(cx);
             return;
         }
         // A focus click stays Select All through ordinary pointer jitter. A
@@ -1124,25 +1160,12 @@ impl Element for TextInputElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let pointer = self.input.clone();
-        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
-            if phase.bubble() {
-                pointer.update(cx, |input, cx| input.mouse_move(event, window, cx));
-            }
-        });
-        let release = self.input.clone();
-        window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, window, cx| {
-            if phase.bubble() && event.button == MouseButton::Left {
-                let owned = release.update(cx, |input, _| {
-                    input.mouse_selection.take().is_some() && input.focus.is_focused(window)
-                });
-                if owned {
-                    cx.stop_propagation();
-                }
-            }
-        });
-        let focus = self.input.read(cx).focus.clone();
-        if self.input.read(cx).enabled {
+        let input = self.input.read(cx);
+        if input.mouse_selection.is_some() && input.enabled && input.focus.is_focused(window) {
+            window.renew_pointer_capture(self.input.entity_id(), CursorStyle::IBeam);
+        }
+        let focus = input.focus.clone();
+        if input.enabled {
             window.handle_input(
                 &focus,
                 ElementInputHandler::new(bounds, self.input.clone()),

@@ -74,6 +74,7 @@
 //! Dynamic/discardable or unknown factory flags retain historical metadata only;
 //! rows explicitly require a rescan. Stored inventory never establishes future
 //! cacheable class availability or authorizes processing admission.
+mod resolve;
 pub mod roots;
 pub mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -599,6 +600,69 @@ mod tests {
         class.class_version = Some("1".into());
         class.class_sdk_version = Some("3.8".into());
         value
+    }
+
+    #[test]
+    fn saved_effect_resolution_requires_exact_unique_cacheable_identity() {
+        let f = Fixture::new();
+        let first = f.module();
+        let mut catalog = Catalog::default();
+        catalog
+            .record(
+                first.clone(),
+                Ok((effect_report(first.clone(), "Fx"), "e".repeat(40))),
+            )
+            .unwrap();
+        let saved = serde_json::to_vec(&catalog).unwrap();
+        assert_eq!(
+            catalog
+                .resolve_effect([1; 16], [0xdd; 32], [0xcc; 32])
+                .unwrap()
+                .module,
+            first
+        );
+        for (cid, executable, info) in [
+            ([2; 16], [0xdd; 32], [0xcc; 32]),
+            ([1; 16], [0xee; 32], [0xcc; 32]),
+            ([1; 16], [0xdd; 32], [0xee; 32]),
+        ] {
+            assert!(catalog.resolve_effect(cid, executable, info).is_err());
+        }
+        assert_eq!(serde_json::to_vec(&catalog).unwrap(), saved);
+        let second = f.0.join("Second.vst3");
+        catalog
+            .record(
+                second.clone(),
+                Ok((effect_report(second, "Fx"), "e".repeat(40))),
+            )
+            .unwrap();
+        assert!(
+            catalog
+                .resolve_effect([1; 16], [0xdd; 32], [0xcc; 32])
+                .unwrap_err()
+                .contains("ambiguous")
+        );
+        catalog.entries.pop();
+        catalog.entries[0].failure = Some("last scan failed".into());
+        assert!(
+            catalog
+                .resolve_effect([1; 16], [0xdd; 32], [0xcc; 32])
+                .is_err()
+        );
+        catalog.entries[0].failure = None;
+        catalog.entries[0]
+            .last_good
+            .as_mut()
+            .unwrap()
+            .discovery
+            .as_mut()
+            .unwrap()
+            .factory_flags = 8;
+        assert!(
+            catalog
+                .resolve_effect([1; 16], [0xdd; 32], [0xcc; 32])
+                .is_err()
+        );
     }
 
     #[test]

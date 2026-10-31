@@ -60,7 +60,8 @@ impl VolumeSlice {
             .ramp
             .gain_at(end)
             .map_err(|_| MutableInstrumentRuntimeError::InvalidSourceSpan)?;
-        if !last.is_finite() || !(0.0..=4.0).contains(&last) {
+        if !last.is_finite() || !(0.0..=hex_lattice::MAX_INSTRUMENT_OCCURRENCE_GAIN).contains(&last)
+        {
             return Err(MutableInstrumentRuntimeError::InvalidSourceSpan);
         }
         Ok((
@@ -83,6 +84,7 @@ impl GainBatch {
 pub(super) fn gains_for_segment(
     pair: &NativeInstrumentRuntimePair,
     proofs: &mut [MutableOccurrence],
+    live: &[Option<super::live::LiveOccurrence>],
     events: &[NativeInstrumentEvent],
     start: u64,
     frames: usize,
@@ -108,14 +110,25 @@ pub(super) fn gains_for_segment(
         .map_err(map_runtime_error)?;
     let mut included = [false; MAX_MUTABLE_OCCURRENCE_PROOFS];
     let mut mark = |id| -> Result<(), MutableInstrumentRuntimeError> {
-        let index = proofs
-            .binary_search_by_key(&id, |p| p.id)
-            .map_err(|_| MutableInstrumentRuntimeError::InvalidSourceSpan)?;
-        included[index] = true;
+        match proofs.binary_search_by_key(&id, |p| p.id) {
+            Ok(index) => included[index] = true,
+            Err(_) if live.iter().flatten().any(|voice| voice.id == id) => {}
+            Err(_) => return Err(MutableInstrumentRuntimeError::InvalidSourceSpan),
+        }
         Ok(())
     };
     for id in &ids[..count] {
-        mark(*id)?;
+        // A zero-tail voice released at this segment's first sample has no
+        // output under its old gain. Its proof may already have retired to
+        // admit the simultaneous replacement; the explicit Off remains in
+        // the source event stream and must not require a fabricated proof.
+        let released_at_start = events.iter().any(|event| matches!(event,
+            NativeInstrumentEvent::NoteOff { frame_offset: 0, occurrence_id } if occurrence_id == id));
+        let has_proof = proofs.binary_search_by_key(id, |proof| proof.id).is_ok()
+            || live.iter().flatten().any(|voice| voice.id == *id);
+        if has_proof || !released_at_start || pair.max_release_tail_frames() != 0 {
+            mark(*id)?;
+        }
     }
     for event in events {
         if let NativeInstrumentEvent::NoteOn { occurrence_id, .. } = event {
@@ -212,6 +225,60 @@ impl MutableInstrumentTrackRuntime {
         resources: &dyn hex_lattice::DeviceResources,
         lookup: &mut VolumeLookup<'_>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.process_volume_scope(
+            Some(track),
+            performance_start,
+            source_start,
+            frames,
+            onsets,
+            suppressions,
+            events,
+            clock,
+            resources,
+            lookup,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_source_segment_with_volume(
+        &mut self,
+        performance_start: u64,
+        frames: &mut [[f32; 2]],
+        onsets: &mut MutableOnsetBuffer,
+        suppressions: &[MidiOccurrenceSuppression],
+        events: &mut Vec<NativeInstrumentEvent>,
+        clock: Option<&dyn NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
+        lookup: &mut VolumeLookup<'_>,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.process_volume_scope(
+            None,
+            performance_start,
+            performance_start,
+            frames,
+            onsets,
+            suppressions,
+            events,
+            clock,
+            resources,
+            lookup,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_volume_scope(
+        &mut self,
+        track: Option<TrackId>,
+        performance_start: u64,
+        source_start: u64,
+        frames: &mut [[f32; 2]],
+        onsets: &mut MutableOnsetBuffer,
+        suppressions: &[MidiOccurrenceSuppression],
+        events: &mut Vec<NativeInstrumentEvent>,
+        clock: Option<&dyn NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
+        lookup: &mut VolumeLookup<'_>,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
         let mut offset = 0;
         while offset < frames.len() {
             let performance = performance_start
@@ -225,7 +292,9 @@ impl MutableInstrumentTrackRuntime {
             // Split at an onset so every new voice's original ramp covers the
             // complete borrowed host segment, without extrapolated endpoints.
             for onset in onsets.iter() {
-                if onset.key.track != track || onset.source_start < source {
+                if track.is_some_and(|track| onset.key.track != track)
+                    || onset.source_start < source
+                {
                     continue;
                 }
                 let delta = onset.source_start - source;

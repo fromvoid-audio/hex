@@ -17,17 +17,37 @@ pub use native_sampler::{
 /// project editing access nor a registry or native owner.
 pub struct ResidentEffectPreparation<'a> {
     pub(in crate::service) project: &'a Project,
+    pub(in crate::service) context: hex_engine::AudioSourceContext,
+    pub(in crate::service) restoring_plugin_state: bool,
+    pub(in crate::service) preparing_edit: bool,
 }
-impl ResidentEffectPreparation<'_> {
+impl<'a> ResidentEffectPreparation<'a> {
+    pub fn context(&self) -> hex_engine::AudioSourceContext {
+        self.context
+    }
+    /// Only the canonical Editor's prepared transition enables native source
+    /// changes. Preview, seek and document-restoration queries cannot do so.
+    pub fn preparing_edit(&self) -> bool {
+        self.preparing_edit
+    }
+    /// Only the unchanged canonical fresh-output continuation sets this bit.
+    /// Ordinary edits and transient audition requests cannot consume its sources.
+    pub fn restoring_plugin_state(&self) -> bool {
+        self.restoring_plugin_state
+    }
     pub fn visit_plugin_effects(
         &self,
-        mut visit: impl FnMut(hex_engine::ProcessorChainOwner, u64) -> Result<(), String>,
+        mut visit: impl FnMut(
+            hex_engine::ProcessorChainOwner,
+            u64,
+            &'a NativeDeviceState,
+        ) -> Result<(), String>,
     ) -> Result<(), String> {
-        let mut chain = |owner, devices: &[hex_project::Device]| {
+        let mut chain = |owner, devices: &'a [hex_project::Device]| {
             for device in devices.iter().filter(|d| {
                 d.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
             }) {
-                visit(owner, device.id().value())?;
+                visit(owner, device.id().value(), device.state())?;
             }
             Ok(())
         };
@@ -69,6 +89,8 @@ pub struct ResidentFreshRuntimeFence {
     pub active_audio_revision: u64,
     pub route_generation: u64,
     pub admitted_command_ticket: u64,
+    /// Last output-fault epoch observed before the seek was prepared.
+    pub output_fault_epoch: u64,
 }
 /// Nonowning scalar witness for the actual installed graph's audition loop.
 /// No PCM, prepared graph, lease or callback runtime is borrowed or transferred.
@@ -119,6 +141,9 @@ pub enum ResidentPublicationPolicy {
     ArrangementEdit,
     /// Existing explicit fresh installation used after priority Stop restoration.
     InstallFreshRuntime,
+    /// Only the same-context fresh-output plugin continuation may replace its
+    /// admitted unpublished graph after actual native/endpoint readiness.
+    RestorePluginState,
     /// New/Open only: admit one exact pending owner before canonical generation replacement.
     /// Acceptance is OfflineRetained; existing teardown/open then queues it on the fresh output.
     /// This never converts ordinary queue pressure into offline acceptance.
@@ -156,6 +181,46 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 /// Construction must not start device work or hold an opened output: a failed
 /// thread spawn may drop the uninitialized adapter on the constructing thread.
 pub trait WorkerAudioSink: Send {
+    /// Capture every active hosted instance required by this exact canonical
+    /// save input. The existing worker retains request order while the adapter
+    /// drains each admitted native token to its matching terminal, including
+    /// failure/cancellation. No stop, canonical edit or source owner transfer.
+    /// An output without native hosting has no runtime states to capture and
+    /// preserves the project's opaque unavailable state. Native hosts must
+    /// override this method; failed capture must never fall back to empty data.
+    fn capture_plugin_states_for_save(
+        &mut self,
+        _input: PluginStateSaveInput<'_>,
+    ) -> Result<Vec<PluginStateCapture>, String> {
+        Ok(Vec::new())
+    }
+    /// Current ordered worker request's read-only shutdown/document-intent
+    /// cancellation. Hosts may poll it during bounded native preparation; it
+    /// never authorizes an edit or changes ordinary FIFO completion order.
+    fn begin_request(&mut self, _cancellation: RequestCancellation) {}
+    /// Exact prepared canonical transition terminal, including compilation or
+    /// publication refusal. Native custody remains with the sink's Root.
+    fn finish_resident_effect_edit(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _accepted: bool,
+    ) {
+    }
+
+    /// A fresh-output owner has restored the unchanged canonical plugin state
+    /// through its actual native/endpoint ACKs. The worker may now recompile
+    /// that exact context; this scalar transfers no source or graph custody.
+    fn plugin_state_restore_ready(&self) -> Option<hex_engine::AudioSourceContext> {
+        None
+    }
+    /// Exact same-context recompilation terminal. Before acceptance, the sink
+    /// retains its admitted unpublished document graph and original resources.
+    fn finish_plugin_state_restore(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _accepted: bool,
+    ) {
+    }
     /// Renew stopped native sources through their original output owner. None
     /// keeps the ordinary restore path; Some(false) retains the operation until
     /// its exact callback returns and fresh endpoint ACKs, Some(true) requests
@@ -414,8 +479,40 @@ pub trait WorkerAudioSink: Send {
     fn close(&mut self);
 }
 
+/// The existing FIFO payload, optionally annotated. The plain form is retained
+/// only for focused preexisting WorkerEvents unit fixtures; production always
+/// exercises the annotated form through Service's unique EventReceiver.
+enum DiagnosticEventSender {
+    Observed(SyncSender<super::diagnostics::ObservedEvent>),
+    #[cfg(test)]
+    Plain(SyncSender<Event>),
+}
+impl DiagnosticEventSender {
+    #[allow(clippy::result_large_err)] // Failed send returns the same complete Event.
+    fn try_send(
+        &self,
+        event: Event,
+        request: Option<super::diagnostics::DiagnosticRequest>,
+    ) -> Result<(), TrySendError<Event>> {
+        match self {
+            Self::Observed(sender) => sender
+                .try_send(super::diagnostics::ObservedEvent { event, request })
+                .map_err(|error| match error {
+                    TrySendError::Full(event) => TrySendError::Full(event.event),
+                    TrySendError::Disconnected(event) => TrySendError::Disconnected(event.event),
+                }),
+            #[cfg(test)]
+            Self::Plain(sender) => sender.try_send(event),
+        }
+    }
+}
 pub(super) struct WorkerEvents {
-    sender: SyncSender<Event>,
+    sender: DiagnosticEventSender,
+    diagnostics: Arc<super::diagnostics::Hooks>,
+    diagnostic: Option<super::diagnostics::DiagnosticRequest>,
+    // Observed-request timing only; absent without an installed observer.
+    diagnostic_started: Option<std::time::Instant>,
+    section_phases: Option<super::diagnostics::SectionPhases>,
     shutdown: Arc<AtomicBool>,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
@@ -425,19 +522,94 @@ pub(super) struct WorkerEvents {
     startup_error: Option<String>,
 }
 impl WorkerEvents {
+    pub(super) fn legacy_reader_limit(&self) -> usize {
+        self.diagnostics.legacy_reader_limit()
+    }
+    pub(super) fn begin_diagnostics(
+        &mut self,
+        queued: &QueuedRequest,
+        generation: u64,
+        revision: u64,
+    ) {
+        let request = queued.diagnostic.or_else(|| {
+            self.diagnostics
+                .begin_at_worker(&queued.request, queued.diagnostic_origin)
+        });
+        self.diagnostic = request;
+        self.diagnostic_started = request.map(|_| std::time::Instant::now());
+        self.section_phases = None;
+        self.diagnostics.emit(
+            request,
+            super::diagnostics::DiagnosticStage::WorkerBegin {
+                generation,
+                revision,
+            },
+            None,
+        );
+    }
+    /// Attach section phases to this request's OutcomeReady observation.
+    pub(super) fn record_section_phases(&mut self, phases: super::diagnostics::SectionPhases) {
+        if self.diagnostic.is_some() {
+            self.section_phases = Some(phases);
+        }
+    }
+    pub(super) fn begin_request(
+        &mut self,
+        document_intent: &Arc<std::sync::atomic::AtomicU64>,
+        expected_intent: u64,
+    ) {
+        if let Some(audio) = self.audio.as_mut() {
+            audio.begin_request(RequestCancellation::new(
+                Arc::clone(&self.shutdown),
+                Arc::clone(document_intent),
+                expected_intent,
+            ));
+        }
+    }
     pub(super) fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
         self.audio
             .as_ref()
             .and_then(|audio| audio.ordinary_source_reservation())
     }
 
+    #[cfg(test)]
     pub(super) fn new(
         sender: SyncSender<Event>,
         shutdown: Arc<AtomicBool>,
         audio: Option<Box<dyn WorkerAudioSink>>,
     ) -> Self {
+        Self::with_sender(
+            DiagnosticEventSender::Plain(sender),
+            shutdown,
+            audio,
+            Arc::new(super::diagnostics::Hooks::default()),
+        )
+    }
+    pub(super) fn new_with_diagnostics(
+        sender: SyncSender<super::diagnostics::ObservedEvent>,
+        shutdown: Arc<AtomicBool>,
+        audio: Option<Box<dyn WorkerAudioSink>>,
+        diagnostics: Arc<super::diagnostics::Hooks>,
+    ) -> Self {
+        Self::with_sender(
+            DiagnosticEventSender::Observed(sender),
+            shutdown,
+            audio,
+            diagnostics,
+        )
+    }
+    fn with_sender(
+        sender: DiagnosticEventSender,
+        shutdown: Arc<AtomicBool>,
+        audio: Option<Box<dyn WorkerAudioSink>>,
+        diagnostics: Arc<super::diagnostics::Hooks>,
+    ) -> Self {
         Self {
             sender,
+            diagnostics,
+            diagnostic: None,
+            diagnostic_started: None,
+            section_phases: None,
             shutdown,
             audio,
             last_context: None,
@@ -560,8 +732,19 @@ impl WorkerEvents {
                     })
             })
             .map(|active| (active.key, active.sequence));
+        let diagnostic = self.diagnostic.take();
+        let worker = self.diagnostic_started.take().map(|start| start.elapsed());
+        let section = self.section_phases.take();
+        self.diagnostics
+            .outcome(diagnostic, &event, false, worker, section);
+        let mut reported_backpressure = false;
         loop {
             if self.shutdown.load(Ordering::Acquire) {
+                self.diagnostics.emit(
+                    diagnostic,
+                    super::diagnostics::DiagnosticStage::ShutdownAbandoned,
+                    None,
+                );
                 return false;
             }
             self.poll();
@@ -570,25 +753,51 @@ impl WorkerEvents {
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
             );
-            match self.sender.try_send(event) {
-                Ok(()) => return true,
-                Err(TrySendError::Disconnected(_)) => return false,
-                Err(TrySendError::Full(returned)) => event = returned,
+            match self.sender.try_send(event, diagnostic) {
+                Ok(()) => {
+                    self.diagnostics.emit(
+                        diagnostic,
+                        super::diagnostics::DiagnosticStage::OutcomeQueued,
+                        None,
+                    );
+                    return true;
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    self.diagnostics.emit(
+                        diagnostic,
+                        super::diagnostics::DiagnosticStage::ConsumerClosed,
+                        None,
+                    );
+                    return false;
+                }
+                Err(TrySendError::Full(returned)) => {
+                    event = returned;
+                    if !reported_backpressure {
+                        self.diagnostics.emit(
+                            diagnostic,
+                            super::diagnostics::DiagnosticStage::OutcomeBackpressure,
+                            None,
+                        );
+                        reported_backpressure = true;
+                    }
+                }
             }
             // Control-side event backpressure retains this exact event. It does
             // not strand native returns or require dropping a canonical ACK.
             thread::sleep(Duration::from_millis(5));
         }
     }
+    #[allow(clippy::too_many_arguments)] // Existing FIFO/control wakeups plus accepted source-intent cancellation.
     pub(super) fn next_request_with_control_poll(
         &mut self,
-        requests: &Receiver<Request>,
+        requests: &Receiver<QueuedRequest>,
+        document_intent: &Arc<std::sync::atomic::AtomicU64>,
         bounded: bool,
         plugin_effect: Option<&PluginEffectInsertion>,
         stopped_restore: Option<hex_engine::AudioSourceContext>,
         context: hex_engine::AudioSourceContext,
         mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
-    ) -> Option<Request> {
+    ) -> Option<QueuedRequest> {
         control_poll(
             self.audio
                 .as_mut()
@@ -625,7 +834,20 @@ impl WorkerEvents {
                 .as_mut()
                 .is_some_and(|a| a.sampler_edit_ready().is_some())
             {
-                return Some(Request::ContinueSamplerEdit);
+                return Some(QueuedRequest::continuation(
+                    Request::ContinueSamplerEdit,
+                    document_intent,
+                ));
+            }
+            if self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.plugin_state_restore_ready().is_some())
+            {
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginStateRestore,
+                    document_intent,
+                ));
             }
             if plugin_effect.is_some_and(|insertion| {
                 insertion.context != context
@@ -635,7 +857,10 @@ impl WorkerEvents {
                         .as_ref()
                         .is_some_and(|audio| audio.plugin_effect_ready())
             }) {
-                return Some(Request::ContinuePluginEffect);
+                return Some(QueuedRequest::continuation(
+                    Request::ContinuePluginEffect,
+                    document_intent,
+                ));
             }
             if stopped_restore.is_some_and(|captured| {
                 captured != context
@@ -644,7 +869,10 @@ impl WorkerEvents {
                         .as_ref()
                         .is_some_and(|audio| audio.stopped_playback_restore_ready())
             }) {
-                return Some(Request::ContinueStoppedPlaybackRestore);
+                return Some(QueuedRequest::continuation(
+                    Request::ContinueStoppedPlaybackRestore,
+                    document_intent,
+                ));
             }
             match requests.recv_timeout(Duration::from_millis(5)) {
                 Ok(request) => {
@@ -783,6 +1011,14 @@ mod tests {
         )
         .unwrap();
         let initial = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "track".into(),
+            }))
+            .unwrap();
+        let edited = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(edited.error.is_none());
+        assert!(edited.state.can_undo);
         for (generation, id, valid) in [(1, 1, false), (0, 0, false), (0, 2, true)] {
             service
                 .submit(Request::RestartAudio {
@@ -791,7 +1027,10 @@ mod tests {
                 })
                 .unwrap();
             let event = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
-            assert_eq!(event.state.revision, initial.state.revision);
+            assert_eq!(event.state.revision, edited.state.revision);
+            assert_eq!(event.state.project, edited.state.project);
+            assert_eq!(event.state.can_undo, edited.state.can_undo);
+            assert_eq!(event.state.can_redo, edited.state.can_redo);
             assert_eq!(
                 event
                     .state
@@ -815,6 +1054,15 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].0, rows[0].1), (0, 2));
         assert_ne!(rows[0].2, thread::current().id());
+        drop(rows);
+        service.submit(Request::Undo).unwrap();
+        let undone = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(undone.error.is_none());
+        assert!(undone.state.project.tracks().is_empty());
+        service.submit(Request::Redo).unwrap();
+        let redone = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(redone.error.is_none());
+        assert_eq!(redone.state.project, edited.state.project);
     }
     #[test]
     fn failed_device_initialization_keeps_offline_canonical_edits_available() {

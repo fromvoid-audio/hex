@@ -324,7 +324,7 @@ fn numeric_kind_pages_navigate_without_mixing_configurations(cx: &mut TestAppCon
     for (name, count) in [
         ("knob", 7),
         ("horizontal slider", 5),
-        ("vertical slider", 2),
+        ("vertical slider", 1),
     ] {
         let page_index = view.read_with(cx, |s, _| {
             s.pages.iter().position(|page| page.name == name).unwrap()

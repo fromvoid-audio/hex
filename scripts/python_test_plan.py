@@ -10,9 +10,16 @@ from pathlib import Path
 
 REVIEWED_MODULES = frozenset({
     "test_changelog", "test_ci_plan", "test_device_catalog", "test_device_layout",
-    "test_eq8_response_compare", "test_gpui_patch", "test_hex_test_build",
+    "test_eq8_response_compare", "test_gpui_patch", "test_dependency_patches",
+    "test_hex_test_build",
     "test_launch", "test_launch_restart", "test_launch_restart_compile",
+    # Update entry and process-observer fixtures exercise standalone tooling;
+    # updater script and test edits still take comprehensive discovery.
+    "test_hex_update_entry", "test_pending_update_exit",
     "test_local_ci", "test_pcm_build_gate", "test_python_test_plan",
+    # Read-only target-volume probes depend on CI tooling and mocked OS metadata,
+    # not app Rust; changes to the helper/tests retain comprehensive discovery.
+    "test_ci_target_storage",
     # Release-ledger fixtures use only their tool and changelog module; edits
     # to those scripts still take the comprehensive unknown/tooling path.
     "test_release_notes",

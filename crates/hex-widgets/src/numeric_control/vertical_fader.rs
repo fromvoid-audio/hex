@@ -8,6 +8,8 @@ use gpui::{PathBuilder, point};
 impl NumericControl {
     pub(super) fn vertical_fader(&self, value: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let style = self.style;
+        let meter = self.appearance == NumericControlAppearance::MeterFader;
+        let well_width = if meter { 28.0 } else { 10.0 };
         let enabled = self.availability.painted_enabled();
         let rail_id = format!("{}-slider", self.id);
         let handle_id = format!("{}-slider-thumb", self.id);
@@ -15,7 +17,7 @@ impl NumericControl {
             .flex()
             .flex_1()
             .min_h(px(16.0))
-            .w(px(28.0))
+            .w(px(well_width + 18.0))
             // Reserve half the handle height at both ends of its travel.
             .py(px(4.0))
             .on_mouse_down(
@@ -23,7 +25,7 @@ impl NumericControl {
                 cx.listener(|control, event, window, cx| {
                     control.text_mouse = None;
                     control.text_click.clear();
-                    control.begin_press(PressTarget::Fader, event, cx);
+                    control.begin_press(PressTarget::Fader, event, window, cx);
                     control.focus.focus(window);
                 }),
             )
@@ -31,11 +33,37 @@ impl NumericControl {
                 div()
                     .debug_selector(move || rail_id.clone())
                     .relative()
-                    .w(px(10.0))
+                    .w(px(well_width))
                     .h_full()
                     .bg(rgb(style.rail))
                     .border_1()
                     .border_color(rgb(style.border))
+                    .when(meter, |rail| {
+                        let amplitude = self.meter_readout.level;
+                        let fraction = if amplitude.is_finite() && amplitude > 0.0 {
+                            {
+                                let (min, max) = self.spec.bounds();
+                                ((f64::from(20.0 * amplitude.log10()) - min) / (max - min))
+                                    .clamp(0.0, 1.0) as f32
+                            }
+                        } else {
+                            0.0
+                        };
+                        let selector = format!("{}-input-fill", self.id);
+                        rail.child(
+                            div()
+                                .debug_selector(move || selector.clone())
+                                .absolute()
+                                .bottom_0()
+                                .w_full()
+                                .h(relative(fraction))
+                                .bg(rgb(if amplitude > 1.0 {
+                                    self.meter_readout.clipping
+                                } else {
+                                    self.meter_readout.signal
+                                })),
+                        )
+                    })
                     .when(self.spec.scale() == crate::NumericScale::Bipolar, |rail| {
                         rail.child(
                             div()
@@ -50,7 +78,7 @@ impl NumericControl {
                         div()
                             .debug_selector(move || handle_id.clone())
                             .absolute()
-                            .left(px(12.0))
+                            .left(px(well_width + 2.0))
                             .bottom(relative(value))
                             .mb(px(-4.0))
                             .w(px(9.0))
@@ -67,7 +95,11 @@ impl NumericControl {
                                         if let Ok(path) = triangle.build() {
                                             window.paint_path(
                                                 path,
-                                                rgb(if enabled { style.text } else { style.muted }),
+                                                rgb(if enabled {
+                                                    if meter { style.accent } else { style.text }
+                                                } else {
+                                                    style.muted
+                                                }),
                                             );
                                         }
                                     },

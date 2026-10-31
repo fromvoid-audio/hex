@@ -6,10 +6,7 @@ use crate::editor::{
 };
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, rgb};
 use hex_project::{BeatTime, Command};
-use std::{
-    sync::atomic::Ordering::Acquire,
-    time::{Duration, Instant},
-};
+use std::{sync::atomic::Ordering::Acquire, time::Instant};
 
 fn assert_playhead(visual: &mut VisualTestContext, fraction: f32) {
     let bounds = visual.debug_bounds("midi-note-roll").unwrap();
@@ -127,7 +124,7 @@ fn rendered_ruler_case(cx: &mut TestAppContext, stateful: bool) {
             "admission is not callback acceptance"
         );
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
         visual.run_until_parked();
@@ -163,6 +160,15 @@ fn rendered_ruler_case(cx: &mut TestAppContext, stateful: bool) {
         );
         assert_eq!(view.midi_selection.ids(), before.3.as_slice());
     });
+    editor.update(cx, |view, cx| {
+        view.selected_clip = None;
+        view.selected_track = None;
+        assert!(view.detail_clip_id().is_none());
+        assert!(view.midi_playhead_source_beat().is_none());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("midi-note-roll").is_none());
     editor.update(cx, |view, _| {
         view.audio.take();
     });
@@ -245,7 +251,7 @@ fn rendered_console_cue_requires_active_clip_and_moves_only_accepted_source_curs
         );
         revision
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
         visual.run_until_parked();
@@ -262,7 +268,7 @@ fn rendered_console_cue_requires_active_clip_and_moves_only_accepted_source_curs
             "request cannot move accepted cursor"
         )
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
         visual.run_until_parked();

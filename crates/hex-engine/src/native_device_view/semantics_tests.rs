@@ -16,14 +16,29 @@ fn cached_view_retains_declarations_and_preserves_undeclared_legacy_controls() {
     );
     assert_eq!(
         rate.semantics.unwrap().automation,
-        ParameterAutomation::Unsupported
+        ParameterAutomation::DeviceArrangementEnvelope
     );
     assert!(rate.enabled);
     let state = hex_devices::utility::UTILITY_DEFINITION
         .default_state()
         .unwrap();
     let view = native_device_view(&state).unwrap();
-    assert!(view.parameters.iter().all(|p| p.semantics.is_none()));
+    assert!(view.parameters.iter().all(|parameter| {
+        parameter.semantics.is_some_and(|semantics| {
+            semantics.access == ParameterAccess::ReadWrite
+                && semantics.automation == ParameterAutomation::DeviceArrangementEnvelope
+        })
+    }));
+    let legacy = hex_devices::compressor::COMPRESSOR_DEFINITION
+        .default_state()
+        .unwrap();
+    assert!(
+        native_device_view(&legacy)
+            .unwrap()
+            .parameters
+            .iter()
+            .all(|parameter| parameter.semantics.is_none())
+    );
 }
 #[test]
 fn dynamic_cached_semantics_never_enable_an_ineffective_eq_control() {

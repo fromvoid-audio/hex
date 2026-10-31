@@ -33,7 +33,7 @@ fn quantize(level: f32) -> [i16; 2] {
 }
 #[test]
 fn loaded_resident_service_exports_exact_default_range_captures_and_stems_without_monitor_input() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for frame_limit in [32_768, 8192] {
         loaded_resident_export_case(frame_limit);
     }

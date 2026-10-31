@@ -2273,3 +2273,57 @@ fn clip_conversion_worker_refuses_audio_and_stale_selection_without_publication(
     assert_eq!(fs::read(&path).unwrap(), bytes);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn selected_solo_worker_publishes_the_complete_group_and_undoes_once() {
+    let directory = TempDir::new();
+    let service = Service::new(48_000, 16, 64).unwrap();
+    let _ = next_event(&service);
+    let mut tracks = Vec::new();
+    for (name, sample) in [("group-first.wav", 8192), ("group-last.wav", 16384)] {
+        let path = directory.path().join(name);
+        fs::write(&path, wav_mono_pcm16(&[sample; 2])).unwrap();
+        service.submit(Request::Import(path)).unwrap();
+        let event = next_event(&service);
+        tracks.push(event.state.project.tracks().last().unwrap().id());
+    }
+    service
+        .submit(Request::Edit(Command::ToggleSoloTracks {
+            tracks: hex_project::TrackSelectionIds::new(&tracks).unwrap(),
+            exclusive: true,
+        }))
+        .unwrap();
+    let event = next_event(&service);
+    assert!(event.error.is_none(), "{:?}", event.error);
+    assert!(
+        event
+            .state
+            .project
+            .tracks()
+            .iter()
+            .all(|track| track.soloed())
+    );
+    let mut graph = event.playback.unwrap();
+    graph.apply(PlaybackCommand::Play);
+    let mut output = [[0.0; 2]; 2];
+    graph.render(&mut output).unwrap();
+    assert_eq!(output, [[0.75; 2]; 2]);
+    service.submit(Request::Undo).unwrap();
+    assert!(
+        next_event(&service)
+            .state
+            .project
+            .tracks()
+            .iter()
+            .all(|track| !track.soloed())
+    );
+    service.submit(Request::Redo).unwrap();
+    assert!(
+        next_event(&service)
+            .state
+            .project
+            .tracks()
+            .iter()
+            .all(|track| track.soloed())
+    );
+}

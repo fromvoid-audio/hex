@@ -127,8 +127,9 @@ fn wheel_accumulates_precise_motion_and_creation_hits_after_zoom(cx: &mut TestAp
     visual.run_until_parked();
     let viewport = editor.read_with(&visual, |v, _| (v.piano_beat_start, v.piano_beat_span));
     double_down(&mut visual, at(0.25), Modifiers::default());
-    visual.simulate_mouse_move(at(0.5), Some(MouseButton::Left), Modifiers::default());
-    visual.simulate_mouse_up(at(0.5), MouseButton::Left, Modifiers::default());
+    // Held cmd snaps the new note's end; it is free by default.
+    visual.simulate_mouse_move(at(0.5), Some(MouseButton::Left), Modifiers::command());
+    visual.simulate_mouse_up(at(0.5), MouseButton::Left, Modifiers::command());
     pump(&editor, &mut visual);
     let (note_center, after) = editor.read_with(&visual, |v, _| {
         assert_eq!((v.piano_beat_start, v.piano_beat_span), viewport);
@@ -232,7 +233,11 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
     // Release outside the gutter retires capture, including later pointer moves.
-    visual.simulate_mouse_up(roll.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(
+        point(roll.center().x, keys.center().y - px(120.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
     visual.simulate_mouse_move(keys.center(), None, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| assert!(v.piano_pitch_zoom.is_none()));
@@ -480,7 +485,7 @@ fn option_wheel_zooms_pitch_under_pointer_and_preserves_time_and_history(cx: &mu
 }
 
 #[gpui::test]
-fn option_wheel_accumulates_independently_clamps_and_cancels_stale_marquee(
+fn option_wheel_accumulates_independently_clamps_and_respects_held_marquee(
     cx: &mut TestAppContext,
 ) {
     use gpui::{Modifiers, MouseButton};
@@ -578,9 +583,21 @@ fn option_wheel_accumulates_independently_clamps_and_cancels_stale_marquee(
     );
     editor.read_with(&visual, |v, _| assert!(v.midi_marquee.is_some()));
     wheel(&mut visual, -80.0, true);
-    editor.read_with(&visual, |v, _| assert!(v.midi_marquee.is_none()));
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.midi_marquee.is_some(),
+            "wheel cannot cancel held selection"
+        );
+        assert_eq!(v.piano_pitch_rows, 1, "wheel cannot zoom during capture");
+    });
+    visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(roll.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
+    wheel(&mut visual, -80.0, true);
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_marquee.is_none());
+        assert!(v.piano_pitch_rows > 1, "fresh wheel works after release");
+    });
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before.2)
     });
@@ -643,3 +660,6 @@ fn option_wheel_pitch_geometry_creates_the_displayed_note_through_worker_and_und
         )
     });
 }
+
+#[path = "midi_pitch_capture_ui_tests.rs"]
+mod capture_tests;

@@ -118,26 +118,20 @@ impl SpectrumCore {
             context: _,
             kernel,
             kernel_rate: _,
-            rolling,
-            ordered,
-            input_rolling,
-            input_ordered,
-            write_index: _,
-            filled: _,
+            output_window,
+            input_window,
             last_sequence: _,
             latest_stamp: _,
             captured_at: _,
             last_analysis_at: _,
-            output_envelope: _,
-            input_envelope: _,
+            output_ballistics: _,
+            input_ballistics: _,
             envelope_at: _,
             dirty_since_analysis: _,
         } = self;
         std::mem::size_of_val(self)
-            .checked_add(std::mem::size_of_val(rolling.as_ref()))?
-            .checked_add(std::mem::size_of_val(ordered.as_ref()))?
-            .checked_add(std::mem::size_of_val(input_rolling.as_ref()))?
-            .checked_add(std::mem::size_of_val(input_ordered.as_ref()))?
+            .checked_add(output_window.heap_data_bytes()?)?
+            .checked_add(input_window.heap_data_bytes()?)?
             .checked_add(kernel.as_ref()?.heap_data_bytes()?)
     }
 }
@@ -151,7 +145,7 @@ pub(crate) fn spawn_native_spectrum_worker(
 pub(crate) fn constructor_storage_quote() -> Option<usize> {
     use crate::native_callback_owner::ChannelStorage;
     let core = std::mem::size_of::<SpectrumCore>()
-        .checked_add(4usize.checked_mul(std::mem::size_of::<[hex_engine::Frame; FFT_SIZE]>())?)?
+        .checked_add(2usize.checked_mul(SpectrumWindow::heap_storage_quote()?)?)?
         .checked_add(SpectrumKernel::heap_storage_quote()?)?;
     core.checked_mul(MAX_SPECTRUM_TARGETS)?
         .checked_add(std::mem::size_of::<Box<[SpectrumCore]>>())?
@@ -169,6 +163,7 @@ pub(crate) fn constructor_storage_quote() -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spectrum::{BASS_FFT_SIZE, FFT_SIZE};
     use std::sync::atomic::AtomicUsize;
     fn stamp(rate: u32) -> SpectrumStamp {
         SpectrumStamp {
@@ -191,11 +186,10 @@ mod tests {
             ),
             (6, 12)
         );
-        // Four stereo signal-window boxes plus the kernel's window, real,
-        // imaginary and one-sided power boxes, excluding headers and queue.
-        let worker_payload = 4 * FFT_SIZE * std::mem::size_of::<[f32; 2]>()
-            + 3 * FFT_SIZE * std::mem::size_of::<f64>()
-            + (FFT_SIZE / 2 + 1) * std::mem::size_of::<f64>();
+        // Two signal windows (full-rate and bass rings) plus both stages'
+        // window, real and imaginary boxes, excluding headers and queue.
+        let worker_payload = 2 * (FFT_SIZE + BASS_FFT_SIZE) * std::mem::size_of::<[f32; 2]>()
+            + 3 * (FFT_SIZE + BASS_FFT_SIZE) * std::mem::size_of::<f64>();
         assert!(receipt.storage.data_bytes > worker_payload * MAX_SPECTRUM_TARGETS);
         assert_eq!(
             Some(receipt.storage.data_bytes),

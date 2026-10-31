@@ -99,10 +99,13 @@ def main():
         "src/view.rs",
         "src/scene.rs",
         "src/bounds_tree.rs",
+        "src/element.rs",
         "src/taffy.rs",
         "src/gpui.rs",
         "src/elements/div.rs",
         "src/view.rs",
+        "src/text_system.rs",
+        "src/text_system/line.rs",
     }
     if set(manifest["patched_files"]) != expected_changes:
         errors.append("unexpected GPUI patch scope")

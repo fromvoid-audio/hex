@@ -15,6 +15,18 @@ pub enum TrackDeviceSlot {
 /// Validated edits on the control plane. One successful command is one undo step.
 #[derive(Debug, Clone)]
 pub enum Command {
+    /// Copy Arrangement placements while retaining explicit shared content.
+    DuplicateAliasClips(Vec<ClipId>),
+    /// Detach selected members without copying decoded media.
+    MakeClipsUnique(Vec<ClipId>),
+    /// Copy current local clip settings to its group, preserving every placement.
+    ApplyClipSettingsToAliases(ClipId),
+    /// Copy a Console cell to the next empty cell, adding a scene if necessary.
+    DuplicateSessionCell {
+        track: TrackId,
+        scene: crate::SceneId,
+        alias: bool,
+    },
     /// Register an independent, currently unassigned native source chain.
     /// Exactly one device is designated as the instrument; other devices are
     /// source-owned processing, never copied from a track implicitly.
@@ -23,11 +35,23 @@ pub enum Command {
         devices: Vec<hex_lattice_contract::NativeDeviceState>,
         instrument_index: usize,
     },
+    /// Link this track to a singleton source, or unlink without deleting it.
+    /// Additional linked tracks share the same immutable instrument instance.
+    BindTrackSource {
+        track: TrackId,
+        source: Option<crate::SourceId>,
+    },
+    /// Select the sole track that emits a source's audio, or leave it unselected.
+    /// A selected track must already be linked to this source.
+    SetNativeSourceReceiver {
+        source: crate::SourceId,
+        track: Option<TrackId>,
+    },
     RenameNativeSource {
         source: crate::SourceId,
         name: String,
     },
-    /// Explicit authored-state deletion. Track bindings are not admitted yet.
+    /// Explicit authored-state deletion. The source must be unlinked from every track.
     RemoveNativeSource(crate::SourceId),
     /// Create one effects-only group around normalized sibling subtrees.
     GroupTracks {
@@ -47,9 +71,12 @@ pub enum Command {
         without_clips: bool,
     },
     /// Adopt all prepared track bounces as one reversible edit. No file I/O.
+    /// `adoption` deactivates the bounced clip/range sources in that same
+    /// edit with the contextual activation commands; new-track adoption only.
     CommitArrangementBounce {
         target: crate::BounceTarget,
         in_place: bool,
+        adoption: crate::BounceAdoption,
         files: Vec<crate::BounceFile>,
     },
     /// Set one authored clip's activation across Arrangement or Session.
@@ -133,6 +160,14 @@ pub enum Command {
     DeleteArrangementSection(crate::SectionId),
     /// Insert a song-wide copy immediately after the source, allocating new IDs.
     DuplicateArrangementSection(crate::SectionId),
+    /// Copy a section's complete song interval before/after a stable target.
+    /// The source remains; one private candidate owns both copy and insertion,
+    /// fresh identities, publication and Undo/Redo. The target may be the source.
+    DuplicateArrangementSectionAt {
+        section: crate::SectionId,
+        target: crate::SectionId,
+        after: bool,
+    },
     /// Split marker metadata at a strict interior beat, preserving all music.
     /// The left marker retains its ID; the right gets a fresh ID and the same
     /// name/color. One validated command owns both adjoining positive ranges.
@@ -187,6 +222,14 @@ pub enum Command {
         before_track: Option<TrackId>,
         slot: TrackDeviceSlot,
         state: hex_lattice_contract::NativeDeviceState,
+    },
+    /// Like `InsertTrackWithDevice`, with an automatic name: `device_name` for an
+    /// instrument slot, otherwise the model-owned default name.
+    InsertDefaultTrackWithDevice {
+        before_track: Option<TrackId>,
+        slot: TrackDeviceSlot,
+        state: hex_lattice_contract::NativeDeviceState,
+        device_name: String,
     },
     /// Atomically splice a bounded touch span, preserving the underlying base curve.
     SpliceGainTouch {
@@ -261,6 +304,15 @@ pub enum Command {
         track: TrackId,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Browser instrument load: fill the empty slot (`replacing: None`) or replace
+    /// the captured current instrument, and rename an automatic-named track to
+    /// `device_name` in the same edit. See `track_name` for the naming policy.
+    LoadInstrument {
+        track: TrackId,
+        replacing: Option<DeviceId>,
+        state: hex_lattice_contract::NativeDeviceState,
+        device_name: String,
+    },
     RemoveInstrument {
         track: TrackId,
     },
@@ -279,6 +331,32 @@ pub enum Command {
         track: TrackId,
         before: Option<DeviceId>,
     },
+    /// Replace one canonical Arrangement envelope; empty points clear it.
+    ReplaceDeviceAutomationTarget {
+        device: DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+        points: Vec<crate::AutomationPoint>,
+    },
+    /// Provider-parameter convenience; host trims use the typed target command.
+    ReplaceDeviceAutomation {
+        device: DeviceId,
+        parameter: hex_lattice_contract::ParameterId,
+        points: Vec<crate::AutomationPoint>,
+    },
+    /// One explicit manual edit selects base only for touched retained lanes.
+    /// Ordinary state/preset/comparison replacements retain their read selection.
+    ManualDeviceEdit {
+        device: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+        targets: Vec<hex_lattice_contract::DeviceAutomationTarget>,
+    },
+    SetDeviceAutomationReadSelection {
+        device: DeviceId,
+        target: hex_lattice_contract::DeviceAutomationTarget,
+        selection: crate::AutomationReadSelection,
+    },
+    /// Resume every retained device envelope in one canonical history edit.
+    ReenableDeviceAutomation,
     ReplaceDeviceState {
         device: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
@@ -349,6 +427,17 @@ pub enum Command {
         track: TrackId,
         frame: u64,
     },
+    /// Remove one validated chain selection as one history edit.
+    RemoveDevices {
+        owner: crate::DeviceChainOwner,
+        selected: crate::DeviceSelectionIds,
+    },
+    /// Insert captured devices with fresh identities and complete authored state.
+    PasteDevices {
+        clipboard: std::sync::Arc<crate::DeviceClipboard>,
+        owner: crate::DeviceChainOwner,
+        before: Option<DeviceId>,
+    },
     /// Insert complete captured tracks in canonical order with fresh identities.
     PasteTracks {
         clipboard: std::sync::Arc<crate::TrackClipboard>,
@@ -395,6 +484,11 @@ pub enum Command {
     /// Insert an empty hybrid track before a stable anchor, or append with None.
     InsertTrack {
         name: String,
+        before_track: Option<TrackId>,
+    },
+    /// Insert an ordinary track named by the model (`track N`); the name stays
+    /// automatic until the user renames it.
+    InsertDefaultTrack {
         before_track: Option<TrackId>,
     },
     /// Atomically create one track, its source asset and a full-length one-shot clip.
@@ -516,6 +610,13 @@ pub enum Command {
         track: TrackId,
         exclusive: bool,
     },
+    /// Toggle one frozen selection atomically. Mixed states enable every member;
+    /// all-soloed members disable together. Exclusive enabling clears outsiders,
+    /// while disabling preserves them. Stale membership refuses before mutation.
+    ToggleSoloTracks {
+        tracks: crate::TrackSelectionIds,
+        exclusive: bool,
+    },
     SetLoopRegion {
         start: u64,
         end: u64,
@@ -600,6 +701,11 @@ pub enum Command {
         tracks: Vec<TrackId>,
         frame: u64,
     },
+    /// Split both boundaries of a finite Arrangement range as one edit. Existing
+    /// boundaries and gaps are no-ops; authored material and global time stay put.
+    SplitTimeRange {
+        range: crate::TimeRange,
+    },
     /// Trim an absolute timeline edge, clamping to the nearest valid clip region.
     TrimClipEdge {
         clip: ClipId,
@@ -661,6 +767,18 @@ pub enum Command {
         source_offset: u64,
         source_length: u64,
     },
+    /// Fit an edge fade or a two-voice source-handle crossfade to a validated
+    /// Arrangement selection. Source content never translates; failures are atomic.
+    CreateArrangementFades {
+        range: crate::TimeRange,
+    },
+    /// Fit one source-event edge fade. Positions use the retained root's declared
+    /// frame/beat clock; Console source windows and event joins explicitly refuse.
+    CreateAudioEventFades {
+        clip: ClipId,
+        start: u64,
+        end: u64,
+    },
     /// Set linear fade lengths and reanchor them to the clip's current duration.
     SetClipFades {
         clip: ClipId,
@@ -697,7 +815,7 @@ pub enum Command {
         edge: TrimEdge,
         frame: u64,
     },
-    /// Recompute a clip-local loop operation from the current authored source.
+    /// Recompute a clip-local loop or playback-start operation from current source.
     /// Outer growth carves both clip kinds; cycle edits retain outer occupancy.
     ResizeAudioClipView {
         clip: ClipId,
@@ -744,6 +862,9 @@ pub enum Command {
         amount: f32,
     },
     ToggleMute(TrackId),
+    /// Mute every explicit member if any is unmuted; otherwise unmute all.
+    /// Reject stale membership before mutation; one command is one undo step.
+    ToggleTracksMute(crate::TrackSelectionIds),
     AddMidiTrack {
         name: String,
     },
@@ -816,6 +937,11 @@ pub enum Command {
         track: TrackId,
         from_scene: crate::SceneId,
         to_scene: crate::SceneId,
+    },
+    /// Change a Console audio cycle without replacing its retained PCM.
+    SetSessionAudioClipLoop {
+        clip: ClipId,
+        loop_range: Option<crate::SessionAudioLoop>,
     },
     SetSessionAudioClipSource {
         clip: ClipId,
@@ -894,6 +1020,11 @@ pub enum Command {
         clip: ClipId,
         volume: crate::MidiClipVolume,
     },
+    /// Replace the clip-local scalar independently of its source-beat curve.
+    SetMidiClipGain {
+        clip: ClipId,
+        gain: crate::ClipGain,
+    },
     /// Author one note using the same source/pitch overwrite rule as `AddMidiNotes`.
     AddMidiNote {
         clip: ClipId,
@@ -955,6 +1086,12 @@ pub enum Command {
         clip: ClipId,
         notes: Vec<MidiNoteUpdate>,
     },
+    /// Atomically enable or disable existing notes without changing their geometry.
+    SetMidiNotesActive {
+        clip: ClipId,
+        notes: Vec<NoteId>,
+        active: bool,
+    },
     RemoveMidiNote(NoteId),
     /// Atomically remove several notes in one MIDI clip as one history step.
     RemoveMidiNotes {
@@ -1012,6 +1149,7 @@ pub struct MidiNoteUpdate {
 /// Musical fields for one newly inserted MIDI note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiNoteInsert {
+    pub active: bool,
     pub start: crate::BeatTime,
     pub duration: crate::BeatTime,
     pub pitch: u8,
@@ -1114,6 +1252,7 @@ pub(crate) fn new_track(
         gain_lane: crate::GainLane::default(),
         id,
         name,
+        automatic_name: false,
         gain: 1.0,
         balance: 0.0,
         muted: false,
@@ -1647,14 +1786,27 @@ impl Project {
     /// Called only on an isolated candidate by Editor; never on an audio thread.
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
+            Command::DuplicateAliasClips(clips) => crate::clip_duplicate::apply_alias(self, clips),
+            Command::MakeClipsUnique(clips) => crate::clip_alias_commands::unique(self, clips),
+            Command::ApplyClipSettingsToAliases(clip) => {
+                crate::clip_alias_commands::apply_settings(self, clip)
+            }
+            Command::DuplicateSessionCell {
+                track,
+                scene,
+                alias,
+            } => crate::clip_alias_commands::duplicate_console(self, track, scene, alias),
             source_command @ (Command::CreateNativeSource { .. }
+            | Command::BindTrackSource { .. }
+            | Command::SetNativeSourceReceiver { .. }
             | Command::RenameNativeSource { .. }
             | Command::RemoveNativeSource(_)) => crate::native_sources::apply(self, source_command),
             Command::CommitArrangementBounce {
                 target,
                 in_place,
+                adoption,
                 files,
-            } => crate::bounce::commit(self, target, in_place, files),
+            } => crate::bounce::commit(self, target, in_place, adoption, files),
             command @ (Command::AddArrangementSection { .. }
             | Command::SetArrangementSectionRange { .. }
             | Command::MoveArrangementSectionMarker { .. }
@@ -1669,6 +1821,7 @@ impl Project {
             | Command::ResizeArrangementSectionBoundary { .. }
             | Command::DeleteArrangementSection(_)
             | Command::DuplicateArrangementSection(_)
+            | Command::DuplicateArrangementSectionAt { .. }
             | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
@@ -1784,6 +1937,7 @@ impl Project {
             Command::ReplaceMidiClipVolume { clip, volume } => {
                 self.replace_midi_clip_volume(clip, volume)
             }
+            Command::SetMidiClipGain { clip, gain } => self.set_midi_clip_gain(clip, gain),
             Command::SetRouting(edges) => self.adopt_routing(edges),
             Command::SetAudioFeed {
                 source,
@@ -1799,6 +1953,27 @@ impl Project {
                 destination,
                 gain,
             } => self.set_return_feed(source, destination, gain),
+            Command::ManualDeviceEdit {
+                device,
+                state,
+                targets,
+            } => self.manual_device_edit(device, state, targets),
+            Command::SetDeviceAutomationReadSelection {
+                device,
+                target,
+                selection,
+            } => self.set_device_automation_read_selection(device, target, selection),
+            Command::ReenableDeviceAutomation => self.reenable_device_automation(),
+            Command::ReplaceDeviceAutomationTarget {
+                device,
+                target,
+                points,
+            } => self.replace_device_automation_target(device, target, points),
+            Command::ReplaceDeviceAutomation {
+                device,
+                parameter,
+                points,
+            } => self.replace_device_automation(device, parameter, points),
             main_command @ (Command::InsertMainDevice { .. } | Command::MoveMainDevice { .. }) => {
                 crate::main_devices::apply(self, main_command)
             }
@@ -1869,6 +2044,7 @@ impl Project {
             | Command::DuplicateMidiSourceRange { .. }
             | Command::UpdateMidiNote { .. }
             | Command::UpdateMidiNotes { .. }
+            | Command::SetMidiNotesActive { .. }
             | Command::RemoveMidiNote(_)
             | Command::RemoveMidiNotes { .. }
             | Command::MoveMidiClip { .. }
@@ -1902,6 +2078,7 @@ impl Project {
             | Command::MoveSessionCell { .. }
             | Command::DuplicateSessionMidiCell { .. }
             | Command::DuplicateSessionAudioCell { .. }
+            | Command::SetSessionAudioClipLoop { .. }
             | Command::SetSessionAudioClipSource { .. }
             | Command::ClearSessionCell { .. }
             | Command::SetSessionStopCell { .. }
@@ -1967,6 +2144,7 @@ impl Project {
             Command::SplitTracksAtFrame { tracks, frame } => {
                 crate::split_tracks::apply(self, &tracks, frame)
             }
+            Command::SplitTimeRange { range } => crate::split_tracks::apply_range(self, &range),
             Command::NudgeClip { clip, frames } => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
                 let start = if frames < 0 {
@@ -2052,6 +2230,21 @@ impl Project {
                 let gain = (self.master_gain + amount).clamp(0.0, 2.0);
                 self.apply(Command::MasterGain { gain })
             }
+            Command::ToggleTracksMute(tracks) => {
+                let mut muted = false;
+                for id in tracks.ids() {
+                    muted |= !self
+                        .track(*id)
+                        .ok_or(Invalid("track selection no longer exists"))?
+                        .muted;
+                }
+                for track in &mut self.tracks {
+                    if tracks.ids().contains(&track.id()) {
+                        track.muted = muted;
+                    }
+                }
+                Ok(Created::None)
+            }
             Command::ToggleMute(track) => {
                 let muted = !self
                     .track(track)
@@ -2080,6 +2273,27 @@ impl Project {
                 }
                 Ok(Created::Track(track))
             }
+            Command::InsertDefaultTrack { before_track } => Ok(Created::Track(
+                crate::track_name::insert_default_track(self, before_track)?,
+            )),
+            Command::InsertDefaultTrackWithDevice {
+                before_track,
+                slot,
+                state,
+                device_name,
+            } => crate::track_name::insert_default_track_with_device(
+                self,
+                before_track,
+                slot,
+                state,
+                device_name,
+            ),
+            Command::LoadInstrument {
+                track,
+                replacing,
+                state,
+                device_name,
+            } => crate::track_name::load_instrument(self, track, replacing, state, device_name),
             Command::AddTrack { name } => {
                 Ok(Created::Track(insert_track_before(self, name, None)?))
             }
@@ -2273,7 +2487,9 @@ impl Project {
             Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
             Command::RenameTrack { track, name } => {
                 name_valid(&name)?;
-                self.track_mut(track)?.name = name;
+                let target = self.track_mut(track)?;
+                target.name = name;
+                target.automatic_name = false;
                 Ok(Created::None)
             }
             Command::Gain { track, gain } => {
@@ -2366,6 +2582,25 @@ impl Project {
                         }
                     }
                     self.track_mut(track)?.soloed = true;
+                }
+                Ok(Created::None)
+            }
+            Command::ToggleSoloTracks { tracks, exclusive } => {
+                let ids = tracks.ids();
+                if ids.iter().any(|id| self.track(*id).is_none()) {
+                    return Err(Invalid("solo selection no longer exists"));
+                }
+                let enable = !self
+                    .tracks
+                    .iter()
+                    .filter(|track| ids.contains(&track.id()))
+                    .all(|track| track.soloed);
+                for track in &mut self.tracks {
+                    if ids.contains(&track.id()) {
+                        track.soloed = enable;
+                    } else if enable && exclusive {
+                        track.soloed = false;
+                    }
                 }
                 Ok(Created::None)
             }
@@ -2622,6 +2857,14 @@ impl Project {
                 self.apply(Command::MoveClip { clip, track, start })?;
                 Ok(Created::Track(track))
             }
+            Command::RemoveDevices { owner, selected } => {
+                crate::device_clipboard::remove(self, owner, &selected)
+            }
+            Command::PasteDevices {
+                clipboard,
+                owner,
+                before,
+            } => crate::device_clipboard::paste(self, &clipboard, owner, before),
             Command::PasteTracks {
                 clipboard,
                 destination,
@@ -2734,6 +2977,12 @@ impl Project {
                     target.gain = gain;
                 }
                 Ok(Created::None)
+            }
+            Command::CreateArrangementFades { range } => {
+                crate::selection_fades::arrangement(self, &range)
+            }
+            Command::CreateAudioEventFades { clip, start, end } => {
+                crate::selection_fades::event(self, clip, start, end)
             }
             Command::SetClipFadeEnvelope { clip, fade } => {
                 let target = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
@@ -2857,6 +3106,7 @@ impl Command {
                 }
                 | Self::DeleteArrangementSection(_)
                 | Self::DuplicateArrangementSection(_)
+                | Self::DuplicateArrangementSectionAt { .. }
         )
     }
 }

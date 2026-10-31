@@ -12,6 +12,12 @@ pub enum ProjectSource {
     Journal(PathBuf),
     SavedJournal(PathBuf),
     PreviousSave(PathBuf),
+    /// Recover the retained source checkpoint; recorded events remain an independent draft.
+    /// This source never acquires the original saved document's overwrite association.
+    AutomationDraft {
+        path: PathBuf,
+        limits: hex_storage::automation_draft::DraftReadLimits,
+    },
 }
 
 /// Native application singleton, shared by development and review bundles.
@@ -23,7 +29,7 @@ pub fn untitled_recovery_path() -> Result<PathBuf, String> {
 
 pub(super) type OpenCandidate = (Session, PathBuf, Option<DocumentHandle>, bool);
 
-fn read_source(
+pub(super) fn read_source(
     source: &ProjectSource,
 ) -> Result<(Project, PathBuf, Option<DocumentHandle>), String> {
     let (project, path, document) = match source {
@@ -58,35 +64,13 @@ fn read_source(
             path,
             None,
         ),
+        ProjectSource::AutomationDraft { path, limits } => {
+            let reader = hex_storage::automation_draft::DraftReader::open(path, *limits)
+                .map_err(|error| error.to_string())?;
+            (reader.source().clone(), path, None)
+        }
     };
     Ok((project, absolute_document_base(path)?, document))
-}
-
-/// Read-only dialog preparation, off the UI thread. Decode and complete candidate
-/// validation still happen on Open; this is not an admission or a content hash.
-pub fn missing_assets(
-    source: &ProjectSource,
-) -> Result<Vec<(hex_project::AssetId, PathBuf)>, String> {
-    let (project, base, _) = read_source(source)?;
-    let mut missing = Vec::new();
-    for asset in project.assets() {
-        let path = if asset.path().is_absolute() {
-            asset.path().to_path_buf()
-        } else {
-            base.join(asset.path())
-        };
-        match std::fs::metadata(&path) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                missing.push((asset.id(), path))
-            }
-            Err(error) => return Err(error.to_string()),
-            Ok(metadata) if !metadata.is_file() => {
-                return Err(format!("media is not a regular file: {}", path.display()));
-            }
-            Ok(_) => {}
-        }
-    }
-    Ok(missing)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -88,8 +88,9 @@ pub enum RectangleSelection {
 pub enum RectangleSelectionPolicy {
     /// Clip headers: Shift range, Command toggle, Command+Shift additive range.
     Range,
-    /// Section markers: Shift toggles membership.
-    Toggle,
+    /// Section markers: Shift range, Command+Shift toggle. Command alone
+    /// belongs to the lane's marker-only edit latch, not selection.
+    Section,
 }
 impl RectangleSelectionPolicy {
     pub fn intent(self, modifiers: Modifiers) -> RectangleSelection {
@@ -98,7 +99,8 @@ impl RectangleSelectionPolicy {
                 additive: modifiers.platform,
             },
             Self::Range if modifiers.platform => RectangleSelection::Toggle,
-            Self::Toggle if modifiers.shift => RectangleSelection::Toggle,
+            Self::Section if modifiers.shift && modifiers.platform => RectangleSelection::Toggle,
+            Self::Section if modifiers.shift => RectangleSelection::Range { additive: false },
             _ => RectangleSelection::Replace,
         }
     }
@@ -179,16 +181,30 @@ impl<K: Copy + PartialEq> RectangleCapture<K> {
     }
 }
 
+/// Standard rectangle border inset in logical pixels. Narrow intervals keep
+/// their authored width; native child hit regions use this same inset rather
+/// than assuming that every surface has a one-point border.
+pub fn rectangle_border_width(pixel_width: f32) -> f32 {
+    if pixel_width.is_finite() && pixel_width >= 2.0 {
+        1.0
+    } else {
+        0.0
+    }
+}
+
 /// Display-only composition. Fractions are projected by the owner; invalid
 /// geometry is hidden instead of emitting nonfinite layout values. Children,
 /// styling, selection paint and held/released preview content remain composable.
+/// `pixel_width` is the owner's projection of the interval onto the full lane.
+/// It controls the standard one-point border, never a minimum layout width:
+/// omit that border below two points so it cannot widen the interval itself.
 /// No pointer cancellation can clear a separately supplied pending display.
-pub fn rectangle_surface(left: f32, width: f32, minimum: f32) -> Div {
+pub fn rectangle_surface(left: f32, width: f32, pixel_width: f32) -> Div {
     let valid = left.is_finite()
         && width.is_finite()
         && width > 0.0
-        && minimum.is_finite()
-        && minimum >= 0.0;
+        && pixel_width.is_finite()
+        && pixel_width >= 0.0;
     div()
         .absolute()
         .top_0()
@@ -196,7 +212,10 @@ pub fn rectangle_surface(left: f32, width: f32, minimum: f32) -> Div {
         .overflow_hidden()
         .left(relative(if valid { left } else { 0.0 }))
         .w(relative(if valid { width } else { 0.0 }))
-        .min_w(px(if valid { minimum } else { 0.0 }))
+        .when(
+            valid && rectangle_border_width(pixel_width) > 0.0,
+            |surface| surface.border_1(),
+        )
         .when(!valid, |this| this.invisible())
 }
 
@@ -251,6 +270,8 @@ pub fn rectangle_pointer<K: Copy + PartialEq>(
 
 /// Absolute pixel counterpart for a floating or cross-lane preview. It uses
 /// the same clipped rectangle composition as in-lane normalized displays.
+/// Preserve horizontal endpoints even below handle size, with the same
+/// room-dependent standard border as the normalized surface.
 pub fn rectangle_surface_pixels(left: f32, top: f32, width: f32, height: f32) -> Div {
     let valid = left.is_finite()
         && top.is_finite()
@@ -263,7 +284,10 @@ pub fn rectangle_surface_pixels(left: f32, top: f32, width: f32, height: f32) ->
         .overflow_hidden()
         .left(px(if valid { left } else { 0.0 }))
         .top(px(if valid { top } else { 0.0 }))
-        .w(px(if valid { width.max(3.0) } else { 0.0 }))
+        .w(px(if valid { width } else { 0.0 }))
         .h(px(if valid { height.max(3.0) } else { 0.0 }))
+        .when(valid && rectangle_border_width(width) > 0.0, |surface| {
+            surface.border_1()
+        })
         .when(!valid, |this| this.invisible())
 }

@@ -159,6 +159,14 @@ impl RuntimeRef<'_> {
             Self::Eligible(p) => p.midi_capture_fault(take_id),
         }
     }
+    pub(super) fn native_parameter_input_target(
+        &self,
+    ) -> Option<hex_engine::NativeParameterInputTarget> {
+        match self {
+            Self::Legacy(p) => p.native_parameter_input_target(),
+            Self::Eligible(p) => p.native_parameter_input_target(),
+        }
+    }
     pub(super) fn gain_recording_ready(&self, track: u64) -> bool {
         match self {
             Self::Legacy(p) => p.gain_recording_ready(track),
@@ -186,6 +194,34 @@ impl RuntimeMut<'_> {
         match self {
             Self::Legacy(p) => RuntimeRef::Legacy(p),
             Self::Eligible(p) => RuntimeRef::Eligible(p),
+        }
+    }
+    pub(super) fn native_parameter_input_target(
+        &self,
+    ) -> Option<hex_engine::NativeParameterInputTarget> {
+        self.read().native_parameter_input_target()
+    }
+    pub(super) fn set_native_parameter_input(
+        &mut self,
+        operation: hex_lattice::NativeTransientOperation,
+    ) -> Result<(), Invalid> {
+        match self {
+            Self::Legacy(p) => p.set_native_parameter_input(operation),
+            Self::Eligible(p) => p.set_native_parameter_input(operation),
+        }
+    }
+    pub(super) fn invalidate_native_parameter_input(&mut self) {
+        match self {
+            Self::Legacy(p) => p.invalidate_native_parameter_input(),
+            Self::Eligible(p) => p.invalidate_native_parameter_input(),
+        }
+    }
+    pub(super) fn take_native_parameter_application(
+        &mut self,
+    ) -> Option<hex_engine::NativeParameterApplication> {
+        match self {
+            Self::Legacy(p) => p.take_native_parameter_application(),
+            Self::Eligible(p) => p.take_native_parameter_application(),
         }
     }
     pub(super) fn position(&self) -> u64 {

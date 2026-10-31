@@ -346,13 +346,16 @@ fn midi_shift_stretch_escape_focus_and_real_document_replacement_retire_without_
 }
 
 fn next(service: &hex_session::service::Service) -> hex_session::service::Event {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "next: hang guard expired"
+        );
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
 }
@@ -436,12 +439,15 @@ fn midi_shift_stretch_pending_receipt_ignores_earlier_ack_and_retires_real_worke
     assert!(visual.debug_bounds("midi-trim-live-preview").is_none());
 }
 fn event(service: &hex_session::service::Service) -> hex_session::service::Event {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             return event;
         }
-        assert!(std::time::Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "event: hang guard expired"
+        );
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
 }

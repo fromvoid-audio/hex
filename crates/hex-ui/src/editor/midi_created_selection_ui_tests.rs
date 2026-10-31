@@ -5,14 +5,16 @@ use gpui::{
 };
 use hex_project::{BeatTime, Command, Created};
 use hex_session::service::{Event, Request};
-use std::time::{Duration, Instant};
 fn next(editor: &Entity<super::super::EditorView>, visual: &VisualTestContext) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = editor.read_with(visual, |v, _| v.service.try_event()) {
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::yield_now();
     }
 }
@@ -512,6 +514,7 @@ fn rapid_batches_use_each_real_canonical_range_and_malformed_ranges_preserve_bas
                     notes: [1, 0]
                         .into_iter()
                         .map(|index| hex_project::MidiNoteInsert {
+                            active: true,
                             start: BeatTime::from_quarters(offset + index).unwrap(),
                             duration: BeatTime::ONE,
                             pitch: 60 + index as u8,
@@ -545,6 +548,7 @@ fn rapid_batches_use_each_real_canonical_range_and_malformed_ranges_preserve_bas
             clip,
             remove: vec![first_batch[1]],
             insert: vec![hex_project::MidiNoteInsert {
+                active: true,
                 start: BeatTime::ZERO,
                 duration: BeatTime::ONE,
                 pitch: 67,

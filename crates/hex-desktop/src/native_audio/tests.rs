@@ -1,7 +1,9 @@
 //! Output completion alone is substituted. Session, verified readers, source
 //! domains, graph preparation, publication and callback are production paths.
 use super::*;
+mod limiter;
 mod plugins;
+mod recovery;
 mod resident_authoring;
 mod resident_bounce;
 mod resident_eq_creation;
@@ -9,12 +11,15 @@ mod resident_export;
 mod resident_grouping;
 mod resident_lifecycle;
 mod resident_preview;
+mod resident_reverb;
 mod resident_routes;
 mod resident_sections;
 mod sampler;
+mod section_benchmark;
 mod stream_export;
 mod track_clipboard;
 mod track_reorder;
+mod transport_loop;
 mod verified_gain;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;
@@ -29,6 +34,13 @@ use std::{
 static NEXT: AtomicU64 = AtomicU64::new(0);
 // The actual native constructor retains the process-wide output lease.
 static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
+/// Serialize native-lease fixtures. A failed test only poisons the unit guard;
+/// recovering it keeps one failure from cascading into unrelated tests.
+fn native_fixture() -> std::sync::MutexGuard<'static, ()> {
+    NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 /// Test-only scalar correlation, never the closed candidate's source/provenance identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RenderedCurrent {
@@ -579,7 +591,9 @@ impl Harness {
             if slot.is_some() {
                 return Ok(None);
             }
-            match hex_audio::worker_fixture::open(rate.unwrap_or(default_rate)) {
+            match hex_audio::worker_fixture::open_with_reliable_action_outcomes(
+                rate.unwrap_or(default_rate),
+            ) {
                 Ok((output, callback)) => {
                     *slot = Some(callback);
                     Ok(Some(output))
@@ -817,10 +831,22 @@ impl Drop for Harness {
 
 #[test]
 fn failed_output_setup_keeps_canonical_editing_and_saving_available() {
+    for retained_failure in [false, true] {
+        unavailable_output_keeps_canonical_editing_and_saving_available(retained_failure);
+    }
+}
+
+fn unavailable_output_keeps_canonical_editing_and_saving_available(retained_failure: bool) {
     let files = Files::new();
     let (events, audio_events) = mpsc::sync_channel(1);
     let mut sink = NativeAudioSink::new(events);
-    sink.output_factory = Some(Box::new(|_| Err("fixture device unavailable".into())));
+    if retained_failure {
+        sink.lifecycle_status = Some(|| Some(hex_audio::AudioLifecycleFailure::Retirement));
+        sink.output_factory = Some(Box::new(|_| panic!("failed retirement must not reopen")));
+    } else {
+        sink.lifecycle_status = Some(|| None);
+        sink.output_factory = Some(Box::new(|_| Err("fixture device unavailable".into())));
+    }
     let recovery = files.0.join("untitled.hex-journal");
     let service = Service::with_audio_sink_and_native_reservation(
         32,
@@ -872,7 +898,7 @@ fn failed_output_setup_keeps_canonical_editing_and_saving_available() {
 
 #[test]
 fn canonical_service_installs_verified_mixed_rate_and_empty_successors_despite_lost_submitted() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(24000, 240000);
     let mut h = Harness::new();
@@ -1116,7 +1142,7 @@ fn canonical_service_installs_verified_mixed_rate_and_empty_successors_despite_l
 
 #[test]
 fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_domain() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(24000, 24000);
     let mut bytes = fs::read(&path).unwrap();
@@ -1210,6 +1236,23 @@ fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_dom
         assert_eq!(status.stream_applied_command_prefix.load(Acquire), pause);
         assert!(!status.playing.load(Acquire));
     }
+    let reader = h
+        .audio
+        .as_mut()
+        .unwrap()
+        .control
+        .action_outcomes_mut()
+        .unwrap();
+    for ticket in [play, seek, pause] {
+        assert_eq!(
+            reader.try_take(),
+            Some(hex_audio::prepared::ActionOutcomeReceipt {
+                ticket,
+                outcome: hex_audio::prepared::ActionOutcome::Applied,
+            })
+        );
+    }
+    assert_eq!(reader.try_take(), None);
     // Stop has its existing independent priority marker even when the actual
     // command ring is full; it must not wait for queued transport work.
     for _ in 0..32 {
@@ -1241,7 +1284,7 @@ fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_dom
 mod controller_input_tests;
 #[test]
 fn native_verified_downsample_uses_source_window_and_applies_decoded_pcm() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let source = files.wav(48000, 9600);
     let mut h = Harness::with_rate(44100);
@@ -1348,7 +1391,7 @@ fn native_verified_downsample_uses_source_window_and_applies_decoded_pcm() {
 
 #[test]
 fn rapid_new_verified_import_supersession_applies_decoded_pcm() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(48000, 9600);
     let mut h = Harness::with_rate(44100);
@@ -1414,9 +1457,82 @@ fn rapid_new_verified_import_supersession_applies_decoded_pcm() {
     }
 }
 
+/// Play from the start until the callback renders `level` on both channels.
+fn play_from_start_expecting(h: &mut Harness, level: f32) {
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let output = h.render();
+        if output
+            .iter()
+            .all(|frame| frame.iter().all(|sample| (*sample - level).abs() < 0.0001))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected PCM {level} not rendered"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+}
+
+#[test]
+fn verified_undo_supersedes_an_uninstalled_import_and_redo_restores_it() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let path = files.wav(44100, 9600);
+    let mut h = Harness::with_rate(44100);
+    h.next();
+    h.open();
+    // The superseded import's source domain may still be retiring when Undo is
+    // admitted; that transient state must be retried, never block the newer
+    // canonical state. Repeat in fresh documents to cover both interleavings.
+    for _ in 0..4 {
+        h.run(Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(AudioPolicy::source_reservation()),
+        });
+        h.open();
+        let first = h.run(Request::Import(path.clone()));
+        h.applied(h.context.unwrap());
+        // No callback renders before Undo, so the second import's candidate is
+        // necessarily uninstalled and Undo's newer snapshot must supersede it.
+        let second = h.run(Request::Import(path.clone()));
+        assert_eq!(second.state.project.tracks().len(), 2);
+        let undone = h.run(Request::Undo);
+        // Undo restores content; the ID allocator stays monotonic.
+        let mut restored = undone.state.project.snapshot();
+        let expected = first.state.project.snapshot();
+        restored.next_id = expected.next_id;
+        assert_eq!(restored, expected);
+        assert!(undone.state.can_redo);
+        h.applied(h.context.unwrap());
+        play_from_start_expecting(&mut h, 0.25);
+        let redone = h.run(Request::Redo);
+        assert_eq!(
+            redone.state.project.snapshot(),
+            second.state.project.snapshot()
+        );
+        h.applied(h.context.unwrap());
+        play_from_start_expecting(&mut h, 0.5);
+    }
+}
+
 #[test]
 fn exact_root_domain_retirement_intent_survives_cleaning_and_recovers_before_reuse() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(24000, 16);
     let service = Service::new(44100, 1, 0).unwrap();
@@ -1544,7 +1660,7 @@ fn exact_root_domain_retirement_intent_survives_cleaning_and_recovers_before_reu
 #[test]
 #[ignore = "requires create-new generated workload and HEX_STREAMING_WORKLOAD_PROJECT"]
 fn generated_100_track_project_uses_actual_verified_service_and_callback() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let path = PathBuf::from(
         std::env::var_os("HEX_STREAMING_WORKLOAD_PROJECT").expect("fixture project path"),
     );
@@ -1650,7 +1766,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
     use hex_session::service::{
         ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     };
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let deadline = Instant::now() + Duration::from_secs(10);
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {

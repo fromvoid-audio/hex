@@ -41,7 +41,10 @@ pub(super) fn install_project_actions(cx: &mut gpui::App) {
             cx.defer(move |cx| {
                 let _ = window.update(cx, |_, window, cx| {
                     if let Some(Some(view)) = window.root::<EditorView>() {
-                        view.update(cx, |view, cx| handler(view, window, cx));
+                        view.update(cx, |view, cx| {
+                            let _scope = crate::diagnostics::action_scope(cx, A::name_for_type());
+                            handler(view, window, cx);
+                        });
                     }
                 });
             });
@@ -182,23 +185,34 @@ impl EditorView {
         self.error = None;
     }
 
-    fn begin_open(&mut self, path: std::path::PathBuf, mode: hex_session::DocumentAudioMode) {
-        let request = match mode {
-            hex_session::DocumentAudioMode::Resident => Request::Open(path),
+    /// Opens after a read-only missing-media check; missing files show the
+    /// relink panel instead of failing the open.
+    fn begin_open(
+        &mut self,
+        path: std::path::PathBuf,
+        mode: hex_session::DocumentAudioMode,
+        cx: &mut Context<Self>,
+    ) {
+        let source = hex_session::service::ProjectSource::Saved(path.clone());
+        let (request, reservation) = match mode {
+            hex_session::DocumentAudioMode::Resident => (Request::Open(path), None),
             hex_session::DocumentAudioMode::VerifiedStreaming => {
                 let Some(reservation) = self.source_reservation else {
                     self.error = Some("verified streaming is unavailable".into());
                     return;
                 };
-                Request::OpenWithAudioMode {
-                    source: hex_session::service::ProjectSource::Saved(path),
-                    relinks: std::collections::BTreeMap::new(),
-                    mode,
-                    reservation: Some(reservation),
-                }
+                (
+                    Request::OpenWithAudioMode {
+                        source: source.clone(),
+                        relinks: std::collections::BTreeMap::new(),
+                        mode,
+                        reservation: Some(reservation),
+                    },
+                    Some(reservation),
+                )
             }
         };
-        self.begin_open_request(request);
+        self.open_checking_missing_media(source, mode, reservation, request, cx);
     }
 
     pub(super) fn new_project(

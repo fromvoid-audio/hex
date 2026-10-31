@@ -38,6 +38,7 @@ fn project_with_saturators_bypassed(
             .expect("digital clip state")
     };
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        automation: Vec::new(),
         comparison: None,
         id: track_device,
         bypassed: track_bypassed,
@@ -53,6 +54,7 @@ fn project_with_saturators_bypassed(
         gain: 0.75,
         muted: false,
         devices: vec![DeviceSnapshot {
+            automation: Vec::new(),
             comparison: None,
             id: return_device,
             bypassed: return_bypassed,

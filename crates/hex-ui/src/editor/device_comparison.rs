@@ -241,7 +241,7 @@ impl EditorView {
         let card_focus = self
             .device_panel
             .comparison_return_focus(target.owner.device, window, cx);
-        self.device_panel.selected_device = Some(target.owner.device);
+        self.device_panel.select_only(Some(target.owner.device));
         let previous_focus = self
             .context_menu
             .take()
@@ -255,6 +255,7 @@ impl EditorView {
             Slot::B => ["switch to a", "copy b to a"],
         };
         self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
             icon_grid: None,
             position,
             selected: 0,

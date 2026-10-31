@@ -5,7 +5,7 @@ use crate::native_callback_owner::{ChannelStorage, Guard};
 
 pub(super) fn reserved_backing(
     guard: &Guard<State>,
-    completed: &Arc<AtomicU64>,
+    completed: &Arc<Signal>,
 ) -> Option<ChannelStorage> {
     let state = guard.owner_ref()?;
     let processor_bytes = match state.processor.as_ref()? {
@@ -52,7 +52,7 @@ impl NativeWorker {
     pub(crate) fn preconstruction_data_bytes_on_control(
         instance: &hex_plugin_host::native::Prepared,
     ) -> Option<usize> {
-        fn capture_bytes<R>(_: fn(Guard<State>, Arc<AtomicU64>) -> R) -> usize {
+        fn capture_bytes<R>(_: fn(Guard<State>, Arc<Signal>) -> R) -> usize {
             std::mem::size_of::<R>()
         }
         instance
@@ -61,7 +61,7 @@ impl NativeWorker {
             .checked_add(channel_storage_bound()?.data_bytes)?
             .checked_add(ChannelStorage::owner_reservation::<State>()?.data_bytes)?
             .checked_add(std::mem::size_of::<hex_plugin_host::native::Prepared>())?
-            .checked_add(std::mem::size_of::<AtomicU64>())?
+            .checked_add(std::mem::size_of::<Signal>())?
             .checked_add(capture_bytes(transport_runner))?
             .checked_add(std::mem::size_of::<Completion>())
     }

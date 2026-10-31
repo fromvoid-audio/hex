@@ -102,9 +102,7 @@ impl EditorView {
         if self.edit_pending() {
             return;
         }
-        let count = self.state.as_ref().map_or(0, |s| s.project.tracks().len());
-        self.enqueue(Request::Edit(Command::InsertTrack {
-            name: format!("track {}", count + 1),
+        self.enqueue(Request::Edit(Command::InsertDefaultTrack {
             before_track: self.new_track_insertion_anchor(),
         }));
     }
@@ -394,6 +392,7 @@ impl EditorView {
             if selected.binary_search(&note.id()).is_ok() {
                 originals.push(super::midi_group_drag::GroupNote {
                     id: note.id(),
+                    active: note.active(),
                     start: note.start().raw(),
                     duration: note.duration().raw(),
                     pitch: note.pitch(),
@@ -476,6 +475,7 @@ impl EditorView {
                 .iter()
                 .map(|note| super::midi_group_drag::GroupNote {
                     id: note.id(),
+                    active: note.active(),
                     start: note.start().raw(),
                     duration: note.duration().raw(),
                     pitch: note.pitch(),
@@ -540,6 +540,7 @@ impl EditorView {
 
     pub(super) fn edit_pending(&self) -> bool {
         (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
+            || self.automation_view.devices.pointer_active()
             || self.sampler_parameter_pending()
             || self.opening_project
             || self.close_prompt_open

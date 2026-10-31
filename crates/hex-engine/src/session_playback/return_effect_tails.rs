@@ -169,6 +169,7 @@ impl ReturnEffectTailBank {
                     frames,
                     frame_offset,
                     None,
+                    None,
                     foreign,
                 )
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -228,34 +229,7 @@ impl ReturnEffectTailBank {
             frames.fill([0.0; 2]);
             let mut arrival = input_arrival;
             for entry in suffix_start..tail.chain.len() {
-                if let Some(compensation) = compensation {
-                    if frames.len() != 1 {
-                        return Err(SessionPlaybackError::DeviceRuntime);
-                    }
-                    let origin = crate::signal_graph::OriginClock(
-                        compensation.delays.stamp_at_delay(arrival),
-                    );
-                    tail.chain.process_range_with_foreign(
-                        entry..entry + 1,
-                        frames,
-                        frame_offset,
-                        Some(&origin),
-                        foreign,
-                    )
-                } else {
-                    if arrival != 0 {
-                        return Err(SessionPlaybackError::DeviceRuntime);
-                    }
-                    tail.chain.process_range_with_foreign(
-                        entry..entry + 1,
-                        frames,
-                        frame_offset,
-                        Some(clock),
-                        foreign,
-                    )
-                }
-                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-                arrival = arrival
+                let output_arrival = arrival
                     .checked_add(
                         tail.chain
                             .algorithmic_latency_frames_for_entry(entry)
@@ -263,6 +237,42 @@ impl ReturnEffectTailBank {
                             .ok_or(SessionPlaybackError::DeviceRuntime)?,
                     )
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                if let Some(compensation) = compensation {
+                    if frames.len() != 1 {
+                        return Err(SessionPlaybackError::DeviceRuntime);
+                    }
+                    let origin = crate::signal_graph::OriginClock(
+                        compensation.delays.stamp_at_delay(arrival),
+                    );
+                    let output_origin = crate::signal_graph::OriginClock(
+                        compensation.delays.stamp_at_delay(output_arrival),
+                    );
+                    tail.chain.process_range_with_foreign(
+                        entry..entry + 1,
+                        frames,
+                        frame_offset,
+                        Some(&origin),
+                        Some(&output_origin),
+                        foreign,
+                    )
+                } else {
+                    if arrival != 0 {
+                        return Err(SessionPlaybackError::DeviceRuntime);
+                    }
+                    // Frozen tail controls do not consume automation clocks.
+                    // Without retained stamps only coincident output is known.
+                    let output_origin = (output_arrival == 0).then_some(clock);
+                    tail.chain.process_range_with_foreign(
+                        entry..entry + 1,
+                        frames,
+                        frame_offset,
+                        Some(clock),
+                        output_origin,
+                        foreign,
+                    )
+                }
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                arrival = output_arrival;
             }
             tail.output_scratch = !tail
                 .chain
@@ -312,6 +322,8 @@ pub(super) struct ReturnEffectTailPlan {
     capture: [Option<(usize, usize)>; MAX_RETURN_TRACKS],
     inherit_bus: [bool; MAX_RETURN_TRACKS],
     main_capture: Option<(usize, usize, u32)>,
+    // A completed suffix needs no old DSP history and no retained tail owner.
+    main_quiet_suffix: Option<usize>,
 }
 
 impl ReturnEffectTailPlan {
@@ -420,6 +432,7 @@ impl ReturnEffectTailPlan {
             capture: [None; MAX_RETURN_TRACKS],
             inherit_bus: [false; MAX_RETURN_TRACKS],
             main_capture: None,
+            main_quiet_suffix: None,
         };
         let mut occupied = [false; RETURN_EFFECT_TAIL_CAPACITY];
 
@@ -533,11 +546,18 @@ impl ReturnEffectTailPlan {
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
             start += 1;
         }
-        if start == old.len() || old.committed_range_is_quiescent(start..old.len()) {
+        if start == old.len() {
             return Ok(());
         }
         if !current.can_inherit_from_excluding_old_range(old, start..old.len()) {
             return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        if old.committed_range_is_quiescent(start..old.len()) {
+            // The original runtime has observed actual completion. A changed
+            // endpoint may start fresh without copying that incompatible quiet
+            // suffix or reserving a tail that will never produce more output.
+            self.main_quiet_suffix = Some(start);
+            return Ok(());
         }
         let target = (0..RETURN_EFFECT_TAIL_CAPACITY)
             .find(|slot| {
@@ -568,7 +588,20 @@ impl ReturnEffectTailPlan {
     }
     pub(super) fn main_excluded(&self, old_len: usize) -> std::ops::Range<usize> {
         self.main_capture
-            .map_or(0..0, |(_, start, _)| start..old_len)
+            .map(|(_, start, _)| start)
+            .or(self.main_quiet_suffix)
+            .map_or(0..0, |start| start..old_len)
+    }
+    pub(super) fn can_inherit_main(
+        &self,
+        current: &NativeRuntimeChain,
+        old: &NativeRuntimeChain,
+    ) -> bool {
+        if self.main_quiet_suffix.is_some() {
+            current.can_inherit_with_completed_foreign_range(old, self.main_excluded(old.len()))
+        } else {
+            current.can_inherit_from_excluding_old_range(old, self.main_excluded(old.len()))
+        }
     }
     pub(super) fn validate_main(
         &self,

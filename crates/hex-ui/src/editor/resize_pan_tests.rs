@@ -8,18 +8,18 @@ use hex_session::service::{Event, Request, Service};
 use std::time::{Duration, Instant};
 
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(Instant::now() < until, "session event did not arrive");
         std::thread::sleep(Duration::from_millis(2));
     }
 }
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -31,7 +31,10 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
             visual.run_until_parked();
             return;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            Instant::now() < until,
+            "editor worker requests did not drain"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }

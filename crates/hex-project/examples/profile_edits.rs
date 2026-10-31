@@ -49,7 +49,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sends: Vec::new(),
         });
     }
-    let project = Project::from_snapshot(Snapshot {
+    let project = Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),

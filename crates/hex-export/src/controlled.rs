@@ -199,7 +199,8 @@ pub fn control_storage_allowance(signal: Option<&ExportSignal>) -> Result<usize,
 }
 
 /// Resolve an optional range for the causal controlled renderer. Explicit
-/// spans and pre-Main capture/stem defaults retain their own source semantics.
+/// spans remain exact. Automatic ranges include declared finite residual tails
+/// on the relevant signal paths and refuse unbounded or excessive drain.
 pub fn controlled_frame_count(
     project: &Project,
     start: u64,
@@ -215,8 +216,31 @@ pub fn controlled_frame_count(
                         "automatic main range is unbounded or invalid; choose an explicit range",
                     )
                 })?,
-                ExportSignal::CapturedMix(_) | ExportSignal::Stems(_) => {
-                    project.audible_end_frame()
+                ExportSignal::CapturedMix(ids) => {
+                    if ids.len() > hex_engine::MAX_OUTPUT_CAPTURES {
+                        return Err(ExportError::Invalid(
+                            "invalid export output selection count",
+                        ));
+                    }
+                    project.untrimmed_capture_end_frame(ids).map_err(|_| {
+                        ExportError::Invalid(
+                            "automatic capture range is unbounded or invalid; choose an explicit range",
+                        )
+                    })?
+                }
+                ExportSignal::Stems(stems) => {
+                    if stems.len() > hex_engine::MAX_OUTPUT_CAPTURES {
+                        return Err(ExportError::Invalid("invalid stem selection count"));
+                    }
+                    let mut ids = Vec::new();
+                    ids.try_reserve_exact(stems.len())
+                        .map_err(|_| ExportError::Invalid("could not reserve stem selection"))?;
+                    ids.extend(stems.iter().map(|stem| stem.id));
+                    project.untrimmed_capture_end_frame(&ids).map_err(|_| {
+                        ExportError::Invalid(
+                            "automatic stem range is unbounded or invalid; choose an explicit range",
+                        )
+                    })?
                 }
             };
             end.unwrap_or(0).saturating_sub(start)

@@ -109,7 +109,7 @@ impl Search<'_, '_> {
                     .iter()
                     .enumerate()
                     .min_by(|a, b| a.1.1.total_cmp(&b.1.1))
-                    .unwrap()
+                    .expect("peaks is a fixed eight-element array")
                     .0
             });
             if score > peaks[index].1 {

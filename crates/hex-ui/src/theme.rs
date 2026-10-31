@@ -82,8 +82,19 @@ pub(crate) fn ruler_tick_color(bar_start: bool, meter_marker: bool) -> u32 {
     }
 }
 
-/// Shared translucency for arranger and clip-editor time ranges.
-pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.22;
+/// Near-white time-range fill shared by the arranger and clip editors, tinted
+/// slightly toward the palette text so it stays within the saved theme.
+pub(crate) fn time_selection_fill() -> u32 {
+    mix(color(PaletteRole::Text), 0xffffff, 0.8)
+}
+
+/// Shared translucency for arranger and clip-editor time ranges. The fill
+/// paints above clips, so this stays low enough for waveforms and clip names
+/// to remain readable through the bright band.
+pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.42;
+
+/// Move-destination ranges stay quieter than the committed selection.
+pub(crate) const TIME_SELECTION_PREVIEW_OPACITY: f32 = 0.2;
 
 /// Explicit track membership stays quieter than time/clip selection overlays.
 pub(crate) const TRACK_SELECTION_OPACITY: f32 = 0.06;
@@ -436,6 +447,31 @@ mod tests {
                 color(PaletteRole::Secondary),
                 color(PaletteRole::SecondaryText)
             ) >= 4.5
+        );
+    }
+
+    #[test]
+    fn time_selection_is_a_near_white_band_that_keeps_clip_content_legible() {
+        let _restore = RestoreTheme(preferences());
+        apply_preferences(hex_preferences::ThemePreferences::default());
+        let fill = time_selection_fill();
+        let over = |base: u32| mix(base, fill, TIME_SELECTION_OPACITY);
+        assert!(contrast_ratio(fill, 0xffffff) < 1.15);
+        // The band meets the 3:1 non-text contrast over empty lanes while dark
+        // clip labels and waveforms keep a readable margin through it.
+        let background = color(PaletteRole::Background);
+        assert!(contrast_ratio(over(background), background) >= 3.0);
+        assert!(
+            contrast_ratio(
+                over(color(PaletteRole::ClipFill)),
+                over(color(PaletteRole::ClipText))
+            ) >= 2.5
+        );
+        assert!(
+            contrast_ratio(
+                over(color(PaletteRole::ClipFill)),
+                over(color(PaletteRole::Waveform))
+            ) >= 2.5
         );
     }
 

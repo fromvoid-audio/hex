@@ -1,6 +1,7 @@
 //! Whole requested-output transaction and exact content-origin tests.
 use super::*;
 use crate::signal_graph::tests::{fixture, prepare};
+use crate::{Audio, SineTable};
 #[test]
 fn compensation_late_failure_rolls_back_all_rings_and_node_histories() {
     let f = fixture(&[&[], &[7]], 1024);
@@ -86,32 +87,61 @@ fn dry_fader_clock_reports_downstream_main_delivery_delay() {
     );
 }
 
+/// Pulse #3772: a latency device on an unrelated track no longer disables
+/// computer-keyboard monitoring. The keyboard plays its instrument through the
+/// compensated graph, delayed only by the project's PDC alignment.
 #[test]
-fn computer_keyboard_positive_latency_refusal_preserves_authored_runtime() {
-    let mut f = fixture(&[&[7]], 1024);
-    f.editor
-        .execute(hex_project::Command::InsertInstrument {
-            track: f.tracks[0],
-            state: hex_project::default_instrument_state().unwrap(),
-        })
-        .unwrap();
-    let revision = prepare(&f).unwrap();
-    let mut tested = crate::playback::Playback::from_prepared(Arc::clone(&revision));
-    let mut oracle = crate::playback::Playback::from_prepared(revision);
-    for playback in [&mut tested, &mut oracle] {
-        playback.apply(crate::playback::PlaybackCommand::Play);
-        playback.render(&mut [[0.0; 2]; 3]).unwrap();
+fn computer_keyboard_plays_through_positive_latency_on_another_track() {
+    let keyboard_output = |delays: &[&[u32]], playing: bool| {
+        let mut f = fixture(delays, 1024);
+        f.editor
+            .execute(hex_project::Command::InsertInstrument {
+                track: f.tracks[1],
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+        // Silence the clip track so only the keyboard track is compared.
+        f.editor
+            .execute(hex_project::Command::Gain {
+                track: f.tracks[0],
+                gain: 0.0,
+            })
+            .unwrap();
+        let revision = prepare(&f).unwrap();
+        let latency = revision.arrangement().main_latency_frames() as usize;
+        let mut playback = crate::playback::Playback::from_prepared(revision);
+        let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        playback
+            .prepare_computer_keyboard(f.editor.project(), f.tracks[1], input)
+            .unwrap();
+        if playing {
+            playback.apply(crate::playback::PlaybackCommand::Play);
+        }
+        let mut output = vec![[0.0; 2]; 512];
+        playback.render(&mut output).unwrap();
+        (latency, output)
+    };
+    for playing in [false, true] {
+        let (latency, delayed) = keyboard_output(&[&[7], &[]], playing);
+        let (none, direct) = keyboard_output(&[&[], &[]], playing);
+        assert_eq!((latency, none), (7, 0));
+        assert!(direct.iter().flatten().any(|sample| *sample != 0.0));
+        assert!(
+            delayed[..latency]
+                .iter()
+                .flatten()
+                .all(|sample| *sample == 0.0)
+        );
+        for (index, (actual, expected)) in delayed[latency..].iter().zip(&direct).enumerate() {
+            for channel in 0..2 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 1e-6,
+                    "playing={playing} frame {index}: {actual:?} != {expected:?}"
+                );
+            }
+        }
     }
-    let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
-    let error = tested
-        .prepare_computer_keyboard(f.editor.project(), f.tracks[0], input)
-        .unwrap_err();
-    assert!(error.to_string().contains("positive latency"));
-    let mut actual = [[0.0; 2]; 32];
-    let mut expected = actual;
-    tested.render(&mut actual).unwrap();
-    oracle.render(&mut expected).unwrap();
-    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -442,7 +472,7 @@ fn ordinary_stopped_compensation_preview_is_pure_and_retains_candidate_admission
     let running = candidate
         .preview_stream_handoff_with_scope(&mut old, 64, Some(true), &mut |_| Ok(()), true)
         .unwrap();
-    assert_eq!(running.frames, 1);
+    assert_eq!(running.frames, 64);
     assert_eq!(
         (
             old.capture_epoch,
@@ -464,3 +494,74 @@ fn ordinary_stopped_compensation_preview_is_pure_and_retains_candidate_admission
     oracle.render(&mut expected).unwrap();
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn gain_recording_delivery_delay_includes_the_complete_serial_main_chain() {
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    use hex_project::{Command, Created, Editor, Project};
+    for (lookaheads, expected_delay) in [(&[2_u32][..], 288_u64), (&[0_u32, 2][..], 360_u64)] {
+        let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "serial main".into(),
+                path: "memory/serial-main.wav".into(),
+                source_sample_rate: 48000,
+                source_frames: 4096,
+                playback_frames: 4096,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        for &lookahead in lookaheads {
+            let definition = &hex_devices::limiter::DEFINITION;
+            let state = definition
+                .patch_parameter(
+                    &definition.default_state().unwrap(),
+                    hex_devices::limiter::parameter::LOOKAHEAD,
+                    ParameterValue::Choice(lookahead),
+                )
+                .unwrap();
+            editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state,
+                })
+                .unwrap();
+        }
+        let media = std::collections::BTreeMap::from([(
+            asset,
+            Audio::new(48000, vec![[0.01, -0.02]; 4096]).unwrap(),
+        )]);
+        let revision = PreparedRevision::prepare_for_gain_recording(
+            editor.project(),
+            &media,
+            Arc::new(SineTable::new()),
+            None,
+            track,
+        )
+        .unwrap();
+        assert_eq!(
+            u64::from(revision.arrangement().main_latency_frames()),
+            expected_delay
+        );
+        let mut runtime = SessionPlayback::new(Arc::new(revision)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        assert_eq!(
+            runtime.gain_recording_clock(track.value()),
+            Some((0, expected_delay, 0)),
+            "serial Main delay must be added after the pre-Main sum"
+        );
+        let mut initial = [[1.0; 2]; 16];
+        runtime.render(&mut initial).unwrap();
+        assert_eq!(initial, [[0.0; 2]; 16]);
+        assert_eq!(
+            runtime.gain_recording_clock(track.value()),
+            Some((16, expected_delay, 0))
+        );
+    }
+}
+
+#[path = "compensation_tests/paused_layout.rs"]
+mod paused_layout;

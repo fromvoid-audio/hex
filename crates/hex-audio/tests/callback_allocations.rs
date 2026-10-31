@@ -7,11 +7,14 @@ mod cursor_loop;
 mod finite_bounce;
 #[path = "callback_allocations/output_capture.rs"]
 mod output_capture;
+#[path = "callback_allocations/probe.rs"]
+mod probe;
 #[path = "callback_allocations/project_tuning.rs"]
 mod project_tuning;
 #[path = "../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;
+use probe::{compare_output, measured_block, measured_shutdown};
 
 use allocation_counter::{AllocationInfo, measure};
 use hex_audio::prepared::{self, PublicationPolicy, SessionRouteOwner};
@@ -454,30 +457,6 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
     }
 }
 
-fn measured_block(callback: &mut prepared::Callback, output: &mut [Frame]) -> AllocationInfo {
-    let mut render_failed = false;
-    let info = measure(|| {
-        callback.begin_block();
-        render_failed = callback.render(output).is_err();
-    });
-    assert!(!render_failed, "callback render returned an error");
-    assert_eq!(info.count_total, 0, "callback allocated");
-    assert_eq!(info.bytes_total, 0, "callback allocated bytes");
-    assert_eq!(
-        info.count_current, 0,
-        "callback changed live allocation count"
-    );
-    assert_eq!(
-        info.bytes_current, 0,
-        "callback changed live allocation bytes"
-    );
-    info
-}
-
-fn measured_shutdown(callback: &mut prepared::Callback, output: &mut [Frame]) -> AllocationInfo {
-    measured_block(callback, output)
-}
-
 #[test]
 fn reused_candidate_rejection_is_allocation_free_and_keeps_the_active_graph()
 -> Result<(), Box<dyn Error>> {
@@ -638,10 +617,6 @@ fn conditional_fresh_runtime_publication_paths_are_callback_allocation_free()
     Ok(())
 }
 
-fn compare_output(actual: &[Frame], expected: &[Frame]) {
-    assert_eq!(actual, expected);
-}
-
 fn assert_session_owner(
     control: &prepared::Control,
     routes: &mut [prepared::SessionRouteEntry],
@@ -784,10 +759,35 @@ fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_fre
     measured_block(&mut callback, &mut output);
     assert!(output.iter().flatten().any(|sample| *sample > 0.0));
 
-    editor.execute(Command::ReplaceDeviceState {
-        device: instrument,
+    let original_source = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.source_id())
+        .ok_or("source missing")?;
+    // A provider without typed state retarget cannot replace its active kernel
+    // in place. Explicit device replacement creates a distinct retained source
+    // and exercises the finite historical-tail ownership transfer instead.
+    editor.execute(Command::RemoveInstrument { track })?;
+    editor.execute(Command::InsertInstrument {
+        track,
         state: hex_lattice_contract::NativeDeviceState::new(MUTABLE_FIXTURE_TYPE, 1, vec![2])?,
     })?;
+    assert_ne!(
+        editor
+            .project()
+            .track(track)
+            .and_then(|track| track.source_id()),
+        Some(original_source)
+    );
+    assert_eq!(
+        editor
+            .project()
+            .native_source(original_source)
+            .ok_or("retained source missing")?
+            .instrument()
+            .id(),
+        instrument
+    );
     let second = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
         editor.project(),
         &media,
@@ -802,9 +802,9 @@ fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_fre
     measured_block(&mut callback, &mut output);
     assert!(output.iter().flatten().any(|sample| *sample > 0.0));
 
-    // At 120 bpm the one-quarter note ends after 24,000 performance frames.
-    // Continue through the gate and declared release tail after suppressing
-    // the exact candidate occurrence during the changed-configuration handoff.
+    // The old source's scoped NoteOff drains its declared finite tail. The
+    // replacement must not replay the pre-cut authored occurrence. Continue
+    // beyond its original one-quarter gate too, checking terminal cleanup.
     for _ in 0..190 {
         measured_block(&mut callback, &mut output);
     }
@@ -1040,7 +1040,7 @@ fn render_partitioned_shared_oracle(
 }
 
 #[test]
-fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_free()
+fn unchanged_mutable_arrangement_handoff_and_chase_restart_are_callback_allocation_free()
 -> Result<(), Box<dyn Error>> {
     let definition = MutableFixtureDefinition;
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
@@ -1139,8 +1139,8 @@ fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_fre
     assert!(retirement.bytes_current < 0);
 
     // A source edit changes the exact descriptor while the old occurrence is
-    // still held. The callback rejects the candidate and continues the old
-    // graph without allocation or a signed-net allocation change.
+    // still held. The callback cannot prove the chase, so it restarts audio at
+    // the cursor (Pulse #3770) instead of rejecting, still without allocation.
     editor.execute(Command::UpdateMidiNote {
         note,
         start: BeatTime::ZERO,
@@ -1161,17 +1161,107 @@ fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_fre
         .publish(changed_playback)
         .map_err(|_| "changed-source candidate publication failed")?;
     measured_block(&mut callback, &mut output);
+    measured_block(&mut callback, &mut output);
     assert!(output.iter().flatten().any(|sample| *sample > 0.0));
-    assert!(control.status.rejected_revision().is_some());
-    let rejected = measure(|| reclaimed = control.reclaim());
+    assert!(control.status.rejected_revision().is_none());
+    let restarted = measure(|| reclaimed = control.reclaim());
     assert!(
         reclaimed > 0,
-        "rejected candidate returns for control retirement"
+        "the replaced graph returns for control retirement"
     );
-    assert_eq!(rejected.count_total, 0);
-    assert!(rejected.count_current < 0);
-    assert!(rejected.bytes_current < 0);
+    assert_eq!(restarted.count_total, 0);
+    assert!(restarted.count_current < 0);
+    assert!(restarted.bytes_current < 0);
 
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
+fn disabling_held_midi_note_handoff_allocates_and_frees_nothing_in_callback()
+-> Result<(), Box<dyn Error>> {
+    let definition = MutableFixtureDefinition;
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
+    let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+    let Created::Track(track) = editor.execute(Command::InsertTrackWithDevice {
+        name: "notes".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state()?,
+    })?
+    else {
+        return Err("expected track".into());
+    };
+    let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(8)?,
+    })?
+    else {
+        return Err("expected clip".into());
+    };
+    let Created::Note(note) = editor.execute(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(4)?,
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    })?
+    else {
+        return Err("expected note".into());
+    };
+    let instrument = editor
+        .project()
+        .track(track)
+        .and_then(|track| track.instrument())
+        .ok_or("expected instrument")?
+        .id();
+    editor.execute(Command::ReplaceDeviceState {
+        device: instrument,
+        state: NativeDeviceState::new(MUTABLE_FIXTURE_TYPE, 1, vec![1])?,
+    })?;
+    let media = BTreeMap::new();
+    let table = Arc::new(SineTable::new());
+    let initial = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        editor.project(),
+        &media,
+        Arc::clone(&table),
+        None,
+        &registry,
+    )?);
+    let playback = Playback::try_from_prepared_with_session(Arc::clone(&initial))?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(playback)
+        .map_err(|_| "initial publication failed")?;
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 128];
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|sample| *sample > 0.0));
+    editor.execute(Command::SetMidiNotesActive {
+        clip,
+        notes: vec![note],
+        active: false,
+    })?;
+    let muted = Arc::new(PreparedRevision::prepare_with_test_instrument_registry(
+        editor.project(),
+        &media,
+        table,
+        Some(initial.session()),
+        &registry,
+    )?);
+    let playback = Playback::try_from_prepared_with_session(muted)?;
+    control
+        .publish(playback)
+        .map_err(|_| "note activation publication failed")?;
+    measured_block(&mut callback, &mut output);
+    assert!(control.status.rejected_revision().is_none());
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().all(|sample| *sample == 0.0));
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut output);
     control.reclaim();
@@ -1846,53 +1936,70 @@ fn fresh_project_and_shutdown_reclaim_graph_and_pcm_only_on_control() -> Result<
 }
 
 #[test]
-fn priority_stop_is_allocation_free_while_retirement_ring_is_full() -> Result<(), Box<dyn Error>> {
+fn priority_stop_is_allocation_free_under_command_and_retirement_pressure()
+-> Result<(), Box<dyn Error>> {
     let workload = fixture::fixture(false)?;
     let candidates = edited_candidates(&workload)?;
-    let (mut control, mut callback) = prepared::channel(RATE)?;
-    let initial = Playback::try_from_prepared_with_session(Arc::clone(&candidates[0].0))?;
-    control
-        .publish(initial)
-        .map_err(|_| "initial playback publication failed")?;
-    control
-        .launch_and_play_with_ticket(SessionPlaybackCommand::LaunchScene {
-            scene: workload.scene_a,
-            quantization: LaunchQuantization::Immediate,
-        })
-        .map_err(|_| "initial launch admission failed")?;
-
-    let mut output = [[0.0; 2]; 128];
-    measured_block(&mut callback, &mut output);
-    for candidate in candidates.iter().skip(1).take(2) {
-        let playback = Playback::try_from_prepared_with_session(Arc::clone(&candidate.0))?;
+    for frames in [1, 17, 128] {
+        let (mut control, mut callback) = prepared::channel(RATE)?;
+        let initial = Playback::try_from_prepared_with_session(Arc::clone(&candidates[0].0))?;
         control
-            .publish(playback)
-            .map_err(|_| "retirement-filling publication failed")?;
-        measured_block(&mut callback, &mut output);
+            .publish(initial)
+            .map_err(|_| "initial playback publication failed")?;
+        control
+            .launch_and_play_with_ticket(SessionPlaybackCommand::LaunchScene {
+                scene: workload.scene_a,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .map_err(|_| "initial launch admission failed")?;
+
+        let mut output = [[0.0; 2]; 128];
+        measured_block(&mut callback, &mut output[..frames]);
+        for candidate in candidates.iter().skip(1).take(2) {
+            let playback = Playback::try_from_prepared_with_session(Arc::clone(&candidate.0))?;
+            control
+                .publish(playback)
+                .map_err(|_| "retirement-filling publication failed")?;
+            measured_block(&mut callback, &mut output[..frames]);
+        }
+        let pending = Playback::try_from_prepared_with_session(Arc::clone(&candidates[3].0))?;
+        control
+            .publish(pending)
+            .map_err(|_| "pending candidate admission failed")?;
+        let mut last_ticket = 0;
+        for _ in 0..32 {
+            last_ticket = control
+                .command_with_ticket(PlaybackCommand::Play)
+                .map_err(|_| "command queue filled early")?;
+        }
+        assert!(control.command(PlaybackCommand::Play).is_err());
+
+        // Stop must suppress the entire full command prefix even when graph
+        // replacement is held behind a full retirement ring.
+        control.stop();
+        measured_block(&mut callback, &mut output[..frames]);
+        assert!(output[..frames].iter().all(|frame| *frame == [0.0; 2]));
+        assert!(
+            !control
+                .status
+                .playing
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+        assert_eq!(
+            control
+                .status
+                .consumed_command
+                .load(std::sync::atomic::Ordering::Acquire),
+            last_ticket
+        );
+
+        assert_eq!(control.reclaim(), 2);
+        measured_block(&mut callback, &mut output[..frames]);
+        assert!(output[..frames].iter().all(|frame| *frame == [0.0; 2]));
+        control.request_shutdown();
+        measured_shutdown(&mut callback, &mut output[..frames]);
+        control.reclaim();
     }
-    let pending = Playback::try_from_prepared_with_session(Arc::clone(&candidates[3].0))?;
-    control
-        .publish(pending)
-        .map_err(|_| "pending candidate admission failed")?;
-
-    // Stop is a priority path and remains effective even while publication is
-    // backpressured by a full callback-to-control retirement ring.
-    control.stop();
-    measured_block(&mut callback, &mut output);
-    assert!(output.iter().all(|frame| *frame == [0.0; 2]));
-    assert!(
-        !control
-            .status
-            .playing
-            .load(std::sync::atomic::Ordering::Acquire)
-    );
-
-    assert_eq!(control.reclaim(), 2);
-    measured_block(&mut callback, &mut output);
-    assert!(output.iter().all(|frame| *frame == [0.0; 2]));
-    control.request_shutdown();
-    measured_shutdown(&mut callback, &mut output);
-    control.reclaim();
     drop(candidates);
     drop(workload);
     Ok(())

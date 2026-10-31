@@ -495,7 +495,7 @@ pub(super) fn is_noop(drag: &ClipDrag, state: &DropState<'_>) -> bool {
     drag.source_track == state.target_track && drag.position == state.position
 }
 
-fn group_position(position: ClipPosition) -> hex_project::ClipGroupPosition {
+pub(super) fn group_position(position: ClipPosition) -> hex_project::ClipGroupPosition {
     match position {
         ClipPosition::Audio { start, .. } => hex_project::ClipGroupPosition::Audio(start),
         ClipPosition::Midi { start, .. } => hex_project::ClipGroupPosition::Midi(start),
@@ -781,6 +781,28 @@ impl super::EditorView {
         (None, false)
     }
 
+    /// Track destinations include attached automation rows, while clip editing
+    /// continues to use the separately measured body bounds in `drag_lanes`.
+    /// Both bounds publish together under the current painted body's epoch.
+    pub(super) fn painted_track_drop_lane(&self, track: TrackId) -> Option<LaneBounds> {
+        if !self.arrangement_track_visible(track)
+            || self.drag_lane_epochs.get(&track) != Some(&self.drag_layout_generation)
+        {
+            return None;
+        }
+        self.track_drop_lanes.get(&track).copied()
+    }
+    pub(super) fn hovered_track_drop_target(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Option<(TrackId, LaneBounds)> {
+        self.drag_lanes.keys().find_map(|track| {
+            let lane = self.painted_track_drop_lane(*track)?;
+            lane_contains_pointer(x, y, lane).then_some((*track, lane))
+        })
+    }
+
     pub(super) fn hovered_drag_target(
         &self,
         pointer_x: f32,
@@ -798,6 +820,7 @@ impl super::EditorView {
     }
 
     pub(super) fn retire_active_clip_drag(&mut self) -> bool {
+        self.drag_bounce_held = false;
         let Some(drag) = self.active_clip_drag.take() else {
             return false;
         };
@@ -994,6 +1017,7 @@ impl super::EditorView {
         {
             self.arrangement_device_preview = None;
             self.active_native_device_drag = None;
+            self.device_panel.drag_copy = None;
         }
         drag.destination.set(None);
         drag.return_destination.set(None);
@@ -1004,6 +1028,7 @@ impl super::EditorView {
         let Some(drag) = self.active_native_device_drag.take() else {
             return false;
         };
+        self.device_panel.drag_copy = None;
         drag.destination.set(None);
         drag.return_destination.set(None);
         true
@@ -1058,7 +1083,7 @@ impl super::EditorView {
 
         let first = state.project.tracks().get(*tracks.first()?)?;
         if self.drag_lane_epochs.get(&first.id()) == Some(&self.drag_layout_generation) {
-            let first_lane = *self.drag_lanes.get(&first.id())?;
+            let first_lane = self.painted_track_drop_lane(first.id())?;
             // Reserve the same narrow insertion band at the first row's top,
             // without adding empty layout space above the tracks.
             if first_lane.top >= body.top && pointer_y <= first_lane.top + 3.0 {
@@ -1074,8 +1099,8 @@ impl super::EditorView {
             {
                 continue;
             }
-            let previous_lane = *self.drag_lanes.get(&previous.id())?;
-            let next_lane = *self.drag_lanes.get(&next.id())?;
+            let previous_lane = self.painted_track_drop_lane(previous.id())?;
+            let next_lane = self.painted_track_drop_lane(next.id())?;
             let boundary = (previous_lane.top + previous_lane.height + next_lane.top) * 0.5;
             if (pointer_y - boundary).abs() <= 3.0 {
                 return Some((Some(next.id()), timeline, boundary));
@@ -1086,7 +1111,7 @@ impl super::EditorView {
         if self.drag_lane_epochs.get(&last.id()) != Some(&self.drag_layout_generation) {
             return None;
         }
-        let last_lane = *self.drag_lanes.get(&last.id())?;
+        let last_lane = self.painted_track_drop_lane(last.id())?;
         let bottom = last_lane.top + last_lane.height;
         if pointer_y >= bottom && pointer_y < body.top + body.height {
             return Some((None, timeline, bottom));
@@ -1304,7 +1329,9 @@ impl super::EditorView {
                 start,
             },
         };
-        self.enqueue(request);
+        if self.enqueue(request) {
+            self.stop_browser_preview_for_drop();
+        }
         self.status = "importing sample to arrangement".into();
         self.active_browser_audio_drag = None;
         cx.notify();
@@ -1339,6 +1366,12 @@ impl super::EditorView {
         {
             if self.worker_requests_pending != 0 || !self.pending_requests.is_empty() {
                 self.error = Some("clip move canceled · project work pending".into());
+                clear(self);
+                cx.notify();
+                return;
+            }
+            if self.drag_bounce_held {
+                self.error = Some("bounce drop needs an existing track".into());
                 clear(self);
                 cx.notify();
                 return;
@@ -1398,6 +1431,11 @@ impl super::EditorView {
         }) {
             self.error = Some("clip move canceled · project changed".into());
             clear(self);
+            cx.notify();
+            return;
+        }
+        if std::mem::take(&mut self.drag_bounce_held) {
+            self.drop_clip_bounce(drag, target_track, preview);
             cx.notify();
             return;
         }

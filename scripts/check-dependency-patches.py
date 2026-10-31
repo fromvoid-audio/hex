@@ -61,8 +61,15 @@ def check():
         assert string_value(entries[0], "source") is None and string_value(entries[0], "checksum") is None
         assert set(manifest["patched_files"]) == {"src/lib.rs"}
         metadata = {"HEX-PATCHES.md", "hex-provenance.json", "hex-patches.diff"}
-        actual = {str(path.relative_to(vendor)) for path in vendor.rglob("*") if path.is_file()}
-        assert actual == set(manifest["original_files"]) | metadata
+        # Finder metadata is ignored by Git and is not a dependency build input.
+        # Keep symlinks and every other unexpected file visible to this check.
+        actual = {
+            str(path.relative_to(vendor)) for path in vendor.rglob("*")
+            if path.is_symlink() or (path.is_file() and path.name != ".DS_Store")
+        }
+        assert actual == set(manifest["original_files"]) | metadata, (
+            f"unexpected files in {relative}: {sorted(actual - set(manifest['original_files']) - metadata)}"
+        )
         for path, original in manifest["original_files"].items():
             assert sha((vendor / path).read_bytes()) == manifest["patched_files"].get(path, original), path
         patched = (vendor / "src/lib.rs").read_text()

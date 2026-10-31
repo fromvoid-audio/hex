@@ -429,15 +429,27 @@ impl PreparedOperatorConfiguration {
         ((routed * note.velocity) as f32, signals)
     }
 
+    pub(crate) fn envelope_levels(&self, age: u64, gate: u64) -> [f64; 4] {
+        self.envelopes.levels(age, gate)
+    }
+
+    pub(crate) fn has_uniform_envelopes(&self) -> bool {
+        self.envelopes.is_uniform()
+    }
+
+    pub(crate) fn uniform_envelope_levels(&self, age: u64, gate: u64) -> [f64; 4] {
+        self.envelopes.uniform_levels(age, gate)
+    }
+
     /// Borrow a provider-owned waveform law while preserving original routing,
     /// envelope, velocity and phase arithmetic. No preparation occurs here.
+    // Specialize the render loop for its borrowed waveform sampler.
+    #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn sample_with_waveform_sampler(
         &self,
         note: &PreparedOperatorNote,
-        age: u64,
-        gate: u64,
-        envelope_override: Option<[f64; 4]>,
+        mut amplitudes: [f64; 4],
         phases: &[u64; 4],
         previous: [f64; 4],
         levels: [f64; 4],
@@ -449,7 +461,6 @@ impl PreparedOperatorConfiguration {
         )>,
         mut sample: impl FnMut(usize, u64, u64) -> f32,
     ) -> (f32, [f64; 4]) {
-        let mut amplitudes = envelope_override.unwrap_or_else(|| self.envelopes.levels(age, gate));
         if note.amplitude_velocity_active {
             super::scale_operator_amplitudes(&mut amplitudes, note.amplitude_velocity_scales);
         }
@@ -543,11 +554,20 @@ impl PreparedOperatorConfiguration {
         if !self.feedback_amounts_are_valid(feedback_turns) {
             return Err(Invalid("invalid Operator feedback retarget values"));
         }
-        Ok(OperatorFeedbackParameters {
+        Ok(self.validated_feedback_parameters(feedback_turns))
+    }
+
+    /// Build parameters for feedback already accepted by `feedback_parameters`
+    /// on control. Render paths use this so they never revalidate or fail.
+    pub(crate) fn validated_feedback_parameters(
+        &self,
+        feedback_turns: [f64; OPERATORS],
+    ) -> OperatorFeedbackParameters {
+        OperatorFeedbackParameters {
             oscillator_levels: self.oscillator_levels,
             carrier_weights: self.configuration.routing.carriers,
             feedback_turns,
-        })
+        }
     }
 
     /// Immutable enable continuation: borrow the unchanged note and override

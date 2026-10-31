@@ -556,7 +556,6 @@ impl EditorView {
 
     fn fade_controls(
         &self,
-        state: &ViewState,
         track: TrackId,
         clip: &Clip,
         visible: (u64, u64),
@@ -567,6 +566,8 @@ impl EditorView {
         if self.track_height(track) <= super::track_layout::HEADER_ONLY_HEIGHT {
             return None;
         }
+        // Held `f` reveals every clip; otherwise only the hovered clip (or the
+        // one whose gesture is still displayed) shows its controls.
         let preview = self.fade_preview(clip.id());
         let active = self.fade_curve_active(clip.id());
         if !self.fade_key_held
@@ -576,9 +577,6 @@ impl EditorView {
             return None;
         }
         let fade = preview.unwrap_or(clip.retained_fade());
-        if !self.fade_key_held && fade.is_neutral() && !fade.has_shape() && !active {
-            return None;
-        }
         let lane = self.drag_lanes.get(&track).copied()?;
         if !lane.width.is_finite()
             || lane.width <= 0.0
@@ -589,9 +587,9 @@ impl EditorView {
         {
             return None;
         }
-        let local_fade = fade.reanchor(clip.duration()).ok()?;
-        let local_controls = self.fade_key_held || preview.is_some() || active;
-        let controls = if local_controls { local_fade } else { fade };
+        // Hover and held `f` share these local controls, so the hovered clip
+        // shows exactly the handle set and corner positions that `f` shows.
+        let controls = fade.reanchor(clip.duration()).ok()?;
         let reanchors =
             clip.audio_edit().is_some() || fade.offset() != 0 || fade.span() != clip.duration();
         let mut positions = Vec::with_capacity(6);
@@ -601,34 +599,11 @@ impl EditorView {
             {
                 continue;
             }
-            let local_frame = |position: u64| -> Option<i128> {
-                if local_controls {
-                    Some(i128::from(position))
-                } else if let Some(edit) = clip.audio_edit() {
-                    edit.projected_fade(state.project.tempo_map())
-                        .and_then(|projection| projection.frame_at_domain_position(position))
-                        .ok()
-                        .flatten()
-                        .zip(edit.projected_domain(state.project.tempo_map()).ok())
-                        .map(|(root, (_, _, start, _))| i128::from(root) - i128::from(start))
-                } else {
-                    Some(i128::from(position) - i128::from(fade.offset()))
-                }
-            };
-            let Some(first) = local_frame(domain_frame) else {
-                continue;
-            };
-            let subframe_offset = if subframe > 0.0 {
-                let Some(next) = domain_frame.checked_add(1).and_then(local_frame) else {
-                    continue;
-                };
-                (next - first) as f64 * subframe
-            } else {
-                0.0
-            };
             // Subtract integer origins before conversion, preserving short-clip
-            // precision even near the maximum absolute project frame.
-            let relative = (first - i128::from(visible.0 - clip.start())) as f64 + subframe_offset;
+            // precision even near the maximum absolute project frame. Local
+            // knots are clip frames, so a subframe is already a frame fraction.
+            let relative = (i128::from(domain_frame) - i128::from(visible.0 - clip.start())) as f64
+                + subframe.max(0.0);
             if !relative.is_finite() || relative < 0.0 || relative >= (visible.1 - visible.0) as f64
             {
                 continue;
@@ -657,14 +632,13 @@ impl EditorView {
         }
         Some(FadeControls {
             lane,
-            local_fade,
+            local_fade: controls,
             reanchors,
             positions,
         })
     }
     pub(super) fn fade_handle_hit(
         &self,
-        state: &ViewState,
         track: TrackId,
         clip: &Clip,
         x: f32,
@@ -678,7 +652,7 @@ impl EditorView {
             return false;
         };
         let visible = (clip.start().max(viewport.start), end.min(viewport_end));
-        let Some(controls) = self.fade_controls(state, track, clip, visible, viewport) else {
+        let Some(controls) = self.fade_controls(track, clip, visible, viewport) else {
             return false;
         };
         let left = controls.lane.left
@@ -703,7 +677,7 @@ impl EditorView {
         viewport: Viewport,
         cx: &mut Context<Self>,
     ) -> Vec<gpui::Stateful<Div>> {
-        let Some(controls) = self.fade_controls(state, track, clip, visible, viewport) else {
+        let Some(controls) = self.fade_controls(track, clip, visible, viewport) else {
             return Vec::new();
         };
         let lane = controls.lane;
@@ -757,14 +731,15 @@ impl EditorView {
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::waveform::ClipTooltip {
                             kind: crate::tooltips::Kind::control(handle.name().replace('-', " ")),
-                            name: if reanchors {
-                                format!(
-                                    "{} · editing fits fades to this clip",
-                                    handle.name().replace('-', " ")
-                                )
-                            } else {
-                                handle.name().replace('-', " ")
-                            },
+                            name: format!(
+                                "{}{} · hold f to show all fade handles",
+                                handle.name().replace('-', " "),
+                                if reanchors {
+                                    " · editing fits fades to this clip"
+                                } else {
+                                    ""
+                                }
+                            ),
                         })
                         .into()
                     })

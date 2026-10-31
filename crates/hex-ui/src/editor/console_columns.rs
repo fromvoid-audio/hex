@@ -14,13 +14,14 @@ use hex_session::{
     service::{ArrangementDeviceDestination, Request},
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(super) struct ColumnFrame {
     generation: u64,
     revision: u64,
     window: WindowId,
     size: gpui::Size<gpui::Pixels>,
     page: usize,
+    fold_revision: u64,
 }
 impl ColumnFrame {
     pub(super) fn capture(view: &EditorView, window: &Window, revision: u64) -> Self {
@@ -30,18 +31,39 @@ impl ColumnFrame {
             window: window.window_handle().window_id(),
             size: window.bounds().size,
             page: view.session_track_start,
+            fold_revision: view.arrangement_focus.projection.fold_revision(),
         }
     }
-    fn current(self, view: &EditorView, window: &Window) -> bool {
+    pub(super) fn current(self, view: &EditorView, window: &Window) -> bool {
+        self.current_view(view)
+            && self.window == window.window_handle().window_id()
+            && self.size == window.bounds().size
+    }
+    pub(super) fn current_view(self, view: &EditorView) -> bool {
+        self.current_view_without_page(view) && self.page == view.session_track_start
+    }
+    fn current_view_without_page(self, view: &EditorView) -> bool {
         view.mode == EditorMode::Session
             && self.generation == view.project_generation
             && view
                 .state
                 .as_ref()
                 .is_some_and(|state| state.revision == self.revision)
+            && self.fold_revision == view.arrangement_focus.projection.fold_revision()
+    }
+    pub(super) fn current_transition(
+        self,
+        view: &EditorView,
+        window: &Window,
+        page: usize,
+    ) -> bool {
+        self.current_view_without_page(view)
+            && view.session_track_start == page
             && self.window == window.window_handle().window_id()
             && self.size == window.bounds().size
-            && self.page == view.session_track_start
+    }
+    pub(super) fn current_transition_view(self, view: &EditorView, page: usize) -> bool {
+        self.current_view_without_page(view) && view.session_track_start == page
     }
 }
 impl EditorView {

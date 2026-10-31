@@ -78,9 +78,10 @@ fn command_t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppC
     visual.run_until_parked();
     visual.simulate_keystrokes("cmd-t");
     let command = editor.read_with(&visual, |view, _| {
-        assert!(
-            matches!(&view.last_enqueued_edit, Some(Command::InsertTrack {name, before_track: None}) if name == "audio 3")
-        );
+        assert!(matches!(
+            &view.last_enqueued_edit,
+            Some(Command::InsertDefaultTrack { before_track: None })
+        ));
         view.last_enqueued_edit.clone().unwrap()
     });
     let mut canonical = Editor::new(original.clone(), 8).unwrap();
@@ -88,7 +89,8 @@ fn command_t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppC
         panic!("track result")
     };
     assert_eq!(canonical.project().tracks().len(), 3);
-    assert_eq!(canonical.project().track(id).unwrap().name(), "audio 3");
+    assert_eq!(canonical.project().track(id).unwrap().name(), "track 3");
+    assert!(canonical.project().track(id).unwrap().name_is_automatic());
     let created = canonical.project().track(id).unwrap();
     assert!(created.instrument().is_none());
     assert!(created.devices().is_empty());
@@ -138,7 +140,7 @@ fn command_t_uses_existing_insert_track_and_one_canonical_undo(cx: &mut TestAppC
     assert_eq!(canonical.project().snapshot(), expected);
     assert!(!canonical.undo());
     assert!(canonical.redo());
-    assert_eq!(canonical.project().track(id).unwrap().name(), "audio 3");
+    assert_eq!(canonical.project().track(id).unwrap().name(), "track 3");
 }
 
 #[gpui::test]
@@ -236,7 +238,7 @@ fn empty_track_fixture_catalog_job_owns_same_root_after_view_and_caller_drop(
     assert!(gate.root_present_during_save.load(Ordering::Relaxed));
     visual.update(|_, _| {});
     assert!(weak.upgrade().is_none());
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(std::time::Instant::now() < until, "owned root cleanup");
         std::thread::yield_now();

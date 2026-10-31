@@ -13,13 +13,16 @@ fn request(service: &Service, request: Request) -> Event {
     next(service)
 }
 fn next(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < until);
+        assert!(
+            std::time::Instant::now() < until,
+            "next: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -27,6 +30,8 @@ fn next(service: &Service) -> Event {
 fn verified_preview_submission_waits_for_exact_view_without_canonical_promotion(
     cx: &mut TestAppContext,
 ) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     let service = Service::new(48_000, 16, 0).unwrap();
     next(&service);
     request(
@@ -75,7 +80,7 @@ fn verified_preview_submission_waits_for_exact_view_without_canonical_promotion(
     let preview = changed.device_preview.take().unwrap();
     assert!(preview.state.canonical_audio_source.is_none());
     let identity = preview.identity;
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = crate::test_wait::hang_deadline();
     let (mut output, _backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {
             Ok(pair) => break pair,

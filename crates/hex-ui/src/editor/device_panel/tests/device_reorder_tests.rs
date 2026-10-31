@@ -261,3 +261,282 @@ fn return_titles_reorder_with_undo_and_cancel_or_noop_without_history(cx: &mut T
         assert_eq!(view.worker_requests_pending, 0);
     });
 }
+
+#[gpui::test]
+fn option_drag_copies_the_selected_group_and_undoes_together(cx: &mut TestAppContext) {
+    let (service, mut state, track, first, _, _) = actor_utility_fixture();
+    for _ in 0..2 {
+        service
+            .submit(Request::AddNativeDevice {
+                track,
+                class: NativeDeviceClass::Effect,
+                type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                    "hex.utility",
+                )),
+                before: None,
+            })
+            .unwrap();
+        state = receive_service_event(&service).state;
+    }
+    let second = state.project.track(track).unwrap().devices()[1].id();
+    let third = state.project.track(track).unwrap().devices()[2].id();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1800.0), px(800.0)));
+    visual.run_until_parked();
+    let title = |visual: &mut VisualTestContext, id: DeviceId| {
+        visual
+            .debug_bounds(Box::leak(
+                format!("device-drag-title-{}", id.value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center()
+    };
+    let first_title = title(&mut visual, first);
+    let second_title = title(&mut visual, second);
+    visual.simulate_click(first_title, Modifiers::default());
+    visual.simulate_click(
+        second_title,
+        Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+    );
+    visual.run_until_parked();
+    let target = visual
+        .debug_bounds(Box::leak(
+            format!("device-drop-card-{}", third.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let landing = point(target.left() + px(8.0), target.center().y);
+    let option = Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    // Press Option after the pointer goes down: original group membership must survive.
+    visual.simulate_mouse_down(first_title, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(first_title.x + px(12.0), first_title.y),
+        MouseButton::Left,
+        option,
+    );
+    visual.simulate_mouse_move(landing, MouseButton::Left, option);
+    visual.run_until_parked();
+    visual.simulate_mouse_up(landing, MouseButton::Left, option);
+    pump_until(&editor, cx, |view| {
+        chain(view, DevicePanelOwner::Track(track)).len() == 5
+    });
+    editor.read_with(cx, |view, _| {
+        let devices = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(track)
+            .unwrap()
+            .devices();
+        assert_eq!(
+            [devices[0].id(), devices[1].id(), devices[4].id()],
+            [first, second, third]
+        );
+        assert!(![first, second, third].contains(&devices[2].id()));
+        assert!(![first, second, third].contains(&devices[3].id()));
+        assert_eq!(devices[0].state(), devices[2].state());
+        assert_eq!(devices[1].state(), devices[3].state());
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        chain(view, DevicePanelOwner::Track(track)) == vec![first, second, third]
+    });
+}
+
+#[gpui::test]
+fn option_drag_copies_effects_on_return_and_main(cx: &mut TestAppContext) {
+    let (service, state, track, return_id, return_device, _) = actor_return_utility_fixture();
+    let utility = state.project.device(return_device).unwrap().state().clone();
+    service
+        .submit(Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state: utility,
+        }))
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let main_device = state.project.main_devices()[0].id();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.focused_return = Some(return_id);
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(800.0)));
+    visual.run_until_parked();
+    let option = Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    let owner = DevicePanelOwner::Return(return_id);
+    let landing = drag_title(&mut visual, return_device, return_device, owner, false);
+    visual.simulate_mouse_move(landing, MouseButton::Left, option);
+    visual.simulate_mouse_up(landing, MouseButton::Left, option);
+    pump_until(&editor, cx, |view| chain(view, owner).len() == 2);
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        chain(view, owner) == vec![return_device]
+    });
+    editor.update(cx, |view, cx| {
+        view.focused_return = None;
+        view.selected_track = None;
+        view.device_panel.main_selected = Some(view.project_generation);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let landing = drag_title(
+        &mut visual,
+        main_device,
+        main_device,
+        DevicePanelOwner::Main,
+        false,
+    );
+    visual.simulate_mouse_move(landing, MouseButton::Left, option);
+    visual.simulate_mouse_up(landing, MouseButton::Left, option);
+    pump_until(&editor, cx, |view| {
+        chain(view, DevicePanelOwner::Main).len() == 2
+    });
+    editor.read_with(cx, |view, _| {
+        assert_ne!(
+            view.state.as_ref().unwrap().project.main_devices()[0].id(),
+            main_device
+        )
+    });
+}
+
+#[gpui::test]
+fn option_drag_instrument_into_occupied_track_refuses_without_changes(cx: &mut TestAppContext) {
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let instrument = state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let before = state.project.clone();
+    let revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let landing = drag_title(
+        &mut visual,
+        instrument,
+        effect,
+        DevicePanelOwner::Track(track),
+        false,
+    );
+    let option = Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    visual.simulate_mouse_move(landing, MouseButton::Left, option);
+    visual.simulate_mouse_up(landing, MouseButton::Left, option);
+    pump_until(&editor, cx, |view| view.error.is_some());
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+        assert_eq!(view.state.as_ref().unwrap().project, before);
+    });
+}
+
+#[gpui::test]
+fn option_drag_cancellation_keeps_the_chain_unchanged(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let before = state.project.clone();
+    let revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let landing = drag_title(
+        &mut visual,
+        effect,
+        effect,
+        DevicePanelOwner::Track(track),
+        false,
+    );
+    let option = Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    visual.simulate_mouse_move(landing, MouseButton::Left, option);
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(landing, MouseButton::Left, option);
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, before);
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+        assert!(view.active_native_device_drag.is_none());
+    });
+}
+
+#[gpui::test]
+fn option_drag_copy_applies_to_the_playing_callback(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering::Acquire;
+    let _guard = eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, effect, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(1500.0), px(800.0)));
+    visual.run_until_parked();
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::RenameTrack {
+            track,
+            name: "copy drag ready".into()
+        })))
+    });
+    let (mut output, mut backend) =
+        eq_ui_tests::held_pointer_tests::attach_actual_output(&editor, cx, &mut visual);
+    visual.simulate_keystrokes("space");
+    let deadline = crate::test_wait::hang_deadline();
+    while !backend.status().unwrap().playing.load(Acquire) {
+        eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+        visual.run_until_parked();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "playback did not start"
+        );
+    }
+    let landing = drag_title(
+        &mut visual,
+        effect,
+        effect,
+        DevicePanelOwner::Track(track),
+        false,
+    );
+    let option = Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    visual.simulate_mouse_move(landing, MouseButton::Left, option);
+    visual.simulate_mouse_up(landing, MouseButton::Left, option);
+    loop {
+        eq_ui_tests::held_pointer_tests::pump_output(&editor, cx, &mut output, &mut backend);
+        visual.run_until_parked();
+        let applied = editor.read_with(cx, |view, _| {
+            view.state.as_ref().is_some_and(|state| {
+                state
+                    .project
+                    .track(track)
+                    .is_some_and(|track| track.devices().len() == 2)
+                    && view.applied_project_revision() == Some(state.revision)
+            })
+        });
+        if applied && backend.status().unwrap().playing.load(Acquire) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "copy drag did not reach playing callback: {:?}",
+            editor.read_with(cx, |view, _| view.error.clone())
+        );
+    }
+}

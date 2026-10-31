@@ -75,18 +75,21 @@ fn fixture_wav(environment: &Environment) -> PathBuf {
 }
 
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             assert!(event.error.is_none(), "{:?}", event.error);
             return event;
         }
-        assert!(Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "next: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
 pub(in crate::editor) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
             if v.tick(cx) {
@@ -98,7 +101,10 @@ pub(in crate::editor) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTe
             visual.run_until_parked();
             return;
         }
-        assert!(Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pump: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -1002,7 +1008,7 @@ fn prove_fixture_catalog_custody(cx: &mut TestAppContext, unwind: bool) {
         weak.upgrade().is_none(),
         "fixture/view/job owners released without Arc leak"
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     while root.exists() {
         assert!(
             Instant::now() < deadline,
@@ -1043,12 +1049,15 @@ fn group_fixture_pre_ack_real_import_failure_retains_disk_but_not_environment_me
         let service = Service::new(48_000, 32, 8_000_000).unwrap();
         next(&service);
         service.submit(Request::Import(missing.clone())).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = crate::test_wait::hang_deadline();
         let event = loop {
             if let Ok(event) = service.try_event() {
                 break event;
             }
-            assert!(Instant::now() < deadline);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "group_fixture_pre_ack_real_import_failure_retains_disk_but_not_environment_memory: hang guard expired"
+            );
             std::thread::sleep(Duration::from_millis(2));
         };
         assert!(event.request_complete);
@@ -1191,6 +1200,12 @@ fn copied_mixed_group_selects_actual_worker_births_then_next_drag_moves_only_cop
     // MIDI is born first in row order, then its NoteId, then the copied Audio
     // ClipId: the actual response range contains a note hole.
     let originals = [midi, audio];
+    editor.update(&mut visual, |v, cx| {
+        // Keep the intended short overlap inside the original loop cycle.
+        v.viewport = Some(super::super::viewport::Viewport::fit(384_000));
+        cx.notify();
+    });
+    visual.run_until_parked();
     let target = begin_group(&mut visual, &originals);
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
     visual.simulate_mouse_up(
@@ -1386,12 +1401,15 @@ fn group_copy_deferred_submission_counts_only_own_fifo_terminal_and_actual_refus
     }
 }
 fn next_with_error(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         if let Ok(event) = service.try_event() {
             return event;
         }
-        assert!(Instant::now() < deadline);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "next_with_error: hang guard expired"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }

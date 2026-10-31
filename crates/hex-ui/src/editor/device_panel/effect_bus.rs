@@ -79,11 +79,11 @@ pub(in crate::editor) fn select_main(
     if view.state.is_none() || !finalize_controls(view, cx) {
         return;
     }
-    view.retained_clip_detail = None;
     view.focused_return = None;
     view.selected_track = None;
     view.track_selection = Default::default();
     view.selected_clip = None;
+    view.detail_context = None;
     view.selected_cell = None;
     view.selected_scene = None;
     view.device_panel.main_selected = Some(view.project_generation);

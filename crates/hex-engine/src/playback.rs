@@ -13,7 +13,10 @@ use metronome::Metronome;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackCommand {
     Play,
-    /// Seek and start at this absolute frame, resetting the same state as Seek.
+    /// Start at this absolute frame with fresh effect/voice history. Mutable
+    /// Arrangement notes crossing the cursor retrigger with their remaining
+    /// authored gate; analytic notes retain their direct authored-age law.
+    /// This interactive action never replays audio before the cursor.
     /// A cursor at/after the enabled loop end continues linearly beyond it;
     /// a cursor before the end enters/wraps the loop without changing its bounds.
     PlayFrom(u64),
@@ -103,6 +106,9 @@ pub enum PlaybackActionRejection {
     StreamPagesNotReady = 12,
     StreamActionCancelled = 13,
     SamplerEditBusy = 14,
+    StreamSourceChanged = 15,
+    OutputFailed = 16,
+    NoActivePlayback = 17,
 }
 
 impl PlaybackActionRejection {
@@ -122,12 +128,16 @@ impl PlaybackActionRejection {
             12 => Some(Self::StreamPagesNotReady),
             13 => Some(Self::StreamActionCancelled),
             14 => Some(Self::SamplerEditBusy),
+            15 => Some(Self::StreamSourceChanged),
+            16 => Some(Self::OutputFailed),
+            17 => Some(Self::NoActivePlayback),
             _ => None,
         }
     }
 
     pub const fn message(self) -> &'static str {
         match self {
+            Self::NoActivePlayback => "no active playback graph",
             Self::MetronomeUnavailable => {
                 "metronome requires prepared musical timing and sample storage"
             }
@@ -144,6 +154,8 @@ impl PlaybackActionRejection {
             Self::InvalidSessionAction => "session playback action was rejected",
             Self::StreamActionBusy => "stream action waits for an earlier command or publication",
             Self::StreamPagesNotReady => "stream action page protection is unavailable",
+            Self::StreamSourceChanged => "original media changed · reopen or relink it",
+            Self::OutputFailed => "audio output failed · restart audio before retrying",
             Self::SamplerEditBusy => "sampler edit is preparing; retry after audio is ready",
             Self::StreamActionCancelled => {
                 "stream action was cancelled by transport or replacement"
@@ -214,11 +226,20 @@ pub enum PlaybackHandoffRejection {
     FreshRuntimeCancelled = 7,
     ConstructorClaimsUnavailable = 8,
     StreamedPagesNotReady = 9,
+    LatencyLayoutChanged = 10,
+    SourceHistoryUnavailable = 11,
+    StreamSourceChanged = 12,
 }
 
 impl PlaybackHandoffRejection {
     pub const fn from_error(error: PlaybackHandoffError) -> Self {
         match error {
+            PlaybackHandoffError::Session(crate::SessionPlaybackError::LatencyLayoutChanged) => {
+                Self::LatencyLayoutChanged
+            }
+            PlaybackHandoffError::Session(
+                crate::SessionPlaybackError::SourceHistoryUnavailable,
+            ) => Self::SourceHistoryUnavailable,
             PlaybackHandoffError::Session(crate::SessionPlaybackError::CandidateAlreadyUsed) => {
                 Self::SessionRuntime
             }
@@ -249,6 +270,9 @@ impl PlaybackHandoffRejection {
             7 => Some(Self::FreshRuntimeCancelled),
             8 => Some(Self::ConstructorClaimsUnavailable),
             9 => Some(Self::StreamedPagesNotReady),
+            10 => Some(Self::LatencyLayoutChanged),
+            11 => Some(Self::SourceHistoryUnavailable),
+            12 => Some(Self::StreamSourceChanged),
             _ => None,
         }
     }
@@ -276,6 +300,13 @@ impl PlaybackHandoffRejection {
             Self::FreshRuntimeCancelled => "playback was cancelled before it became active",
             Self::ConstructorClaimsUnavailable => "constructor playback claims are unavailable",
             Self::StreamedPagesNotReady => "streamed playback page readiness is unavailable",
+            Self::StreamSourceChanged => "original media changed · reopen or relink it",
+            Self::LatencyLayoutChanged => {
+                "latency layout could not change live · previous audio continues"
+            }
+            Self::SourceHistoryUnavailable => {
+                "source history cannot transfer live · previous audio continues"
+            }
         }
     }
 }
@@ -284,7 +315,10 @@ impl PlaybackHandoffError {
     pub const fn is_transient(self) -> bool {
         matches!(
             self,
-            Self::Session(crate::SessionPlaybackError::ReleaseBankFull)
+            Self::Session(
+                crate::SessionPlaybackError::ReleaseBankFull
+                    | crate::SessionPlaybackError::GroupTailRoutingBusy
+            )
         )
     }
 
@@ -433,12 +467,6 @@ impl Playback {
             .as_ref()
             .is_some_and(|runtime| runtime.live_expression_supported_on_control(track))
     }
-    /// Existing monitor-latency capability of this actual constructed graph.
-    pub fn computer_keyboard_latency_supported_on_control(&self) -> bool {
-        self.session_runtime
-            .as_ref()
-            .is_some_and(|runtime| runtime.computer_keyboard_latency_supported())
-    }
     /// Control-side attachment validated against the exact compiled instrument instance.
     pub fn prepare_live_expression(
         &mut self,
@@ -458,7 +486,8 @@ impl Playback {
         if project.sample_rate() != self.sample_rate()
             || canonical.id() != input.instrument
             || compiled.instrument_id != Some(input.instrument)
-            || compiled.instrument_state.as_ref() != Some(canonical.state())
+            || compiled.instrument_state.as_ref()
+                != Some(&canonical.state().clone().without_host_gains())
             || compiled.instrument_bypassed != canonical.bypassed()
             || canonical.bypassed()
         {
@@ -525,12 +554,21 @@ impl Playback {
             .find(|candidate| candidate.id() == track)
             .and_then(hex_project::Track::instrument)
             .ok_or(Invalid("computer keyboard track is unavailable"))?;
-        let compiled = self
+        let contributor = self
             .project
             .tracks()
             .iter()
-            .find(|candidate| candidate.canonical_track_id() == Some(track))
+            .position(|candidate| candidate.canonical_track_id() == Some(track))
             .ok_or(Invalid("computer keyboard track is unavailable"))?;
+        let receiver = self
+            .prepared_revision
+            .as_ref()
+            .and_then(|revision| revision.source_routing().receiver_index(contributor));
+        let compiled = self
+            .project
+            .tracks()
+            .get(receiver.unwrap_or(contributor))
+            .ok_or(Invalid("computer keyboard receiver is unavailable"))?;
         if project.sample_rate() != self.sample_rate()
             || compiled.instrument_id != Some(canonical.id())
             || compiled.instrument_state.as_ref() != Some(canonical.state())
@@ -541,11 +579,6 @@ impl Playback {
         let runtime = self.session_runtime.as_mut().ok_or(Invalid(
             "computer keyboard requires prepared session playback",
         ))?;
-        if !runtime.computer_keyboard_latency_supported() {
-            return Err(Invalid(
-                "computer keyboard monitoring is unavailable with positive latency devices",
-            ));
-        }
         let family = self
             .prepared_revision
             .as_ref()
@@ -558,8 +591,37 @@ impl Playback {
         {
             return Err(Invalid("computer keyboard tuning does not match playback"));
         }
-        let resources = runtime.device_resource_lease_on_control(track)?;
-        let mut candidate = Box::new(if let Some(resources) = resources {
+        let source_input = receiver.filter(|_| !runtime.current_sampler_console_available());
+        let resources = if source_input.is_none() {
+            runtime.device_resource_lease_on_control(track)?
+        } else {
+            None
+        };
+        let mut candidate = Box::new(if let Some(receiver) = source_input {
+            let revision = self
+                .prepared_revision
+                .as_ref()
+                .ok_or(Invalid("source provenance is unavailable"))?;
+            let source = runtime.source_runtime_on_control(receiver);
+            let authored = revision
+                .source_routing()
+                .contributors(receiver)
+                .iter()
+                .try_fold(0usize, |sum, &index| {
+                    sum.checked_add(runtime.source_voice_envelope(usize::from(index)))
+                        .ok_or(Invalid("shared live voice capacity overflow"))
+                })?;
+            let capacity = source.map_or(64usize.saturating_sub(authored), |source| {
+                source.live_voice_capacity(authored)
+            });
+            let contexts = self.project.shared_contexts();
+            let context = contexts
+                .index_for_device(canonical.id())
+                .and_then(|index| contexts.clone_owner(index));
+            crate::computer_keyboard::ComputerKeyboardRuntime::prepare_source_input(
+                project, track, input, source, context, capacity,
+            )?
+        } else if let Some(resources) = resources {
             if hint.is_some() {
                 return Err(Invalid("resource keyboard tuning hints are unsupported"));
             }
@@ -589,10 +651,30 @@ impl Playback {
             crate::computer_keyboard::ComputerKeyboardRuntime::prepare(project, track, input)?
         });
         candidate.set_tuning_family(family);
+        if candidate.is_source_input()
+            && let Some(hint) = hint
+        {
+            candidate.validate_source_tuning_lease(family, hint)?;
+        }
         let previous = runtime.computer_keyboard.replace(candidate);
         if runtime.validate_candidate_runtime_storage(0).is_err() {
             runtime.computer_keyboard = previous;
             return Err(Invalid("computer keyboard exceeds graph storage budget"));
+        }
+        if runtime
+            .computer_keyboard
+            .as_ref()
+            .is_some_and(|keyboard| keyboard.is_source_input())
+            && runtime.activate_source_monitor_on_control().is_err()
+        {
+            runtime.computer_keyboard = previous;
+            return Err(Invalid("source monitoring could not release clip notes"));
+        }
+        if let Some(input) = previous
+            .as_ref()
+            .and_then(|keyboard| keyboard.source_input_id())
+        {
+            runtime.release_source_input_on_control(input);
         }
         Ok(())
     }
@@ -1007,6 +1089,33 @@ impl Playback {
         }
     }
 
+    pub fn native_parameter_input_target(&self) -> Option<crate::NativeParameterInputTarget> {
+        self.session_runtime
+            .as_ref()?
+            .native_parameter_input_target()
+    }
+    pub fn set_native_parameter_input(
+        &mut self,
+        operation: hex_lattice::NativeTransientOperation,
+    ) -> Result<(), Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("native parameter input requires session playback"))?
+            .set_native_parameter_input(operation)
+    }
+    pub fn invalidate_native_parameter_input(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.invalidate_native_parameter_input();
+        }
+    }
+    pub fn take_native_parameter_application(
+        &mut self,
+    ) -> Option<crate::NativeParameterApplication> {
+        self.session_runtime
+            .as_mut()?
+            .take_native_parameter_application()
+    }
+
     /// True only for an explicitly armed, admitted Session-capable runtime.
     pub fn gain_recording_ready(&self, track: u64) -> bool {
         self.session_runtime
@@ -1196,7 +1305,7 @@ impl Playback {
         self.project.sample_rate()
     }
 
-    /// Control-side immutable prepared source facts; these are not page or
+    /// Control-side immutable prepared PCM source facts; these are not page or
     /// native publication authority. Legacy graphs without a complete prepared
     /// revision return an explicit refusal rather than incomplete dependencies.
     pub fn streamed_sources_on_control(
@@ -1208,6 +1317,27 @@ impl Playback {
             .ok_or(Invalid("prepared source inventory unavailable"))?
             .streamed_sources())
     }
+    /// Complete typed dependency inventory for ordinary native publication.
+    /// Actual catalog leases are checked by the output's existing domain owner.
+    pub fn stream_resources_on_control(
+        &self,
+    ) -> Result<impl Iterator<Item = crate::StreamResourceMetadata> + '_, Invalid> {
+        let revision = self
+            .prepared_revision
+            .as_ref()
+            .ok_or(Invalid("prepared source inventory unavailable"))?;
+        Ok(revision
+            .streamed_sources()
+            .cloned()
+            .map(crate::StreamResourceMetadata::Audio)
+            .chain(
+                revision
+                    .scalar_automation
+                    .iter()
+                    .map(|binding| crate::StreamResourceMetadata::Scalar(binding.source.clone())),
+            ))
+    }
+
     /// Whether any Arrangement or Session source needs the streamed page
     /// provider. Cached by the prepared revision, not rescanned per block.
     pub fn contains_streamed_sources(&self) -> bool {
@@ -1253,6 +1383,19 @@ impl Playback {
         self.session_runtime
             .as_ref()
             .and_then(|runtime| runtime.transient_loop)
+    }
+
+    /// Configured content-clock law for a control-side automation capture.
+    /// Includes a transient section loop and excludes loops during linear export.
+    /// A first-pass origin at/after its end still advances linearly, following
+    /// the renderer's absolute-seek rule. This read-only fact grants no capture
+    /// admission: the caller must fence the exact output, source and transport
+    /// epoch through the existing delivered-input endpoint.
+    pub fn automation_capture_loop(&self) -> Option<hex_project::LoopRegion> {
+        self.session_runtime.as_ref().map_or_else(
+            || self.project.loop_region().filter(|region| region.enabled()),
+            |runtime| runtime.loop_region(),
+        )
     }
 
     /// True after the legacy monotonic clock reached its representable limit.
@@ -1384,13 +1527,9 @@ impl Playback {
                     let command = match command {
                         PlaybackCommand::Play => crate::SessionPlaybackCommand::Play,
                         PlaybackCommand::PlayFrom(frame) => {
-                            runtime
-                                .apply(crate::SessionPlaybackCommand::Seek(frame))
-                                .map_err(PlaybackActionError::Session)?;
-                            runtime
-                                .apply(crate::SessionPlaybackCommand::Play)
-                                .map_err(PlaybackActionError::Session)?;
-                            return Ok(());
+                            return runtime
+                                .play_from(frame)
+                                .map_err(PlaybackActionError::Session);
                         }
                         PlaybackCommand::Pause => crate::SessionPlaybackCommand::Pause,
                         PlaybackCommand::Stop => crate::SessionPlaybackCommand::Stop,
@@ -1600,7 +1739,33 @@ impl Playback {
                         .as_ref()
                         .zip(previous.prepared_revision.as_ref())
                         .is_some_and(|(next, old)| next.tuning_family() == old.tuning_family());
-                if (!exact_revision && !tuning_revision) || !next.can_preserve_from(old) {
+                // Input-only source schedulers carry no synthesis history.
+                // Their exact live tokens can follow a source publication only
+                // after Session's complete source runtime/import proof succeeds.
+                let source_revision = same_control_context
+                    && next.is_source_input()
+                    && old.is_source_input()
+                    && self
+                        .prepared_revision
+                        .as_ref()
+                        .zip(previous.prepared_revision.as_ref())
+                        .is_some_and(|(next_revision, old_revision)| {
+                            let source =
+                                |revision: &PreparedRevision, track: hex_project::TrackId| {
+                                    revision
+                                        .arrangement()
+                                        .tracks()
+                                        .iter()
+                                        .position(|row| row.canonical_track_id() == Some(track))
+                                        .and_then(|index| revision.source_routing().source(index))
+                                };
+                            source(next_revision, next.track())
+                                .zip(source(old_revision, old.track()))
+                                .is_some_and(|(next, old)| next == old)
+                        });
+                if (!exact_revision && !tuning_revision && !source_revision)
+                    || !next.can_preserve_from(old)
+                {
                     return Err(PlaybackHandoffError::Session(
                         crate::SessionPlaybackError::DeviceRuntime,
                     ));
@@ -1611,7 +1776,7 @@ impl Playback {
         };
         match (&mut self.session_runtime, &mut previous.session_runtime) {
             (Some(next), Some(old)) => next
-                .try_inherit_state_from(old)
+                .try_inherit_state_live_from(old)
                 .map(|_| ())
                 .map_err(PlaybackHandoffError::Session)?,
             (Some(next), None) => {
@@ -1940,7 +2105,7 @@ impl Playback {
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<crate::StreamChunkWindow, Invalid> {
         self.session_runtime
             .as_ref()
@@ -1951,7 +2116,7 @@ impl Playback {
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<crate::StreamChunkWindow, Invalid> {
         self.session_runtime
             .as_ref()
@@ -1963,7 +2128,7 @@ impl Playback {
         previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
         let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         let next = self.session_runtime.as_mut().ok_or_else(invalid)?;
@@ -1976,7 +2141,7 @@ impl Playback {
         previous: &mut Self,
         maximum_frames: usize,
         playing: Option<bool>,
-        visit: &mut impl FnMut(crate::StreamPageExtent) -> Result<(), Invalid>,
+        visit: &mut impl FnMut(crate::StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<crate::StreamChunkWindow, PlaybackHandoffError> {
         let invalid = || PlaybackHandoffError::Session(crate::SessionPlaybackError::InvalidCommand);
         let next = self.session_runtime.as_mut().ok_or_else(invalid)?;

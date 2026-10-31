@@ -573,7 +573,10 @@ impl EditorView {
                 .get(&role)
                 .copied()
                 .unwrap_or(0.0);
-            picker.update(cx, |picker, cx| picker.set_external_color(rgb, hue, cx));
+            picker.update(cx, |picker, cx| {
+                picker.cancel_pointer(cx);
+                picker.set_external_color(rgb, hue, cx);
+            });
         }
         self.sync_theme_controls(cx);
         cx.notify();
@@ -854,6 +857,11 @@ impl EditorView {
             cx.notify();
         }
         true
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn mark_theme_save_pending_for_update_test(&mut self) {
+        self.theme_settings.saving = true;
     }
 
     pub(super) fn render_theme_settings(
@@ -1166,7 +1174,7 @@ mod tests {
                 editor
             })
             .expect("editor window");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             cx.run_until_parked();
             if editor.read_with(cx, |view, _| {
@@ -1426,6 +1434,45 @@ mod tests {
         let reloaded = hex_preferences::load_theme_preferences(&directory.0.join("theme.json"))
             .expect("saved palette reloads");
         assert_eq!(reloaded.secondary, theme::preferences().secondary);
+    }
+
+    #[gpui::test]
+    fn changing_picker_role_with_equal_rgb_retires_the_old_pointer(cx: &mut TestAppContext) {
+        let _restore = RestoreTheme(theme::preferences());
+        theme::apply_preferences(ThemePreferences::default());
+        let directory = TestDirectory::new();
+        let (handle, editor) = editor_fixture(cx, &directory);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-,");
+        visual.run_until_parked();
+        editor.update(cx, |view, cx| {
+            view.select_theme_role(ThemeRole::Primary, cx)
+        });
+        visual.run_until_parked();
+        let field = visual.debug_bounds("theme-color-picker-field").unwrap();
+        visual.simulate_mouse_down(field.center(), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let retained = editor.update(cx, |view, cx| {
+            let color = view.theme_settings.draft.primary;
+            // Source identity changes even when its current value is identical.
+            view.theme_settings.draft.secondary = color;
+            view.select_theme_role(ThemeRole::Secondary, cx);
+            color
+        });
+        visual.run_until_parked();
+        let moved = field.origin + point(field.size.width * 0.8, field.size.height * 0.2);
+        visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.theme_settings.selected_role, ThemeRole::Secondary);
+            assert_eq!(view.theme_settings.draft.primary, retained);
+            assert_eq!(
+                view.theme_settings.draft.secondary, retained,
+                "an old pointer must not edit the newly selected role"
+            );
+        });
     }
 
     #[gpui::test]

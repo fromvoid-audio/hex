@@ -42,6 +42,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: Vec::new(),
             instrument: Some(hex_project::DeviceSnapshot {
+                automation: Vec::new(),
                 comparison: None,
                 id: instrument_id,
                 bypassed: false,
@@ -61,6 +62,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 next_id += 1;
                 notes.push(MidiNoteSnapshot {
                     id,
+                    active: true,
                     start_raw: 0,
                     duration_raw: 2 << 32,
                     pitch: 48 + ((index + voice) % 36) as u8,
@@ -98,7 +100,9 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
             });
         }
     }
-    Ok(Project::from_snapshot(Snapshot {
+    Ok(Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),

@@ -36,6 +36,7 @@ fn session_loop_project() -> Project {
         looping: true,
         notes: vec![
             MidiNoteSnapshot {
+                active: true,
                 id: NOTE_BEFORE_START,
                 start_raw: Q / 4,
                 duration_raw: 2 * Q,
@@ -44,6 +45,7 @@ fn session_loop_project() -> Project {
                 velocity: 100,
             },
             MidiNoteSnapshot {
+                active: true,
                 id: NOTE_INTRO_ONLY,
                 start_raw: 3 * Q / 4,
                 duration_raw: 2 * Q,
@@ -52,6 +54,7 @@ fn session_loop_project() -> Project {
                 velocity: 100,
             },
             MidiNoteSnapshot {
+                active: true,
                 id: NOTE_REPEATED,
                 start_raw: 3 * Q / 2,
                 duration_raw: 2 * Q,
@@ -91,6 +94,7 @@ fn session_expanded_oracle_project() -> Project {
     // the existing contract does not chase an onset authored before source_start.
     clip.source.notes = vec![
         MidiNoteSnapshot {
+            active: true,
             id: NOTE_INTRO_ONLY,
             start_raw: Q / 4,
             duration_raw: 5 * Q / 4,
@@ -99,6 +103,7 @@ fn session_expanded_oracle_project() -> Project {
             velocity: 100,
         },
         MidiNoteSnapshot {
+            active: true,
             id: NOTE_REPEATED,
             start_raw: Q,
             duration_raw: Q / 2,
@@ -107,6 +112,7 @@ fn session_expanded_oracle_project() -> Project {
             velocity: 100,
         },
         MidiNoteSnapshot {
+            active: true,
             id: NOTE_REPEATED + 1,
             start_raw: 2 * Q,
             duration_raw: Q / 2,
@@ -115,6 +121,7 @@ fn session_expanded_oracle_project() -> Project {
             velocity: 100,
         },
         MidiNoteSnapshot {
+            active: true,
             id: NOTE_REPEATED + 2,
             start_raw: 3 * Q,
             duration_raw: Q / 2,
@@ -150,6 +157,7 @@ pub(super) fn arrangement_loop_project() -> Project {
     clip.loop_end_raw = 2 * Q;
     clip.looping = true;
     clip.notes = vec![MidiNoteSnapshot {
+        active: true,
         id: 3,
         start_raw: 3 * Q / 2,
         duration_raw: 2 * Q,
@@ -178,6 +186,7 @@ fn arrangement_expanded_oracle_project() -> Project {
     clip.looping = false;
     clip.notes = (0..4)
         .map(|iteration| MidiNoteSnapshot {
+            active: true,
             id: first_note_id + iteration,
             start_raw: (iteration + 1) * Q,
             duration_raw: Q / 2,
@@ -544,6 +553,7 @@ fn mutable_source_loop_admission_keeps_period_and_density_bounds() {
     clip.source.loop_end_raw = Q;
     clip.source.notes = (0..129)
         .map(|index| MidiNoteSnapshot {
+            active: true,
             id: 2_000_000 + index,
             // 129 gates per period, with exact adjacency when pitch zero
             // repeats. Preserve density without invalid same-pitch authoring.
@@ -588,6 +598,7 @@ fn once_boundary_renders_the_original_source_window_in_both_views_across_blocks(
             (&mut clip.source.notes, clip.source.loop_end_raw)
         };
         notes.push(MidiNoteSnapshot {
+            active: true,
             id: NOTE_REPEATED + 1,
             start_raw: 3 * Q,
             duration_raw: Q / 2,

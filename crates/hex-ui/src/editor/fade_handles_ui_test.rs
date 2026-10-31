@@ -791,9 +791,9 @@ fn two_axis_curve_drags_change_pcm_keep_endpoints_and_bound_vertical_travel(
 
 #[gpui::test]
 fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppContext) {
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
     fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             let ready = editor.update(&mut *visual, |v, cx| {
                 if v.tick(cx) {
@@ -844,7 +844,7 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
     let held = visual.debug_bounds(selector).unwrap();
     let preview = editor.read_with(&visual, |v, _| v.fade_preview(clip).unwrap());
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let event = loop {
         if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
             if event.request_complete {
@@ -904,6 +904,48 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
     });
     hover_clip(&mut visual, clip);
     assert_eq!(visual.debug_bounds(selector), Some(held));
+
+    // A later canonical document replacement cancels an unadmitted drag.
+    // Its eventual mouse-up must not apply the old envelope to the new source.
+    key(&mut visual, true, "f");
+    let from = visual.debug_bounds(selector).unwrap().center();
+    let to = point(from.x - px(7.0), from.y + px(6.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let generation = editor.read_with(&visual, |v, _| {
+        assert!(v.active_fade_drag.as_ref().is_some_and(|drag| drag.moved));
+        v.project_generation
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        }));
+    });
+    pump(&editor, &mut visual);
+    let replacement = editor.update(&mut visual, |v, _| {
+        assert!(v.project_generation > generation);
+        assert!(v.active_fade_drag.is_none() && v.pending_fade.is_none());
+        assert!(v.state.as_ref().unwrap().project.tracks().is_empty());
+        // Reset only the test edit trace after the expected earlier commit.
+        v.last_enqueued_edit = None;
+        v.state.as_ref().unwrap().project.snapshot()
+    });
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    for _ in 0..2 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds(selector).is_none());
+    }
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), replacement);
+        assert!(v.last_enqueued_edit.is_none());
+        assert!(v.error.is_none() && !v.state.as_ref().unwrap().can_undo);
+        assert!(v.active_fade_drag.is_none() && v.pending_fade.is_none());
+        assert!(v.pending_requests.is_empty() && v.worker_requests_pending == 0);
+    });
 }
 
 #[gpui::test]
@@ -932,7 +974,7 @@ fn real_refusal_retires_frozen_curve_with_its_canonical_state(cx: &mut TestAppCo
     visual.run_until_parked();
     let held = visual.debug_bounds(selector).unwrap();
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     let terminal = loop {
         if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event())
             && event.request_complete
@@ -1024,4 +1066,116 @@ fn sample_zoomed_short_curves_follow_subframe_pointer_motion(cx: &mut TestAppCon
         model.execute(command).unwrap();
         assert_eq!(model.project().clip(clip).unwrap().retained_fade(), preview);
     }
+}
+
+#[gpui::test]
+fn hover_reveals_the_held_f_handle_set_on_the_hovered_clip_only(cx: &mut TestAppContext) {
+    let (project, _, _, first) = super::super::clip_drag_ui_test::audio_project();
+    let mut canonical = hex_project::Editor::new(project, 16).unwrap();
+    let hex_project::Created::Clip(second) = canonical
+        .execute(Command::SplitClip {
+            clip: first,
+            frame: 48_000,
+        })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    // One authored clip (curve handles too) and one fade-free clip.
+    canonical
+        .execute(Command::SetClipFadeEnvelope {
+            clip: first,
+            fade: ClipFade::new(48_000, 0, 12_000, 12_000).unwrap(),
+        })
+        .unwrap();
+    let (handle, _) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        canonical.project().clone(),
+        Arc::default(),
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let handles = |visual: &mut VisualTestContext, clip: ClipId| {
+        visual.run_until_parked();
+        [
+            Handle::InTop,
+            Handle::InBottom,
+            Handle::InCurve,
+            Handle::OutTop,
+            Handle::OutBottom,
+            Handle::OutCurve,
+        ]
+        .map(|kind| {
+            visual.debug_bounds(Box::leak(
+                format!("{}-{}", kind.name(), clip.value()).into_boxed_str(),
+            ))
+        })
+    };
+    let away = |visual: &mut VisualTestContext| {
+        visual.simulate_mouse_move(point(px(5.0), px(5.0)), None, Modifiers::default());
+    };
+    let none = [None; 6];
+    assert_eq!(handles(&mut visual, first), none);
+    assert_eq!(handles(&mut visual, second), none);
+    for (clip, other, authored) in [(first, second, true), (second, first, false)] {
+        away(&mut visual);
+        key(&mut visual, true, "f");
+        let held = handles(&mut visual, clip);
+        assert!(held.iter().filter(|b| b.is_some()).count() == if authored { 6 } else { 4 });
+        key(&mut visual, false, "f");
+        hover_clip(&mut visual, clip);
+        assert_eq!(
+            handles(&mut visual, clip),
+            held,
+            "hover shows the same handles at the same corners as held f"
+        );
+        assert_eq!(handles(&mut visual, other), none, "only the hovered clip");
+    }
+    away(&mut visual);
+    assert_eq!(handles(&mut visual, first), none);
+    assert_eq!(handles(&mut visual, second), none);
+}
+
+#[gpui::test]
+fn hover_revealed_handle_on_a_fade_free_clip_drags_one_fade_without_moving_clip(
+    cx: &mut TestAppContext,
+) {
+    let (project, _, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let original = project.clip(clip).unwrap().clone();
+    assert!(original.retained_fade().is_neutral());
+    let (handle, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    hover_clip(&mut visual, clip);
+    let target = visual
+        .debug_bounds(Box::leak(
+            format!("fade-out-top-{}", clip.value()).into_boxed_str(),
+        ))
+        .expect("hover reveals the fade-free clip's handle")
+        .center();
+    visual.simulate_mouse_move(target, None, Modifiers::default());
+    visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+    let to = point(target.x - px(30.0), target.y);
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.active_fade_drag.as_ref().unwrap().preview.fade_out() > 0);
+        assert!(view.active_clip_drag.is_none() && view.active_trim_drag.is_none());
+    });
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    let edit = editor.read_with(&visual, |view, _| {
+        assert!(view.active_fade_drag.is_none());
+        view.last_enqueued_edit.clone().expect("one fade edit")
+    });
+    let mut canonical = hex_project::Editor::new(
+        editor.read_with(&visual, |v, _| (*v.state.as_ref().unwrap().project).clone()),
+        8,
+    )
+    .unwrap();
+    canonical.execute(edit).unwrap();
+    let changed = canonical.project().clip(clip).unwrap();
+    assert_eq!(
+        (changed.start(), changed.duration()),
+        (original.start(), original.duration())
+    );
+    assert!(changed.fade().fade_out() > 0 && changed.fade().fade_in() == 0);
 }

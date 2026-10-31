@@ -20,6 +20,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
                 next_id += 1;
                 MidiNoteSnapshot {
                     id,
+                    active: true,
                     start_raw: (note * 4) << 32,
                     duration_raw: 1 << 32,
                     pitch: 48 + (index % 36) as u8,
@@ -65,7 +66,9 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             sends: Vec::new(),
         });
     }
-    Project::from_snapshot(Snapshot {
+    Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
+        aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
         main_devices: Vec::new(),

@@ -263,6 +263,7 @@ impl Workspace {
         let focus = cx.focus_handle();
         focus.focus(window);
         self.menu = Some(PopupMenu {
+            scroll: Default::default(),
             position,
             icon_grid: grid.then(|| vec!["○", "△", "□", "+"]),
             items,
@@ -758,7 +759,7 @@ impl Workspace {
                             .bottom(px(8.0))
                             .left(gpui::relative(start))
                             .w(gpui::relative(end - start))
-                            .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            .bg(rgb(theme::time_selection_fill()))
                             .opacity(theme::TIME_SELECTION_OPACITY),
                     );
                 for edge in [TimeMarkerEdge::Top, TimeMarkerEdge::Bottom] {

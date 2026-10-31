@@ -74,6 +74,34 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
         old.as_object_mut().unwrap().remove("native_sources"),
         Some(serde_json::json!([]))
     );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("track_source_bindings"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("session_audio_cycles"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
+        old.as_object_mut().unwrap().remove("device_automation"),
+        Some(serde_json::json!([]))
+    );
+    for key in [
+        "alias_sources",
+        "alias_members",
+        "host_automation",
+        "inactive_midi_notes",
+        "inactive_audio_events",
+        "nested_audio",
+        "audio_event_gains",
+        "midi_clip_gains",
+        "automatic_track_names",
+    ] {
+        assert_eq!(
+            old.as_object_mut().unwrap().remove(key),
+            Some(serde_json::json!([]))
+        );
+    }
     old["version"] = 36.into();
     old.as_object_mut().unwrap().remove("arrangement_sections");
     let original = serde_json::to_vec(&old).unwrap();
@@ -147,14 +175,13 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
 #[test]
 fn growing_current_document_requires_consent_only_when_crossing_older_reader_limit() {
     use hex_project::{BeatTime, TrackContentSnapshot};
+    // The consent flow, not the byte count, is this boundary's contract: the
+    // service's older-reader ceiling sits just above the original document, so
+    // duplicating its clips crosses it. hex-storage's provenance tests own the
+    // real 8 MiB LEGACY_READER_DOCUMENT_BYTES threshold.
     fn large_request(service: &Service, request: Request) -> Event {
         service.submit(request).unwrap();
-        // Real 8k-clip validation/compilation runs in debug, outside a realtime
-        // callback. Keep a finite deadline without using the tiny-fixture budget.
-        service
-            .events
-            .recv_timeout(Duration::from_secs(60))
-            .unwrap()
+        next(service)
     }
     let files = Files::new();
     let path = files.0.join("growing.hex");
@@ -182,7 +209,7 @@ fn growing_current_document_requires_consent_only_when_crossing_older_reader_lim
         panic!("midi")
     };
     let seed = clips[0].clone();
-    *clips = (0..4096)
+    *clips = (0..64)
         .map(|index| {
             let mut clip = seed.clone();
             clip.id = index + 10;
@@ -191,12 +218,14 @@ fn growing_current_document_requires_consent_only_when_crossing_older_reader_lim
             clip
         })
         .collect();
-    snapshot.next_id = 4106;
+    snapshot.next_id = 74;
     let small = Project::from_snapshot(snapshot).unwrap();
     hex_storage::save_new(&path, &small).unwrap();
     let original = fs::read(&path).unwrap();
-    assert!(original.len() < hex_storage::LEGACY_READER_DOCUMENT_BYTES);
+    let limit = original.len() + 1024;
+    assert!(limit < hex_storage::LEGACY_READER_DOCUMENT_BYTES);
     let service = Service::new(48_000, 4, 8_000_000).unwrap();
+    service.diagnostics.set_legacy_reader_limit(limit as u64);
     next(&service);
     let opened = large_request(&service, Request::Open(path.clone()));
     assert!(opened.error.is_none(), "{:?}", opened.error);
@@ -214,10 +243,7 @@ fn growing_current_document_requires_consent_only_when_crossing_older_reader_lim
         },
     );
     assert!(grown.error.is_none(), "{:?}", grown.error);
-    assert!(
-        hex_storage::encode(&grown.state.project).unwrap().len()
-            > hex_storage::LEGACY_READER_DOCUMENT_BYTES
-    );
+    assert!(hex_storage::encode(&grown.state.project).unwrap().len() > limit);
     let refused = large_request(&service, Request::SaveCurrent);
     assert!(refused.save_complete && refused.save_confirmation_required);
     assert!(refused.error.is_some());
@@ -254,4 +280,51 @@ fn growing_current_document_requires_consent_only_when_crossing_older_reader_lim
     let copied = large_request(&service, Request::SaveNew(copy.clone()));
     assert!(copied.error.is_none(), "{:?}", copied.error);
     assert_eq!(hex_storage::load(copy).unwrap(), *grown.state.project);
+}
+
+#[test]
+fn schema60_and_schema61_save_require_consent_or_save_as_for_current_schema() {
+    for version in [60, 61] {
+        let files = Files::new();
+        let path = files.0.join(format!("schema{version}.hex"));
+        let service = Service::new(48_000, 16, 8_000_000).unwrap();
+        let initial = next(&service);
+        let mut prior: serde_json::Value =
+            serde_json::from_slice(&hex_storage::encode(&initial.state.project).unwrap()).unwrap();
+        // Empty prior formats omit fields introduced by later schemas.
+        assert_eq!(
+            prior.as_object_mut().unwrap().remove("midi_clip_gains"),
+            Some(serde_json::json!([]))
+        );
+        assert_eq!(
+            prior
+                .as_object_mut()
+                .unwrap()
+                .remove("automatic_track_names"),
+            Some(serde_json::json!([]))
+        );
+        if version == 60 {
+            assert_eq!(
+                prior.as_object_mut().unwrap().remove("audio_event_gains"),
+                Some(serde_json::json!([]))
+            );
+        }
+        prior["version"] = version.into();
+        let original = serde_json::to_vec(&prior).unwrap();
+        fs::write(&path, &original).unwrap();
+        let opened = request(&service, Request::Open(path.clone()));
+        assert!(opened.error.is_none(), "{:?}", opened.error);
+        assert!(opened.document_format_upgrade_required);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let refused = request(&service, Request::SaveCurrent);
+        assert!(refused.save_confirmation_required && refused.error.is_some());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let copy = files.0.join("upgraded.hex");
+        let saved = request(&service, Request::SaveNew(copy.clone()));
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        assert!(!saved.document_format_upgrade_required);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let upgraded: serde_json::Value = serde_json::from_slice(&fs::read(copy).unwrap()).unwrap();
+        assert_eq!(upgraded["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+    }
 }

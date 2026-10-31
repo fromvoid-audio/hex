@@ -143,7 +143,7 @@ impl EditorView {
 
     fn range_input_available(&self) -> bool {
         self.mode == EditorMode::Arrangement
-            && !self.automation_view.enabled
+            && (!self.automation_view.enabled || self.time_selection_key_held)
             && self.clip_name_edit.is_none()
             && !self.sections.naming()
             && !self.track_name.is_editing()
@@ -211,7 +211,6 @@ impl EditorView {
             pulse_color: theme::color(theme::PaletteRole::Text),
             pulse_started: Instant::now(),
         });
-        self.retain_clip_detail_for_time_selection();
         self.selected_clip = None;
         self.suppress_cursor_click = true;
         true
@@ -284,7 +283,6 @@ impl EditorView {
             free_modifier: free,
             last_tick: Instant::now(),
         });
-        self.retain_clip_detail_for_time_selection();
         self.selected_clip = None;
         true
     }
@@ -417,7 +415,9 @@ impl EditorView {
             return false;
         };
         let (ordinary_handle, priority_control) = self.clip_pointer_handles(track, x, y, viewport);
-        if priority_control || ((extend || !inside_selection) && ordinary_handle) {
+        if !self.time_selection_key_held
+            && (priority_control || ((extend || !inside_selection) && ordinary_handle))
+        {
             return false;
         }
         let anchor = self.time_selection_cursor_anchor(extend);
@@ -449,8 +449,12 @@ impl EditorView {
             free_modifier: free,
             last_tick: Instant::now(),
         });
-        self.retain_clip_detail_for_time_selection();
-        self.select_lane_track(track);
+        self.select_lane_span(selection.anchor_track, track);
+        // The pressed clip stays the clip editor subject, not an object selection.
+        let pressed = self.arrangement_clip_at(track, frame, self.detail_clip_id());
+        if anchor.is_none() {
+            self.set_detail_context(pressed);
+        }
         self.selected_clip = None;
         self.cancel_midi_note_gesture();
         true
@@ -1020,7 +1024,7 @@ impl EditorView {
         self.time_selection = Some(next);
         self.time_selection_gesture = Some(gesture);
         if !self.time_selection_project_scope {
-            self.select_lane_track(track);
+            self.select_lane_span(next.anchor_track, track);
         }
         self.selected_clip = None;
         true
@@ -1031,7 +1035,9 @@ impl EditorView {
             return false;
         };
         self.suppress_cursor_click = gesture.moved;
-        self.finish_arrange_range_fit();
+        if gesture.moved {
+            self.fit_clip_editor_to_time_selection();
+        }
         true
     }
 
@@ -1053,7 +1059,6 @@ impl EditorView {
     pub(super) fn cancel_time_selection_gesture(&mut self) -> bool {
         let had_move = self.cancel_time_range_move_gesture();
         let had_gesture = self.time_selection_gesture.take().is_some();
-        self.cancel_arrange_range_fit();
         if had_move {
             self.advance_selection_intent();
             self.suppress_cursor_click = false;
@@ -1141,7 +1146,7 @@ impl EditorView {
         let Some(viewport_end) = viewport.end().filter(|_| viewport.length > 0) else {
             return (true, false);
         };
-        let handle_hit = |start: u64, end: u64, minimum: f32| {
+        let handle_hit = |start: u64, end: u64| {
             let visible_start = start.max(viewport.start);
             let visible_end = end.min(viewport_end);
             if visible_start >= visible_end {
@@ -1151,15 +1156,18 @@ impl EditorView {
                 + lane.width
                     * ((visible_start - viewport.start) as f64 / viewport.length as f64) as f32;
             let fraction = (visible_end - visible_start) as f64 / viewport.length as f64;
-            let width = super::trim::rendered_clip_width(lane.width, fraction, minimum);
+            let width = super::trim::rendered_clip_width(lane.width, fraction);
             if x < left || x >= left + width {
                 return None;
             }
+            // Edge trim strips only cover the header rail (the whole row when
+            // it is header-only); below that the edge is ordinary body.
             let edge = super::trim::handle_width(width);
+            let on_edge = (visible_start == start && x < left + edge)
+                || (visible_end == end && x >= left + width - edge);
             Some(
                 y < lane.top + header_hit_height(lane.height)
-                    || (visible_start == start && x < left + edge)
-                    || (visible_end == end && x >= left + width - edge),
+                    || (on_edge && y < lane.top + super::trim::edge_trim_height(lane.height)),
             )
         };
         // MIDI is drawn after audio; later clips cover earlier clips of each kind.
@@ -1173,7 +1181,7 @@ impl EditorView {
                     return None;
                 }
                 let preview = state.midi_preview.get(clip.id())?;
-                handle_hit(preview.frame_start, preview.frame_end, 4.0).map(|ordinary| {
+                handle_hit(preview.frame_start, preview.frame_end).map(|ordinary| {
                     (
                         ordinary,
                         super::trim::loop_handles::midi_controls(
@@ -1192,10 +1200,10 @@ impl EditorView {
                         return None;
                     }
                     let end = clip.start().checked_add(clip.duration())?;
-                    handle_hit(clip.start(), end, 3.0).map(|ordinary| {
+                    handle_hit(clip.start(), end).map(|ordinary| {
                         (
                             ordinary,
-                            self.fade_handle_hit(state, track.id(), clip, x, y, viewport)
+                            self.fade_handle_hit(track.id(), clip, x, y, viewport)
                                 || super::trim::loop_handles::audio_controls(
                                     clip,
                                     &state.project,
@@ -1319,7 +1327,7 @@ impl EditorView {
                     div()
                         .absolute()
                         .inset_0()
-                        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                        .bg(rgb(theme::time_selection_fill()))
                         .opacity(theme::TIME_SELECTION_OPACITY)
                         .child(
                             div()
@@ -1407,7 +1415,7 @@ impl EditorView {
                     div()
                         .absolute()
                         .inset_0()
-                        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                        .bg(rgb(theme::time_selection_fill()))
                         .opacity(theme::TIME_SELECTION_OPACITY)
                         .child(
                             div()
@@ -1459,8 +1467,8 @@ impl EditorView {
                 .bottom_0()
                 .left(relative(left as f32))
                 .w(relative(width as f32))
-                .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(0.12)
+                .bg(rgb(theme::time_selection_fill()))
+                .opacity(theme::TIME_SELECTION_PREVIEW_OPACITY)
                 .cursor(if preview.copy_modifier {
                     CursorStyle::DragCopy
                 } else {

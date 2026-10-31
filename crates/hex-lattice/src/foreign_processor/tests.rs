@@ -20,6 +20,7 @@ fn state() -> Arc<NativeDeviceState> {
 }
 fn declaration(owner: ProcessorChainOwner, bypassed: bool) -> PreparedRuntimeInstance {
     PreparedRuntimeInstance {
+        automation: Default::default(),
         meter: Default::default(),
         owner,
         device_id: 17,
@@ -135,6 +136,7 @@ fn foreign_nodes_borrow_exact_configuration_and_route_segments_for_all_chain_own
                         segment,
                         offset,
                         None,
+                        None,
                         &mut foreign,
                         &mut |actual_owner, device, kind, phase, at, samples| {
                             assert_eq!((actual_owner, device, kind), (owner, 17, TYPE));
@@ -155,8 +157,9 @@ fn foreign_nodes_borrow_exact_configuration_and_route_segments_for_all_chain_own
             }
             chain.commit_block();
             let peaks = meter.take_peaks();
-            assert_eq!(peaks[0], 10.0);
-            assert!((peaks[1] - if bypassed { 1.0 } else { 0.25 }).abs() < 1.0e-6);
+            assert_eq!(peaks.input, 10.0);
+            let output = peaks.output[0].max(peaks.output[1]);
+            assert!((output - if bypassed { 1.0 } else { 0.25 }).abs() < 1.0e-6);
             assert_eq!(foreign.first_input, Some([1.0, -0.5]));
             assert_eq!(
                 (foreign.segments, foreign.next, foreign.rejections),
@@ -193,6 +196,7 @@ fn missing_foreign_context_refuses_and_failed_processing_revokes_without_replayi
             &mut [[1.0; 2]],
             0,
             None,
+            None,
             &mut foreign,
             &mut |_, _, _, phase, _, _| taps.push(phase),
         ),
@@ -207,6 +211,7 @@ fn missing_foreign_context_refuses_and_failed_processing_revokes_without_replayi
             0..1,
             &mut [[1.0; 2]],
             0,
+            None,
             None,
             &mut foreign,
             &mut |_, _, _, _, _, _| {},
@@ -316,6 +321,14 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
     instance.definition = Some(PreparedProcessorFactory::Foreign(facts));
     let mut foreign = endpoint(&instance);
     let mut chain = NativeRuntimeChain::new_prepared(vec![instance]).unwrap();
+    let mut next = declaration(ProcessorChainOwner::Main, false);
+    next.definition = Some(PreparedProcessorFactory::Foreign(
+        PreparedForeignProcessor::new(8, 4, 16)
+            .unwrap()
+            .with_output_tail(crate::OutputTail::Finite { max_tail_frames: 3 }),
+    ));
+    let successor = NativeRuntimeChain::new_prepared(vec![next]).unwrap();
+    assert!(!successor.can_inherit_with_completed_foreign_range(&chain, 0..1));
     assert_eq!(
         chain.zero_input_drain_for_range(0..1),
         Some(crate::OutputTail::Finite {
@@ -325,7 +338,7 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
     assert!(!chain.committed_range_is_quiescent(0..1));
     chain.begin_block();
     chain
-        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 0, None, &mut foreign)
+        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 0, None, None, &mut foreign)
         .unwrap();
     chain.commit_block();
     assert!(
@@ -335,24 +348,68 @@ fn finite_foreign_tail_requires_original_provider_observation_in_chain_transacti
     foreign.drained = true;
     chain.begin_block();
     chain
-        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 1, None, &mut foreign)
+        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 1, None, None, &mut foreign)
         .unwrap();
     assert!(chain.speculative_range_is_quiescent(0..1));
     assert!(!chain.committed_range_is_quiescent(0..1));
+    assert!(!successor.can_inherit_with_completed_foreign_range(&chain, 0..1));
     chain.rollback_block();
     assert!(!chain.speculative_range_is_quiescent(0..1));
     chain.begin_block();
     chain
-        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 2, None, &mut foreign)
+        .process_range_with_foreign(0..1, &mut [[0.0; 2]], 2, None, None, &mut foreign)
         .unwrap();
     chain.commit_block();
     assert!(chain.committed_range_is_quiescent(0..1));
+    assert!(successor.can_inherit_with_completed_foreign_range(&chain, 0..1));
+    assert!(!successor.can_inherit_from(&chain));
     foreign.drained = false;
     chain.begin_block();
     chain
-        .process_range_with_foreign(0..1, &mut [[1.0; 2]], 3, None, &mut foreign)
+        .process_range_with_foreign(0..1, &mut [[1.0; 2]], 3, None, None, &mut foreign)
         .unwrap();
     assert!(!chain.speculative_range_is_quiescent(0..1));
     chain.commit_block();
     assert!(!chain.committed_range_is_quiescent(0..1));
+    assert!(!successor.can_inherit_with_completed_foreign_range(&chain, 0..1));
+}
+
+#[test]
+fn parameter_capability_default_refuses_nonempty_without_silent_loss_and_preserves_empty_processing()
+ {
+    let declaration = declaration(ProcessorChainOwner::Main, false);
+    let mut endpoint = endpoint(&declaration);
+    let node = ForeignProcessorNode {
+        owner: declaration.owner,
+        device_id: 17,
+        device_type: TYPE,
+        sample_rate: 48_000,
+        configuration: declaration.configuration.as_deref().unwrap(),
+        prepared: PreparedForeignProcessor::new(8, 3, 16).unwrap(),
+        bypassed: false,
+        input_gain: 10.0,
+    };
+    let mut frames = [[1.0, -0.5]; 2];
+    endpoint
+        .process_segment_with_parameters(node, 0, &mut frames, &[], None)
+        .unwrap();
+    assert_eq!(frames, [[2.5, -1.25]; 2]);
+    assert_eq!(endpoint.segments, 1);
+    assert_eq!(
+        endpoint.process_segment_with_parameters(
+            node,
+            2,
+            &mut frames,
+            &[ForeignParameterPoint {
+                frame: 0,
+                id: 0,
+                normalized: 0.5
+            }],
+            None
+        ),
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    );
+    assert_eq!(frames, [[0.0; 2]; 2]);
+    assert_eq!(endpoint.segments, 1);
+    assert_eq!(endpoint.rejections, 1);
 }

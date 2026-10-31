@@ -12,7 +12,7 @@ use std::{
 };
 
 fn receive_worker(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         let done = editor.update(cx, |view, cx| {
             if view.tick(cx) {

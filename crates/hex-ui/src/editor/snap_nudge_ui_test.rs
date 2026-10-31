@@ -70,17 +70,20 @@ fn arrangement_nudge_free_modifier_and_busy_refusal_preserve_legacy_commands(
 fn snap_nudge_worker_history_keeps_source_and_other_tracks(cx: &mut TestAppContext) {
     use hex_session::service::{Request, Service};
     fn next(service: &Service) -> hex_session::service::Event {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = service.try_event() {
                 return event;
             }
-            assert!(std::time::Instant::now() < deadline);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "next: hang guard expired"
+            );
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
     fn pump(editor: &gpui::Entity<super::EditorView>, cx: &mut TestAppContext, revision: u64) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = crate::test_wait::hang_deadline();
         loop {
             editor.update(cx, |view, cx| {
                 view.tick(cx);
@@ -95,7 +98,10 @@ fn snap_nudge_worker_history_keeps_source_and_other_tracks(cx: &mut TestAppConte
             }) {
                 return;
             }
-            assert!(std::time::Instant::now() < deadline);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pump: hang guard expired"
+            );
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }

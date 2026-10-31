@@ -13,6 +13,8 @@ mod draft;
 mod grouped_audio_tests;
 mod preparation;
 mod reservation;
+#[cfg(test)]
+mod reverb_tests;
 pub use draft::AudioCandidateDraft;
 pub use preparation::{AudioCandidateEffects, AudioCandidatePreparation};
 pub use reservation::AudioCandidateReservationQuote;
