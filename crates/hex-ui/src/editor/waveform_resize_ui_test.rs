@@ -327,10 +327,18 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                         assert_eq!(rendered.len(), 1, "only the actual preview waveform is painted");
                         let preview = drag.preview.borrow();
                         let preview = &preview.as_ref().unwrap().clip;
-                        let expected_mapping = preview.audio_edit().filter(|_| !stretch).map(|edit| {
-                            let (_, _, offset, _) = edit.projected_domain(original.tempo_map()).unwrap();
-                            (preview.start(), offset)
-                        });
+                        // A repeating clip's right edge drags its outer repeat
+                        // (Pulse #3778); repeats paint through the occurrence
+                        // path, not a single prepared crop mapping.
+                        let outer_repeat = looping && edge == TrimEdge::Right && !stretch;
+                        let expected_mapping = preview
+                            .audio_edit()
+                            .filter(|_| !stretch && !outer_repeat)
+                            .map(|edit| {
+                                let (_, _, offset, _) =
+                                    edit.projected_domain(original.tempo_map()).unwrap();
+                                (preview.start(), offset)
+                            });
                         let root_matches = Arc::ptr_eq(&rendered[0].source, expected_source);
                         if !rendered[0].spans.iter().all(|span| *span > 1.0)
                             || !root_matches || rendered[0].prepared != expected_mapping

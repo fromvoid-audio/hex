@@ -98,7 +98,9 @@ soloed; turning solo off restores its muted state. solo does not change the stor
 track activator setting.
 
 in arrange, select a track or clip before editing it. drag a clip to move it and
-use its edges to adjust its extent. work at a zoom level where the intended edge
+drag its left or right edge within the clip header (the top third) to adjust its
+extent; lower down, the edge belongs to the clip body, fades and the loop corner.
+work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
 
@@ -424,8 +426,9 @@ the audible pitch while the stored transpose value is retained.
 
 ## clip loop resizing
 
-hover the lower part of a clip's right edge to show the circular-arrow cursor, then drag
-to repeat its source. the rest of the edge keeps ordinary trimming. audio and
+hover the bottom corner of a clip's right edge to show the circle cursor, then drag
+to repeat its source. the lower fade handle sits just inside that corner, and
+ordinary trimming stays in the clip header. audio and
 midi clips use the same gesture; no loop icon is painted inside the clip. looped
 clips have rounded bottom corners. the first repeat boundary uses left/right
 arrows; drag it to change the cycle while keeping the outer duration; directed clips retain only the outer
