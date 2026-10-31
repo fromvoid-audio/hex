@@ -223,7 +223,16 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     if boundary["kind"] == "packages":
         if sorted(boundary["test_packages"]) != sorted(affected) or tests:
             raise ValueError("package boundary must test every affected consumer")
-        steps.append(Step("affected-tests", ("cargo", "test", *packages, "--locked")))
+        # Reviewed additive test features run once, with the feature (below);
+        # their doctests stay here because --all-targets feature runs omit them.
+        single = boundary.get("single_run", {})
+        defaults = tuple(arg for p in affected if p not in single for arg in ("-p", p))
+        if defaults:
+            steps.append(Step("affected-tests", ("cargo", "test", *defaults, "--locked")))
+        if single:
+            steps.append(Step("single-run-doctests", ("cargo", "test", "--doc",
+                                                      *(arg for p in affected if p in single for arg in ("-p", p)),
+                                                      "--locked")))
     elif boundary["kind"] == "compressor":
         if not tests:
             raise ValueError("device boundary has no contract targets")
@@ -332,7 +341,8 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                       ci_plan.python_tests.argv(plan["python_tests"])
                       if s.step_id == "runner-tests" and "python_tests" in plan else s.argv,
                       s.uses_cargo_target,
-                      s.argv[:2] == ("cargo", "test") or s.step_id == "runner-tests") for s in steps)
+                      (s.argv[:2] == ("cargo", "test") and "--doc" not in s.argv)
+                      or s.step_id == "runner-tests") for s in steps)
 
 
 def utc_now() -> str:
