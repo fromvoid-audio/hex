@@ -87,9 +87,11 @@ fn paused_latency_layout_change_applies_at_the_cursor_and_later_edits_follow() {
     assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
 }
 
-/// Playing transport still refuses: there is no defined in-stream cut yet.
+/// Playing: the change applies at the next block with the transport still
+/// running. Audio restarts there (tails/PDC empty, notes chased), exactly as a
+/// Play-from at that cursor; a following edit applies too.
 #[test]
-fn playing_latency_layout_change_still_refuses() {
+fn playing_latency_layout_change_restarts_audio_without_stopping() {
     let mut f = fixture(&[&[], &[]], 512);
     let first = f.tracks[0];
     f.editor
@@ -110,9 +112,30 @@ fn playing_latency_layout_change_still_refuses() {
         })
         .unwrap();
     let mut next = SessionPlayback::new(prepare(&f)).unwrap();
+    next.try_inherit_state_from(&mut old).unwrap();
+    assert!(next.playing);
+    assert_eq!((next.performance_frame, next.arrangement_frame), (40, 40));
+    f.editor
+        .execute(Command::Gain {
+            track: f.tracks[1],
+            gain: 0.5,
+        })
+        .unwrap();
+    let edited = prepare(&f);
+    let mut later = SessionPlayback::new(Arc::clone(&edited)).unwrap();
+    later.try_inherit_state_from(&mut next).unwrap();
+    assert!(later.playing);
+    assert_eq!(later.performance_frame, 40);
+
+    let mut oracle = SessionPlayback::new(edited).unwrap();
+    oracle.play_from(40).unwrap();
+    let mut actual = vec![[0.0; 2]; 2048];
+    let mut expected = actual.clone();
+    later.render(&mut actual).unwrap();
+    oracle.render(&mut expected).unwrap();
     assert_eq!(
-        next.try_inherit_state_from(&mut old).unwrap_err(),
-        SessionPlaybackError::LatencyLayoutChanged
+        actual, expected,
+        "running restart equals play-from the cursor"
     );
-    assert_eq!(old.performance_frame, 40);
+    assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
 }
