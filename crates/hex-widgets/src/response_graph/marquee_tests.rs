@@ -172,7 +172,11 @@ fn blank_click_clears_or_creates_on_release_and_escape_restores(cx: &mut TestApp
         .simulate_mouse_up(blank, MouseButton::Left, Modifiers::default());
     assert_eq!(
         fixture.seen.take(),
-        vec![Seen::Node(ResponseGraphPhase::Create, 0)]
+        vec![
+            Seen::Node(ResponseGraphPhase::Create, 0),
+            Seen::Node(ResponseGraphPhase::Release, 0),
+        ],
+        "creation-drag owners receive a closed node-zero stream"
     );
 
     let mut fixture = self::fixture(cx, true, &[3]);
@@ -214,5 +218,29 @@ fn node_presses_keep_their_select_and_drag_stream(cx: &mut TestAppContext) {
             ResponseGraphPhase::Release,
         ]
         .map(Some)
+    );
+}
+
+#[gpui::test]
+fn option_blank_press_keeps_the_creation_drag_stream(cx: &mut TestAppContext) {
+    let option = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    let mut fixture = fixture(cx, true, &[]);
+    drag(&mut fixture, [0.6, 0.6], [0.7, 0.4], option);
+    let seen = fixture.seen.take();
+    assert_eq!(
+        seen.first(),
+        Some(&Seen::Node(ResponseGraphPhase::Create, 0))
+    );
+    assert!(seen.contains(&Seen::Node(ResponseGraphPhase::Begin, 0)));
+    assert_eq!(
+        seen.last(),
+        Some(&Seen::Node(ResponseGraphPhase::Release, 0))
+    );
+    assert!(
+        !seen.iter().any(|seen| matches!(seen, Seen::Marquee(..))),
+        "option keeps the owner's create-and-shape gesture"
     );
 }
