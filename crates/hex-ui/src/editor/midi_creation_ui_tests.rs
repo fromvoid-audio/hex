@@ -130,10 +130,11 @@ fn double_click_hold_resizes_one_snapped_note_and_one_history_step(cx: &mut Test
     editor.read_with(&visual, |v, _| {
         assert!(!v.edit_pending(), "held preview must not submit an edit")
     });
-    visual.simulate_mouse_move(at(0.875), Some(MouseButton::Left), Modifiers::default());
-    visual.simulate_mouse_move(at(0.625), Some(MouseButton::Left), Modifiers::default());
+    let snap = Modifiers::command();
+    visual.simulate_mouse_move(at(0.875), Some(MouseButton::Left), snap);
+    visual.simulate_mouse_move(at(0.625), Some(MouseButton::Left), snap);
     visual.run_until_parked();
-    visual.simulate_mouse_up(at(0.625), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at(0.625), MouseButton::Left, snap);
     pump(&editor, &mut visual);
     let after = editor.read_with(&visual, |v, _| {
         let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
@@ -168,11 +169,12 @@ fn double_click_hold_resizes_one_snapped_note_and_one_history_step(cx: &mut Test
 }
 
 #[gpui::test]
-fn held_creation_respects_grid_override_free_motion_and_plain_click(cx: &mut TestAppContext) {
+fn held_creation_end_is_free_by_default_and_snaps_while_cmd_is_held(cx: &mut TestAppContext) {
     for (grid, override_snap, motion, expected) in [
-        (MidiGrid::Quarter, false, true, 2.0),
-        (MidiGrid::Quarter, true, true, 1.56),
+        (MidiGrid::Quarter, false, true, 1.56),
+        (MidiGrid::Quarter, true, true, 2.0),
         (MidiGrid::Off, false, true, 1.56),
+        (MidiGrid::Off, true, true, 1.5),
         (MidiGrid::Sixteenth, false, false, 0.25),
         (MidiGrid::Off, false, false, 0.0),
     ] {
@@ -226,6 +228,50 @@ fn held_creation_respects_grid_override_free_motion_and_plain_click(cx: &mut Tes
             );
         });
     }
+}
+
+#[gpui::test]
+fn releasing_cmd_mid_creation_returns_end_to_free_motion(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    let roll = visual.debug_bounds("midi-note-roll").unwrap();
+    let at = |fraction| {
+        point(
+            roll.origin.x + gpui::px(1.0) + (roll.size.width - gpui::px(2.0)) * fraction,
+            roll.center().y,
+        )
+    };
+    double_down(&mut visual, at(0.25), Modifiers::default());
+    let gate = |visual: &mut VisualTestContext| {
+        editor.read_with(visual, |v, _| {
+            v.midi_creation.as_ref().unwrap().preview.duration.raw() as f64
+                / BeatTime::ONE.raw() as f64
+        })
+    };
+    visual.simulate_mouse_move(at(0.64), Some(MouseButton::Left), Modifiers::command());
+    assert_eq!(gate(&mut visual), 1.5, "cmd snaps the held end");
+    visual.simulate_mouse_move(at(0.64), Some(MouseButton::Left), Modifiers::default());
+    let free = gate(&mut visual);
+    assert!((free - 1.56).abs() < 0.01, "released cmd is free: {free}");
+    let preview = editor.read_with(&visual, |v, _| v.midi_creation.as_ref().unwrap().preview);
+    visual.simulate_mouse_up(at(0.64), MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let notes = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_source(clip)
+            .unwrap()
+            .notes();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].start(), preview.start);
+        assert_eq!(
+            notes[0].duration(),
+            preview.duration,
+            "commit matches preview"
+        );
+    });
 }
 
 #[gpui::test]
@@ -360,11 +406,28 @@ fn normal_delete_and_draw_mode_still_use_their_own_gestures(cx: &mut TestAppCont
 
 #[gpui::test]
 fn held_creation_clamps_to_clip_end_and_positive_minimum(cx: &mut TestAppContext) {
-    for (grid, from, to, expected) in [
-        (MidiGrid::Sixteenth, 0.25, 0.01, BeatTime::ONE.raw() / 4),
-        (MidiGrid::Off, 0.25, 0.01, 0),
-        (MidiGrid::Sixteenth, 0.875, 0.98, BeatTime::ONE.raw() / 2),
+    for (grid, snap, from, to, expected) in [
+        (
+            MidiGrid::Sixteenth,
+            true,
+            0.25,
+            0.01,
+            BeatTime::ONE.raw() / 4,
+        ),
+        (MidiGrid::Sixteenth, false, 0.25, 0.01, 0),
+        (MidiGrid::Off, false, 0.25, 0.01, 0),
+        (
+            MidiGrid::Sixteenth,
+            true,
+            0.875,
+            0.98,
+            BeatTime::ONE.raw() / 2,
+        ),
     ] {
+        let modifiers = Modifiers {
+            platform: snap,
+            ..Modifiers::default()
+        };
         let (mut visual, editor, _environment, clip) = fixture(cx);
         editor.update(&mut visual, |v, cx| {
             v.midi_snap_grid = grid;
@@ -379,12 +442,16 @@ fn held_creation_clamps_to_clip_end_and_positive_minimum(cx: &mut TestAppContext
             )
         };
         double_down(&mut visual, at(from), Modifiers::default());
-        visual.simulate_mouse_move(at(to), Some(MouseButton::Left), Modifiers::default());
-        visual.simulate_mouse_up(at(to), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(to), Some(MouseButton::Left), modifiers);
+        visual.simulate_mouse_up(at(to), MouseButton::Left, modifiers);
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
-            assert_eq!(source.notes().len(), 1, "grid={grid:?} from={from} to={to}");
+            assert_eq!(
+                source.notes().len(),
+                1,
+                "grid={grid:?} snap={snap} from={from} to={to}"
+            );
             let note = &source.notes()[0];
             if expected > 0 {
                 assert_eq!(note.duration().raw(), expected);
