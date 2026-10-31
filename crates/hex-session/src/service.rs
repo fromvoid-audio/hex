@@ -73,6 +73,7 @@ mod format_upgrade_tests;
 #[cfg(test)]
 #[path = "service/limiter_tests.rs"]
 mod limiter_tests;
+pub mod missing_media;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -82,9 +83,7 @@ pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 mod stopped_playback_tests;
 use hex_storage::FileToken;
 use recovery::absolute_document_path;
-pub use recovery::{
-    ProjectSource, RecoveryFailure, RecoveryRestart, missing_assets, untitled_recovery_path,
-};
+pub use recovery::{ProjectSource, RecoveryFailure, RecoveryRestart, untitled_recovery_path};
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -5920,7 +5919,10 @@ fn run_worker(
                         }
                         (Some(handle), Ok(project)) => {
                             if !consent {
-                                match handle.token.requires_save_confirmation(&project) {
+                                match handle.token.requires_save_confirmation_within(
+                                    &project,
+                                    events.legacy_reader_limit(),
+                                ) {
                                     Ok(true) => {
                                         save_confirmation_required = true;
                                         error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());

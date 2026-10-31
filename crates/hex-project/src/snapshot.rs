@@ -1353,6 +1353,15 @@ pub(crate) fn insert_id(
 }
 
 impl Snapshot {
+    /// Keep automatic-name origins aligned after an intentional render
+    /// projection removed tracks. Surviving tracks keep their origin. Like the
+    /// alias projection below, this is not a decoder repair; admit the result
+    /// through Project::from_snapshot.
+    pub fn retain_automatic_track_names_after_projection(&mut self) {
+        let live: BTreeSet<u64> = self.tracks.iter().map(|track| track.id).collect();
+        self.automatic_track_names.retain(|id| live.contains(id));
+    }
+
     /// Keep alias references aligned after an intentional render projection of
     /// a snapshot captured from a validated Project. Removed placements release
     /// membership; a surviving source keeps its original identity and payload.
