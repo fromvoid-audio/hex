@@ -33,6 +33,13 @@ use std::{
 static NEXT: AtomicU64 = AtomicU64::new(0);
 // The actual native constructor retains the process-wide output lease.
 static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
+/// Serialize native-lease fixtures. A failed test only poisons the unit guard;
+/// recovering it keeps one failure from cascading into unrelated tests.
+fn native_fixture() -> std::sync::MutexGuard<'static, ()> {
+    NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 /// Test-only scalar correlation, never the closed candidate's source/provenance identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RenderedCurrent {
@@ -890,7 +897,7 @@ fn unavailable_output_keeps_canonical_editing_and_saving_available(retained_fail
 
 #[test]
 fn canonical_service_installs_verified_mixed_rate_and_empty_successors_despite_lost_submitted() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(24000, 240000);
     let mut h = Harness::new();
@@ -1134,7 +1141,7 @@ fn canonical_service_installs_verified_mixed_rate_and_empty_successors_despite_l
 
 #[test]
 fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_domain() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(24000, 24000);
     let mut bytes = fs::read(&path).unwrap();
@@ -1276,7 +1283,7 @@ fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_dom
 mod controller_input_tests;
 #[test]
 fn native_verified_downsample_uses_source_window_and_applies_decoded_pcm() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let source = files.wav(48000, 9600);
     let mut h = Harness::with_rate(44100);
@@ -1383,7 +1390,7 @@ fn native_verified_downsample_uses_source_window_and_applies_decoded_pcm() {
 
 #[test]
 fn rapid_new_verified_import_supersession_applies_decoded_pcm() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(48000, 9600);
     let mut h = Harness::with_rate(44100);
@@ -1482,7 +1489,7 @@ fn play_from_start_expecting(h: &mut Harness, level: f32) {
 
 #[test]
 fn verified_undo_supersedes_an_uninstalled_import_and_redo_restores_it() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(44100, 9600);
     let mut h = Harness::with_rate(44100);
@@ -1524,7 +1531,7 @@ fn verified_undo_supersedes_an_uninstalled_import_and_redo_restores_it() {
 
 #[test]
 fn exact_root_domain_retirement_intent_survives_cleaning_and_recovers_before_reuse() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(24000, 16);
     let service = Service::new(44100, 1, 0).unwrap();
@@ -1652,7 +1659,7 @@ fn exact_root_domain_retirement_intent_survives_cleaning_and_recovers_before_reu
 #[test]
 #[ignore = "requires create-new generated workload and HEX_STREAMING_WORKLOAD_PROJECT"]
 fn generated_100_track_project_uses_actual_verified_service_and_callback() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let path = PathBuf::from(
         std::env::var_os("HEX_STREAMING_WORKLOAD_PROJECT").expect("fixture project path"),
     );
@@ -1758,7 +1765,7 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
     use hex_session::service::{
         ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
     };
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let deadline = Instant::now() + Duration::from_secs(10);
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {

@@ -269,7 +269,7 @@ fn bounce_failure_case(whole_track: bool) {
     let result = session.adopt_arrangement_bounce_using(
         target.clone(),
         whole_track,
-        false,
+        hex_project::BounceAdoption::NewTracks,
         vec![BounceFile {
             source: hex_project::BounceSource::Arrangement,
             track: item.track,
@@ -1362,7 +1362,7 @@ fn whole_track_console_second_output_cancel_and_final_publication_fail_without_p
                     .adopt_arrangement_bounce_using(
                         target,
                         true,
-                        false,
+                        hex_project::BounceAdoption::NewTracks,
                         files,
                         prepared,
                         None,

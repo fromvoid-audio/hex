@@ -26,7 +26,7 @@ fn seek(h: &mut ResidentHarness, applied: &mut u64, revision: u64, request: u64)
 }
 #[test]
 fn loaded_resident_bounce_preserves_float_source_mix_single_history_and_native_playback() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let source = Files::new();
     let other = Files::new();
     let inactive = Files::new();

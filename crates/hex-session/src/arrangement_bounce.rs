@@ -355,7 +355,7 @@ impl Session {
         &mut self,
         target: BounceTarget,
         in_place: bool,
-        mute_sources: bool,
+        adoption: hex_project::BounceAdoption,
         files: Vec<BounceFile>,
         prepared: Vec<PreparedImport>,
         previous: Option<&hex_engine::PreparedRevision>,
@@ -436,7 +436,7 @@ impl Session {
             Command::CommitArrangementBounce {
                 target,
                 in_place,
-                mute_sources,
+                adoption,
                 files,
             },
             |candidate| {
@@ -492,18 +492,24 @@ impl Session {
         control: &hex_export::ExportControl,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
-        self.bounce_arrangement_muting_sources(
-            target, in_place, false, directory, control, previous,
+        self.bounce_arrangement_adopting(
+            target,
+            in_place,
+            hex_project::BounceAdoption::NewTracks,
+            directory,
+            control,
+            previous,
         )
     }
 
-    /// As [`Self::bounce_arrangement`]; `mute_sources` deactivates the bounced
-    /// clip or range sources in the same adoption edit and Undo step.
-    pub fn bounce_arrangement_muting_sources(
+    /// As [`Self::bounce_arrangement`] with an explicit new-track adoption:
+    /// optionally muting the sources or landing at a clip drop, in the same
+    /// adoption edit and Undo step.
+    pub fn bounce_arrangement_adopting(
         &mut self,
         target: BounceTarget,
         in_place: bool,
-        mute_sources: bool,
+        adoption: hex_project::BounceAdoption,
         directory: &Path,
         control: &hex_export::ExportControl,
         previous: Option<&hex_engine::PreparedRevision>,
@@ -547,7 +553,7 @@ impl Session {
                     .adopt_arrangement_bounce_using(
                         captured,
                         in_place,
-                        mute_sources,
+                        adoption,
                         files,
                         prepared,
                         previous,
