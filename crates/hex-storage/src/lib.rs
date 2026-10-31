@@ -29,9 +29,10 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
+/// Schema63 records automatic track names; earlier names migrate as user-set.
 /// Schema62 adds independent MIDI clip gain; schema61 migrates at unity.
 /// Schema59 is a reserved incompatible development layout and remains unsupported.
-pub const CURRENT_SCHEMA_VERSION: u32 = 62;
+pub const CURRENT_SCHEMA_VERSION: u32 = 63;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -158,12 +159,13 @@ impl From<serde_json::Error> for StorageError {
 /// independent MIDI note activation (schema56), and independent audio event
 /// activation, including retained roots (schema57), and bounded nested audio
 /// sources (schema58), consistent shared audio event projections (schema60),
-/// independent audio event gain (schema61), and MIDI clip gain (schema62).
+/// independent audio event gain (schema61), MIDI clip gain (schema62), and
+/// automatic track name origin (schema63).
 /// Schema59 is reserved and explicitly refused.
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::midi_clip_gain::encode(project)?)
+    encode_document(&schema::track_name_origin::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -179,6 +181,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::track_name_origin::require_user_names(project)?;
     schema::midi_clip_gain::require_unity(project)?;
     schema::event_gain::require_unity(project)?;
     schema::event_activation::require_all_active(project)?;
@@ -327,7 +330,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        CURRENT_SCHEMA_VERSION => schema::midi_clip_gain::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::track_name_origin::decode(bytes),
+        62 => schema::midi_clip_gain::decode(bytes),
         61 => schema::event_gain::decode(bytes),
         60 => schema::alias_projection_v60::decode(bytes),
         59 => Err(StorageError::Invalid(
