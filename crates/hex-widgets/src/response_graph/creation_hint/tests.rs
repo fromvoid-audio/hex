@@ -89,6 +89,7 @@ fn fixture(cx: &mut TestAppContext, hints: bool) -> Fixture {
                             secondary: vec![[0.0, 0.5], [1.0, 0.5]],
                             analyzer: None,
                             input_analyzer: None,
+                            analyzer_peak: None,
                             nodes: vec![ResponseGraphNode {
                                 id: 3,
                                 position: [0.5, 0.5],

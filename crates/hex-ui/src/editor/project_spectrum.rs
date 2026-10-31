@@ -352,33 +352,25 @@ impl EditorView {
             cache.theme = palette;
             return cache.layers.clone();
         }
-        let points = |frame: &hex_audio::spectrum::SpectrumFrame| {
+        let curves = |frame: &hex_audio::spectrum::SpectrumFrame| {
             let upper = 20_000.0_f32.min(frame.sample_rate_hz as f32 / 2.0);
             let span = (upper / 20.0).ln();
-            frame
-                .bins_dbfs
-                .iter()
-                .enumerate()
-                .filter_map(|(index, db)| {
-                    let (low, high) =
-                        hex_audio::spectrum::band_bounds_hz(frame.sample_rate_hz, index)?;
-                    Some([
-                        (((low * high).sqrt() / 20.0).ln() / span).clamp(0.0, 1.0),
-                        super::device_panel::spectrum_display::level(*db),
-                    ])
-                })
-                .collect()
+            super::device_panel::spectrum_display::curves(frame, |hz| (hz / 20.0).ln() / span)
         };
         let mut layers = Vec::with_capacity(result.selection.layer_count());
         for (index, color) in colors[..ids.len()].iter().enumerate() {
             layers.push(SpectrumPlotLayer {
-                points: points(&result.frames()[index + 1]),
+                points: curves(&result.frames()[index + 1]).level,
+                peak: None,
                 color: *color,
             });
         }
-        // Real master stays contrasting and above every independent track layer.
+        // Real master stays contrasting and above every independent track
+        // layer, and alone carries a held-peak line to keep dense views legible.
+        let master = curves(&result.frames()[0]);
         layers.push(SpectrumPlotLayer {
-            points: points(&result.frames()[0]),
+            points: master.level,
+            peak: Some(master.peak),
             color: theme::device_analyzer_style().output,
         });
         let layers = SpectrumPlotLayers::new(layers).unwrap_or_default();
