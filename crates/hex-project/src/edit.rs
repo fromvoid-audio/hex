@@ -661,6 +661,11 @@ pub enum Command {
         source_slot: hex_lattice_contract::DeviceAssetSlot,
     },
     RemoveAsset(AssetId),
+    /// Point offline assets at found files as one history step, bringing them
+    /// back online. Undo returns them to offline at their old paths. Paths must
+    /// be absolute; only offline, non-device assets can be relinked, and callers
+    /// must have prepared media matching the saved rate and frame count.
+    RelinkAssets(Vec<(AssetId, PathBuf)>),
     /// Place audio as one atomic hybrid overwrite, retaining old outer fragments.
     PlaceClip {
         track: TrackId,
@@ -2754,6 +2759,39 @@ impl Project {
                     .map_err(|_| Invalid("invalid device source binding"))?;
                 self.apply(Command::ReplaceDeviceState { device, state })?;
                 Ok(Created::Asset(asset))
+            }
+            Command::RelinkAssets(relinks) => {
+                if relinks.is_empty() || relinks.len() > crate::MAX_ASSETS {
+                    return Err(Invalid(
+                        "relink needs between one and the asset limit of files",
+                    ));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for (id, path) in &relinks {
+                    if !seen.insert(*id) {
+                        return Err(Invalid("relink names an asset twice"));
+                    }
+                    if !self.asset_offline(*id) {
+                        return Err(Invalid("only missing media can be relinked"));
+                    }
+                    if !path.is_absolute() {
+                        return Err(Invalid("relinked media path must be absolute"));
+                    }
+                    let asset = self
+                        .assets
+                        .get(id)
+                        .ok_or(Invalid("media no longer exists"))?;
+                    if asset.original_source().is_some() {
+                        return Err(Invalid("device media cannot be relinked in place"));
+                    }
+                }
+                for (id, path) in relinks {
+                    if let Some(asset) = self.assets.get_mut(&id) {
+                        asset.path = path;
+                    }
+                    self.offline_assets.remove(&id);
+                }
+                Ok(Created::None)
             }
             Command::RemoveAsset(id) => {
                 if self.device_uses_asset(id) {
