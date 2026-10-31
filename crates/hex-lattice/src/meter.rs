@@ -12,6 +12,15 @@ pub struct DynamicsMeter {
     pub post_input_peak: f32,
 }
 
+/// Sample peaks drained from one [`DeviceMeter`], as linear amplitude.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DevicePeaks {
+    /// Device input, after host input gain, as the larger of both channels.
+    pub input: f32,
+    /// Device output after host output gain, left then right.
+    pub output: [f32; 2],
+}
+
 /// Scalar endpoint retained by charged playback observations. On 64-bit hosts,
 /// align its payload with the Arc counter header so payload-plus-header storage
 /// declarations include all trailing allocation padding as fields are added.
@@ -19,7 +28,8 @@ pub struct DynamicsMeter {
 #[derive(Debug, Default)]
 pub struct DeviceMeter {
     input: AtomicU32,
-    output: AtomicU32,
+    /// Post-device left/right sample peaks for the passive inter-device meter.
+    output: [AtomicU32; 2],
     track_output: AtomicU32,
     reduction: [AtomicU32; 2],
     clipped: AtomicU32,
@@ -52,8 +62,22 @@ impl DeviceMeter {
     pub(crate) fn observe_input_with_gain(&self, frames: &[[f32; 2]], gain: f32) {
         Self::observe_with_gain(&self.input, frames, gain);
     }
+    /// Accumulate left and right independently for the stereo output meter.
     pub fn observe_output(&self, frames: &[[f32; 2]]) {
-        Self::observe(&self.output, frames);
+        let mut peaks = [0.0_f32; 2];
+        for frame in frames {
+            for (peak, sample) in peaks.iter_mut().zip(frame) {
+                if sample.is_finite() {
+                    *peak = peak.max(sample.abs());
+                }
+            }
+        }
+        Self::publish_output(&self.output, peaks);
+    }
+    fn publish_output(output: &[AtomicU32; 2], peaks: [f32; 2]) {
+        for (target, peak) in output.iter().zip(peaks) {
+            target.fetch_max(peak.to_bits(), Relaxed);
+        }
     }
     /// Accumulate the containing track's post-fader output independently of
     /// the instrument's own input and output taps.
@@ -68,19 +92,23 @@ impl DeviceMeter {
     /// Unity lanes are exact; fader normalization carries f32 rounding only.
     /// Muted/zero-gain lanes contribute no measured signal.
     pub fn observe_mixed(&self, frames: &[[f32; 2]], gains: [f32; 2], input: bool) {
-        let mut peak = 0.0_f32;
+        let mut peaks = [0.0_f32; 2];
         for frame in frames {
             for channel in 0..2 {
                 if gains[channel] > 0.0 {
                     let value = (frame[channel] / gains[channel]).abs();
                     if value.is_finite() {
-                        peak = peak.max(value);
+                        peaks[channel] = peaks[channel].max(value);
                     }
                 }
             }
         }
-        let target = if input { &self.input } else { &self.output };
-        target.fetch_max(peak.to_bits(), Relaxed);
+        if input {
+            self.input
+                .fetch_max(peaks[0].max(peaks[1]).to_bits(), Relaxed);
+        } else {
+            Self::publish_output(&self.output, peaks);
+        }
     }
     fn observe(peak: &AtomicU32, frames: &[[f32; 2]]) {
         Self::observe_with_gain(peak, frames, 1.0);
@@ -96,12 +124,16 @@ impl DeviceMeter {
         });
         peak.fetch_max(value.to_bits(), Relaxed);
     }
-    /// One UI consumer drains the maximum since its last refresh.
-    pub fn take_peaks(&self) -> [f32; 2] {
-        [
-            f32::from_bits(self.input.swap(0, Relaxed)),
-            f32::from_bits(self.output.swap(0, Relaxed)),
-        ]
+    /// One UI consumer drains the maxima since its last refresh: the
+    /// channel-combined input peak and the post-device left/right peaks.
+    pub fn take_peaks(&self) -> DevicePeaks {
+        DevicePeaks {
+            input: f32::from_bits(self.input.swap(0, Relaxed)),
+            output: self
+                .output
+                .each_ref()
+                .map(|peak| f32::from_bits(peak.swap(0, Relaxed))),
+        }
     }
     pub(crate) fn observe_dynamics(&self, reading: DynamicsMeter) {
         if reading.post_input_peak.is_finite() && reading.post_input_peak > 0.0 {
@@ -160,10 +192,34 @@ mod tests {
             meter.observe_input(&[[0.01; 2]]);
         }
         meter.observe_output(&[[f32::NAN, f32::INFINITY]]);
-        assert_eq!(meter.take_peaks(), [1.2, 0.8]);
+        assert_eq!(
+            meter.take_peaks(),
+            DevicePeaks {
+                input: 1.2,
+                output: [0.4, 0.8],
+            }
+        );
         assert_eq!(meter.take_track_output(), 0.6);
         assert_eq!(meter.take_track_output(), 0.0);
-        assert_eq!(meter.take_peaks(), [0.0; 2]);
+        assert_eq!(meter.take_peaks(), DevicePeaks::default());
+    }
+
+    #[test]
+    fn output_channels_stay_independent_for_direct_and_mixed_taps() {
+        let meter = DeviceMeter::default();
+        meter.observe_output(&[[0.5, 0.0], [-0.25, f32::NAN]]);
+        meter.observe_output(&[[0.0, -0.125]]);
+        assert_eq!(meter.take_peaks().output, [0.5, 0.125]);
+        // A muted lane contributes no evidence; the other lane is normalized.
+        meter.observe_mixed(&[[0.5, 0.3]], [0.5, 0.0], false);
+        meter.observe_mixed(&[[0.2, 0.6]], [0.5, 0.5], true);
+        assert_eq!(
+            meter.take_peaks(),
+            DevicePeaks {
+                input: 1.2,
+                output: [1.0, 0.0],
+            }
+        );
     }
 
     #[test]
@@ -203,7 +259,13 @@ mod tests {
             post_input_peak: 0.0,
         });
 
-        assert_eq!(meter.take_peaks(), [0.5, 1.0]);
+        assert_eq!(
+            meter.take_peaks(),
+            DevicePeaks {
+                input: 0.5,
+                output: [0.75, 1.0],
+            }
+        );
         assert_eq!(
             meter.take_dynamics(),
             DynamicsMeter {
@@ -213,7 +275,7 @@ mod tests {
             }
         );
         assert_eq!(meter.take_dynamics(), DynamicsMeter::default());
-        assert_eq!(meter.take_peaks(), [0.0; 2]);
+        assert_eq!(meter.take_peaks(), DevicePeaks::default());
         assert_eq!(
             meter.control_storage_declaration(),
             crate::PreparedStorageDeclaration::ExclusiveOnly {

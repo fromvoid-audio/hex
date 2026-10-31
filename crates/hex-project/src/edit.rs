@@ -220,6 +220,14 @@ pub enum Command {
         slot: TrackDeviceSlot,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Like `InsertTrackWithDevice`, with an automatic name: `device_name` for an
+    /// instrument slot, otherwise the model-owned default name.
+    InsertDefaultTrackWithDevice {
+        before_track: Option<TrackId>,
+        slot: TrackDeviceSlot,
+        state: hex_lattice_contract::NativeDeviceState,
+        device_name: String,
+    },
     /// Atomically splice a bounded touch span, preserving the underlying base curve.
     SpliceGainTouch {
         track: TrackId,
@@ -292,6 +300,15 @@ pub enum Command {
     InsertInstrument {
         track: TrackId,
         state: hex_lattice_contract::NativeDeviceState,
+    },
+    /// Browser instrument load: fill the empty slot (`replacing: None`) or replace
+    /// the captured current instrument, and rename an automatic-named track to
+    /// `device_name` in the same edit. See `track_name` for the naming policy.
+    LoadInstrument {
+        track: TrackId,
+        replacing: Option<DeviceId>,
+        state: hex_lattice_contract::NativeDeviceState,
+        device_name: String,
     },
     RemoveInstrument {
         track: TrackId,
@@ -464,6 +481,11 @@ pub enum Command {
     /// Insert an empty hybrid track before a stable anchor, or append with None.
     InsertTrack {
         name: String,
+        before_track: Option<TrackId>,
+    },
+    /// Insert an ordinary track named by the model (`track N`); the name stays
+    /// automatic until the user renames it.
+    InsertDefaultTrack {
         before_track: Option<TrackId>,
     },
     /// Atomically create one track, its source asset and a full-length one-shot clip.
@@ -1227,6 +1249,7 @@ pub(crate) fn new_track(
         gain_lane: crate::GainLane::default(),
         id,
         name,
+        automatic_name: false,
         gain: 1.0,
         balance: 0.0,
         muted: false,
@@ -2246,6 +2269,27 @@ impl Project {
                 }
                 Ok(Created::Track(track))
             }
+            Command::InsertDefaultTrack { before_track } => Ok(Created::Track(
+                crate::track_name::insert_default_track(self, before_track)?,
+            )),
+            Command::InsertDefaultTrackWithDevice {
+                before_track,
+                slot,
+                state,
+                device_name,
+            } => crate::track_name::insert_default_track_with_device(
+                self,
+                before_track,
+                slot,
+                state,
+                device_name,
+            ),
+            Command::LoadInstrument {
+                track,
+                replacing,
+                state,
+                device_name,
+            } => crate::track_name::load_instrument(self, track, replacing, state, device_name),
             Command::AddTrack { name } => {
                 Ok(Created::Track(insert_track_before(self, name, None)?))
             }
@@ -2439,7 +2483,9 @@ impl Project {
             Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
             Command::RenameTrack { track, name } => {
                 name_valid(&name)?;
-                self.track_mut(track)?.name = name;
+                let target = self.track_mut(track)?;
+                target.name = name;
+                target.automatic_name = false;
                 Ok(Created::None)
             }
             Command::Gain { track, gain } => {

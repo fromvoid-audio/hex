@@ -31,7 +31,7 @@ use hex_lattice_contract::{
     NativeDeviceState,
 };
 pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
-pub use meter::{DeviceMeter, DynamicsMeter};
+pub use meter::{DeviceMeter, DevicePeaks, DynamicsMeter};
 pub use owned_processor::{
     OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, PreparedProcessorFactory,
     PreparedRuntimeDevice, PreparedRuntimeInstance,
@@ -2662,9 +2662,15 @@ mod tests {
             chain.entries[0].meter.take_dynamics(),
             DynamicsMeter::default()
         );
-        // Existing I/O meters accumulate one maximum across both channels for
-        // each side, independently of committed provider dynamics readings.
-        assert_eq!(chain.entries[0].meter.take_peaks(), [4.0, 4.0]);
+        // The input tap combines both channels; the output tap keeps left and
+        // right apart. Neither depends on committed provider dynamics readings.
+        assert_eq!(
+            chain.entries[0].meter.take_peaks(),
+            crate::DevicePeaks {
+                input: 4.0,
+                output: [2.5, 4.0],
+            }
+        );
 
         chain.begin_block();
         let mut committed = [[0.25, 0.75]];
@@ -2679,7 +2685,13 @@ mod tests {
                 post_input_peak: 0.75,
             }
         );
-        assert_eq!(chain.entries[0].meter.take_peaks(), [0.75, 0.75]);
+        assert_eq!(
+            chain.entries[0].meter.take_peaks(),
+            crate::DevicePeaks {
+                input: 0.75,
+                output: [0.25, 0.75],
+            }
+        );
     }
 
     #[test]
@@ -2714,7 +2726,13 @@ mod tests {
             bypassed.entries[0].meter.take_dynamics(),
             DynamicsMeter::default()
         );
-        assert_eq!(bypassed.entries[0].meter.take_peaks(), [3.0, 3.0]);
+        assert_eq!(
+            bypassed.entries[0].meter.take_peaks(),
+            crate::DevicePeaks {
+                input: 3.0,
+                output: [2.0, 3.0],
+            }
+        );
     }
 
     const SNAPSHOT_PATCH_PARAMETER: ParameterId = ParameterId::from_static(1);

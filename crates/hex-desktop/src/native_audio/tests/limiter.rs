@@ -500,3 +500,150 @@ fn first_track_limiter_keeps_active_reverb_prefix_through_native_publication() {
     assert!(h.publication_refusals.is_empty());
     // Every h.render also measures total and signed-net callback allocations/bytes.
 }
+
+/// Field report (build 6de4bd2d): a latency-changing device dropped while
+/// paused mid-song was refused, and every later revision, including a new
+/// instrument track, was refused against the stale applied graph, so live
+/// input could not bind. Paused publication applies at the cursor instead.
+#[test]
+fn paused_latency_change_then_new_instrument_track_applies_and_binds_live_input() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    let track = imported.state.project.tracks()[0].id();
+    (applied, _) = h.applied(applied);
+    let limiter = || Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+        before: None,
+    };
+    h.run(limiter());
+    (applied, _) = h.applied(applied);
+    let control = |h: &mut ResidentHarness, command| {
+        h.audio.as_mut().unwrap().control.command(command).unwrap();
+    };
+    control(&mut h, PlaybackCommand::Play);
+    for _ in 0..12 {
+        h.render();
+    }
+    control(&mut h, PlaybackCommand::Pause);
+    h.render();
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let paused = status.position.load(Acquire);
+    assert!(paused > 0 && !status.playing.load(Acquire));
+
+    h.run(limiter());
+    (applied, _) = h.applied(applied);
+    let added = h.run(Request::Edit(hex_project::Command::InsertTrackWithDevice {
+        name: "keys".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            hex_engine::DeviceTypeId::from_static("hex.instrument.operator"),
+        )
+        .unwrap(),
+    }));
+    (applied, _) = h.applied(applied);
+    let (keys, instrument) = added
+        .state
+        .project
+        .tracks()
+        .iter()
+        .find_map(|track| Some((track.id(), track.instrument()?.id())))
+        .unwrap();
+    let input = Arc::new(hex_engine::live_expression::LiveExpressionInput::new(
+        0, keys, instrument,
+    ));
+    let bound = h.run(Request::PrepareLiveExpression {
+        input: Arc::clone(&input),
+        revision: added.state.revision,
+    });
+    assert!(Arc::ptr_eq(
+        bound.live_expression_complete.as_ref().unwrap(),
+        &input
+    ));
+    h.applied(applied);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert_eq!(
+        status.position.load(Acquire),
+        paused,
+        "paused cursor is kept"
+    );
+    assert!(!status.playing.load(Acquire));
+}
+
+/// A latency change refused while playing applies once the transport pauses:
+/// the editor republishes the current revision, which installs at the cursor.
+#[test]
+fn latency_change_refused_while_playing_applies_after_pause_republish() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    let track = imported.state.project.tracks()[0].id();
+    (applied, _) = h.applied(applied);
+    let limiter = || Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+        before: None,
+    };
+    h.run(limiter());
+    (applied, _) = h.applied(applied);
+    let control = |h: &mut ResidentHarness, command| {
+        h.audio.as_mut().unwrap().control.command(command).unwrap();
+    };
+    control(&mut h, PlaybackCommand::Play);
+    for _ in 0..12 {
+        h.render();
+    }
+    h.run(limiter());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let rejected = loop {
+        h.pump();
+        h.render();
+        if let Some((revision, reason)) = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .rejected_revision()
+            && revision > applied
+        {
+            assert_eq!(
+                reason,
+                hex_engine::PlaybackHandoffRejection::LatencyLayoutChanged
+            );
+            break revision;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "latency refusal was not reported"
+        );
+        std::thread::yield_now();
+    };
+    control(&mut h, PlaybackCommand::Pause);
+    h.render();
+    let paused = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    assert!(paused > 0);
+    h.run(Request::RepublishPausedPlayback);
+    h.applied(rejected);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert_eq!(status.position.load(Acquire), paused);
+    assert!(!status.playing.load(Acquire));
+}
