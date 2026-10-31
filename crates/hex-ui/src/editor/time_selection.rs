@@ -450,6 +450,11 @@ impl EditorView {
             last_tick: Instant::now(),
         });
         self.select_lane_span(selection.anchor_track, track);
+        // The pressed clip stays the clip editor subject, not an object selection.
+        let pressed = self.arrangement_clip_at(track, frame, self.detail_clip_id());
+        if anchor.is_none() {
+            self.set_detail_context(pressed);
+        }
         self.selected_clip = None;
         self.cancel_midi_note_gesture();
         true

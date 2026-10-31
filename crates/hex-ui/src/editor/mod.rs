@@ -94,6 +94,7 @@ mod console_track_page;
 mod context_menu;
 mod controller;
 mod controller_input;
+mod detail_context;
 mod device_comparison;
 mod device_gesture;
 mod device_panel;
@@ -981,6 +982,7 @@ pub(super) struct EditorView {
     /// The selected clip a point cursor was deliberately placed inside; that
     /// cursor then outranks the clip's play start (see `selected_clip_play_start`).
     edit_cursor_in_selected_clip: Option<ClipId>,
+    detail_context: Option<detail_context::DetailContext>,
     clip_paint_gesture: Option<clip_paint::ClipPaintGesture>,
     time_selection: Option<time_selection::TimeSelection>,
     time_selection_project_scope: bool,
@@ -1695,6 +1697,7 @@ impl EditorView {
             context_menu: None,
             edit_cursor: None,
             edit_cursor_in_selected_clip: None,
+            detail_context: None,
             clip_paint_gesture: None,
             time_selection: None,
             time_selection_project_scope: false,
@@ -1913,12 +1916,7 @@ impl EditorView {
     }
 
     pub(super) fn add_track(&mut self) {
-        let count = self
-            .state
-            .as_ref()
-            .map_or(0, |state| state.project.tracks().len());
-        self.enqueue(Request::Edit(Command::InsertTrack {
-            name: format!("audio {}", count + 1),
+        self.enqueue(Request::Edit(Command::InsertDefaultTrack {
             before_track: self.new_track_insertion_anchor(),
         }));
     }
@@ -2002,27 +2000,8 @@ impl EditorView {
         }
         self.advance_selection_intent();
         self.duplicate_intent.cancel_chain();
-        if self.selected_clip != Some(clip) {
-            self.piano_view_clip = None;
-            self.zoom_fit.clear_clip();
-            self.audio_event_editor.clear_fit_back();
-            self.midi_creation = None;
-            self.midi_note_gesture = None;
-            self.midi_hit_cycle = None;
-            self.midi_scene_cache.clear();
-            self.midi_selection.clear();
-            self.piano_beat_start = hex_project::BeatTime::ZERO;
-            if let Some(length) = self
-                .state
-                .as_ref()
-                .and_then(|state| state.project.midi_clip(clip))
-                .map(|midi| midi.source_length())
-            {
-                self.piano_beat_span = hex_project::BeatTime::from_raw(
-                    self.piano_beat_span.raw().min(length.raw().max(1)),
-                );
-            }
-        }
+        self.retire_clip_detail_state_for(clip);
+        self.detail_context = None;
         self.selected_track = Some(track);
         self.arrangement_focus.observe_active_track(Some(track));
         if !self.track_selection.contains(track)
@@ -2036,6 +2015,32 @@ impl EditorView {
         self.clip_selection.only(track, clip);
         self.focus.focus(window);
         true
+    }
+
+    /// Reset clip-local editor state when the clip editor's subject changes.
+    pub(super) fn retire_clip_detail_state_for(&mut self, clip: ClipId) {
+        if self.detail_clip_id() == Some(clip) {
+            return;
+        }
+        self.piano_view_clip = None;
+        self.zoom_fit.clear_clip();
+        self.audio_event_editor.clear_fit_back();
+        self.midi_creation = None;
+        self.midi_note_gesture = None;
+        self.midi_hit_cycle = None;
+        self.midi_scene_cache.clear();
+        self.midi_selection.clear();
+        self.piano_beat_start = hex_project::BeatTime::ZERO;
+        if let Some(length) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.midi_clip(clip))
+            .map(|midi| midi.source_length())
+        {
+            self.piano_beat_span = hex_project::BeatTime::from_raw(
+                self.piano_beat_span.raw().min(length.raw().max(1)),
+            );
+        }
     }
 
     pub(super) fn applied_project_revision(&self) -> Option<u64> {

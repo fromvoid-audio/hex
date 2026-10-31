@@ -976,6 +976,7 @@ fn project(gain: f32, note_start: u64, note_duration: u64) -> Project {
 
 fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
@@ -1218,6 +1219,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
 
 fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
@@ -12771,8 +12773,8 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
         assert_eq!(track_meter.take_track_output(), output_peak);
         assert_eq!(track_meter.take_track_output(), 0.0);
         let peaks = meter.take_peaks();
-        assert_eq!(peaks[0], 0.0);
-        assert!(peaks[1] > 0.0);
+        assert_eq!(peaks.input, 0.0);
+        assert!(peaks.output.iter().any(|peak| *peak > 0.0));
         let mut snapshot = project.snapshot();
         let instrument = snapshot.tracks[0].instrument.as_mut().unwrap();
         instrument.state = if input {

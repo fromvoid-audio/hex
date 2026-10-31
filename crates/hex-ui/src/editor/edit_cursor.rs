@@ -99,32 +99,19 @@ impl EditorView {
             end_frame: frame,
         });
         self.time_selection_project_scope = false;
-        let selected_clip_under_pointer = state.project.track(track).is_some_and(|track_data| {
-            track_data.clips().iter().any(|clip| {
-                self.selected_clip == Some(clip.id())
-                    && frame >= clip.start()
-                    && clip
-                        .start()
-                        .checked_add(clip.duration())
-                        .is_some_and(|end| frame < end)
-            }) || {
-                let beat = state.project.tempo_map().frame_to_beat(frame).ok();
-                track_data.midi_clips().iter().any(|clip| {
-                    self.selected_clip == Some(clip.id())
-                        && beat.is_some_and(|beat| {
-                            beat >= clip.start()
-                                && beat.raw()
-                                    < clip.start().raw().saturating_add(clip.length().raw())
-                        })
-                })
-            }
-        });
+        let under_pointer = self.arrangement_clip_at(track, frame, self.selected_clip);
+        let selected_clip_under_pointer =
+            under_pointer.is_some() && under_pointer == self.selected_clip;
         self.select_lane_track(track);
         self.edit_cursor_in_selected_clip =
             self.selected_clip.filter(|_| selected_clip_under_pointer);
         self.advance_selection_intent();
-        if !selected_clip_under_pointer {
+        if under_pointer.is_none() {
             self.focus_track_details(window);
+        } else if !selected_clip_under_pointer {
+            // A cursor inside a clip keeps it in the clip editor (see detail_context).
+            self.set_detail_context(under_pointer);
+            self.focus_detail_context(window, cx);
         }
         self.focus.focus(window);
         cx.notify();
