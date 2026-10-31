@@ -73,6 +73,7 @@ mod format_upgrade_tests;
 #[cfg(test)]
 #[path = "service/limiter_tests.rs"]
 mod limiter_tests;
+pub mod missing_media;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -82,9 +83,7 @@ pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 mod stopped_playback_tests;
 use hex_storage::FileToken;
 use recovery::absolute_document_path;
-pub use recovery::{
-    ProjectSource, RecoveryFailure, RecoveryRestart, missing_assets, untitled_recovery_path,
-};
+pub use recovery::{ProjectSource, RecoveryFailure, RecoveryRestart, untitled_recovery_path};
 use std::{
     collections::BTreeMap,
     fmt, io,

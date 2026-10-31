@@ -1073,7 +1073,7 @@ impl EditorView {
                         self.record_project_directory(path, cx);
                     }
                     if let Some((success, revision)) = open_save {
-                        self.complete_open_save(success, revision);
+                        self.complete_open_save(success, revision, cx);
                     }
                     if let Some((correlation, success, confirmation_required)) = update_save {
                         self.update_save_terminal(correlation, success, confirmation_required, cx);

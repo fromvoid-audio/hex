@@ -449,6 +449,21 @@ impl Project {
             _ => Err(Invalid("command has no section splice preview")),
         }
     }
+    /// Display-only clip layout for a structural section command, built once
+    /// per submitted command. It applies the same candidate edit canonical
+    /// history applies, without commit validation, history, audio preparation
+    /// or source custody; the canonical result may still refuse or differ.
+    pub fn preview_section_layout(&self, command: &Command) -> Result<Project, Invalid> {
+        if !command.requires_section_publication() {
+            return Err(Invalid("command has no section clip layout preview"));
+        }
+        let mut command = command.clone();
+        let alias = crate::clip_alias_edit::Plan::capture(self, &mut command)?;
+        let mut candidate = self.clone();
+        candidate.apply(command)?;
+        alias.finish(&mut candidate)?;
+        Ok(candidate)
+    }
     // Preview uses the same zero-ID convention as copied marker previews. The
     // fresh identity is allocated only by the canonical candidate, never input.
     fn preview_section_split(
