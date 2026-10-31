@@ -170,6 +170,55 @@ fn folder_search_reports_unique_ambiguous_and_mismatched_candidates() {
 }
 
 #[test]
+fn proposed_candidate_lists_resolve_exact_ambiguous_mismatched_and_none() {
+    let files = Files::new();
+    let missing = vec![
+        item(1, PathBuf::from("/gone/Kick.wav"), 10),
+        item(2, PathBuf::from("/gone/snare.wav"), 20),
+        item(3, PathBuf::from("/gone/pad.wav"), 30),
+        item(4, PathBuf::from("/gone/absent.wav"), 40),
+    ];
+    let kick = files.wav("a/KICK.WAV", 48_000, 10);
+    let snares = [
+        files.wav("a/snare.wav", 48_000, 20),
+        files.wav("b/snare.wav", 48_000, 20),
+    ];
+    let pad = files.wav("b/pad.wav", 44_100, 30);
+    let renamed = files.wav("b/other.wav", 48_000, 10);
+    let lists = BTreeMap::from([
+        // A differently named catalog proposal is not this matcher's business.
+        (missing[0].asset, vec![renamed, kick.clone()]),
+        (missing[1].asset, snares.to_vec()),
+        (missing[2].asset, vec![pad]),
+        (missing[3].asset, vec![files.0.join("gone/absent.wav")]),
+    ]);
+    let cancel = AtomicBool::new(false);
+    let outcome = check_candidate_lists(&missing, &lists, 8, &cancel);
+    assert_eq!(outcome.stopped, None);
+    assert_eq!(outcome.scanned, 5);
+    assert_eq!(outcome.unique_match(missing[0].asset), Some(kick.as_path()));
+    assert_eq!(outcome.candidates[&missing[0].asset].len(), 1);
+    assert_eq!(outcome.unique_match(missing[1].asset), None);
+    assert_eq!(outcome.candidates[&missing[1].asset].len(), 2);
+    assert!(matches!(
+        outcome.candidates[&missing[2].asset][0].1,
+        CandidateFit::Mismatch(_)
+    ));
+    assert!(matches!(
+        outcome.candidates[&missing[3].asset][0].1,
+        CandidateFit::Unusable(_)
+    ));
+    assert_eq!(outcome.unreadable, 1);
+
+    let capped = check_candidate_lists(&missing[1..2], &lists, 1, &cancel);
+    assert_eq!(capped.candidates[&missing[1].asset].len(), 1);
+    cancel.store(true, Ordering::Relaxed);
+    let stopped = check_candidate_lists(&missing, &lists, 8, &cancel);
+    assert_eq!(stopped.stopped, Some(SearchStop::Cancelled));
+    assert!(stopped.candidates.is_empty());
+}
+
+#[test]
 fn folder_search_is_bounded_and_cancellable() {
     let files = Files::new();
     let missing = vec![item(1, PathBuf::from("/gone/kick.wav"), 10)];

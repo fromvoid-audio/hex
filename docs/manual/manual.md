@@ -81,6 +81,11 @@ saved project.
   sample rate equal the saved recording. when several files match, pick one;
   a file that differs is shown as a mismatch and is not used. you can cancel a
   search at any time.
+- **relink all found** appears when the browser's scanned sample folders
+  contain files with the same names. it applies only when you click it: files
+  with exactly one matching candidate are found, and files with several
+  matches list them for you to pick. add the new sample folder to the browser
+  first so it is scanned.
 - **open** becomes available once every file is found. the project then opens
   with the new locations as unsaved changes; your project file stays unchanged
   until you save. **cancel** keeps the current project.
