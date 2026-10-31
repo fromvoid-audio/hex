@@ -314,6 +314,7 @@ impl Fixture {
                     ],
                     analyzer: None,
                     input_analyzer: None,
+                    analyzer_peak: None,
                     nodes: Vec::new(),
                 },
                 theme::device_style(theme::DeviceStyleRole::Display),

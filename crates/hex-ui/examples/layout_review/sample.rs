@@ -648,10 +648,12 @@ impl Sample {
                     _ => SpectrumPlotLayers::new(vec![
                         SpectrumPlotLayer {
                             points: points.to_vec(),
+                            peak: None,
                             color: s.accent,
                         },
                         SpectrumPlotLayer {
                             points: points.map(|[x, y]| [x, 1.0 - y]).to_vec(),
+                            peak: None,
                             color: s.muted,
                         },
                     ])
