@@ -4,7 +4,7 @@ use super::*;
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_save_batch_captures_each_track_return_main_instance() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_plugins(
         host(),

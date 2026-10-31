@@ -8,7 +8,7 @@ use hex_session::{
 
 #[test]
 fn loop_edit_after_pausing_a_track_limiter_publishes_current_audio() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(131_072);
     assert!(h.next().error.is_none());
@@ -103,7 +103,7 @@ fn loop_edit_after_pausing_a_track_limiter_publishes_current_audio() {
 
 #[test]
 fn main_limiter_added_after_sounding_track_limiter_applies_to_audio() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(131_072);
     let initial = h.next();
@@ -165,7 +165,7 @@ fn main_limiter_added_after_sounding_track_limiter_applies_to_audio() {
 
 #[test]
 fn main_limiter_quiet_timing_changes_publish_and_render_the_new_delay() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::new();
     let initial = h.next();
@@ -241,7 +241,7 @@ fn main_limiter_quiet_timing_changes_publish_and_render_the_new_delay() {
 
 #[test]
 fn changing_existing_latency_while_playing_applies_without_stopping() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(131_072);
     assert!(h.next().error.is_none());
@@ -306,7 +306,7 @@ fn changing_existing_latency_while_playing_applies_without_stopping() {
 
 #[test]
 fn first_track_limiter_after_play_or_pause_publishes_and_parameter_edits_are_audible() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for paused in [false, true] {
         let files = Files::new();
         let mut h = ResidentHarness::with_frame_limit(131_072);
@@ -409,7 +409,7 @@ fn first_track_limiter_after_play_or_pause_publishes_and_parameter_edits_are_aud
 
 #[test]
 fn first_track_limiter_keeps_active_reverb_prefix_through_native_publication() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(65_536);
     assert!(h.next().error.is_none());
@@ -469,7 +469,7 @@ fn first_track_limiter_keeps_active_reverb_prefix_through_native_publication() {
 /// input could not bind. Paused publication applies at the cursor instead.
 #[test]
 fn paused_latency_change_then_new_instrument_track_applies_and_binds_live_input() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(131_072);
     assert!(h.next().error.is_none());

@@ -46,7 +46,7 @@ fn add(
 }
 #[test]
 fn resident_sections_reproject_stopped_cursor_and_refuse_stale_or_failed_edits() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::new();
     let initial = h.next();
     assert!(initial.error.is_none());
@@ -285,7 +285,7 @@ fn resident_sections_reproject_stopped_cursor_and_refuse_stale_or_failed_edits()
 
 #[test]
 fn stateless_section_reorder_retains_late_and_outside_loop_stopped_positions() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for (position, enabled_loop) in [(9_000_000, false), (96_000, true)] {
         let mut h = ResidentHarness::new();
         let initial = h.next();
@@ -368,7 +368,7 @@ fn stateless_section_reorder_retains_late_and_outside_loop_stopped_positions() {
 
 #[test]
 fn structural_section_splices_apply_live_or_stopped_and_preserve_failed_history() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for kind in [0, 1, 3, 4] {
         let mut h = ResidentHarness::new();
         let initial = h.next();
@@ -487,7 +487,7 @@ fn structural_section_splices_apply_live_or_stopped_and_preserve_failed_history(
 /// Every render also probes zero total and signed-net callback allocations.
 #[test]
 fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_refusal() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(8_000_000);
     let initial = h.next();
@@ -690,7 +690,7 @@ fn live_section_moves_duplicates_and_history_keep_advancing_audio_and_atomic_ref
 
 #[test]
 fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for (micro_bpm, copy_before_self) in [
         (143_000_000, false),
         (180_000_000, false),
@@ -1063,7 +1063,7 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
 
 #[test]
 fn empty_section_structural_history_retains_the_launched_loop_while_playing() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::new();
     let initial = h.next();
     let (mut applied, _) = h.applied(0);
@@ -1164,7 +1164,7 @@ fn assert_loop_wraps(h: &ResidentHarness, region: hex_project::LoopRegion) {
 }
 #[test]
 fn ordinary_metadata_and_history_preserve_the_applied_section_loop() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let MetadataLoop {
         mut h,
         mut event,
@@ -1231,7 +1231,7 @@ fn ordinary_metadata_and_history_preserve_the_applied_section_loop() {
 
 #[test]
 fn stale_loop_witnesses_and_admission_refusals_preserve_project_redo_and_playback() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let MetadataLoop {
         mut h,
         event,
@@ -1294,7 +1294,7 @@ fn stale_loop_witnesses_and_admission_refusals_preserve_project_redo_and_playbac
 
 #[test]
 fn offline_metadata_edits_and_history_do_not_require_an_applied_loop_witness() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::with_open_gate(8192, Arc::new(AtomicBool::new(false)));
     let initial = h.next();
     let (added, intro) = add(&mut h, initial.state.revision, "offline", 0, 2);
@@ -1334,7 +1334,7 @@ fn submit_pending_launch(h: &mut ResidentHarness, request_id: u64, revision: u64
 
 #[test]
 fn pending_launch_refuses_undo_and_redo_without_losing_either_history_stack() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let MetadataLoop {
         mut h,
         event,
@@ -1395,7 +1395,7 @@ fn pending_launch_refuses_undo_and_redo_without_losing_either_history_stack() {
 
 #[test]
 fn pending_launch_refuses_metadata_and_stop_cancellation_keeps_the_actual_loop() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let MetadataLoop {
         mut h,
         event,
@@ -1505,7 +1505,7 @@ fn pending_launch_refuses_metadata_and_stop_cancellation_keeps_the_actual_loop()
 
 #[test]
 fn new_document_and_output_do_not_inherit_the_previous_audition_loop() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let MetadataLoop { mut h, region, .. } = metadata_loop_fixture();
     let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let new = h.run(Request::NewWithAudioMode {
@@ -1555,7 +1555,7 @@ fn new_document_and_output_do_not_inherit_the_previous_audition_loop() {
 #[test]
 fn stopped_section_edits_reset_device_tails_at_a_late_cursor_without_replay() {
     const QUARTER: u64 = 24_000; // 120 bpm at 48 khz.
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(8_000_000);
     assert!(h.next().error.is_none());
