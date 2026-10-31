@@ -71,6 +71,10 @@ struct Display {
     // Owned gesture feedback, frozen with the exact released display. Ordinary
     // hover resumes elsewhere without repainting this receipt's final fill.
     pointer_hover: Option<BeatTime>,
+    // Sections under the held edge or body keep one hovered fill for the whole
+    // gesture and its receipt; a snapped edge crossing the pointer must not
+    // toggle it.
+    held: [Option<SectionId>; 2],
 }
 impl Display {
     fn pointer_hover_at(
@@ -111,6 +115,20 @@ enum Mode {
     },
     ContentStart(SectionId),
     ContentEnd(SectionId),
+}
+impl Mode {
+    fn held(self) -> [Option<SectionId>; 2] {
+        match self {
+            Mode::Paint => [None; 2],
+            Mode::Shared { left, right, .. } => [Some(left), Some(right)],
+            Mode::Start(id)
+            | Mode::End(id)
+            | Mode::Move(id)
+            | Mode::Reorder(id)
+            | Mode::ContentStart(id)
+            | Mode::ContentEnd(id) => [Some(id), None],
+        }
+    }
 }
 struct Gesture {
     launch_eligible: bool,
@@ -161,8 +179,17 @@ pub(super) struct Sections {
     cursor: Option<SectionCursor>,
     gesture: Option<Gesture>,
     pending: Option<Pending>,
+    // One keyboard/menu follow-up typed while an edit is in flight (latest
+    // wins). It is validated and submitted against the acknowledged revision.
+    queued: Option<Queued>,
     name: Option<Name>,
 }
+struct Queued {
+    generation: u64,
+    command: Command,
+}
+/// Visible refusal for section input that cannot wait for an in-flight edit.
+const SECTION_BUSY: &str = "applying section edit · try again when it finishes";
 impl Sections {
     pub(super) fn selected_ids(&self) -> &[SectionId] {
         if self.selected.is_some_and(|id| self.selection.contains(&id)) {
@@ -506,10 +533,15 @@ impl EditorView {
             && self.device_panel.main_selected == Some(self.project_generation)
     }
     fn sections_available(&self) -> bool {
+        self.sections_idle() && self.section_input_open()
+    }
+    /// No section or other project edit is in flight.
+    fn sections_idle(&self) -> bool {
+        !self.edit_pending() && self.sections.pending.is_none() && !self.section_install_pending()
+    }
+    /// No modal owner, text field or other gesture holds editor input.
+    fn section_input_open(&self) -> bool {
         self.mode == EditorMode::Arrangement
-            && !self.edit_pending()
-            && self.sections.pending.is_none()
-            && !self.section_install_pending()
             && self.sections.name.is_none()
             && self.clip_name_edit.is_none()
             && !self.track_name.is_editing()
@@ -686,7 +718,11 @@ impl EditorView {
             return false;
         };
         if !self.sections_available() {
-            return self.section_hit(x, y).is_some();
+            let hit = self.section_hit(x, y).is_some();
+            if hit && !self.sections_idle() {
+                self.error = Some(SECTION_BUSY.into());
+            }
+            return hit;
         }
         let edge = self.section_edge_hit(x);
         let Some([_, top, _, height]) = self.section_layout() else {
@@ -816,6 +852,7 @@ impl EditorView {
                 .collect(),
             tempo: state.project.tempo_map().clone(),
             pointer_hover: None,
+            held: [None; 2],
         };
         let part = match edge {
             Some(SectionEdge::Shared(..)) => RectanglePart::Seam,
@@ -917,6 +954,7 @@ impl EditorView {
                 .collect(),
             tempo: state.project.tempo_map().clone(),
             pointer_hover: None,
+            held: [None; 2],
         };
         match g.mode {
             Mode::Reorder(id) => {
@@ -1132,6 +1170,7 @@ impl EditorView {
         g.display.pointer_hover = g
             .display
             .pointer_hover_at(g.viewport, g.layout, g.last_pointer);
+        g.display.held = g.mode.held();
         self.sections.gesture = Some(g);
         true
     }
@@ -1273,6 +1312,13 @@ impl EditorView {
                 self.sections.selected = Some(*id);
                 self.sections.selection = vec![*id];
             }
+            if (event.error.is_some() || event.project_replaced)
+                && self.sections.queued.take().is_some()
+            {
+                // It was chosen against the refused preview; never apply it
+                // to different content. The terminal error stays visible.
+                self.status = "queued section edit dropped".into();
+            }
             self.retire_pending_section();
         }
         if event.project_replaced {
@@ -1284,6 +1330,35 @@ impl EditorView {
             .is_some_and(|g| g.revision != event.state.revision)
         {
             self.cancel_section_pointer();
+        }
+    }
+    /// Submit the queued follow-up once its predecessor is acknowledged.
+    /// It is validated against the installed revision like a fresh key press.
+    pub(super) fn submit_queued_section(&mut self) -> bool {
+        if self
+            .sections
+            .queued
+            .as_ref()
+            .is_some_and(|q| q.generation != self.project_generation)
+        {
+            self.sections.queued = None;
+            return true;
+        }
+        if self.sections.queued.is_none() || !self.sections_available() {
+            return false;
+        }
+        let Some(Queued { command, .. }) = self.sections.queued.take() else {
+            return false;
+        };
+        self.status = "applying queued section edit".into();
+        self.section_metadata(command);
+        true
+    }
+    /// Undo/Redo order behind the in-flight edit; a queued section follow-up
+    /// was aimed at the state they replace, so it is dropped visibly.
+    pub(super) fn cancel_queued_section(&mut self) {
+        if self.sections.queued.take().is_some() {
+            self.status = "queued section edit cancelled by undo/redo".into();
         }
     }
     pub(super) fn reconcile_sections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1364,6 +1439,9 @@ impl EditorView {
             return false;
         };
         if !self.sections_available() {
+            if !self.sections_idle() {
+                self.error = Some(SECTION_BUSY.into());
+            }
             return true;
         }
         self.cancel_section_pointer();
@@ -1395,7 +1473,7 @@ impl EditorView {
             return;
         };
         let name = n.input.read(cx).text().to_owned();
-        if self.section_stamp_current(n.generation, n.revision, n.id) && !self.edit_pending() {
+        if self.section_stamp_current(n.generation, n.revision, n.id) {
             self.section_metadata(Command::RenameArrangementSection {
                 section: n.id,
                 name,
@@ -1454,7 +1532,7 @@ impl EditorView {
         if !self.section_has_focus(window) {
             return false;
         }
-        if self.sections_available() {
+        if self.section_input_open() {
             self.cancel_section_pointer();
             if self.sections.selection.len() > 1 {
                 self.error = Some(
@@ -1499,6 +1577,10 @@ impl EditorView {
             return false;
         };
         if !self.sections_available() || self.sections.held() {
+            if !self.sections_idle() {
+                // The cursor is revision-bound, so a split cannot be queued.
+                self.error = Some(SECTION_BUSY.into());
+            }
             return true;
         }
         let Some(state) = self.state.as_ref() else {
@@ -1529,7 +1611,7 @@ impl EditorView {
         }
         if self.sections.selection.len() < 2 {
             self.error = Some("shift-click another section to merge a span".into());
-        } else if !self.sections_available() {
+        } else if !self.section_input_open() {
             self.error = Some("applying edit · wait before merging sections".into());
         } else {
             self.section_metadata(Command::MergeArrangementSections(
@@ -1539,7 +1621,15 @@ impl EditorView {
         true
     }
     fn section_metadata(&mut self, command: Command) {
-        if !self.sections_available() {
+        if !self.section_input_open() {
+            return;
+        }
+        if !self.sections_idle() {
+            self.sections.queued = Some(Queued {
+                generation: self.project_generation,
+                command,
+            });
+            self.status = "section edit queued · applies after the current edit".into();
             return;
         }
         let Some(state) = self.state.as_ref() else {
@@ -1554,6 +1644,7 @@ impl EditorView {
                 .collect(),
             tempo: state.project.tempo_map().clone(),
             pointer_hover: None,
+            held: [None; 2],
         };
         match &command {
             Command::RenameArrangementSection { section, name } => {
@@ -1598,6 +1689,9 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         if !self.sections_available() {
+            if !self.sections_idle() {
+                self.error = Some(SECTION_BUSY.into());
+            }
             return;
         }
         self.cancel_section_pointer();
@@ -1754,6 +1848,7 @@ impl EditorView {
                     .collect(),
                 tempo: state.project.tempo_map().clone(),
                 pointer_hover: None,
+                held: [None; 2],
             };
             &canonical
         };
@@ -1797,9 +1892,10 @@ impl EditorView {
                     && m.id.is_some_and(|id| {
                         self.sections.selection.contains(&id) || self.sections.selected == Some(id)
                     }));
-            let owned_hover = display
-                .pointer_hover
-                .is_some_and(|beat| m.start <= beat && beat <= m.end);
+            let owned_hover = m.id.is_some_and(|id| display.held.contains(&Some(id)))
+                || display
+                    .pointer_hover
+                    .is_some_and(|beat| m.start <= beat && beat <= m.end);
             let colors = theme::section_colors(m.color, selected, owned_hover);
             let hover = theme::section_colors(m.color, selected, true);
             let border = colors.2;
@@ -5010,5 +5106,241 @@ mod tests {
             v.receive(event);
             assert_eq!(v.state.as_ref().unwrap().project, before);
         });
+    }
+    /// Tick the real worker pump until every edit and queued follow-up lands.
+    fn settle(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let idle = editor.update(visual, |v, cx| {
+                v.tick(cx);
+                !v.edit_pending() && v.sections.pending.is_none() && v.sections.queued.is_none()
+            });
+            if idle {
+                break;
+            }
+            assert!(Instant::now() < deadline, "section edits settle");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        visual.run_until_parked();
+    }
+    #[gpui::test]
+    fn section_keys_during_a_pending_edit_queue_one_follow_up_or_refuse_visibly(
+        cx: &mut TestAppContext,
+    ) {
+        let sections = |editor: &Entity<EditorView>, cx: &mut TestAppContext| {
+            editor.read_with(cx, |v, _| {
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .arrangement_sections()
+                    .iter()
+                    .map(|s| s.id())
+                    .collect::<Vec<_>>()
+            })
+        };
+        // (keys after the pending cmd-d, expected section count, first kept)
+        for (keys, count, kept) in [
+            // Back to back: duplicate, then delete of the same section.
+            ("backspace", 2, false),
+            // Latest wins: the delete is replaced by a second duplicate.
+            ("backspace cmd-d", 4, true),
+            // Undo orders behind the duplicate and drops the queued delete.
+            ("backspace cmd-z", 2, true),
+        ] {
+            let (handle, editor, ids) = fixture(cx);
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+            let a = editor.read_with(cx, |v, _| position(v, 2));
+            visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_keystrokes("cmd-d");
+            // The acknowledgement is delayed: nothing ticks the worker yet.
+            visual.simulate_keystrokes(keys);
+            editor.read_with(cx, |v, _| {
+                assert!(v.sections.pending.is_some(), "{keys}");
+                let queued = v.sections.queued.as_ref().map(|q| &q.command);
+                match keys {
+                    "backspace" => assert!(
+                        matches!(queued, Some(Command::DeleteArrangementSection(id)) if *id == ids[0])
+                    ),
+                    "backspace cmd-d" => assert!(
+                        matches!(queued, Some(Command::DuplicateArrangementSection(id)) if *id == ids[0])
+                    ),
+                    _ => {
+                        assert!(queued.is_none());
+                        assert_eq!(&*v.status, "queued section edit cancelled by undo/redo");
+                    }
+                }
+                if queued.is_some() {
+                    assert_eq!(
+                        &*v.status,
+                        "section edit queued · applies after the current edit"
+                    );
+                }
+            });
+            settle(&editor, &mut visual);
+            let after = sections(&editor, cx);
+            assert_eq!(after.len(), count, "{keys}: {after:?}");
+            assert_eq!(after.contains(&ids[0]), kept, "{keys}");
+            editor.read_with(cx, |v, _| {
+                assert!(v.error.is_none(), "{keys}: {:?}", v.error)
+            });
+        }
+
+        // g queues a merge behind another in-flight section edit.
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (a, b) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
+        visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(b, MouseButton::Left, shift);
+        visual.simulate_mouse_up(b, MouseButton::Left, shift);
+        visual.run_until_parked();
+        editor.update(cx, |v, _| {
+            v.section_metadata(Command::SetArrangementSectionColor {
+                section: ids[1],
+                color: ElementColor::Green,
+            });
+            assert!(v.sections.pending.is_some());
+        });
+        visual.simulate_keystrokes("g");
+        editor.read_with(cx, |v, _| {
+            assert!(matches!(
+                v.sections.queued.as_ref().map(|q| &q.command),
+                Some(Command::MergeArrangementSections(_))
+            ));
+        });
+        settle(&editor, &mut visual);
+        assert_eq!(sections(&editor, cx), vec![ids[0]]);
+
+        // Pointer and split input cannot wait for the edit; they refuse visibly.
+        editor.update(cx, |v, _| {
+            v.section_metadata(Command::SetArrangementSectionColor {
+                section: ids[0],
+                color: ElementColor::Blue,
+            });
+            assert!(v.sections.pending.is_some());
+        });
+        visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |v, _| {
+            assert_eq!(v.error.as_deref(), Some(SECTION_BUSY));
+            assert!(v.sections.gesture.is_none());
+        });
+        settle(&editor, &mut visual);
+    }
+    #[gpui::test]
+    fn resize_keeps_one_selected_surface_every_frame_through_delayed_ack(cx: &mut TestAppContext) {
+        let platform = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        // (touching seam, modifiers, release quarter)
+        for (seam, modifiers, end) in [
+            (false, Modifiers::default(), 7),
+            (false, platform, 7),
+            (false, alt, 7),
+            (true, Modifiers::default(), 6),
+            (true, platform, 6),
+        ] {
+            let (handle, editor, ids) = if seam {
+                touching_fixture(cx)
+            } else {
+                fixture(cx)
+            };
+            let mut visual = VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+            let edge = bounds(&mut visual, 0);
+            let down = point(
+                if seam {
+                    edge.right()
+                } else {
+                    edge.right() - px(1.0)
+                },
+                edge.origin.y + px(12.0),
+            );
+            let to = editor.read_with(cx, |v, _| position(v, end));
+            visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+            let mut frames = Vec::new();
+            // Sub-grid steps cross snap points, so the pointer alternates
+            // between inside and outside the snapped preview edge.
+            for step in 1..=8 {
+                let x = down.x + (to.x - down.x) * (step as f32 / 8.0);
+                visual.simulate_mouse_move(point(x, down.y), MouseButton::Left, modifiers);
+                visual.run_until_parked();
+                assert!(
+                    visual
+                        .debug_bounds("arrangement-section-selected-trailing-0")
+                        .is_some(),
+                    "seam {seam} {modifiers:?} step {step}: section lost its selected edge"
+                );
+                editor.read_with(cx, |v, _| {
+                    assert_eq!(v.sections.selected, Some(ids[0]));
+                    assert!(v.sections.gesture.is_some());
+                });
+                frames.push((
+                    visual.rendered_background("arrangement-section-0"),
+                    visual.rendered_background("arrangement-section-header-0"),
+                ));
+            }
+            visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
+            let event = editor.update(cx, |v, _| next(&v.service));
+            assert!(event.error.is_none(), "{:?}", event.error);
+            // Delayed acknowledgement: completed repaints keep the frozen look.
+            for _ in 0..3 {
+                visual.update(|window, _| window.refresh());
+                visual.run_until_parked();
+                assert!(
+                    visual
+                        .debug_bounds("arrangement-section-selected-trailing-0")
+                        .is_some()
+                );
+                frames.push((
+                    visual.rendered_background("arrangement-section-0"),
+                    visual.rendered_background("arrangement-section-header-0"),
+                ));
+            }
+            assert!(frames[0].0.is_some() && frames[0].1.is_some());
+            for (index, frame) in frames.iter().enumerate() {
+                assert_eq!(
+                    frame, &frames[0],
+                    "seam {seam} {modifiers:?} frame {index}: selected surface changed"
+                );
+            }
+            editor.update(cx, |v, cx| {
+                v.receive(event);
+                cx.notify();
+            });
+            visual.run_until_parked();
+            assert!(
+                visual
+                    .debug_bounds("arrangement-section-selected-trailing-0")
+                    .is_some()
+            );
+            editor.read_with(cx, |v, _| {
+                assert_eq!(v.sections.selected, Some(ids[0]));
+                assert_eq!(
+                    v.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .arrangement_section(ids[0])
+                        .unwrap()
+                        .end(),
+                    BeatTime::from_quarters(end).unwrap()
+                );
+            });
+        }
     }
 }

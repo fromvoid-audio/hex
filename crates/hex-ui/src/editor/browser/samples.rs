@@ -1,6 +1,10 @@
 //! Sample catalog worker coordination and compact source filters.
 use super::*;
-use hex_library::catalog::{SampleCatalog, scan_samples};
+use hex_library::catalog::{SampleCatalog, ScanControl, scan_samples_with};
+use std::{
+    collections::BTreeSet,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 /// The Samples listing model shared by row construction and its count label.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -43,6 +47,12 @@ struct FolderCache {
 #[derive(Default)]
 pub(super) struct SampleBrowser {
     pub(super) catalog: SampleCatalog,
+    /// Configured roots the last completed scan found missing.
+    pub(super) missing_roots: BTreeSet<PathBuf>,
+    /// Roots and cancel flag of the scan in flight; a root change cancels it.
+    scanning: Option<(Vec<PathBuf>, Arc<AtomicBool>)>,
+    /// Entries inspected by the scan in flight.
+    progress: Arc<AtomicUsize>,
     in_flight: bool,
     pending: bool,
     loaded: bool,
@@ -187,14 +197,26 @@ impl EditorView {
         if self.browser.preferences_loading {
             return;
         }
+        let roots = self.sample_roots();
         if self.browser.samples.in_flight {
+            if let Some((scanning, cancel)) = &self.browser.samples.scanning
+                && *scanning != roots
+            {
+                // Its result would be discarded anyway; stop reading files now.
+                cancel.store(true, Ordering::Relaxed);
+            }
             self.browser.samples.pending = true;
             return;
         }
         self.browser.samples.in_flight = true;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.browser.samples.scanning = Some((roots.clone(), Arc::clone(&cancel)));
+        self.browser.samples.progress.store(0, Ordering::Relaxed);
+        let progress = Arc::clone(&self.browser.samples.progress);
+        #[cfg(not(test))]
+        self.repaint_sample_scan_progress(cx);
         cx.notify();
         let load = !self.browser.samples.loaded;
-        let roots = self.sample_roots();
         let database = self
             .browser
             .preferences_path
@@ -212,7 +234,12 @@ impl EditorView {
                     .spawn(async move {
                         #[cfg(test)]
                         let _test_environment = load_environment;
-                        SampleCatalog::load(&path)
+                        // A refused cache is kept aside, then rebuilt by this scan.
+                        SampleCatalog::load(&path).inspect_err(|error| {
+                            if error.kind() == std::io::ErrorKind::InvalidData {
+                                let _ = SampleCatalog::preserve_corrupt(&path);
+                            }
+                        })
                     })
                     .await;
                 if this
@@ -239,14 +266,30 @@ impl EditorView {
                     return;
                 }
             }
+            let Ok(previous) = this.update(cx, |view, _| view.browser.samples.catalog.clone())
+            else {
+                return;
+            };
             let scan_roots = roots.clone();
             let (scan, saved) = cx
                 .background_executor()
                 .spawn(async move {
-                    let scan = scan_samples(&scan_roots);
+                    let scan = scan_samples_with(
+                        &scan_roots,
+                        ScanControl {
+                            previous: Some(&previous),
+                            cancel: Some(&cancel),
+                            progress: Some(&progress),
+                        },
+                    );
                     #[cfg(test)]
                     let gate = test_environment.before_catalog_save().await;
-                    let saved = scan.catalog.save(&database);
+                    // A cancelled scan is partial; keep the last complete cache.
+                    let saved = if scan.cancelled {
+                        Ok(())
+                    } else {
+                        scan.catalog.save(&database)
+                    };
                     #[cfg(test)]
                     if let Some(gate) = gate {
                         gate.did_save(saved.is_ok(), test_environment.root().is_dir());
@@ -256,8 +299,11 @@ impl EditorView {
                 .await;
             let _ = this.update(cx, |view, cx| {
                 view.browser.samples.in_flight = false;
+                view.browser.samples.scanning = None;
                 // Changes to roots while a scan runs must not publish old results.
-                if roots == view.sample_roots() {
+                if roots == view.sample_roots() && !scan.cancelled {
+                    view.browser.samples.missing_roots =
+                        scan.missing_roots.iter().cloned().collect();
                     let mut status = Vec::new();
                     if scan.truncated {
                         status.push("sample scan limit reached".to_owned());
@@ -286,6 +332,29 @@ impl EditorView {
         .detach();
     }
 
+    /// Redraw the progress count a few times a second while a scan runs. The
+    /// count is an atomic read; the UI never walks folders itself.
+    #[cfg(not(test))]
+    fn repaint_sample_scan_progress(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(250))
+                    .await;
+                let scanning = this
+                    .update(cx, |view, cx| {
+                        cx.notify();
+                        view.browser.samples.in_flight
+                    })
+                    .unwrap_or(false);
+                if !scanning {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
     pub(super) fn apply_sample_catalog(&mut self, catalog: SampleCatalog, cx: &mut Context<Self>) {
         let remap = !self.browser_place_unavailable()
             && matches!(
@@ -301,14 +370,14 @@ impl EditorView {
     pub(super) fn sample_results_count_text(&self, cx: &App) -> String {
         let count = self.browser_visible_entries(cx).len();
         let noun = ResultsMode::for_query(self.browser.search.read(cx).text()).count_noun();
-        format!(
-            "{count} {noun}{}",
-            if self.browser.samples.in_flight {
-                " · scanning…"
-            } else {
-                ""
-            }
-        )
+        let scanned = self.browser.samples.progress.load(Ordering::Relaxed);
+        if !self.browser.samples.in_flight {
+            format!("{count} {noun}")
+        } else if scanned == 0 {
+            format!("{count} {noun} · scanning…")
+        } else {
+            format!("{count} {noun} · scanning {scanned} files…")
+        }
     }
 
     pub(super) fn sample_filters(&self, cx: &mut Context<Self>) -> Div {

@@ -63,6 +63,7 @@ pub(super) enum EditorContextAction {
         request_id: u64,
     },
     RemoveBrowserSource(super::browser::BrowserSection),
+    RelocateBrowserPlace(std::path::PathBuf),
     AdaptiveGrid {
         generation: u64,
         density: super::musical_time::AdaptiveGridDensity,
@@ -665,6 +666,9 @@ impl EditorView {
             EditorContextAction::RemoveBrowserSource(source) => {
                 self.remove_browser_source(source, window, cx);
             }
+            EditorContextAction::RelocateBrowserPlace(path) => {
+                self.prompt_relocate_browser_place(path, cx);
+            }
             EditorContextAction::AdaptiveGrid {
                 generation,
                 density,
@@ -893,6 +897,9 @@ impl EditorView {
                 }
                 EditorContextAction::RemoveBrowserSource(source) => {
                     !self.browser_source_removable(source)
+                }
+                EditorContextAction::RelocateBrowserPlace(path) => {
+                    !self.browser_place_relocatable(path)
                 }
                 EditorContextAction::BounceTrack {
                     generation,
