@@ -30,7 +30,10 @@ mod dial;
 mod discrete;
 mod focus_marker;
 mod frame;
-pub use device_meters::DeviceMeterReadout;
+pub use device_meters::{
+    DeviceMeterReadout, STEREO_PEAK_BAR_GAP, STEREO_PEAK_BAR_WIDTH, StereoPeakMeter,
+    stereo_peak_meter,
+};
 mod numeric;
 mod numeric_control;
 mod numeric_text;

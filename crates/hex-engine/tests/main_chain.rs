@@ -221,14 +221,15 @@ fn main_meter_resolves_the_actual_rendered_device_tap() {
     playback.render(&mut [[0.0; 2]; 64]).unwrap();
     let peaks = meter.take_peaks();
     assert!(
-        peaks[0] > 0.4 && peaks[0] < 0.46,
+        peaks.input > 0.4 && peaks.input < 0.46,
         "actual Main input: {peaks:?}"
     );
+    let output = peaks.output[0].max(peaks.output[1]);
     assert!(
-        peaks[1] > 0.3 && peaks[1] < peaks[0],
+        output > 0.3 && output < peaks.input,
         "actual DC-filter output: {peaks:?}"
     );
-    assert_eq!(meter.take_peaks(), [0.0; 2]);
+    assert_eq!(meter.take_peaks(), hex_engine::DevicePeaks::default());
 }
 
 #[test]
@@ -364,7 +365,7 @@ fn main_renderer_metering_tracks_public_enable_disable_and_reenable_without_pcm_
         renderer.play();
         unmetered.play();
         for enabled in [false, true, false, true] {
-            assert_eq!(meter.take_peaks(), [0.0; 2]);
+            assert_eq!(meter.take_peaks(), hex_engine::DevicePeaks::default());
             renderer.set_effect_metering(enabled);
             let mut actual = [[0.0; 2]; 64];
             let mut expected = actual;
@@ -378,13 +379,17 @@ fn main_renderer_metering_tracks_public_enable_disable_and_reenable_without_pcm_
             );
             if enabled {
                 assert!(
-                    peaks[0] > 0.01 && peaks[1] > 0.01,
+                    peaks.input > 0.01 && peaks.output.iter().any(|peak| *peak > 0.01),
                     "public Renderer enable must meter nonzero Main PCM: {peaks:?}"
                 );
             } else {
-                assert_eq!(peaks, [0.0; 2], "disabled Main telemetry must stay silent");
+                assert_eq!(
+                    peaks,
+                    hex_engine::DevicePeaks::default(),
+                    "disabled Main telemetry must stay silent"
+                );
             }
-            assert_eq!(meter.take_peaks(), [0.0; 2]);
+            assert_eq!(meter.take_peaks(), hex_engine::DevicePeaks::default());
             assert_eq!(renderer.position(), unmetered.position());
         }
     }
