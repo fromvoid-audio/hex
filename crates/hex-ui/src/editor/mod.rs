@@ -37,6 +37,7 @@ mod clip_gain;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod clip_gain_ui_tests;
 mod clip_name;
+mod clip_range_fit;
 mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
