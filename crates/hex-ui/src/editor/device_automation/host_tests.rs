@@ -705,3 +705,171 @@ fn stale_reenable_keeps_pending_selection_until_its_terminal_then_restores_canon
         );
     });
 }
+
+const CMD: Modifiers = Modifiers {
+    control: false,
+    alt: false,
+    shift: false,
+    platform: true,
+    function: false,
+};
+const SHIFT: Modifiers = Modifiers {
+    control: false,
+    alt: false,
+    shift: true,
+    platform: false,
+    function: false,
+};
+
+fn lane_point(
+    visual: &mut VisualTestContext,
+    device: DeviceId,
+    target: DeviceAutomationTarget,
+    [x, y]: [f32; 2],
+) -> gpui::Point<Pixels> {
+    let bounds = plot(visual, device, target);
+    point(
+        bounds.left() + bounds.size.width * x,
+        bounds.top() + bounds.size.height * y,
+    )
+}
+
+fn lane_points(
+    visual: &VisualTestContext,
+    editor: &Entity<EditorView>,
+    device: DeviceId,
+    target: DeviceAutomationTarget,
+) -> Vec<AutomationPoint> {
+    editor.read_with(visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .automation_target(target)
+            .map(|lane| lane.points.clone())
+            .unwrap_or_default()
+    })
+}
+
+fn selected_beats(visual: &VisualTestContext, editor: &Entity<EditorView>) -> Vec<BeatTime> {
+    editor.read_with(visual, |view, _| {
+        view.automation_view
+            .devices
+            .selected
+            .as_ref()
+            .map(|selected| selected.beats.clone())
+            .unwrap_or_default()
+    })
+}
+
+fn lane_drag(
+    visual: &mut VisualTestContext,
+    from: gpui::Point<Pixels>,
+    to: gpui::Point<Pixels>,
+    modifiers: Modifiers,
+) {
+    visual.simulate_mouse_down(from, MouseButton::Left, modifiers);
+    visual.simulate_mouse_move(to, Some(MouseButton::Left), modifiers);
+    visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
+    visual.run_until_parked();
+}
+
+/// Three unsnapped points (Cmd) at known pixels, so presses hit them exactly.
+fn three_point_lane(
+    cx: &mut TestAppContext,
+) -> (
+    VisualTestContext,
+    Entity<EditorView>,
+    DeviceId,
+    DeviceAutomationTarget,
+    Vec<AutomationPoint>,
+) {
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    let target =
+        DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+    header_assign(&mut visual, &editor, owner, target);
+    for x in [0.2, 0.4, 0.8] {
+        let at = lane_point(&mut visual, device, target, [x, 0.5]);
+        visual.simulate_click(at, CMD);
+        pump(&mut visual, &editor);
+    }
+    let points = lane_points(&visual, &editor, device, target);
+    assert_eq!(points.len(), 3, "blank clicks still add points");
+    (visual, editor, device, target, points)
+}
+
+#[gpui::test]
+fn lane_marquee_selects_inside_points_and_shift_adds_while_cmd_toggles(cx: &mut TestAppContext) {
+    let (mut visual, editor, device, target, points) = three_point_lane(cx);
+    let beats: Vec<_> = points.iter().map(|point| point.beat).collect();
+    let before = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+    // Drag right-to-left over the first two points.
+    let from = lane_point(&mut visual, device, target, [0.5, 0.95]);
+    let to = lane_point(&mut visual, device, target, [0.1, 0.05]);
+    lane_drag(&mut visual, from, to, Modifiers::default());
+    assert_eq!(selected_beats(&visual, &editor), beats[..2]);
+    let from = lane_point(&mut visual, device, target, [0.7, 0.05]);
+    let to = lane_point(&mut visual, device, target, [0.9, 0.95]);
+    lane_drag(&mut visual, from, to, SHIFT);
+    assert_eq!(selected_beats(&visual, &editor), beats);
+    let from = lane_point(&mut visual, device, target, [0.1, 0.05]);
+    let to = lane_point(&mut visual, device, target, [0.3, 0.95]);
+    lane_drag(&mut visual, from, to, CMD);
+    assert_eq!(selected_beats(&visual, &editor), beats[1..]);
+    pump(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state.as_ref().unwrap().revision,
+            before,
+            "marquee selection is view state and authors nothing"
+        );
+    });
+    assert_eq!(lane_points(&visual, &editor, device, target), points);
+}
+
+#[gpui::test]
+fn lane_group_move_and_delete_each_undo_in_one_step(cx: &mut TestAppContext) {
+    let (mut visual, editor, device, target, points) = three_point_lane(cx);
+    let from = lane_point(&mut visual, device, target, [0.1, 0.05]);
+    let to = lane_point(&mut visual, device, target, [0.5, 0.95]);
+    lane_drag(&mut visual, from, to, Modifiers::default());
+    assert_eq!(selected_beats(&visual, &editor).len(), 2);
+
+    // Dragging one selected point moves both by the same value delta.
+    let first = lane_point(&mut visual, device, target, [0.2, 0.5]);
+    let lower = point(first.x, first.y + px(12.0));
+    lane_drag(&mut visual, first, lower, CMD);
+    pump(&mut visual, &editor);
+    let moved = lane_points(&visual, &editor, device, target);
+    assert_eq!(moved.len(), 3);
+    let deltas: Vec<f32> = moved
+        .iter()
+        .zip(&points)
+        .map(|(moved, original)| {
+            assert_eq!(moved.beat, original.beat, "a vertical drag keeps beats");
+            moved.value.get() - original.value.get()
+        })
+        .collect();
+    assert!(deltas[0] < -0.05, "{deltas:?}");
+    assert!((deltas[0] - deltas[1]).abs() < 1e-4, "{deltas:?}");
+    assert_eq!(deltas[2], 0.0, "unselected points stay put");
+    assert_eq!(selected_beats(&visual, &editor).len(), 2);
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), points);
+
+    let from = lane_point(&mut visual, device, target, [0.3, 0.05]);
+    let to = lane_point(&mut visual, device, target, [0.9, 0.95]);
+    lane_drag(&mut visual, from, to, Modifiers::default());
+    assert_eq!(selected_beats(&visual, &editor).len(), 2);
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.delete_device_automation_point(cx))
+    });
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), points[..1]);
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target), points);
+}
