@@ -1,4 +1,4 @@
-//! Regression for Vector B edits, rejected live handoff and explicit Stop recovery.
+//! Regression for Vector B edits, restarted live handoff and explicit Stop recovery.
 use super::*;
 use hex_engine::{NativeDeviceClass, playback::PlaybackCommand};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
@@ -38,7 +38,7 @@ fn render(playback: &mut Playback) -> Vec<hex_engine::Frame> {
 }
 
 #[test]
-fn vector_b_tuning_refusal_preserves_canonical_sound_and_stop_can_restore_a_refused_handoff() {
+fn vector_b_tuning_refusal_preserves_canonical_sound_and_stop_can_restore_a_restarted_handoff() {
     let service = Service::new(48_000, 16, 0).expect("service");
     next(&service);
     let added = submit(
@@ -125,11 +125,18 @@ fn vector_b_tuning_refusal_preserves_canonical_sound_and_stop_can_restore_a_refu
     assert_eq!(refused.state.can_undo, canonical.can_undo);
     render(&mut active);
 
-    // A supported B ratio compiles but cannot replace active filter histories.
+    // A supported B ratio compiles. Its filter histories cannot carry over, so
+    // the live handoff restarts audio at the cursor instead of refusing
+    // (Pulse #3784): the replacement takes the runtime and keeps sounding.
     let edited = patch(&service, device, 4, ParameterValue::Float(3.0));
     assert!(edited.error.is_none(), "{:?}", edited.error);
-    let mut candidate = edited.playback.unwrap();
-    assert!(candidate.try_inherit_runtime_from(&mut active).is_err());
+    let mut active = {
+        let mut candidate = edited.playback.unwrap();
+        candidate
+            .try_inherit_runtime_from(&mut active)
+            .expect("unavailable source history restarts at the cursor");
+        candidate
+    };
     render(&mut active);
 
     active.apply(PlaybackCommand::Stop);
@@ -146,13 +153,13 @@ fn vector_b_tuning_refusal_preserves_canonical_sound_and_stop_can_restore_a_refu
             .unwrap();
     restored
         .try_inherit_runtime_from(&mut active)
-        .expect("Stop releases incompatible histories");
+        .expect("Stop hands over the restarted runtime");
     restored.apply(PlaybackCommand::Play);
     oracle.apply(PlaybackCommand::Play);
     assert_eq!(render(&mut restored), render(&mut oracle));
 
     // Each connected B/C/D level changes the serial FM signal independently
-    // of the earlier rejected tuning handoff.
+    // of the earlier restarted tuning handoff.
     for level in [5, 8, 11] {
         let leveled = patch(&service, device, level, ParameterValue::Float(0.0));
         assert!(leveled.error.is_none());
