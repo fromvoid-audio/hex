@@ -1411,9 +1411,15 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &super::BounceToNewTracks, window, cx| {
-                view.bounce_arrangement_selection(window);
+                view.bounce_arrangement_selection(window, false);
                 cx.notify();
             }))
+            .on_action(
+                cx.trace(|view, _: &super::BounceAndMuteSources, window, cx| {
+                    view.bounce_arrangement_selection(window, true);
+                    cx.notify();
+                }),
+            )
             .on_action(cx.trace(|view, _: &LoopSelection, window, cx| {
                 view.loop_selection_key(window, cx);
                 cx.notify();

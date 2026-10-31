@@ -246,8 +246,16 @@ pub(crate) fn commit(
     project: &mut Project,
     target: BounceTarget,
     in_place: bool,
+    mute_sources: bool,
     files: Vec<BounceFile>,
 ) -> Result<Created, Invalid> {
+    if mute_sources
+        && (in_place || !matches!(target, BounceTarget::Clips(_) | BounceTarget::Range(_)))
+    {
+        return Err(Invalid(
+            "bounce and mute requires selected clips or a time selection on new tracks",
+        ));
+    }
     if let BounceTarget::AudioGroup { clips, range } = &target {
         if !in_place {
             return Err(Invalid("audio grouping replaces its selected clips"));
@@ -316,7 +324,7 @@ pub(crate) fn commit(
             });
             if overlaps {
                 return Err(Invalid(
-                    "bounce tail overlaps unselected material · use command-b",
+                    "bounce tail overlaps unselected material · use b to bounce to a new track",
                 ));
             }
         }
@@ -402,6 +410,23 @@ pub(crate) fn commit(
         first.get_or_insert(clip);
         last = Some(clip);
     }
+    // Same canonical deactivation as contextual `c`/`0`, but always inactive:
+    // a toggle could reactivate material that was already partly muted.
+    if mute_sources {
+        match &target {
+            BounceTarget::Clips(clips) => project.apply(Command::EditClips {
+                clips: clips.clone(),
+                edit: crate::ClipEdit::Active { active: false },
+            })?,
+            BounceTarget::Range(range) => project.apply(Command::SetTimeRangeActive {
+                range: range.clone(),
+                active: false,
+            })?,
+            BounceTarget::Track(_) | BounceTarget::AudioGroup { .. } => {
+                return Err(Invalid("bounce and mute target changed"));
+            }
+        };
+    }
     if let BounceTarget::Track(track) = target {
         if project
             .track(track)
@@ -482,6 +507,7 @@ mod tests {
         let after_command = Command::CommitArrangementBounce {
             target: BounceTarget::Track(track),
             in_place: true,
+            mute_sources: false,
             files: vec![BounceFile {
                 source: BounceSource::Arrangement,
                 track,
@@ -557,6 +583,7 @@ mod tests {
             .execute(Command::CommitArrangementBounce {
                 target: BounceTarget::Clips(vec![clip]),
                 in_place: true,
+                mute_sources: false,
                 files: vec![output(150)],
             })
             .unwrap_err();
@@ -567,6 +594,7 @@ mod tests {
                 .execute(Command::CommitArrangementBounce {
                     target: BounceTarget::Range(TimeRange::new(vec![track], 0, 100).unwrap()),
                     in_place: true,
+                    mute_sources: false,
                     files: vec![output(101)]
                 })
                 .is_err()
@@ -577,6 +605,7 @@ mod tests {
                 .execute(Command::CommitArrangementBounce {
                     target: BounceTarget::Clips(vec![clip]),
                     in_place: false,
+                    mute_sources: false,
                     files: vec![output(150)]
                 })
                 .is_ok()
@@ -655,6 +684,7 @@ mod tests {
                 .execute(Command::CommitArrangementBounce {
                     target,
                     in_place: true,
+                    mute_sources: false,
                     files: vec![BounceFile {
                         source: crate::BounceSource::Arrangement,
                         track,
@@ -689,6 +719,7 @@ mod tests {
                 .execute(Command::CommitArrangementBounce {
                     target: BounceTarget::Track(track),
                     in_place: true,
+                    mute_sources: false,
                     files
                 })
                 .is_err()
@@ -720,5 +751,95 @@ mod tests {
                     .contains("ungrouped")
             );
         }
+    }
+
+    #[test]
+    fn bounce_and_mute_deactivates_exact_sources_in_one_history_step() {
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { track, clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "original.wav".into(),
+                sample_rate: 48_000,
+                frames: 100,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        let original = editor.project().clone();
+        let output = |start, frames| BounceFile {
+            source: BounceSource::Arrangement,
+            track,
+            start,
+            frames,
+            path: "generated.wav".into(),
+        };
+        let range = TimeRange::new(vec![track], 25, 75).unwrap();
+        for (target, in_place) in [
+            (BounceTarget::Clips(vec![clip]), true),
+            (BounceTarget::Track(track), true),
+            (
+                BounceTarget::AudioGroup {
+                    clips: vec![clip],
+                    range: None,
+                },
+                true,
+            ),
+        ] {
+            assert!(
+                editor
+                    .execute(Command::CommitArrangementBounce {
+                        target,
+                        in_place,
+                        mute_sources: true,
+                        files: vec![output(0, 100)],
+                    })
+                    .is_err()
+            );
+            assert_eq!(editor.project(), &original);
+        }
+
+        editor
+            .execute(Command::CommitArrangementBounce {
+                target: BounceTarget::Clips(vec![clip]),
+                in_place: false,
+                mute_sources: true,
+                files: vec![output(0, 100)],
+            })
+            .unwrap();
+        let muted = editor.project().clone();
+        assert!(!muted.clip(clip).unwrap().active());
+        assert!(muted.tracks()[1].clips()[0].active());
+        assert!(editor.undo());
+        assert_eq!(
+            editor.project().snapshot().tracks,
+            original.snapshot().tracks
+        );
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &muted);
+        assert!(editor.undo());
+
+        editor
+            .execute(Command::CommitArrangementBounce {
+                target: BounceTarget::Range(range.clone()),
+                in_place: false,
+                mute_sources: true,
+                files: vec![output(25, 50)],
+            })
+            .unwrap();
+        let fragments = editor.project().tracks()[0]
+            .clips()
+            .iter()
+            .map(|c| (c.start(), c.duration(), c.active()))
+            .collect::<Vec<_>>();
+        assert_eq!(fragments, [(0, 25, true), (25, 50, false), (75, 25, true)]);
+        let bounced = &editor.project().tracks()[1].clips()[0];
+        assert_eq!((bounced.start(), bounced.duration()), (25, 50));
+        assert!(editor.undo());
+        assert_eq!(
+            editor.project().snapshot().tracks,
+            original.snapshot().tracks
+        );
     }
 }

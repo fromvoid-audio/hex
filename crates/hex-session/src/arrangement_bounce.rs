@@ -354,6 +354,7 @@ impl Session {
         &mut self,
         target: BounceTarget,
         in_place: bool,
+        mute_sources: bool,
         files: Vec<BounceFile>,
         prepared: Vec<PreparedImport>,
         previous: Option<&hex_engine::PreparedRevision>,
@@ -434,6 +435,7 @@ impl Session {
             Command::CommitArrangementBounce {
                 target,
                 in_place,
+                mute_sources,
                 files,
             },
             |candidate| {
@@ -489,6 +491,22 @@ impl Session {
         control: &hex_export::ExportControl,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
+        self.bounce_arrangement_muting_sources(
+            target, in_place, false, directory, control, previous,
+        )
+    }
+
+    /// As [`Self::bounce_arrangement`]; `mute_sources` deactivates the bounced
+    /// clip or range sources in the same adoption edit and Undo step.
+    pub fn bounce_arrangement_muting_sources(
+        &mut self,
+        target: BounceTarget,
+        in_place: bool,
+        mute_sources: bool,
+        directory: &Path,
+        control: &hex_export::ExportControl,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
         let captured = target.clone();
         self.bounce_arrangement_using(
             target,
@@ -528,6 +546,7 @@ impl Session {
                     .adopt_arrangement_bounce_using(
                         captured,
                         in_place,
+                        mute_sources,
                         files,
                         prepared,
                         previous,

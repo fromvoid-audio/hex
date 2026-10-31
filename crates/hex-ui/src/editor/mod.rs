@@ -420,6 +420,7 @@ actions!(
         SplitClip,
         LoopSelection,
         BounceToNewTracks,
+        BounceAndMuteSources,
         ToggleLoop,
         ZoomIn,
         ZoomOut,
@@ -537,9 +538,16 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("e", SplitClip, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-l", ToggleLoop, Some("hex_editor && !hex_text_editing")),
+        // Live's `b` toggles draw mode; hex keeps that inside the midi editor
+        // (`hex_midi`). Arrangement has no draw mode, so `b` bounces there.
+        KeyBinding::new(
+            "b",
+            BounceToNewTracks,
+            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events && !hex_device_selection"),
+        ),
         KeyBinding::new(
             "cmd-b",
-            BounceToNewTracks,
+            BounceAndMuteSources,
             Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events"),
         ),
         KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
