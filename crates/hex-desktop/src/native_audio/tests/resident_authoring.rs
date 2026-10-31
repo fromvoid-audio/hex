@@ -211,6 +211,7 @@ fn scalar_pcm_at_cursor(
 ) {
     *request_id += 1;
     let intent = h.seek_intent(*request_id, state.state.revision, None, None);
+    let destination = intent.destination_frame;
     h.service.submit_resident_arrangement_seek(intent).unwrap();
     assert!(h.next().error.is_none());
     let ResidentPublicationAcceptance::Submitted { audio_revision, .. } =
@@ -240,10 +241,12 @@ fn scalar_pcm_at_cursor(
         "fixture advanced past its short audio clip while awaiting scalar observation: {position}"
     );
     for (offset, frame) in h.render().into_iter().enumerate() {
+        // Seeks start voices empty: the held sampler note retriggers at the
+        // destination, so its attack restarts there.
         let envelope = if attack_frames == 0 {
             1.0
         } else {
-            ((position + offset as u64) as f64 / attack_frames as f64).min(1.0)
+            ((position - destination + offset as u64) as f64 / attack_frames as f64).min(1.0)
         };
         let expected = (f64::from(value) * envelope) as f32;
         assert_eq!(

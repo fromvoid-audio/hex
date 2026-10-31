@@ -11680,7 +11680,7 @@ fn mutable_feedback_with_stateful_track_and_return_edited(
 }
 
 #[test]
-fn section_loop_preroll_matches_canonical_loop_with_mutable_and_stateful_history() {
+fn section_loop_preroll_starts_canonical_loop_with_empty_device_history() {
     thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
@@ -11690,12 +11690,13 @@ fn section_loop_preroll_matches_canonical_loop_with_mutable_and_stateful_history
                 snapshot.loop_region = Some(region)
             });
             assert!(source.arrangement().loop_region().is_none());
+            // Section launches use the interactive Play-from law at the loop
+            // start: no prefix replay, empty tails and chased held notes.
             let mut expected = SessionPlayback::new(oracle).unwrap();
-            expected.apply(SessionPlaybackCommand::Play).unwrap();
-            let mut preroll = vec![[0.0; 2]; 24_000];
-            for chunk in preroll.chunks_mut(257) {
-                expected.render(chunk).unwrap();
-            }
+            expected.play_from(24_000).unwrap();
+            let mut history = SessionPlayback::new(Arc::clone(&expected.revision)).unwrap();
+            history.apply(SessionPlaybackCommand::Play).unwrap();
+            render_checkpoint_partitioned(&mut history, &[257], 24_000);
             let mut actual = SessionPlayback::prepare_section_arrangement_preroll(
                 Arc::clone(&source),
                 None,
@@ -11720,8 +11721,13 @@ fn section_loop_preroll_matches_canonical_loop_with_mutable_and_stateful_history
             }
             assert_eq!(
                 rendered, reference,
-                "first pass, loop gates and stateful return history"
+                "first pass, loop gates and empty tails"
             );
+            let mut replayed = vec![[0.0; 2]; reference.len()];
+            for chunk in replayed.chunks_mut(257) {
+                history.render(chunk).unwrap();
+            }
+            assert_ne!(rendered, replayed, "prefix history is not reconstructed");
             assert_eq!(actual.arrangement_frame(), expected.arrangement_frame());
             assert_eq!(actual.performance_frame(), expected.performance_frame());
             assert!(
@@ -11796,7 +11802,7 @@ fn section_loop_readmits_rounded_timing_without_rebuilding_note_resources() {
 }
 
 #[test]
-fn arrangement_preroll_keeps_held_mutable_source_and_return_send_history_aligned() {
+fn arrangement_preroll_held_mutable_source_and_return_send_follow_seek_law() {
     let prepared = mutable_feedback_with_stateful_track_and_return();
     assert!(prepared.arrangement_seek_requires_preroll());
     let caller = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
@@ -11807,7 +11813,7 @@ fn arrangement_preroll_keeps_held_mutable_source_and_return_send_history_aligned
 }
 
 #[test]
-fn interactive_arrangement_preroll_keeps_released_mutable_source_and_return_history() {
+fn interactive_arrangement_preroll_released_mutable_source_and_return_start_empty() {
     let prepared = mutable_feedback_with_stateful_track_and_return();
     assert!(prepared.arrangement_seek_requires_preroll());
     run_preroll_continuation_on_worker_stack(prepared, 24_704);
@@ -11830,7 +11836,7 @@ fn run_preroll_continuation_on_worker_stack(prepared: Arc<PreparedRevision>, tar
 }
 
 #[test]
-fn interactive_arrangement_preroll_loop_destinations_preserve_mutable_and_effect_history() {
+fn interactive_arrangement_preroll_loop_destinations_follow_play_from_law() {
     thread::Builder::new()
         .name("hex-engine-loop-preroll-test".into())
         .stack_size(8 * 1024 * 1024)
@@ -11841,13 +11847,12 @@ fn interactive_arrangement_preroll_loop_destinations_preserve_mutable_and_effect
                     Tempo::new(90_000_000).unwrap(),
                 ));
                 // This later authored transition is outside the loop. It must
-                // not leak into the periodic performance clock after replay.
+                // not leak into the periodic performance clock after the seek.
                 snapshot.tempo_points.push(TempoPoint::new(
                     BeatTime::from_ratio(1, 10).unwrap(),
                     Tempo::new(180_000_000).unwrap(),
                 ));
             };
-            let linear = mutable_feedback_with_stateful_track_and_return_edited(tempo);
             let prepared = mutable_feedback_with_stateful_track_and_return_edited(|snapshot| {
                 tempo(snapshot);
                 snapshot.loop_region = Some(LoopRegion::new(128, 1024, true).unwrap());
@@ -11862,13 +11867,7 @@ fn interactive_arrangement_preroll_loop_destinations_preserve_mutable_and_effect
                 (91_008, 91_008),
             ] {
                 for playing in [false, true] {
-                    assert_loop_preroll_continuation(
-                        &prepared,
-                        &linear,
-                        requested,
-                        destination,
-                        playing,
-                    );
+                    assert_loop_preroll_continuation(&prepared, requested, destination, playing);
                 }
             }
         })
@@ -11880,21 +11879,15 @@ fn interactive_arrangement_preroll_loop_destinations_preserve_mutable_and_effect
 #[inline(never)]
 fn assert_loop_preroll_continuation(
     prepared: &Arc<PreparedRevision>,
-    linear: &Arc<PreparedRevision>,
     requested: u64,
     destination: u64,
     playing: bool,
 ) {
-    let mut expected = vec![[0.0; 2]; 2500];
-    {
-        // Ordinary uninterrupted playback is independently covered against
-        // explicitly authored linear occurrences in transport_loop_tests.
-        let source = if destination < 1024 { prepared } else { linear };
-        let mut oracle = SessionPlayback::new(Arc::clone(source)).unwrap();
-        oracle.apply(SessionPlaybackCommand::Play).unwrap();
-        render_checkpoint_partitioned(&mut oracle, &[17, 61, 193], destination as usize);
-        oracle.render(&mut expected).unwrap();
-    }
+    // Play-from keeps absolute transport before, inside and after the loop
+    // (interactive_start tests); seeks share that empty-tail law.
+    let mut oracle = SessionPlayback::new(Arc::clone(prepared)).unwrap();
+    oracle.play_from(destination).unwrap();
+    let expected = render_checkpoint_partitioned(&mut oracle, &[17, 61, 193], 2500);
     let runtime = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
         Arc::clone(prepared),
         requested,
@@ -12003,7 +11996,7 @@ fn interactive_arrangement_preroll_accepts_loops_and_checks_cancellation() {
 
 #[inline(never)]
 fn assert_preroll_continuation(prepared: &Arc<PreparedRevision>, target: u64, interactive: bool) {
-    let mut expected = [[0.0; 2]; 129];
+    let mut history = [[0.0; 2]; 129];
     {
         let mut uninterrupted = SessionPlayback::new(Arc::clone(prepared)).unwrap();
         uninterrupted.apply(SessionPlaybackCommand::Play).unwrap();
@@ -12018,8 +12011,20 @@ fn assert_preroll_continuation(prepared: &Arc<PreparedRevision>, target: u64, in
             remaining -= count as u64;
             partition_index += 1;
         }
-        uninterrupted.render(&mut expected).unwrap();
+        uninterrupted.render(&mut history).unwrap();
     }
+    // Linear export reconstructs exact history; interactive seeks start device
+    // and voice history empty at the destination like Play-from.
+    let expected = if interactive {
+        let mut fresh = SessionPlayback::new(Arc::clone(prepared)).unwrap();
+        fresh.play_from(target).unwrap();
+        let mut expected = [[0.0; 2]; 129];
+        fresh.render(&mut expected).unwrap();
+        assert_ne!(expected, history, "fixture must expose prefix history");
+        expected
+    } else {
+        history
+    };
     let mut candidate = if interactive {
         SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
             Arc::clone(prepared),
