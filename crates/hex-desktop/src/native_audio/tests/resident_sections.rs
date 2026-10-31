@@ -1627,3 +1627,95 @@ fn new_document_and_output_do_not_inherit_the_previous_audition_loop() {
         "new document must play beyond the previous audition loop"
     );
 }
+
+/// Stopped section edits and their history start device tails empty at the raw
+/// cursor instead of replaying the song prefix through stateful devices.
+#[test]
+fn stopped_section_edits_reset_device_tails_at_a_late_cursor_without_replay() {
+    const QUARTER: u64 = 24_000; // 120 bpm at 48 khz.
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(8_000_000);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, QUARTER as u32)));
+    let track = imported.state.project.tracks()[0].id();
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::MoveClip {
+        clip,
+        track,
+        start: 200 * QUARTER,
+    }));
+    (applied, _) = h.applied(applied);
+    let added = h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.reverb")),
+        before: None,
+    });
+    assert!(added.error.is_none(), "{:?}", added.error);
+    (applied, _) = h.applied(applied);
+    let (event, section) = add(&mut h, added.state.revision, "hit", 200, 201);
+    (applied, _) = h.applied(applied);
+    let seek = |h: &mut ResidentHarness, frame: u64| {
+        let audio = h.audio.as_mut().unwrap();
+        audio.control.command(PlaybackCommand::Pause).unwrap();
+        audio.control.command(PlaybackCommand::Seek(frame)).unwrap();
+        h.render();
+    };
+    let position = |h: &ResidentHarness| {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        (status.position.load(Acquire), status.playing.load(Acquire))
+    };
+    // Silence after both the original (ends at 201) and the duplicate (ends at 202).
+    let cursor = 202 * QUARTER + 2_400;
+    seek(&mut h, cursor);
+    let play_energy = |h: &mut ResidentHarness| {
+        let until = Instant::now() + Duration::from_secs(2);
+        while h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .stopped_edit_pending()
+        {
+            h.pump();
+            h.render();
+            assert!(Instant::now() < until, "installed gate did not retire");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let audio = h.audio.as_mut().unwrap();
+        audio.control.command(PlaybackCommand::Play).unwrap();
+        (0..8)
+            .flat_map(|_| h.render())
+            .flatten()
+            .map(|v| f64::from(v).powi(2))
+            .sum::<f64>()
+    };
+    let duplicated = run_callback(
+        &mut h,
+        section_request(
+            event.state.revision,
+            Command::DuplicateArrangementSection(section),
+        ),
+    );
+    assert!(duplicated.error.is_none(), "{:?}", duplicated.error);
+    assert_eq!(duplicated.state.project.arrangement_sections().len(), 2);
+    for step in [None, Some(Request::Undo), Some(Request::Redo)] {
+        if let Some(request) = step {
+            seek(&mut h, cursor);
+            let event = run_callback(&mut h, request);
+            assert!(event.error.is_none(), "{:?}", event.error);
+        }
+        (applied, _) = h.applied(applied);
+        assert_eq!(position(&h), (cursor, false));
+        // An exact prefix replay would leave the hit's reverb decay sounding here.
+        assert_eq!(play_energy(&mut h), 0.0, "device tails start empty");
+    }
+    // Playback renders the edited arrangement: the duplicate now sounds at 201.
+    seek(&mut h, 201 * QUARTER + 2_400);
+    assert!(play_energy(&mut h) > 1e-6, "duplicated audio plays");
+    // Every h.render above checks both total and signed-net allocations/bytes.
+}
