@@ -451,6 +451,7 @@ impl EditorView {
         self.selected_track = None;
         self.arrangement_focus.observe_active_track(None);
         self.selected_clip = None;
+        self.detail_context = None;
         self.focused_return = None;
         // Use Main's existing view owner so ordinary worker snapshots cannot
         // reselect the first clip and open its inspector under a held preview.

@@ -169,30 +169,6 @@ fn header_assign(
     let index=editor.read_with(visual,|view,_|view.context_menu.as_ref().unwrap().items.iter().position(|item|matches!(&item.action,super::super::context_menu::EditorContextAction::Automation(Action::Show(entry,_)) if entry.target.kind==target)).unwrap());
     choose_index(visual, editor, index);
 }
-fn control_assign(
-    visual: &mut VisualTestContext,
-    editor: &Entity<EditorView>,
-    device: DeviceId,
-    target: DeviceAutomationTarget,
-) {
-    let (parameter, side) = match target {
-        DeviceAutomationTarget::HostInputGain => (hex_engine::DEVICE_INPUT_GAIN.id, "input"),
-        DeviceAutomationTarget::HostOutputGain => (hex_engine::DEVICE_OUTPUT_GAIN.id, "output"),
-        DeviceAutomationTarget::Parameter(_) => panic!("host control"),
-    };
-    let selector = format!(
-        "device-{}-parameter-{}-{side}-meter",
-        device.value(),
-        parameter.value()
-    );
-    let at = visual
-        .debug_bounds(Box::leak(selector.into_boxed_str()))
-        .unwrap()
-        .center();
-    visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::default());
-    visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::default());
-    choose_label(visual, editor, "add new automation lane");
-}
 fn pump(visual: &mut VisualTestContext, editor: &Entity<EditorView>) {
     let deadline = crate::test_wait::hang_deadline();
     loop {
@@ -259,25 +235,33 @@ fn draw(
 }
 
 #[gpui::test]
-fn host_controls_and_header_picker_are_real_for_utility_and_other_native_owners(
+fn host_header_picker_assigns_real_lanes_for_utility_and_other_native_owners(
     cx: &mut TestAppContext,
 ) {
     for type_id in ["hex.utility", "hex.overdrive"] {
         for slot in [Slot::Track, Slot::Main, Slot::Return] {
             let (mut visual, editor, owner, _, device) = window(cx, type_id, slot);
+            // Host trim has no chain control; only the passive output meter follows the device.
+            assert!(
+                visual
+                    .debug_bounds(Box::leak(
+                        format!("device-{}-output-meter", device.value()).into_boxed_str()
+                    ))
+                    .is_some()
+            );
             let before = editor.read_with(&visual, |view, _| {
                 view.state.as_ref().unwrap().project.snapshot()
             });
-            control_assign(
+            header_assign(
                 &mut visual,
                 &editor,
-                device,
+                owner,
                 DeviceAutomationTarget::HostInputGain,
             );
-            control_assign(
+            header_assign(
                 &mut visual,
                 &editor,
-                device,
+                owner,
                 DeviceAutomationTarget::HostOutputGain,
             );
             header_assign(
@@ -326,16 +310,16 @@ fn provider_and_two_host_lanes_edit_clear_and_undo_independently(cx: &mut TestAp
     let provider =
         DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
     header_assign(&mut visual, &editor, owner, provider);
-    control_assign(
+    header_assign(
         &mut visual,
         &editor,
-        device,
+        owner,
         DeviceAutomationTarget::HostInputGain,
     );
-    control_assign(
+    header_assign(
         &mut visual,
         &editor,
-        device,
+        owner,
         DeviceAutomationTarget::HostOutputGain,
     );
     for (target, y) in [

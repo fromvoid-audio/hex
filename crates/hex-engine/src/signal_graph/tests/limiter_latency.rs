@@ -115,7 +115,7 @@ fn first_track_limiter_delays_existing_upstream_and_other_track_reverb_without_l
 }
 
 #[test]
-fn first_track_limiter_does_not_discard_existing_reverb_or_change_routing() {
+fn first_track_limiter_while_playing_restarts_audio_at_the_cursor() {
     for active_reverb in [false, true] {
         let mut f = fixture(&[&[], &[]], 8192);
         if active_reverb {
@@ -155,13 +155,20 @@ fn first_track_limiter_does_not_discard_existing_reverb_or_change_routing() {
                 })
                 .unwrap();
         }
-        let mut candidate = SessionPlayback::new(prepare_native(&f)).unwrap();
-        assert!(candidate.try_inherit_state_from(&mut donor).is_err());
-        assert_eq!(donor.performance_frame(), oracle.performance_frame());
+        // A changed latency layout while playing restarts audio at the
+        // running cursor (Pulse #3769): tails restart, routing is the new
+        // revision's, and the transport keeps running.
+        let current = prepare_native(&f);
+        let mut candidate = SessionPlayback::new(Arc::clone(&current)).unwrap();
+        candidate.try_inherit_state_from(&mut donor).unwrap();
+        assert!(candidate.playing());
+        assert_eq!(candidate.performance_frame(), oracle.performance_frame());
+        let mut restarted = SessionPlayback::new(current).unwrap();
+        restarted.play_from(oracle.performance_frame()).unwrap();
         let mut actual = [[0.0; 2]; 513];
         let mut expected = actual;
-        donor.render(&mut actual).unwrap();
-        oracle.render(&mut expected).unwrap();
+        candidate.render(&mut actual).unwrap();
+        restarted.render(&mut expected).unwrap();
         assert_eq!(actual, expected);
     }
 }
@@ -230,7 +237,7 @@ fn live_flat_eq_insertion_under_main_limiter_preserves_pending_pcm_and_clock() {
 }
 
 #[test]
-fn clock_only_history_does_not_admit_changed_upstream_delay_or_feed() {
+fn clock_only_history_restarts_on_changed_upstream_delay_or_feed() {
     for feed in [false, true] {
         let mut f = fixture(&[&[], &[]], 1024);
         let limiter = crate::default_native_device_state_for_class(
@@ -274,14 +281,22 @@ fn clock_only_history_does_not_admit_changed_upstream_delay_or_feed() {
             }
         };
         f.editor.execute(command).unwrap();
-        let mut changed = SessionPlayback::new(prepare_native(&f)).unwrap();
-        assert!(changed.try_inherit_state_from(&mut current).is_err());
+        // The clock-only history cannot carry the changed upstream delay or
+        // feed, so the running graph restarts at its cursor instead of
+        // refusing (Pulse #3769).
+        let revised = prepare_native(&f);
+        let mut changed = SessionPlayback::new(Arc::clone(&revised)).unwrap();
+        changed.try_inherit_state_from(&mut current).unwrap();
+        let frame = current.performance_frame();
+        assert!(changed.playing());
+        assert_eq!(changed.performance_frame(), frame);
+        let mut restarted = SessionPlayback::new(revised).unwrap();
+        restarted.play_from(frame).unwrap();
         let mut actual = [[0.0; 2]; 129];
         let mut expected = actual;
-        current.render(&mut actual).unwrap();
-        oracle.render(&mut expected).unwrap();
-        assert_eq!(actual, expected, "refusal changed donor PCM; feed={feed}");
-        assert_eq!(current.performance_frame(), oracle.performance_frame());
+        changed.render(&mut actual).unwrap();
+        restarted.render(&mut expected).unwrap();
+        assert_eq!(actual, expected, "running restart; feed={feed}");
     }
 }
 
