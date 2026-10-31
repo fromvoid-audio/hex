@@ -160,6 +160,7 @@ fn route_gate_rejects_pending_or_non_arrangement_owners() {
         track_id,
         owner: SessionRouteOwner::Arrangement,
         active_origin: None,
+        audio_launch_frame: None,
         pending: None,
     };
     assert!(routes_are_current(&[arrangement], &project));
