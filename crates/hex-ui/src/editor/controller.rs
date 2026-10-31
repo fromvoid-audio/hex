@@ -2583,7 +2583,15 @@ impl EditorView {
             && !event.state.project.tracks().is_empty();
         let save_confirmation_required =
             event.save_confirmation_required && !event.project_replaced;
+        let loop_was_enabled = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.loop_region())
+            .is_some_and(|region| region.enabled());
         self.state = Some(event.state);
+        if !event.project_replaced {
+            self.retire_point_cursor_on_loop_enable(loop_was_enabled);
+        }
         self.gain_take_state_installed();
         self.device_automation_state_installed(event.project_replaced);
         if save_confirmation_required {
@@ -2670,6 +2678,7 @@ impl EditorView {
             self.device_gesture_barriers.clear();
             self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
+            self.loop_start_over_clip = None;
             self.clip_paint_gesture = None;
             self.cancel_section_pointer();
             self.time_selection = None;
