@@ -95,6 +95,7 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
         "nested_audio",
         "audio_event_gains",
         "midi_clip_gains",
+        "automatic_track_names",
     ] {
         assert_eq!(
             old.as_object_mut().unwrap().remove(key),
@@ -295,6 +296,10 @@ fn schema60_and_schema61_save_require_consent_or_save_as_for_current_schema() {
         // Empty prior formats omit fields introduced by later schemas.
         assert_eq!(
             prior.as_object_mut().unwrap().remove("midi_clip_gains"),
+            Some(serde_json::json!([]))
+        );
+        assert_eq!(
+            prior.as_object_mut().unwrap().remove("automatic_track_names"),
             Some(serde_json::json!([]))
         );
         if version == 60 {
