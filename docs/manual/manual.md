@@ -88,6 +88,11 @@ saved project.
   or **search folders…**, then **relink**. relinking is one edit, so **undo**
   makes those clips silent again; files you have not found stay offline. a missing sampler or other device sample, or a missing
   file used by a session clip, still has to be found before the project opens.
+- **relink all found** appears when the browser's scanned sample folders
+  contain files with the same names. it applies only when you click it: files
+  with exactly one matching candidate are found, and files with several
+  matches list them for you to pick. add the new sample folder to the browser
+  first so it is scanned.
 - **open** becomes available once every file is found. the project then opens
   with the new locations as unsaved changes; your project file stays unchanged
   until you save. **cancel** keeps the current project.
@@ -198,9 +203,9 @@ repeats it, and starting after its end plays on without looping. only when there
 is no selection or edit cursor does an enabled loop supply its beginning.
 moving or resizing the loop during playback takes effect immediately with the
 same rule: inside the new loop the playhead wraps at its new end, before it the
-playhead plays into it, and after it playback continues. a known limit: a loop
-change made while an arrangement instrument note is still sounding is not yet
-applied to playback.
+playhead plays into it, and after it playback continues. if an instrument note
+is sounding when the loop changes, audio restarts at the playhead: effect tails
+reset and notes under the playhead start again from there.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 setting new loop bounds from selected main sections also turns on section focus
@@ -558,6 +563,13 @@ drag a folder from the browser results onto **places** to bookmark it. the
 folder stays in its original location; bookmarking keeps the current browser
 source and search. dragging the same folder again preserves its existing place
 and icon. press **escape** or drop outside places to cancel.
+
+adding a sample folder starts a background scan; the samples count shows its
+progress. the scan records each sample's size and a content fingerprint so hex
+can later find moved files. it only reads your samples; it never moves or
+changes them. if a place's folder has been moved or renamed, the place shows
+**missing**. right-click it and choose **relocate…** to point it at the new
+folder; its position and icon are kept and its samples reappear after the scan.
 
 the preview controls audition a selected audio file. the waveform can be used to
 choose a preview position. stop preview playback before judging the main project's
