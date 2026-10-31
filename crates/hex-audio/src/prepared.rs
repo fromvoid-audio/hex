@@ -6188,6 +6188,49 @@ mod tests {
 
     #[cfg(feature = "allocation-probe")]
     #[test]
+    fn rattle_track_return_handoff_and_render_allocate_nothing() {
+        use hex_devices::rattle::{RATTLE_DEFINITION as d, parameter};
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let original = d.default_state().unwrap();
+        control
+            .publish(native_effect_track_and_return_graph(original.clone()))
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 128];
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        // The edited revision inherits oversampler/noise history and glides drive.
+        let changed = d
+            .patch_parameter(&original, parameter::DRIVE, ParameterValue::Float(1.0))
+            .unwrap();
+        control
+            .publish(native_effect_track_and_return_graph(changed))
+            .unwrap();
+        let allocations = allocation_counter::measure(|| {
+            for _ in 0..4 {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            }
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(output.iter().flatten().all(|sample| sample.is_finite()));
+        assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
     fn compressor_track_and_return_revision_admission_and_render_allocate_nothing() {
         let (mut control, mut callback) = channel(48_000).expect("channel");
         control

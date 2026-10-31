@@ -15,6 +15,47 @@ partial feedback. Runner certification and reviewed change-based verification
 are distinct evidence routes under AGENTS.md; neither implies native acceptance.
 See [development-workflow.md](development-workflow.md).
 
+## Default sequence for an issue
+
+Use the cheapest check that can fail first; do not use the merge runner as
+first feedback.
+
+1. **Focused tests** for the changed boundary and its named consumers, for
+   example `cargo test -p OWNER --lib FILTER` (target under ten seconds; see
+   [focused commands](#focused-commands)).
+2. **Preflight**: `python3 scripts/local-ci.py --quick` plus
+   `cargo clippy -p OWNER --all-targets [--features …] --locked -- -D warnings`
+   for each touched package and its relevant feature configurations. This
+   catches style, guard and lint failures in about a minute.
+3. **Merge qualification**: run the merge profile (below). Where the selector
+   has no narrower supported boundary and would widen far beyond the change's
+   actual impact, a reviewed change-based check set may qualify instead under
+   AGENTS.md, recorded in the PR as shown in the template below. Allocation-probe,
+   persistence and Undo/Redo requirements of the touched boundaries still apply.
+4. After merging, run the [post-merge health check](#check-main-right-after-a-merge);
+   when the base moved during step 3, [carry](#continue-after-the-base-advances)
+   instead of rerunning everything.
+
+When several sessions share the machine, run one Cargo-heavy command (test,
+clippy, build or runner) at a time. A session's own worktree target may need
+`--adopt-target` on its first runner use; never adopt another session's target.
+Do not edit a checkout while a runner is using it: a changed tree marks the
+run stale, and Python self-tests that start scripts would test the edit.
+
+Reviewed check set template for a PR description:
+
+```text
+## Verification (reviewed change-based check set)
+Base BASE_SHA, source SOURCE_SHA.
+Owners: crate::module (responsibility); contracts: …; consumers: …
+- cargo test -p OWNER --locked [--features …]: passed (N tests)
+- cargo test -p CONSUMER --test NAME --locked: passed (N tests)
+- cargo clippy -p OWNER -p CONSUMER --all-targets --locked -- -D warnings: passed
+- python3 scripts/local-ci.py --quick: passed
+Omitted, with reasons: …
+Not a runner-certified plan; native acceptance remains in Pulse.
+```
+
 The runner executes sequentially and stops on failure. Read the numbered log for
 the failing step; later `not_run` steps did not pass. Results are in
 `artifacts/local-ci/<run-id>/summary.json` and adjacent raw logs. A runner-certified run
@@ -75,6 +116,22 @@ plan. A new consumer or macro/include input widens to complete affected-package
 tests; missing required consumers/targets refuse. Other device modules currently
 retain affected-package coverage until their runtime relationships are reviewed.
 
+Changes that only touch code other packages cannot observe test the owning
+packages only: integration tests, benches and examples, and `src/` files whose
+every `mod` declaration (resolving `#[path]`) is `#[cfg(test)]` or
+`#[cfg(all(test, …))]`, directly or through a parent test module. `any(`/`not(`
+conditions, inline-module nesting, `include!(` in the package, deleted files and
+any production path in the same change keep the consumer closure.
+
+hex-desktop's allocation-probe tests run through `scripts/test_shards.py` as four
+disjoint processes: its native fixtures serialize on a process-wide output lease,
+so one process ran them back to back (109 s). Each shard owns its own lease and
+prints its own `test result`; every listed test runs exactly once (70 s).
+
+Packages whose only extra feature is reviewed as additive for tests (see
+`ADDITIVE_TEST_FEATURES` in `scripts/ci_plan.py`) run their tests once with the
+feature and keep a separate doctest run; default-feature Clippy still applies.
+
 Package plans retain default tests/lints, applicable allocation/UI/export feature
 configurations, gallery and desktop build checks, and independently declared
 additional features. Feature combinations need reviewed contract rules; individual
@@ -117,6 +174,51 @@ Explicit native acceptance inputs (any nonempty `HEX_VST3_*`, including partial
 SDK/fixture/receipt setup, or `HEX_TEST_SIGNING_IDENTITY`) keep comprehensive
 Python discovery for app-only merges too. Native suites retain their own opt-in
 requirements; a skipped fixture is not native acceptance.
+
+## Continue after the base advances
+
+When `main` moves while a merge run is in progress, or right after it passes,
+merge the new base into the candidate and rerun with the earlier passed report:
+
+```sh
+git fetch origin main && git merge --no-edit origin/main
+python3 scripts/local-ci.py --profile merge --base "$(git rev-parse origin/main)" \
+  --source "$(git rev-parse HEAD)" --carry-report artifacts/local-ci/PASSED/summary.json
+```
+
+A passed merge run prints this hint with its own summary path. The carry is
+accepted only when every executable path changed since the earlier candidate
+came verbatim from the base advance, touches none of the candidate's own paths,
+and is ordinary package source. A changed manifest, lockfile, build script,
+toolchain, tooling or unknown input refuses the carry, and so do a different
+Cargo inventory, guarded toolchain/dependency identity or native opt-in. A
+refused carry is recorded and every step runs fresh; it never fails the run.
+
+Per step, guards and formatting always rerun. A Cargo step is carried only when
+the dependency closure of every package it names excludes all packages the base
+advance changed; a workspace-wide step carries only when no package changed.
+The Python step reruns just the selection the changed paths require. Carried
+steps keep `status: carried`, `execution: carried` and `carried_from` (the report,
+commit and log that actually executed them, preserved through chained carries);
+the summary's `carry` lists each decision and its reason. A carried report is
+not a fresh full run and cannot feed `--reuse-report`.
+
+## Check main right after a merge
+
+After each standing-authorization merge, check the merge commit on an
+up-to-date main checkout before starting further merges:
+
+```sh
+git switch main && git pull --ff-only
+python3 scripts/local-ci.py --profile health --base HEAD^1 --source HEAD
+```
+
+`health` compares the merge commit with its first parent and runs formatting
+plus the tests of the merged change's own packages, not every consumer (tooling
+paths add the Python self-tests; unknown or high-risk inputs test the
+workspace). It is a fast red-main signal, never merge qualification, so a pass
+reports `partial`. A failure prints the merge that turned main red: fix forward
+in a focused PR before merging anything else, and tell other active sessions.
 
 ## macOS target storage
 

@@ -165,6 +165,7 @@ impl EditorView {
             .as_ref()
             .filter(|p| p.current(self))
             .map(|p| &p.drag)
+            .or_else(|| self.pending_bounce_drag())
             .or_else(|| {
                 self.active_clip_drag
                     .as_ref()

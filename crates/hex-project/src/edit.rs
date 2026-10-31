@@ -71,9 +71,12 @@ pub enum Command {
         without_clips: bool,
     },
     /// Adopt all prepared track bounces as one reversible edit. No file I/O.
+    /// `adoption` deactivates the bounced clip/range sources in that same
+    /// edit with the contextual activation commands; new-track adoption only.
     CommitArrangementBounce {
         target: crate::BounceTarget,
         in_place: bool,
+        adoption: crate::BounceAdoption,
         files: Vec<crate::BounceFile>,
     },
     /// Set one authored clip's activation across Arrangement or Session.
@@ -1801,8 +1804,9 @@ impl Project {
             Command::CommitArrangementBounce {
                 target,
                 in_place,
+                adoption,
                 files,
-            } => crate::bounce::commit(self, target, in_place, files),
+            } => crate::bounce::commit(self, target, in_place, adoption, files),
             command @ (Command::AddArrangementSection { .. }
             | Command::SetArrangementSectionRange { .. }
             | Command::MoveArrangementSectionMarker { .. }
