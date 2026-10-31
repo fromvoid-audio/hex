@@ -1,9 +1,11 @@
 //! Thin Arrangement bounce routing; rendering/adoption belong to the worker.
+//! Plain `b` bounces the selection to new tracks; `cmd-b` also deactivates the
+//! bounced sources in the same adoption edit, matching contextual `c`/`0`.
 use super::{EditorMode, EditorView};
 use gpui::Window;
 use hex_session::service::{ExportControl, Request};
 impl EditorView {
-    pub(super) fn bounce_arrangement_selection(&mut self, window: &Window) {
+    pub(super) fn bounce_arrangement_selection(&mut self, window: &Window, mute_sources: bool) {
         if self.mode != EditorMode::Arrangement
             || !self.focus.is_focused(window)
             || self.computer_keyboard.enabled
@@ -32,7 +34,7 @@ impl EditorView {
         } else {
             hex_project::BounceTarget::Clips(self.selected_clip_ids())
         };
-        self.start_arrangement_bounce(target, false);
+        self.start_arrangement_bounce(target, false, mute_sources);
     }
 
     pub(super) fn bounce_track_in_place(
@@ -46,10 +48,15 @@ impl EditorView {
         {
             return;
         }
-        self.start_arrangement_bounce(hex_project::BounceTarget::Track(track), true);
+        self.start_arrangement_bounce(hex_project::BounceTarget::Track(track), true, false);
     }
 
-    fn start_arrangement_bounce(&mut self, target: hex_project::BounceTarget, in_place: bool) {
+    fn start_arrangement_bounce(
+        &mut self,
+        target: hex_project::BounceTarget,
+        in_place: bool,
+        mute_sources: bool,
+    ) {
         if in_place
             && self
                 .audio
@@ -101,6 +108,7 @@ impl EditorView {
             revision: state.revision,
             target,
             in_place,
+            mute_sources,
             control: control.clone(),
         }) {
             self.bounce_control = Some(control);
@@ -123,20 +131,20 @@ mod tests {
     use crate::editor::loop_selection_ui_test::{click, fixture_with_bounce_media, pump};
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
     #[gpui::test]
-    fn rendered_b_is_unbound_and_platform_b_adopts_below_with_one_undo(cx: &mut TestAppContext) {
+    fn rendered_b_bounces_and_cmd_b_also_mutes_sources_with_one_undo(cx: &mut TestAppContext) {
         let (handle, editor, audio, _, files) = fixture_with_bounce_media(cx, true);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         click(&mut visual, audio, false);
         let original =
             editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-        visual.simulate_keystrokes("cmd-b");
+        visual.simulate_keystrokes("b");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
             let p = &v.state.as_ref().unwrap().project;
             assert_eq!(p.tracks().len(), original.tracks.len() + 1);
-            assert!(p.clip(audio).is_some());
+            assert!(p.clip(audio).unwrap().active());
             let clip = &p.tracks()[1].clips()[0];
             assert_eq!((clip.start(), clip.duration()), (0, 48_000));
             assert!(
@@ -150,13 +158,30 @@ mod tests {
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
         click(&mut visual, audio, false);
-        visual.simulate_keystrokes("b");
+        visual.simulate_keystrokes("cmd-b");
         pump(&editor, &mut visual);
-        editor.read_with(&visual, |v, _| {
+        let muted = editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
             let p = &v.state.as_ref().unwrap().project;
-            assert_eq!(p.snapshot().tracks, original.tracks);
+            assert_eq!(p.tracks().len(), original.tracks.len() + 1);
+            assert!(!p.clip(audio).unwrap().active());
+            assert!(p.tracks()[1].clips()[0].active());
             assert!(v.bounce_control.is_none());
+            p.snapshot()
+        });
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            let p = v.state.as_ref().unwrap().project.snapshot();
+            assert_eq!(p.tracks, original.tracks);
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot().tracks,
+                muted.tracks
+            );
         });
     }
     #[gpui::test]
@@ -165,7 +190,10 @@ mod tests {
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         click(&mut visual, audio, false);
-        let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
+        let (before, tracks) = editor.read_with(&visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            (state.revision, state.project.tracks().len())
+        });
         visual.update(|window, cx| {
             editor.read_with(cx, |v, _| v.browser.search.read(cx).focus(window))
         });
@@ -214,13 +242,32 @@ mod tests {
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
-            let clip = &v.state.as_ref().unwrap().project.tracks()[1].clips()[0];
+            let p = &v.state.as_ref().unwrap().project;
+            let clip = &p.tracks()[1].clips()[0];
             assert_eq!((clip.start(), clip.duration()), (12_013, 23_994));
+            // Same fragments as contextual `c`/`0` on that time selection.
+            let sources = p.tracks()[0]
+                .clips()
+                .iter()
+                .map(|c| (c.start(), c.duration(), c.active()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                sources,
+                [
+                    (0, 12_013, true),
+                    (12_013, 23_994, false),
+                    (36_007, 11_993, true)
+                ]
+            );
         });
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
         editor.update(&mut visual, |v, _| {
-            let track = v.state.as_ref().unwrap().project.tracks()[0].id();
+            let p = &v.state.as_ref().unwrap().project;
+            assert_eq!(p.tracks().len(), tracks);
+            assert_eq!(p.tracks()[0].clips().len(), 1);
+            assert!(p.tracks()[0].clips()[0].active());
+            let track = p.tracks()[0].id();
             v.time_selection = Some(crate::editor::time_selection::TimeSelection {
                 anchor_track: track,
                 end_track: track,
@@ -233,14 +280,12 @@ mod tests {
         editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
             let p = &v.state.as_ref().unwrap().project;
+            let clip = &p.tracks()[1].clips()[0];
+            assert_eq!((clip.start(), clip.duration()), (12_013, 23_994));
             assert_eq!(p.tracks()[0].clips().len(), 1);
-            assert_eq!(
-                (
-                    p.tracks()[0].clips()[0].start(),
-                    p.tracks()[0].clips()[0].duration()
-                ),
-                (0, 48_000)
-            );
+            let source = &p.tracks()[0].clips()[0];
+            assert_eq!((source.start(), source.duration()), (0, 48_000));
+            assert!(source.active());
             assert!(v.bounce_control.is_none());
         });
     }
