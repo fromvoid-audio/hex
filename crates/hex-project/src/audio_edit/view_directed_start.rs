@@ -55,5 +55,6 @@ pub(super) fn preview(
         frame_end,
         play_start_position: Some(position),
         content_override: Some(content),
+        outer_start: None,
     })
 }
