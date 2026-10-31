@@ -248,6 +248,12 @@ ownership refuses before normal checks. Read the diagnostic before recovery.
 and establishes the checkout's development owner; it is not permission to remove
 another executor's active cache, release artifacts or user data.
 
+Development and release ownership are separate markers: a target populated by
+local CI has no release owner, so packaging refuses it unless it is empty or
+explicitly adopted. `./launch` therefore defaults to dedicated
+`artifacts/cargo-ci-target` and `artifacts/cargo-release-target` targets when
+`CARGO_TARGET_DIR` is unset; see [native macOS builds](test-builds.md).
+
 Package-scoped handoffs use Cargo-supported plain package names only after
 complete metadata proves each selected workspace/path name is unique across
 sources and versions. Provenance retains full package IDs. Ambiguous names or

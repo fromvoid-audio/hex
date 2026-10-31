@@ -23,6 +23,13 @@ Normal update refuses dirty/non-main/ahead/divergent source and running installe
 or raw desktop processes. Without `--test`, it records source-only verification
 and tests as not run. `--open` does not update or build.
 
+Unless `CARGO_TARGET_DIR` is set, `./launch` builds in its own Cargo targets:
+`artifacts/cargo-ci-target` for full local CI and `artifacts/cargo-release-target`
+for packaging and release-target recovery. The release guard refuses a target
+already populated by development checks, so the two stay separate. The checkout's
+`target/` is left for ad-hoc Cargo use. An explicit `CARGO_TARGET_DIR` is used for
+both; `--recover-release-target --test` still verifies in a fresh invocation target.
+
 `--force-restart` is a separate explicit destructive opt-in: it can terminate the
 verified development app after normal quit fails. Never infer that authorization
 from a build request. `--recover-release-target` handles supported recreated or

@@ -15,6 +15,9 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parent
+# Launcher-owned Cargo targets, used unless CARGO_TARGET_DIR is set explicitly.
+CI_TARGET = Path("artifacts/cargo-ci-target")
+RELEASE_TARGET = Path("artifacts/cargo-release-target")
 
 
 def load_helper(name: str, path: Path):
@@ -212,6 +215,14 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
         # Re-import helpers and run the entrypoint from the newly fetched source.
         os.execv(sys.executable, [sys.executable, str(root / "launch"), *(argv or [])])
         raise LaunchError("could not restart ./launch from the updated main source")
+    verification = {}
+    if not os.environ.get("CARGO_TARGET_DIR"):
+        # Keep the checkout's ad-hoc `target/` out of launcher custody. The
+        # release guard refuses a target already populated by development
+        # checks, so full local CI and packaging use separate targets. Restart
+        # recovery and packaging inherit the release target from this process.
+        os.environ["CARGO_TARGET_DIR"] = str(root / RELEASE_TARGET)
+        verification["env"] = {**os.environ, "CARGO_TARGET_DIR": str(root / CI_TARGET)}
     included = included_revisions(source, root)
     app = configured_app(root)
     recovery_args = []
@@ -235,7 +246,6 @@ def run_launch(root: Path = ROOT, argv: list[str] | None = None) -> Path:
 
     tested = "--test" in (argv or [])
     if tested:
-        verification = {}
         if "--recover-release-target" in (argv or []):
             # Release recovery is not authority to adopt a stale DEV cache.
             # Retain this fresh invocation-owned target and its normal CI owner;
