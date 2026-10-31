@@ -533,3 +533,6 @@ fn gain_recording_delivery_delay_includes_the_complete_serial_main_chain() {
         );
     }
 }
+
+#[path = "compensation_tests/paused_layout.rs"]
+mod paused_layout;

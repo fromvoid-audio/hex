@@ -815,6 +815,11 @@ pub enum Request {
     RestorePlayback {
         generation: u64,
     },
+    /// Republish the current canonical sound through ordinary inheritance after
+    /// the callback refused it while playing (a latency-layout change). The
+    /// caller sends it once the transport is paused, where the engine applies
+    /// the new layout at the kept cursor. It is not part of output recovery.
+    RepublishPausedPlayback,
     /// Reprepare the current canonical sound after the caller explicitly stops.
     RestoreStoppedPlayback,
     /// Worker-local continuation of the existing stopped restoration request.
@@ -6568,8 +6573,11 @@ fn run_worker(
                             Some("computer keyboard requires a compiled project revision".into());
                     }
                 }
-                Request::RestorePlayback { generation } => {
-                    restore_complete = Some(generation);
+                request @ (Request::RestorePlayback { .. } | Request::RepublishPausedPlayback) => {
+                    if let Request::RestorePlayback { generation } = &request {
+                        restore_complete = Some(*generation);
+                    }
+                    let republish = matches!(&request, Request::RepublishPausedPlayback);
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident
                     {
@@ -6601,7 +6609,14 @@ fn run_worker(
                         match result {
                             Ok(hint) => {
                                 keyboard_tuning_hint = hint;
-                                status = Some("playback restored".into());
+                                status = Some(
+                                    if republish {
+                                        "paused audio updated · effect tails reset"
+                                    } else {
+                                        "playback restored"
+                                    }
+                                    .into(),
+                                );
                             }
                             Err(reason) => error = Some(reason.to_string()),
                         }
