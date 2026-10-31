@@ -1381,8 +1381,12 @@ impl Session {
         let mut playback = playback_with_loop(snapshot, section_loop)?;
         let requested = selected.clone();
         selected.attach(project, &mut playback)?;
-        if required.is_some_and(|required| !selected.satisfies(&requested, required)) {
-            return Err(SessionError::Invalid("runtime input source is unavailable"));
+        if let Some(required) = required
+            && !selected.satisfies(&requested, required)
+        {
+            return Err(SessionError::Invalid(
+                requested.unbound_reason(project, &playback, required),
+            ));
         }
         selected.selected_after(&snapshot.inputs)?;
         let hint = playback.computer_keyboard_tuning_hint();

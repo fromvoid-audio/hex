@@ -1549,6 +1549,7 @@ pub(super) fn request(value: &Request) -> Description {
         Request::RestorePlayback { generation } => {
             describe!("restore_playback"; ["generation" => generation]; omitted="")
         }
+        Request::RepublishPausedPlayback => describe!("republish_paused_playback"; []; omitted=""),
         Request::RestoreStoppedPlayback => describe!("restore_stopped_playback"; []; omitted=""),
         Request::ContinueStoppedPlaybackRestore => {
             describe!("continue_stopped_playback_restore"; []; omitted="")

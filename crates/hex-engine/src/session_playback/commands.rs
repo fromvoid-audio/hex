@@ -262,7 +262,7 @@ impl SessionPlayback {
             .map_err(|_| SessionPlaybackError::TempoConversion)
     }
 
-    fn install_seek(&mut self, frame: u64, beat: BeatTime) {
+    pub(super) fn install_seek(&mut self, frame: u64, beat: BeatTime) {
         self.monitor_source_releases = false;
         let mut changed = self.performance_frame != frame;
         for route in &self.routes {
