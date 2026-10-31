@@ -5,7 +5,7 @@ use hex_project::{Command, Created};
 
 #[test]
 fn ordinary_native_reverb_track_return_edits_frozen_removal_and_stop_reach_real_callback() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::new();
     assert!(h.next().error.is_none());

@@ -1439,25 +1439,27 @@ mod tests {
                     state,
                 })
                 .unwrap();
-            let (mut unsupported, _) = live_playback(&f, &input);
+            // The live handoff restarts audio at the cursor instead of
+            // refusing (Pulse #3784). It must still never sound two source
+            // kernels at once, and releasing the held key must leave silence.
+            let (mut restarted, _) = live_playback(&f, &input);
+            restarted
+                .try_inherit_runtime_in_control_context(&mut effected, Some(19), Some(19))
+                .unwrap();
+            let mut after_restart = [[0.0; 2]; 64];
+            restarted.render(&mut after_restart).unwrap();
+            let single_kernel = 0.5 * gain + 0.000_002;
             assert!(
-                unsupported
-                    .try_inherit_runtime_in_control_context(&mut effected, Some(19), Some(19))
-                    .is_err()
+                after_restart
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.abs() <= single_kernel),
+                "no second concurrent source kernel"
             );
-            let mut after_refusal = [[0.0; 2]; 5];
-            effected.render(&mut after_refusal).unwrap();
-            for (index, frame) in after_refusal.iter().enumerate() {
-                for channel in 0..2 {
-                    assert!(
-                        (frame[channel] - PCM[(23 + index) % 4][channel] * gain).abs() < 0.000_002
-                    );
-                }
-            }
             input.set_key(0, None).unwrap();
-            let mut stopped = [[1.0; 2]; 32];
-            effected.render(&mut stopped).unwrap();
-            assert_eq!(stopped, [[0.0; 2]; 32]);
+            let mut stopped = [[1.0; 2]; 64];
+            restarted.render(&mut stopped).unwrap();
+            assert_eq!(stopped[32..], [[0.0; 2]; 32], "no stuck live note");
         });
     }
 
@@ -1667,53 +1669,21 @@ mod tests {
                             state: hex_project::default_instrument_state().unwrap(),
                         })
                         .unwrap();
-                    let (mut refused, _) = live_playback(&f, &input);
-                    assert!(
-                        refused
-                            .try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
-                            .is_err()
-                    );
-                    let mut quiet = [[1.0; 2]; 8];
-                    old.render(&mut quiet).unwrap();
-                    assert_eq!(
-                        quiet, [[0.0; 2]; 8],
-                        "held physical key cannot restart a completed voice"
-                    );
-                    input.set_key(0, None).unwrap();
-                    let tail = old
-                        .prepared_revision()
-                        .unwrap()
-                        .session()
-                        .mutable_instrument_factory(f.receiver)
-                        .unwrap()
-                        .max_release_tail_frames();
-                    assert!(tail < 16_000, "bounded four-frame one-shot source");
-                    let mut drained = vec![[1.0; 2]; tail as usize + 2];
-                    for chunk in drained.chunks_mut(17) {
-                        old.render(chunk).unwrap();
-                    }
-                    assert!(drained.iter().all(|frame| *frame == [0.0; 2]));
-                    // Expired scheduler slots retire at the next bounded span.
-                    old.render(&mut [[0.0; 2]; 1]).unwrap();
-                    let source = old.session_runtime_mut_for_stream_action().unwrap();
-                    assert!(
-                        source.mutable_instruments[0]
-                            .as_ref()
-                            .unwrap()
-                            .committed_is_quiescent(),
-                        "completed native kernel is quiet"
-                    );
-                    assert!(
-                        !source
-                            .computer_keyboard
-                            .as_ref()
-                            .unwrap()
-                            .has_mutable_source_input_voices(),
-                        "released logical input is quiet after its bound"
-                    );
+                    // The live handoff restarts audio instead of refusing
+                    // (Pulse #3784). Releasing the held key leaves silence, and
+                    // a real new onset still plays on the new instrument.
                     let (mut next, _) = live_playback(&f, &input);
                     next.try_inherit_runtime_in_control_context(&mut old, Some(19), Some(19))
                         .unwrap();
+                    input.set_key(0, None).unwrap();
+                    let mut drained = vec![[1.0; 2]; 16_064];
+                    for chunk in drained.chunks_mut(17) {
+                        next.render(chunk).unwrap();
+                    }
+                    assert!(
+                        drained[16_000..].iter().all(|frame| *frame == [0.0; 2]),
+                        "no stuck note after the held key is released"
+                    );
                     input.set_key(0, Some((60, 127, 2))).unwrap();
                     let mut future = [[0.0; 2]; 32];
                     next.render(&mut future).unwrap();

@@ -218,6 +218,7 @@ pub(crate) fn isolated(
     snapshot.loop_region = None;
     snapshot.master_gain = 1.0;
     snapshot.retain_clip_aliases_after_projection();
+    snapshot.retain_automatic_track_names_after_projection();
     Project::from_snapshot(snapshot).map_err(|e| e.to_string())
 }
 
@@ -350,10 +351,12 @@ impl Session {
 
     /// Reserved complete media adoption. The caller's last preparation hook
     /// rechecks cancellation and seals/enqueues only as its last fallible action.
+    #[allow(clippy::too_many_arguments)] // One captured adoption intent per field.
     pub(crate) fn adopt_arrangement_bounce_using<T>(
         &mut self,
         target: BounceTarget,
         in_place: bool,
+        adoption: hex_project::BounceAdoption,
         files: Vec<BounceFile>,
         prepared: Vec<PreparedImport>,
         previous: Option<&hex_engine::PreparedRevision>,
@@ -434,6 +437,7 @@ impl Session {
             Command::CommitArrangementBounce {
                 target,
                 in_place,
+                adoption,
                 files,
             },
             |candidate| {
@@ -489,6 +493,28 @@ impl Session {
         control: &hex_export::ExportControl,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
+        self.bounce_arrangement_adopting(
+            target,
+            in_place,
+            hex_project::BounceAdoption::NewTracks,
+            directory,
+            control,
+            previous,
+        )
+    }
+
+    /// As [`Self::bounce_arrangement`] with an explicit new-track adoption:
+    /// optionally muting the sources or landing at a clip drop, in the same
+    /// adoption edit and Undo step.
+    pub fn bounce_arrangement_adopting(
+        &mut self,
+        target: BounceTarget,
+        in_place: bool,
+        adoption: hex_project::BounceAdoption,
+        directory: &Path,
+        control: &hex_export::ExportControl,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
         let captured = target.clone();
         self.bounce_arrangement_using(
             target,
@@ -528,6 +554,7 @@ impl Session {
                     .adopt_arrangement_bounce_using(
                         captured,
                         in_place,
+                        adoption,
                         files,
                         prepared,
                         previous,
