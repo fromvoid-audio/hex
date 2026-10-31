@@ -2544,3 +2544,74 @@ fn selected_clips_hide_the_point_cursor_and_supply_the_earliest_play_start(
         "clearing the clip selection restores the cursor and its play start"
     );
 }
+
+#[gpui::test]
+fn cursor_inside_a_clip_keeps_it_in_the_clip_editor_without_selecting_it(cx: &mut TestAppContext) {
+    for midi in [false, true] {
+        assert_cursor_keeps_clip_detail(&mut cx.new_app(), midi);
+    }
+}
+
+fn assert_cursor_keeps_clip_detail(cx: &mut TestAppContext, midi: bool) {
+    cx.update(super::bind_editor_keys);
+    let (project, source, _, clip) = if midi {
+        midi_project()
+    } else {
+        audio_project()
+    };
+    let preview = if midi {
+        let (_, preview) =
+            hex_engine::compile::project_with_midi_preview(&project, &Default::default())
+                .expect("midi preview");
+        Arc::new(preview)
+    } else {
+        Arc::default()
+    };
+    let (handle, editor) = editor_window(cx, project, preview);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", source.value()).into_boxed_str(),
+        ))
+        .expect("lane");
+    let click_at = |visual: &mut VisualTestContext, fraction: f32| {
+        let at = point(
+            lane.origin.x + lane.size.width * fraction,
+            lane.origin.y + px(22.0),
+        );
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+    };
+
+    // 0.17 of the 384 000-frame view lies inside both fixtures' clips.
+    click_at(&mut visual, 0.17);
+    let cursor = editor.read_with(&visual, |view, _| {
+        assert!(view.selected_clip.is_none(), "no whole-clip selection");
+        assert_eq!(view.detail_clip_id(), Some(clip), "midi={midi}");
+        assert!(!view.device_panel_active, "the clip editor stays shown");
+        view.edit_cursor.expect("cursor").frame
+    });
+    assert!(visual.debug_bounds("edit-cursor-layer").is_some());
+
+    visual.simulate_keystrokes("delete space");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert!(
+            project.clip(clip).is_some() || project.midi_clip(clip).is_some(),
+            "delete does not treat the editor subject as a selected clip"
+        );
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(cursor)),
+            "play starts from the visible cursor, not the clip start"
+        );
+    });
+
+    click_at(&mut visual, 0.75);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.detail_clip_id(), None, "empty lane space retires it");
+    });
+}
