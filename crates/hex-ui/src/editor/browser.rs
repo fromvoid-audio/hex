@@ -754,6 +754,16 @@ impl EditorView {
         }
     }
 
+    /// A completed sample drop (admitted into a device, track, Arrangement,
+    /// Session or new track) ends that browser interaction, so it stops the
+    /// active preview through the ordinary cancellation. A cancelled or refused
+    /// drop leaves the preview playing, as in Live, until the user moves on.
+    pub(super) fn stop_browser_preview_for_drop(&mut self) {
+        if self.browser.playback_output.is_some() || self.browser.playback_pending.is_some() {
+            self.cancel_browser_sample_playback();
+        }
+    }
+
     fn play_browser_sample(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.play_browser_sample_from(path, 0.0, cx);
     }

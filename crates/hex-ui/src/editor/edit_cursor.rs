@@ -120,6 +120,8 @@ impl EditorView {
             }
         });
         self.select_lane_track(track);
+        self.edit_cursor_in_selected_clip =
+            self.selected_clip.filter(|_| selected_clip_under_pointer);
         self.advance_selection_intent();
         if !selected_clip_under_pointer {
             self.focus_track_details(window);
@@ -199,7 +201,13 @@ impl EditorView {
         }
         // A completed range belongs to Arrangement even while Console is shown.
         // Its stale-source checks above still run; hidden point cursors need no pulse.
-        self.mode == EditorMode::Arrangement && cursor.pulse(now)
+        // A point cursor hidden behind a clip play start needs no pulse either.
+        self.mode == EditorMode::Arrangement
+            && self.selected_clip_play_start().is_none()
+            && self
+                .edit_cursor
+                .as_mut()
+                .is_some_and(|cursor| cursor.pulse(now))
     }
 
     /// Paint the same live range bounds above the loop rail and at the bottom
@@ -226,6 +234,9 @@ impl EditorView {
             hex_widgets::TimeMarkerEdge::Top => "top",
             hex_widgets::TimeMarkerEdge::Bottom => "bottom",
         };
+        if start == end && self.selected_clip_play_start().is_some() {
+            return None;
+        }
         let markers = [
             (
                 start,

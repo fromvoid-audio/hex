@@ -1192,7 +1192,7 @@ impl EditorView {
                     handle_hit(clip.start(), end).map(|ordinary| {
                         (
                             ordinary,
-                            self.fade_handle_hit(state, track.id(), clip, x, y, viewport)
+                            self.fade_handle_hit(track.id(), clip, x, y, viewport)
                                 || super::trim::loop_handles::audio_controls(
                                     clip,
                                     &state.project,
