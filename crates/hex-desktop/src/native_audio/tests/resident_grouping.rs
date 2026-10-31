@@ -23,7 +23,7 @@ fn replay(h: &mut ResidentHarness) -> Vec<hex_engine::Frame> {
 }
 #[test]
 fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(32_768);
     assert!(h.next().error.is_none());
@@ -290,7 +290,7 @@ fn resident_grouping_publishes_exact_pcm_with_atomic_refusal_history_and_reopen(
 #[test]
 fn resident_sampler_and_grouped_audio_retain_every_media_root_and_pcm() {
     use hex_project::BeatTime;
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(32_768);
     assert!(h.next().error.is_none());
