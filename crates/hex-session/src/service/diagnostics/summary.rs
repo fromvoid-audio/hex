@@ -258,9 +258,12 @@ pub(super) fn command(value: &Command) -> Description {
             describe!("duplicate_tracks"; ["tracks_count" => tracks.ids().len(), "tracks_first_ids" => FirstIds(tracks.ids()), "without_clips" => without_clips]; omitted="")
         }
         Command::CommitArrangementBounce {
-            in_place, files, ..
+            in_place,
+            adoption,
+            files,
+            ..
         } => {
-            describe!("commit_arrangement_bounce"; ["in_place" => in_place, "files_count" => files.len()]; omitted="target")
+            describe!("commit_arrangement_bounce"; ["in_place" => in_place, "adoption" => adoption, "files_count" => files.len()]; omitted="target")
         }
         Command::SetClipActive { clip, active } => {
             describe!("set_clip_active"; ["clip" => clip.value(), "active" => active]; omitted="")
@@ -373,6 +376,14 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("insert_track_with_device"; ["name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="slot")
         }
+        Command::InsertDefaultTrackWithDevice {
+            before_track,
+            state,
+            device_name,
+            ..
+        } => {
+            describe!("insert_default_track_with_device"; ["before_track" => before_track.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len(), "device_name_redacted_bytes" => device_name.len()]; omitted="slot")
+        }
         Command::SpliceGainTouch {
             track,
             expected_epoch,
@@ -435,6 +446,14 @@ pub(super) fn command(value: &Command) -> Description {
             state,
         } => {
             describe!("insert_device"; ["track" => track.value(), "before" => before.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
+        Command::LoadInstrument {
+            track,
+            replacing,
+            state,
+            device_name,
+        } => {
+            describe!("load_instrument"; ["track" => track.value(), "replacing" => replacing.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len(), "device_name_redacted_bytes" => device_name.len()]; omitted="")
         }
         Command::InsertInstrument { track, state } => {
             describe!("insert_instrument"; ["track" => track.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
@@ -587,6 +606,9 @@ pub(super) fn command(value: &Command) -> Description {
         }
         Command::AddTrack { name } => {
             describe!("add_track"; ["name_redacted_bytes" => name.len()]; omitted="")
+        }
+        Command::InsertDefaultTrack { before_track } => {
+            describe!("insert_default_track"; ["before_track" => before_track.map(|id| id.value())]; omitted="")
         }
         Command::InsertTrack { name, before_track } => {
             describe!("insert_track"; ["name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value())]; omitted="")
@@ -1511,9 +1533,10 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             in_place,
+            adoption,
             ..
         } => {
-            describe!("bounce_arrangement"; ["project_generation" => project_generation, "revision" => revision, "in_place" => in_place]; omitted="target,control")
+            describe!("bounce_arrangement"; ["project_generation" => project_generation, "revision" => revision, "in_place" => in_place, "adoption" => adoption]; omitted="target,control")
         }
         Request::ConvertClip {
             project_generation,
@@ -1549,6 +1572,7 @@ pub(super) fn request(value: &Request) -> Description {
         Request::RestorePlayback { generation } => {
             describe!("restore_playback"; ["generation" => generation]; omitted="")
         }
+        Request::RepublishPausedPlayback => describe!("republish_paused_playback"; []; omitted=""),
         Request::RestoreStoppedPlayback => describe!("restore_stopped_playback"; []; omitted=""),
         Request::ContinueStoppedPlaybackRestore => {
             describe!("continue_stopped_playback_restore"; []; omitted="")

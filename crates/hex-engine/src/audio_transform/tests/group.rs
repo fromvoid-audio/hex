@@ -1096,3 +1096,73 @@ fn thousand_pasted_frame_groups_share_one_rendered_sample_and_keep_history_pcm()
     assert_eq!(render(&redone, 15_000_000, 15_000, 257), expected);
     assert_eq!(context.retained_pcm_bytes(), pcm_bytes);
 }
+
+#[test]
+fn split_and_copied_repeating_group_pieces_share_one_composite_root() {
+    let (mut editor, ids, media) = group_fixture();
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group");
+    };
+    let mut snapshot = editor.project().snapshot();
+    let row = snapshot.tracks[0]
+        .audio_clips_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row.id == group.value())
+        .unwrap();
+    let edit = row.edit.as_mut().unwrap();
+    edit.view_start = 2_000;
+    edit.view_end = 9_000;
+    edit.placement = Some(hex_project::AudioViewPlacement {
+        mode: hex_project::AudioViewMode::Repeat,
+        outer_length: AudioDomainClock::Frames(40_000),
+        cycle_phase: 1_500,
+    });
+    row.duration = 40_000;
+    row.fade = hex_project::ClipFade::neutral(row.duration).unwrap();
+    let start = row.start;
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let unsplit = prepare(&editor, &media, &context);
+    let expected = render(&unsplit, start, 40_000, 127);
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    let root = unsplit.arrangement().audio_clip_views()[0].audio.clone();
+    // The composite root plus its pitched child render; no outer placement PCM.
+    let retained = context.retained_pcm_bytes();
+    assert!(retained < 40_000 * std::mem::size_of::<crate::Frame>());
+    let Created::Clip(tail) = editor
+        .execute(Command::SplitClip {
+            clip: group,
+            frame: start + 23_456,
+        })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    let track = editor.project().tracks()[0].id();
+    let clipboard = Arc::new(editor.project().capture_clips(&[tail]).unwrap());
+    for copy in 0..8 {
+        editor
+            .execute(Command::PasteClips {
+                clipboard: Arc::clone(&clipboard),
+                track,
+                frame: start + 40_000 + copy * 16_544,
+                insert: false,
+            })
+            .unwrap();
+    }
+    let copied = prepare(&editor, &media, &context);
+    assert!(
+        copied
+            .arrangement()
+            .audio_clip_views()
+            .iter()
+            .all(|view| view.audio.shares_pcm_with(&root))
+    );
+    assert_eq!(context.retained_pcm_bytes(), retained);
+    assert_eq!(render(&copied, start, 40_000, 257), expected);
+    assert_eq!(
+        render(&copied, start + 40_000 + 7 * 16_544, 16_544, 31),
+        expected[23_456..]
+    );
+}

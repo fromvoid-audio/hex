@@ -2,9 +2,12 @@
 //! Structural relocation may freeze original tempo/root context independently of
 //! destination placement. Cache identity, mapping, fades and events all consume
 //! that retained processing law; a crop never restarts full-root analysis.
-//! Finite Once/Repeat placements compose the canonical projection into one
-//! resident outer buffer, shared with waveform preparation. Their distinct
-//! cache identity retains complete geometry and tempo. Outer frames and summed
+//! Frame-clock placements that tile their root window loop the shared cached
+//! root without outer PCM. Musical roots at translation-free origins (one
+//! constant tempo, exact-frame onset) share a single render, so their copies and
+//! placements reuse it the same way. Other finite Once/Repeat placements compose the
+//! canonical projection into one resident outer buffer, shared with waveform
+//! preparation; their distinct cache identity retains geometry and tempo. Outer frames and summed
 //! musical full-root work each cap at 16777216; at most 8192 occurrences are
 //! admitted before PCM allocation. Unsupported streamed placement preparation
 //! refuses without changing project or media. Ordinary crops keep their path.
@@ -109,7 +112,9 @@ enum EntryKey {
     Root {
         domain: Arc<AudioClipDomain>,
         tempo: Option<Arc<hex_project::TempoMap>>,
-        origin: i128,
+        /// `None` when the processing origin is translation-free (see
+        /// `translation_free_origin`): every such origin renders identical PCM.
+        origin: Option<i128>,
     },
     Group {
         root_only: bool,
@@ -423,13 +428,14 @@ impl AudioTransformPreparation {
         source: &Audio,
         edit: &AudioClipEdit,
         tempo: &Option<Arc<hex_project::TempoMap>>,
-        origin: i128,
+        origin: Option<i128>,
         asset: &Asset,
     ) -> Result<Option<Audio>, Invalid> {
         self.lookup_key(source, asset, |key| {
             matches!(key, EntryKey::Root { domain, tempo: retained, origin: at }
-                if (Arc::ptr_eq(domain, &edit.domain) || domain == &edit.domain)
-                    && *at == origin && retained.as_deref() == tempo.as_deref())
+                if *at == origin && retained.as_deref() == tempo.as_deref()
+                    && (Arc::ptr_eq(domain, &edit.domain) || domain == &edit.domain
+                        || (origin.is_none() && same_translated_domain(domain, &edit.domain))))
         })
     }
     fn lookup_key(
@@ -499,9 +505,10 @@ impl AudioTransformPreparation {
             None
         };
         let origin = if edit.reference_start_raw().is_some() {
-            edit.processing_origin()?
+            let origin = edit.processing_origin()?;
+            (!translation_free_origin(edit.processing_tempo(tempo_map), origin)?).then_some(origin)
         } else {
-            0
+            Some(0)
         };
         if let Some(audio) = self.lookup(source, edit, &tempo, origin, asset)? {
             return Ok(audio);
@@ -764,6 +771,37 @@ impl AudioTransformPreparation {
         .map(|clip_engine| Some(clip_engine.with_gain(clip.gain())))
     }
 }
+/// A root's processing origin only enters its render through tempo points
+/// relative to it, `tempo_at`, and differences `frame(origin + x) - frame(origin)`
+/// / `beat(frame(origin) + f) - origin`. Under one constant tempo, a non-negative
+/// origin on an exact Q32 frame boundary makes every such term independent of
+/// the origin, so all translation-free origins prepare identical PCM. Copies of a
+/// musical clip on the beat grid of a constant-tempo song can then share a root.
+pub(crate) fn translation_free_origin(
+    tempo: &hex_project::TempoMap,
+    origin: i128,
+) -> Result<bool, Invalid> {
+    let ([point], Ok(raw)) = (tempo.points(), u64::try_from(origin)) else {
+        return Ok(false);
+    };
+    if point.beat() != hex_project::BeatTime::ZERO {
+        return Ok(false);
+    }
+    let frame_q32 = tempo.beat_to_frame_q32(hex_project::BeatTime::from_raw(raw))?;
+    Ok(frame_q32 & ((1_u128 << 32) - 1) == 0)
+}
+
+/// A neutral fade never reads its projection, which records the clip's absolute
+/// onset. Translated copies otherwise share every rendered domain input.
+fn same_translated_domain(a: &AudioClipDomain, b: &AudioClipDomain) -> bool {
+    a.content == b.content
+        && a.source_phase == b.source_phase
+        && a.looping == b.looping
+        && a.fade == b.fade
+        && a.fade_start == b.fade_start
+        && (a.fade_projection == b.fade_projection || a.fade.is_neutral())
+}
+
 fn direct_clip(
     clip: &hex_project::Clip,
     source: PreparedAudioSourceRef<'_>,

@@ -423,7 +423,7 @@ impl EditorView {
                                 point(bounds.origin.x + px(left), bounds.origin.y),
                                 size(px(right - left), bounds.size.height),
                             ),
-                            gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            gpui::Hsla::from(rgb(theme::time_selection_fill()))
                                 .opacity(theme::TIME_SELECTION_OPACITY),
                         ));
                     }
@@ -1434,9 +1434,9 @@ impl EditorView {
             .children([self.midi_button(
                 grid.label(),
                 if cfg!(target_os = "macos") {
-                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold cmd to invert snapping"
+                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold cmd to invert snapping · note ends drag free, hold cmd to snap"
                 } else {
-                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold control to invert snapping"
+                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold control to invert snapping · note ends drag free, hold control to snap"
                 },
                 cx.listener(|v, _, _, cx| {
                     v.cycle_midi_grid();

@@ -208,8 +208,7 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::MutableInstrumentChase);
             }
         }
-        let base_timing =
-            base_timing_for(self.revision.session(), self.periodic_tempo_at(frame, 0));
+        let base_timing = base_timing_for(self.revision.session(), self.periodic_tempo_at(frame));
         let beat = base_timing
             .frame_to_beat(frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
@@ -258,12 +257,12 @@ impl SessionPlayback {
         frame
             .checked_add(1)
             .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-        base_timing_for(self.revision.session(), self.periodic_tempo_at(frame, 0))
+        base_timing_for(self.revision.session(), self.periodic_tempo_at(frame))
             .frame_to_beat(frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)
     }
 
-    fn install_seek(&mut self, frame: u64, beat: BeatTime) {
+    pub(super) fn install_seek(&mut self, frame: u64, beat: BeatTime) {
         self.monitor_source_releases = false;
         let mut changed = self.performance_frame != frame;
         for route in &self.routes {
@@ -280,12 +279,38 @@ impl SessionPlayback {
         self.arrangement_loop_pass = 0;
         self.anchor = None;
         self.interactive_start_frame = None;
+        self.historical_floor = None;
+        self.route_historical_floors.fill(None);
+        self.restart_audio_history();
+        for route in &mut self.routes {
+            route.pending = None;
+            if let RouteOwner::Session { clip, .. } = route.owner {
+                route.owner = RouteOwner::Session {
+                    clip,
+                    origin: SessionMidiOrigin::launch(beat),
+                };
+            }
+            if let RouteOwner::SessionAudio { clip, .. } = route.owner {
+                route.owner = RouteOwner::SessionAudio {
+                    clip,
+                    launch_frame: frame,
+                };
+            }
+        }
+        if changed {
+            self.advance_route_state_generation();
+        }
+    }
+
+    /// The seek law's audio cut without moving the transport: analytic
+    /// releases/continuations, device chains, return/effect tails, the
+    /// compensation epoch and mutable voices start empty. Allocation-free:
+    /// existing owners are cleared or reset in place.
+    pub(super) fn restart_audio_history(&mut self) {
         self.analytic_continuations.fill(None);
         self.analytic_continuation_scratch.fill(None);
         self.releases.clear();
         self.suppressions.clear();
-        self.historical_floor = None;
-        self.route_historical_floors.fill(None);
         self.release_order = 0;
         self.main_chain.reset();
         for chain in &mut self.device_chains {
@@ -308,24 +333,6 @@ impl SessionPlayback {
         }
         for tail in self.tail_mutable_instruments.iter_mut().flatten() {
             tail.runtime.reset();
-        }
-        for route in &mut self.routes {
-            route.pending = None;
-            if let RouteOwner::Session { clip, .. } = route.owner {
-                route.owner = RouteOwner::Session {
-                    clip,
-                    origin: SessionMidiOrigin::launch(beat),
-                };
-            }
-            if let RouteOwner::SessionAudio { clip, .. } = route.owner {
-                route.owner = RouteOwner::SessionAudio {
-                    clip,
-                    launch_frame: frame,
-                };
-            }
-        }
-        if changed {
-            self.advance_route_state_generation();
         }
     }
 
@@ -368,7 +375,7 @@ impl SessionPlayback {
                 }
                 let timing = timing_view_for(
                     self.revision.session(),
-                    self.periodic_tempo_at(frame, 0),
+                    self.periodic_tempo_at(frame),
                     self.anchor,
                 );
                 prepared

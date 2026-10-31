@@ -1,8 +1,11 @@
-//! Host gain staging: adjacent input/output sample peaks, with manual input/output trim.
+//! Post-device output metering: the passive stereo peak meter after each device,
+//! plus the dynamics readings that device panels draw themselves.
 use super::*;
 use std::time::Instant;
 
-pub(super) const WIDTH: f32 = 25.0;
+/// Strip width: both channel bars, their gap and a 2px gutter on each side.
+pub(super) const WIDTH: f32 =
+    2.0 * hex_widgets::STEREO_PEAK_BAR_WIDTH + hex_widgets::STEREO_PEAK_BAR_GAP + 4.0;
 pub(super) struct MeterState {
     device_type: Option<hex_lattice_contract::DeviceTypeId>,
     levels: [f32; 2],
@@ -153,7 +156,7 @@ fn sample_levels(view: &mut EditorView, device: &hex_project::Device) -> ([f32; 
     // Borrow only while reading peaks: caching an individual endpoint would outlive the
     // charged observation that owns it, especially when this panel is no longer visible.
     let has_source = source.is_some();
-    let peaks = source.map_or([0.0; 2], |source| source.take_peaks());
+    let peaks = source.map_or([0.0; 2], |source| source.take_peaks().output);
     let state = view.device_panel.meter_states.entry(id).or_default();
     state.attach(device.state().type_id(), has_source);
     let now = Instant::now();
@@ -174,78 +177,42 @@ fn sample_levels(view: &mut EditorView, device: &hex_project::Device) -> ([f32; 
     (state.levels, state.held)
 }
 
-pub(super) fn render(
-    view: &mut EditorView,
-    cx: &mut Context<EditorView>,
-    device: &hex_project::Device,
-    class: NativeDeviceClass,
-) -> Div {
-    let id = device.id();
+/// Passive post-device stereo meter between devices: left/right output peaks,
+/// display-only. Host trim stays canonical device state edited by automation;
+/// a non-neutral trim is disclosed in the tooltip rather than hidden.
+pub(super) fn render(view: &mut EditorView, device: &hex_project::Device) -> Div {
     let (levels, held) = sample_levels(view, device);
-    let mut strip = div().flex().w(px(WIDTH)).px(px(1.0)).gap(px(3.0));
-    for (index, descriptor, value) in [
-        (
-            0,
-            hex_engine::DEVICE_INPUT_GAIN,
-            device.state().input_gain_db(),
-        ),
-        (
-            1,
-            hex_engine::DEVICE_OUTPUT_GAIN,
-            device.state().output_gain_db(),
-        ),
-    ] {
-        let parameter = NativeDeviceParameterView {
-            descriptor,
-            semantics: None,
-            value: ParameterValue::Float(value),
-            enabled: true,
-        };
-        let control = parameter_control_with_presentation(
-            view,
-            cx,
-            id,
-            DeviceControlIdentity {
-                class,
-                type_id: device.state().type_id(),
-            },
-            &parameter,
-            ControlPresentation::DeviceMeters,
-            ControlText {
-                label: None,
-                codec: None,
-            },
-        );
-        let key = ParameterKey {
-            device: id,
-            parameter: descriptor.id,
-        };
-        let ParameterValue::Float(gain) = effective_parameter_value(view, key, parameter.value)
-        else {
-            continue;
-        };
-        let tooltips = ["input", "output"].map(|side| theme::text(format!(
-            "{side} peak {} dbfs · gain {gain:+.2} db\ndrag to adjust · shift for fine · double-click to reset",
-            peak_db(held[index])
-        )));
-        let colors = theme::meter_colors();
-        let readout = hex_widgets::DeviceMeterReadout {
-            height: DEVICE_FRAME_HEIGHT,
-            index,
-            gain_db: gain,
-            levels,
-            held,
-            tooltips,
-            signal: colors.signal,
-            warning: colors.near_peak,
-            clipping: colors.clipping,
-        };
-        if let Some(ParameterControl::Float { entity, .. }) = view.device_panel.controls.get(&key) {
-            entity.update(cx, |numeric, cx| numeric.set_meter_readout(readout, cx));
-        }
-        strip = strip.child(control);
+    let mut tooltip = format!(
+        "output peak l {} · r {} dbfs",
+        peak_db(held[0]),
+        peak_db(held[1])
+    );
+    let (input_trim, output_trim) = (
+        device.state().input_gain_db(),
+        device.state().output_gain_db(),
+    );
+    if input_trim != 0.0 || output_trim != 0.0 {
+        tooltip.push_str(&format!(
+            "\ntrim in {input_trim:+.2} db · out {output_trim:+.2} db"
+        ));
     }
-    strip
+    div()
+        .w(px(WIDTH))
+        .h_full()
+        .flex()
+        .flex_shrink_0()
+        .justify_center()
+        .py(px(4.0))
+        .child(hex_widgets::stereo_peak_meter(
+            format!("device-{}-output-meter", device.id().value()).into(),
+            hex_widgets::StereoPeakMeter {
+                levels,
+                held,
+                tooltip: theme::text(tooltip),
+                colors: theme::meter_colors(),
+            },
+            theme::control_style(),
+        ))
 }
 
 fn peak_db(peak: f32) -> String {

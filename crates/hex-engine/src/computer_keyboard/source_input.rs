@@ -314,10 +314,12 @@ mod tests {
         );
     }
     #[test]
-    fn stopped_preroll_freezes_until_live_activation_then_releases_clips_once() {
+    fn stopped_seek_monitors_live_input_without_destination_clip_history() {
         use crate::playback::PlaybackCommand;
         use hex_project::{BeatTime, Created};
         let (project, track) = short_operator_project();
+        // Oracle: the same graph without the clip, so only live input sounds.
+        let silent_clip_revision = crate::computer_keyboard::tests::prepared(&project);
         let mut editor = Editor::new(project, 8).unwrap();
         let Created::Clip(clip) = editor
             .execute(Command::PlaceMidiClip {
@@ -353,10 +355,10 @@ mod tests {
         let mut frozen = [[1.0; 2]; 19];
         actual.render(&mut frozen).unwrap();
         assert_eq!(frozen, [[0.0; 2]; 19]);
-        let mut expected = Playback::from_prepared(revision);
-        expected.apply(PlaybackCommand::Play);
-        expected.render(&mut [[0.0; 2]; 512]).unwrap();
-        expected.apply(PlaybackCommand::Pause);
+        // A stopped seek starts voices empty; the held clip note is chased on
+        // Play, not released into live monitoring.
+        let mut expected = Playback::from_prepared(silent_clip_revision);
+        expected.apply(PlaybackCommand::Seek(512));
         let input = Arc::new(ComputerKeyboardInput::default());
         let reference = Arc::new(ComputerKeyboardInput::default());
         input.set_key(0, Some((64, 100, 1))).unwrap();
@@ -371,10 +373,8 @@ mod tests {
         let mut b = a;
         actual.render(&mut a).unwrap();
         expected.render(&mut b).unwrap();
-        assert_eq!(
-            a, b,
-            "live activation releases the frozen clip through the same kernel"
-        );
+        assert_eq!(a, b, "only the live input sounds while stopped");
+        assert!(a.iter().flatten().any(|sample| sample.abs() > 0.000_001));
         assert_eq!(actual.performance_frame(), 512);
         assert_eq!(expected.performance_frame(), 512);
     }

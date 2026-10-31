@@ -9,7 +9,7 @@ pub(super) fn exercise(
     visual: &mut VisualTestContext,
     h: &mut Harness,
     window: gpui::AnyWindowHandle,
-    end: Instant,
+    step: Duration,
     track: hex_project::TrackId,
     saved: &std::path::Path,
 ) {
@@ -168,6 +168,9 @@ pub(super) fn exercise(
     .into_iter()
     .enumerate()
     {
+        // Each edit/save/new/reopen phase gets its own stuck-progress deadline.
+        // One whole-fixture budget made 21 sequential steps fail under host load.
+        let mut end = Instant::now() + step;
         match parameter {
             Gain => gain = value,
             Transpose => pitch = value,
@@ -260,6 +263,7 @@ pub(super) fn exercise(
         for _ in 0..12 {
             pulse(visual);
         }
+        end = Instant::now() + step;
         visual.simulate_keystrokes("cmd-s");
         loop {
             pulse(visual);
@@ -341,6 +345,7 @@ pub(super) fn exercise(
                 .unwrap()
                 .rendered_current(h)
                 .unwrap();
+            end = Instant::now() + step;
             visual.simulate_keystrokes("cmd-n");
             visual.run_until_parked();
             visual.simulate_keystrokes("cmd-n");
@@ -351,6 +356,7 @@ pub(super) fn exercise(
             for _ in 0..8 {
                 pulse(visual);
             }
+            end = Instant::now() + step;
             visual.simulate_keystrokes("cmd-o");
             while !cx.did_prompt_for_paths() {
                 pulse(visual);
@@ -440,6 +446,7 @@ pub(super) fn exercise(
                 submissions
             );
         }
+        end = Instant::now() + step;
         // Capture first key render without pumping away this short source.
         let before_keyboard = h
             .backend

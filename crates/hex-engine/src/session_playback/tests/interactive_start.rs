@@ -346,6 +346,62 @@ fn chased_note_gate_and_stop_match_authored_pcm_at_fixed_block_sizes() {
 }
 
 #[test]
+fn stateful_seek_candidate_chases_held_note_with_empty_tails_at_fixed_block_sizes() {
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            for limiter in [None, Some(false), Some(true)] {
+                let prepared = start_fixture(0, 1 << 32, limiter);
+                assert!(prepared.arrangement_seek_requires_preroll());
+                let latency = prepared.arrangement().main_latency_frames() as usize;
+                // Independently authored music whose note starts at the seek
+                // point and ends at the original gate; any replayed feedback
+                // or limiter history would change the PCM.
+                let mut oracle =
+                    SessionPlayback::new(start_fixture(1 << 31, 1 << 31, limiter)).unwrap();
+                oracle.apply(SessionPlaybackCommand::Play).unwrap();
+                let _ = render_checkpoint_prefix(&mut oracle, 12_000);
+                let expected = render_checkpoint_partitioned(&mut oracle, &[256], 12_064 + latency);
+                for playing in [true, false] {
+                    for block in [1, 64, 256, 512] {
+                        let candidate =
+                            SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                                Arc::clone(&prepared),
+                                12_000,
+                                12_000,
+                                playing,
+                                &AtomicBool::new(false),
+                            )
+                            .unwrap();
+                        let mut playback =
+                            Playback::from_interactive_arrangement_preroll(candidate).unwrap();
+                        assert_eq!(playback.position(), 12_000);
+                        assert_eq!(playback.playing(), playing);
+                        if !playing {
+                            let mut frozen = [[1.0; 2]; 19];
+                            playback.render(&mut frozen).unwrap();
+                            assert_eq!(frozen, [[0.0; 2]; 19]);
+                            assert_eq!(playback.position(), 12_000);
+                            playback.apply(PlaybackCommand::Play);
+                        }
+                        let mut actual = vec![[0.0; 2]; expected.len()];
+                        for chunk in actual.chunks_mut(block) {
+                            playback.render(chunk).unwrap();
+                        }
+                        assert_eq!(
+                            actual, expected,
+                            "limiter={limiter:?} playing={playing} block={block}"
+                        );
+                    }
+                }
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn play_from_invalid_destination_is_atomic_and_strict_seek_still_refuses_chase() {
     let (prepared, track) = mutable_checkpoint_fixture(1 << 32);
     let mut runtime = SessionPlayback::new(prepared).unwrap();

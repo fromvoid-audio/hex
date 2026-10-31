@@ -8,6 +8,7 @@ use crate::MediaBank;
 use hex_engine::native_device_resources::{
     DeviceResourceAdmission, DeviceResourcePhase, PreparedDeviceResources,
 };
+use std::time::{Duration, Instant};
 
 mod bounce;
 mod runtime_inputs;
@@ -339,6 +340,9 @@ impl Inputs<'_> {
         };
         self.publish_tagged(snapshot, project, sink, metadata)
     }
+    /// Stopped section edits (and their Undo/Redo) keep the raw cursor but start
+    /// every device, effect tail, compensation delay and instrument empty there:
+    /// the song prefix is not replayed, so latency is independent of the cursor.
     fn publish_stopped_section(
         &self,
         snapshot: &mut Snapshot,
@@ -355,6 +359,11 @@ impl Inputs<'_> {
             project.tempo_map().beat_to_frame(cursor)?,
         )
     }
+    /// Publish a stopped runtime at `destination` with empty device history
+    /// (the interactive seek law). Preserve the raw stopped cursor, including
+    /// late positions and positions outside an enabled loop. A mutable
+    /// instrument the strict Seek refuses (an active or chased note) uses the
+    /// interactive seek candidate, which keeps that note's chase for Play.
     fn publish_stopped_at_frame(
         &self,
         snapshot: &mut Snapshot,
@@ -363,32 +372,42 @@ impl Inputs<'_> {
         context: hex_engine::AudioSourceContext,
         destination: u64,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let mut playback = if snapshot.prepared.arrangement_seek_requires_preroll() {
-            let runtime = hex_engine::SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
-                Arc::clone(&snapshot.prepared), &snapshot.resources, destination,
-                hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES, false, self.shutdown,
-            ).map_err(|error| SessionError::NativeAudio(format!("stopped arrangement preparation refused: {error:?}")))?;
-            Playback::from_interactive_arrangement_preroll(runtime).map_err(|error| {
-                SessionError::NativeAudio(format!("stopped arrangement runtime refused: {error:?}"))
-            })?
-        } else {
-            // Stateless arrangements need no replay. Preserve the raw stopped
-            // cursor, including late positions and positions outside an enabled loop.
+        let requires_preroll = snapshot.prepared.arrangement_seek_requires_preroll();
+        let direct = {
             let mut playback = Playback::try_from_prepared_with_device_resources(
                 Arc::clone(&snapshot.prepared),
                 &snapshot.resources,
             )
             .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
-            playback
-                .try_apply_action(hex_engine::PlaybackAction::Transport(
-                    hex_engine::PlaybackCommand::Seek(destination),
-                ))
-                .map_err(|error| {
-                    SessionError::NativeAudio(format!(
+            match playback.try_apply_action(hex_engine::PlaybackAction::Transport(
+                hex_engine::PlaybackCommand::Seek(destination),
+            )) {
+                Ok(()) => Some(playback),
+                Err(hex_engine::PlaybackActionError::Session(
+                    hex_engine::SessionPlaybackError::MutableInstrumentActive
+                    | hex_engine::SessionPlaybackError::MutableInstrumentChase
+                    | hex_engine::SessionPlaybackError::MutableInstrumentDiagnostic(_),
+                )) if requires_preroll => None,
+                Err(error) => {
+                    return Err(SessionError::NativeAudio(format!(
                         "stopped arrangement positioning refused: {error:?}"
+                    )));
+                }
+            }
+        };
+        let mut playback = match direct {
+            Some(playback) => playback,
+            None => {
+                let runtime = hex_engine::SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
+                    Arc::clone(&snapshot.prepared), &snapshot.resources, destination,
+                    hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES, false, self.shutdown,
+                ).map_err(|error| SessionError::NativeAudio(format!("stopped arrangement preparation refused: {error:?}")))?;
+                Playback::from_interactive_arrangement_preroll(runtime).map_err(|error| {
+                    SessionError::NativeAudio(format!(
+                        "stopped arrangement runtime refused: {error:?}"
                     ))
-                })?;
-            playback
+                })?
+            }
         };
         if playback.position() != destination || playback.playing() {
             return Err(SessionError::Invalid(
@@ -666,16 +685,38 @@ pub(super) fn execute_command(
     resident: &mut Option<Snapshot>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
+    execute_command_timed(
+        session, command, previous, context, events, resident, admission, None,
+    )
+}
+/// `execute_command` that reports resident transition phases when measured.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_command_timed(
+    session: &mut Session,
+    command: Command,
+    previous: Option<&PreparedRevision>,
+    context: hex_engine::AudioSourceContext,
+    events: &mut WorkerEvents,
+    resident: &mut Option<Snapshot>,
+    admission: sampler_export::Admission<'_>,
+    phases: Option<&mut super::diagnostics::SectionPhases>,
+) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
     if session.audio_mode() == DocumentAudioMode::Resident
         && let Some(sink) = events.resident_audio()
     {
-        let (created, snapshot) = session.command_resident_snapshot(
-            command,
-            context,
-            sink,
-            admission,
-            resident.as_ref(),
-        )?;
+        let (created, snapshot) = session
+            .resident_transition_timed(
+                Transition::Command(Box::new(command)),
+                context,
+                sink,
+                admission,
+                resident.as_ref(),
+                None,
+                phases,
+            )?
+            .ok_or(SessionError::Invalid(
+                "resident command produced no transition",
+            ))?;
         let prepared = Arc::clone(&snapshot.prepared);
         *resident = Some(snapshot);
         Ok((created, prepared))
@@ -1363,8 +1404,12 @@ impl Session {
         let mut playback = playback_with_loop(snapshot, section_loop)?;
         let requested = selected.clone();
         selected.attach(project, &mut playback)?;
-        if required.is_some_and(|required| !selected.satisfies(&requested, required)) {
-            return Err(SessionError::Invalid("runtime input source is unavailable"));
+        if let Some(required) = required
+            && !selected.satisfies(&requested, required)
+        {
+            return Err(SessionError::Invalid(
+                requested.unbound_reason(project, &playback, required),
+            ));
         }
         selected.selected_after(&snapshot.inputs)?;
         let hint = playback.computer_keyboard_tuning_hint();
@@ -1704,6 +1749,7 @@ impl Session {
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
+        phases: &mut super::diagnostics::SectionPhases,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
         let cursor = if position.playing {
             None
@@ -1731,7 +1777,15 @@ impl Session {
                 section_loop,
             },
         };
-        self.resident_transition(transition, context, sink, admission, current, None)
+        self.resident_transition_timed(
+            transition,
+            context,
+            sink,
+            admission,
+            current,
+            None,
+            Some(phases),
+        )
     }
     pub(super) fn command_resident_snapshot(
         &mut self,
@@ -1873,6 +1927,24 @@ impl Session {
         current: Option<&Snapshot>,
         cancel: Option<&AtomicBool>,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
+        self.resident_transition_timed(transition, context, sink, admission, current, cancel, None)
+    }
+    /// `phases` receives control-worker durations; `edit` is the remainder of
+    /// the canonical transition around preparation and publication.
+    #[allow(clippy::too_many_arguments)]
+    fn resident_transition_timed(
+        &mut self,
+        transition: Transition,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+        cancel: Option<&AtomicBool>,
+        phases: Option<&mut super::diagnostics::SectionPhases>,
+    ) -> Result<Option<(Created, Snapshot)>, SessionError> {
+        let started = Instant::now();
+        let mut prepare_time = Duration::ZERO;
+        let mut publish_time = Duration::ZERO;
         if let Transition::Command(command)
         | Transition::PluginEffect { command, .. }
         | Transition::MidiCommand(command)
@@ -1943,6 +2015,7 @@ impl Session {
             } else {
                 context
             };
+            let prepare_started = Instant::now();
             let mut snapshot = inputs.prepare_transition(
                 source,
                 project,
@@ -1954,30 +2027,16 @@ impl Session {
                 waveforms,
                 context,
             )?;
+            let publish_started = Instant::now();
+            prepare_time = publish_started - prepare_started;
             if let Some(frame) = stopped_bounce_frame {
                 inputs.publish_stopped_at_frame(&mut snapshot, project, sink, context, frame)?;
             } else if let Some(cursor) = stopped_cursor {
                 inputs.publish_stopped_section(&mut snapshot, project, sink, context, cursor)?;
             } else if section_transition {
-                // Existing live compensation/active-loop gates cannot rebind a
-                // changed tempo map. Refuse before canonical history/publication,
-                // rather than committing a candidate the callback must reject.
-                if !source.tempo_map().proves_same_clock(project.tempo_map()) {
-                    return Err(SessionError::Invalid(
-                        "live section edits that change the tempo map require stopped playback",
-                    ));
-                }
-                if current.map_or_else(
-                    || snapshot.prepared.has_arrangement_mutable_instruments(),
-                    |old| {
-                        old.prepared
-                            .section_midi_relocation_requires_stop(&snapshot.prepared)
-                    },
-                ) {
-                    return Err(SessionError::Invalid(
-                        "stop playback before relocating instrument midi with section edits or history",
-                    ));
-                }
+                // A changed tempo map or relocated instrument MIDI no longer
+                // refuses here: the callback's live handoff restarts audio at
+                // the musically equivalent cursor instead (Pulse #3774).
                 // Keep the launched loop at its musical timeline range. A section
                 // move changes the music under that range, never teleports transport.
                 let region = section_loop
@@ -2010,6 +2069,7 @@ impl Session {
             } else {
                 inputs.publish(&mut snapshot, project, sink, context)?;
             }
+            publish_time = publish_started.elapsed();
             Ok(snapshot)
         };
         let result = match transition {
@@ -2034,7 +2094,16 @@ impl Session {
                 result.map(|result| result.map(|snapshot| (Created::None, snapshot)))
             }
         };
+        let finish_started = Instant::now();
         sink.finish_resident_effect_edit(context, result.is_ok());
+        if let Some(phases) = phases {
+            phases.finish = finish_started.elapsed();
+            phases.prepare = prepare_time;
+            phases.publish = publish_time;
+            phases.edit = (finish_started - started)
+                .saturating_sub(prepare_time)
+                .saturating_sub(publish_time);
+        }
         result
     }
 }

@@ -97,6 +97,9 @@ pub struct SessionRouteStatus {
     pub owner: SessionPlaybackOwner,
     /// Present only for a Session MIDI owner; both coordinates remain global/cued as typed.
     pub active_origin: Option<SessionMidiOrigin>,
+    /// Present only for a Session audio owner: the performance frame at which
+    /// its source elapsed time is zero (a launch or legacy seed, not a cursor).
+    pub audio_launch_frame: Option<u64>,
     pub pending: Option<SessionPendingRouteStatus>,
 }
 
@@ -171,10 +174,10 @@ impl SessionPlaybackError {
             Self::ReleaseBankFull => "session playback outgoing release bank is full",
             Self::DeviceRuntime => "session playback native device runtime is unavailable",
             Self::LatencyLayoutChanged => {
-                "latency layout changed · stop transport before applying this revision"
+                "latency layout could not change live · previous audio continues"
             }
             Self::SourceHistoryUnavailable => {
-                "source history cannot transfer · stop transport before applying this revision"
+                "source history cannot transfer live · previous audio continues"
             }
             Self::ForeignTailSourceBusy => {
                 "native effect endpoint is still owned by an outgoing tail"
@@ -641,7 +644,9 @@ impl SessionPlayback {
                     .filter_map(|keyboard| keyboard.resources.as_ref()),
             )
     }
-    pub(crate) fn computer_keyboard_latency_supported(&self) -> bool {
+    /// Keyboard monitoring plays through PDC at any latency. Recorded MIDI
+    /// stamps are not yet latency-corrected, so capture still requires none.
+    pub(crate) fn midi_capture_latency_supported(&self) -> bool {
         self.compensation
             .as_ref()
             .is_none_or(|runtime| runtime.graph.plan.max_latency_frames() == 0)
@@ -2002,16 +2007,11 @@ impl SessionPlayback {
     }
 
     pub(crate) fn periodic_tempo(&self) -> Option<PreparedPeriodicSessionTempo> {
-        self.periodic_tempo_at(self.arrangement_frame, self.arrangement_loop_pass)
+        self.periodic_tempo_at(self.arrangement_frame)
     }
 
-    fn periodic_tempo_at(
-        &self,
-        frame: u64,
-        loop_pass: u64,
-    ) -> Option<PreparedPeriodicSessionTempo> {
-        self.active_loop_region_at(frame, loop_pass)
-            .and(self.periodic_tempo)
+    fn periodic_tempo_at(&self, frame: u64) -> Option<PreparedPeriodicSessionTempo> {
+        self.active_loop_region_at(frame).and(self.periodic_tempo)
     }
 
     pub fn performance_frame(&self) -> u64 {
@@ -2031,17 +2031,18 @@ impl SessionPlayback {
         }
     }
 
-    /// The saved/audition loop participates only when playback reaches it from
-    /// before its end. An absolute seek at or after the end begins a linear
-    /// first pass; a completed wrap retains the existing periodic loop law.
+    /// The saved/audition loop participates only while the cursor is before
+    /// its end, on every pass. An absolute seek at or after the end begins a
+    /// linear pass; a cursor before the start plays into the loop and wraps.
+    /// A loop edited behind a cursor that already wrapped likewise lets
+    /// playback continue linearly instead of jumping into the new region.
     /// This query does not change loop settings or introduce transport state.
     pub(crate) fn active_loop_region(&self) -> Option<hex_project::LoopRegion> {
-        self.active_loop_region_at(self.arrangement_frame, self.arrangement_loop_pass)
+        self.active_loop_region_at(self.arrangement_frame)
     }
 
-    fn active_loop_region_at(&self, frame: u64, loop_pass: u64) -> Option<hex_project::LoopRegion> {
-        self.loop_region()
-            .filter(|region| loop_pass > 0 || frame < region.end())
+    fn active_loop_region_at(&self, frame: u64) -> Option<hex_project::LoopRegion> {
+        self.loop_region().filter(|region| frame < region.end())
     }
 
     /// Exact immutable graph retained by this runtime.
@@ -2081,13 +2082,17 @@ impl SessionPlayback {
     /// Read one route without allocation. `None` means the index is out of range.
     pub fn route_status(&self, index: usize) -> Option<SessionRouteStatus> {
         let route = self.routes.get(index)?;
-        let (owner, active_origin) = match route.owner {
-            RouteOwner::Arrangement => (SessionPlaybackOwner::Arrangement, None),
+        let (owner, active_origin, audio_launch_frame) = match route.owner {
+            RouteOwner::Arrangement => (SessionPlaybackOwner::Arrangement, None, None),
             RouteOwner::Session { clip, origin } => {
-                (SessionPlaybackOwner::Session { clip }, Some(origin))
+                (SessionPlaybackOwner::Session { clip }, Some(origin), None)
             }
-            RouteOwner::SessionAudio { clip, .. } => (SessionPlaybackOwner::Session { clip }, None),
-            RouteOwner::Silence => (SessionPlaybackOwner::Silence, None),
+            RouteOwner::SessionAudio { clip, launch_frame } => (
+                SessionPlaybackOwner::Session { clip },
+                None,
+                Some(launch_frame),
+            ),
+            RouteOwner::Silence => (SessionPlaybackOwner::Silence, None, None),
         };
         let pending = route.pending.map(|pending| SessionPendingRouteStatus {
             target: match pending.target {
@@ -2102,6 +2107,7 @@ impl SessionPlayback {
             track: route.id,
             owner,
             active_origin,
+            audio_launch_frame,
             pending,
         })
     }
@@ -2135,7 +2141,7 @@ impl SessionPlayback {
         // than accepting a graph that will fail at its first render/launch.
         base_timing_for(
             self.revision.session(),
-            self.periodic_tempo_at(arrangement_frame, 0),
+            self.periodic_tempo_at(arrangement_frame),
         )
         .frame_to_beat(performance_frame)
         .map_err(|_| SessionPlaybackError::TempoConversion)?;
@@ -2281,6 +2287,27 @@ impl SessionPlayback {
         self.inherit_state(previous)
     }
 
+    /// The live publication handoff: as `try_inherit_state_from`, except an
+    /// unproven mutable chase restarts audio at the cursor instead of
+    /// refusing (Pulse #3770). Allocation-free; nothing is committed before
+    /// the strict planner's refusal.
+    pub fn try_inherit_state_live_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if self.midi_capture_active()
+            || previous.midi_capture_active()
+            || self.linear_arrangement_export
+            || previous.linear_arrangement_export
+            || self.current_sampler_console
+            || previous.current_sampler_console
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.require_fresh_candidate()?;
+        self.inherit_state_live(previous, None)
+    }
+
     pub(crate) fn inherit_candidate_groups(
         &mut self,
         previous: &mut Self,
@@ -2296,7 +2323,7 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.require_fresh_candidate()?;
-        self.inherit_state_with_groups(previous, Some(groups))
+        self.inherit_state_live(previous, Some(groups))
     }
 
     pub(super) fn require_fresh_candidate(&self) -> Result<(), SessionPlaybackError> {

@@ -238,10 +238,7 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
                             sample_rate_hz: target.sample_rate_hz,
                             applied_revision: target.activation_floor,
                         },
-                        frame: hex_audio::spectrum::SpectrumFrame {
-                            sample_rate_hz: target.sample_rate_hz,
-                            bins_dbfs: [-120.0; hex_audio::spectrum::SPECTRUM_BANDS],
-                        },
+                        frame: hex_audio::spectrum::SpectrumFrame::silent(target.sample_rate_hz),
                         captured_at: std::time::Instant::now(),
                         processed_at: std::time::Instant::now(),
                     },

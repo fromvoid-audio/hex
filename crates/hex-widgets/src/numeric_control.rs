@@ -104,7 +104,6 @@ pub enum NumericControlPresentation {
     LabeledSlider,
     FilledSlider,
     VerticalSlider,
-    DeviceMeters,
     /// Input-level well with a ceiling triangle and editable numeric readout.
     MeterFader,
 }
@@ -119,9 +118,7 @@ impl NumericControlPresentation {
             | Self::CompactSlider
             | Self::LabeledSlider
             | Self::FilledSlider => NumericControlKind::HorizontalSlider,
-            Self::VerticalSlider | Self::DeviceMeters | Self::MeterFader => {
-                NumericControlKind::VerticalSlider
-            }
+            Self::VerticalSlider | Self::MeterFader => NumericControlKind::VerticalSlider,
         }
     }
     fn appearance(self) -> NumericControlAppearance {
@@ -136,7 +133,6 @@ impl NumericControlPresentation {
             Self::CompactSlider => NumericControlAppearance::CompactSlider,
             Self::LabeledSlider => NumericControlAppearance::LabeledSlider,
             Self::FilledSlider => NumericControlAppearance::FilledSlider,
-            Self::DeviceMeters => NumericControlAppearance::DeviceMeters,
             Self::MeterFader => NumericControlAppearance::MeterFader,
         }
     }
@@ -168,7 +164,6 @@ enum NumericControlAppearance {
     /// One filled mixer field with centered editable text and upward scrubbing.
     /// Bipolar specs fill from the marked center; other scales fill from the left.
     FilledSlider,
-    DeviceMeters,
     MeterFader,
 }
 
@@ -603,8 +598,7 @@ impl NumericControl {
         if !self.availability.interactive() || event.button != MouseButton::Left {
             return;
         }
-        if (matches!(self.kind, NumericControlKind::Knob)
-            || self.appearance == NumericControlAppearance::DeviceMeters)
+        if matches!(self.kind, NumericControlKind::Knob)
             && matches!(target, PressTarget::Control)
             && event.click_count >= 2
         {
@@ -1606,24 +1600,6 @@ impl gpui::Render for NumericControl {
             crate::MICRO_DIAL_WIDTH
         };
         let mut root = match (self.kind, self.appearance) {
-            (_, NumericControlAppearance::DeviceMeters) => div()
-                .id(self.id.clone())
-                .w(px(10.0))
-                .h(px(self.meter_readout.height))
-                .flex()
-                .py(px(4.0))
-                .track_focus(&self.focus)
-                .key_context(key_context)
-                .child(
-                    crate::device_meters::well(
-                        self.id.clone(),
-                        self.meter_readout.index,
-                        &self.meter_readout,
-                        style,
-                    )
-                    .cursor(gpui::CursorStyle::ResizeUpDown)
-                    .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx)),
-                ),
             (
                 NumericControlKind::Knob,
                 NumericControlAppearance::MicroDial | NumericControlAppearance::WideMicroDial,

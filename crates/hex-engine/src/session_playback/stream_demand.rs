@@ -67,7 +67,7 @@ impl SessionPlayback {
             visit,
             window: None,
         };
-        self.inherit_state_planned(previous, None, Some(&mut demand))?;
+        self.inherit_state_planned(previous, None, Some(&mut demand), true)?;
         demand
             .window
             .ok_or(SessionPlaybackError::ArithmeticOverflow)
@@ -244,7 +244,7 @@ impl SessionPlayback {
         if window.frames == 0 {
             return Ok(window);
         }
-        let region = self.active_loop_region_at(arrangement_frame, loop_pass);
+        let region = self.active_loop_region_at(arrangement_frame);
         if let Some(region) = region {
             window.arrangement_frame =
                 render::normalize_loop_cursor(window.arrangement_frame, region, loop_pass)
