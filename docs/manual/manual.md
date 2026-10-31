@@ -411,7 +411,7 @@ and are retained when saving, reopening and rendering the project. clicking a
 control without editing it leaves automation running.
 
 supported device controls are utility's parameters, saturator's four parameters,
-and auto pan's amount, rate, phase and waveform. native effects on tracks, main
+auto pan's amount, rate, phase and waveform, and rattle's drive. native effects on tracks, main
 and returns also offer host **input gain** and **output gain** lanes. instrument
 and source-owned effect lanes, other device controls and vst lanes are not yet
 available. recording device movements and shared modulator assignments are not
@@ -726,6 +726,13 @@ to choose the input band; the graph shows this filter response. **drive** adds
 distortion, **tone** adjusts its brightness, and **dynamics** restores more of the
 input's level changes as it increases. **dry/wet** blends the original signal with
 the processed sound. the effect is available on track, return and main chains.
+
+rattle is a one-knob drive. at **drive** 0 it passes audio unchanged; raising
+**drive** blends in a progressively harder, grittier and noisier saturation whose
+level is compensated for typical programme, so it gets dirtier rather than much
+louder. rattle processes at twice the sample rate and reports 11 samples of
+latency, which hex compensates. drive changes glide over about 20 ms and can be
+automated. bypass passes audio unchanged while keeping its history warm.
 
 in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
