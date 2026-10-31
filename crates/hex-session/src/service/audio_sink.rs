@@ -519,6 +519,9 @@ pub(super) struct WorkerEvents {
     startup_error: Option<String>,
 }
 impl WorkerEvents {
+    pub(super) fn legacy_reader_limit(&self) -> usize {
+        self.diagnostics.legacy_reader_limit()
+    }
     pub(super) fn begin_diagnostics(
         &mut self,
         queued: &QueuedRequest,
