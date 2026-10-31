@@ -225,7 +225,7 @@ fn section_edit_benchmark() {
     fs::create_dir_all(&directory).unwrap();
     let copy = directory.join("project.hex");
     let mut text = fs::read_to_string(&original).unwrap();
-    if let Some(remap) = std::env::var("HEX_SECTION_BENCH_MEDIA_REMAP").ok() {
+    if let Ok(remap) = std::env::var("HEX_SECTION_BENCH_MEDIA_REMAP") {
         let (from, to) = remap.split_once('=').expect("remap is FROM=TO");
         text = text.replace(&format!("\"{from}"), &format!("\"{to}"));
     }

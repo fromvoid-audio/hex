@@ -1940,7 +1940,7 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
         cancel: Option<&AtomicBool>,
-        mut phases: Option<&mut super::diagnostics::SectionPhases>,
+        phases: Option<&mut super::diagnostics::SectionPhases>,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
         let started = Instant::now();
         let mut prepare_time = Duration::ZERO;
@@ -2096,7 +2096,7 @@ impl Session {
         };
         let finish_started = Instant::now();
         sink.finish_resident_effect_edit(context, result.is_ok());
-        if let Some(phases) = phases.as_deref_mut() {
+        if let Some(phases) = phases {
             phases.finish = finish_started.elapsed();
             phases.prepare = prepare_time;
             phases.publish = publish_time;
