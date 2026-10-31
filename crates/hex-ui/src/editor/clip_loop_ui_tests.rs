@@ -99,18 +99,12 @@ fn selector(f: &Fixture, kind: &str) -> &'static str {
         .into_boxed_str(),
     )
 }
-// A hovered clip's lower-right fade handle covers the outer corner below its
-// top band (Pulse #3736); grab loop controls in that exposed band.
-fn grab(bounds: gpui::Bounds<gpui::Pixels>) -> gpui::Point<gpui::Pixels> {
-    point(bounds.center().x, bounds.top() + px(2.0))
-}
-
 fn drag(f: &mut Fixture, kind: &str, dx: f32, modifiers: Modifiers) -> gpui::Point<gpui::Pixels> {
-    let down = grab(
-        f.visual
-            .debug_bounds(selector(f, kind))
-            .expect("loop handle"),
-    );
+    let down = f
+        .visual
+        .debug_bounds(selector(f, kind))
+        .expect("loop handle")
+        .center();
     f.visual
         .simulate_mouse_down(down, MouseButton::Left, modifiers);
     f.visual.simulate_mouse_move(
@@ -188,27 +182,39 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             )
             .into_boxed_str(),
         );
+        // Edge trim lives in the header rail; the loop corner keeps the
+        // bottom of the same edge, with ordinary body between them.
         let trim = f.visual.debug_bounds(trim_selector).unwrap();
         assert!((handle.right() - trim.right()).abs() <= px(1.0));
-        assert!((handle.bottom() - trim.bottom()).abs() <= px(1.0));
-        assert!(handle.size.height < trim.size.height);
+        assert!(trim.bottom() < handle.top());
         f.visual
-            .simulate_mouse_move(grab(handle), None, Modifiers::default());
+            .simulate_mouse_move(handle.center(), None, Modifiers::default());
         f.visual.run_until_parked();
         assert_eq!(
             f.visual.rendered_cursor_style(),
             Some(gpui::CursorStyle::Loop)
         );
+        f.visual
+            .simulate_mouse_move(trim.center(), None, Modifiers::default());
+        f.visual.run_until_parked();
+        // A covering time selection owns the header rail (it moves the range).
+        if !selected_range {
+            assert_eq!(
+                f.visual.rendered_cursor_style(),
+                Some(gpui::CursorStyle::ResizeRightBracket),
+                "header right edge trims"
+            );
+        }
         f.visual.simulate_mouse_move(
             point(handle.center().x, handle.top() - px(3.0)),
             None,
             Modifiers::default(),
         );
         f.visual.run_until_parked();
-        assert_eq!(
+        assert_ne!(
             f.visual.rendered_cursor_style(),
             Some(gpui::CursorStyle::ResizeRightBracket),
-            "upper right edge still trims"
+            "the lower right edge above the loop corner no longer trims"
         );
         let modifiers = Modifiers {
             shift: !selected_range,
@@ -707,5 +713,186 @@ fn repeat_boundary_cursor_retires_with_focus_and_window_loss(cx: &mut TestAppCon
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });
         }
+    }
+}
+
+#[gpui::test]
+fn edge_trim_starts_only_in_the_header_and_loop_corner_and_fade_handle_stay_apart(
+    cx: &mut TestAppContext,
+) {
+    let mut f = fixture(cx, false);
+    let id = f.clip.value();
+    let bounds = |f: &mut Fixture, name: String| {
+        f.visual.run_until_parked();
+        f.visual
+            .debug_bounds(Box::leak(name.into_boxed_str()))
+            .unwrap_or_else(|| panic!("painted {id}"))
+    };
+    let clip = bounds(&mut f, format!("clip-visual-{id}"));
+    let trim = bounds(&mut f, format!("clip-trim-right-{id}"));
+    let outer = f.visual.debug_bounds(selector(&f, "outer")).unwrap();
+    let header = edge_trim_height(f32::from(clip.size.height));
+    assert!(
+        trim.bottom() <= clip.top() + px(header + 1.0),
+        "trim strip is the header rail"
+    );
+    // Hover reveals the f handle set; the fade-out corner sits inside the loop corner.
+    f.visual
+        .simulate_mouse_move(clip.center(), None, Modifiers::default());
+    let fade = bounds(&mut f, format!("fade-out-bottom-{id}"));
+    assert!(!fade.intersects(&outer), "fade {fade:?} loop {outer:?}");
+    let cursor_at = |f: &mut Fixture, at| {
+        f.visual.simulate_mouse_move(at, None, Modifiers::default());
+        f.visual.run_until_parked();
+        f.visual.rendered_cursor_style()
+    };
+    assert_eq!(
+        cursor_at(&mut f, outer.center()),
+        Some(gpui::CursorStyle::Loop)
+    );
+    assert_eq!(
+        cursor_at(&mut f, trim.center()),
+        Some(gpui::CursorStyle::ResizeRightBracket)
+    );
+    let lower_edge = point(trim.center().x, outer.top() - px(4.0));
+    assert_ne!(
+        cursor_at(&mut f, lower_edge),
+        Some(gpui::CursorStyle::ResizeRightBracket)
+    );
+    let press = |f: &mut Fixture, at: gpui::Point<gpui::Pixels>| {
+        f.visual
+            .simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        f.visual.simulate_mouse_move(
+            point(at.x - px(12.0), at.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        f.visual.run_until_parked();
+        let state = f.editor.read_with(&f.visual, |v, _| {
+            (
+                v.active_trim_drag.as_ref().map(|d| d.loop_kind),
+                v.active_fade_drag.is_some(),
+            )
+        });
+        f.visual.simulate_keystrokes("escape");
+        f.visual
+            .simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        f.visual.run_until_parked();
+        state
+    };
+    assert_eq!(
+        press(&mut f, trim.center()),
+        (Some(None), false),
+        "header edge trims"
+    );
+    assert_eq!(
+        press(&mut f, lower_edge).0,
+        None,
+        "lower edge is body, not trim"
+    );
+    assert_eq!(
+        press(&mut f, outer.center()),
+        (Some(Some(LoopHandleKind::Outer)), false),
+        "loop corner keeps its own hit box"
+    );
+    f.visual
+        .simulate_mouse_move(clip.center(), None, Modifiers::default());
+    let fade = bounds(&mut f, format!("fade-out-bottom-{id}"));
+    assert_eq!(
+        press(&mut f, fade.center()),
+        (None, true),
+        "fade handle drags"
+    );
+}
+
+#[gpui::test]
+fn warped_looping_clip_right_edge_extends_by_repeats_instead_of_cancelling(
+    cx: &mut TestAppContext,
+) {
+    // Reported: warp + looping from the clip panel, then dragging the right
+    // edge submitted nothing. A warped trim cannot grow past its retained
+    // audio, so the edge of a repeating clip must use the outer repeat.
+    for dx in [40.0, 250.0] {
+        let mut f = fixture(cx, false);
+        let clip = f.clip;
+        f.editor.update(&mut f.visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            let settings = hex_project::default_audio_warp(
+                state.project.clip(clip).unwrap(),
+                state.project.tempo_map(),
+                hex_project::WarpMode::RePitch,
+            )
+            .unwrap();
+            assert!(v.enqueue(Request::Edit(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings)
+            })));
+        });
+        pump(&f.editor, &mut f.visual);
+        f.editor.update(&mut f.visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::SetClipLooping {
+                clip,
+                looping: true
+            })));
+        });
+        pump(&f.editor, &mut f.visual);
+        f.visual.run_until_parked();
+        let (end, rate) = f.editor.read_with(&f.visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            let clip = state.project.clip(clip).unwrap();
+            (clip.start() + clip.duration(), state.project.sample_rate())
+        });
+        let edge = f
+            .visual
+            .debug_bounds(Box::leak(
+                format!("clip-trim-right-{}", clip.value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        f.visual
+            .simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
+        f.visual.simulate_mouse_move(
+            point(edge.x + px(12.0), edge.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        f.visual.run_until_parked();
+        let target = point(edge.x + px(dx), edge.y);
+        f.visual
+            .simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        f.visual.run_until_parked();
+        f.editor.read_with(&f.visual, |v, _| {
+            let drag = v.active_trim_drag.as_ref().expect("held edge");
+            let preview = drag.preview.borrow();
+            let preview = preview
+                .as_ref()
+                .expect("a growing repeat preview, not none");
+            assert!(preview.clip.start() + preview.clip.duration() > end);
+        });
+        f.visual
+            .simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        f.visual.run_until_parked();
+        let edit = f
+            .editor
+            .read_with(&f.visual, |v, _| v.last_enqueued_edit.clone());
+        let Some(Command::ResizeAudioClipView {
+            clip: edited,
+            operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame },
+        }) = edit
+        else {
+            panic!("expected one outer repeat edit, got {edit:?}")
+        };
+        assert_eq!(edited, clip);
+        assert!(
+            project_frame > end + u64::from(rate) / 100,
+            "{project_frame} vs {end}"
+        );
+        pump(&f.editor, &mut f.visual);
+        f.editor.read_with(&f.visual, |v, _| {
+            let state = v.state.as_ref().unwrap();
+            let canonical = state.project.clip(clip).unwrap();
+            assert_eq!(canonical.start() + canonical.duration(), project_frame);
+            assert!(loop_handles::audio_repeats(canonical));
+        });
     }
 }

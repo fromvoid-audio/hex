@@ -127,8 +127,9 @@ fn wheel_accumulates_precise_motion_and_creation_hits_after_zoom(cx: &mut TestAp
     visual.run_until_parked();
     let viewport = editor.read_with(&visual, |v, _| (v.piano_beat_start, v.piano_beat_span));
     double_down(&mut visual, at(0.25), Modifiers::default());
-    visual.simulate_mouse_move(at(0.5), Some(MouseButton::Left), Modifiers::default());
-    visual.simulate_mouse_up(at(0.5), MouseButton::Left, Modifiers::default());
+    // Held cmd snaps the new note's end; it is free by default.
+    visual.simulate_mouse_move(at(0.5), Some(MouseButton::Left), Modifiers::command());
+    visual.simulate_mouse_up(at(0.5), MouseButton::Left, Modifiers::command());
     pump(&editor, &mut visual);
     let (note_center, after) = editor.read_with(&visual, |v, _| {
         assert_eq!((v.piano_beat_start, v.piano_beat_span), viewport);

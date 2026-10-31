@@ -27,11 +27,9 @@ fn assert_visible(
             "time selection never reduces to a note"
         );
     });
-    let color: gpui::Background = gpui::Hsla::from(gpui::rgb(crate::theme::color(
-        crate::theme::PaletteRole::Secondary,
-    )))
-    .opacity(crate::theme::TIME_SELECTION_OPACITY)
-    .into();
+    let color: gpui::Background = gpui::Hsla::from(gpui::rgb(crate::theme::time_selection_fill()))
+        .opacity(crate::theme::TIME_SELECTION_OPACITY)
+        .into();
     let scale = visual.update(|window, _| window.scale_factor());
     for selector in ["midi-source-ruler", "midi-note-roll"] {
         let bounds = content_bounds(visual, selector);

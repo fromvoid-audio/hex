@@ -1076,3 +1076,83 @@ fn history_refused_while_edit_publication_pending_keeps_both_stacks_and_pcm() {
     (applied, _) = h.applied(applied);
     pcm_at_cursor(&mut h, &redone, &mut applied, &mut request_id, 0.125);
 }
+
+/// Field report (Pulse #3770): editing a sampler note sounding under the
+/// cursor refused with `MutableInstrumentChase`, leaving audio on the old
+/// revision. The live publication now restarts audio at the cursor, so the
+/// edit and later edits apply, paused or playing, without Stop.
+#[test]
+fn editing_a_sounding_sampler_note_applies_while_paused_or_playing() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    for paused in [true, false] {
+        let file = Files::new();
+        let mut h = ResidentHarness::with_frame_limit(32_768);
+        assert!(h.next().error.is_none());
+        let (mut applied, _) = h.applied(0);
+        let added = h.run(Request::Edit(Command::AddMidiTrack {
+            name: "sampler".into(),
+        }));
+        let Some(Created::Track(track)) = added.created else {
+            panic!("track");
+        };
+        (applied, _) = h.applied(applied);
+        h.run(Request::LoadFirstSampler {
+            request_id: 1,
+            project_generation: 0,
+            revision: added.state.revision,
+            track,
+            empty_sampler: None,
+            path: file.wav(48_000, 8192),
+            cancel: Arc::new(AtomicBool::new(false)),
+        });
+        (applied, _) = h.applied(applied);
+        let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        }));
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("clip");
+        };
+        (applied, _) = h.applied(applied);
+        let with_note = h.run(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(4).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        }));
+        let note = with_note.state.project.track(track).unwrap().midi_clips()[0].notes()[0].id();
+        (applied, _) = h.applied(applied);
+        let control = |h: &mut ResidentHarness, command| {
+            h.audio.as_mut().unwrap().control.command(command).unwrap();
+        };
+        control(&mut h, hex_engine::playback::PlaybackCommand::Play);
+        assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
+        if paused {
+            control(&mut h, hex_engine::playback::PlaybackCommand::Pause);
+            h.render();
+        }
+        h.run(Request::Edit(Command::UpdateMidiNote {
+            note,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(4).unwrap(),
+            pitch: 64,
+            channel: 0,
+            velocity: 127,
+        }));
+        (applied, _) = h.applied(applied);
+        h.run(Request::Edit(Command::MasterGain { gain: 0.5 }));
+        h.applied(applied);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert_eq!(status.playing.load(Acquire), !paused, "paused={paused}");
+        if paused {
+            control(&mut h, hex_engine::playback::PlaybackCommand::Play);
+        }
+        assert!(
+            (0..4).any(|_| h.render().iter().flatten().any(|sample| *sample != 0.0)),
+            "edited note sounds after the restart; paused={paused}"
+        );
+    }
+}
