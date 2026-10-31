@@ -418,7 +418,7 @@ pub(super) fn render_return_effect(
             cx,
         ))
         .child(rendered)
-        .child(super::device_meter::render(view, device))
+        .child(super::device_meter::render(view, device, cx))
 }
 
 fn render_return_add_menu(

@@ -1146,6 +1146,7 @@ impl Render for EditorView {
                     && super::device_panel::finalize_controls(view, cx)
                 {
                     view.cancel_duplicate_chain();
+                    view.cancel_queued_section();
                     view.enqueue_device_barrier(SessionRequest::Undo);
                 }
                 cx.notify();
@@ -1155,6 +1156,7 @@ impl Render for EditorView {
                     && super::device_panel::finalize_controls(view, cx)
                 {
                     view.cancel_duplicate_chain();
+                    view.cancel_queued_section();
                     view.enqueue_device_barrier(SessionRequest::Redo);
                 }
                 cx.notify();

@@ -430,5 +430,50 @@ pub fn search_folders(
     outcome
 }
 
+/// Checks candidates proposed by another source, such as the browser's sample
+/// catalog, with the same name and frame/rate rules as [`search_folders`]. The
+/// outcome feeds the panel exactly like a folder search, so there is no second
+/// matcher. Unknown assets, and paths whose file name differs from the missing
+/// file, are ignored; at most `max_candidates` paths are checked per item.
+/// `scanned` counts checked paths. Read-only.
+pub fn check_candidate_lists(
+    missing: &[MissingMedia],
+    lists: &BTreeMap<AssetId, Vec<PathBuf>>,
+    max_candidates: usize,
+    cancel: &AtomicBool,
+) -> SearchOutcome {
+    let mut outcome = SearchOutcome::default();
+    for item in missing {
+        let Some(paths) = lists.get(&item.asset) else {
+            continue;
+        };
+        let wanted = item.file_name().to_ascii_lowercase();
+        let mut checked = Vec::new();
+        for path in paths
+            .iter()
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().to_ascii_lowercase() == wanted)
+            })
+            .take(max_candidates)
+        {
+            if cancel.load(Ordering::Relaxed) {
+                outcome.stopped = Some(SearchStop::Cancelled);
+                return outcome;
+            }
+            outcome.scanned += 1;
+            let fit = check_candidate(item, path);
+            if matches!(fit, CandidateFit::Unusable(_)) {
+                outcome.unreadable += 1;
+            }
+            checked.push((path.clone(), fit));
+        }
+        if !checked.is_empty() {
+            outcome.candidates.insert(item.asset, checked);
+        }
+    }
+    outcome
+}
+
 #[cfg(test)]
 mod tests;

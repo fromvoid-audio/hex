@@ -450,6 +450,45 @@ impl AudioClipEdit {
             residual(end, tempo.beat_to_frame(BeatTime::from_raw(beat_end))?)?;
         Ok(())
     }
+    /// Retain a structurally moved musical span, keeping `candidate` when its
+    /// start and end both stay within the one-sample residual of their beats.
+    /// Otherwise the span moves (never resizes) to the allowed start nearest the
+    /// candidate: frame-shifted fragments carry one rounding step per edit, and
+    /// a second step must not refuse the edit. Returns the start.
+    pub(crate) fn retain_moved_frame_span(
+        &mut self,
+        candidate: u64,
+        duration: u64,
+        tempo: &TempoMap,
+    ) -> Result<u64, Invalid> {
+        let Some(beat) = self.live_musical_start() else {
+            return Ok(candidate);
+        };
+        let length = self
+            .placement
+            .map_or(self.view_end - self.view_start, |p| p.outer_length.length());
+        let beat_end = beat
+            .raw()
+            .checked_add(length)
+            .ok_or(Invalid("audio placement beat end overflow"))?;
+        let start = i128::from(tempo.beat_to_frame(beat)?);
+        let end = i128::from(tempo.beat_to_frame(BeatTime::from_raw(beat_end))?);
+        let duration_i = i128::from(duration);
+        let low = (start - 1).max(end - duration_i - 1).max(0);
+        let high = (start + 1).min(end - duration_i + 1);
+        if low > high {
+            return Err(Invalid(
+                "audio structural placement exceeds one-sample rounding residual",
+            ));
+        }
+        let placed = u64::try_from(i128::from(candidate).clamp(low, high))
+            .map_err(|_| Invalid("audio placement frame overflow"))?;
+        let placed_end = placed
+            .checked_add(duration)
+            .ok_or(Invalid("audio placement frame overflow"))?;
+        self.retain_frame_bounds(placed, placed_end, tempo)?;
+        Ok(placed)
+    }
     pub(crate) fn freeze_processing(&mut self, tempo: Arc<TempoMap>) -> Result<(), Invalid> {
         if self.live_musical_start().is_some() && self.processing_projection.is_none() {
             self.processing_projection = Some(Arc::new(AudioProcessingProjection {
