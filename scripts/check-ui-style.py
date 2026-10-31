@@ -138,8 +138,8 @@ widgets = (
     'gate_column(',
     # Device-chain navigator is a typed view component; labels use theme::text.
     'super::device_panel::bottom_bar(', 'overview)',
-    # Shared host meter strip supplies lowercase tooltip text through theme::text.
-    'gain_meters::render(', 'super::gain_meters::render(',
+    # The passive post-device stereo meter supplies lowercase tooltip text through theme::text.
+    'device_meter::render(', 'super::device_meter::render(', 'hex_widgets::stereo_peak_meter(',
     # Typed routing/recording components normalize their labels at the boundary.
     'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
     # Retained recording controls route all captions through theme::text internally.

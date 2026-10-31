@@ -62,7 +62,7 @@ fn gate_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut Te
             .expect("gate body");
         assert_eq!(
             frame.size.width,
-            px(gate_panel::FRAME_WIDTH + gain_meters::WIDTH)
+            px(gate_panel::FRAME_WIDTH + device_meter::WIDTH)
         );
         assert_eq!(frame.size.height, px(DEVICE_FRAME_HEIGHT));
         for parameter in 1..=6 {
