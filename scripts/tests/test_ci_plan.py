@@ -820,6 +820,74 @@ class ScopeTests(unittest.TestCase):
             self.assertEqual(result["status"], "passed")
 
 
+class TestOnlyScopeTests(unittest.TestCase):
+    FILES = {
+        "crates/core/src/lib.rs": ('mod prod;\n#[cfg(test)]\nmod a_tests;\n'
+                                   '#[cfg(any(test, feature = "x"))]\npub mod support;\n'
+                                   '#[cfg(test)]\n#[path = "custom/p.rs"]\nmod p;\n'
+                                   '#[cfg(all(test, not(feature = "x")))]\nmod negated;\n'
+                                   '#[cfg(all(test, feature = "x"))]\nmod featured;\n'
+                                   'mod outer {\n    #[cfg(test)]\n    mod inline_tests;\n}\n'),
+        "crates/core/src/prod.rs": "#[cfg(test)]\nmod t;\npub fn f() {}\n",
+        "crates/core/src/prod/t.rs": "// test\n",
+        "crates/core/src/a_tests.rs": "mod helper;\n",
+        "crates/core/src/a_tests/helper.rs": "// helper\n",
+        "crates/core/src/support.rs": "// support\n",
+        "crates/core/src/custom/p.rs": "// path test\n",
+        "crates/core/src/negated.rs": "// negated\n",
+        "crates/core/src/featured.rs": "// featured\n",
+        "crates/core/src/outer/inline_tests.rs": "// inline\n",
+        "crates/core/tests/integration.rs": "// integration\n",
+        "crates/ui/src/lib.rs": "pub fn g() {}\n",
+    }
+
+    def write(self, root):
+        for name, text in self.FILES.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(text)
+
+    def test_only_cfg_test_declarations_and_owner_targets_are_owner_only(self):
+        inventory = BaseAdvanceCarryTests.INVENTORY
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write(root)
+            owner = lambda name: plan.test_only_owner(root, name, inventory)
+            for name in ("src/a_tests.rs", "src/a_tests/helper.rs", "src/prod/t.rs", "src/custom/p.rs",
+                         "src/featured.rs", "tests/integration.rs"):
+                with self.subTest(name=name):
+                    self.assertEqual(owner("crates/core/" + name), "core")
+            for name in ("src/lib.rs", "src/prod.rs", "src/support.rs", "src/negated.rs",
+                         "src/outer/inline_tests.rs", "src/missing.rs", "build.rs"):
+                with self.subTest(name=name):
+                    self.assertIsNone(owner("crates/core/" + name))
+            (root / "crates/core/src/prod.rs").write_text('include!("a_tests/helper.rs");\n')
+            self.assertIsNone(owner("crates/core/src/a_tests.rs"))
+
+    def test_resolved_plan_tests_only_owners_and_mixed_inputs_widen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git = BaseAdvanceCarryTests.repository(self, root)
+            self.write(root)
+            git("add", ".")
+            git("commit", "-qm", "fixture")
+            base = git("rev-parse", "HEAD")
+            metadata = BaseAdvanceCarryTests.metadata(self, root)
+            (root / "crates/core/src/a_tests.rs").write_text("mod helper;\n// changed\n")
+            git("commit", "-qam", "test only")
+            resolved = plan.resolve(root, profile="merge", base=base, source=git("rev-parse", "HEAD"),
+                                    metadata=metadata)
+            self.assertEqual((resolved["scope"], resolved["affected_packages"]), ("rust", ["core"]))
+            self.assertTrue(any("test-only" in r and "ui" in r for r in resolved["reasons"]))
+            steps = [s.argv for s in ci.planned_steps(resolved)]
+            self.assertIn(("cargo", "test", "-p", "core", "--locked"), steps)
+            self.assertIn(("cargo", "clippy", "-p", "core", "--all-targets", "--locked", "--", "-D", "warnings"), steps)
+            (root / "crates/core/src/prod.rs").write_text("#[cfg(test)]\nmod t;\npub fn f() -> u8 { 1 }\n")
+            git("commit", "-qam", "production too")
+            mixed = plan.resolve(root, profile="merge", base=base, source=git("rev-parse", "HEAD"),
+                                 metadata=metadata)
+            self.assertEqual(mixed["affected_packages"], ["core", "ui"])
+
+
 class SingleRunFeatureTests(unittest.TestCase):
     def live(self):
         root = SCRIPTS.parent

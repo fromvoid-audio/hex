@@ -116,6 +116,17 @@ plan. A new consumer or macro/include input widens to complete affected-package
 tests; missing required consumers/targets refuse. Other device modules currently
 retain affected-package coverage until their runtime relationships are reviewed.
 
+Changes that only touch code other packages cannot observe test the owning
+packages only: integration tests, benches and examples, and `src/` files whose
+every `mod` declaration (resolving `#[path]`) is `#[cfg(test)]` or
+`#[cfg(all(test, …))]`, directly or through a parent test module. `any(`/`not(`
+conditions, inline-module nesting, `include!(` in the package, deleted files and
+any production path in the same change keep the consumer closure.
+
+Packages whose only extra feature is reviewed as additive for tests (see
+`ADDITIVE_TEST_FEATURES` in `scripts/ci_plan.py`) run their tests once with the
+feature and keep a separate doctest run; default-feature Clippy still applies.
+
 Package plans retain default tests/lints, applicable allocation/UI/export feature
 configurations, gallery and desktop build checks, and independently declared
 additional features. Feature combinations need reviewed contract rules; individual
