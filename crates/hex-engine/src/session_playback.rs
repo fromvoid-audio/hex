@@ -174,10 +174,10 @@ impl SessionPlaybackError {
             Self::ReleaseBankFull => "session playback outgoing release bank is full",
             Self::DeviceRuntime => "session playback native device runtime is unavailable",
             Self::LatencyLayoutChanged => {
-                "latency layout changed · pause or stop transport to apply this revision"
+                "latency layout could not change live · previous audio continues"
             }
             Self::SourceHistoryUnavailable => {
-                "source history cannot transfer · stop transport before applying this revision"
+                "source history cannot transfer live · previous audio continues"
             }
             Self::ForeignTailSourceBusy => {
                 "native effect endpoint is still owned by an outgoing tail"
@@ -644,7 +644,9 @@ impl SessionPlayback {
                     .filter_map(|keyboard| keyboard.resources.as_ref()),
             )
     }
-    pub(crate) fn computer_keyboard_latency_supported(&self) -> bool {
+    /// Keyboard monitoring plays through PDC at any latency. Recorded MIDI
+    /// stamps are not yet latency-corrected, so capture still requires none.
+    pub(crate) fn midi_capture_latency_supported(&self) -> bool {
         self.compensation
             .as_ref()
             .is_none_or(|runtime| runtime.graph.plan.max_latency_frames() == 0)

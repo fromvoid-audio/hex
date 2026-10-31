@@ -99,7 +99,8 @@ track activator setting.
 
 in arrange, select a track or clip before editing it. drag a clip to move it and
 drag its left or right edge within the clip header (the top third) to adjust its
-extent; lower down, the edge belongs to the clip body, fades and the loop corner.
+extent; hold **shift** to stretch instead. lower down, the edge belongs to the clip
+body and its fade handles.
 work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
@@ -189,8 +190,9 @@ before or after another section, or beside the source. changing option during th
 switches between moving and copying. the source stays in place when copying, and
 one undo restores the entire operation.
 
-some section edits involving sampler midi require stopped playback. if hex asks,
-stop playback and repeat the edit; the refused edit leaves the project and history unchanged.
+section edits apply while playing. when an edit changes the tempo, a sampler's held
+notes or a device's latency, audio briefly restarts at the playhead: effect tails
+cut and sounding notes start again, and playback keeps running.
 
 hold **command** before or during a drag to adjust only the marker; the music stays
 in place. command-resize an edge to trim or remove overlapping section markers, or
@@ -233,11 +235,14 @@ a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
 corner and stays visible after release.
 
-with the arrange timeline focused, **command+b** keeps the originals and inserts
+with the arrange timeline focused, **b** keeps the originals and inserts
 bounced audio on a new track below
-each source track. a nonempty time selection takes precedence over selected clips.
+each source track. **command+b** does the same and then deactivates the bounced
+source clips or time selection, exactly as **c** or **0** would; one undo restores
+both the bounce and the sources' activation. a nonempty time selection takes precedence over selected clips.
 each selected track produces one audio clip spanning its selected clips and gaps.
-clip bounces include instrument and effect release tails. a time selection renders
+clip bounces render instrument and effect release tails, but the new clip keeps the
+original clip's start and length; drag its right edge out to reveal the tail. a time selection renders
 exactly its start-to-end interval, retaining earlier state needed for sound inside
 that interval. press **escape** to cancel; one undo restores the entire operation.
 
@@ -250,7 +255,7 @@ and main processing remain live. only the track-header **bounce in place** actio
 removes the track's devices. it covers the entire track, regardless of a smaller
 clip or time selection. for clip and time-selection editing, use **g** to group
 material instead; grouping retains its existing source and processing behavior.
-**b** has no arrange bounce action. routed inputs, verified streaming and nonzero-latency device
+in the focused midi editor, **b** keeps toggling draw mode. routed inputs, verified streaming and nonzero-latency device
 paths currently refuse. clip bounces keep up to 30 seconds of release after the
 selected span. if the tail is still sounding then, hex cuts it at that limit and
 finishes the bounce. a noise floor at or below -80 dbfs peak in both channels
@@ -423,13 +428,17 @@ the audible pitch while the stored transpose value is retained.
 
 ## clip loop resizing
 
-hover the bottom corner of a clip's right edge to show the circle cursor, then drag
-to repeat its source. the lower fade handle sits just inside that corner, and
-ordinary trimming stays in the clip header. audio and
-midi clips use the same gesture; no loop icon is painted inside the clip. looped
-clips have rounded bottom corners. the first repeat boundary uses left/right
-arrows; drag it to change the cycle while keeping the outer duration; directed clips retain only the outer
-repeat handle. **escape** cancels a held edit; one undo restores a completed drag.
+hold **option** over a clip's right header edge to show the circle cursor, then
+drag to repeat its source. the modifier you hold when the drag starts decides the
+gesture for the whole drag: none trims, **shift** stretches, **option** repeats
+(option wins if both are held). dragging the right edge of a clip that already
+repeats also extends its repeats. audio and midi clips use the same gesture; no
+loop icon is painted inside the clip, and the fade-out handle keeps the
+bottom-right corner. looped clips have rounded bottom corners. the first repeat
+boundary uses left/right arrows; drag it to change the cycle while keeping the
+outer duration; directed clips have no first-boundary handle. inside a time
+selection the clip header moves or copies the range instead. **escape** cancels
+a held edit; one undo restores a completed drag.
 
 clips and sections keep their actual timeline width when zoomed out. zoom in
 to resize very short clips when their edge handles no longer fit.
@@ -823,7 +832,8 @@ the complete edit.
 | selection fades / browser search outside audio selection | command+f |
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
-| bounce selected material to a new track | command+b |
+| bounce selected material to a new track | b |
+| bounce to a new track and deactivate the sources | command+b |
 | arrangement automation view | a / toolbar a control |
 | contextual activation | c / 0 |
 | export | command+shift+e |
