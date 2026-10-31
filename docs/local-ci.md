@@ -123,6 +123,11 @@ every `mod` declaration (resolving `#[path]`) is `#[cfg(test)]` or
 conditions, inline-module nesting, `include!(` in the package, deleted files and
 any production path in the same change keep the consumer closure.
 
+hex-desktop's allocation-probe tests run through `scripts/test_shards.py` as four
+disjoint processes: its native fixtures serialize on a process-wide output lease,
+so one process ran them back to back (109 s). Each shard owns its own lease and
+prints its own `test result`; every listed test runs exactly once (70 s).
+
 Packages whose only extra feature is reviewed as additive for tests (see
 `ADDITIVE_TEST_FEATURES` in `scripts/ci_plan.py`) run their tests once with the
 feature and keep a separate doctest run; default-feature Clippy still applies.
