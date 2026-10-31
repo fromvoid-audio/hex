@@ -5078,6 +5078,7 @@ mod tests {
             return_state = state.clone();
         }
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            automatic_track_names: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5252,6 +5253,7 @@ mod tests {
         const FRAMES: u64 = 512;
         let make_state = || state.clone();
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            automatic_track_names: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5385,6 +5387,7 @@ mod tests {
             .expect("compressor threshold")
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            automatic_track_names: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5537,6 +5540,7 @@ mod tests {
         const RETURN_DEVICE_ID: u64 = 8;
         const FRAMES: u64 = 512;
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            automatic_track_names: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -9925,6 +9929,7 @@ mod tests {
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            automatic_track_names: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -10642,6 +10647,7 @@ mod tests {
             TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            automatic_track_names: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),

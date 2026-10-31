@@ -324,6 +324,13 @@ fn previous_event_activation_schema_migrates_without_nested_sources() {
         value.as_object_mut().unwrap().remove("midi_clip_gains"),
         Some(serde_json::json!([]))
     );
+    assert_eq!(
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("automatic_track_names"),
+        Some(serde_json::json!([]))
+    );
     value["version"] = 57.into();
     assert_eq!(decode(&bytes(&value)).unwrap(), *editor.project());
 }
