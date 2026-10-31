@@ -31,6 +31,11 @@ impl Handle {
         }
     }
 }
+/// Minimum visible clip width for hover to reveal handles on a fade-free clip.
+const HOVER_REVEAL_MIN_WIDTH: f32 = 28.0;
+/// Handle-centre inset that keeps a hover-revealed 8px handle off the 4px trim strip.
+const HOVER_REVEAL_EDGE_INSET: f32 = 9.0;
+
 struct FadeControls {
     lane: LaneBounds,
     local_fade: ClipFade,
@@ -567,6 +572,8 @@ impl EditorView {
         if self.track_height(track) <= super::track_layout::HEADER_ONLY_HEIGHT {
             return None;
         }
+        // Held `f` reveals every clip; otherwise only the hovered clip (or the
+        // one whose gesture is still displayed) shows its controls.
         let preview = self.fade_preview(clip.id());
         let active = self.fade_curve_active(clip.id());
         if !self.fade_key_held
@@ -576,9 +583,6 @@ impl EditorView {
             return None;
         }
         let fade = preview.unwrap_or(clip.retained_fade());
-        if !self.fade_key_held && fade.is_neutral() && !fade.has_shape() && !active {
-            return None;
-        }
         let lane = self.drag_lanes.get(&track).copied()?;
         if !lane.width.is_finite()
             || lane.width <= 0.0
@@ -589,8 +593,21 @@ impl EditorView {
         {
             return None;
         }
+        let unauthored = fade.is_neutral() && !fade.has_shape();
+        // Hover alone on a fade-free clip reveals only the upper handles that
+        // author fades. Its lower handles merely resize, so trim strips and the
+        // loop corner keep those gestures; narrow clips stay free to move.
+        // A pressed handle keeps this geometry until its preview authors a fade.
+        let hover_unauthored = unauthored && !self.fade_key_held;
+        if hover_unauthored
+            && !active
+            && lane.width * ((visible.1 - visible.0) as f32 / viewport.length as f32)
+                < HOVER_REVEAL_MIN_WIDTH
+        {
+            return None;
+        }
         let local_fade = fade.reanchor(clip.duration()).ok()?;
-        let local_controls = self.fade_key_held || preview.is_some() || active;
+        let local_controls = self.fade_key_held || preview.is_some() || active || unauthored;
         let controls = if local_controls { local_fade } else { fade };
         let reanchors =
             clip.audio_edit().is_some() || fade.offset() != 0 || fade.span() != clip.duration();
@@ -598,6 +615,7 @@ impl EditorView {
         for (handle, (domain_frame, subframe), gain) in knots(controls) {
             if matches!(handle, Handle::InCurve) && controls.fade_in() < 3
                 || matches!(handle, Handle::OutCurve) && controls.fade_out() < 3
+                || hover_unauthored && matches!(handle, Handle::InBottom | Handle::OutBottom)
             {
                 continue;
             }
@@ -640,7 +658,13 @@ impl EditorView {
             if !pixel_width.is_finite() {
                 continue;
             }
-            let inset = (4.0_f32).min(pixel_width / 2.0);
+            // Hover-only handles also clear the edge trim strip.
+            let edge_inset = if hover_unauthored {
+                HOVER_REVEAL_EDGE_INSET
+            } else {
+                4.0
+            };
+            let inset = edge_inset.min(pixel_width / 2.0);
             let fraction = (fraction * pixel_width).clamp(inset, pixel_width - inset) / pixel_width;
             let name_height = super::clip_name::CLIP_NAME_HEIGHT;
             let body_height = (lane.height - name_height).max(8.0);
@@ -757,14 +781,15 @@ impl EditorView {
                     .tooltip(move |_, cx| {
                         cx.new(|_| super::waveform::ClipTooltip {
                             kind: crate::tooltips::Kind::control(handle.name().replace('-', " ")),
-                            name: if reanchors {
-                                format!(
-                                    "{} · editing fits fades to this clip",
-                                    handle.name().replace('-', " ")
-                                )
-                            } else {
-                                handle.name().replace('-', " ")
-                            },
+                            name: format!(
+                                "{}{} · hold f to show all fade handles",
+                                handle.name().replace('-', " "),
+                                if reanchors {
+                                    " · editing fits fades to this clip"
+                                } else {
+                                    ""
+                                }
+                            ),
                         })
                         .into()
                     })
