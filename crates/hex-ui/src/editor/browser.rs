@@ -1657,6 +1657,26 @@ impl EditorView {
         }
     }
 
+    /// The current sample catalog for relink lookups, and whether a scan is
+    /// still running (so results may be incomplete). Callers search a clone on a
+    /// background worker.
+    pub(super) fn sample_catalog_snapshot(&self) -> (hex_library::catalog::SampleCatalog, bool) {
+        (
+            self.browser.samples.catalog.clone(),
+            self.browser.samples.history_loading(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_replace_sample_catalog(
+        &mut self,
+        catalog: hex_library::catalog::SampleCatalog,
+    ) -> bool {
+        let settled = !self.browser.samples.history_loading();
+        self.browser.samples.replace(catalog);
+        settled
+    }
+
     fn browser_place_unavailable(&self) -> bool {
         matches!(self.browser.section, BrowserSection::Place(_))
             && (self.browser.loading || self.browser.error.is_some())
