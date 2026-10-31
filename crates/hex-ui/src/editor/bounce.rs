@@ -1,10 +1,109 @@
 //! Thin Arrangement bounce routing; rendering/adoption belong to the worker.
 //! Plain `b` bounces the selection to new tracks; `cmd-b` also deactivates the
 //! bounced sources in the same adoption edit, matching contextual `c`/`0`.
-use super::{EditorMode, EditorView};
-use gpui::Window;
+//! `b` held at the release of an Arrangement clip drag drops a bounce of the
+//! dragged clips at the drop position instead of moving them.
+use super::{EditorMode, EditorView, drag::ClipDrag, drag::DropPreview};
+use gpui::{KeyUpEvent, Window};
+use hex_project::{BounceAdoption, BounceDrop, BounceTarget, TrackId};
 use hex_session::service::{ExportControl, Request};
+
+const DRAG_BOUNCE_HINT: &str = "b held · drop bounces the dragged clips · release b to move";
+
+/// Released bounce drop: the frozen destination keeps painting, with sources
+/// visible, until its own bounce job's terminal installs the adopted state.
+pub(super) struct PendingBounceDrop {
+    drag: ClipDrag,
+    control: ExportControl,
+}
+
 impl EditorView {
+    /// `b` during a held Arrangement clip drag arms a bounce drop instead of
+    /// bouncing the selection. Returns false outside a drag.
+    pub(super) fn arm_drag_bounce(&mut self) -> bool {
+        if self.active_clip_drag.is_none() {
+            return false;
+        }
+        if !self.drag_bounce_held {
+            self.drag_bounce_held = true;
+            self.status = DRAG_BOUNCE_HINT.into();
+        }
+        true
+    }
+
+    pub(super) fn drag_bounce_key_up(&mut self, event: &KeyUpEvent) -> bool {
+        if event.keystroke.key != "b" || !self.drag_bounce_held {
+            return false;
+        }
+        self.drag_bounce_held = false;
+        if self.status == DRAG_BOUNCE_HINT {
+            self.status.clear();
+        }
+        true
+    }
+
+    pub(super) fn pending_bounce_drag(&self) -> Option<&ClipDrag> {
+        self.pending_bounce_drop
+            .as_ref()
+            .filter(|p| {
+                self.bounce_control
+                    .as_ref()
+                    .is_some_and(|active| active.same_job(&p.control))
+            })
+            .map(|p| &p.drag)
+    }
+
+    /// Validate and submit a held-`b` drop; the sources never move.
+    pub(super) fn drop_clip_bounce(
+        &mut self,
+        drag: &ClipDrag,
+        target_track: TrackId,
+        preview: DropPreview,
+    ) {
+        if self.status == DRAG_BOUNCE_HINT {
+            self.status.clear();
+        }
+        let Some(state) = &self.state else {
+            self.retire_active_clip_drag();
+            return;
+        };
+        let clips = {
+            let group = drag.group.borrow();
+            if group.ids.len() > 1 {
+                group.ids.clone()
+            } else {
+                vec![drag.clip]
+            }
+        };
+        let target = BounceTarget::Clips(clips);
+        let drop = BounceDrop {
+            anchor: drag.clip,
+            track: target_track,
+            position: super::drag::group_position(preview.position),
+        };
+        if let Err(reason) = state.project.validate_bounce_drop(&target, drop) {
+            self.error = Some(reason.to_string().into());
+            self.retire_active_clip_drag();
+            return;
+        }
+        // Input capture ends here; the bounce gate refuses while a drag is held.
+        let Some(active) = self.active_clip_drag.take() else {
+            return;
+        };
+        active.copy_modifier.set(true);
+        active.preview.set(Some(preview));
+        self.start_arrangement_bounce(target, false, BounceAdoption::Drop(drop));
+        match self.bounce_control.clone() {
+            Some(control) => {
+                self.pending_bounce_drop = Some(PendingBounceDrop {
+                    drag: active,
+                    control,
+                });
+            }
+            None => active.retire(),
+        }
+    }
+
     pub(super) fn bounce_arrangement_selection(&mut self, window: &Window, mute_sources: bool) {
         if self.mode != EditorMode::Arrangement
             || !self.focus.is_focused(window)
@@ -34,7 +133,15 @@ impl EditorView {
         } else {
             hex_project::BounceTarget::Clips(self.selected_clip_ids())
         };
-        self.start_arrangement_bounce(target, false, mute_sources);
+        self.start_arrangement_bounce(
+            target,
+            false,
+            if mute_sources {
+                BounceAdoption::NewTracksMutingSources
+            } else {
+                BounceAdoption::NewTracks
+            },
+        );
     }
 
     pub(super) fn bounce_track_in_place(
@@ -48,14 +155,14 @@ impl EditorView {
         {
             return;
         }
-        self.start_arrangement_bounce(hex_project::BounceTarget::Track(track), true, false);
+        self.start_arrangement_bounce(BounceTarget::Track(track), true, BounceAdoption::NewTracks);
     }
 
     fn start_arrangement_bounce(
         &mut self,
-        target: hex_project::BounceTarget,
+        target: BounceTarget,
         in_place: bool,
-        mute_sources: bool,
+        adoption: BounceAdoption,
     ) {
         if in_place
             && self
@@ -108,7 +215,7 @@ impl EditorView {
             revision: state.revision,
             target,
             in_place,
-            mute_sources,
+            adoption,
             control: control.clone(),
         }) {
             self.bounce_control = Some(control);
@@ -181,6 +288,144 @@ mod tests {
             assert_eq!(
                 v.state.as_ref().unwrap().project.snapshot().tracks,
                 muted.tracks
+            );
+        });
+    }
+    /// Start a rendered drag of `clip` and hover the middle of `track`'s lane.
+    fn hover_drag(
+        visual: &mut VisualTestContext,
+        clip: hex_project::ClipId,
+        track: hex_project::TrackId,
+    ) -> gpui::Point<gpui::Pixels> {
+        let surface = visual
+            .debug_bounds(Box::leak(
+                format!("clip-drag-surface-{}", clip.value()).into_boxed_str(),
+            ))
+            .expect("audio drag surface");
+        let lane = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+            ))
+            .expect("destination lane");
+        let down = surface.center();
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            gpui::point(down.x + gpui::px(12.0), down.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        let target = gpui::point(down.x + gpui::px(40.0), lane.center().y);
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        target
+    }
+    fn b_up(visual: &mut VisualTestContext) {
+        visual.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("b").unwrap(),
+        });
+        visual.run_until_parked();
+    }
+    #[gpui::test]
+    fn held_b_drop_bounces_at_the_drop_and_leaves_the_source(cx: &mut TestAppContext) {
+        let (handle, editor, audio, _, _files) = fixture_with_bounce_media(cx, true);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (original, source_track, target_track) = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            (p.snapshot(), p.tracks()[0].id(), p.tracks()[1].id())
+        });
+        let release = hover_drag(&mut visual, audio, target_track);
+        visual.simulate_keystrokes("b");
+        visual.run_until_parked();
+        let start = editor.read_with(&visual, |v, _| {
+            assert!(v.drag_bounce_held);
+            assert_eq!(v.status, super::DRAG_BOUNCE_HINT);
+            assert!(
+                v.bounce_control.is_none(),
+                "b never bounces the selection mid-drag"
+            );
+            let preview = v.active_clip_drag.as_ref().unwrap().preview.get();
+            preview.expect("lane preview").start_frame
+        });
+        visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        // Before the worker's terminal is received the frozen ghost still paints
+        // at the destination and the source remains where it was.
+        editor.read_with(&visual, |v, _| {
+            assert!(v.pending_bounce_drag().is_some());
+            assert!(v.active_clip_drag.is_none() && !v.drag_bounce_held);
+            let p = &v.state.as_ref().unwrap().project;
+            assert_eq!(p.snapshot().tracks, original.tracks);
+        });
+        assert!(visual.debug_bounds("clip-drop-preview").is_some());
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("clip-name-{}", audio.value()).into_boxed_str()
+                ))
+                .is_some(),
+            "the source clip keeps painting at its original place"
+        );
+        pump(&editor, &mut visual);
+        let dropped = editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert!(v.pending_bounce_drop.is_none() && v.bounce_control.is_none());
+            let p = &v.state.as_ref().unwrap().project;
+            assert_eq!(p.tracks().len(), original.tracks.len());
+            let source = p.clip(audio).unwrap();
+            assert_eq!(
+                (source.start(), source.duration(), source.active()),
+                (0, 48_000, true)
+            );
+            assert_eq!(p.track(source_track).unwrap().clips().len(), 1);
+            let bounced = &p.track(target_track).unwrap().clips()[0];
+            assert_eq!((bounced.start(), bounced.duration()), (start, 48_000));
+            p.snapshot()
+        });
+        assert!(visual.debug_bounds("clip-drop-preview").is_none());
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            let p = v.state.as_ref().unwrap().project.snapshot();
+            assert_eq!(p.tracks, original.tracks);
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            let p = v.state.as_ref().unwrap().project.snapshot();
+            assert_eq!(p.tracks, dropped.tracks);
+        });
+    }
+    #[gpui::test]
+    fn b_released_before_the_drop_moves_normally(cx: &mut TestAppContext) {
+        let (handle, editor, audio, _, _files) = fixture_with_bounce_media(cx, true);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (tracks, target_track) = editor.read_with(&visual, |v, _| {
+            let p = &v.state.as_ref().unwrap().project;
+            (p.tracks().len(), p.tracks()[1].id())
+        });
+        let release = hover_drag(&mut visual, audio, target_track);
+        visual.simulate_keystrokes("b");
+        b_up(&mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(!v.drag_bounce_held);
+            assert!(v.status.is_empty());
+        });
+        visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert!(v.error.is_none(), "{:?}", v.error);
+            assert!(v.pending_bounce_drop.is_none() && v.bounce_control.is_none());
+            let p = &v.state.as_ref().unwrap().project;
+            assert_eq!(p.tracks().len(), tracks);
+            assert!(p.tracks()[0].clips().is_empty(), "the source moved");
+            assert!(
+                p.track(target_track)
+                    .unwrap()
+                    .clips()
+                    .iter()
+                    .any(|c| c.id() == audio)
             );
         });
     }

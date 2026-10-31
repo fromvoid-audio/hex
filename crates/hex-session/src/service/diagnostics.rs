@@ -144,6 +144,10 @@ pub(super) struct Hooks {
     service_id: u64,
     next_request: AtomicU64,
     observer: OnceLock<Arc<DiagnosticObserver>>,
+    // Per-service test ceiling for the older-reader save preflight (0: the
+    // real hex-storage limit). Shared with this service's worker only.
+    #[cfg(test)]
+    legacy_reader_limit: AtomicU64,
 }
 impl Default for Hooks {
     fn default() -> Self {
@@ -156,10 +160,24 @@ impl Default for Hooks {
             service_id,
             next_request: AtomicU64::new(0),
             observer: OnceLock::new(),
+            #[cfg(test)]
+            legacy_reader_limit: AtomicU64::new(0),
         }
     }
 }
 impl Hooks {
+    /// Older-reader byte ceiling for save consent: the real limit in production.
+    pub fn legacy_reader_limit(&self) -> usize {
+        #[cfg(test)]
+        if let Ok(limit @ 1..) = usize::try_from(self.legacy_reader_limit.load(Ordering::Relaxed)) {
+            return limit;
+        }
+        hex_storage::LEGACY_READER_DOCUMENT_BYTES
+    }
+    #[cfg(test)]
+    pub fn set_legacy_reader_limit(&self, bytes: u64) {
+        self.legacy_reader_limit.store(bytes, Ordering::Relaxed);
+    }
     pub fn install(&self, observer: Arc<DiagnosticObserver>) -> Result<(), &'static str> {
         self.observer
             .set(observer)

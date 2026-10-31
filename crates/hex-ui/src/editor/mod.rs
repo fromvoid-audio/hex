@@ -52,6 +52,7 @@ pub(crate) use plugin_effect::fixture_view as plugin_effect_fixture_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
 mod section_launch;
+mod section_layout_preview;
 mod track_header;
 mod track_header_device_drop;
 mod track_hierarchy_indent;
@@ -140,6 +141,7 @@ mod midi_note_overwrite;
 mod midi_pan;
 mod midi_pitch_zoom;
 mod midi_recording;
+mod missing_media;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
 mod midi_ruler;
@@ -866,6 +868,9 @@ pub(super) struct EditorView {
     close_prompt_open: bool,
     export_pending: bool,
     bounce_control: Option<hex_session::service::ExportControl>,
+    /// `b` is held during the active Arrangement clip drag; release bounces.
+    drag_bounce_held: bool,
+    pending_bounce_drop: Option<bounce::PendingBounceDrop>,
     pending_plugin_effect: Option<plugin_effect::PendingPluginEffect>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
@@ -985,6 +990,7 @@ pub(super) struct EditorView {
     recent_projects: RecentProjectsState,
     project_directory: project_directory::State,
     changelog: changelog::State,
+    missing_media: Option<missing_media::Panel>,
     theme_settings: theme_settings::ThemeSettingsState,
     audio_import_settings: audio_import_settings::State,
     tuning: tuning::TuningState,
@@ -1591,6 +1597,8 @@ impl EditorView {
             close_prompt_open: false,
             export_pending: false,
             bounce_control: None,
+            drag_bounce_held: false,
+            pending_bounce_drop: None,
             pending_plugin_effect: None,
             export_control: None,
             export_window: None,
@@ -1703,6 +1711,7 @@ impl EditorView {
             recent_projects,
             project_directory,
             changelog: changelog::State::new(cx),
+            missing_media: None,
             theme_settings,
             audio_import_settings,
             tuning: tuning::TuningState::new(cx),

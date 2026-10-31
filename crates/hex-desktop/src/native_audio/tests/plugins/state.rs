@@ -9,7 +9,7 @@ mod save;
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_save_captures_processed_state_without_mutating_history() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let (mut h, files, before) = fixture(Start::Saved);
     let path = files.0.join("effect.hex");
     let original = fs::read(&path).unwrap();
@@ -104,7 +104,7 @@ fn nondefault_fixture() -> SavedEffectFixture {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts; variant37 additionally exercises controller state"]
 fn native_effect_saved_state_restores_fresh_instance_and_nondefault_pcm() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let SavedEffectFixture {
         files,
         path,
@@ -250,7 +250,7 @@ fn native_effect_saved_state_restores_fresh_instance_and_nondefault_pcm() {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_reopen_source_refusals_preserve_state_without_defaults() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for failure in 0..5 {
         let mut saved = nondefault_fixture();
         let module = saved.files.0.canonicalize().unwrap().join("original.vst3");
@@ -355,7 +355,7 @@ fn native_effect_reopen_source_refusals_preserve_state_without_defaults() {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_reopen_preserves_sealed_same_audio_authoring_alias() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let saved = nondefault_fixture();
     let mut editor = hex_project::Editor::new(saved.project.clone(), 16).unwrap();
     let class = hex_engine::NativeDeviceClass::Effect;
@@ -445,7 +445,7 @@ fn native_effect_reopen_preserves_sealed_same_audio_authoring_alias() {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_reopen_document_replacement_retires_exact_unacknowledged_source() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let saved = nondefault_fixture();
     let before = fs::read(&saved.path).unwrap();
     let mut h = ResidentHarness::with_plugins_and_catalog(
@@ -496,7 +496,7 @@ fn native_effect_reopen_document_replacement_retires_exact_unacknowledged_source
 fn native_effect_reopen_paints_pending_until_real_ack_then_restored_canonical(
     cx: &mut gpui::TestAppContext,
 ) {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let saved = nondefault_fixture();
     let mut h = ResidentHarness::with_plugins_and_catalog(
         host(),
@@ -605,7 +605,7 @@ fn native_effect_reopen_paints_pending_until_real_ack_then_restored_canonical(
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_saved_project_without_resolved_source_retains_opaque_state() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for start in [Start::Reopened, Start::EmptyThenReopened] {
         let (h, files, state) = fixture(start);
         drop(h);
@@ -726,7 +726,7 @@ fn fixture(start: Start) -> (ResidentHarness, Files, Arc<hex_session::service::V
 fn native_effect_reopened_unavailable_status_follows_actual_applied_graph(
     cx: &mut gpui::TestAppContext,
 ) {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let (h, files, state) = fixture(Start::Saved);
     let device = state.project.main_devices()[0].id();
     // Real read-only request delivers the current canonical snapshot to the
