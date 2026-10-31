@@ -127,6 +127,7 @@ pub(in crate::editor) fn rows(
     for (index, entry) in entries {
         let target = entry.target;
         let points = view.automation_view.devices.points(state, target);
+        let live = view.live_device_automation_base(&entry);
         // Readout: the held point, else a single selected point, else the base.
         let lanes = &view.automation_view.devices;
         let value = lanes
@@ -144,7 +145,7 @@ pub(in crate::editor) fn rows(
                         _ => None,
                     })
             })
-            .map_or(entry.base, |point| point.value.get());
+            .map_or(live, |point| point.value.get());
         let overridden = view.device_automation_read_selection(target)
             == Some(hex_project::AutomationReadSelection::Base);
         let name = format!(
@@ -257,7 +258,8 @@ fn plot(
     let selected = view.automation_view.devices.selected.clone();
     let project = state.project.clone();
     let revision = state.revision;
-    let base = entry.base;
+    let base = view.live_device_automation_base(&entry);
+    let dotted = all_points.is_empty();
     let entity = cx.entity();
     let label = entry.label.clone();
     div()
@@ -435,6 +437,32 @@ fn plot(
             .absolute()
             .inset_0(),
         )
+        // Unpainted locator inside the same 4 px insets as the dotted stroke.
+        .when(dotted, |plot| {
+            plot.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(4.0))
+                    .bottom(px(4.0))
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .h(px(0.0))
+                            .top(gpui::relative(1.0 - base.clamp(0.0, 1.0)))
+                            .debug_selector(move || {
+                                format!(
+                                    "automation-dotted-{}-{}-{main}",
+                                    target.device.value(),
+                                    target.key()
+                                )
+                            }),
+                    ),
+            )
+        })
         .when(main, |plot| {
             plot.child(
                 div()

@@ -129,7 +129,10 @@ from the edit cursor and saved play-start marker. it stays at the accepted
 position when paused and hides outside the clip or while its current audio
 mapping is unavailable. the audio source tab shows the corresponding original
 source position; the piano roll follows the midi source position. zooming and
-scrolling change the visible window without moving playback.
+scrolling change the visible window without moving playback. in the console,
+the piano roll and the audio cell's waveform show the same line while that
+launched cell owns its track, wrapping with the cell's loop; it hides when the
+cell stops, ends or another clip takes the track.
 
 hover the saved play-start marker to highlight its grab target. drag the audio
 arrow or midi ruler triangle to choose where playback starts, keeping the clip's

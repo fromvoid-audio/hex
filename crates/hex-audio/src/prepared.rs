@@ -147,6 +147,9 @@ pub struct SessionRouteEntry {
     pub owner: SessionRouteOwner,
     /// Accepted source origin, published with the route snapshot sequence.
     pub active_origin: Option<hex_engine::SessionMidiOrigin>,
+    /// Accepted Session audio launch on the performance clock, published with
+    /// the same sequence. Elapsed source time is `performance_frame - launch`.
+    pub audio_launch_frame: Option<u64>,
     pub pending: Option<SessionPendingRoute>,
 }
 
@@ -156,6 +159,7 @@ impl Default for SessionRouteEntry {
             track_id: 0,
             owner: SessionRouteOwner::Silence,
             active_origin: None,
+            audio_launch_frame: None,
             pending: None,
         }
     }
@@ -181,6 +185,8 @@ struct AtomicRouteSlot {
     active_origin_tag: AtomicU32,
     active_performance_anchor_raw: AtomicU64,
     active_elapsed_at_anchor_raw: AtomicU64,
+    audio_launch_tag: AtomicU32,
+    audio_launch_frame: AtomicU64,
     pending_tag: AtomicU32,
     pending_target_tag: AtomicU32,
     pending_clip_id: AtomicU64,
@@ -197,6 +203,8 @@ impl AtomicRouteSlot {
             active_origin_tag: AtomicU32::new(0),
             active_performance_anchor_raw: AtomicU64::new(0),
             active_elapsed_at_anchor_raw: AtomicU64::new(0),
+            audio_launch_tag: AtomicU32::new(0),
+            audio_launch_frame: AtomicU64::new(0),
             pending_tag: AtomicU32::new(0),
             pending_target_tag: AtomicU32::new(0),
             pending_clip_id: AtomicU64::new(0),
@@ -212,6 +220,8 @@ impl AtomicRouteSlot {
         self.active_origin_tag.store(0, SeqCst);
         self.active_performance_anchor_raw.store(0, SeqCst);
         self.active_elapsed_at_anchor_raw.store(0, SeqCst);
+        self.audio_launch_tag.store(0, SeqCst);
+        self.audio_launch_frame.store(0, SeqCst);
         self.pending_tag.store(0, SeqCst);
         self.pending_target_tag.store(0, SeqCst);
         self.pending_clip_id.store(0, SeqCst);
@@ -887,6 +897,8 @@ impl Status {
                 let active_origin_tag = slot.active_origin_tag.load(SeqCst);
                 let active_performance_anchor_raw = slot.active_performance_anchor_raw.load(SeqCst);
                 let active_elapsed_at_anchor_raw = slot.active_elapsed_at_anchor_raw.load(SeqCst);
+                let audio_launch_tag = slot.audio_launch_tag.load(SeqCst);
+                let audio_launch_frame = slot.audio_launch_frame.load(SeqCst);
                 let pending_tag = slot.pending_tag.load(SeqCst);
                 let pending_target_tag = slot.pending_target_tag.load(SeqCst);
                 let pending_clip_id = slot.pending_clip_id.load(SeqCst);
@@ -906,6 +918,11 @@ impl Status {
                         active_performance_anchor_raw,
                         active_elapsed_at_anchor_raw,
                     )),
+                    _ => return None,
+                };
+                let audio_launch_frame = match audio_launch_tag {
+                    0 => None,
+                    1 => Some(audio_launch_frame),
                     _ => return None,
                 };
                 let pending = match pending_tag {
@@ -931,6 +948,7 @@ impl Status {
                     track_id,
                     owner,
                     active_origin,
+                    audio_launch_frame,
                     pending,
                 };
             }
@@ -1029,6 +1047,13 @@ impl Status {
             slot.active_performance_anchor_raw.store(0, SeqCst);
             slot.active_elapsed_at_anchor_raw.store(0, SeqCst);
             slot.active_origin_tag.store(0, SeqCst);
+        }
+        if let Some(launch) = route.audio_launch_frame {
+            slot.audio_launch_frame.store(launch, SeqCst);
+            slot.audio_launch_tag.store(1, SeqCst);
+        } else {
+            slot.audio_launch_frame.store(0, SeqCst);
+            slot.audio_launch_tag.store(0, SeqCst);
         }
         if let Some(pending) = route.pending {
             let (tag, clip_id) = match pending.target {
@@ -10759,6 +10784,7 @@ mod tests {
                 track_id: 0,
                 owner: SessionRouteOwner::Silence,
                 active_origin: None,
+                audio_launch_frame: None,
                 pending: None,
             }; 1];
             let mut observed = 0;

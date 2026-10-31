@@ -873,3 +873,190 @@ fn lane_group_move_and_delete_each_undo_in_one_step(cx: &mut TestAppContext) {
     pump(&mut visual, &editor);
     assert_eq!(lane_points(&visual, &editor, device, target), points);
 }
+
+/// The bound control displays the in-flight gesture value before canonical state.
+fn utility_gain_value(
+    visual: &mut VisualTestContext,
+    editor: &Entity<EditorView>,
+    device: DeviceId,
+) -> (Option<ParameterValue>, ParameterValue) {
+    let parameter = hex_lattice_contract::ParameterId::from_static(1);
+    editor.read_with(visual, |view, _| {
+        let canonical = hex_engine::native_device_parameter(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state(),
+            parameter,
+        )
+        .unwrap();
+        (
+            view.device_gesture
+                .snapshot()
+                .map(|snapshot| snapshot.value),
+            canonical,
+        )
+    })
+}
+
+fn dotted_top(visual: &mut VisualTestContext, device: DeviceId) -> Option<Pixels> {
+    visual
+        .debug_bounds(Box::leak(
+            format!("automation-dotted-{}-1-true", device.value()).into_boxed_str(),
+        ))
+        .map(|bounds| bounds.top())
+}
+
+#[gpui::test]
+fn last_touched_dotted_line_follows_gesture_preview_through_delayed_ack(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    let kind = DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+    editor.update(&mut visual, |view, cx| {
+        view.automation_view.enabled = true;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(editor.read_with(&visual, |view, _| {
+        !view.automation_view.devices.has_main(owner)
+    }));
+    assert!(dotted_top(&mut visual, device).is_none());
+    let (_, initial) = utility_gain_value(&mut visual, &editor, device);
+    let knob = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-1-knob", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let start = knob.center();
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    let mut previous = None;
+    let mut end = start;
+    for step in 1..=3 {
+        end = point(start.x, start.y - px(20.0 * step as f32));
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        let (control, canonical) = utility_gain_value(&mut visual, &editor, device);
+        assert_eq!(canonical, initial, "drag frames stay uncommitted");
+        let expected = editor.read_with(&visual, |view, _| {
+            let entry = view
+                .automation_view
+                .devices
+                .main
+                .iter()
+                .find(|entry| entry.target.owner == owner)
+                .expect("touching the control selects its lane");
+            assert_eq!(entry.target.kind, kind);
+            entry.normalized(control.expect("gesture preview")).unwrap()
+        });
+        let plot = visual
+            .debug_bounds(Box::leak(
+                format!("automation-plot-{}-1-true", device.value()).into_boxed_str(),
+            ))
+            .unwrap();
+        let top = dotted_top(&mut visual, device).expect("unautomated lane is dotted");
+        let wanted =
+            f32::from(plot.top()) + 4.0 + (1.0 - expected) * (f32::from(plot.size.height) - 8.0);
+        assert!((f32::from(top) - wanted).abs() < 0.5, "{top:?} vs {wanted}");
+        assert!(
+            previous.is_none_or(|previous| top < previous),
+            "line follows each frame"
+        );
+        previous = Some(top);
+    }
+    let released = previous.unwrap();
+    let (final_value, _) = utility_gain_value(&mut visual, &editor, device);
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        editor.update(&mut visual, |view, cx| {
+            assert!(
+                view.device_gesture.snapshot().is_some(),
+                "ack still delayed"
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(dotted_top(&mut visual, device), Some(released));
+        assert_eq!(utility_gain_value(&mut visual, &editor, device).1, initial);
+    }
+    pump(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.device_gesture.snapshot().is_none())
+    });
+    assert_eq!(
+        utility_gain_value(&mut visual, &editor, device).1,
+        final_value.unwrap()
+    );
+    let installed = dotted_top(&mut visual, device).unwrap();
+    assert!((f32::from(installed) - f32::from(released)).abs() < 0.5);
+}
+
+#[gpui::test]
+fn touching_an_automated_parameter_shows_its_envelope_unmoved(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, _, device) = window(cx, "hex.utility", Slot::Track);
+    let kind = DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+    let points = vec![AutomationPoint {
+        beat: BeatTime::ZERO,
+        value: AutomationValue::new(0.75).unwrap(),
+        outgoing: AutomationInterpolation::Step,
+    }];
+    editor.update(&mut visual, |view, cx| {
+        let revision = view.state.as_ref().unwrap().revision;
+        assert!(view.enqueue(Request::DeviceAutomation {
+            project_generation: view.project_generation,
+            revision,
+            device,
+            target: kind,
+            points: points.clone()
+        }));
+        view.automation_view.enabled = true;
+        cx.notify();
+    });
+    pump(&mut visual, &editor);
+    let knob = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-1-knob", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let start = knob.center();
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(start.x, start.y - px(16.0)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        let entry = view
+            .automation_view
+            .devices
+            .main
+            .iter()
+            .find(|entry| entry.target.owner == owner)
+            .unwrap();
+        assert_eq!(entry.target.kind, kind);
+        assert_eq!(
+            view.automation_view.devices.points(state, entry.target),
+            points
+        );
+    });
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("automation-plot-{}-1-true", device.value()).into_boxed_str(),
+            ))
+            .is_some()
+    );
+    assert!(
+        dotted_top(&mut visual, device).is_none(),
+        "envelope replaces the dotted line"
+    );
+    visual.simulate_mouse_up(
+        point(start.x, start.y - px(16.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    pump(&mut visual, &editor);
+}
