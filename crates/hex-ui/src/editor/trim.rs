@@ -688,6 +688,16 @@ fn preview_is_noop(original: &Clip, preview: &Clip) -> bool {
     original == preview
 }
 
+/// Height of a clip's edge-trim strips, from the top of the clip: the header
+/// rail, or the whole row when a header-only row has no body below it.
+pub(super) fn edge_trim_height(row_height: f32) -> f32 {
+    if row_height <= super::track_layout::HEADER_ONLY_HEIGHT {
+        row_height.max(0.0)
+    } else {
+        super::time_selection::header_hit_height(row_height)
+    }
+}
+
 pub(super) fn handle_width(clip_width: f32) -> f32 {
     hex_widgets::RectangleEdges {
         width: HANDLE_WIDTH,
@@ -1037,7 +1047,7 @@ impl EditorView {
                 TrimEdge::Right => ("midi-trim-right", "midi-clip-trim-right"),
             },
         };
-        loop_handles::base(edge, clip_width, control, scale)
+        loop_handles::base(edge, clip_width, lane.height, control, scale)
             .id((element_prefix, clip_id.value()))
             .debug_selector(move || format!("{debug_prefix}-{}", clip_id.value()))
             .map(|surface| loop_handles::decorate(surface, control))
@@ -1158,7 +1168,7 @@ impl EditorView {
                 TrimEdge::Right => ("trim-right", "clip-trim-right"),
             },
         };
-        loop_handles::base(edge, clip_width, control, scale)
+        loop_handles::base(edge, clip_width, lane.height, control, scale)
             .id((element_prefix, clip_id.value()))
             .debug_selector(move || format!("{debug_prefix}-{}", clip_id.value()))
             .map(|surface| loop_handles::decorate(surface, control))

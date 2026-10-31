@@ -1035,6 +1035,9 @@ impl EditorView {
             return false;
         };
         self.suppress_cursor_click = gesture.moved;
+        if gesture.moved {
+            self.fit_clip_editor_to_time_selection();
+        }
         true
     }
 
@@ -1157,11 +1160,14 @@ impl EditorView {
             if x < left || x >= left + width {
                 return None;
             }
+            // Edge trim strips only cover the header rail (the whole row when
+            // it is header-only); below that the edge is ordinary body.
             let edge = super::trim::handle_width(width);
+            let on_edge = (visible_start == start && x < left + edge)
+                || (visible_end == end && x >= left + width - edge);
             Some(
                 y < lane.top + header_hit_height(lane.height)
-                    || (visible_start == start && x < left + edge)
-                    || (visible_end == end && x >= left + width - edge),
+                    || (on_edge && y < lane.top + super::trim::edge_trim_height(lane.height)),
             )
         };
         // MIDI is drawn after audio; later clips cover earlier clips of each kind.
