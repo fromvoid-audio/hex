@@ -1130,3 +1130,77 @@ fn editing_a_sounding_sampler_note_applies_while_paused_or_playing() {
         );
     }
 }
+
+/// Audit (Pulse #3792): the running restart excludes private sampler scopes.
+/// A resident sampler revision carries only the ordinary device resource
+/// scope, so adding a latency device while its note sounds restarts audio at
+/// the cursor instead of refusing.
+#[test]
+fn adding_a_latency_device_while_a_sampler_plays_applies_without_refusal() {
+    let _native = native_fixture();
+    let file = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(32_768);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track");
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::LoadFirstSampler {
+        request_id: 1,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        empty_sampler: None,
+        path: file.wav(48_000, 8192),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(4).unwrap(),
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip");
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(4).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
+    // Lookahead latency changes the compensated layout under a sounding voice.
+    let limited = h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+        before: None,
+    });
+    assert_eq!(
+        limited.state.project.track(track).unwrap().devices().len(),
+        1
+    );
+    // `applied` panics on any callback rejection of the new revision.
+    h.applied(applied);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Acquire), "the transport keeps running");
+    assert!(
+        (0..4).any(|_| h.render().iter().flatten().any(|sample| *sample != 0.0)),
+        "the sampler sounds after the restart"
+    );
+}
