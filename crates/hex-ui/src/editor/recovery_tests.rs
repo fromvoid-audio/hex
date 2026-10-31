@@ -896,3 +896,73 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
     backend.close();
     std::fs::remove_file(path).unwrap();
 }
+
+#[gpui::test]
+fn refused_latency_edit_in_midi_project_shows_waiting_until_applied_or_stopped(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::super::audio_admission::{LatencyRebuild, ProjectRevision, StoppedPlaybackRestore};
+    use super::super::controller::LATENCY_EDIT_WAITING;
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let (project, ..) = super::super::clip_drag_ui_test::midi_project();
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let deadline = crate::test_wait::hang_deadline();
+    let (mut output, _backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(output) => break output,
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && Instant::now() < deadline =>
+            {
+                std::thread::yield_now()
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    let client = output.take_client().unwrap();
+    editor.update(cx, |view, _| {
+        let output = client.output_identity().unwrap();
+        // The callback reports playing; the refused revision is current.
+        client.status().unwrap().playing.store(true, Release);
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "midi latency fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.project_generation = 0;
+        let revision = view.state.as_ref().unwrap().revision;
+        let project = ProjectRevision {
+            generation: 0,
+            revision,
+        };
+        view.latency_rebuild = Some(LatencyRebuild::Waiting { project, output });
+
+        // Playing: MIDI voices are kept, and the wait is visible, once.
+        assert!(view.tick_latency_rebuild());
+        assert_eq!(view.error.as_deref(), Some(LATENCY_EDIT_WAITING));
+        assert!(view.latency_rebuild.is_some());
+        assert!(!view.tick_latency_rebuild());
+        assert!(view.pending_audio_commands.is_empty());
+
+        // Once the revision is audible, the notice retires with the wait.
+        view.applied_project_revision = Some(revision);
+        assert!(view.tick_latency_rebuild());
+        assert!(view.error.is_none());
+        assert!(view.latency_rebuild.is_none());
+
+        // Stop installs the waiting revision through the stopped restore.
+        view.applied_project_revision = None;
+        view.latency_rebuild = Some(LatencyRebuild::Waiting { project, output });
+        assert!(view.tick_latency_rebuild());
+        view.stop();
+        assert!(view.latency_rebuild.is_none());
+        assert_ne!(view.error.as_deref(), Some(LATENCY_EDIT_WAITING));
+        assert_eq!(
+            view.stopped_playback_restore,
+            Some(StoppedPlaybackRestore::Preparing)
+        );
+    });
+}
