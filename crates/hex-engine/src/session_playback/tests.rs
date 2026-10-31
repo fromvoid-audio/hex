@@ -4144,6 +4144,88 @@ fn mutable_arrangement_source_change_does_not_take_the_exact_continuity_path() {
     );
 }
 
+/// Field report (Pulse #3770): editing a note that is sounding under the
+/// cursor refused publication with `MutableInstrumentChase`, so audio stayed on
+/// the old revision. The strict planner still refuses; the live publication
+/// path restarts audio at the cursor instead (playing or paused), chasing the
+/// edited note, and a following edit applies too.
+#[test]
+fn live_handoff_restarts_an_unproven_chase_while_playing_or_paused() {
+    use hex_project::{Command, Editor};
+
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let revision = |project: &hex_project::Project| {
+        revision_with_instrument_registry(project, Arc::clone(&table), &registry)
+    };
+    for paused in [false, true] {
+        let mut editor =
+            Editor::new(with_test_instrument(&project(1.0, 0, 8 << 32), id, 0), 8).unwrap();
+        let note = editor.project().tracks()[0].midi_clips()[0].notes()[0].id();
+        let mut playback = SessionPlayback::new(revision(editor.project())).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut [[0.0; 2]; 8]).unwrap();
+        if paused {
+            playback.apply(SessionPlaybackCommand::Pause).unwrap();
+        }
+        let frame = playback.performance_frame();
+        editor
+            .execute(Command::UpdateMidiNote {
+                note,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_raw(8 << 32),
+                pitch: 61,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        let edited = revision(editor.project());
+        assert_eq!(
+            SessionPlayback::new(Arc::clone(&edited))
+                .unwrap()
+                .try_inherit_state_from(&mut playback),
+            Err(SessionPlaybackError::MutableInstrumentChase),
+            "strict planner; paused={paused}"
+        );
+        let mut candidate = SessionPlayback::new(Arc::clone(&edited)).unwrap();
+        candidate
+            .try_inherit_state_live_from(&mut playback)
+            .unwrap();
+        assert_eq!(candidate.playing(), !paused);
+        assert_eq!(candidate.performance_frame(), frame);
+
+        editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+        let later_revision = revision(editor.project());
+        let mut later = SessionPlayback::new(Arc::clone(&later_revision)).unwrap();
+        later.try_inherit_state_live_from(&mut candidate).unwrap();
+        assert_eq!(later.performance_frame(), frame);
+
+        let mut oracle = SessionPlayback::new(later_revision).unwrap();
+        oracle.play_from(frame).unwrap();
+        if paused {
+            later.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let mut actual = [[0.0; 2]; 64];
+        let mut expected = actual;
+        later.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(
+            actual, expected,
+            "restart chases the edited note; paused={paused}"
+        );
+        assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    }
+}
+
 #[test]
 fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
     use hex_lattice_contract::NativeDeviceMetadata as _;

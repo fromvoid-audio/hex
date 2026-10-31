@@ -764,8 +764,30 @@ fn preview_for_pointer(
     resolve_preview(drag, project, frame)
 }
 
+/// The right edge of a repeating audio clip extends by whole repeats, like the
+/// outer loop corner. A plain trim cannot grow a warped clip past its retained
+/// audio, so routing it as a trim would refuse every extension.
+fn effective_loop_kind(drag: &TrimDrag) -> Option<LoopHandleKind> {
+    drag.loop_kind.or_else(|| {
+        (drag.edge == TrimEdge::Right
+            && !drag.stretch_modifier.get()
+            && loop_handles::audio_repeats(&drag.clip))
+        .then_some(LoopHandleKind::Outer)
+    })
+}
+
+/// The held preview a refused pointer position falls back to, if it was made
+/// in the current trim/stretch mode.
+fn retained_preview(drag: &TrimDrag) -> Option<TrimPreviewState> {
+    drag.preview
+        .try_borrow()
+        .ok()?
+        .clone()
+        .filter(|preview| preview.stretch == drag.stretch_modifier.get())
+}
+
 fn resolve_preview(drag: &TrimDrag, project: &Project, frame: u64) -> Option<TrimPreviewState> {
-    if drag.loop_kind.is_some() {
+    if effective_loop_kind(drag).is_some() {
         Some(TrimPreviewState {
             clip: preview_clip(drag, project, frame).ok()?,
             command_frame: frame,
@@ -802,7 +824,7 @@ fn preview_clip(
     project: &Project,
     frame: u64,
 ) -> Result<Clip, hex_project::Invalid> {
-    if let Some(kind) = drag.loop_kind {
+    if let Some(kind) = effective_loop_kind(drag) {
         hex_project::preview_audio_view_resize(
             &drag.clip,
             project.tempo_map(),
@@ -1363,6 +1385,24 @@ impl EditorView {
         let next = preview_for_pointer(drag, &state.project, pointer_x, lane, viewport);
         if next.is_some() {
             drag.valid_pointer_x.set(Some(pointer_x));
+        } else {
+            let reason = snapped_edge_frame(drag, &state.project, pointer_x, lane, viewport)
+                .and_then(|frame| preview_clip(drag, &state.project, frame).err());
+            let held = retained_preview(drag).is_some();
+            self.status = match (held, reason) {
+                (true, Some(hex_project::Invalid(reason))) => {
+                    format!("resize held at the last valid length · {reason}")
+                }
+                (true, None) => "resize held at the last valid length".into(),
+                (false, Some(hex_project::Invalid(reason))) => format!("resize refused · {reason}"),
+                (false, None) => self.status.clone(),
+            };
+            if held {
+                // Hold the last valid extent rather than dropping the gesture.
+                self.active_trim_drag = Some(drag.clone());
+                cx.notify();
+                return false;
+            }
         }
         let changed = replace_audio_trim_preview(&drag.preview, next);
         self.active_trim_drag = Some(drag.clone());
@@ -1811,19 +1851,22 @@ impl EditorView {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         };
-        let Some(resolved) = resolve_preview(drag, &state.project, frame) else {
+        let Some(resolved) =
+            resolve_preview(drag, &state.project, frame).or_else(|| retained_preview(drag))
+        else {
             return;
         };
         let frame = resolved.command_frame;
         let preview = resolved.clip;
         if preview_is_noop(&drag.clip, &preview)
-            || (drag.loop_kind.is_some() && audio_grab_frame(drag, &state.project) == Some(frame))
+            || (effective_loop_kind(drag).is_some()
+                && audio_grab_frame(drag, &state.project) == Some(frame))
         {
             self.clear_trim_drag(drag.project_generation, drag.clip.id(), cx);
             return;
         }
         let stretch = drag.stretch_modifier.get();
-        let request = Request::Edit(if let Some(kind) = drag.loop_kind {
+        let request = Request::Edit(if let Some(kind) = effective_loop_kind(drag) {
             Command::ResizeAudioClipView {
                 clip: drag.clip.id(),
                 operation: kind.audio_operation(frame),

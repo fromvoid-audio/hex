@@ -314,24 +314,47 @@ impl SessionPlayback {
         Ok((candidates, count, source_frame))
     }
 
+    /// Strict planner: an unproven mutable chase refuses, leaving both
+    /// runtimes unchanged.
     pub(super) fn inherit_state(
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_with_groups(previous, None)
+        self.inherit_state_planned(previous, None, None, false)
     }
-    pub(super) fn inherit_state_with_groups(
+    /// Live publication policy (Pulse #3770): see `inherit_state_planned`.
+    pub(super) fn inherit_state_live(
         &mut self,
         previous: &mut Self,
         groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned(previous, groups, None)
+        self.inherit_state_planned(previous, groups, None, true)
     }
+    /// With `live`, an unproven mutable chase does not refuse: the strict
+    /// planner rejects it in its pure preflight (nothing committed), then audio
+    /// restarts at the cursor through the reset handoff. Voices reset and
+    /// gate-active notes are chased on the next played block; the transport is
+    /// never stopped and no note-off is lost.
     pub(super) fn inherit_state_planned(
+        &mut self,
+        previous: &mut Self,
+        groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
+        mut demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
+        live: bool,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        match self.inherit_state_planned_once(previous, groups, demand.as_deref_mut(), false) {
+            Err(SessionPlaybackError::MutableInstrumentChase) if live => {
+                self.inherit_state_planned_once(previous, None, demand, true)
+            }
+            result => result,
+        }
+    }
+    fn inherit_state_planned_once(
         &mut self,
         previous: &mut Self,
         mut groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
+        force_restart: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
@@ -564,7 +587,7 @@ impl SessionPlayback {
         // Apply the interactive seek law at the kept cursor (device chains,
         // tails, compensation and mutable voices start empty) instead of
         // refusing every later revision until Stop.
-        let relocate = planned_transfer.is_none()
+        let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
         let paused_cursor = (relocate && !previous.playing).then_some(previous.arrangement_frame);
@@ -576,7 +599,7 @@ impl SessionPlayback {
             && previous.playing
             && mapped_main_clock
             && previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame);
-        if (self.compensation.is_some() || previous.compensation.is_some())
+        if (self.compensation.is_some() || previous.compensation.is_some() || force_restart)
             && (!previous.playing || running_restart)
             && (paused_cursor.is_some()
                 || running_restart
@@ -716,6 +739,8 @@ impl SessionPlayback {
                 let monitoring = self.monitor_source_releases || previous.monitor_source_releases;
                 self.install_seek(frame, beat);
                 self.monitor_source_releases = monitoring;
+                // Notes sounding at the cursor are chased when play resumes.
+                self.interactive_start_frame = Some(frame);
             } else if running_restart {
                 self.performance_frame = previous.performance_frame;
                 self.arrangement_frame = previous.arrangement_frame;
