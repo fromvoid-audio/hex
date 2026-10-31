@@ -306,7 +306,8 @@ impl EditorView {
                         return;
                     }
                     let captured = down.update(cx, |view, cx| {
-                        if view.gain_numeric_editing(cx)
+                        if view.context_menu.is_some()
+                            || view.gain_numeric_editing(cx)
                             || view.clip_numeric_editing(cx)
                             || view.project_tempo_editing(cx)
                         {
@@ -1526,7 +1527,11 @@ impl EditorView {
         if !self.section_has_focus(window) || self.sections.selected.is_none() {
             return false;
         }
-        if self.sections.selection.len() >= 2 {
+        if self.sections.selection.len() < 2 {
+            self.error = Some("shift-click another section to merge a span".into());
+        } else if !self.sections_available() {
+            self.error = Some("applying edit · wait before merging sections".into());
+        } else {
             self.section_metadata(Command::MergeArrangementSections(
                 self.sections.selection.clone(),
             ));
@@ -4930,5 +4935,80 @@ mod tests {
         assert_eq!(click(10, shift), (all[..3].to_vec(), Some(all[2])));
         click(14, Modifiers::default());
         assert_eq!(click(2, shift), (all.to_vec(), Some(all[0])));
+    }
+    #[gpui::test]
+    fn menu_merge_click_over_the_lane_merges_and_undo_restores(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (a, b) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
+        let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
+        visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        // One selected section: g explains instead of silently consuming input.
+        visual.simulate_keystrokes("g");
+        editor.read_with(cx, |v, _| {
+            assert!(v.sections.pending.is_none());
+            assert!(
+                v.error
+                    .as_ref()
+                    .is_some_and(|e| e.contains("shift-click another section to merge a span"))
+            );
+        });
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(b, MouseButton::Left, shift);
+        visual.simulate_mouse_up(b, MouseButton::Left, shift);
+        visual.run_until_parked();
+        let body = editor.read_with(cx, |v, _| {
+            let [_, top, _, height] = v.section_layout().unwrap();
+            point(a.x, px(top + height * 0.75))
+        });
+        visual.simulate_mouse_down(body, MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(body, MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |v, _| {
+            assert_eq!(
+                v.context_menu.as_ref().unwrap().items[0].label,
+                "merge selected span · g"
+            )
+        });
+        // The first row opens at the pointer, above the lane's own capture.
+        let panel = visual.debug_bounds("context-menu-panel").unwrap();
+        let row = point(panel.origin.x + px(20.0), panel.origin.y + px(14.0));
+        visual.simulate_mouse_down(row, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(row, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let event = editor.update(cx, |v, _| {
+            assert!(v.context_menu.is_none());
+            assert!(matches!(
+                v.sections.pending.as_ref().map(|p| &p.command),
+                Some(Command::MergeArrangementSections(_))
+            ));
+            next(&v.service)
+        });
+        assert!(event.error.is_none(), "{:?}", event.error);
+        editor.update(cx, |v, cx| {
+            v.receive(event);
+            let p = &v.state.as_ref().unwrap().project;
+            assert_eq!(p.arrangement_sections().len(), 1);
+            assert_eq!(
+                p.arrangement_section(ids[0]).unwrap().end(),
+                BeatTime::from_quarters(12).unwrap()
+            );
+            assert_eq!(p.tracks(), before.tracks());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-z");
+        let event = editor.update(cx, |v, _| next(&v.service));
+        assert!(event.error.is_none(), "{:?}", event.error);
+        editor.update(cx, |v, _| {
+            v.receive(event);
+            assert_eq!(v.state.as_ref().unwrap().project, before);
+        });
     }
 }
