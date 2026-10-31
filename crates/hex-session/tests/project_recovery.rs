@@ -1,6 +1,8 @@
 //! Public worker recovery, relink atomicity, restart and mixed project round trips.
 use hex_project::{BeatTime, Command, Created, Meter, Project, Tempo};
-use hex_session::service::{Event, ProjectSource, Request, Service, missing_assets};
+use hex_session::service::{
+    Event, ProjectSource, Request, Service, missing_media::missing_media_report,
+};
 use std::{
     collections::BTreeMap,
     fs,
@@ -406,7 +408,7 @@ fn mixed_project_relink_recovery_save_as_current_and_session_round_trip() {
     let moved = directory.0.join("MovedCase.wav");
     fs::rename(&media, &moved).expect("missing original media");
     let source = ProjectSource::SavedJournal(target.clone());
-    let missing = missing_assets(&source).expect("discover missing stable assets");
+    let missing = missing_media_report(&source).expect("discover missing stable assets");
     assert_eq!(missing.len(), 2);
     let restarted = directory.service();
     wait(&restarted);
@@ -420,7 +422,7 @@ fn mixed_project_relink_recovery_save_as_current_and_session_round_trip() {
     let initial = request(&restarted, Request::SaveNew(working_path.clone()));
     let wrong = directory.0.join("WrongLength.wav");
     wav(&wrong, 7);
-    let bad_relinks = missing.iter().map(|(id, _)| (*id, wrong.clone())).collect();
+    let bad_relinks = missing.iter().map(|m| (m.asset, wrong.clone())).collect();
     restarted
         .submit(Request::OpenWith {
             source: source.clone(),
@@ -447,7 +449,7 @@ fn mixed_project_relink_recovery_save_as_current_and_session_round_trip() {
         fs::read(&target).expect("source preserved after refusal"),
         saved_bytes
     );
-    let relinks = missing.iter().map(|(id, _)| (*id, moved.clone())).collect();
+    let relinks = missing.iter().map(|m| (m.asset, moved.clone())).collect();
     let recovered = open(&restarted, source, relinks);
     let mut expected = dirty_project.snapshot();
     for asset in &mut expected.assets {

@@ -249,7 +249,7 @@ enum InvalidSource {
 fn rendered_native_effect_refuses_changed_sources_and_unsupported_inventory_before_spawn(
     cx: &mut TestAppContext,
 ) {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for (invalid, pointer) in [
         InvalidSource::Missing,
         InvalidSource::ReplacedExecutable,
@@ -375,7 +375,7 @@ enum Closing {
 fn rendered_native_effect_close_and_document_replacement_cancel_exact_preparation(
     cx: &mut TestAppContext,
 ) {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for closing in [Closing::ViewDrop, Closing::Discard, Closing::NewDocument] {
         let mut fixture = open_browser(
             cx,
@@ -499,7 +499,7 @@ fn rendered_native_effect_close_and_document_replacement_cancel_exact_preparatio
 fn rendered_native_effect_terminals_preserve_canonical_history_and_original_source(
     cx: &mut TestAppContext,
 ) {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for terminal in [
         Terminal::BrowserEscape,
         Terminal::EditorEscape,
@@ -722,7 +722,7 @@ fn rendered_native_effect_terminals_preserve_canonical_history_and_original_sour
 fn rendered_native_effect_browser_enters_actual_track_return_main_after_ack(
     cx: &mut TestAppContext,
 ) {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for (location, pointer) in
         (0..3).flat_map(|location| [false, true].map(|pointer| (location, pointer)))
     {

@@ -8,6 +8,7 @@ use crate::MediaBank;
 use hex_engine::native_device_resources::{
     DeviceResourceAdmission, DeviceResourcePhase, PreparedDeviceResources,
 };
+use std::time::{Duration, Instant};
 
 mod bounce;
 mod runtime_inputs;
@@ -684,16 +685,38 @@ pub(super) fn execute_command(
     resident: &mut Option<Snapshot>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
+    execute_command_timed(
+        session, command, previous, context, events, resident, admission, None,
+    )
+}
+/// `execute_command` that reports resident transition phases when measured.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_command_timed(
+    session: &mut Session,
+    command: Command,
+    previous: Option<&PreparedRevision>,
+    context: hex_engine::AudioSourceContext,
+    events: &mut WorkerEvents,
+    resident: &mut Option<Snapshot>,
+    admission: sampler_export::Admission<'_>,
+    phases: Option<&mut super::diagnostics::SectionPhases>,
+) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
     if session.audio_mode() == DocumentAudioMode::Resident
         && let Some(sink) = events.resident_audio()
     {
-        let (created, snapshot) = session.command_resident_snapshot(
-            command,
-            context,
-            sink,
-            admission,
-            resident.as_ref(),
-        )?;
+        let (created, snapshot) = session
+            .resident_transition_timed(
+                Transition::Command(Box::new(command)),
+                context,
+                sink,
+                admission,
+                resident.as_ref(),
+                None,
+                phases,
+            )?
+            .ok_or(SessionError::Invalid(
+                "resident command produced no transition",
+            ))?;
         let prepared = Arc::clone(&snapshot.prepared);
         *resident = Some(snapshot);
         Ok((created, prepared))
@@ -1726,6 +1749,7 @@ impl Session {
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
+        phases: &mut super::diagnostics::SectionPhases,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
         let cursor = if position.playing {
             None
@@ -1753,7 +1777,15 @@ impl Session {
                 section_loop,
             },
         };
-        self.resident_transition(transition, context, sink, admission, current, None)
+        self.resident_transition_timed(
+            transition,
+            context,
+            sink,
+            admission,
+            current,
+            None,
+            Some(phases),
+        )
     }
     pub(super) fn command_resident_snapshot(
         &mut self,
@@ -1895,6 +1927,24 @@ impl Session {
         current: Option<&Snapshot>,
         cancel: Option<&AtomicBool>,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
+        self.resident_transition_timed(transition, context, sink, admission, current, cancel, None)
+    }
+    /// `phases` receives control-worker durations; `edit` is the remainder of
+    /// the canonical transition around preparation and publication.
+    #[allow(clippy::too_many_arguments)]
+    fn resident_transition_timed(
+        &mut self,
+        transition: Transition,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+        cancel: Option<&AtomicBool>,
+        phases: Option<&mut super::diagnostics::SectionPhases>,
+    ) -> Result<Option<(Created, Snapshot)>, SessionError> {
+        let started = Instant::now();
+        let mut prepare_time = Duration::ZERO;
+        let mut publish_time = Duration::ZERO;
         if let Transition::Command(command)
         | Transition::PluginEffect { command, .. }
         | Transition::MidiCommand(command)
@@ -1965,6 +2015,7 @@ impl Session {
             } else {
                 context
             };
+            let prepare_started = Instant::now();
             let mut snapshot = inputs.prepare_transition(
                 source,
                 project,
@@ -1976,6 +2027,8 @@ impl Session {
                 waveforms,
                 context,
             )?;
+            let publish_started = Instant::now();
+            prepare_time = publish_started - prepare_started;
             if let Some(frame) = stopped_bounce_frame {
                 inputs.publish_stopped_at_frame(&mut snapshot, project, sink, context, frame)?;
             } else if let Some(cursor) = stopped_cursor {
@@ -2016,6 +2069,7 @@ impl Session {
             } else {
                 inputs.publish(&mut snapshot, project, sink, context)?;
             }
+            publish_time = publish_started.elapsed();
             Ok(snapshot)
         };
         let result = match transition {
@@ -2040,7 +2094,16 @@ impl Session {
                 result.map(|result| result.map(|snapshot| (Created::None, snapshot)))
             }
         };
+        let finish_started = Instant::now();
         sink.finish_resident_effect_edit(context, result.is_ok());
+        if let Some(phases) = phases {
+            phases.finish = finish_started.elapsed();
+            phases.prepare = prepare_time;
+            phases.publish = publish_time;
+            phases.edit = (finish_started - started)
+                .saturating_sub(prepare_time)
+                .saturating_sub(publish_time);
+        }
         result
     }
 }
