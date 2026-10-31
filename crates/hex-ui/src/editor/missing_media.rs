@@ -218,7 +218,7 @@ impl EditorView {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some(theme::text(format!("locate {}", row.media.file_name())).into()),
+            prompt: Some(theme::text(format!("locate {}", row.media.file_name()))),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(mut paths))) = prompt.await else {
@@ -272,7 +272,7 @@ impl EditorView {
             files: false,
             directories: true,
             multiple: true,
-            prompt: Some(theme::text("search folders").into()),
+            prompt: Some(theme::text("search folders")),
         });
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(roots))) = prompt.await else {

@@ -152,7 +152,11 @@ fn folder_search_reports_unique_ambiguous_and_mismatched_candidates() {
     files.wav("a/snare.wav", 48_000, 20);
     files.wav("b/snare.wav", 48_000, 20);
     files.wav("b/pad.wav", 48_000, 31);
-    let outcome = search(&missing, &[files.0.clone()], SearchLimits::default());
+    let outcome = search(
+        &missing,
+        std::slice::from_ref(&files.0),
+        SearchLimits::default(),
+    );
     assert_eq!(outcome.stopped, None);
     assert_eq!(outcome.unique_match(missing[0].asset), Some(kick.as_path()));
     assert_eq!(outcome.candidates[&missing[1].asset].len(), 2);
@@ -175,7 +179,7 @@ fn folder_search_is_bounded_and_cancellable() {
     }
     let shallow = search(
         &missing,
-        &[files.0.clone()],
+        std::slice::from_ref(&files.0),
         SearchLimits {
             max_depth: 2,
             ..SearchLimits::default()
@@ -198,7 +202,7 @@ fn folder_search_is_bounded_and_cancellable() {
     let progress = AtomicUsize::new(0);
     let cancelled = search_folders(
         &missing,
-        &[files.0.clone()],
+        std::slice::from_ref(&files.0),
         SearchLimits::default(),
         &AtomicBool::new(true),
         &progress,
@@ -221,7 +225,11 @@ fn folder_search_survives_symlink_cycles() {
     files.wav("lib/kick.wav", 48_000, 10);
     std::os::unix::fs::symlink(files.0.join("lib"), files.0.join("lib/loop")).unwrap();
     std::os::unix::fs::symlink(files.0.join("lib"), files.0.join("alias")).unwrap();
-    let outcome = search(&missing, &[files.0.clone()], SearchLimits::default());
+    let outcome = search(
+        &missing,
+        std::slice::from_ref(&files.0),
+        SearchLimits::default(),
+    );
     assert_eq!(outcome.stopped, None);
     // "alias" sorts first, so the shared directory is visited once through it.
     let found = outcome.unique_match(missing[0].asset).unwrap();
