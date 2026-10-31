@@ -867,6 +867,9 @@ pub(super) struct EditorView {
     close_prompt_open: bool,
     export_pending: bool,
     bounce_control: Option<hex_session::service::ExportControl>,
+    /// `b` is held during the active Arrangement clip drag; release bounces.
+    drag_bounce_held: bool,
+    pending_bounce_drop: Option<bounce::PendingBounceDrop>,
     pending_plugin_effect: Option<plugin_effect::PendingPluginEffect>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
@@ -1593,6 +1596,8 @@ impl EditorView {
             close_prompt_open: false,
             export_pending: false,
             bounce_control: None,
+            drag_bounce_held: false,
+            pending_bounce_drop: None,
             pending_plugin_effect: None,
             export_control: None,
             export_window: None,

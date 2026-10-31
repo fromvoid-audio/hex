@@ -767,6 +767,9 @@ impl Render for EditorView {
                 }
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, window, cx| {
+                if view.drag_bounce_key_up(event) {
+                    cx.notify();
+                }
                 if view.time_selection_key_up(event, cx) {
                     cx.stop_propagation();
                 }
@@ -1416,7 +1419,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &super::BounceToNewTracks, window, cx| {
-                view.bounce_arrangement_selection(window, false);
+                if !view.arm_drag_bounce() {
+                    view.bounce_arrangement_selection(window, false);
+                }
                 cx.notify();
             }))
             .on_action(

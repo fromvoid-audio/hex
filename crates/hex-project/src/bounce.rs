@@ -54,6 +54,24 @@ impl BounceTarget {
         in_place && !self.is_audio_group()
     }
 }
+/// Where a new (not in-place) bounce lands and what happens to its sources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BounceAdoption {
+    /// One new track below each source track; sources stay unchanged.
+    NewTracks,
+    /// As `NewTracks`, then deactivate the bounced sources (contextual `c`/`0`).
+    NewTracksMutingSources,
+    /// Held-`b` clip drop: outputs keep their offsets from the dragged anchor and
+    /// overwrite their destination span; sources stay unchanged. Clips only.
+    Drop(BounceDrop),
+}
+/// Captured drop of a dragged anchor clip, in the drag's own clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BounceDrop {
+    pub anchor: ClipId,
+    pub track: TrackId,
+    pub position: crate::ClipGroupPosition,
+}
 #[derive(Clone, Debug)]
 pub struct BounceTrack {
     pub source: BounceSource,
@@ -71,6 +89,19 @@ pub struct BounceFile {
     pub path: PathBuf,
 }
 impl Project {
+    /// Validate a held-`b` clip drop before rendering: the same placement rules
+    /// commit applies, so overlap and off-track drops refuse without a render.
+    pub fn validate_bounce_drop(
+        &self,
+        target: &BounceTarget,
+        drop: BounceDrop,
+    ) -> Result<(), Invalid> {
+        if !matches!(target, BounceTarget::Clips(_)) {
+            return Err(Invalid("bounce drop requires dragged arrangement clips"));
+        }
+        let plan = self.plan_arrangement_bounce(target, false)?;
+        drop_placements(self, &plan, drop).map(|_| ())
+    }
     /// Validate captured intent before rendering. No file or history mutation.
     pub fn plan_arrangement_bounce(
         &self,
@@ -248,15 +279,22 @@ pub(crate) fn commit(
     project: &mut Project,
     target: BounceTarget,
     in_place: bool,
-    mute_sources: bool,
+    adoption: crate::BounceAdoption,
     files: Vec<BounceFile>,
 ) -> Result<Created, Invalid> {
-    if mute_sources
-        && (in_place || !matches!(target, BounceTarget::Clips(_) | BounceTarget::Range(_)))
-    {
-        return Err(Invalid(
-            "bounce and mute requires selected clips or a time selection on new tracks",
-        ));
+    match adoption {
+        BounceAdoption::NewTracks => {}
+        BounceAdoption::NewTracksMutingSources
+            if !in_place && matches!(target, BounceTarget::Clips(_) | BounceTarget::Range(_)) => {}
+        BounceAdoption::NewTracksMutingSources => {
+            return Err(Invalid(
+                "bounce and mute requires selected clips or a time selection on new tracks",
+            ));
+        }
+        BounceAdoption::Drop(_) if !in_place && matches!(target, BounceTarget::Clips(_)) => {}
+        BounceAdoption::Drop(_) => {
+            return Err(Invalid("bounce drop requires dragged arrangement clips"));
+        }
     }
     if let BounceTarget::AudioGroup { clips, range } = &target {
         if !in_place {
@@ -274,9 +312,13 @@ pub(crate) fn commit(
             return Err(Invalid("bounce outputs must have distinct media paths"));
         }
     }
+    let placements = match adoption {
+        BounceAdoption::Drop(drop) => Some(drop_placements(project, &plan, drop)?),
+        BounceAdoption::NewTracks | BounceAdoption::NewTracksMutingSources => None,
+    };
     let mut first = None;
     let mut last = None;
-    for (item, file) in plan.into_iter().zip(files) {
+    for (index, (item, file)) in plan.into_iter().zip(files).enumerate() {
         if file.source != item.source
             || file.track != item.track
             || file.start != item.start
@@ -330,7 +372,14 @@ pub(crate) fn commit(
                 ));
             }
         }
-        let destination = if in_place {
+        let span = item.end - item.start;
+        let (destination, start) = if let Some(placements) = &placements {
+            let (track, start) = placements[index];
+            project.apply(Command::DeleteTimeRange {
+                range: TimeRange::new(vec![track], start, start + span)?,
+            })?;
+            (track, start)
+        } else if in_place {
             match &target {
                 BounceTarget::Clips(_) | BounceTarget::Track(_) => {
                     for clip in &item.clips {
@@ -366,7 +415,7 @@ pub(crate) fn commit(
                 owner.instrument = None;
                 owner.instrument_position = None;
             }
-            item.track
+            (item.track, file.start)
         } else {
             let index = project
                 .tracks
@@ -393,13 +442,13 @@ pub(crate) fn commit(
             owner.sends = original.sends;
             owner.muted = original.muted;
             owner.soloed = original.soloed;
-            id
+            (id, file.start)
         };
         // No overwrite: a release tail intersecting unselected material refuses the
         // entire private candidate instead of erasing or truncating either source.
         let Created::Imported { clip, .. } = project.apply(Command::ImportPreparedAudioClip {
             track: destination,
-            start: file.start,
+            start,
             path: file.path,
             source_sample_rate: project.sample_rate(),
             source_frames: file.frames,
@@ -411,11 +460,10 @@ pub(crate) fn commit(
         };
         // A new-track clip bounce keeps the selected span; the rendered release
         // tail stays in the file beyond the view end, revealed by extending it.
-        let span = item.end - item.start;
         if !in_place && matches!(target, BounceTarget::Clips(_)) && file.frames > span {
             project.apply(Command::TrimClip {
                 clip,
-                start: file.start,
+                start,
                 duration: span,
                 source_offset: 0,
                 source_length: span,
@@ -426,7 +474,7 @@ pub(crate) fn commit(
     }
     // Same canonical deactivation as contextual `c`/`0`, but always inactive:
     // a toggle could reactivate material that was already partly muted.
-    if mute_sources {
+    if adoption == BounceAdoption::NewTracksMutingSources {
         match &target {
             BounceTarget::Clips(clips) => project.apply(Command::EditClips {
                 clips: clips.clone(),
@@ -461,6 +509,73 @@ pub(crate) fn commit(
         (Some(first), Some(last)) => Ok(Created::Clips { first, last }),
         _ => Err(Invalid("bounce produced no clips")),
     }
+}
+
+/// Resolve each output's destination track and start from the anchor's drop.
+/// Track order and frames shift by the anchor's own offset; any destination
+/// outside the track list, or overlapping a bounced source, refuses.
+fn drop_placements(
+    project: &Project,
+    plan: &[BounceTrack],
+    drop: BounceDrop,
+) -> Result<Vec<(TrackId, u64)>, Invalid> {
+    let index_of = |id| project.tracks().iter().position(|t| t.id() == id);
+    let interval = |id| -> Result<Option<(u64, u64)>, Invalid> {
+        if let Some(clip) = project.clip(id) {
+            return Ok(Some((clip.start(), clip.start() + clip.duration())));
+        }
+        project
+            .midi_clip(id)
+            .map(|clip| midi_frames(project, clip))
+            .transpose()
+    };
+    let anchor = plan
+        .iter()
+        .find(|item| item.clips.contains(&drop.anchor))
+        .ok_or(Invalid("bounce drop anchor is not a dragged clip"))?;
+    let (anchor_start, _) =
+        interval(drop.anchor)?.ok_or(Invalid("bounce drop anchor no longer exists"))?;
+    let destination = match drop.position {
+        crate::ClipGroupPosition::Audio(frame) => frame,
+        crate::ClipGroupPosition::Midi(beat) => project.tempo_map().beat_to_frame(beat)?,
+    };
+    let track_shift = index_of(drop.track)
+        .zip(index_of(anchor.track))
+        .map(|(to, from)| to as i128 - from as i128)
+        .ok_or(Invalid("bounce drop track no longer exists"))?;
+    let frame_shift = i128::from(destination) - i128::from(anchor_start);
+    let mut sources = Vec::new();
+    for item in plan {
+        for id in &item.clips {
+            if let Some(range) = interval(*id)? {
+                sources.push((item.track, range));
+            }
+        }
+    }
+    plan.iter()
+        .map(|item| {
+            let track = index_of(item.track)
+                .and_then(|i| usize::try_from(i as i128 + track_shift).ok())
+                .and_then(|i| project.tracks().get(i))
+                .filter(|t| t.kind() == crate::TrackKind::Ordinary)
+                .ok_or(Invalid("bounce drop lands outside the ordinary tracks"))?
+                .id();
+            let start = u64::try_from(i128::from(item.start) + frame_shift)
+                .map_err(|_| Invalid("bounce drop starts before the arrangement"))?;
+            let end = start
+                .checked_add(item.end - item.start)
+                .ok_or(Invalid("bounce drop end overflows"))?;
+            if sources
+                .iter()
+                .any(|(owner, (s, e))| *owner == track && *s < end && *e > start)
+            {
+                return Err(Invalid(
+                    "bounce drop would overwrite its own source · drop elsewhere",
+                ));
+            }
+            Ok((track, start))
+        })
+        .collect()
 }
 
 fn midi_frames(project: &Project, clip: &crate::MidiClip) -> Result<(u64, u64), Invalid> {
@@ -521,7 +636,7 @@ mod tests {
         let after_command = Command::CommitArrangementBounce {
             target: BounceTarget::Track(track),
             in_place: true,
-            mute_sources: false,
+            adoption: BounceAdoption::NewTracks,
             files: vec![BounceFile {
                 source: BounceSource::Arrangement,
                 track,
@@ -597,7 +712,7 @@ mod tests {
             .execute(Command::CommitArrangementBounce {
                 target: BounceTarget::Clips(vec![clip]),
                 in_place: true,
-                mute_sources: false,
+                adoption: BounceAdoption::NewTracks,
                 files: vec![output(150)],
             })
             .unwrap_err();
@@ -608,7 +723,7 @@ mod tests {
                 .execute(Command::CommitArrangementBounce {
                     target: BounceTarget::Range(TimeRange::new(vec![track], 0, 100).unwrap()),
                     in_place: true,
-                    mute_sources: false,
+                    adoption: BounceAdoption::NewTracks,
                     files: vec![output(101)]
                 })
                 .is_err()
@@ -619,7 +734,7 @@ mod tests {
                 .execute(Command::CommitArrangementBounce {
                     target: BounceTarget::Clips(vec![clip]),
                     in_place: false,
-                    mute_sources: false,
+                    adoption: BounceAdoption::NewTracks,
                     files: vec![output(150)]
                 })
                 .is_ok()
@@ -713,7 +828,7 @@ mod tests {
                 .execute(Command::CommitArrangementBounce {
                     target,
                     in_place: true,
-                    mute_sources: false,
+                    adoption: BounceAdoption::NewTracks,
                     files: vec![BounceFile {
                         source: crate::BounceSource::Arrangement,
                         track,
@@ -748,7 +863,7 @@ mod tests {
                 .execute(Command::CommitArrangementBounce {
                     target: BounceTarget::Track(track),
                     in_place: true,
-                    mute_sources: false,
+                    adoption: BounceAdoption::NewTracks,
                     files
                 })
                 .is_err()
@@ -821,7 +936,7 @@ mod tests {
                     .execute(Command::CommitArrangementBounce {
                         target,
                         in_place,
-                        mute_sources: true,
+                        adoption: BounceAdoption::NewTracksMutingSources,
                         files: vec![output(0, 100)],
                     })
                     .is_err()
@@ -833,7 +948,7 @@ mod tests {
             .execute(Command::CommitArrangementBounce {
                 target: BounceTarget::Clips(vec![clip]),
                 in_place: false,
-                mute_sources: true,
+                adoption: BounceAdoption::NewTracksMutingSources,
                 files: vec![output(0, 100)],
             })
             .unwrap();
@@ -853,7 +968,7 @@ mod tests {
             .execute(Command::CommitArrangementBounce {
                 target: BounceTarget::Range(range.clone()),
                 in_place: false,
-                mute_sources: true,
+                adoption: BounceAdoption::NewTracksMutingSources,
                 files: vec![output(25, 50)],
             })
             .unwrap();
@@ -870,5 +985,101 @@ mod tests {
             editor.project().snapshot().tracks,
             original.snapshot().tracks
         );
+    }
+
+    #[test]
+    fn bounce_drop_lands_at_the_anchor_offset_and_keeps_sources() {
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { track, clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "original.wav".into(),
+                sample_rate: 48_000,
+                frames: 100,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        let Created::Track(other) = editor
+            .execute(Command::InsertTrack {
+                name: "other".into(),
+                before_track: None,
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let original = editor.project().clone();
+        let commit = |track_to, start: u64| Command::CommitArrangementBounce {
+            target: BounceTarget::Clips(vec![clip]),
+            in_place: false,
+            adoption: BounceAdoption::Drop(BounceDrop {
+                anchor: clip,
+                track: track_to,
+                position: crate::ClipGroupPosition::Audio(start),
+            }),
+            files: vec![BounceFile {
+                source: BounceSource::Arrangement,
+                track,
+                start: 0,
+                frames: 150,
+                path: "generated.wav".into(),
+            }],
+        };
+        // Overlapping the source on its own track refuses without any edit.
+        let error = editor.execute(commit(track, 50)).unwrap_err();
+        assert!(error.to_string().contains("own source"), "{error}");
+        assert_eq!(editor.project(), &original);
+
+        editor.execute(commit(other, 300)).unwrap();
+        let p = editor.project();
+        assert_eq!(p.tracks().len(), 2);
+        assert_eq!(p.tracks()[0], original.tracks()[0]);
+        let bounced = &p.track(other).unwrap().clips()[0];
+        assert_eq!((bounced.start(), bounced.duration()), (300, 100));
+        assert_eq!(p.asset(bounced.asset()).unwrap().playback_frames(), 150);
+        let dropped = p.clone();
+        assert!(editor.undo());
+        assert_eq!(
+            editor.project().snapshot().tracks,
+            original.snapshot().tracks
+        );
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &dropped);
+        assert!(editor.undo());
+
+        // A same-track drop clear of the source is allowed; the source stays.
+        editor.execute(commit(track, 100)).unwrap();
+        let clips = editor.project().track(track).unwrap().clips();
+        assert_eq!(clips.len(), 2);
+        assert_eq!((clips[0].id(), clips[0].start()), (clip, 0));
+        assert_eq!((clips[1].start(), clips[1].duration()), (100, 100));
+        assert!(editor.undo());
+        for target in [
+            BounceTarget::Range(TimeRange::new(vec![track], 0, 100).unwrap()),
+            BounceTarget::Track(track),
+        ] {
+            let Command::CommitArrangementBounce {
+                adoption, files, ..
+            } = commit(other, 300)
+            else {
+                unreachable!()
+            };
+            assert!(
+                editor
+                    .execute(Command::CommitArrangementBounce {
+                        target,
+                        in_place: false,
+                        adoption,
+                        files,
+                    })
+                    .is_err()
+            );
+            assert_eq!(
+                editor.project().snapshot().tracks,
+                original.snapshot().tracks
+            );
+        }
     }
 }
