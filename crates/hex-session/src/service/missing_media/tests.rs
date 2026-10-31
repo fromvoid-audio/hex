@@ -277,9 +277,11 @@ fn moved_media_is_reported_found_and_relinked_on_open_then_saved() {
         MediaUsage::ArrangementClip { .. }
     ));
 
-    service.submit(Request::Open(saved.clone())).unwrap();
-    let refused = next(&service);
-    assert!(refused.error.is_some() && !refused.project_replaced);
+    // Opening without a relink keeps the asset offline instead of failing.
+    let offline = run(&service, Request::Open(saved.clone()));
+    assert!(offline.project_replaced && offline.error.is_none());
+    assert!(offline.state.project.asset_offline(asset));
+    assert_eq!(offline.state.project.asset(asset).unwrap().path(), original);
 
     let outcome = search(&report, &[files.0.join("new")], SearchLimits::default());
     let found = outcome.unique_match(asset).unwrap().to_path_buf();
@@ -305,4 +307,55 @@ fn moved_media_is_reported_found_and_relinked_on_open_then_saved() {
     let reopened = run(&service, Request::Open(saved));
     assert_eq!(reopened.state.project.asset(asset).unwrap().path(), moved);
     assert_eq!(fs::read(&moved).unwrap(), media_bytes);
+}
+
+#[test]
+fn missing_media_opens_offline_keeps_clips_and_saves_original_paths() {
+    let files = Files::new();
+    let kick = files.wav("old/kick.wav", 48_000, 256);
+    let snare = files.wav("old/snare.wav", 48_000, 128);
+    let service = Service::new(48_000, 16, 1 << 20).unwrap();
+    let _ = next(&service);
+    run(&service, Request::Import(kick.clone()));
+    let imported = run(&service, Request::Import(snare.clone()));
+    let id_of = |project: &Project, path: &Path| {
+        project
+            .assets()
+            .find(|asset| asset.path() == path)
+            .unwrap()
+            .id()
+    };
+    let kick_id = id_of(&imported.state.project, &kick);
+    let snare_id = id_of(&imported.state.project, &snare);
+    let clips = |project: &Project| {
+        project
+            .tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .count()
+    };
+    let clip_count = clips(&imported.state.project);
+    assert_eq!(clip_count, 2);
+    let saved = files.0.join("song.hex");
+    run(&service, Request::SaveNew(saved.clone()));
+    fs::remove_file(&kick).unwrap();
+
+    let opened = run(&service, Request::Open(saved.clone()));
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert!(opened.project_replaced);
+    let project = &opened.state.project;
+    assert_eq!(project.offline_assets().collect::<Vec<_>>(), [kick_id]);
+    assert!(!project.asset_offline(snare_id));
+    assert_eq!(clips(project), clip_count, "offline clips are kept");
+    assert_eq!(project.asset(kick_id).unwrap().path(), kick);
+
+    // Saving keeps the original path; reopening still finds it missing.
+    run(&service, Request::SaveCurrent);
+    let report = missing_media_report(&ProjectSource::Saved(saved.clone())).unwrap();
+    assert_eq!(report.len(), 1);
+    assert_eq!(report[0].expected_path, kick);
+    let reopened = run(&service, Request::Open(saved));
+    assert!(reopened.state.project.asset_offline(kick_id));
+    assert_eq!(clips(&reopened.state.project), clip_count);
+    assert!(!kick.exists(), "opening never recreates missing media");
 }

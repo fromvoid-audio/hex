@@ -4,6 +4,7 @@
 //! `hex_session::service::missing_media` owns reporting, matching and search;
 //! this view owns only dialog state. The project opens through the existing
 //! `OpenWith`/`OpenWithAudioMode` relink admission once every file is resolved,
+//! or on request with the remaining files offline (their clips play silence),
 //! so relinks stay in memory until the user saves. File system work runs on the
 //! background executor; the panel only reads media and never changes it.
 use super::EditorView;
@@ -369,10 +370,16 @@ impl EditorView {
     }
 
     fn missing_media_open(&mut self, cx: &mut Context<Self>) {
+        self.missing_media_open_with(false, cx);
+    }
+
+    /// Opens with the files found so far; with `offline`, files still missing
+    /// open offline (their clips are silent) instead of blocking the open.
+    pub(super) fn missing_media_open_with(&mut self, offline: bool, cx: &mut Context<Self>) {
         let Some(panel) = self.missing_media.as_ref() else {
             return;
         };
-        if !panel.complete() || panel.search.is_some() {
+        if (!offline && !panel.complete()) || panel.search.is_some() {
             return;
         }
         let Some(panel) = self.missing_media.take() else {
@@ -531,6 +538,10 @@ impl EditorView {
                 .on_click(cx.listener(|view, _, _, cx| view.missing_media_search(cx)))
         };
         let can_open = panel.complete() && panel.search.is_none();
+        let offline_button = (!panel.complete() && panel.search.is_none()).then(|| {
+            button("missing-media-open-offline", "open with missing offline")
+                .on_click(cx.listener(|view, _, _, cx| view.missing_media_open_with(true, cx)))
+        });
         let open_button = button("missing-media-open", "open")
             .when(!can_open, |button| {
                 button.text_color(muted).cursor_default()
@@ -572,7 +583,9 @@ impl EditorView {
                                     )),
                                 ))
                                 .child(div().flex_1().text_xs().text_color(muted).child(
-                                    theme::text("the project opens once every file is found"),
+                                    theme::text(
+                                        "open once every file is found, or open with missing files offline",
+                                    ),
                                 )),
                         )
                         .children([list])
@@ -594,6 +607,7 @@ impl EditorView {
                                 .child(button("missing-media-dismiss", "cancel").on_click(
                                     cx.listener(|view, _, _, cx| view.missing_media_dismiss(cx)),
                                 ))
+                                .children(offline_button)
                                 .children([open_button]),
                         ),
                 ),
@@ -618,7 +632,7 @@ fn open_request(
     }
 }
 
-fn button(id: impl Into<gpui::ElementId>, label: &'static str) -> Stateful<Div> {
+fn button(id: impl Into<gpui::ElementId>, label: impl AsRef<str>) -> Stateful<Div> {
     div()
         .id(id)
         .flex_shrink_0()

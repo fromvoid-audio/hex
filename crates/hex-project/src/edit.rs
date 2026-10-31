@@ -2771,6 +2771,7 @@ impl Project {
                 self.assets
                     .remove(&id)
                     .ok_or(Invalid("media no longer exists"))?;
+                self.offline_assets.remove(&id);
                 Ok(Created::None)
             }
             Command::PlaceClip {

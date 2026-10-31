@@ -129,6 +129,7 @@ pub(super) fn open_source_with_limits(
         }
         project = Project::from_snapshot(snapshot).map_err(|e| e.to_string())?;
     }
+    project = with_missing_media_offline(project, &project_dir)?;
     if mode == DocumentAudioMode::Resident
         && project.sample_rate() != current.project().sample_rate()
     {
@@ -138,7 +139,7 @@ pub(super) fn open_source_with_limits(
         DocumentAudioMode::Resident => reservation.or(current.source_plan_reservation()),
         DocumentAudioMode::VerifiedStreaming => reservation,
     };
-    let required_pcm = project.assets().try_fold(0u64, |total, asset| {
+    let required_pcm = online_assets(&project).try_fold(0u64, |total, asset| {
         let frames = if asset.source_sample_rate() == project.sample_rate() {
             asset.playback_frames()
         } else {
@@ -178,7 +179,7 @@ pub(super) fn open_source_with_limits(
         .map_err(|e| e.to_string())?
         .with_shutdown(Arc::clone(&current.shutdown));
         // Verify every retained asset, including unused records, without decoding PCM.
-        for asset in project.assets() {
+        for asset in online_assets(&project) {
             let path = if asset.path().is_absolute() {
                 asset.path().to_path_buf()
             } else {
@@ -217,9 +218,9 @@ pub(super) fn open_source_with_limits(
         .map_err(|_| "could not reserve decoded media table".to_owned())?;
     let mut originals = hex_engine::native_device_resources::ResidentDeviceAssets::default();
     let mut remaining_frames = frame_allowance;
-    // Load unreferenced assets too: the editor can place them later, so missing
-    // media in any asset record rejects the candidate instead of dropping it.
-    for asset in project.assets() {
+    // Load unreferenced assets too: the editor can place them later. Missing
+    // media is either offline (recorded on the project) or rejects the candidate.
+    for asset in online_assets(&project) {
         let media_path = if asset.path().is_absolute() {
             asset.path().to_path_buf()
         } else {
@@ -452,6 +453,38 @@ pub(super) fn open_source_with_limits(
         document,
         dirty,
     ))
+}
+
+fn online_assets(project: &Project) -> impl Iterator<Item = &hex_project::Asset> {
+    project
+        .assets()
+        .filter(|asset| !project.asset_offline(asset.id()))
+}
+
+/// Mark ordinary assets whose files are absent as offline so the project opens
+/// with their clips silent; nothing is dropped and paths are kept. Missing
+/// device or Session-grid media is still refused (see
+/// [`Project::with_offline_assets`]), and an existing path that cannot be
+/// inspected is left for the loader to report.
+fn with_missing_media_offline(project: Project, base: &Path) -> Result<Project, String> {
+    let missing: Vec<_> = project
+        .assets()
+        .filter(|asset| {
+            let path = if asset.path().is_absolute() {
+                asset.path().to_path_buf()
+            } else {
+                base.join(asset.path())
+            };
+            matches!(std::fs::metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+        })
+        .map(|asset| asset.id())
+        .collect();
+    if missing.is_empty() {
+        return Ok(project);
+    }
+    project
+        .with_offline_assets(missing)
+        .map_err(|error| format!("missing media: {error}"))
 }
 
 /// Keep every materialized processing dependency resident, including retained

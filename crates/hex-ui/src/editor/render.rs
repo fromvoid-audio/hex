@@ -202,6 +202,31 @@ impl EditorView {
                     .child(theme::text(&self.status)),
             );
         }
+        let offline = self
+            .state
+            .as_ref()
+            .map_or(0, |state| state.project.offline_assets().count());
+        if offline > 0 {
+            bar = bar.child(
+                div()
+                    .id("missing-media-indicator")
+                    .debug_selector(|| "missing-media-indicator".into())
+                    .px_1()
+                    .flex_shrink_0()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
+                            description: theme::text(
+                                "these files were missing when the project opened; \
+                                 their clips play silence. restore them and reopen",
+                            ),
+                        })
+                        .into()
+                    })
+                    .child(theme::text(format!("missing files: {offline}"))),
+            );
+        }
         if let Some(label) = self.update_label() {
             bar = bar.child(
                 div()
