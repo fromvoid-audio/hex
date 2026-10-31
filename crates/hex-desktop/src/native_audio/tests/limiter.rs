@@ -529,6 +529,17 @@ fn paused_latency_change_then_new_instrument_track_applies_and_binds_live_input(
         bound.live_expression_complete.as_ref().unwrap(),
         &input
     ));
+    (applied, _) = h.applied(applied);
+    // Pulse #3772: the limiter's PDC latency no longer disables the computer
+    // keyboard on another track.
+    let keyboard = h.run(Request::PrepareComputerKeyboard {
+        project_generation: 0,
+        revision: added.state.revision,
+        request_id: 1,
+        track: keys,
+        input: Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default()),
+    });
+    assert_eq!(keyboard.computer_keyboard_complete, Some(1));
     h.applied(applied);
     let status = h.audio.as_ref().unwrap().status().unwrap();
     assert_eq!(

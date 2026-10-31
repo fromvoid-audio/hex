@@ -13,8 +13,19 @@ impl SessionPlayback {
             || binding.first_frame >= binding.end_frame
             || self.arrangement_frame < binding.first_frame
             || self.arrangement_frame >= binding.end_frame
-            || !self.capture_route_supported()
         {
+            return Err(Invalid(
+                "midi capture requires a playing resident nonlooping arrangement",
+            ));
+        }
+        if !self.midi_capture_latency_supported() {
+            // Monitoring plays through PDC; recorded stamps are not yet
+            // shifted by it, so a take would land late by the latency.
+            return Err(Invalid(
+                "midi recording is not available while devices add latency",
+            ));
+        }
+        if !self.capture_route_supported() {
             return Err(Invalid(
                 "midi capture requires a playing resident nonlooping arrangement",
             ));
@@ -43,7 +54,7 @@ impl SessionPlayback {
             && !self.current_sampler_console
             && !self.revision.contains_streamed_sources()
             && self.loop_region().is_none()
-            && self.computer_keyboard_latency_supported()
+            && self.midi_capture_latency_supported()
     }
     pub(super) fn begin_midi_capture_render(&mut self, frames: usize) {
         let supported = self.capture_route_supported();
