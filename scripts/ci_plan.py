@@ -151,6 +151,47 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
     return scope, sorted(affected), reasons
 
 
+# Reviewed test-only features that add APIs/tests without changing default behavior,
+# so a package's default `cargo test` is a subset of its feature run (doctests
+# excepted; --all-targets omits them, so plans keep a --doc run). Default-feature
+# compilation stays proven by affected clippy. Reviewed 31 October 2026:
+# - hex-ui ui-test-support: enables gpui/test-support (test executor/platform and
+#   debug selectors only) and hex-session's overview hooks; no cfg(not) gates.
+# - hex-session source-overview-test-support: an optional observer hook, None by default.
+# - hex-engine/hex-export instrument-test-support: probe/fixture modules only.
+# allocation-probe installs a counting global allocator and has cfg(not) gates;
+# it is deliberately absent and keeps both runs.
+ADDITIVE_TEST_FEATURES = {
+    "hex-ui": "ui-test-support",
+    "hex-session": "source-overview-test-support",
+    "hex-engine": "instrument-test-support",
+    "hex-export": "instrument-test-support",
+}
+
+
+def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) -> dict[str, str]:
+    """Affected packages whose only extra feature is reviewed additive.
+
+    Any line combining `not(` with that feature in the package's Rust sources is a
+    tripwire: the package keeps both default and feature test runs.
+    """
+    selected = {}
+    for package in inventory:
+        feature = ADDITIVE_TEST_FEATURES.get(package["name"])
+        if package["name"] not in affected or not feature:
+            continue
+        if set(package["features"]) - {"default"} != {feature}:
+            continue
+        directory = root / Path(package["manifest"]).parent
+        needle = f'feature = "{feature}"'
+        gated = any("not(" in line and needle in line
+                    for source in directory.rglob("*.rs") if source.is_file()
+                    for line in source.read_text(errors="replace").splitlines())
+        if not gated:
+            selected[package["name"]] = feature
+    return selected
+
+
 def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affected: list[str]) -> dict:
     """Narrow only reviewed runtime relationships; Cargo closure remains the lint boundary.
 
@@ -197,6 +238,7 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
         ]
     return {"kind": "compressor" if narrow else "packages", "tests": tests,
             "test_packages": [] if narrow else affected,
+            "single_run": {} if narrow else single_run_packages(root, affected, inventory),
             "lint_packages": affected,
             "excluded_behavior_packages": sorted(set(affected) - {t["package"] for t in tests}) if narrow else [],
             "excluded_configurations": (["unrelated instrument/export and whole UI/audio suites: compressor-only implementation; unchanged shared host/registration/build inputs"] if narrow else []),
@@ -205,9 +247,30 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
                           if narrow else "owner plus transitive normal/dev/build/optional/target and reviewed runtime consumers; full package tests and relevant feature configurations; no module isolation assumed")}
 
 
+def health_selection(paths: list[str], inventory: list[dict]) -> dict:
+    """Post-merge main health: the merged change's own packages, not every consumer.
+
+    A short signal that main is not red right after a merge, never qualification.
+    Tooling paths add the Python self-tests; unknown/high-risk inputs test the
+    workspace; prose alone keeps the metadata check.
+    """
+    owners, python, workspace = set(), False, []
+    for path in paths:
+        if metadata_path(path):
+            continue
+        scope = classify([path], inventory)[0]
+        if scope == "tooling":
+            python = True
+        elif scope in {"rust", "ui"} and owner_package(path, inventory):
+            owners.add(owner_package(path, inventory))
+        else:
+            workspace.append(path)
+    return {"packages": sorted(owners), "python": python, "workspace_inputs": workspace}
+
+
 def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
             allow_same_tree_merge: bool = False) -> dict:
-    if profile not in {"edit", "merge", "full", "release"}:
+    if profile not in {"edit", "merge", "full", "release", "health"}:
         raise ValueError("unknown check profile")
     source_sha = git(root, "rev-parse", "--verify", source + "^{commit}").decode().strip()
     base_sha = git(root, "rev-parse", "--verify", base + "^{commit}").decode().strip()
@@ -217,7 +280,11 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
                 != git(root, "rev-parse", source_sha + "^{tree}")):
             raise ValueError("requested source is not the current checkout")
         subprocess.run(["git", "merge-base", "--is-ancestor", source_sha, head], cwd=root, check=True)
-    subprocess.run(["git", "merge-base", "--is-ancestor", base_sha, source_sha], cwd=root, check=True)
+    if subprocess.run(["git", "merge-base", "--is-ancestor", base_sha, source_sha],
+                      cwd=root, capture_output=True).returncode != 0:
+        raise ValueError(f"base {base_sha[:12]} is not an ancestor of source {source_sha[:12]}; "
+                         "merge the current base into the candidate first, then rerun "
+                         "(--carry-report <last passed summary.json> reuses unaffected steps)")
     paths = changed_paths(root, base_sha, source_sha)
     if not paths:
         raise ValueError("empty scope is not qualifying test evidence; use --profile full for an audit")
@@ -225,6 +292,8 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
     inputs = runtime_inputs(root)
     if profile in {"merge", "full", "release"}:
         require_qualifying_inputs(inputs)
+    if profile == "health" and git(root, "rev-parse", "--verify", source_sha + "^1").decode().strip() != base_sha:
+        raise ValueError("health checks a merge commit against its first parent: use --base SOURCE^1")
     scope, affected, reasons = classify(paths, inventory)
     if profile in {"full", "release"}:
         scope = "full"
@@ -241,6 +310,8 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
               "qualifies_merge": profile in {"merge", "full", "release"}}
     if scope == "rust":
         result["boundary"] = boundary_selection(root, paths, inventory, affected)
+    if profile == "health":
+        result["health"] = health_selection(paths, inventory)
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
     return result
 
@@ -282,6 +353,97 @@ def reuse_checks(root: Path, plan: dict, report: Path, env=None) -> dict:
     result.pop("plan_sha256")
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
     return result
+
+
+# A base advance through these inputs can change every compiled configuration.
+CARRY_BLOCKING_NAMES = {"Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain.toml", "rust-toolchain"}
+
+
+def owner_package(path: str, inventory: list[dict]) -> str | None:
+    owners = [p for p in inventory if path.startswith(str(Path(p["manifest"]).parent) + "/")]
+    owner = max(owners, key=lambda p: len(p["manifest"]), default=None)
+    return None if owner is None else owner["name"]
+
+
+def dependency_closure(packages: list[str], inventory: list[dict]) -> set[str]:
+    """Packages plus every workspace dependency of any kind, optional or target-specific."""
+    by_name = {p["name"]: p for p in inventory}
+    closure = set(packages)
+    pending = list(packages)
+    while pending:
+        package = by_name.get(pending.pop())
+        for dependency in package["dependencies"] if package else ():
+            if dependency["name"] in by_name and dependency["name"] not in closure:
+                closure.add(dependency["name"])
+                pending.append(dependency["name"])
+    return closure
+
+
+def carry_basis(root: Path, plan: dict, evidence: dict, env=None) -> dict:
+    """Prove a candidate differs from a passed one only by verbatim base-advance inputs.
+
+    The earlier candidate (merge of the PR onto an older base) passed every step.
+    The new candidate merged a newer base. Results may carry only when every
+    executable path changed since the earlier candidate came unmodified from the
+    base advance, touches none of the PR's own paths, and is ordinary package
+    source (no manifest, lockfile, toolchain, build script, tooling or unknown
+    input). Returns the directly changed owner packages and the Python selection
+    that those paths require; callers decide per step and rerun on any doubt.
+    """
+    if plan["profile"] != "merge":
+        raise ValueError("base-advance carry requires an explicit merge profile")
+    if python_tests.native_acceptance_inputs(os.environ if env is None else env):
+        raise ValueError("native/external acceptance inputs require fresh checks")
+    old = evidence.get("plan") or {}
+    steps = evidence.get("steps") or []
+    tree = evidence.get("start_tree")
+    if (evidence.get("schema_version") != 2 or evidence.get("mode") != "merge"
+            or evidence.get("status") != "passed" or evidence.get("exit_code") != 0
+            or evidence.get("stale") is not False or evidence.get("dirty") is not False
+            or evidence.get("native_acceptance_opt_in") is not False
+            or not tree or tree != evidence.get("end_tree")
+            or evidence.get("resume") or old.get("reuse")
+            or not old.get("qualifies_merge") or old.get("profile") != "merge"
+            or not steps or any(s.get("status") not in {"passed", "carried"} for s in steps)):
+        raise ValueError("carried report is not a complete passed merge-profile run")
+    if old.get("cargo_inventory") != plan["cargo_inventory"]:
+        raise ValueError("Cargo workspace inventory changed since the carried report")
+    previous, previous_base = old["source"], old["base"]
+    if evidence.get("commit") != previous or tree.get("commit") != previous:
+        raise ValueError("carried report does not identify its own candidate")
+    for ancestor, descendant, what in ((previous_base, plan["base"], "base"),
+                                       (previous, plan["source"], "candidate")):
+        if subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant],
+                          cwd=root, capture_output=True).returncode != 0:
+            raise ValueError(f"carried report's {what} is not an ancestor of the current {what}")
+    delta = changed_paths(root, previous, plan["source"])
+    executable = [p for p in delta if not metadata_path(p)]
+    upstream = set(changed_paths(root, previous_base, plan["base"]))
+    own = set(old.get("paths", []))
+
+    def blob(revision: str, path: str) -> str | None:
+        result = subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{revision}:{path}"],
+                                cwd=root, capture_output=True, text=True)
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    inventory = plan["cargo_inventory"]
+    owners = set()
+    for path in executable:
+        if path in own:
+            raise ValueError("candidate's own path changed since the carried report: " + path)
+        if path not in upstream or blob(plan["source"], path) != blob(plan["base"], path):
+            raise ValueError("change is not a verbatim base-advance input: " + path)
+        if Path(path).name in CARRY_BLOCKING_NAMES or classify([path], inventory)[0] not in {"rust", "ui"}:
+            raise ValueError("dependency, toolchain, build, tooling or unknown input changed: " + path)
+        owner = owner_package(path, inventory)
+        if owner is None:
+            raise ValueError("changed input has no workspace owner: " + path)
+        owners.add(owner)
+    return {"report_commit": previous, "report_base": previous_base,
+            "delta_paths": delta, "delta_owners": sorted(owners),
+            "python_tests": python_tests.select(
+                "merge", executable, inventory, UI_PACKAGES,
+                python_tests.available_modules(root), env=env)}
 
 
 def check_metadata(root: Path, base: str, source: str) -> list[str]:
