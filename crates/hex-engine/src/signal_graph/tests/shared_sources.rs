@@ -345,18 +345,24 @@ fn shared_source_main_only_latency_preserves_receiver_mix_and_partitions() {
         );
         let delay = revision.arrangement().main_latency_frames() as usize;
         assert_eq!(delay, 288);
-        // Main batching does not admit a new live-monitoring capability.
+        // Keyboard monitoring plays through the batched Main latency (#3772).
         let mut monitor =
             crate::playback::Playback::try_from_prepared_with_session(Arc::clone(&revision))
                 .unwrap();
-        let error = monitor
-            .prepare_computer_keyboard(
-                editor.project(),
-                tracks[0],
-                Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default()),
-            )
-            .unwrap_err();
-        assert!(error.0.contains("unavailable with positive latency"));
+        let keys = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+        keys.set_key(0, Some((60, 100, 1))).unwrap();
+        monitor
+            .prepare_computer_keyboard(editor.project(), tracks[0], keys)
+            .unwrap();
+        let mut monitored = vec![[0.0; 2]; delay + 512];
+        monitor.render(&mut monitored).unwrap();
+        assert!(monitored[..delay].iter().all(|frame| *frame == [0.0; 2]));
+        assert!(
+            monitored[delay..]
+                .iter()
+                .flatten()
+                .any(|sample| *sample != 0.0)
+        );
         for partition in [1, 63, 257] {
             let output = session(Arc::clone(&revision), dry.len(), partition);
             assert!(output[..delay].iter().all(|frame| *frame == [0.0; 2]));
