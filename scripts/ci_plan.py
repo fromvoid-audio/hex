@@ -192,6 +192,81 @@ def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) 
     return selected
 
 
+TEST_CFG = re.compile(r"#\[cfg\((test|all\(test\b[^()]*(\([^()]*\)[^()]*)*\))\)\]")
+
+
+def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[str]]]]:
+    """Map each declared module file to (declaring file, attributes) pairs.
+
+    Only top-level `mod NAME;` lines (no indentation) are indexed; `#[path]` is
+    resolved relative to the declaring file's directory, as rustc does outside
+    inline modules. Declarations nested in inline modules are not indexed, so
+    their files stay unproven rather than misattributed.
+    """
+    declaration = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
+    path_attribute = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
+    found: dict[Path, list[tuple[Path, list[str]]]] = {}
+    for parent in sorted(f for f in source_root.rglob("*.rs") if f.is_file()):
+        lines = parent.read_text(errors="replace").splitlines()
+        for index, line in enumerate(lines):
+            match = declaration.fullmatch(line.rstrip())
+            if not match:
+                continue
+            attributes = []
+            cursor = index - 1
+            while cursor >= 0 and lines[cursor].startswith(("#[", "//")):
+                attributes.append(lines[cursor].strip())
+                cursor -= 1
+            name = match.group(3)
+            explicit = next((path_attribute.fullmatch(a).group(1) for a in attributes
+                             if path_attribute.fullmatch(a)), None)
+            if explicit:
+                targets = [parent.parent / explicit]
+            else:
+                base = parent.parent if parent.name in {"mod.rs", "lib.rs", "main.rs"} else parent.with_suffix("")
+                targets = [base / f"{name}.rs", base / name / "mod.rs"]
+            for target in targets:
+                found.setdefault(target.resolve(), []).append((parent.resolve(), attributes))
+    return found
+
+
+def test_only_owner(root: Path, path: str, inventory: list[dict]) -> str | None:
+    """Owner of a Rust file no other package can observe, or None when unproven.
+
+    Integration tests, benches and examples are owner-only targets. A `src/`
+    file qualifies only when every declaration of it is directly preceded by
+    `#[cfg(test)]` or `#[cfg(all(test, …))]`, or lives in a file that itself
+    qualifies. `any(`/`not(` conditions, `include!(` in the package, missing,
+    undeclared or inline-nested files are not proven and keep consumers.
+    """
+    owner = owner_package(path, inventory)
+    package = next((p for p in inventory if p["name"] == owner), None)
+    if package is None or not path.endswith(".rs") or path.endswith("/build.rs"):
+        return None
+    directory = root / Path(package["manifest"]).parent
+    file = (root / path).resolve()
+    if not file.is_file():
+        return None
+    relative = file.relative_to(directory.resolve())
+    if relative.parts[0] in {"tests", "benches", "examples"}:
+        return owner
+    if relative.parts[0] != "src":
+        return None
+    source_root = directory / "src"
+    if any("include!(" in f.read_text(errors="replace") for f in source_root.rglob("*.rs") if f.is_file()):
+        return None
+    declarations = module_declarations(source_root)
+
+    def gated(module: Path, seen: frozenset) -> bool:
+        uses = declarations.get(module, [])
+        if not uses or module in seen:
+            return False
+        return all(any(TEST_CFG.fullmatch(a) and "any(" not in a and "not(" not in a for a in attributes)
+                   or gated(parent, seen | {module}) for parent, attributes in uses)
+
+    return owner if gated(file, frozenset()) else None
+
+
 def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affected: list[str]) -> dict:
     """Narrow only reviewed runtime relationships; Cargo closure remains the lint boundary.
 
@@ -295,6 +370,14 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
     if profile == "health" and git(root, "rev-parse", "--verify", source_sha + "^1").decode().strip() != base_sha:
         raise ValueError("health checks a merge commit against its first parent: use --base SOURCE^1")
     scope, affected, reasons = classify(paths, inventory)
+    executable = [p for p in paths if not metadata_path(p)]
+    if profile == "merge" and scope in {"rust", "ui"} and executable:
+        owners = [test_only_owner(root, p, inventory) for p in executable]
+        if all(owners):
+            excluded = sorted(set(affected) - set(owners))
+            scope, affected = "rust", sorted(set(owners))
+            reasons.append("test-only inputs (cfg(test) modules or owner test targets): owner packages "
+                           "only; consumers cannot observe them: " + ", ".join(excluded))
     if profile in {"full", "release"}:
         scope = "full"
         reasons.append("explicit full audit/release request")
