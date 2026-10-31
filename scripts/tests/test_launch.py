@@ -5,6 +5,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import io
 import importlib.machinery
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -38,9 +39,17 @@ class LaunchTests(unittest.TestCase):
         self.ci_result = 0
         self.ci_status = "passed"
         self.raw_processes = ""
+        # run_launch defaults the process target; keep each test's environment isolated.
+        environment = patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop("CARGO_TARGET_DIR", None)
+        self.ci_targets = []
+        self.package_targets = []
 
         class FakeCiRunner:
-            def __init__(inner, root, mode):
+            def __init__(inner, root, mode, env=None):
+                self.ci_targets.append(None if env is None else env.get("CARGO_TARGET_DIR"))
                 inner.output_dir = root / "artifacts/local-ci/run-id"
                 inner.summary_path = inner.output_dir / "summary.json"
                 inner.summary = {}
@@ -86,6 +95,7 @@ class LaunchTests(unittest.TestCase):
         if argv[:3] == ["git", "rev-parse", "--git-common-dir"]:
             return self.process(argv, stdout=".git")
         if argv[:2] == ["sh", "scripts/bundle-macos.sh"]:
+            self.package_targets.append(os.environ.get("CARGO_TARGET_DIR"))
             return self.process(argv)
         if argv[:2] == ["open", "-a"]:
             return self.process(argv)
@@ -140,6 +150,23 @@ class LaunchTests(unittest.TestCase):
         report = Path(package[package.index("--ci-report") + 1])
         self.assertEqual(report, self.root / "artifacts/local-ci/run-id/summary.json")
         self.assertIn("full local CI passed", (report.parent / "USER-TEST.md").read_text())
+
+    def test_default_targets_keep_ci_and_release_apart_from_adhoc_target(self):
+        for tested in (False, True):
+            with self.subTest(tested=tested):
+                self.ci_targets.clear()
+                self.package_targets.clear()
+                os.environ.pop("CARGO_TARGET_DIR", None)
+                self.run_success(tested=tested)
+                self.assertEqual(self.ci_targets, [str(self.root / "artifacts/cargo-ci-target")] if tested else [])
+                self.assertEqual(self.package_targets, [str(self.root / "artifacts/cargo-release-target")])
+
+    def test_explicit_target_is_shared_by_ci_and_packaging(self):
+        explicit = str(self.root / "chosen-target")
+        os.environ["CARGO_TARGET_DIR"] = explicit
+        self.run_success(tested=True)
+        self.assertEqual(self.ci_targets, [None])
+        self.assertEqual(self.package_targets, [explicit])
 
     def test_refuses_dirty_checkout(self):
         def dirty(argv, **kwargs):
