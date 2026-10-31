@@ -1,7 +1,8 @@
 //! Shared painted/captured loop zones in outer clip pixels. Musical projection
 //! comes from project queries; ordinary trim/warp/fade policies stay with owners.
-//! First-boundary handles use horizontal arrows; outer repeat handles retain
-//! the circular-arrow cursor. GPUI typed drags inherit that same handle style.
+//! First-boundary handles use horizontal arrows; outer repeat handles show the
+//! circle cursor (`CursorStyle::Loop`, drawn from `assets/cursors/loop.svg`).
+//! GPUI typed drags inherit that same handle style.
 //! Ordinary edge trimming only starts in the clip's header rail
 //! ([`super::edge_trim_height`]); the lower edge belongs to the body,
 //! the fade handles and the outer loop corner, which owns its own hit box.
