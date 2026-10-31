@@ -2135,7 +2135,7 @@ impl Project {
                     .map_err(|_| Invalid("could not reserve clip storage"))?;
                 let right_id = ClipId(self.allocate_id()?);
                 let (left, right) =
-                    split_clip_at_tempo(&original, frame, right_id, self.tempo_map())?;
+                    crate::clip_fade_split::split(&original, frame, right_id, self.tempo_map())?;
                 self.audio_clips_mut(self.tracks[track_index].id)?[clip_index] = left;
                 self.audio_clips_mut(self.tracks[track_index].id)?
                     .insert(clip_index + 1, right);
