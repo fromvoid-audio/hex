@@ -199,7 +199,12 @@ pub use snapshot::{
     SessionAudioClipSnapshot, SessionCellContentSnapshot, SessionCellSnapshot,
     SessionMidiClipSnapshot, SessionSnapshot, Snapshot, TrackContentSnapshot, TrackSnapshot,
 };
-use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    path::PathBuf,
+    sync::Arc,
+};
 pub use timebase::{
     AUTOMATION_PROJECTION_VERSION, BeatPulse, BeatTime, CapturedAutomationProjection,
     InputQuantization, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap, MeterMapCopyCustody,
@@ -672,6 +677,11 @@ pub struct Project {
     pub(crate) main_devices: Vec<Device>,
     pub(crate) tempo_map: TempoMap,
     pub(crate) meter_map: MeterMap,
+    /// Assets whose media was missing when the project opened. This is runtime
+    /// availability, never saved: snapshots exclude it and reopening re-detects
+    /// missing files. History clones carry it, so an edit that relinks an asset
+    /// can undo back to offline. See [`Project::with_offline_assets`].
+    pub(crate) offline_assets: BTreeSet<AssetId>,
 }
 impl Project {
     pub fn new(sample_rate: u32) -> Result<Self, Invalid> {
@@ -698,6 +708,7 @@ impl Project {
             main_devices: Vec::new(),
             tempo_map: TempoMap::constant(sample_rate, Tempo::new(120_000_000)?)?,
             meter_map: MeterMap::common_time(),
+            offline_assets: BTreeSet::new(),
         })
     }
     /// Project-saved tuning and audition settings; no local library identity.
@@ -728,6 +739,7 @@ impl Project {
             main_devices,
             tempo_map,
             meter_map,
+            offline_assets,
         } = self;
         aliases == &other.aliases
             && native_sources == &other.native_sources
@@ -747,6 +759,7 @@ impl Project {
             && master_gain == &other.master_gain
             && tempo_map == &other.tempo_map
             && meter_map == &other.meter_map
+            && offline_assets == &other.offline_assets
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -876,6 +889,41 @@ impl Project {
     }
     pub fn asset(&self, id: AssetId) -> Option<&Asset> {
         self.assets.get(&id)
+    }
+
+    /// Whether the asset's media was missing at open; its clips play silence.
+    pub fn asset_offline(&self, id: AssetId) -> bool {
+        self.offline_assets.contains(&id)
+    }
+
+    pub fn offline_assets(&self) -> impl Iterator<Item = AssetId> + '_ {
+        self.offline_assets.iter().copied()
+    }
+
+    /// Mark assets whose media is missing as offline before the project is
+    /// published. Only ordinary file assets used by Arrangement clips (or unused)
+    /// may be offline: device-original sources and Session-grid audio cells
+    /// still need their media, so they are refused. Paths and clips are kept.
+    pub fn with_offline_assets(
+        mut self,
+        ids: impl IntoIterator<Item = AssetId>,
+    ) -> Result<Self, Invalid> {
+        for id in ids {
+            let asset = self
+                .assets
+                .get(&id)
+                .ok_or(Invalid("offline media refers to an unknown asset"))?;
+            if asset.original_source().is_some() || self.device_uses_asset(id) {
+                return Err(Invalid("device media cannot be offline"));
+            }
+            if self.session.cells.iter().any(
+                |cell| matches!(&cell.content, SessionCellContent::Audio(clip) if clip.asset == id),
+            ) {
+                return Err(Invalid("session clip media cannot be offline yet"));
+            }
+            self.offline_assets.insert(id);
+        }
+        Ok(self)
     }
     pub fn track(&self, id: TrackId) -> Option<&Track> {
         self.tracks.iter().find(|t| t.id == id)

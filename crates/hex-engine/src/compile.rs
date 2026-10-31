@@ -599,6 +599,15 @@ fn compile_project_inner<'a>(
                 let asset = snapshot
                     .asset(clip.asset())
                     .ok_or(Invalid("project asset missing"))?;
+                // Offline media (missing at open) compiles to no playback: the clip
+                // stays in the project and renders silence with no callback work.
+                if snapshot.asset_offline(asset.id())
+                    || clip
+                        .retained_audio_roots()
+                        .any(|root| snapshot.asset_offline(root.clip.asset()))
+                {
+                    return Ok(None);
+                }
                 let mut compiled = if let Some(events) = clip.audio_edit()
                     .and_then(|edit| edit.domain.events.as_ref())
                     .filter(|events| !events.sources.is_empty())

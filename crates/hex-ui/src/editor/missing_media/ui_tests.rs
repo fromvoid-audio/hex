@@ -229,3 +229,71 @@ fn sample_catalog_matches_are_offered_then_relinked_all_at_once(cx: &mut TestApp
         view.missing_media_dismiss(cx);
     });
 }
+
+#[gpui::test]
+fn missing_media_can_open_offline_and_shows_the_missing_count(cx: &mut TestAppContext) {
+    let environment = test_environment::Environment::new().unwrap();
+    let root = environment.root().to_path_buf();
+    std::fs::create_dir(root.join("samples")).unwrap();
+    let kick = root.join("samples/kick.wav");
+    let snare = root.join("samples/snare.wav");
+    wav(&kick, 64);
+    wav(&snare, 32);
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_environment(
+                    window,
+                    cx,
+                    Service::new(48_000, 32, 8_000_000).unwrap(),
+                    Arc::clone(&environment),
+                )
+            })
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    pump(&editor, &mut visual);
+    let song = root.join("song.hex");
+    for path in [&kick, &snare] {
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Import(path.clone())));
+        });
+        pump(&editor, &mut visual);
+    }
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::SaveNew(song.clone())));
+    });
+    pump(&editor, &mut visual);
+    std::fs::remove_file(&kick).unwrap();
+    let generation = editor.read_with(&visual, |view, _| view.project_generation);
+    assert!(visual.debug_bounds("missing-media-indicator").is_none());
+
+    editor.update(&mut visual, |view, cx| {
+        view.choose_project(song.clone(), DocumentAudioMode::Resident);
+        cx.notify();
+    });
+    pump(&editor, &mut visual);
+    assert!(editor.read_with(&visual, |view, _| view.missing_media.is_some()));
+    editor.update(&mut visual, |view, cx| {
+        view.missing_media_open_with(true, cx)
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(view.missing_media.is_none() && !view.opening_project);
+        assert_eq!(view.project_generation, generation + 1);
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.offline_assets().count(), 1);
+        assert_eq!(
+            project
+                .tracks()
+                .iter()
+                .flat_map(|track| track.clips())
+                .count(),
+            2
+        );
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("missing-media-indicator").is_some());
+}
