@@ -15,6 +15,7 @@ mod resident_reverb;
 mod resident_routes;
 mod resident_sections;
 mod sampler;
+mod section_benchmark;
 mod stream_export;
 mod track_clipboard;
 mod track_reorder;

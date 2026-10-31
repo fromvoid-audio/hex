@@ -462,6 +462,11 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
+                            // An open menu paints above this body; its rows
+                            // own the press, never a section or range gesture.
+                            if view.context_menu.is_some() {
+                                return (false, false);
+                            }
                             if view.time_selection_key_held {
                                 let started = view.begin_main_time_selection_gesture(
                                     x,
