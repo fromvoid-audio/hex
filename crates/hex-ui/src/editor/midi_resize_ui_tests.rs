@@ -64,9 +64,15 @@ fn group_edges_anchor_each_opposite_edge_and_commit_once_after_release(cx: &mut 
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
         });
         visual.update(|window, cx| editor.update(cx, |v, _| v.midi_focus.focus(window)));
+        // Trailing ends snap only while cmd is held; leading edges keep the grid.
+        let snap = if leading {
+            Modifiers::default()
+        } else {
+            Modifiers::command()
+        };
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
-        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), snap);
+        visual.simulate_mouse_up(end, MouseButton::Left, snap);
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |v, _| {
             let notes = v
