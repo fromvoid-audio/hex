@@ -41,9 +41,19 @@ impl FileToken {
     /// reader compatibility just as a schema upgrade does. Already-large files
     /// do not acquire a new compatibility loss on subsequent saves.
     pub fn requires_save_confirmation(&self, project: &Project) -> Result<bool, StorageError> {
+        self.requires_save_confirmation_within(project, crate::LEGACY_READER_DOCUMENT_BYTES)
+    }
+
+    /// The same preflight against an explicit older-reader ceiling. Production
+    /// uses [`crate::LEGACY_READER_DOCUMENT_BYTES`]; callers may pass a smaller
+    /// ceiling to exercise their consent flow without encoding 8 MiB documents.
+    pub fn requires_save_confirmation_within(
+        &self,
+        project: &Project,
+        limit: usize,
+    ) -> Result<bool, StorageError> {
         Ok(self.requires_format_upgrade()
-            || (self.0.len() <= crate::LEGACY_READER_DOCUMENT_BYTES
-                && encode(project)?.len() > crate::LEGACY_READER_DOCUMENT_BYTES))
+            || (self.0.len() <= limit && encode(project)?.len() > limit))
     }
 
     pub(super) fn from_validated_bytes(bytes: Arc<[u8]>) -> Self {

@@ -5919,7 +5919,10 @@ fn run_worker(
                         }
                         (Some(handle), Ok(project)) => {
                             if !consent {
-                                match handle.token.requires_save_confirmation(&project) {
+                                match handle.token.requires_save_confirmation_within(
+                                    &project,
+                                    events.legacy_reader_limit(),
+                                ) {
                                     Ok(true) => {
                                         save_confirmation_required = true;
                                         error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
