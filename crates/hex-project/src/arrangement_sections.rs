@@ -210,6 +210,7 @@ impl Project {
             sample_rate,
             next_id: _,
             assets,
+            offline_assets,
             tracks,
             returns,
             session,
@@ -232,6 +233,7 @@ impl Project {
             && *midi_routes == other.midi_routes
             && *import_provenance == other.import_provenance
             && *assets == other.assets
+            && *offline_assets == other.offline_assets
             && *returns == other.returns
             && *session == other.session
             && *main_devices == other.main_devices
