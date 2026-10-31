@@ -76,19 +76,38 @@ pub(super) fn trim_content(
     } else {
         i128::from(frame)
     };
-    let (start, length) = match edge {
-        TrimEdge::Left => (
-            position,
-            old_start + i128::from(content.window.length()?) - position,
-        ),
-        TrimEdge::Right => (old_start, position - old_start),
+    // Preserve a separately valid ordinary placement carrier, including the
+    // existing retained-processing residual law. It owns extent/edit controls;
+    // the independent base window owns actual content reads.
+    let mut carrier = clip.clone();
+    carrier
+        .audio_edit_mut()
+        .ok_or(Invalid("audio content domain missing"))?
+        .content_view = None;
+    let mut next = super::commands::trim_view(&carrier, edge, frame, tempo)?;
+    // Size the read window from the carrier's audible extent. Retained
+    // processing crops in its frozen clock, which may round one raw beat
+    // apart from the destination reference position.
+    let length = {
+        let edit = next
+            .audio_edit()
+            .ok_or(Invalid("audio content domain missing"))?;
+        edit.placement
+            .map_or(edit.view_end - edit.view_start, |p| p.outer_length.length())
     };
-    let length = u64::try_from(length)
-        .ok()
-        .filter(|n| *n > 0)
-        .ok_or(Invalid("audio trim must retain a positive interval"))?;
-    let delta = start - old_start;
-    let resized = content.window.resized(delta, length);
+    if length == 0 {
+        return Err(Invalid("audio trim must retain a positive interval"));
+    }
+    // Reference displacement keeps the base anchored; the window shift is in
+    // the same read clock as the carrier crop.
+    let (delta, shift) = match edge {
+        TrimEdge::Left => (
+            position - old_start,
+            i128::from(content.window.length()?) - i128::from(length),
+        ),
+        TrimEdge::Right => (0, 0),
+    };
+    let resized = content.window.resized(shift, length);
     if let Ok(window) = resized {
         if window.end <= content.base_length()? {
             content.window = window;
@@ -109,9 +128,9 @@ pub(super) fn trim_content(
         // A reversed right extension may reveal retained source before the
         // captured crop. Rebase the finite law without moving its root clock.
         let read_end = if content.window.reversed {
-            i128::from(content.window.end) - delta
+            i128::from(content.window.end) - shift
         } else {
-            i128::from(content.window.start) + delta + i128::from(length)
+            i128::from(content.window.start) + shift + i128::from(length)
         };
         let read_start = read_end - i128::from(length);
         let rewind = u64::try_from(
@@ -138,15 +157,6 @@ pub(super) fn trim_content(
         .base_start_delta
         .checked_sub(delta)
         .ok_or(Invalid("audio base displacement overflow"))?;
-    // Preserve a separately valid ordinary placement carrier, including the
-    // existing retained-processing residual law. It owns extent/edit controls;
-    // the independent base window owns actual content reads.
-    let mut carrier = clip.clone();
-    carrier
-        .audio_edit_mut()
-        .ok_or(Invalid("audio content domain missing"))?
-        .content_view = None;
-    let mut next = super::commands::trim_view(&carrier, edge, frame, tempo)?;
     next.audio_edit_mut()
         .ok_or(Invalid("audio content domain missing"))?
         .content_view = Some(content);

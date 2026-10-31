@@ -1065,7 +1065,13 @@ impl EditorView {
                         (event.save_complete && event.error.is_none() && !event.state.unsaved)
                             .then(|| event.state.document_path.clone())
                             .flatten();
-                    if let Some(path) = self.receive(event) {
+                    let install = crate::diagnostics::actions_enabled(cx)
+                        .then(|| (event.state.revision, std::time::Instant::now()));
+                    let opened = self.receive(event);
+                    if let Some((revision, started)) = install {
+                        crate::diagnostics::record_ui_install(cx, revision, started.elapsed());
+                    }
+                    if let Some(path) = opened {
                         self.record_opened_project(path.clone(), cx);
                         self.record_project_directory(path, cx);
                     } else if let Some(path) = saved_project_path {
@@ -1073,7 +1079,7 @@ impl EditorView {
                         self.record_project_directory(path, cx);
                     }
                     if let Some((success, revision)) = open_save {
-                        self.complete_open_save(success, revision);
+                        self.complete_open_save(success, revision, cx);
                     }
                     if let Some((correlation, success, confirmation_required)) = update_save {
                         self.update_save_terminal(correlation, success, confirmation_required, cx);
@@ -2367,6 +2373,11 @@ impl EditorView {
         {
             control.cancel();
         }
+        // A bounce drop's ghost retires with its job's terminal, in the same
+        // receive that installs the adopted (or unchanged, refused) state.
+        if self.bounce_control.is_none() {
+            self.pending_bounce_drop = None;
+        }
         if event.save_complete {
             self.saving_project = false;
         }
@@ -2578,7 +2589,15 @@ impl EditorView {
             && !event.state.project.tracks().is_empty();
         let save_confirmation_required =
             event.save_confirmation_required && !event.project_replaced;
+        let loop_was_enabled = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.loop_region())
+            .is_some_and(|region| region.enabled());
         self.state = Some(event.state);
+        if !event.project_replaced {
+            self.retire_point_cursor_on_loop_enable(loop_was_enabled);
+        }
         self.gain_take_state_installed();
         self.device_automation_state_installed(event.project_replaced);
         if save_confirmation_required {
@@ -2665,6 +2684,7 @@ impl EditorView {
             self.device_gesture_barriers.clear();
             self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
+            self.loop_start_over_clip = None;
             self.clip_paint_gesture = None;
             self.cancel_section_pointer();
             self.time_selection = None;

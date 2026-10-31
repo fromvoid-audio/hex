@@ -166,6 +166,22 @@ pub(crate) fn record_key(cx: &App, event: &gpui::KeystrokeEvent) {
     }
 }
 
+/// Control-thread time to install one received session outcome into the view
+/// (`Editor::receive`), logged after that event's `ClientReceived` line. Paint
+/// and present are not included.
+pub(crate) fn record_ui_install(cx: &App, revision: u64, install: std::time::Duration) {
+    if let Some(Ok(handle)) = cx
+        .try_global::<SessionDiagnostics>()
+        .filter(|d| d.action_observer.is_some())
+        .map(|d| &d.handle)
+    {
+        let _ = handle.record(&format!(
+            "action_diag v=1 stage=ui_installed revision={revision} install_us={}",
+            install.as_micros()
+        ));
+    }
+}
+
 pub(crate) fn actions_enabled(cx: &App) -> bool {
     cx.try_global::<SessionDiagnostics>()
         .is_some_and(|d| d.action_observer.is_some())

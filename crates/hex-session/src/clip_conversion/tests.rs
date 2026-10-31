@@ -531,3 +531,21 @@ fn isolated_clip_source_omits_unrelated_retained_source_media_without_changing_l
     assert!(editor.project().asset(asset).is_some());
     assert_eq!(editor.project().native_sources().len(), 2);
 }
+
+#[test]
+fn isolated_conversion_admits_projects_with_automatic_names_on_dropped_tracks() {
+    let (mut session, track, clip) = fixture();
+    let Created::Track(other) = session
+        .command(Command::InsertDefaultTrack { before_track: None })
+        .unwrap()
+    else {
+        panic!("default track")
+    };
+    let original = session.project().clone();
+    assert!(original.track(other).unwrap().name_is_automatic());
+    let (isolated, owner, _) = isolated_source(&original, clip).unwrap();
+    assert_eq!(owner, track);
+    assert!(isolated.track(other).is_none());
+    assert!(isolated.snapshot().automatic_track_names.is_empty());
+    assert_eq!(session.project(), &original);
+}
