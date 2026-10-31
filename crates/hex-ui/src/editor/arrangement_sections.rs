@@ -10,7 +10,8 @@
 //! while released preview custody remains independent of input capture.
 //! Five-pixel inner edges resize one section; a touching seam resizes both, or
 //! the left marker's end under Command. Paint and input share native bracket cursors.
-//! Shift-click toggles section membership throughout the lane. Header drags own
+//! Shift-click selects the song-order range from the last plain-clicked anchor;
+//! Command+Shift-click toggles membership and moves the anchor. Header drags own
 //! section edits; ordinary lower-body drags use Main's all-track range owner,
 //! including tracks hidden by section focus.
 use super::{
@@ -155,6 +156,8 @@ struct SectionCursor {
 pub(super) struct Sections {
     pub(super) selected: Option<SectionId>,
     selection: Vec<SectionId>,
+    // Shift ranges start here; ignored once it leaves the selection.
+    anchor: Option<SectionId>,
     cursor: Option<SectionCursor>,
     gesture: Option<Gesture>,
     pending: Option<Pending>,
@@ -463,6 +466,7 @@ impl EditorView {
         self.duplicate_intent.cancel_chain();
         self.sections.selected = id;
         self.sections.selection = id.into_iter().collect();
+        self.sections.anchor = id;
         self.selected_track = None;
         self.arrangement_focus.observe_active_track(None);
         self.selected_clip = None;
@@ -578,6 +582,24 @@ impl EditorView {
             .find(|s| s.start() <= beat && beat < s.end())
             .map(|s| s.id())
     }
+    /// Sections from `anchor` through `clicked` in song order, inclusive.
+    fn section_range(&self, anchor: SectionId, clicked: SectionId) -> Vec<SectionId> {
+        let Some(project) = self.state.as_ref().map(|state| &state.project) else {
+            return vec![clicked];
+        };
+        let start = |id| project.arrangement_section(id).map(|s| s.start());
+        let (Some(a), Some(b)) = (start(anchor), start(clicked)) else {
+            return vec![clicked];
+        };
+        let (low, high) = (a.min(b), a.max(b));
+        let mut range: Vec<_> = project
+            .arrangement_sections()
+            .iter()
+            .filter(|s| low <= s.start() && s.start() <= high)
+            .collect();
+        range.sort_by_key(|s| s.start());
+        range.into_iter().map(|s| s.id()).collect()
+    }
     fn section_edge_hit(&self, x: f32) -> Option<SectionEdge> {
         let state = self.state.as_ref()?;
         let viewport = self.visible_viewport(state.timeline_frames);
@@ -640,8 +662,8 @@ impl EditorView {
         modifiers: gpui::Modifiers,
         cx: &Context<Self>,
     ) -> bool {
-        let extend =
-            RectangleSelectionPolicy::Toggle.intent(modifiers) == RectangleSelection::Toggle;
+        let intent = RectangleSelectionPolicy::Section.intent(modifiers);
+        let extend = intent != RectangleSelection::Replace;
         let free = modifiers.control;
         let marker_only = modifiers.platform;
         let launch_eligible =
@@ -676,15 +698,32 @@ impl EditorView {
         // Section membership takes precedence over the lower-body range owner,
         // edge resizing and autoplay; Shift never creates a time rectangle here.
         if extend && let Some(id) = id {
-            let mut selection = self.sections.selection.clone();
+            let previous = self.sections.selected_ids().to_vec();
+            let anchor = self
+                .sections
+                .anchor
+                .filter(|anchor| previous.contains(anchor))
+                .or(self.sections.selected)
+                .unwrap_or(id);
             self.select_section_metadata(Some(id));
-            if selection.contains(&id) {
-                selection.retain(|old| *old != id);
+            let (selection, anchor) = if intent == RectangleSelection::Toggle {
+                let mut selection = previous;
+                if selection.contains(&id) {
+                    selection.retain(|old| *old != id);
+                } else {
+                    selection.push(id);
+                }
+                (selection, id)
             } else {
-                selection.push(id);
-            }
-            self.sections.selected = selection.last().copied();
+                (self.section_range(anchor, id), anchor)
+            };
+            self.sections.selected = if selection.contains(&id) {
+                Some(id)
+            } else {
+                selection.last().copied()
+            };
             self.sections.selection = selection;
+            self.sections.anchor = Some(anchor);
             self.sections.cursor = None;
             self.cancel_section_pointer();
             self.suppress_cursor_click = true;
@@ -1784,7 +1823,7 @@ impl EditorView {
                 .text_xs()
                 .tooltip(|_, cx| {
                     cx.new(|_| super::waveform::ClipTooltip { kind: crate::tooltips::Kind::Help,
-                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: copy · command: markers only · control: snap · shift-click: select · g: merge · cmd-d: duplicate · e: split"
+                        name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: copy · command: markers only · control: snap · shift-click: select range · cmd-shift-click: toggle · g: merge · cmd-d: duplicate · e: split"
                             .into(),
                     })
                     .into()
@@ -4795,7 +4834,7 @@ mod tests {
             editor.read_with(cx, |view, _| {
                 assert!(view.time_selection.is_none());
                 assert!(!view.time_selection_project_scope);
-                assert_eq!(view.sections.selection, vec![ids[1], ids[0]]);
+                assert_eq!(view.sections.selection, vec![ids[0], ids[1]]);
                 assert_eq!(view.sections.selected, Some(ids[0]));
                 assert!(view.selected_clip_ids().is_empty());
                 assert!(
@@ -4822,8 +4861,13 @@ mod tests {
                 );
                 assert_eq!(view.arrangement_focus.projection.enabled, focused);
             });
-            visual.simulate_mouse_down(at, MouseButton::Left, shift);
-            visual.simulate_mouse_up(at, MouseButton::Left, shift);
+            let toggle = Modifiers {
+                shift: true,
+                platform: true,
+                ..Modifiers::default()
+            };
+            visual.simulate_mouse_down(at, MouseButton::Left, toggle);
+            visual.simulate_mouse_up(at, MouseButton::Left, toggle);
             visual.run_until_parked();
             editor.read_with(cx, |view, _| {
                 assert_eq!(view.sections.selection, vec![ids[1]]);
@@ -4831,5 +4875,60 @@ mod tests {
                 assert!(view.time_selection.is_none());
             });
         }
+    }
+    #[gpui::test]
+    fn shift_click_selects_every_section_between_anchor_and_click(cx: &mut TestAppContext) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut all = vec![ids[0]];
+        editor.update(cx, |view, cx| {
+            for (start, end, name) in [(4, 8, "Verse"), (12, 16, "Bridge")] {
+                assert!(view.enqueue(Request::EditArrangementSection {
+                    project_generation: view.project_generation,
+                    revision: view.state.as_ref().unwrap().revision,
+                    command: Command::AddArrangementSection {
+                        name: name.into(),
+                        color: ElementColor::Green,
+                        start: BeatTime::from_quarters(start).unwrap(),
+                        end: BeatTime::from_quarters(end).unwrap(),
+                    },
+                }));
+                let event = next(&view.service);
+                assert!(event.error.is_none(), "{:?}", event.error);
+                let Some(Created::ArrangementSection(id)) = event.created else {
+                    panic!("section result")
+                };
+                all.push(id);
+                view.receive(event);
+            }
+            view.section_autoplay = false;
+            cx.notify();
+        });
+        // Song order: intro, verse, chorus, bridge.
+        let all = [all[0], all[1], ids[1], all[2]];
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let mut click = |quarters, modifiers| {
+            let at = editor.read_with(&visual, |view, _| position(view, quarters));
+            visual.simulate_mouse_down(at, MouseButton::Left, modifiers);
+            visual.simulate_mouse_up(at, MouseButton::Left, modifiers);
+            visual.run_until_parked();
+            editor.read_with(&visual, |view, _| {
+                assert!(view.time_selection.is_none());
+                (
+                    view.sections.selected_ids().to_vec(),
+                    view.sections.selected,
+                )
+            })
+        };
+        click(2, Modifiers::default());
+        assert_eq!(click(14, shift), (all.to_vec(), Some(all[3])));
+        // Same anchor: a shorter range replaces the previous one.
+        assert_eq!(click(10, shift), (all[..3].to_vec(), Some(all[2])));
+        click(14, Modifiers::default());
+        assert_eq!(click(2, shift), (all.to_vec(), Some(all[0])));
     }
 }
