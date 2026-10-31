@@ -118,6 +118,51 @@ SDK/fixture/receipt setup, or `HEX_TEST_SIGNING_IDENTITY`) keep comprehensive
 Python discovery for app-only merges too. Native suites retain their own opt-in
 requirements; a skipped fixture is not native acceptance.
 
+## Continue after the base advances
+
+When `main` moves while a merge run is in progress, or right after it passes,
+merge the new base into the candidate and rerun with the earlier passed report:
+
+```sh
+git fetch origin main && git merge --no-edit origin/main
+python3 scripts/local-ci.py --profile merge --base "$(git rev-parse origin/main)" \
+  --source "$(git rev-parse HEAD)" --carry-report artifacts/local-ci/PASSED/summary.json
+```
+
+A passed merge run prints this hint with its own summary path. The carry is
+accepted only when every executable path changed since the earlier candidate
+came verbatim from the base advance, touches none of the candidate's own paths,
+and is ordinary package source. A changed manifest, lockfile, build script,
+toolchain, tooling or unknown input refuses the carry, and so do a different
+Cargo inventory, guarded toolchain/dependency identity or native opt-in. A
+refused carry is recorded and every step runs fresh; it never fails the run.
+
+Per step, guards and formatting always rerun. A Cargo step is carried only when
+the dependency closure of every package it names excludes all packages the base
+advance changed; a workspace-wide step carries only when no package changed.
+The Python step reruns just the selection the changed paths require. Carried
+steps keep `status: carried`, `execution: carried` and `carried_from` (the report,
+commit and log that actually executed them, preserved through chained carries);
+the summary's `carry` lists each decision and its reason. A carried report is
+not a fresh full run and cannot feed `--reuse-report`.
+
+## Check main right after a merge
+
+After each standing-authorization merge, check the merge commit on an
+up-to-date main checkout before starting further merges:
+
+```sh
+git switch main && git pull --ff-only
+python3 scripts/local-ci.py --profile health --base HEAD^1 --source HEAD
+```
+
+`health` compares the merge commit with its first parent and runs formatting
+plus the tests of the merged change's own packages, not every consumer (tooling
+paths add the Python self-tests; unknown or high-risk inputs test the
+workspace). It is a fast red-main signal, never merge qualification, so a pass
+reports `partial`. A failure prints the merge that turned main red: fix forward
+in a focused PR before merging anything else, and tell other active sessions.
+
 ## macOS target storage
 
 Use a persistent Cargo target on APFS. Set `CARGO_TARGET_DIR` to a fresh directory

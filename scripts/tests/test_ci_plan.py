@@ -820,6 +820,211 @@ class ScopeTests(unittest.TestCase):
             self.assertEqual(result["status"], "passed")
 
 
+class BaseAdvanceCarryTests(unittest.TestCase):
+    """Fabricated reports exercise carry policy; no product test counts are claimed."""
+
+    INVENTORY = [dict(name=name, manifest=f"crates/{name}/Cargo.toml", features={}, targets=[],
+                      dependencies=[{"name": d, "kind": None} for d in deps])
+                 for name, deps in (("core", []), ("ui", ["core"]), ("desktop", ["ui"]), ("tool", []))]
+
+    def entry(self, step, count=1):
+        return {"step_id": step.step_id, "argv": list(step.argv), "status": "passed", "log": "old.log",
+                "test_results": {"rust_passed_by_binary": [count]}}
+
+    def test_steps_carry_only_outside_the_changed_dependency_closure(self):
+        shared = {"mode": "shared", "test_selectors": ["test_python_test_plan"], "reasons": ["app-only"]}
+        steps = (ci.Step("format", ("cargo", "fmt", "--all", "--check")),
+                 ci.Step("runner-tests", ci.ci_plan.python_tests.COMPREHENSIVE_ARGV, True, True),
+                 ci.Step("affected-tests", ("cargo", "test", "-p", "core", "-p", "tool", "--locked"), requires_tests=True),
+                 ci.Step("tool-clippy", ("cargo", "clippy", "-p", "tool", "--locked")),
+                 ci.Step("desktop-build", ("cargo", "build", "-p", "desktop", "--locked")),
+                 ci.Step("workspace-tests", ("cargo", "test", "--workspace", "--locked"), requires_tests=True),
+                 ci.Step("new-step", ("cargo", "test", "-p", "tool", "--features", "x"), requires_tests=True),
+                 ci.Step("zero-match", ("cargo", "test", "-p", "tool", "--lib"), requires_tests=True))
+        evidence = {"steps": [self.entry(s, 0 if s.step_id == "zero-match" else 1)
+                              for s in steps if s.step_id != "new-step"]}
+        actions = lambda owners, python=shared: [d["action"] for d in ci.carry_decisions(
+            steps, evidence, {"delta_owners": owners, "python_tests": python}, self.INVENTORY)]
+        # A leaf change reruns its consumers only; guards always rerun.
+        self.assertEqual(actions(["desktop"]),
+                         ["run", "narrow", "carry", "carry", "run", "run", "run", "run"])
+        # A shared dependency reruns every step whose closure reaches it.
+        self.assertEqual(actions(["core"]),
+                         ["run", "narrow", "run", "carry", "run", "run", "run", "run"])
+        self.assertEqual(actions([], {"mode": "none", "reasons": []}),
+                         ["run", "carry", "carry", "carry", "carry", "carry", "run", "run"])
+        comprehensive = {"mode": "comprehensive", "reasons": ["tooling"]}
+        self.assertEqual(actions(["tool"], comprehensive)[1:4], ["run", "run", "run"])
+        narrowed = ci.carry_decisions(steps, evidence, {"delta_owners": ["desktop"], "python_tests": shared},
+                                      self.INVENTORY)[1]
+        self.assertEqual(narrowed["argv"], ci.ci_plan.python_tests.argv(shared))
+        # A narrowed or carried entry still matches by its planned configuration.
+        chained = {"steps": [{**self.entry(steps[1]), "argv": list(narrowed["argv"]),
+                              "carry": {"planned_argv": list(steps[1].argv)}},
+                             {**self.entry(steps[3]), "status": "carried"}]}
+        self.assertEqual([d["action"] for d in ci.carry_decisions(
+            steps[1:4:2], chained, {"delta_owners": ["desktop"], "python_tests": shared}, self.INVENTORY)],
+            ["narrow", "carry"])
+
+    def repository(self, root):
+        def git(*args):
+            return subprocess.check_output(["git", *args], cwd=root).decode().strip()
+        git("init", "-q", "-b", "main")
+        git("config", "user.name", "carry fixture")
+        git("config", "user.email", "fixture@invalid")
+        (root / ".gitignore").write_text("/artifacts/\n")
+        for name in ("core", "ui"):
+            (root / f"crates/{name}/src").mkdir(parents=True)
+            (root / f"crates/{name}/Cargo.toml").write_text(f"[package]\nname='{name}'\n")
+            (root / f"crates/{name}/src/lib.rs").write_text("// base\n")
+        git("add", ".")
+        git("commit", "-qm", "base")
+        return git
+
+    def metadata(self, root):
+        return {"workspace_members": ["core", "ui"], "packages": [
+            dict(id=name, name=name, manifest_path=str(root / f"crates/{name}/Cargo.toml"), features={},
+                 targets=[], dependencies=[{"name": "core", "kind": None}] if name == "ui" else [])
+            for name in ("core", "ui")]}
+
+    def evidence(self, root, resolved):
+        tree = {"commit": resolved["source"], "dirty": False, "dirty_files": [], "content_sha256": "fixture"}
+        return {"schema_version": 2, "mode": "merge", "status": "passed", "exit_code": 0,
+                "commit": resolved["source"], "dirty": False, "stale": False,
+                "native_acceptance_opt_in": False, "start_tree": tree, "end_tree": tree,
+                "plan": resolved, "target_cache": {"dependency_inputs": {"version": 1}},
+                "steps": [{"step_id": "affected-tests", "argv": ["cargo", "test", "-p", "ui"], "status": "passed",
+                           "test_results": {"rust_passed_by_binary": [1]}}]}
+
+    def test_carry_basis_accepts_only_verbatim_disjoint_ordinary_base_advances(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git = self.repository(root)
+            base = git("rev-parse", "HEAD")
+            git("checkout", "-qb", "pr")
+            (root / "crates/ui/src/a.rs").write_text("// pr\n")
+            git("add", ".")
+            git("commit", "-qm", "pr")
+            evidence = self.evidence(root, plan.resolve(root, profile="merge", base=base,
+                                                        source=git("rev-parse", "HEAD"), metadata=self.metadata(root)))
+            candidate = git("rev-parse", "HEAD")
+
+            def advance(paths, *, then=None):
+                git("checkout", "-q", "--detach", base)
+                for path, text in paths.items():
+                    (root / path).parent.mkdir(parents=True, exist_ok=True)
+                    (root / path).write_text(text)
+                git("add", ".")
+                git("commit", "-qm", "advance")
+                advanced = git("rev-parse", "HEAD")
+                git("checkout", "-q", "--detach", candidate)
+                git("merge", "-q", "--no-edit", advanced)
+                if then:
+                    (root / then).write_text("// edited after merge\n")
+                    git("add", ".")
+                    git("commit", "-qm", "extra")
+                resolved = plan.resolve(root, profile="merge", base=advanced,
+                                        source=git("rev-parse", "HEAD"), metadata=self.metadata(root))
+                return plan.carry_basis(root, resolved, evidence, env={})
+
+            basis = advance({"crates/core/src/lib.rs": "// advanced\n", "docs/a.md": "prose"})
+            self.assertEqual(basis["delta_owners"], ["core"])
+            self.assertEqual(basis["report_commit"], candidate)
+            for paths, then, message in (
+                    ({"crates/core/src/lib.rs": "// advanced\n"}, "crates/core/src/lib.rs", "verbatim"),
+                    ({"crates/core/src/lib.rs": "// advanced\n"}, "crates/ui/src/a.rs", "own path"),
+                    ({"rust-toolchain.toml": "[toolchain]\n"}, None, "toolchain"),
+                    ({"crates/core/Cargo.toml": "[package]\nname='core'\nversion='2'\n"}, None, "dependency"),
+                    ({"scripts/ci_plan.py": "# tool\n"}, None, "tooling")):
+                with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                    advance(paths, then=then)
+            git("checkout", "-q", "--detach", candidate)
+            current = plan.resolve(root, profile="merge", base=base, source=candidate, metadata=self.metadata(root))
+            for field, value in (("status", "failed"), ("stale", True), ("mode", "full"),
+                                 ("native_acceptance_opt_in", None), ("steps", [])):
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, "not a complete passed"):
+                    plan.carry_basis(root, current, {**evidence, field: value}, env={})
+            with self.assertRaisesRegex(ValueError, "native/external"):
+                plan.carry_basis(root, current, evidence, env={"HEX_VST3_SDK_DIR": "x"})
+            # A report whose base is newer than the current base cannot carry.
+            newer = {**evidence["plan"], "base": candidate}
+            with self.assertRaisesRegex(ValueError, "not an ancestor"):
+                plan.carry_basis(root, current, {**evidence, "plan": newer}, env={})
+
+    def test_runner_records_carried_origin_and_falls_back_to_fresh_runs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = root / "old.json"
+            step = ci.Step("tool-tests", ("cargo", "test", "-p", "tool"), requires_tests=True)
+            report.write_text(json.dumps({"steps": [self.entry(step)],
+                                          "target_cache": {"dependency_inputs": {"version": 1}}}))
+            resolved = {"cargo_inventory": self.INVENTORY, "profile": "merge"}
+            runner = ci.LocalCiRunner(root, mode="merge", plan=resolved, min_free_bytes=0,
+                                      steps=(step,), carry_report=report)
+            runner.output_dir.mkdir(parents=True)  # run() creates it before any step.
+            basis = {"report_commit": "c0", "delta_paths": ["crates/core/src/lib.rs"],
+                     "delta_owners": ["core"], "python_tests": {"mode": "none", "reasons": []}}
+            with patch.object(ci.ci_plan, "carry_basis", return_value=basis):
+                runner._prepare_carry()
+            self.assertEqual(runner.summary["carry"]["decisions"][0]["action"], "carry")
+            runner._record_carried(step, 1, runner._carry[0])
+            carried = runner.summary["steps"][0]
+            self.assertEqual((carried["status"], carried["execution"], carried["log"]), ("carried", "carried", None))
+            self.assertEqual(carried["carried_from"], {"report": str(report.resolve()), "commit": "c0", "log": "old.log"})
+            # A chained carry keeps the run that actually executed the step.
+            self.assertEqual(runner._carry_origin({"carried_from": {"report": "first.json"}}), {"report": "first.json"})
+            runner._drop_carry("toolchain changed")
+            self.assertIsNone(runner._carry)
+            self.assertIn("run fresh", runner.summary["carry"]["refused"])
+            refused = ci.LocalCiRunner(root, mode="merge", plan=resolved, min_free_bytes=0,
+                                       steps=(step,), carry_report=report)
+            with patch.object(ci.ci_plan, "carry_basis", side_effect=ValueError("own path changed")):
+                refused._prepare_carry()
+            self.assertIsNone(refused._carry)
+            self.assertIn("every step runs fresh", refused.summary["carry"]["refused"])
+
+
+class MainHealthTests(unittest.TestCase):
+    INVENTORY = BaseAdvanceCarryTests.INVENTORY
+
+    def steps(self, paths):
+        health = plan.health_selection(paths, self.INVENTORY)
+        return [(s.step_id, s.argv) for s in ci.planned_steps(
+            {"health": health, "base": "b", "source": "s", "scope": "rust"})]
+
+    def test_health_tests_only_the_merged_owners_and_widens_for_unknown_inputs(self):
+        fmt = ("format", ("cargo", "fmt", "--all", "--check"))
+        self.assertEqual(self.steps(["crates/core/src/a.rs", "crates/ui/tests/b.rs", "docs/a.md"]),
+                         [fmt, ("health-tests", ("cargo", "test", "-p", "core", "-p", "ui", "--locked"))])
+        self.assertEqual(self.steps(["scripts/ci_plan.py"]),
+                         [fmt, ("health-runner-tests", ci.ci_plan.python_tests.COMPREHENSIVE_ARGV)])
+        self.assertEqual(self.steps(["Cargo.lock", "crates/core/src/a.rs"])[1],
+                         ("health-tests", ("cargo", "test", "--workspace", "--locked")))
+        self.assertEqual(self.steps(["docs/a.md"])[1][0], "metadata")
+
+    def test_health_requires_the_merge_commit_and_its_first_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git = BaseAdvanceCarryTests.repository(self, root)
+            first = git("rev-parse", "HEAD")
+            git("checkout", "-qb", "pr")
+            (root / "crates/ui/src/a.rs").write_text("// pr\n")
+            git("add", ".")
+            git("commit", "-qm", "pr")
+            git("checkout", "-q", "main")
+            (root / "crates/core/src/b.rs").write_text("// main\n")
+            git("add", ".")
+            git("commit", "-qm", "main")
+            git("merge", "-q", "--no-ff", "--no-edit", "pr")
+            merge = git("rev-parse", "HEAD")
+            metadata = BaseAdvanceCarryTests.metadata(self, root)
+            resolved = plan.resolve(root, profile="health", base=merge + "^1", source=merge, metadata=metadata)
+            self.assertEqual(resolved["health"]["packages"], ["ui"])
+            self.assertFalse(resolved["qualifies_merge"])
+            with self.assertRaisesRegex(ValueError, "first parent"):
+                plan.resolve(root, profile="health", base=first, source=merge, metadata=metadata)
+
+
 class CacheIdentityTests(unittest.TestCase):
     def test_actual_cargo_restored_mtime_dependency_api_is_invalidated(self):
         with tempfile.TemporaryDirectory() as directory:
