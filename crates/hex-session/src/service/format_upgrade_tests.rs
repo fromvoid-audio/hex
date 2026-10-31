@@ -299,7 +299,10 @@ fn schema60_and_schema61_save_require_consent_or_save_as_for_current_schema() {
             Some(serde_json::json!([]))
         );
         assert_eq!(
-            prior.as_object_mut().unwrap().remove("automatic_track_names"),
+            prior
+                .as_object_mut()
+                .unwrap()
+                .remove("automatic_track_names"),
             Some(serde_json::json!([]))
         );
         if version == 60 {
