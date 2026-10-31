@@ -15,6 +15,47 @@ partial feedback. Runner certification and reviewed change-based verification
 are distinct evidence routes under AGENTS.md; neither implies native acceptance.
 See [development-workflow.md](development-workflow.md).
 
+## Default sequence for an issue
+
+Use the cheapest check that can fail first; do not use the merge runner as
+first feedback.
+
+1. **Focused tests** for the changed boundary and its named consumers, for
+   example `cargo test -p OWNER --lib FILTER` (target under ten seconds; see
+   [focused commands](#focused-commands)).
+2. **Preflight**: `python3 scripts/local-ci.py --quick` plus
+   `cargo clippy -p OWNER --all-targets [--features …] --locked -- -D warnings`
+   for each touched package and its relevant feature configurations. This
+   catches style, guard and lint failures in about a minute.
+3. **Merge qualification**: run the merge profile (below). Where the selector
+   has no narrower supported boundary and would widen far beyond the change's
+   actual impact, a reviewed change-based check set may qualify instead under
+   AGENTS.md, recorded in the PR as shown in the template below. Allocation-probe,
+   persistence and Undo/Redo requirements of the touched boundaries still apply.
+4. After merging, run the [post-merge health check](#check-main-right-after-a-merge);
+   when the base moved during step 3, [carry](#continue-after-the-base-advances)
+   instead of rerunning everything.
+
+When several sessions share the machine, run one Cargo-heavy command (test,
+clippy, build or runner) at a time. A session's own worktree target may need
+`--adopt-target` on its first runner use; never adopt another session's target.
+Do not edit a checkout while a runner is using it: a changed tree marks the
+run stale, and Python self-tests that start scripts would test the edit.
+
+Reviewed check set template for a PR description:
+
+```text
+## Verification (reviewed change-based check set)
+Base BASE_SHA, source SOURCE_SHA.
+Owners: crate::module (responsibility); contracts: …; consumers: …
+- cargo test -p OWNER --locked [--features …]: passed (N tests)
+- cargo test -p CONSUMER --test NAME --locked: passed (N tests)
+- cargo clippy -p OWNER -p CONSUMER --all-targets --locked -- -D warnings: passed
+- python3 scripts/local-ci.py --quick: passed
+Omitted, with reasons: …
+Not a runner-certified plan; native acceptance remains in Pulse.
+```
+
 The runner executes sequentially and stops on failure. Read the numbered log for
 the failing step; later `not_run` steps did not pass. Results are in
 `artifacts/local-ci/<run-id>/summary.json` and adjacent raw logs. A runner-certified run
