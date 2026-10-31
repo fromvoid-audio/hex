@@ -822,7 +822,7 @@ fn gain_uses_delayed_content_frame_and_loop_history_survives_wrap() {
     }
 }
 #[test]
-fn compatible_gain_handoff_preserves_inflight_impulse_and_changed_latency_refuses() {
+fn compatible_gain_handoff_preserves_inflight_impulse_and_changed_latency_restarts() {
     let mut f = fixture(&[&[], &[7]], 32);
     let revision = prepare(&f).unwrap();
     let mut old = SessionPlayback::new(revision).unwrap();
@@ -846,10 +846,12 @@ fn compatible_gain_handoff_preserves_inflight_impulse_and_changed_latency_refuse
             state: state(8).unwrap(),
         })
         .unwrap();
+    let frame = candidate.performance_frame();
     let mut changed = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
-    assert!(changed.try_inherit_state_from(&mut candidate).is_err());
-    candidate.apply(SessionPlaybackCommand::Stop).unwrap();
+    // Changed latency while playing restarts audio at the cursor (Pulse #3769).
     changed.try_inherit_state_from(&mut candidate).unwrap();
+    assert!(changed.playing());
+    assert_eq!(changed.performance_frame(), frame);
 }
 #[test]
 fn unknown_latency_and_cumulative_overflow_refuse_actual_preparation() {
