@@ -154,7 +154,6 @@ impl Sample {
             subscriptions.push(
                 cx.subscribe(&number, move |s, _, e: &NumericControlEvent, cx| {
                     s.status = format!("value {} · {:?} · {:.4}", i + 1, e.phase, e.value);
-                    s.refresh_meters(cx);
                     cx.notify();
                 }),
             );
@@ -231,7 +230,7 @@ impl Sample {
                 cx,
             )
         });
-        let mut s = Self {
+        Self {
             item,
             prefix,
             numbers,
@@ -253,43 +252,10 @@ impl Sample {
             narrow: false,
             actions: 0,
             workspace: workspace.map(|p| cx.new(|cx| Workspace::new(p, cx))),
-        };
-        s.refresh_meters(cx);
-        s
+        }
     }
     fn id(&self, name: &str) -> String {
         format!("{}{name}", self.prefix)
-    }
-    fn refresh_meters(&mut self, cx: &mut Context<Self>) {
-        if !matches!(
-            self.item.demo,
-            Demo::Numeric(NumericControlPresentation::DeviceMeters, _, _)
-        ) {
-            return;
-        }
-        for n in &self.numbers {
-            n.update(cx, |n, cx| {
-                let gain = n.value() as f32;
-                n.set_meter_readout(
-                    DeviceMeterReadout {
-                        height: 110.0,
-                        index: 0,
-                        gain_db: if gain > 0.0 {
-                            20.0 * gain.log10()
-                        } else {
-                            -120.0
-                        },
-                        levels: [gain * 0.5, gain * 0.4],
-                        held: [gain * 0.6, gain * 0.5],
-                        tooltips: [theme::text("input fixture"), theme::text("output fixture")],
-                        signal: 0x55aa88,
-                        warning: 0xd9ab55,
-                        clipping: 0xdd5566,
-                    },
-                    cx,
-                );
-            });
-        }
     }
     fn bar_event(&mut self, e: &BarEditorEvent, cx: &mut Context<Self>) {
         match e.phase {

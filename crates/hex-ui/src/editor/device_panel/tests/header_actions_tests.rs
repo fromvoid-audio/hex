@@ -110,7 +110,7 @@ fn assert_order(visual: &mut VisualTestContext, device: DeviceId, remove_prefix:
         "toggle is the far-left control"
     );
     assert_eq!(
-        frame.right() - px(gain_meters::WIDTH) - remove.right(),
+        frame.right() - px(device_meter::WIDTH) - remove.right(),
         inset,
         "X occupies the right inset"
     );
