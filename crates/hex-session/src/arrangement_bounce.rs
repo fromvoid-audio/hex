@@ -218,6 +218,7 @@ pub(crate) fn isolated(
     snapshot.loop_region = None;
     snapshot.master_gain = 1.0;
     snapshot.retain_clip_aliases_after_projection();
+    snapshot.retain_automatic_track_names_after_projection();
     Project::from_snapshot(snapshot).map_err(|e| e.to_string())
 }
 
