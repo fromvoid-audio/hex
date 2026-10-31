@@ -309,9 +309,7 @@ fn replaced_project_cannot_resume_an_older_latency_rebuild(cx: &mut gpui::TestAp
 }
 
 #[gpui::test]
-fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
-    cx: &mut gpui::TestAppContext,
-) {
+fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppContext) {
     let files = super::super::test_environment::Environment::new().unwrap();
     let wav_path = files.root().join("latency-recovery.wav");
     let frames = 96_000_u32;
@@ -369,7 +367,6 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
     let reject_next_fresh = Arc::new(AtomicBool::new(false));
     let cancel_next_fresh = Arc::new(AtomicBool::new(false));
     let cancellation_done = Arc::new(AtomicBool::new(false));
-    let release = events.clone();
     let service = Service::with_audio_sink_and_native_reservation(
         16,
         8_000_000,
@@ -398,7 +395,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
                 Err(TryRecvError::Empty) => {
                     assert!(
                         std::time::Instant::now() < deadline,
-                        "rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position: hang guard expired"
+                        "second_limiter_while_playing_applies_without_stopping: hang guard expired"
                     );
                     std::thread::yield_now();
                 }
@@ -493,123 +490,36 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
         audible_before,
         "the original graph must produce the fixture audio"
     );
-    hold.store(true, std::sync::atomic::Ordering::Release);
+    // A latency-layout change while playing applies at a block boundary:
+    // the transport keeps running, with no stop/rebuild and no error.
     editor.update(cx, |view, _| {
         assert!(view.enqueue(add_limiter(second_track)));
     });
-    let deadline = crate::test_wait::hang_deadline();
-    let rejected_event = loop {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        editor.update(cx, |view, cx| {
-            view.tick(cx);
-        });
-        if let Some(event) = held.lock().unwrap().take() {
-            break event;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "candidate observation was not held"
-        );
-        std::thread::yield_now();
-    };
-    let rejected_revision = match &rejected_event {
-        EditorAudioEvent::Publication {
-            state: EditorPublicationState::ResidentSubmitted { audio_revision, .. },
-            ..
-        } => *audio_revision,
-        _ => panic!("unexpected held publication"),
-    };
     let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if editor.update(cx, |view, cx| {
             view.tick(cx);
-            view.observed_rejected_revision == rejected_revision
-                && matches!(view.latency_rebuild, Some(super::super::audio_admission::LatencyRebuild::Unresolved { audio_revision, .. }) if audio_revision == rejected_revision)
-        }) { break; }
-        assert!(
-            Instant::now() < deadline,
-            "rejection did not arrive before its metadata"
-        );
-        std::thread::yield_now();
-    }
-    release.send(rejected_event).unwrap();
-    let mut captured = None;
-    let deadline = crate::test_wait::hang_deadline();
-    let mut released_restore = false;
-    let mut stopped_seen = false;
-    loop {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        let complete = editor.update(cx, |view, cx| {
-            view.tick(cx);
-            if let Some(super::super::audio_admission::LatencyRebuild::Restoring {
-                frame, ..
-            }) = view.latency_rebuild
-            {
-                if captured.is_none() {
-                    assert_eq!(
-                        view.status,
-                        "rebuilding audio · effect tails will reset · playback will resume"
-                    );
-                }
-                captured = Some(frame);
-            }
-            let status = view.audio_status().unwrap();
-            stopped_seen |= captured.is_some() && !status.playing.load(Acquire);
-            if stopped_seen && !released_restore {
-                assert!(
-                    !status.playing.load(Acquire),
-                    "must not resume before restoration metadata"
-                );
-            }
-            captured.is_some()
-                && view.latency_rebuild.is_none()
-                && view
-                    .state
-                    .as_ref()
-                    .is_some_and(|s| view.applied_project_revision == Some(s.revision))
-                && status.playing.load(Acquire)
-        });
-        if captured.is_some()
-            && !released_restore
-            && let Some(event) = held.lock().unwrap().take()
-        {
-            hold.store(false, std::sync::atomic::Ordering::Release);
-            release.send(event).unwrap();
-            released_restore = true;
-        }
-        if complete {
+            assert!(view.latency_rebuild.is_none());
+            assert!(view.audio_status().unwrap().playing.load(Acquire));
+            view.state.as_ref().is_some_and(|s| {
+                view.applied_project_revision == Some(s.revision)
+                    && s.project
+                        .track(second_track)
+                        .is_some_and(|track| !track.devices().is_empty())
+            })
+        }) {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "rebuild did not resume (captured={captured:?}, released={released_restore}, stopped={stopped_seen}): {:?}",
-            editor.read_with(cx, |view, _| (
-                view.error.clone(),
-                view.latency_rebuild,
-                view.stopped_playback_restore,
-                view.applied_project_revision,
-                view.state.as_ref().map(|s| s.revision),
-                view.playback_candidates
-                    .iter()
-                    .map(|c| (
-                        c.audio_revision,
-                        c.state.revision,
-                        c.device_preview_identity.is_some()
-                    ))
-                    .collect::<Vec<_>>(),
-                view.audio_status().map(|s| (
-                    s.playing.load(Acquire),
-                    s.applied_revision.load(Acquire),
-                    s.rejected_revision()
-                ))
-            ))
+            "latency change did not apply while playing: {:?}",
+            editor.read_with(cx, |view, _| view.error.clone())
         );
         std::thread::yield_now();
     }
     editor.update(cx, |view, _| {
-        let status = view.audio_status().unwrap();
-        assert!(status.position.load(Acquire) >= captured.unwrap());
+        assert!(view.error.is_none(), "{:?}", view.error);
         assert_eq!(
             view.state
                 .as_ref()
@@ -628,223 +538,7 @@ fn rejected_second_limiter_rebuilds_and_resumes_at_the_captured_position(
         backend.render(&mut output).unwrap();
         audible_after |= output.iter().flatten().any(|sample| sample.abs() > 0.05);
     }
-    assert!(
-        audible_after,
-        "the rebuilt graph must resume the fixture audio"
-    );
-
-    // A later explicit Stop must win even if another rebuild is in flight.
-    editor.update(cx, |view, _| {
-        assert!(view.enqueue(add_limiter(second_track)));
-    });
-    let deadline = crate::test_wait::hang_deadline();
-    loop {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if editor.update(cx, |view, cx| {
-            view.tick(cx);
-            matches!(
-                view.latency_rebuild,
-                Some(super::super::audio_admission::LatencyRebuild::Restoring { .. })
-            )
-        }) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "second rebuild did not start");
-        std::thread::yield_now();
-    }
-    editor.update(cx, |view, _| view.stop());
-    for _ in 0..100 {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        editor.update(cx, |view, cx| {
-            view.tick(cx);
-            assert!(view.latency_rebuild.is_none());
-        });
-        std::thread::yield_now();
-    }
-    editor.update(cx, |view, _| {
-        assert!(!view.audio_status().unwrap().playing.load(Acquire))
-    });
-
-    // A worker refusal of the fresh stopped graph must never restart transport.
-    let deadline = crate::test_wait::hang_deadline();
-    loop {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if editor.update(cx, |view, cx| {
-            view.tick(cx);
-            view.stopped_playback_restore.is_none()
-                && view
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| view.applied_project_revision == Some(state.revision))
-        }) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "cancelled restoration did not settle"
-        );
-        std::thread::yield_now();
-    }
-    editor.update(cx, |view, _| {
-        view.queue_audio_command(PlaybackCommand::Play)
-    });
-    backend.render(&mut [[0.0; 2]; 64]).unwrap();
-    reject_next_fresh.store(true, Release);
-    editor.update(cx, |view, _| {
-        assert!(view.enqueue(add_limiter(second_track)))
-    });
-    let deadline = crate::test_wait::hang_deadline();
-    loop {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if editor.update(cx, |view, cx| {
-            view.tick(cx);
-            !reject_next_fresh.load(Acquire)
-                && view.latency_rebuild.is_none()
-                && view.stopped_playback_restore.is_none()
-        }) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "refused restoration did not settle"
-        );
-        std::thread::yield_now();
-    }
-    for _ in 0..20 {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        editor.update(cx, |view, cx| {
-            view.tick(cx);
-            assert!(!view.audio_status().unwrap().playing.load(Acquire));
-        });
-    }
-
-    // Retry the retained project while stopped, then force the callback to
-    // reject the next fresh publication before it can be installed.
-    editor.update(cx, |view, _| view.stop());
-    let deadline = crate::test_wait::hang_deadline();
-    loop {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if editor.update(cx, |view, cx| {
-            view.tick(cx);
-            view.stopped_playback_restore.is_none()
-                && view
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| view.applied_project_revision == Some(state.revision))
-        }) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "manual retry did not settle");
-        std::thread::yield_now();
-    }
-    editor.update(cx, |view, _| {
-        view.queue_audio_command(PlaybackCommand::Play)
-    });
-    backend.render(&mut [[0.0; 2]; 64]).unwrap();
-    cancel_next_fresh.store(true, Release);
-    editor.update(cx, |view, _| {
-        assert!(view.enqueue(add_limiter(second_track)))
-    });
-    let deadline = crate::test_wait::hang_deadline();
-    loop {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if editor.update(cx, |view, cx| {
-            view.tick(cx);
-            matches!(
-                view.latency_rebuild,
-                Some(super::super::audio_admission::LatencyRebuild::Restoring { .. })
-            ) && !view.audio_status().unwrap().playing.load(Acquire)
-        }) {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "callback-refusal recovery did not stop"
-        );
-        std::thread::yield_now();
-    }
-    while !cancellation_done.load(Acquire) {
-        editor.update(cx, |view, cx| view.tick(cx));
-        assert!(
-            Instant::now() < deadline,
-            "fresh publication was not cancelled"
-        );
-        std::thread::yield_now();
-    }
-    let mut rejected = false;
-    for _ in 0..100 {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        editor.update(cx, |view, cx| {
-            view.tick(cx);
-            let status = view.audio_status().unwrap();
-            rejected |= status.rejected_revision().is_some_and(|(_, reason)| {
-                reason == hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled
-            });
-            assert!(!status.playing.load(Acquire));
-        });
-        std::thread::yield_now();
-    }
-    assert!(
-        rejected,
-        "the callback must report the cancelled fresh graph"
-    );
-    editor.update(cx, |view, _| {
-        assert!(view.latency_rebuild.is_none());
-        assert!(view.stopped_playback_restore.is_none());
-    });
-
-    // A later Pause is a new user intent and must cancel automatic resume.
-    editor.update(cx, |view, _| view.stop());
-    let deadline = crate::test_wait::hang_deadline();
-    loop {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if editor.update(cx, |view, cx| {
-            view.tick(cx);
-            view.stopped_playback_restore.is_none()
-                && view
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| view.applied_project_revision == Some(state.revision))
-        }) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "pause fixture did not recover");
-        std::thread::yield_now();
-    }
-    editor.update(cx, |view, _| {
-        view.queue_audio_command(PlaybackCommand::Play)
-    });
-    backend.render(&mut [[0.0; 2]; 64]).unwrap();
-    editor.update(cx, |view, _| {
-        assert!(view.enqueue(add_limiter(second_track)))
-    });
-    let deadline = crate::test_wait::hang_deadline();
-    loop {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if editor.update(cx, |view, cx| {
-            view.tick(cx);
-            matches!(
-                view.latency_rebuild,
-                Some(super::super::audio_admission::LatencyRebuild::Restoring { .. })
-            )
-        }) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "pause recovery did not start");
-        std::thread::yield_now();
-    }
-    editor.update(cx, |view, _| {
-        view.queue_audio_command(PlaybackCommand::Pause)
-    });
-    for _ in 0..100 {
-        backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        editor.update(cx, |view, cx| {
-            view.tick(cx);
-            assert!(view.latency_rebuild.is_none());
-            assert!(!view.audio_status().unwrap().playing.load(Acquire));
-        });
-        std::thread::yield_now();
-    }
+    assert!(audible_after, "playback continues with the new graph");
 }
 
 #[gpui::test]
@@ -1201,4 +895,74 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
     });
     backend.close();
     std::fs::remove_file(path).unwrap();
+}
+
+#[gpui::test]
+fn refused_latency_edit_in_midi_project_shows_waiting_until_applied_or_stopped(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::super::audio_admission::{LatencyRebuild, ProjectRevision, StoppedPlaybackRestore};
+    use super::super::controller::LATENCY_EDIT_WAITING;
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let (project, ..) = super::super::clip_drag_ui_test::midi_project();
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let deadline = crate::test_wait::hang_deadline();
+    let (mut output, _backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(output) => break output,
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && Instant::now() < deadline =>
+            {
+                std::thread::yield_now()
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    let client = output.take_client().unwrap();
+    editor.update(cx, |view, _| {
+        let output = client.output_identity().unwrap();
+        // The callback reports playing; the refused revision is current.
+        client.status().unwrap().playing.store(true, Release);
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "midi latency fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.project_generation = 0;
+        let revision = view.state.as_ref().unwrap().revision;
+        let project = ProjectRevision {
+            generation: 0,
+            revision,
+        };
+        view.latency_rebuild = Some(LatencyRebuild::Waiting { project, output });
+
+        // Playing: MIDI voices are kept, and the wait is visible, once.
+        assert!(view.tick_latency_rebuild());
+        assert_eq!(view.error.as_deref(), Some(LATENCY_EDIT_WAITING));
+        assert!(view.latency_rebuild.is_some());
+        assert!(!view.tick_latency_rebuild());
+        assert!(view.pending_audio_commands.is_empty());
+
+        // Once the revision is audible, the notice retires with the wait.
+        view.applied_project_revision = Some(revision);
+        assert!(view.tick_latency_rebuild());
+        assert!(view.error.is_none());
+        assert!(view.latency_rebuild.is_none());
+
+        // Stop installs the waiting revision through the stopped restore.
+        view.applied_project_revision = None;
+        view.latency_rebuild = Some(LatencyRebuild::Waiting { project, output });
+        assert!(view.tick_latency_rebuild());
+        view.stop();
+        assert!(view.latency_rebuild.is_none());
+        assert_ne!(view.error.as_deref(), Some(LATENCY_EDIT_WAITING));
+        assert_eq!(
+            view.stopped_playback_restore,
+            Some(StoppedPlaybackRestore::Preparing)
+        );
+    });
 }

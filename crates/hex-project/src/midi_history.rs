@@ -1054,7 +1054,11 @@ fn same_shell(
         main_devices,
         tempo_map,
         meter_map,
+        offline_assets,
     } = a;
+    if offline_assets != &b.offline_assets {
+        return false;
+    }
     let death = match kind {
         Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => Some(clip),
         _ => None,
@@ -1121,6 +1125,7 @@ fn same_shell(
             gain_lane,
             id,
             name,
+            automatic_name,
             gain,
             balance,
             muted,
@@ -1145,6 +1150,7 @@ fn same_shell(
             && color == &b.color
             && id == &b.id
             && name == &b.name
+            && automatic_name == &b.automatic_name
             && gain == &b.gain
             && balance == &b.balance
             && muted == &b.muted

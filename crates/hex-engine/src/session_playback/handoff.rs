@@ -314,24 +314,53 @@ impl SessionPlayback {
         Ok((candidates, count, source_frame))
     }
 
+    /// Strict planner: an unproven mutable chase refuses, leaving both
+    /// runtimes unchanged.
     pub(super) fn inherit_state(
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_with_groups(previous, None)
+        self.inherit_state_planned(previous, None, None, false)
     }
-    pub(super) fn inherit_state_with_groups(
+    /// Live publication policy (Pulse #3770): see `inherit_state_planned`.
+    pub(super) fn inherit_state_live(
         &mut self,
         previous: &mut Self,
         groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned(previous, groups, None)
+        self.inherit_state_planned(previous, groups, None, true)
     }
+    /// With `live`, a transition the strict planner cannot prove (an unproven
+    /// mutable chase, a changed MIDI source layout, compensated timing or tails,
+    /// unavailable source history...) does not refuse: the planner rejects it
+    /// in its pure preflight (nothing committed), then audio restarts at the
+    /// cursor through the reset handoff. Voices and tails reset and gate-active
+    /// notes are chased on the next played block; the transport is never
+    /// stopped and no note-off is lost. A changed tempo map or loop relocates
+    /// to the musically equivalent frame while playing.
     pub(super) fn inherit_state_planned(
+        &mut self,
+        previous: &mut Self,
+        groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
+        mut demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
+        live: bool,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        match self.inherit_state_planned_once(previous, groups, demand.as_deref_mut(), false) {
+            // An open admission proves the refusal came from the pure
+            // preflight: neither runtime changed, so the reset handoff may
+            // run instead (Pulse #3770, #3774).
+            Err(error) if live && self.candidate_admission_open && restartable(error) => {
+                self.inherit_state_planned_once(previous, None, demand, true)
+            }
+            result => result,
+        }
+    }
+    fn inherit_state_planned_once(
         &mut self,
         previous: &mut Self,
         mut groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
+        force_restart: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
@@ -403,7 +432,7 @@ impl SessionPlayback {
                 || previous.arrangement_frame != 0)
         {
             return Err(SessionPlaybackError::Arrangement(
-                "midi source layout changed · stop transport before applying this revision",
+                MIDI_SOURCE_LAYOUT_CHANGED,
             ));
         }
         let compensation_bytes = self
@@ -421,92 +450,6 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::DeviceRuntime)?;
         if compensation_bytes > crate::signal_graph::MAX_COEXISTING_COMPENSATION_BYTES {
             return Err(SessionPlaybackError::DeviceRuntime);
-        }
-        if (self.compensation.is_some() || previous.compensation.is_some())
-            && !previous.playing
-            && !previous.monitor_source_releases
-            && previous.performance_frame == 0
-            && previous.arrangement_frame == 0
-            && self.main_chain.can_inherit_from(&previous.main_chain)
-        {
-            // Stop/explicit reset removed every in-flight sample; a donor with
-            // admitted stopped monitoring must use the full source planner.
-            // Adopt fresh
-            // processor/delay owners instead of copying incompatible histories.
-            // A changed foreign binding needs the full tail/source planner
-            // below; the fast reset cannot inherit that original endpoint.
-            let recipient_epoch = self
-                .capture_epoch
-                .checked_add(1)
-                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-            let donor_epoch = previous
-                .capture_epoch
-                .checked_add(1)
-                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
-            for route in &mut self.route_scratch {
-                if let Some(old) = previous.routes.iter().find(|old| old.id == route.id) {
-                    route.owner = match old.owner {
-                        RouteOwner::Session { clip, origin }
-                            if crate::session_inventory::EffectiveSessionMidi::new(
-                                self.revision.session(),
-                                self.midi_admission.as_ref(),
-                            )
-                            .midi_clip(clip)
-                            .is_some_and(|clip| clip.track == route.id) =>
-                        {
-                            RouteOwner::Session { clip, origin }
-                        }
-                        RouteOwner::SessionAudio { clip, .. }
-                            if self
-                                .revision
-                                .session()
-                                .audio_clip(clip)
-                                .is_some_and(|clip| clip.track == route.id) =>
-                        {
-                            RouteOwner::SessionAudio {
-                                clip,
-                                launch_frame: 0,
-                            }
-                        }
-                        RouteOwner::Silence => RouteOwner::Silence,
-                        _ => RouteOwner::Arrangement,
-                    };
-                }
-            }
-            if let Some(demand) = demand {
-                // This stopped reset is also a publication planning boundary.
-                // Enumerate its candidate routes before either runtime's capture
-                // epoch, DSP history or one-shot admission is changed.
-                demand.window = Some(
-                    self.visit_stream_chunk_with_history(
-                        demand.ordinary,
-                        &self.route_scratch,
-                        self.performance_frame,
-                        self.arrangement_frame,
-                        self.route_state_generation,
-                        self.arrangement_loop_pass,
-                        demand.playing.unwrap_or(previous.playing),
-                        demand.maximum_frames,
-                        &mut demand.visit,
-                        super::stream_demand::ScalarOriginHistory::Empty,
-                    )
-                    .map_err(|error| SessionPlaybackError::Arrangement(error.0))?,
-                );
-                return Ok(SessionHandoffReport {
-                    cancelled_pending: [None; MAX_TRACKS],
-                    cancelled_pending_len: 0,
-                });
-            }
-            self.routes.copy_from_slice(&self.route_scratch);
-            self.capture_epoch = recipient_epoch;
-            previous.capture_epoch = donor_epoch;
-            self.candidate_admission_open = false;
-            self.main_chain
-                .transfer_history_from(&mut previous.main_chain);
-            return Ok(SessionHandoffReport {
-                cancelled_pending: [None; MAX_TRACKS],
-                cancelled_pending_len: 0,
-            });
         }
         // 0: existing fresh/no-delay path; 1: copy into the larger fresh
         // history; 2: carry the actual larger donor plan/rings, explicitly bound
@@ -583,13 +526,15 @@ impl SessionPlayback {
                 .iter()
                 .flatten()
                 .any(|tail| tail.output_active);
-        let mut clock_transfer = match (&self.compensation, &previous.compensation) {
+        // None: the delay layout cannot carry the moved clock (refused below
+        // unless a paused donor takes the reset at its cursor).
+        let planned_transfer = match (&self.compensation, &previous.compensation) {
             (Some(candidate), Some(old))
                 if (candidate.graph.compatible(&old.graph) || mapped_main_clock)
                     && donor_epoch_matches
                     && candidate.can_copy_from(old) =>
             {
-                1_u8
+                Some(1_u8)
             }
             (_, Some(old))
                 if mapped_main_clock
@@ -615,10 +560,10 @@ impl SessionPlayback {
                                 })
                         }) =>
             {
-                2
+                Some(2)
             }
-            (None, None) => 0,
-            (Some(_), None) if first_compensation => 0,
+            (None, None) => Some(0),
+            (Some(_), None) if first_compensation => Some(0),
             (Some(candidate), None)
                 if mapped_main_clock
                     && previous
@@ -628,21 +573,232 @@ impl SessionPlayback {
                         .as_ref()
                         .is_some_and(|graph| candidate.graph.pre_main_compatible(graph)) =>
             {
-                0
+                Some(0)
             }
             _ if self.revision.arrangement().main_latency_frames() == 0
                 && previous.revision.arrangement().main_latency_frames() == 0 =>
             {
-                0
+                Some(0)
             }
             _ if previous.playing
                 || previous.performance_frame != 0
                 || previous.arrangement_frame != 0 =>
             {
-                return Err(SessionPlaybackError::LatencyLayoutChanged);
+                None
             }
-            _ => 0,
+            _ => Some(0),
         };
+        // Paused away from the origin with a delay layout that cannot carry the
+        // moved clock: the delay rings and processor histories are frozen.
+        // Apply the interactive seek law at the kept cursor (device chains,
+        // tails, compensation and mutable voices start empty) instead of
+        // refusing every later revision until Stop.
+        //
+        // Private sampler scopes never reach this as a live edit (Pulse
+        // #3792). A `resource_scope` revision comes only from
+        // `ControlSamplerSources` (offline export and non-resident service
+        // snapshots). Every ordinary interactive constructor refuses it, and
+        // the resident desktop sampler carries only `device_resource_scope`.
+        // Only the CURRENT console runtime accepts it, and that runtime
+        // refuses every live handoff before planning. Its closed-stream
+        // demand preview may still plan here, so the exclusion keeps that
+        // preview a refusal like its commit.
+        let relocate = (planned_transfer.is_none() || force_restart)
+            && !self.current_sampler_console
+            && !self.revision.requires_control_sampler_sources();
+        let paused_cursor = (relocate && !previous.playing).then_some(previous.arrangement_frame);
+        // Running: the same law at the next block boundary, but the transport
+        // clock, loop pass and Session launches continue unchanged. Audio
+        // restarts there (tails/PDC empty, gate-active notes chased); the user
+        // never has to stop. A changed tempo map or loop keeps its refusal.
+        let running_restart = relocate
+            && previous.playing
+            && mapped_main_clock
+            && previous.periodic_tempo() == self.periodic_tempo_at(previous.arrangement_frame);
+        // A changed tempo map or loop cannot keep the running clock: restart
+        // as a Play-from at the musically equivalent frame instead.
+        let running_relocate = relocate && previous.playing && !running_restart;
+        if (self.compensation.is_some() || previous.compensation.is_some() || force_restart)
+            && (!previous.playing || running_restart || running_relocate)
+            && (paused_cursor.is_some()
+                || running_restart
+                || running_relocate
+                || (!previous.monitor_source_releases
+                    && previous.performance_frame == 0
+                    && previous.arrangement_frame == 0))
+            && self.main_chain.can_inherit_from(&previous.main_chain)
+        {
+            // Stop/explicit reset removed every in-flight sample; a donor with
+            // admitted stopped monitoring must use the full source planner.
+            // Adopt fresh
+            // processor/delay owners instead of copying incompatible histories.
+            // A changed foreign binding needs the full tail/source planner
+            // below; the fast reset cannot inherit that original endpoint.
+            let recipient_epoch = self
+                .capture_epoch
+                .checked_add(1)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            let donor_epoch = previous
+                .capture_epoch
+                .checked_add(1)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            for route in &mut self.route_scratch {
+                if let Some(old) = previous.routes.iter().find(|old| old.id == route.id) {
+                    route.owner = match old.owner {
+                        RouteOwner::Session { clip, origin }
+                            if crate::session_inventory::EffectiveSessionMidi::new(
+                                self.revision.session(),
+                                self.midi_admission.as_ref(),
+                            )
+                            .midi_clip(clip)
+                            .is_some_and(|clip| clip.track == route.id) =>
+                        {
+                            RouteOwner::Session { clip, origin }
+                        }
+                        RouteOwner::SessionAudio { clip, launch_frame }
+                            if self
+                                .revision
+                                .session()
+                                .audio_clip(clip)
+                                .is_some_and(|clip| clip.track == route.id) =>
+                        {
+                            RouteOwner::SessionAudio {
+                                clip,
+                                launch_frame: if running_restart { launch_frame } else { 0 },
+                            }
+                        }
+                        RouteOwner::Silence => RouteOwner::Silence,
+                        _ => RouteOwner::Arrangement,
+                    };
+                }
+            }
+            // Queued launches cannot be proven against the restarted graph;
+            // report them as cancelled rather than dropping them silently.
+            let mut cancelled_pending = [None; MAX_TRACKS];
+            let mut cancelled_pending_len = 0;
+            if running_restart {
+                for (slot, old) in cancelled_pending
+                    .iter_mut()
+                    .zip(previous.routes.iter().filter(|old| old.pending.is_some()))
+                {
+                    *slot = Some(old.id);
+                    cancelled_pending_len += 1;
+                }
+            }
+            let relocated = if running_relocate {
+                use crate::MidiTiming as _;
+                let beat = base_timing_for(previous.revision.session(), previous.periodic_tempo())
+                    .frame_to_beat(previous.arrangement_frame)
+                    .map_err(|_| SessionPlaybackError::TempoConversion)?;
+                Some(
+                    base_timing_for(
+                        self.revision.session(),
+                        self.periodic_tempo_at(previous.arrangement_frame),
+                    )
+                    .beat_to_frame(beat)
+                    .map_err(|_| SessionPlaybackError::TempoConversion)?,
+                )
+            } else {
+                None
+            };
+            let cursor = match paused_cursor.or(relocated) {
+                Some(frame) => {
+                    let beat =
+                        base_timing_for(self.revision.session(), self.periodic_tempo_at(frame))
+                            .frame_to_beat(frame)
+                            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+                    // The same route relaunch `install_seek` commits below.
+                    for route in &mut self.route_scratch {
+                        route.pending = None;
+                        if let RouteOwner::Session { clip, .. } = route.owner {
+                            route.owner = RouteOwner::Session {
+                                clip,
+                                origin: SessionMidiOrigin::launch(beat),
+                            };
+                        }
+                        if let RouteOwner::SessionAudio { clip, .. } = route.owner {
+                            route.owner = RouteOwner::SessionAudio {
+                                clip,
+                                launch_frame: frame,
+                            };
+                        }
+                    }
+                    Some((frame, beat))
+                }
+                None => None,
+            };
+            if let Some(demand) = demand {
+                // This stopped reset is also a publication planning boundary.
+                // Enumerate its candidate routes before either runtime's capture
+                // epoch, DSP history or one-shot admission is changed.
+                let (frame, arrangement_frame, loop_pass) = match cursor {
+                    Some((frame, _)) => (frame, frame, 0),
+                    None if running_restart => (
+                        previous.performance_frame,
+                        previous.arrangement_frame,
+                        previous.arrangement_loop_pass,
+                    ),
+                    None => (
+                        self.performance_frame,
+                        self.arrangement_frame,
+                        self.arrangement_loop_pass,
+                    ),
+                };
+                demand.window = Some(
+                    self.visit_stream_chunk_with_history(
+                        demand.ordinary,
+                        &self.route_scratch,
+                        frame,
+                        arrangement_frame,
+                        self.route_state_generation,
+                        loop_pass,
+                        demand.playing.unwrap_or(previous.playing),
+                        demand.maximum_frames,
+                        &mut demand.visit,
+                        super::stream_demand::ScalarOriginHistory::Empty,
+                    )
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0))?,
+                );
+                return Ok(SessionHandoffReport {
+                    cancelled_pending,
+                    cancelled_pending_len,
+                });
+            }
+            self.routes.copy_from_slice(&self.route_scratch);
+            self.capture_epoch = recipient_epoch;
+            previous.capture_epoch = donor_epoch;
+            self.candidate_admission_open = false;
+            self.main_chain
+                .transfer_history_from(&mut previous.main_chain);
+            if let Some((frame, beat)) = cursor {
+                // Admitted paused monitoring keeps rendering at the cursor.
+                let monitoring = self.monitor_source_releases || previous.monitor_source_releases;
+                self.install_seek(frame, beat);
+                self.monitor_source_releases = monitoring;
+                // Notes sounding at the cursor are chased when play resumes
+                // (or on the next block when relocating while playing).
+                self.interactive_start_frame = Some(frame);
+                self.playing = running_relocate;
+            } else if running_restart {
+                self.performance_frame = previous.performance_frame;
+                self.arrangement_frame = previous.arrangement_frame;
+                self.arrangement_loop_pass = previous.arrangement_loop_pass;
+                self.anchor = previous.anchor;
+                self.historical_floor = previous.historical_floor;
+                self.route_historical_floors = previous.route_historical_floors;
+                self.monitor_source_releases |= previous.monitor_source_releases;
+                self.restart_audio_history();
+                self.interactive_start_frame = Some(self.performance_frame);
+                self.playing = true;
+                self.route_state_generation = previous.route_state_generation.wrapping_add(1);
+            }
+            return Ok(SessionHandoffReport {
+                cancelled_pending,
+                cancelled_pending_len,
+            });
+        }
+        let mut clock_transfer =
+            planned_transfer.ok_or(SessionPlaybackError::LatencyLayoutChanged)?;
         let capture_epoch = self
             .capture_epoch
             .checked_add(1)
@@ -693,7 +849,7 @@ impl SessionPlayback {
                 || previous.arrangement_frame != 0)
         {
             return Err(SessionPlaybackError::Arrangement(
-                "compensated timing changed · stop transport before applying this revision",
+                COMPENSATED_TIMING_CHANGED,
             ));
         }
         if timing_changed
@@ -3460,6 +3616,23 @@ impl SessionPlayback {
                 }
             }
         }
+        // Pure inputs only: refuse before any commit, so the live path can
+        // restart instead of leaving the old graph applied.
+        if (self.revision.arrangement().main_latency_frames() > 0
+            || previous.revision.arrangement().main_latency_frames() > 0)
+            && (return_tail_plan.captures_bus()
+                || old_track_mutable_tail_slots.iter().any(Option::is_some)
+                || old_track_tail_slots.iter().any(Option::is_some)
+                || previous.tail_output_active.iter().any(|&active| active)
+                || previous
+                    .return_effect_tails
+                    .slots()
+                    .iter()
+                    .flatten()
+                    .any(|tail| tail.output_active && tail.return_id().is_some()))
+        {
+            return Err(SessionPlaybackError::Arrangement(COMPENSATED_TAILS_CHANGED));
+        }
         if let Some(demand) = demand {
             let generation = if visible_state_changed {
                 previous.route_state_generation.wrapping_add(1)
@@ -3570,23 +3743,6 @@ impl SessionPlayback {
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         }
 
-        if (self.revision.arrangement().main_latency_frames() > 0
-            || previous.revision.arrangement().main_latency_frames() > 0)
-            && (return_tail_plan.captures_bus()
-                || old_track_mutable_tail_slots.iter().any(Option::is_some)
-                || old_track_tail_slots.iter().any(Option::is_some)
-                || previous.tail_output_active.iter().any(|&active| active)
-                || previous
-                    .return_effect_tails
-                    .slots()
-                    .iter()
-                    .flatten()
-                    .any(|tail| tail.output_active && tail.return_id().is_some()))
-        {
-            return Err(SessionPlaybackError::Arrangement(
-                "compensated processor tails require stopping transport before changing the chain",
-            ));
-        }
         // Actual retained owners, including unused prefix Vec capacity and both
         // transactional twins, must fit the existing complete runtime budget.
         let mut retained_bytes = return_tail_plan
@@ -4494,4 +4650,31 @@ fn retune_inline_release(
         .voice
         .set_sampler(PreparedMidiNote::Inline(continued));
     Ok(())
+}
+
+/// Strict-planner refusals for transitions whose history cannot carry over.
+/// The live publication path replaces them with a restart at the cursor.
+pub(crate) const MIDI_SOURCE_LAYOUT_CHANGED: &str = "midi source layout changed";
+pub(crate) const COMPENSATED_TIMING_CHANGED: &str = "compensated timing changed";
+pub(crate) const COMPENSATED_TAILS_CHANGED: &str =
+    "compensated processor tails cannot carry this chain change";
+
+/// Transition refusals the live reset handoff replaces. Capacity, budget,
+/// foreign-tail and source-custody refusals stay refusals: a restart would
+/// not satisfy what they protect.
+fn restartable(error: SessionPlaybackError) -> bool {
+    match error {
+        SessionPlaybackError::LatencyLayoutChanged
+        | SessionPlaybackError::MutableInstrumentChase
+        | SessionPlaybackError::MutableInstrumentActive
+        | SessionPlaybackError::MutableInstrumentLoopBoundsActive
+        | SessionPlaybackError::SourceHistoryUnavailable => true,
+        SessionPlaybackError::Arrangement(message) => [
+            MIDI_SOURCE_LAYOUT_CHANGED,
+            COMPENSATED_TIMING_CHANGED,
+            COMPENSATED_TAILS_CHANGED,
+        ]
+        .contains(&message),
+        _ => false,
+    }
 }

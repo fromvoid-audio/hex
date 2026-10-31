@@ -157,7 +157,7 @@ impl PostNodeIdentity {
     }
 }
 
-pub use hex_lattice::{DeviceMeter, DynamicsMeter};
+pub use hex_lattice::{DeviceMeter, DevicePeaks, DynamicsMeter};
 pub use native_device_view::{DEVICE_INPUT_GAIN, DEVICE_OUTPUT_GAIN};
 
 /// Borrowed stereo Main after master gain from a successful engine render.
@@ -3761,6 +3761,7 @@ pub use scalar_streamed::{
 mod project_output;
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
+    midi_clip_preview,
 };
 pub use midi_template::{
     MIDI_SPAN_BUFFER_CAPACITY, MIDI_TEMPLATE_MAX_EDGES, MIDI_TEMPLATE_MAX_ONSETS,

@@ -71,9 +71,12 @@ pub enum Command {
         without_clips: bool,
     },
     /// Adopt all prepared track bounces as one reversible edit. No file I/O.
+    /// `adoption` deactivates the bounced clip/range sources in that same
+    /// edit with the contextual activation commands; new-track adoption only.
     CommitArrangementBounce {
         target: crate::BounceTarget,
         in_place: bool,
+        adoption: crate::BounceAdoption,
         files: Vec<crate::BounceFile>,
     },
     /// Set one authored clip's activation across Arrangement or Session.
@@ -220,6 +223,14 @@ pub enum Command {
         slot: TrackDeviceSlot,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Like `InsertTrackWithDevice`, with an automatic name: `device_name` for an
+    /// instrument slot, otherwise the model-owned default name.
+    InsertDefaultTrackWithDevice {
+        before_track: Option<TrackId>,
+        slot: TrackDeviceSlot,
+        state: hex_lattice_contract::NativeDeviceState,
+        device_name: String,
+    },
     /// Atomically splice a bounded touch span, preserving the underlying base curve.
     SpliceGainTouch {
         track: TrackId,
@@ -292,6 +303,15 @@ pub enum Command {
     InsertInstrument {
         track: TrackId,
         state: hex_lattice_contract::NativeDeviceState,
+    },
+    /// Browser instrument load: fill the empty slot (`replacing: None`) or replace
+    /// the captured current instrument, and rename an automatic-named track to
+    /// `device_name` in the same edit. See `track_name` for the naming policy.
+    LoadInstrument {
+        track: TrackId,
+        replacing: Option<DeviceId>,
+        state: hex_lattice_contract::NativeDeviceState,
+        device_name: String,
     },
     RemoveInstrument {
         track: TrackId,
@@ -466,6 +486,11 @@ pub enum Command {
         name: String,
         before_track: Option<TrackId>,
     },
+    /// Insert an ordinary track named by the model (`track N`); the name stays
+    /// automatic until the user renames it.
+    InsertDefaultTrack {
+        before_track: Option<TrackId>,
+    },
     /// Atomically create one track, its source asset and a full-length one-shot clip.
     ImportAudioTrack {
         name: String,
@@ -636,6 +661,11 @@ pub enum Command {
         source_slot: hex_lattice_contract::DeviceAssetSlot,
     },
     RemoveAsset(AssetId),
+    /// Point offline assets at found files as one history step, bringing them
+    /// back online. Undo returns them to offline at their old paths. Paths must
+    /// be absolute; only offline, non-device assets can be relinked, and callers
+    /// must have prepared media matching the saved rate and frame count.
+    RelinkAssets(Vec<(AssetId, PathBuf)>),
     /// Place audio as one atomic hybrid overwrite, retaining old outer fragments.
     PlaceClip {
         track: TrackId,
@@ -1227,6 +1257,7 @@ pub(crate) fn new_track(
         gain_lane: crate::GainLane::default(),
         id,
         name,
+        automatic_name: false,
         gain: 1.0,
         balance: 0.0,
         muted: false,
@@ -1778,8 +1809,9 @@ impl Project {
             Command::CommitArrangementBounce {
                 target,
                 in_place,
+                adoption,
                 files,
-            } => crate::bounce::commit(self, target, in_place, files),
+            } => crate::bounce::commit(self, target, in_place, adoption, files),
             command @ (Command::AddArrangementSection { .. }
             | Command::SetArrangementSectionRange { .. }
             | Command::MoveArrangementSectionMarker { .. }
@@ -2108,7 +2140,7 @@ impl Project {
                     .map_err(|_| Invalid("could not reserve clip storage"))?;
                 let right_id = ClipId(self.allocate_id()?);
                 let (left, right) =
-                    split_clip_at_tempo(&original, frame, right_id, self.tempo_map())?;
+                    crate::clip_fade_split::split(&original, frame, right_id, self.tempo_map())?;
                 self.audio_clips_mut(self.tracks[track_index].id)?[clip_index] = left;
                 self.audio_clips_mut(self.tracks[track_index].id)?
                     .insert(clip_index + 1, right);
@@ -2246,6 +2278,27 @@ impl Project {
                 }
                 Ok(Created::Track(track))
             }
+            Command::InsertDefaultTrack { before_track } => Ok(Created::Track(
+                crate::track_name::insert_default_track(self, before_track)?,
+            )),
+            Command::InsertDefaultTrackWithDevice {
+                before_track,
+                slot,
+                state,
+                device_name,
+            } => crate::track_name::insert_default_track_with_device(
+                self,
+                before_track,
+                slot,
+                state,
+                device_name,
+            ),
+            Command::LoadInstrument {
+                track,
+                replacing,
+                state,
+                device_name,
+            } => crate::track_name::load_instrument(self, track, replacing, state, device_name),
             Command::AddTrack { name } => {
                 Ok(Created::Track(insert_track_before(self, name, None)?))
             }
@@ -2439,7 +2492,9 @@ impl Project {
             Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
             Command::RenameTrack { track, name } => {
                 name_valid(&name)?;
-                self.track_mut(track)?.name = name;
+                let target = self.track_mut(track)?;
+                target.name = name;
+                target.automatic_name = false;
                 Ok(Created::None)
             }
             Command::Gain { track, gain } => {
@@ -2705,6 +2760,39 @@ impl Project {
                 self.apply(Command::ReplaceDeviceState { device, state })?;
                 Ok(Created::Asset(asset))
             }
+            Command::RelinkAssets(relinks) => {
+                if relinks.is_empty() || relinks.len() > crate::MAX_ASSETS {
+                    return Err(Invalid(
+                        "relink needs between one and the asset limit of files",
+                    ));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for (id, path) in &relinks {
+                    if !seen.insert(*id) {
+                        return Err(Invalid("relink names an asset twice"));
+                    }
+                    if !self.asset_offline(*id) {
+                        return Err(Invalid("only missing media can be relinked"));
+                    }
+                    if !path.is_absolute() {
+                        return Err(Invalid("relinked media path must be absolute"));
+                    }
+                    let asset = self
+                        .assets
+                        .get(id)
+                        .ok_or(Invalid("media no longer exists"))?;
+                    if asset.original_source().is_some() {
+                        return Err(Invalid("device media cannot be relinked in place"));
+                    }
+                }
+                for (id, path) in relinks {
+                    if let Some(asset) = self.assets.get_mut(&id) {
+                        asset.path = path;
+                    }
+                    self.offline_assets.remove(&id);
+                }
+                Ok(Created::None)
+            }
             Command::RemoveAsset(id) => {
                 if self.device_uses_asset(id) {
                     return Err(Invalid("media is still referenced by a device"));
@@ -2721,6 +2809,7 @@ impl Project {
                 self.assets
                     .remove(&id)
                     .ok_or(Invalid("media no longer exists"))?;
+                self.offline_assets.remove(&id);
                 Ok(Created::None)
             }
             Command::PlaceClip {

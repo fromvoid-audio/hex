@@ -73,6 +73,7 @@ mod format_upgrade_tests;
 #[cfg(test)]
 #[path = "service/limiter_tests.rs"]
 mod limiter_tests;
+pub mod missing_media;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -82,9 +83,7 @@ pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 mod stopped_playback_tests;
 use hex_storage::FileToken;
 use recovery::absolute_document_path;
-pub use recovery::{
-    ProjectSource, RecoveryFailure, RecoveryRestart, missing_assets, untitled_recovery_path,
-};
+pub use recovery::{ProjectSource, RecoveryFailure, RecoveryRestart, untitled_recovery_path};
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -704,6 +703,9 @@ pub enum Request {
         value: hex_lattice_contract::ParameterValue,
     },
     Import(PathBuf),
+    /// Point offline assets at found files as one undoable edit. The files are
+    /// decoded on the worker and must match the saved rate and frame count.
+    RelinkMedia(BTreeMap<hex_project::AssetId, PathBuf>),
     /// Decode and atomically admit an unassigned original native source.
     ImportDeviceAsset {
         path: PathBuf,
@@ -772,7 +774,8 @@ pub enum Request {
         relinks: BTreeMap<hex_project::AssetId, PathBuf>,
     },
     Edit(Command),
-    /// Bounce selected Arrangement clips or an explicit range.
+    /// Bounce selected Arrangement clips or an explicit range. `adoption`
+    /// selects new tracks, muted sources or a clip drop (one adoption edit).
     /// At most MAX_CLIPS captured IDs or MAX_TRACKS range rows in the existing
     /// 32-slot FIFO. One synchronous control-worker job; Escape cancels via the
     /// shared control without waiting for that FIFO. No audio/UI thread rendering.
@@ -781,6 +784,7 @@ pub enum Request {
         revision: u64,
         target: hex_project::BounceTarget,
         in_place: bool,
+        adoption: hex_project::BounceAdoption,
         control: hex_export::ExportControl,
     },
     /// Bounce the exact selected MIDI clip; stale actions and audio-to-MIDI refuse.
@@ -815,6 +819,11 @@ pub enum Request {
     RestorePlayback {
         generation: u64,
     },
+    /// Republish the current canonical sound through ordinary inheritance after
+    /// the callback refused it while playing (a latency-layout change). The
+    /// caller sends it once the transport is paused, where the engine applies
+    /// the new layout at the kept cursor. It is not part of output recovery.
+    RepublishPausedPlayback,
     /// Reprepare the current canonical sound after the caller explicitly stops.
     RestoreStoppedPlayback,
     /// Worker-local continuation of the existing stopped restoration request.
@@ -2554,13 +2563,15 @@ fn run_worker(
                     Err("browser selection is not an instrument".into())
                 } else {
                     hex_engine::default_native_device_state_for_class(*class, *type_id)
-                        .map(|state| Command::InsertTrackWithDevice {
-                            name: format!("track {}", session.project().tracks().len() + 1),
-                            before_track: None,
-                            slot: hex_project::TrackDeviceSlot::Instrument,
-                            state,
-                        })
                         .map_err(|reason| reason.to_string().to_lowercase())
+                        .and_then(|state| {
+                            Ok(Command::InsertDefaultTrackWithDevice {
+                                before_track: None,
+                                slot: hex_project::TrackDeviceSlot::Instrument,
+                                state,
+                                device_name: native_device_name(*class, *type_id)?,
+                            })
+                        })
                 },
             ),
             Request::InsertEffectBusDevice {
@@ -3759,15 +3770,15 @@ fn run_worker(
                                             if instrument.id() != replacement {
                                                 return Err("instrument replacement target changed".into());
                                             }
-                                            Ok(Command::ReplaceDeviceState {
-                                                device: replacement,
-                                                state,
-                                            })
                                         } else if target.instrument().is_some() {
-                                            Err("instrument slot is already occupied".into())
-                                        } else {
-                                            Ok(Command::InsertInstrument { track, state })
+                                            return Err("instrument slot is already occupied".into());
                                         }
+                                        Ok(Command::LoadInstrument {
+                                            track,
+                                            replacing: replace,
+                                            state,
+                                            device_name: native_device_name(class, type_id)?,
+                                        })
                                     }),
                             },
                             NativeDeviceDropSource::Existing {
@@ -4382,6 +4393,58 @@ fn run_worker(
                         Err(reason) => error = Some(reason.to_string()),
                     }
                 }
+                Request::RelinkMedia(relinks) => {
+                    let count = relinks.len();
+                    let result = if events.resident_publication_enabled() {
+                        events
+                            .resident_audio()
+                            .ok_or(SessionError::Invalid("native worker unavailable"))
+                            .and_then(|sink| {
+                                resident_audio::relink_files(
+                                    &mut session,
+                                    relinks,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision.saturating_add(1),
+                                    },
+                                    sink,
+                                    export_lane.admission_with_resident_owners(
+                                        compiled.as_ref().map(|(_, prepared)| {
+                                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                                sources: current_sources.as_ref(),
+                                                prepared: Some(prepared),
+                                            }
+                                        }),
+                                        resident_seek.as_ref(),
+                                        resident_preview.as_ref(),
+                                    ),
+                                    &mut resident_snapshot,
+                                )
+                            })
+                    } else {
+                        let allowance = session
+                            .max_resident_frames()
+                            .saturating_sub(session.resident_frames());
+                        resident_audio::decode_relinks(&session, relinks, allowance).and_then(
+                            |prepared| {
+                                let expected = session.project().clone();
+                                session.relink_offline_media_revision(
+                                    prepared,
+                                    &expected,
+                                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                )
+                            },
+                        )
+                    };
+                    match result {
+                        Ok(prepared) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some(format!("relinked {count} files"));
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
                 Request::Import(path) => match import(
                     &mut session,
                     path,
@@ -4872,10 +4935,16 @@ fn run_worker(
                                         "instrument slot is already occupied",
                                     ));
                                 }
+                                let device_name =
+                                    native_device_name(class, *type_id).map_err(|_| {
+                                        hex_engine::Invalid("native device is not registered")
+                                    })?;
                                 hex_engine::default_native_device_state_for_class(class, *type_id)
-                                    .map(|state| Command::InsertInstrument {
+                                    .map(|state| Command::LoadInstrument {
                                         track: track_id,
+                                        replacing: None,
                                         state,
+                                        device_name,
                                     })
                             }),
                     };
@@ -5404,6 +5473,7 @@ fn run_worker(
                     revision: captured_revision,
                     target,
                     in_place,
+                    adoption,
                     control,
                 } => {
                     let grouping = target.is_audio_group();
@@ -5449,6 +5519,7 @@ fn run_worker(
                                         &mut session,
                                         target,
                                         in_place,
+                                        adoption,
                                         &root,
                                         &control,
                                         context,
@@ -5457,9 +5528,10 @@ fn run_worker(
                                         &mut resident_snapshot,
                                     )
                                 } else {
-                                    session.bounce_arrangement(
+                                    session.bounce_arrangement_adopting(
                                         target,
                                         in_place,
+                                        adoption,
                                         &root,
                                         &control,
                                         compiled.as_ref().map(|(_, p)| p.as_ref()),
@@ -5902,7 +5974,10 @@ fn run_worker(
                         }
                         (Some(handle), Ok(project)) => {
                             if !consent {
-                                match handle.token.requires_save_confirmation(&project) {
+                                match handle.token.requires_save_confirmation_within(
+                                    &project,
+                                    events.legacy_reader_limit(),
+                                ) {
                                     Ok(true) => {
                                         save_confirmation_required = true;
                                         error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
@@ -6568,8 +6643,11 @@ fn run_worker(
                             Some("computer keyboard requires a compiled project revision".into());
                     }
                 }
-                Request::RestorePlayback { generation } => {
-                    restore_complete = Some(generation);
+                request @ (Request::RestorePlayback { .. } | Request::RepublishPausedPlayback) => {
+                    if let Request::RestorePlayback { generation } = &request {
+                        restore_complete = Some(*generation);
+                    }
+                    let republish = matches!(&request, Request::RepublishPausedPlayback);
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident
                     {
@@ -6601,7 +6679,14 @@ fn run_worker(
                         match result {
                             Ok(hint) => {
                                 keyboard_tuning_hint = hint;
-                                status = Some("playback restored".into());
+                                status = Some(
+                                    if republish {
+                                        "paused audio updated · effect tails reset"
+                                    } else {
+                                        "playback restored"
+                                    }
+                                    .into(),
+                                );
                             }
                             Err(reason) => error = Some(reason.to_string()),
                         }
@@ -7606,6 +7691,28 @@ fn import_to_session(
         .map_err(|error| error.to_string().to_lowercase())
 }
 
+/// Registered presentation name, offered as the automatic track name on device
+/// loads; `hex_project::track_name` owns whether the track adopts it.
+fn native_device_name(
+    class: hex_engine::NativeDeviceClass,
+    type_id: hex_lattice_contract::DeviceTypeId,
+) -> Result<String, String> {
+    hex_engine::native_device_catalog_for_class(class)
+        .map_err(|error| error.to_string().to_lowercase())?
+        .into_iter()
+        .find(|entry| entry.type_id == type_id)
+        .map_or_else(
+            // Unlisted definitions present their type identifier, as device views do.
+            || {
+                type_id
+                    .as_str()
+                    .map(str::to_owned)
+                    .map_err(|_| "native device type identifier is invalid".to_owned())
+            },
+            |entry| Ok(entry.name),
+        )
+}
+
 fn arrangement_device_command(
     project: &hex_project::Project,
     class: hex_engine::NativeDeviceClass,
@@ -7617,14 +7724,14 @@ fn arrangement_device_command(
         .map_err(|error| error.to_string().to_lowercase())?;
     match destination {
         ArrangementDeviceDestination::NewTrack { before_track } => {
-            Ok(Command::InsertTrackWithDevice {
-                name: "new track".into(),
+            Ok(Command::InsertDefaultTrackWithDevice {
                 before_track,
                 slot: match class {
                     NativeDeviceClass::Instrument => hex_project::TrackDeviceSlot::Instrument,
                     NativeDeviceClass::Effect => hex_project::TrackDeviceSlot::Effect,
                 },
                 state,
+                device_name: native_device_name(class, type_id)?,
             })
         }
         ArrangementDeviceDestination::ExistingTrack { track, instrument } => {
@@ -7640,9 +7747,11 @@ fn arrangement_device_command(
                     before: None,
                     state,
                 },
-                NativeDeviceClass::Instrument => match instrument {
-                    Some(device) => Command::ReplaceDeviceState { device, state },
-                    None => Command::InsertInstrument { track, state },
+                NativeDeviceClass::Instrument => Command::LoadInstrument {
+                    track,
+                    replacing: instrument,
+                    state,
+                    device_name: native_device_name(class, type_id)?,
                 },
             })
         }

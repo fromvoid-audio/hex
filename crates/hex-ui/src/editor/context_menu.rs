@@ -63,6 +63,7 @@ pub(super) enum EditorContextAction {
         request_id: u64,
     },
     RemoveBrowserSource(super::browser::BrowserSection),
+    RelocateBrowserPlace(std::path::PathBuf),
     AdaptiveGrid {
         generation: u64,
         density: super::musical_time::AdaptiveGridDensity,
@@ -665,6 +666,9 @@ impl EditorView {
             EditorContextAction::RemoveBrowserSource(source) => {
                 self.remove_browser_source(source, window, cx);
             }
+            EditorContextAction::RelocateBrowserPlace(path) => {
+                self.prompt_relocate_browser_place(path, cx);
+            }
             EditorContextAction::AdaptiveGrid {
                 generation,
                 density,
@@ -805,9 +809,7 @@ impl EditorView {
                     cx.notify();
                     return;
                 }
-                let name = format!("track {}", state.project.tracks().len() + 1);
-                self.enqueue(Request::Edit(Command::InsertTrack {
-                    name,
+                self.enqueue(Request::Edit(Command::InsertDefaultTrack {
                     before_track: action.before_track,
                 }));
                 cx.notify();
@@ -895,6 +897,9 @@ impl EditorView {
                 }
                 EditorContextAction::RemoveBrowserSource(source) => {
                     !self.browser_source_removable(source)
+                }
+                EditorContextAction::RelocateBrowserPlace(path) => {
+                    !self.browser_place_relocatable(path)
                 }
                 EditorContextAction::BounceTrack {
                     generation,
@@ -1517,7 +1522,7 @@ mod tests {
         visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
             assert!(view.context_menu.is_none());
-            assert!(matches!(view.last_enqueued_edit, Some(Command::InsertTrack { before_track: Some(anchor), .. }) if anchor == target));
+            assert!(matches!(view.last_enqueued_edit, Some(Command::InsertDefaultTrack { before_track: Some(anchor) }) if anchor == target));
         });
     }
 
@@ -1561,10 +1566,7 @@ mod tests {
             assert!(view.context_menu.is_none());
             assert!(matches!(
                 view.last_enqueued_edit,
-                Some(Command::InsertTrack {
-                    before_track: None,
-                    ..
-                })
+                Some(Command::InsertDefaultTrack { before_track: None })
             ));
         });
     }

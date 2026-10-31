@@ -407,7 +407,7 @@ pub(super) fn render_return_effect(
             format!("effect-device-{}", id.value()).into(),
         ))
         .debug_selector(move || format!("effect-device-{}", id.value()))
-        .w(px(frame_width + super::gain_meters::WIDTH))
+        .w(px(frame_width + super::device_meter::WIDTH))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
@@ -418,12 +418,7 @@ pub(super) fn render_return_effect(
             cx,
         ))
         .child(rendered)
-        .child(super::gain_meters::render(
-            view,
-            cx,
-            device,
-            NativeDeviceClass::Effect,
-        ))
+        .child(super::device_meter::render(view, device, cx))
 }
 
 fn render_return_add_menu(

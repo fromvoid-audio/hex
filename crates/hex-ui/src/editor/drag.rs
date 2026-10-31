@@ -495,7 +495,7 @@ pub(super) fn is_noop(drag: &ClipDrag, state: &DropState<'_>) -> bool {
     drag.source_track == state.target_track && drag.position == state.position
 }
 
-fn group_position(position: ClipPosition) -> hex_project::ClipGroupPosition {
+pub(super) fn group_position(position: ClipPosition) -> hex_project::ClipGroupPosition {
     match position {
         ClipPosition::Audio { start, .. } => hex_project::ClipGroupPosition::Audio(start),
         ClipPosition::Midi { start, .. } => hex_project::ClipGroupPosition::Midi(start),
@@ -820,6 +820,7 @@ impl super::EditorView {
     }
 
     pub(super) fn retire_active_clip_drag(&mut self) -> bool {
+        self.drag_bounce_held = false;
         let Some(drag) = self.active_clip_drag.take() else {
             return false;
         };
@@ -1328,7 +1329,9 @@ impl super::EditorView {
                 start,
             },
         };
-        self.enqueue(request);
+        if self.enqueue(request) {
+            self.stop_browser_preview_for_drop();
+        }
         self.status = "importing sample to arrangement".into();
         self.active_browser_audio_drag = None;
         cx.notify();
@@ -1363,6 +1366,12 @@ impl super::EditorView {
         {
             if self.worker_requests_pending != 0 || !self.pending_requests.is_empty() {
                 self.error = Some("clip move canceled · project work pending".into());
+                clear(self);
+                cx.notify();
+                return;
+            }
+            if self.drag_bounce_held {
+                self.error = Some("bounce drop needs an existing track".into());
                 clear(self);
                 cx.notify();
                 return;
@@ -1422,6 +1431,11 @@ impl super::EditorView {
         }) {
             self.error = Some("clip move canceled · project changed".into());
             clear(self);
+            cx.notify();
+            return;
+        }
+        if std::mem::take(&mut self.drag_bounce_held) {
+            self.drop_clip_bounce(drag, target_track, preview);
             cx.notify();
             return;
         }

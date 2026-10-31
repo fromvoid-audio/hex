@@ -754,6 +754,16 @@ impl EditorView {
         }
     }
 
+    /// A completed sample drop (admitted into a device, track, Arrangement,
+    /// Session or new track) ends that browser interaction, so it stops the
+    /// active preview through the ordinary cancellation. A cancelled or refused
+    /// drop leaves the preview playing, as in Live, until the user moves on.
+    pub(super) fn stop_browser_preview_for_drop(&mut self) {
+        if self.browser.playback_output.is_some() || self.browser.playback_pending.is_some() {
+            self.cancel_browser_sample_playback();
+        }
+    }
+
     fn play_browser_sample(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.play_browser_sample_from(path, 0.0, cx);
     }
@@ -1645,6 +1655,26 @@ impl EditorView {
         } else {
             self.reset_browser_results();
         }
+    }
+
+    /// The current sample catalog for relink lookups, and whether a scan is
+    /// still running (so results may be incomplete). Callers search a clone on a
+    /// background worker.
+    pub(super) fn sample_catalog_snapshot(&self) -> (hex_library::catalog::SampleCatalog, bool) {
+        (
+            self.browser.samples.catalog.clone(),
+            self.browser.samples.history_loading(),
+        )
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn test_replace_sample_catalog(
+        &mut self,
+        catalog: hex_library::catalog::SampleCatalog,
+    ) -> bool {
+        let settled = !self.browser.samples.history_loading();
+        self.browser.samples.replace(catalog);
+        settled
     }
 
     fn browser_place_unavailable(&self) -> bool {

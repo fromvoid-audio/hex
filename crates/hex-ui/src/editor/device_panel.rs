@@ -27,11 +27,11 @@ mod auto_pan_panel;
 mod bindings;
 mod delay_panel;
 mod overdrive_panel;
-pub(super) use bindings::effective_parameter_value;
 use bindings::{
     ControlPresentation, ControlText, ParameterControl, cancel_control,
     parameter_control_matches_identity,
 };
+pub(super) use bindings::{effective_parameter_value, parameter_display_override};
 mod gesture_adapter;
 pub(super) use gesture_adapter::{
     NumericGestureLease, commit_owned_numeric_edit, dispatch_bound_numeric_gesture,
@@ -46,7 +46,7 @@ mod eq_panel;
 mod limiter_panel;
 pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
-mod gain_meters;
+mod device_meter;
 mod gate_panel;
 mod keyboard;
 mod navigation;
@@ -123,7 +123,7 @@ pub(super) struct DevicePanelState {
     insertion: Option<InsertionPoint>,
     pub(super) drag_copy: Option<DeviceDragCopy>,
     controls: HashMap<ParameterKey, ParameterControl>,
-    meter_states: HashMap<DeviceId, gain_meters::MeterState>,
+    meter_states: HashMap<DeviceId, device_meter::MeterState>,
     send_controls: HashMap<SendControlKey, SendControl>,
     views: HashMap<
         DeviceId,
@@ -347,21 +347,6 @@ impl DevicePanelState {
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn has_control_for(&self, device: DeviceId) -> bool {
         self.controls.keys().any(|key| key.device == device)
-    }
-
-    #[cfg(all(test, feature = "ui-test-support"))]
-    pub(super) fn has_only_host_control_for(&self, device: DeviceId) -> bool {
-        self.controls.contains_key(&ParameterKey {
-            device,
-            parameter: hex_engine::DEVICE_OUTPUT_GAIN.id,
-        }) && self
-            .controls
-            .keys()
-            .filter(|key| key.device == device)
-            .all(|key| {
-                key.parameter == hex_engine::DEVICE_OUTPUT_GAIN.id
-                    || key.parameter == hex_engine::DEVICE_INPUT_GAIN.id
-            })
     }
 
     pub(super) fn has_pending_draft(&self, cx: &App) -> bool {
@@ -1330,7 +1315,7 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Effect, Some("hex.overdrive")) => overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
-    frame_width + gain_meters::WIDTH
+    frame_width + device_meter::WIDTH
 }
 
 fn pointer_within_visible_device_drop_bounds(
@@ -1999,7 +1984,7 @@ fn render_effect(
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(frame_width + gain_meters::WIDTH))
+        .w(px(frame_width + device_meter::WIDTH))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
@@ -2010,12 +1995,7 @@ fn render_effect(
             cx,
         ))
         .child(rendered)
-        .child(gain_meters::render(
-            view,
-            cx,
-            device,
-            NativeDeviceClass::Effect,
-        ))
+        .child(device_meter::render(view, device, cx))
 }
 
 impl EditorView {
@@ -2692,7 +2672,7 @@ fn render_instrument(
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(frame_width + gain_meters::WIDTH))
+        .w(px(frame_width + device_meter::WIDTH))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
@@ -2703,12 +2683,7 @@ fn render_instrument(
             cx,
         ))
         .child(rendered)
-        .child(gain_meters::render(
-            view,
-            cx,
-            device,
-            NativeDeviceClass::Instrument,
-        ))
+        .child(device_meter::render(view, device, cx))
 }
 
 fn instrument_actions(
@@ -3008,9 +2983,7 @@ fn binding_policy(
     presentation: ControlPresentation,
     display: ControlText,
 ) -> bindings::BindingPolicy {
-    let tab_navigation = identity.type_id.as_str() == Ok("hex.instrument.operator")
-        && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id
-        && descriptor.id != hex_engine::DEVICE_INPUT_GAIN.id;
+    let tab_navigation = identity.type_id.as_str() == Ok("hex.instrument.operator");
     let numeric_begin = if identity.class == NativeDeviceClass::Instrument
         && identity.type_id.as_str() == Ok("hex.instrument.operator")
     {

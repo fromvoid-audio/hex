@@ -78,8 +78,10 @@ impl Project {
             main_devices,
             tempo_map,
             meter_map,
+            offline_assets,
         } = self;
         if aliases != &target.aliases
+            || offline_assets != &target.offline_assets
             || native_sources.len() != target.native_sources.len()
             || arrangement_sections != &target.arrangement_sections
             || tuning != &target.tuning
@@ -110,6 +112,7 @@ impl Project {
                 gain_lane,
                 id,
                 name,
+                automatic_name,
                 gain,
                 balance,
                 muted,
@@ -130,6 +133,7 @@ impl Project {
                 || color != &next.color
                 || id != &next.id
                 || name != &next.name
+                || automatic_name != &next.automatic_name
                 || gain != &next.gain
                 || balance != &next.balance
                 || muted != &next.muted

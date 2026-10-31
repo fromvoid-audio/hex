@@ -42,6 +42,9 @@ struct Context {
     revision: u64,
     clip: ClipId,
     values: SourceValues,
+    // A forward one-shot Arrangement region begins at its start marker, so
+    // the marker stays inside song time and before the region end.
+    play_start_region: bool,
     start: u64,
     span: u64,
     grid: MidiGrid,
@@ -128,9 +131,21 @@ impl Gesture {
             };
             match self.handle {
                 Handle::Start => {
-                    let last = self.context.exclusive_end() - 1;
+                    let mut first = 0;
+                    let mut last = self.context.exclusive_end() - 1;
+                    if self.context.play_start_region {
+                        first = original
+                            .source_start
+                            .saturating_sub(original.arrangement_start);
+                        last = last.min(
+                            original
+                                .source_start
+                                .saturating_add(original.arrangement_length)
+                                .saturating_sub(1),
+                        );
+                    }
                     let last = grid.step_raw().map_or(last, |step| last / step * step);
-                    next.source_start = moved(original.source_start).min(last);
+                    next.source_start = moved(original.source_start).min(last).max(first);
                 }
                 Handle::LoopStart => {
                     next.loop_start =
@@ -199,6 +214,8 @@ impl EditorView {
                     clip.arrangement_length().raw()
                 }),
             ),
+            play_start_region: arrangement
+                .is_some_and(|clip| !clip.looping() && clip.content_view().is_none()),
             start: self.piano_beat_start.raw(),
             span: self.piano_beat_span.raw(),
             grid: self.midi_snap_grid,
@@ -467,7 +484,7 @@ impl EditorView {
                                     point(px(left), bounds.origin.y),
                                     size(px(right - left), px(b.height)),
                                 ),
-                                gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                                gpui::Hsla::from(rgb(theme::time_selection_fill()))
                                     .opacity(theme::TIME_SELECTION_OPACITY),
                             ));
                         }
@@ -642,6 +659,7 @@ mod geometry_tests {
                 0,
                 4 * BeatTime::ONE.raw(),
             ),
+            play_start_region: false,
             start: 0,
             span: 4 * BeatTime::ONE.raw(),
             grid: MidiGrid::Sixteenth,

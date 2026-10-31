@@ -31,20 +31,11 @@ pub(super) struct BindingPresentation {
     pub(super) compact_toggle_width: f32,
 }
 
-// Translate view-only host control keys into neutral lane targets. The Session
-// adapter also normalizes legacy parameter-gesture keys before canonical edits;
-// reserved widget IDs never enter provider/model persistence.
+// Bound controls are device-owned parameters; host trim has no bound control.
 fn automation_target(
     parameter: hex_lattice_contract::ParameterId,
 ) -> hex_lattice_contract::DeviceAutomationTarget {
-    use hex_lattice_contract::DeviceAutomationTarget as Target;
-    if parameter == hex_engine::DEVICE_INPUT_GAIN.id {
-        Target::HostInputGain
-    } else if parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
-        Target::HostOutputGain
-    } else {
-        Target::Parameter(parameter)
-    }
+    hex_lattice_contract::DeviceAutomationTarget::Parameter(parameter)
 }
 
 #[derive(Clone, Copy)]
@@ -101,12 +92,6 @@ impl CapturedBinding {
         };
         if device.state().type_id() != self.identity.type_id {
             return false;
-        }
-        if self.key.parameter == hex_engine::DEVICE_INPUT_GAIN.id {
-            return self.descriptor == hex_engine::DEVICE_INPUT_GAIN;
-        }
-        if self.key.parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
-            return self.descriptor == hex_engine::DEVICE_OUTPUT_GAIN;
         }
         if let Some((class, cached_state, cached_view)) =
             view.device_panel.views.get(&self.key.device)
@@ -201,7 +186,6 @@ pub(super) enum ControlPresentation {
     CompactDial,
     MicroDial,
     InlineValue,
-    DeviceMeters,
     MeterFader,
     ChoiceDial,
     CompactButton,
@@ -221,6 +205,15 @@ pub(crate) fn effective_parameter_value(
     key: ParameterKey,
     canonical_value: ParameterValue,
 ) -> ParameterValue {
+    parameter_display_override(view, key).unwrap_or(canonical_value)
+}
+
+/// The in-flight gesture value, else the admitted manual value awaiting its
+/// barrier. Bound controls and automation lanes share this display source.
+pub(crate) fn parameter_display_override(
+    view: &mut EditorView,
+    key: ParameterKey,
+) -> Option<ParameterValue> {
     let gesture_value = view
         .device_gesture
         .snapshot()
@@ -262,13 +255,7 @@ pub(crate) fn effective_parameter_value(
     {
         view.device_panel.pending_values.remove(&key);
     }
-    gesture_value.unwrap_or_else(|| {
-        view.device_panel
-            .pending_values
-            .get(&key)
-            .copied()
-            .unwrap_or(canonical_value)
-    })
+    gesture_value.or_else(|| view.device_panel.pending_values.get(&key).copied())
 }
 
 pub(super) fn render_parameter(
@@ -412,7 +399,6 @@ pub(super) fn render_parameter(
                     hex_widgets::INLINE_VALUE_WIDTH,
                     hex_widgets::INLINE_VALUE_HEIGHT,
                 ),
-                ControlPresentation::DeviceMeters => (10.0, DEVICE_FRAME_HEIGHT),
                 ControlPresentation::MeterFader => (60.0, 154.0),
                 _ => (136.0, 26.0),
             };
@@ -628,7 +614,6 @@ fn create_parameter_control(
                 ControlPresentation::CompactDial => NumericControlPresentation::CompactDial,
                 ControlPresentation::MicroDial => NumericControlPresentation::MicroDial,
                 ControlPresentation::InlineValue => NumericControlPresentation::InlineValue,
-                ControlPresentation::DeviceMeters => NumericControlPresentation::DeviceMeters,
                 ControlPresentation::MeterFader => NumericControlPresentation::MeterFader,
                 _ => NumericControlPresentation::HorizontalSlider,
             };

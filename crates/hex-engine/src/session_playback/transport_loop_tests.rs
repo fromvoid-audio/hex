@@ -99,12 +99,35 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock() {
     paused.render(&mut [[0.0; 2]; 600]).unwrap();
     paused.apply(SessionPlaybackCommand::Pause).unwrap();
     let mut tempo_candidate = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
-    assert!(matches!(
+    // Strict planner refusal; the live path restarts instead (Pulse #3774).
+    assert_eq!(
         tempo_candidate.try_inherit_state_from(&mut paused),
         Err(SessionPlaybackError::Arrangement(
-            "compensated timing changed · stop transport before applying this revision"
+            super::handoff::COMPENSATED_TIMING_CHANGED
         ))
-    ));
+    );
+    // Live: paused, the tempo edit applies at the kept frame; playing, audio
+    // restarts as Play-from at the same beat under the new map.
+    let paused_frame = paused.arrangement_frame();
+    let mut tempo_live = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
+    tempo_live.try_inherit_state_live_from(&mut paused).unwrap();
+    assert!(!tempo_live.playing());
+    assert_eq!(tempo_live.arrangement_frame(), paused_frame);
+    let mut running = SessionPlayback::new(prepare(&linear)).unwrap();
+    running.apply(SessionPlaybackCommand::Play).unwrap();
+    running.render(&mut [[0.0; 2]; 600]).unwrap();
+    let mut relocated = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
+    relocated.try_inherit_state_live_from(&mut running).unwrap();
+    assert!(relocated.playing());
+    // 120 -> 90 bpm: frame 600 (1/40 beat) lands at frame 800 under 90 bpm.
+    assert_eq!(relocated.arrangement_frame(), 800);
+    let mut relocated_oracle = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
+    relocated_oracle.play_from(800).unwrap();
+    let mut relocated_actual = vec![[0.0; 2]; 2048];
+    let mut relocated_expected = relocated_actual.clone();
+    relocated.render(&mut relocated_actual).unwrap();
+    relocated_oracle.render(&mut relocated_expected).unwrap();
+    assert_eq!(relocated_actual, relocated_expected);
     let mut donor = SessionPlayback::new(prepare(&linear)).unwrap();
     let mut oracle = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
     for runtime in [&mut donor, &mut oracle] {
@@ -158,13 +181,26 @@ fn paused_loop_change_with_limiter_refuses_active_instrument_tail_without_corrup
         runtime.apply(SessionPlaybackCommand::Pause).unwrap();
         runtime.render(&mut [[0.0; 2]; 64]).unwrap();
     }
-    let mut candidate = SessionPlayback::new(loop_revision).unwrap();
-    assert!(matches!(
+    let mut candidate = SessionPlayback::new(Arc::clone(&loop_revision)).unwrap();
+    // Strict planner refusal; the live path restarts instead (Pulse #3774).
+    assert_eq!(
         candidate.try_inherit_state_from(&mut donor),
         Err(SessionPlaybackError::Arrangement(
-            "compensated processor tails require stopping transport before changing the chain"
+            super::handoff::COMPENSATED_TAILS_CHANGED
         ))
-    ));
+    );
+    // The live path applies the loop edit at the paused cursor on a separate
+    // donor, leaving this test's donor untouched for the checks below.
+    let mut live_donor = SessionPlayback::new(revision(&linear, Arc::clone(&table))).unwrap();
+    live_donor.apply(SessionPlaybackCommand::Play).unwrap();
+    live_donor.render(&mut [[0.0; 2]; 600]).unwrap();
+    live_donor.apply(SessionPlaybackCommand::Pause).unwrap();
+    live_donor.render(&mut [[0.0; 2]; 64]).unwrap();
+    let cursor = live_donor.arrangement_frame();
+    let mut live = SessionPlayback::new(loop_revision).unwrap();
+    live.try_inherit_state_live_from(&mut live_donor).unwrap();
+    assert!(!live.playing());
+    assert_eq!(live.arrangement_frame(), cursor);
     for runtime in [&mut donor, &mut oracle] {
         runtime.apply(SessionPlaybackCommand::Play).unwrap();
     }
@@ -1460,4 +1496,74 @@ fn mutable_transport_wrap_pass_and_live_gate_survive_revision_handoff() {
         .render(&mut expected)
         .expect("render uninterrupted oracle");
     assert_eq!(actual, expected);
+}
+
+/// Pulse #3731: a loop edit while an Arrangement mutable-instrument note is
+/// sounding was refused, so playback kept the old loop. The strict planner
+/// still refuses (above); the live publication restarts audio at the cursor.
+/// With the cursor inside, before or after the new loop and at different
+/// block sizes, the result equals a fresh Play-from at that cursor: the held
+/// note is chased once, with no stuck or duplicated voice.
+#[test]
+fn live_loop_edit_during_a_held_arrangement_note_restarts_at_the_cursor() {
+    let project = transport_loop_project(false);
+    // The held note spans 24_000..72_000; the edit lands at frame 30_000.
+    // Cursor inside, before and after the new loop, each at its own block size.
+    for (start, end, block) in [
+        (24_000, 120_000, 7),
+        (36_000, 144_000, 64),
+        (0, 27_000, 509),
+    ] {
+        let mut changed = project.snapshot();
+        changed.loop_region = Some(LoopRegion::new(start, end, true).expect("new loop"));
+        let changed = legacy_project_from_snapshot(changed).expect("valid new bounds");
+        let mut active = SessionPlayback::new(prepare_mutable(&project)).expect("old loop");
+        active
+            .apply(SessionPlaybackCommand::Play)
+            .expect("start transport");
+        active
+            .render(&mut vec![[0.0; 2]; 30_000])
+            .expect("render into the held note");
+        assert!(
+            active.mutable_instruments[0]
+                .as_ref()
+                .expect("mutable runtime")
+                .proofs()
+                .any(|proof| !proof.note_off_sent),
+            "the note is held at the edit"
+        );
+        let revision = prepare_mutable(&changed);
+        let mut candidate = SessionPlayback::new(Arc::clone(&revision)).expect("new loop");
+        candidate
+            .try_inherit_state_live_from(&mut active)
+            .expect("live loop edit applies");
+        let context = format!("loop {start}..{end}, block {block}");
+        assert!(candidate.playing(), "{context}");
+        assert_eq!(candidate.arrangement_frame(), 30_000, "{context}");
+        assert_eq!(
+            candidate.loop_region(),
+            Some(LoopRegion::new(start, end, true).expect("new loop")),
+            "{context}"
+        );
+        let mut oracle = SessionPlayback::new(revision).expect("oracle");
+        oracle.play_from(30_000).expect("oracle play-from");
+        // Through the held note's end (72_000) and past each new loop edge.
+        let mut actual = vec![[0.0; 2]; 43_000];
+        let mut expected = actual.clone();
+        for (actual, expected) in actual.chunks_mut(block).zip(expected.chunks_mut(block)) {
+            candidate.render(actual).expect("render after edit");
+            oracle.render(expected).expect("render oracle");
+        }
+        assert!(
+            actual == expected,
+            "restart equals play-from at the cursor; {context}"
+        );
+        assert!(
+            actual[..block]
+                .iter()
+                .flatten()
+                .any(|sample| *sample != 0.0),
+            "the held note is chased; {context}"
+        );
+    }
 }

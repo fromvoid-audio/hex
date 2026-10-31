@@ -73,6 +73,7 @@ mod tests {
             secondary,
             analyzer: None,
             input_analyzer: None,
+            analyzer_peak: None,
             nodes: vec![],
         };
         model.validate().unwrap();
@@ -124,6 +125,7 @@ mod tests {
                 secondary,
                 analyzer: None,
                 input_analyzer: None,
+                analyzer_peak: None,
                 nodes: vec![],
             }
             .validate()
