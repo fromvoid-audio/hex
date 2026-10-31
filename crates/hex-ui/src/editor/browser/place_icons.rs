@@ -111,6 +111,12 @@ impl EditorView {
                     path.clone(),
                 )),
             }))
+            .chain(self.browser_place_relocatable(&path).then(|| MenuItem {
+                label: "relocate…",
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::RelocateBrowserPlace(path.clone()),
+            }))
             .collect(),
         });
         cx.notify();
