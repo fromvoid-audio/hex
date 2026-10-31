@@ -820,6 +820,52 @@ class ScopeTests(unittest.TestCase):
             self.assertEqual(result["status"], "passed")
 
 
+class SingleRunFeatureTests(unittest.TestCase):
+    def live(self):
+        root = SCRIPTS.parent
+        metadata = json.loads(subprocess.check_output(
+            ["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], cwd=root))
+        return root, plan.cargo_inventory(metadata, root)
+
+    def test_reviewed_additive_features_test_once_and_keep_doctests_and_lint(self):
+        root, inventory = self.live()
+        path = "crates/hex-session/src/lib.rs"
+        _, affected, _ = plan.classify([path], inventory)
+        boundary = plan.boundary_selection(root, [path], inventory, affected)
+        self.assertEqual(boundary["single_run"], {
+            name: feature for name, feature in plan.ADDITIVE_TEST_FEATURES.items() if name in affected})
+        self.assertIn("hex-session", boundary["single_run"])
+        steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": affected, "boundary": boundary, "cargo_inventory": inventory})}
+        default = steps["affected-tests"].argv
+        for name in boundary["single_run"]:
+            with self.subTest(name=name):
+                self.assertNotIn(name, default)
+                self.assertIn(name, steps["single-run-doctests"].argv)
+                self.assertIn(name, steps["affected-clippy"].argv)  # default config still compiles
+                self.assertTrue(any(name in s.argv and plan.ADDITIVE_TEST_FEATURES[name] in s.argv
+                                    and s.argv[1] == "test" for s in steps.values()))
+        # The counting allocator is not additive: hex-desktop keeps both runs.
+        self.assertIn("hex-desktop", default)
+        self.assertIn("audio-allocation-probe", steps)
+        self.assertFalse(steps["single-run-doctests"].requires_tests)
+        self.assertTrue(steps["affected-tests"].requires_tests)
+
+    def test_cfg_not_tripwire_and_unreviewed_features_keep_both_runs(self):
+        inventory = [dict(name="hex-ui", manifest="crates/hex-ui/Cargo.toml", features={"ui-test-support": []},
+                          dependencies=[], targets=[]),
+                     dict(name="hex-session", manifest="crates/hex-session/Cargo.toml",
+                          features={"source-overview-test-support": [], "new-configuration": []},
+                          dependencies=[], targets=[])]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "crates/hex-ui/src").mkdir(parents=True)
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory),
+                             {"hex-ui": "ui-test-support"})
+            (root / "crates/hex-ui/src/lib.rs").write_text('#[cfg(not(feature = "ui-test-support"))]\nfn f() {}\n')
+            self.assertEqual(plan.single_run_packages(root, ["hex-ui", "hex-session"], inventory), {})
+
+
 class BaseAdvanceCarryTests(unittest.TestCase):
     """Fabricated reports exercise carry policy; no product test counts are claimed."""
 

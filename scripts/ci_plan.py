@@ -151,6 +151,47 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
     return scope, sorted(affected), reasons
 
 
+# Reviewed test-only features that add APIs/tests without changing default behavior,
+# so a package's default `cargo test` is a subset of its feature run (doctests
+# excepted; --all-targets omits them, so plans keep a --doc run). Default-feature
+# compilation stays proven by affected clippy. Reviewed 31 October 2026:
+# - hex-ui ui-test-support: enables gpui/test-support (test executor/platform and
+#   debug selectors only) and hex-session's overview hooks; no cfg(not) gates.
+# - hex-session source-overview-test-support: an optional observer hook, None by default.
+# - hex-engine/hex-export instrument-test-support: probe/fixture modules only.
+# allocation-probe installs a counting global allocator and has cfg(not) gates;
+# it is deliberately absent and keeps both runs.
+ADDITIVE_TEST_FEATURES = {
+    "hex-ui": "ui-test-support",
+    "hex-session": "source-overview-test-support",
+    "hex-engine": "instrument-test-support",
+    "hex-export": "instrument-test-support",
+}
+
+
+def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) -> dict[str, str]:
+    """Affected packages whose only extra feature is reviewed additive.
+
+    Any line combining `not(` with that feature in the package's Rust sources is a
+    tripwire: the package keeps both default and feature test runs.
+    """
+    selected = {}
+    for package in inventory:
+        feature = ADDITIVE_TEST_FEATURES.get(package["name"])
+        if package["name"] not in affected or not feature:
+            continue
+        if set(package["features"]) - {"default"} != {feature}:
+            continue
+        directory = root / Path(package["manifest"]).parent
+        needle = f'feature = "{feature}"'
+        gated = any("not(" in line and needle in line
+                    for source in directory.rglob("*.rs") if source.is_file()
+                    for line in source.read_text(errors="replace").splitlines())
+        if not gated:
+            selected[package["name"]] = feature
+    return selected
+
+
 def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affected: list[str]) -> dict:
     """Narrow only reviewed runtime relationships; Cargo closure remains the lint boundary.
 
@@ -197,6 +238,7 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
         ]
     return {"kind": "compressor" if narrow else "packages", "tests": tests,
             "test_packages": [] if narrow else affected,
+            "single_run": {} if narrow else single_run_packages(root, affected, inventory),
             "lint_packages": affected,
             "excluded_behavior_packages": sorted(set(affected) - {t["package"] for t in tests}) if narrow else [],
             "excluded_configurations": (["unrelated instrument/export and whole UI/audio suites: compressor-only implementation; unchanged shared host/registration/build inputs"] if narrow else []),
