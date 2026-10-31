@@ -1981,25 +1981,9 @@ impl Session {
             } else if let Some(cursor) = stopped_cursor {
                 inputs.publish_stopped_section(&mut snapshot, project, sink, context, cursor)?;
             } else if section_transition {
-                // Existing live compensation/active-loop gates cannot rebind a
-                // changed tempo map. Refuse before canonical history/publication,
-                // rather than committing a candidate the callback must reject.
-                if !source.tempo_map().proves_same_clock(project.tempo_map()) {
-                    return Err(SessionError::Invalid(
-                        "live section edits that change the tempo map require stopped playback",
-                    ));
-                }
-                if current.map_or_else(
-                    || snapshot.prepared.has_arrangement_mutable_instruments(),
-                    |old| {
-                        old.prepared
-                            .section_midi_relocation_requires_stop(&snapshot.prepared)
-                    },
-                ) {
-                    return Err(SessionError::Invalid(
-                        "stop playback before relocating instrument midi with section edits or history",
-                    ));
-                }
+                // A changed tempo map or relocated instrument MIDI no longer
+                // refuses here: the callback's live handoff restarts audio at
+                // the musically equivalent cursor instead (Pulse #3774).
                 // Keep the launched loop at its musical timeline range. A section
                 // move changes the music under that range, never teleports transport.
                 let region = section_loop
