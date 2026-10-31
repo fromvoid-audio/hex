@@ -61,6 +61,8 @@ mod clip_alias_edit;
 pub use clip_alias::{
     AliasContentSnapshot, AliasMemberSnapshot, AliasSourceSnapshot, ClipAliasesSnapshot,
 };
+mod audio_event_timeline;
+mod clip_fade_split;
 mod clip_fade_trim;
 mod clip_name;
 mod clip_selection_edit;
@@ -83,7 +85,8 @@ mod bounce;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
 pub use bounce::{
-    BounceFile, BounceSource, BounceTarget, BounceTrack, MAX_ARRANGEMENT_BOUNCE_FRAMES,
+    BounceAdoption, BounceDrop, BounceFile, BounceSource, BounceTarget, BounceTrack,
+    MAX_ARRANGEMENT_BOUNCE_FRAMES,
 };
 pub use clip_conversion::AUDIO_TO_MIDI_UNSUPPORTED;
 mod track_clipboard;

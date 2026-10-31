@@ -73,6 +73,7 @@ mod format_upgrade_tests;
 #[cfg(test)]
 #[path = "service/limiter_tests.rs"]
 mod limiter_tests;
+pub mod missing_media;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -82,9 +83,7 @@ pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 mod stopped_playback_tests;
 use hex_storage::FileToken;
 use recovery::absolute_document_path;
-pub use recovery::{
-    ProjectSource, RecoveryFailure, RecoveryRestart, missing_assets, untitled_recovery_path,
-};
+pub use recovery::{ProjectSource, RecoveryFailure, RecoveryRestart, untitled_recovery_path};
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -772,8 +771,8 @@ pub enum Request {
         relinks: BTreeMap<hex_project::AssetId, PathBuf>,
     },
     Edit(Command),
-    /// Bounce selected Arrangement clips or an explicit range. `mute_sources`
-    /// deactivates those sources in the same adoption edit (new tracks only).
+    /// Bounce selected Arrangement clips or an explicit range. `adoption`
+    /// selects new tracks, muted sources or a clip drop (one adoption edit).
     /// At most MAX_CLIPS captured IDs or MAX_TRACKS range rows in the existing
     /// 32-slot FIFO. One synchronous control-worker job; Escape cancels via the
     /// shared control without waiting for that FIFO. No audio/UI thread rendering.
@@ -782,7 +781,7 @@ pub enum Request {
         revision: u64,
         target: hex_project::BounceTarget,
         in_place: bool,
-        mute_sources: bool,
+        adoption: hex_project::BounceAdoption,
         control: hex_export::ExportControl,
     },
     /// Bounce the exact selected MIDI clip; stale actions and audio-to-MIDI refuse.
@@ -5419,7 +5418,7 @@ fn run_worker(
                     revision: captured_revision,
                     target,
                     in_place,
-                    mute_sources,
+                    adoption,
                     control,
                 } => {
                     let grouping = target.is_audio_group();
@@ -5465,7 +5464,7 @@ fn run_worker(
                                         &mut session,
                                         target,
                                         in_place,
-                                        mute_sources,
+                                        adoption,
                                         &root,
                                         &control,
                                         context,
@@ -5474,10 +5473,10 @@ fn run_worker(
                                         &mut resident_snapshot,
                                     )
                                 } else {
-                                    session.bounce_arrangement_muting_sources(
+                                    session.bounce_arrangement_adopting(
                                         target,
                                         in_place,
-                                        mute_sources,
+                                        adoption,
                                         &root,
                                         &control,
                                         compiled.as_ref().map(|(_, p)| p.as_ref()),
@@ -5920,7 +5919,10 @@ fn run_worker(
                         }
                         (Some(handle), Ok(project)) => {
                             if !consent {
-                                match handle.token.requires_save_confirmation(&project) {
+                                match handle.token.requires_save_confirmation_within(
+                                    &project,
+                                    events.legacy_reader_limit(),
+                                ) {
                                     Ok(true) => {
                                         save_confirmation_required = true;
                                         error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());

@@ -71,12 +71,12 @@ pub enum Command {
         without_clips: bool,
     },
     /// Adopt all prepared track bounces as one reversible edit. No file I/O.
-    /// `mute_sources` deactivates the bounced clip/range sources in that same
+    /// `adoption` deactivates the bounced clip/range sources in that same
     /// edit with the contextual activation commands; new-track adoption only.
     CommitArrangementBounce {
         target: crate::BounceTarget,
         in_place: bool,
-        mute_sources: bool,
+        adoption: crate::BounceAdoption,
         files: Vec<crate::BounceFile>,
     },
     /// Set one authored clip's activation across Arrangement or Session.
@@ -1804,9 +1804,9 @@ impl Project {
             Command::CommitArrangementBounce {
                 target,
                 in_place,
-                mute_sources,
+                adoption,
                 files,
-            } => crate::bounce::commit(self, target, in_place, mute_sources, files),
+            } => crate::bounce::commit(self, target, in_place, adoption, files),
             command @ (Command::AddArrangementSection { .. }
             | Command::SetArrangementSectionRange { .. }
             | Command::MoveArrangementSectionMarker { .. }
@@ -2135,7 +2135,7 @@ impl Project {
                     .map_err(|_| Invalid("could not reserve clip storage"))?;
                 let right_id = ClipId(self.allocate_id()?);
                 let (left, right) =
-                    split_clip_at_tempo(&original, frame, right_id, self.tempo_map())?;
+                    crate::clip_fade_split::split(&original, frame, right_id, self.tempo_map())?;
                 self.audio_clips_mut(self.tracks[track_index].id)?[clip_index] = left;
                 self.audio_clips_mut(self.tracks[track_index].id)?
                     .insert(clip_index + 1, right);

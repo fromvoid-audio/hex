@@ -1065,7 +1065,13 @@ impl EditorView {
                         (event.save_complete && event.error.is_none() && !event.state.unsaved)
                             .then(|| event.state.document_path.clone())
                             .flatten();
-                    if let Some(path) = self.receive(event) {
+                    let install = crate::diagnostics::actions_enabled(cx)
+                        .then(|| (event.state.revision, std::time::Instant::now()));
+                    let opened = self.receive(event);
+                    if let Some((revision, started)) = install {
+                        crate::diagnostics::record_ui_install(cx, revision, started.elapsed());
+                    }
+                    if let Some(path) = opened {
                         self.record_opened_project(path.clone(), cx);
                         self.record_project_directory(path, cx);
                     } else if let Some(path) = saved_project_path {
@@ -1073,7 +1079,7 @@ impl EditorView {
                         self.record_project_directory(path, cx);
                     }
                     if let Some((success, revision)) = open_save {
-                        self.complete_open_save(success, revision);
+                        self.complete_open_save(success, revision, cx);
                     }
                     if let Some((correlation, success, confirmation_required)) = update_save {
                         self.update_save_terminal(correlation, success, confirmation_required, cx);
@@ -1117,6 +1123,7 @@ impl EditorView {
         if !self.edit_pending() {
             self.midi_step.cancel_pending();
         }
+        visible_change |= self.submit_queued_section();
         visible_change |= self.poll_editor_audio_events(cx);
         visible_change |= self.poll_export(cx);
         visible_change |= self.pump_tuning_gesture();
@@ -2367,6 +2374,11 @@ impl EditorView {
         {
             control.cancel();
         }
+        // A bounce drop's ghost retires with its job's terminal, in the same
+        // receive that installs the adopted (or unchanged, refused) state.
+        if self.bounce_control.is_none() {
+            self.pending_bounce_drop = None;
+        }
         if event.save_complete {
             self.saving_project = false;
         }
@@ -2578,7 +2590,15 @@ impl EditorView {
             && !event.state.project.tracks().is_empty();
         let save_confirmation_required =
             event.save_confirmation_required && !event.project_replaced;
+        let loop_was_enabled = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.loop_region())
+            .is_some_and(|region| region.enabled());
         self.state = Some(event.state);
+        if !event.project_replaced {
+            self.retire_point_cursor_on_loop_enable(loop_was_enabled);
+        }
         self.gain_take_state_installed();
         self.device_automation_state_installed(event.project_replaced);
         if save_confirmation_required {
@@ -2665,6 +2685,7 @@ impl EditorView {
             self.device_gesture_barriers.clear();
             self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
+            self.loop_start_over_clip = None;
             self.clip_paint_gesture = None;
             self.cancel_section_pointer();
             self.time_selection = None;
@@ -4184,8 +4205,10 @@ impl EditorView {
                 .and_then(|audio| audio.control.output_identity())
                 != Some(output)
         {
+            // A newer revision or output publishes on its own; its admission
+            // reports any further refusal.
             self.latency_rebuild = None;
-            return false;
+            return self.clear_latency_waiting();
         }
         match rebuild {
             LatencyRebuild::Unresolved { .. } => false,
@@ -4217,13 +4240,14 @@ impl EditorView {
                 };
                 if self.applied_project_revision == Some(project.revision) {
                     self.latency_rebuild = None;
-                    return false;
+                    return self.clear_latency_waiting();
                 }
                 if !playing {
                     // Paused: the callback applies the new latency layout at
                     // the kept cursor. Republish the refused current revision
                     // once rather than leaving audio on the old graph.
                     self.latency_rebuild = None;
+                    self.clear_latency_waiting();
                     if self.enqueue(Request::RepublishPausedPlayback) {
                         self.status = "applying latency change at the paused cursor".into();
                     }
@@ -4236,7 +4260,9 @@ impl EditorView {
                 }
                 // A fresh runtime cuts mutable voices. Until their live-input
                 // custody can be restored explicitly, MIDI projects wait for
-                // Pause (republish above) or Stop instead of dropping notes.
+                // Pause (republish above) or Stop (`stop` restores the current
+                // revision) instead of dropping notes. Say so: the committed
+                // edit is not audible yet (Pulse #3793).
                 if self.state.as_ref().is_some_and(|state| {
                     state
                         .project
@@ -4244,7 +4270,7 @@ impl EditorView {
                         .iter()
                         .any(|track| track.instrument().is_some() || !track.midi_clips().is_empty())
                 }) {
-                    return false;
+                    return replace_error(&mut self.error, LATENCY_EDIT_WAITING);
                 }
                 let Some(status) = self.audio.as_ref().and_then(|audio| audio.control.status())
                 else {
@@ -4305,8 +4331,22 @@ impl EditorView {
         }
     }
 
+    /// Retire the waiting notice once its refused revision is applied,
+    /// superseded or handed to a paused republish.
+    fn clear_latency_waiting(&mut self) -> bool {
+        if self.error.as_deref() == Some(LATENCY_EDIT_WAITING) {
+            self.error = None;
+            true
+        } else {
+            false
+        }
+    }
+
     pub(super) fn stop(&mut self) {
         self.latency_rebuild = None;
+        // Stop restores the refused revision below, or a pending edit
+        // publishes it while stopped.
+        self.clear_latency_waiting();
         self.midi_step.cancel_pending();
         // Stop explicitly discards voice histories. A previously refused edit
         // or restoration can now install the canonical sound without inheriting
@@ -4783,6 +4823,11 @@ fn fault_with_action_errors(
     }
     diagnostic.to_owned()
 }
+
+/// Shown while a refused latency edit in an instrument/MIDI project waits for
+/// Pause or Stop, which apply it without cutting sounding voices.
+pub(super) const LATENCY_EDIT_WAITING: &str =
+    "edit waiting · latency layout could not change live · applies on pause or stop";
 
 fn replace_error(error: &mut Option<super::display_error::DisplayError>, message: &str) -> bool {
     if error.as_deref() == Some(message) {

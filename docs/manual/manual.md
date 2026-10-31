@@ -67,10 +67,33 @@ not convert it. compatibility with every historical alpha file is not implied.
 
 ## missing media
 
-use **file → open and relink media…** when audio files have moved. follow the
-**locate missing media** prompt and select the corresponding original recording.
-check the loaded clips before saving a new copy. do not replace a missing file
-with unrelated audio merely to dismiss the prompt.
+when you open a project whose audio files have moved, hex shows the
+**missing files** panel instead of an error. each row lists the file name, its
+last known location and where the project uses it (clips, scenes, sampler and
+other devices). **file → open and relink media…** opens the same panel for any
+saved project.
+
+- **locate…** picks the file for one row. other missing files from the same old
+  folder are found automatically when they exist at the same relative location
+  under the new folder.
+- **search folders…** searches the folders you choose, including subfolders,
+  for files with the same name. a file is accepted only when its length and
+  sample rate equal the saved recording. when several files match, pick one;
+  a file that differs is shown as a mismatch and is not used. you can cancel a
+  search at any time.
+- **relink all found** appears when the browser's scanned sample folders
+  contain files with the same names. it applies only when you click it: files
+  with exactly one matching candidate are found, and files with several
+  matches list them for you to pick. add the new sample folder to the browser
+  first so it is scanned.
+- **open** becomes available once every file is found. the project then opens
+  with the new locations as unsaved changes; your project file stays unchanged
+  until you save. **cancel** keeps the current project.
+
+hex only reads your sample files; it never moves, renames or deletes them.
+matching uses the file name, length and sample rate, so check the loaded clips
+before saving: two different recordings with the same name, length and rate
+cannot be told apart yet.
 
 ## recover work
 
@@ -173,9 +196,9 @@ repeats it, and starting after its end plays on without looping. only when there
 is no selection or edit cursor does an enabled loop supply its beginning.
 moving or resizing the loop during playback takes effect immediately with the
 same rule: inside the new loop the playhead wraps at its new end, before it the
-playhead plays into it, and after it playback continues. a known limit: a loop
-change made while an arrangement instrument note is still sounding is not yet
-applied to playback.
+playhead plays into it, and after it playback continues. if an instrument note
+is sounding when the loop changes, audio restarts at the playhead: effect tails
+reset and notes under the playhead start again from there.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 setting new loop bounds from selected main sections also turns on section focus
@@ -183,8 +206,9 @@ after the edit is accepted. focus shows tracks that intersect the selected
 sections, excluding gaps between them. repeated loop toggles leave focus unchanged;
 press **q** or use the section focus toggle to restore all tracks.
 
-**shift-click** section blocks to add or remove them from the section selection,
-including clicks in their lower body. ordinary lower-body dragging still selects time.
+**shift-click** a section block to select every section from the last clicked one
+through it; **command-shift-click** adds or removes a single section. both work in a
+section's lower body too. ordinary lower-body dragging still selects time.
 drag a section header to move its musical content; hold **option** to insert a copy
 before or after another section, or beside the source. changing option during the drag
 switches between moving and copying. the source stays in place when copying, and
@@ -245,6 +269,13 @@ clip bounces render instrument and effect release tails, but the new clip keeps 
 original clip's start and length; drag its right edge out to reveal the tail. a time selection renders
 exactly its start-to-end interval, retaining earlier state needed for sound inside
 that interval. press **escape** to cancel; one undo restores the entire operation.
+
+while dragging arrangement clips, hold **b** as you release to drop a bounce of them
+at the drop position instead of moving them. the dragged clips stay where they were,
+the bounced clips keep their original lengths with the tail in the file, and one undo
+removes the drop. the drop shows as pending until rendering finishes. let go of **b**
+before releasing to move normally. a bounce drop that would overlap its own source, or
+that lands between tracks, is refused.
 
 stop playback and disable live midi input or audition before bouncing in place. hex keeps the stopped cursor and installs
 a fresh playback state so live release voices cannot duplicate the baked tails.
@@ -404,7 +435,7 @@ and are retained when saving, reopening and rendering the project. clicking a
 control without editing it leaves automation running.
 
 supported device controls are utility's parameters, saturator's four parameters,
-and auto pan's amount, rate, phase and waveform. native effects on tracks, main
+auto pan's amount, rate, phase and waveform, and rattle's drive. native effects on tracks, main
 and returns also offer host **input gain** and **output gain** lanes. instrument
 and source-owned effect lanes, other device controls and vst lanes are not yet
 available. recording device movements and shared modulator assignments are not
@@ -525,6 +556,13 @@ drag a folder from the browser results onto **places** to bookmark it. the
 folder stays in its original location; bookmarking keeps the current browser
 source and search. dragging the same folder again preserves its existing place
 and icon. press **escape** or drop outside places to cancel.
+
+adding a sample folder starts a background scan; the samples count shows its
+progress. the scan records each sample's size and a content fingerprint so hex
+can later find moved files. it only reads your samples; it never moves or
+changes them. if a place's folder has been moved or renamed, the place shows
+**missing**. right-click it and choose **relocate…** to point it at the new
+folder; its position and icon are kept and its samples reappear after the scan.
 
 the preview controls audition a selected audio file. the waveform can be used to
 choose a preview position. stop preview playback before judging the main project's
@@ -720,6 +758,13 @@ distortion, **tone** adjusts its brightness, and **dynamics** restores more of t
 input's level changes as it increases. **dry/wet** blends the original signal with
 the processed sound. the effect is available on track, return and main chains.
 
+rattle is a one-knob drive. at **drive** 0 it passes audio unchanged; raising
+**drive** blends in a progressively harder, grittier and noisier saturation whose
+level is compensated for typical programme, so it gets dirtier rather than much
+louder. rattle processes at twice the sample rate and reports 11 samples of
+latency, which hex compensates. drive changes glide over about 20 ms and can be
+automated. bypass passes audio unchanged while keeping its history warm.
+
 in the eq graph, single-click empty space to create a band. the left and right
 edges create low-cut and high-cut bands; the bottom interior creates a notch;
 other empty space creates a bell. at the bottom corners, the edge cut takes
@@ -827,6 +872,7 @@ the complete edit.
 | settings | command+, |
 | bounce selected material to a new track | b |
 | bounce to a new track and deactivate the sources | command+b |
+| drop a bounce of dragged clips | hold b while releasing a clip drag |
 | arrangement automation view | a / toolbar a control |
 | contextual activation | c / 0 |
 | export | command+shift+e |

@@ -7,7 +7,7 @@ use hex_session::service::ResidentPublicationAcceptance;
 
 #[test]
 fn active_source_provider_change_applies_while_playing() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let file = Files::new();
     let mut h = ResidentHarness::with_frame_limit(32_768);
     assert!(h.next().error.is_none());
@@ -109,7 +109,7 @@ fn active_source_provider_change_applies_while_playing() {
 
 #[test]
 fn global_bpm_publishes_with_original_and_predecessor_pcm_still_retained() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for rate in [44_100, 48_000] {
         let file = Files::new();
         let mut h = ResidentHarness::with_frame_limit_at_rate(8_000_000, rate);
@@ -233,7 +233,7 @@ fn scalar_pcm_at_cursor(
 
 #[test]
 fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let sampler_file = Files::new();
     let audio_file = Files::new();
     // This fixture reserves below the production aggregate frame policy, with room for actual distinct
@@ -711,7 +711,7 @@ fn sampler_note_fixture() -> SamplerNote {
 fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
     use hex_engine::SamplerParameter::{AttackMs, Gain};
     use hex_session::service::{SamplerEdit, SamplerParameterEdit};
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let SamplerNote {
         mut h,
         _files: files,
@@ -857,7 +857,7 @@ fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
 #[test]
 fn clip_loop_resize_publishes_native_pcm_with_retained_preview_root_and_exact_history() {
     use hex_project::AudioViewResizeOperation as Resize;
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for rate in [44_100, 48_000] {
         let file = Files::new();
         let mut h = ResidentHarness::with_frame_limit_at_rate(32_768, rate);
@@ -912,7 +912,7 @@ fn clip_loop_resize_publishes_native_pcm_with_retained_preview_root_and_exact_hi
 
 #[test]
 fn copied_frame_groups_share_audio_under_tight_admission_and_survive_history_reopen() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(256);
     assert!(h.next().error.is_none());
@@ -1002,7 +1002,7 @@ fn copied_frame_groups_share_audio_under_tight_admission_and_survive_history_reo
 fn history_refused_while_edit_publication_pending_keeps_both_stacks_and_pcm() {
     use hex_engine::SamplerParameter::Gain;
     use hex_session::service::{SamplerEdit, SamplerParameterEdit};
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let SamplerNote {
         mut h,
         _files,
@@ -1057,7 +1057,7 @@ fn history_refused_while_edit_publication_pending_keeps_both_stacks_and_pcm() {
 /// edit and later edits apply, paused or playing, without Stop.
 #[test]
 fn editing_a_sounding_sampler_note_applies_while_paused_or_playing() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for paused in [true, false] {
         let file = Files::new();
         let mut h = ResidentHarness::with_frame_limit(32_768);
@@ -1129,4 +1129,78 @@ fn editing_a_sounding_sampler_note_applies_while_paused_or_playing() {
             "edited note sounds after the restart; paused={paused}"
         );
     }
+}
+
+/// Audit (Pulse #3792): the running restart excludes private sampler scopes.
+/// A resident sampler revision carries only the ordinary device resource
+/// scope, so adding a latency device while its note sounds restarts audio at
+/// the cursor instead of refusing.
+#[test]
+fn adding_a_latency_device_while_a_sampler_plays_applies_without_refusal() {
+    let _native = native_fixture();
+    let file = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(32_768);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track");
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::LoadFirstSampler {
+        request_id: 1,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        empty_sampler: None,
+        path: file.wav(48_000, 8192),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(4).unwrap(),
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip");
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::from_quarters(4).unwrap(),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Play)
+        .unwrap();
+    assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
+    // Lookahead latency changes the compensated layout under a sounding voice.
+    let limited = h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+        before: None,
+    });
+    assert_eq!(
+        limited.state.project.track(track).unwrap().devices().len(),
+        1
+    );
+    // `applied` panics on any callback rejection of the new revision.
+    h.applied(applied);
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert!(status.playing.load(Acquire), "the transport keeps running");
+    assert!(
+        (0..4).any(|_| h.render().iter().flatten().any(|sample| *sample != 0.0)),
+        "the sampler sounds after the restart"
+    );
 }

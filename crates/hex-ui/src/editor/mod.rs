@@ -52,6 +52,7 @@ pub(crate) use plugin_effect::fixture_view as plugin_effect_fixture_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
 mod section_launch;
+mod section_layout_preview;
 mod track_header;
 mod track_header_device_drop;
 mod track_hierarchy_indent;
@@ -140,6 +141,7 @@ mod midi_note_overwrite;
 mod midi_pan;
 mod midi_pitch_zoom;
 mod midi_recording;
+mod missing_media;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
 mod midi_ruler;
@@ -866,6 +868,9 @@ pub(super) struct EditorView {
     close_prompt_open: bool,
     export_pending: bool,
     bounce_control: Option<hex_session::service::ExportControl>,
+    /// `b` is held during the active Arrangement clip drag; release bounces.
+    drag_bounce_held: bool,
+    pending_bounce_drop: Option<bounce::PendingBounceDrop>,
     pending_plugin_effect: Option<plugin_effect::PendingPluginEffect>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
@@ -985,6 +990,7 @@ pub(super) struct EditorView {
     recent_projects: RecentProjectsState,
     project_directory: project_directory::State,
     changelog: changelog::State,
+    missing_media: Option<missing_media::Panel>,
     theme_settings: theme_settings::ThemeSettingsState,
     audio_import_settings: audio_import_settings::State,
     tuning: tuning::TuningState,
@@ -993,6 +999,9 @@ pub(super) struct EditorView {
     /// The selected clip a point cursor was deliberately placed inside; that
     /// cursor then outranks the clip's play start (see `selected_clip_play_start`).
     edit_cursor_in_selected_clip: Option<ClipId>,
+    /// The selected clip whose in-clip cursor a loop enable retired; the loop
+    /// start then keeps outranking that clip's play start until a new click.
+    loop_start_over_clip: Option<ClipId>,
     detail_context: Option<detail_context::DetailContext>,
     clip_paint_gesture: Option<clip_paint::ClipPaintGesture>,
     time_selection: Option<time_selection::TimeSelection>,
@@ -1591,6 +1600,8 @@ impl EditorView {
             close_prompt_open: false,
             export_pending: false,
             bounce_control: None,
+            drag_bounce_held: false,
+            pending_bounce_drop: None,
             pending_plugin_effect: None,
             export_control: None,
             export_window: None,
@@ -1703,12 +1714,14 @@ impl EditorView {
             recent_projects,
             project_directory,
             changelog: changelog::State::new(cx),
+            missing_media: None,
             theme_settings,
             audio_import_settings,
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
             edit_cursor: None,
             edit_cursor_in_selected_clip: None,
+            loop_start_over_clip: None,
             detail_context: None,
             clip_paint_gesture: None,
             time_selection: None,
@@ -1828,6 +1841,7 @@ impl EditorView {
     fn playback_start_frame(&self) -> u64 {
         // The user's placed position wins, even outside an enabled loop; the
         // acknowledged canonical loop only supplies a start when none is placed.
+        // Enabling the loop retires an earlier point cursor (Pulse #3838).
         // A whole-clip selection replaces the point cursor, not a time range.
         if let Some(selection) = self.normalized_time_selection() {
             return selection.start();
