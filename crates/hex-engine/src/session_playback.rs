@@ -174,10 +174,10 @@ impl SessionPlaybackError {
             Self::ReleaseBankFull => "session playback outgoing release bank is full",
             Self::DeviceRuntime => "session playback native device runtime is unavailable",
             Self::LatencyLayoutChanged => {
-                "latency layout changed · pause or stop transport to apply this revision"
+                "latency layout could not change live · previous audio continues"
             }
             Self::SourceHistoryUnavailable => {
-                "source history cannot transfer · stop transport before applying this revision"
+                "source history cannot transfer live · previous audio continues"
             }
             Self::ForeignTailSourceBusy => {
                 "native effect endpoint is still owned by an outgoing tail"

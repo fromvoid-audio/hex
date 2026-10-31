@@ -117,7 +117,8 @@ track activator setting.
 
 in arrange, select a track or clip before editing it. drag a clip to move it and
 drag its left or right edge within the clip header (the top third) to adjust its
-extent; lower down, the edge belongs to the clip body, fades and the loop corner.
+extent; hold **shift** to stretch instead. lower down, the edge belongs to the clip
+body and its fade handles.
 work at a zoom level where the intended edge
 and grid position are clear. use **command+z** to undo and
 **command+shift+z** to redo admitted edits.
@@ -207,8 +208,9 @@ before or after another section, or beside the source. changing option during th
 switches between moving and copying. the source stays in place when copying, and
 one undo restores the entire operation.
 
-some section edits involving sampler midi require stopped playback. if hex asks,
-stop playback and repeat the edit; the refused edit leaves the project and history unchanged.
+section edits apply while playing. when an edit changes the tempo, a sampler's held
+notes or a device's latency, audio briefly restarts at the playhead: effect tails
+cut and sounding notes start again, and playback keeps running.
 
 hold **command** before or during a drag to adjust only the marker; the music stays
 in place. command-resize an edge to trim or remove overlapping section markers, or
@@ -441,13 +443,17 @@ the audible pitch while the stored transpose value is retained.
 
 ## clip loop resizing
 
-hover the bottom corner of a clip's right edge to show the circle cursor, then drag
-to repeat its source. the lower fade handle sits just inside that corner, and
-ordinary trimming stays in the clip header. audio and
-midi clips use the same gesture; no loop icon is painted inside the clip. looped
-clips have rounded bottom corners. the first repeat boundary uses left/right
-arrows; drag it to change the cycle while keeping the outer duration; directed clips retain only the outer
-repeat handle. **escape** cancels a held edit; one undo restores a completed drag.
+hold **option** over a clip's right header edge to show the circle cursor, then
+drag to repeat its source. the modifier you hold when the drag starts decides the
+gesture for the whole drag: none trims, **shift** stretches, **option** repeats
+(option wins if both are held). dragging the right edge of a clip that already
+repeats also extends its repeats. audio and midi clips use the same gesture; no
+loop icon is painted inside the clip, and the fade-out handle keeps the
+bottom-right corner. looped clips have rounded bottom corners. the first repeat
+boundary uses left/right arrows; drag it to change the cycle while keeping the
+outer duration; directed clips have no first-boundary handle. inside a time
+selection the clip header moves or copies the range instead. **escape** cancels
+a held edit; one undo restores a completed drag.
 
 clips and sections keep their actual timeline width when zoomed out. zoom in
 to resize very short clips when their edge handles no longer fit.
