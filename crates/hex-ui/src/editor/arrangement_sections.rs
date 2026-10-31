@@ -742,24 +742,6 @@ impl EditorView {
         } else {
             Mode::Paint
         };
-        if matches!(
-            mode,
-            Mode::ContentStart(_)
-                | Mode::ContentEnd(_)
-                | Mode::Shared {
-                    marker_only: false,
-                    ..
-                }
-        ) && self
-            .audio
-            .as_ref()
-            .and_then(|a| a.control.status())
-            .is_some_and(|s| s.playing.load(std::sync::atomic::Ordering::Acquire))
-        {
-            self.select_section_metadata(id);
-            self.error = Some("stop playback before resizing song sections".into());
-            return true;
-        }
         if matches!(mode, Mode::Paint) {
             let (name, color) = new_marker_appearance(&state.project);
             original = Some(Marker {

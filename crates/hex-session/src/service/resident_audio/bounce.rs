@@ -120,6 +120,7 @@ pub(in crate::service) fn bounce_arrangement(
     session: &mut Session,
     target: hex_project::BounceTarget,
     in_place: bool,
+    mute_sources: bool,
     directory: &Path,
     control: &hex_export::ExportControl,
     context: hex_engine::AudioSourceContext,
@@ -224,6 +225,7 @@ pub(in crate::service) fn bounce_arrangement(
                 .adopt_arrangement_bounce_using(
                     captured,
                     in_place,
+                    mute_sources,
                     files,
                     prepared,
                     current.as_ref().map(|s| s.prepared.as_ref()),

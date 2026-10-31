@@ -235,11 +235,14 @@ a time selection shows a dark dot when its musical length is a power of two,
 such as two or four beats. the dot follows the dragged top-right or top-left
 corner and stays visible after release.
 
-with the arrange timeline focused, **command+b** keeps the originals and inserts
+with the arrange timeline focused, **b** keeps the originals and inserts
 bounced audio on a new track below
-each source track. a nonempty time selection takes precedence over selected clips.
+each source track. **command+b** does the same and then deactivates the bounced
+source clips or time selection, exactly as **c** or **0** would; one undo restores
+both the bounce and the sources' activation. a nonempty time selection takes precedence over selected clips.
 each selected track produces one audio clip spanning its selected clips and gaps.
-clip bounces include instrument and effect release tails. a time selection renders
+clip bounces render instrument and effect release tails, but the new clip keeps the
+original clip's start and length; drag its right edge out to reveal the tail. a time selection renders
 exactly its start-to-end interval, retaining earlier state needed for sound inside
 that interval. press **escape** to cancel; one undo restores the entire operation.
 
@@ -252,7 +255,7 @@ and main processing remain live. only the track-header **bounce in place** actio
 removes the track's devices. it covers the entire track, regardless of a smaller
 clip or time selection. for clip and time-selection editing, use **g** to group
 material instead; grouping retains its existing source and processing behavior.
-**b** has no arrange bounce action. routed inputs, verified streaming and nonzero-latency device
+in the focused midi editor, **b** keeps toggling draw mode. routed inputs, verified streaming and nonzero-latency device
 paths currently refuse. clip bounces keep up to 30 seconds of release after the
 selected span. if the tail is still sounding then, hex cuts it at that limit and
 finishes the bounce. a noise floor at or below -80 dbfs peak in both channels
@@ -822,7 +825,8 @@ the complete edit.
 | selection fades / browser search outside audio selection | command+f |
 | compact track overview (computer midi keyboard off) | h |
 | settings | command+, |
-| bounce selected material to a new track | command+b |
+| bounce selected material to a new track | b |
+| bounce to a new track and deactivate the sources | command+b |
 | arrangement automation view | a / toolbar a control |
 | contextual activation | c / 0 |
 | export | command+shift+e |

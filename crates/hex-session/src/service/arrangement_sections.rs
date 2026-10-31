@@ -87,19 +87,10 @@ pub(super) fn command(
         editor_revision: context.editor_revision.saturating_sub(1),
         ..context
     };
-    let position = super::stopped_arrangement::acquire_position(
-        sink,
-        source_context,
-        &shutdown,
-        None,
-        matches!(
-            &command,
-            Command::ReorderSectionBefore { .. }
-                | Command::ReorderSectionAfter { .. }
-                | Command::DuplicateArrangementSection(_)
-                | Command::DuplicateArrangementSectionAt { .. }
-        ),
-    )?;
+    // Every section edit may run while playing: the callback's live handoff
+    // restarts audio at the cursor when history cannot carry over (#3784).
+    let position =
+        super::stopped_arrangement::acquire_position(sink, source_context, &shutdown, None, true)?;
     let result = session.section_snapshot(
         Some(command),
         false,
