@@ -352,13 +352,13 @@ pub(super) fn open_source_with_limits(
             IMPORT_FRAME_LIMIT
         };
         let decoded = decode_wav_file(media_path, Limits::new(IMPORT_FILE_LIMIT, source_limit))
-            .map_err(|error| error.to_string().to_lowercase())?;
+            .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
         if decoded.sample_rate() != asset.source_sample_rate()
             || u64::try_from(decoded.frames()).ok() != Some(asset.source_frames())
         {
             return Err(format!(
                 "media {} rate or frame count differs from project metadata",
-                asset.path().display()
+                hex_storage::text::verbatim(asset.path().display())
             ));
         }
         if let Some(expected) = asset.original_source() {
@@ -411,7 +411,12 @@ pub(super) fn open_source_with_limits(
                         )
                     },
                 )
-                .map_err(|e| format!("could not reopen {}: {e}", asset.path().display()))?;
+                .map_err(|e| {
+                    format!(
+                        "could not reopen {}: {e}",
+                        hex_storage::text::verbatim(asset.path().display())
+                    )
+                })?;
             remaining_frames = remaining_frames
                 .checked_sub(frames)
                 .ok_or("resident original frame allowance overflow")?;
@@ -455,7 +460,7 @@ pub(super) fn open_source_with_limits(
                     .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?,
             },
         )
-        .map_err(|error| error.to_string().to_lowercase())?;
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
         remaining_frames = remaining_frames
             .checked_sub(
                 prepared
@@ -518,7 +523,7 @@ pub(super) fn open_source_with_limits(
             current.overview_budget.clone(),
         )
     }
-    .map_err(|error| error.to_string().to_lowercase())?;
+    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     session.source_reservation = reservation
         .map(SourcePlanReservation::validate)
         .transpose()
@@ -641,7 +646,7 @@ pub(super) fn absolute_document_path(path: &Path) -> Result<PathBuf, String> {
     } else {
         std::env::current_dir()
             .map(|directory| directory.join(path))
-            .map_err(|error| error.to_string().to_lowercase())
+            .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
     }
 }
 
@@ -655,7 +660,7 @@ fn absolute_document_base(path: &Path) -> Result<PathBuf, String> {
     } else {
         std::env::current_dir()
             .map(|directory| directory.join(parent))
-            .map_err(|error| error.to_string().to_lowercase())
+            .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
     }
 }
 
@@ -701,7 +706,8 @@ pub(super) fn project_for_save(
             asset.path = base.join(&asset.path);
         }
     }
-    hex_project::Project::from_snapshot(snapshot).map_err(|error| error.to_string().to_lowercase())
+    hex_project::Project::from_snapshot(snapshot)
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
 }
 
 fn checkpoint_path(document: Option<&DocumentHandle>, untitled: &Path) -> Result<PathBuf, String> {

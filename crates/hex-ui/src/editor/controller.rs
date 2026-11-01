@@ -3045,9 +3045,9 @@ impl EditorView {
                 .playback
                 .as_ref()
                 .map(|playback| match playback.session_capability() {
-                    hex_engine::SessionCapability::Unavailable(error) => {
-                        Some(error.to_string().to_lowercase())
-                    }
+                    hex_engine::SessionCapability::Unavailable(error) => Some(
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+                    ),
                     _ => None,
                 });
         let mut stopped_restore_error = None;
