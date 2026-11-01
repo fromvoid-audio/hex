@@ -99,9 +99,45 @@ Ordering changes no required commands, configurations or qualification rules;
 quick/edit/custom probes remain partial. Preflight source/target checks still apply.
 
 `scripts/ci_plan.py` selects checks from both sides of changed Git paths, Cargo
-ownership and transitive normal/dev/build/optional/target dependencies. Rust,
-package manifests and package build scripts select owning packages and consumers,
-including reviewed runtime relationships such as opaque device state in storage.
+ownership and transitive normal/dev/build/optional/target dependencies.
+
+**Owner boundaries (policy since 1 November 2026).** A merge runs the test suites
+of the packages that own the changed source, in every configuration, plus reviewed
+runtime consumers with no Cargo edge (opaque device state in hex-storage). Every
+transitive Cargo consumer still compiles and lints, default and feature
+configurations, so an API break cannot reach main, but consumer suites are not
+rerun. The owner's boundary tests are what guarantee behaviour downstream. If a
+consumer later breaks, the defect is a missing owner boundary test: add it at the
+owner. Package manifests and build scripts can change how consumers build, so they
+keep the whole affected closure's suites.
+
+**Module scope.** Inside an owner, a changed `src/` file runs only the tests of
+its own Rust module subtree. The planner resolves `mod`/`#[path]` from the crate
+root and runs `cargo test … -- module::path::` in each of the owner's test
+configurations, including sharded ones via `test_shards.py --filter`. A module
+with no tests of its own selects its nearest ancestor module that has tests.
+The crate root, `include!`, non-`src/` inputs and manifests keep whole-crate
+tests. One configuration may hold none of a module's tests, so module-scoped
+steps are checked together: a merge whose changed modules pass no test fails
+with "changed modules ran no tests". Example targets (the device gallery) are
+skipped for module-scoped owners. Smaller, self-tested modules therefore mean
+faster merges; an untested module inherits its parent's often-large suite.
+
+Python tooling follows the same rule. A changed `scripts/NAME.py` (or
+`scripts/NAME`) runs its own `test_NAME` module, and a changed
+`scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
+Scripts without their own test module, config files and unknown inputs keep
+comprehensive discovery. Owner selections run through `scripts/python_shards.py`:
+one process per test from a shared work queue (up to 12 workers), which brings
+`test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
+
+**One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
+build phase, under 60 s. local-ci sums executed test steps (wall time minus the
+reported build phase; carried steps excluded) into `test_budget` in the summary
+and fails the run when the sum exceeds the limit. The fix is to narrow the owner
+boundary, split the change, or speed up the slowest suite. While a known-slow
+owner suite is being fixed, pass `--over-budget-reason "Pulse #N …"`. The reason
+is recorded in the summary and the run may qualify.
 Mixed tooling/Rust changes combine comprehensive Python checks with affected Rust
 configurations. Contributor prose, including AGENTS.md, gets link/path checks;
 executable selector/runner policy gets comprehensive tooling tests and guards.
@@ -132,9 +168,9 @@ Packages whose only extra feature is reviewed as additive for tests (see
 `ADDITIVE_TEST_FEATURES` in `scripts/ci_plan.py`) run their tests once with the
 feature and keep a separate doctest run; default-feature Clippy still applies.
 
-Package plans retain default tests/lints, applicable allocation/UI/export feature
-configurations, gallery and desktop build checks, and independently declared
-additional features. Feature combinations need reviewed contract rules; individual
+Package plans run the owners' default tests and applicable allocation/UI/export
+feature tests, and lint every consumer in each of those configurations. The
+desktop build runs when hex-desktop owns the change. Feature combinations need reviewed contract rules; individual
 feature runs do not prove all combinations. Global manifests/lockfiles, toolchain,
 vendor, unowned resources and unknown inputs conservatively select the comprehensive
 audit with explicit input reasons. Review unknown effects rather than assuming
