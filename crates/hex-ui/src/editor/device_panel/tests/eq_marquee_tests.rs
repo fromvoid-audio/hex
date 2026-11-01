@@ -1,4 +1,4 @@
-//! Marquee selection and group move/delete through the real eq graph and worker.
+//! Shift marquee selection and group move/delete through the real eq graph and worker.
 use super::*;
 
 const SHIFT: Modifiers = Modifiers {
@@ -7,6 +7,10 @@ const SHIFT: Modifiers = Modifiers {
     shift: true,
     platform: false,
     function: false,
+};
+const SHIFT_CMD: Modifiers = Modifiers {
+    platform: true,
+    ..SHIFT
 };
 const NODE_X: [f32; 3] = [0.3, 0.45, 0.8];
 
@@ -65,42 +69,24 @@ fn group(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, device: Dev
 }
 
 #[gpui::test]
-fn eq_marquee_selects_nodes_shift_adds_and_group_delete_undoes_in_one_step(
+fn eq_shift_marquee_selects_nodes_shift_cmd_toggles_and_group_delete_undoes_in_one_step(
     cx: &mut TestAppContext,
 ) {
     let (handle, editor, _root, device, before) = three_nodes(cx);
     let ids: Vec<u32> = before.nodes.iter().map(|node| node.id.value()).collect();
     let mut visual = VisualTestContext::from_window(handle, cx);
-    marquee(
-        &mut visual,
-        device,
-        [0.5, 0.7],
-        [0.25, 0.3],
-        Modifiers::default(),
-    );
+    marquee(&mut visual, device, [0.5, 0.7], [0.25, 0.3], SHIFT);
     assert_eq!(group(&editor, cx, device), ids[..2]);
     editor.read_with(cx, |view, _| {
         assert_eq!(read(view, device), before, "selection authors nothing");
         assert!(settled(view));
     });
-    marquee(&mut visual, device, [0.75, 0.7], [0.85, 0.3], SHIFT);
+    marquee(&mut visual, device, [0.75, 0.7], [0.85, 0.3], SHIFT_CMD);
     assert_eq!(group(&editor, cx, device), ids);
-    // A plain marquee over the third node replaces the group with one node.
-    marquee(
-        &mut visual,
-        device,
-        [0.75, 0.7],
-        [0.85, 0.3],
-        Modifiers::default(),
-    );
+    // A Shift marquee over the third node replaces the group with one node.
+    marquee(&mut visual, device, [0.75, 0.7], [0.85, 0.3], SHIFT);
     assert!(group(&editor, cx, device).is_empty());
-    marquee(
-        &mut visual,
-        device,
-        [0.25, 0.7],
-        [0.5, 0.3],
-        Modifiers::default(),
-    );
+    marquee(&mut visual, device, [0.25, 0.7], [0.5, 0.3], SHIFT);
     visual.simulate_keystrokes("backspace");
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device).nodes.len() == 1
@@ -118,13 +104,7 @@ fn eq_marquee_selects_nodes_shift_adds_and_group_delete_undoes_in_one_step(
 fn eq_group_drag_moves_every_selected_node_and_undoes_in_one_step(cx: &mut TestAppContext) {
     let (handle, editor, _root, device, before) = three_nodes(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
-    marquee(
-        &mut visual,
-        device,
-        [0.25, 0.7],
-        [0.5, 0.3],
-        Modifiers::default(),
-    );
+    marquee(&mut visual, device, [0.25, 0.7], [0.5, 0.3], SHIFT);
     assert_eq!(group(&editor, cx, device).len(), 2);
     let start = plot(&mut visual, device, NODE_X[0], 0.5);
     let end = plot(&mut visual, device, NODE_X[0] + 0.05, 0.65);
@@ -157,4 +137,24 @@ fn eq_group_drag_moves_every_selected_node_and_undoes_in_one_step(cx: &mut TestA
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device) == before
     });
+}
+
+#[gpui::test]
+fn eq_plain_blank_drag_adds_a_node_instead_of_a_marquee(cx: &mut TestAppContext) {
+    let (handle, editor, _root, device, before) = three_nodes(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    marquee(
+        &mut visual,
+        device,
+        [0.6, 0.8],
+        [0.25, 0.3],
+        Modifiers::default(),
+    );
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device).nodes.len() == before.nodes.len() + 1
+    });
+    assert!(
+        group(&editor, cx, device).is_empty(),
+        "a plain blank drag never draws a selection band"
+    );
 }

@@ -432,7 +432,7 @@ pub(super) fn render_body(
         );
     } else {
         bottom = bottom.child(theme::text(
-            "click to add a node · option-drag to place and shape · drag to select",
+            "click to add a node · option-drag to place and shape · shift-drag to select",
         ));
     }
     let body = bottom;
