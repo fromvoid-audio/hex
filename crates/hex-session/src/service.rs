@@ -7014,12 +7014,19 @@ fn run_worker(
                 unsaved,
                 revision != revision_before_request,
             );
-            if let Err(reason) = journal_result {
-                let message = format!("automatic recovery: {reason}");
-                error = Some(match error {
-                    Some(existing) => format!("{existing}; {message}"),
-                    None => message,
-                });
+            match journal_result {
+                Ok(Some(_)) => {
+                    status =
+                        Some("previous recovery journal preserved beside its original slot".into());
+                }
+                Ok(None) => {}
+                Err(reason) => {
+                    let message = format!("automatic recovery: {reason}");
+                    error = Some(match error {
+                        Some(existing) => format!("{existing}; {message}"),
+                        None => message,
+                    });
+                }
             }
         }
         if let Some(preview) = resident_preview.as_ref() {

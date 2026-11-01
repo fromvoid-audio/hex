@@ -10,6 +10,9 @@
 //! foreign plugins. Preparation is control work; processing borrows validated inputs and must
 //! remain bounded and allocation-free.
 mod parameter_binding;
+mod response;
+
+pub use response::{NativeResponseError, native_effect_frequency_response};
 
 pub mod auto_pan;
 pub mod compressor;
