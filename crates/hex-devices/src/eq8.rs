@@ -891,14 +891,17 @@ impl NativeProcessorRuntime for Eq8Runtime {
             .downcast_ref::<Self>()
             .is_some_and(|previous| self.sample_rate == previous.sample_rate)
     }
+    /// A channel-mode change retargets through `ModeFade` instead of a reset,
+    /// so session playback keeps one chain rather than detaching the old
+    /// suffix as a ringing tail beside a fresh EQ. Within one mode, the
+    /// enabled-band set must still match.
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
             .as_any()
             .downcast_ref::<Self>()
             .is_some_and(|previous| {
                 self.sample_rate == previous.sample_rate
-                    && self.mode == previous.mode
-                    && self.enabled_bands == previous.enabled_bands
+                    && (self.mode != previous.mode || self.enabled_bands == previous.enabled_bands)
             })
     }
     fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {

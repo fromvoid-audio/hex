@@ -721,7 +721,8 @@ fn audition_history_crossfades_copies_and_partitions_with_live_coefficients() {
 }
 
 #[test]
-fn parameter_retarget_accepts_filter_edits_but_requires_same_rate_mode_and_enabled_topology() {
+fn parameter_retarget_accepts_filter_edits_and_mode_crossfades_but_requires_same_rate_and_enabled_topology()
+ {
     let mut state = EQ8_DEFINITION.default_state().unwrap();
     state = EQ8_DEFINITION
         .patch_parameter(&state, parameter::enabled(0, 1), ParameterValue::Bool(true))
@@ -754,7 +755,8 @@ fn parameter_retarget_accepts_filter_edits_but_requires_same_rate_mode_and_enabl
     let mode_candidate = PreparedEq8::new(decode(&mode_changed).unwrap(), 48_000)
         .unwrap()
         .runtime();
-    assert!(!mode_candidate.can_retarget_parameters_from(&source));
+    // A mode change retargets through the ModeFade crossfade (Pulse #4106).
+    assert!(mode_candidate.can_retarget_parameters_from(&source));
 
     let enabled_changed = EQ8_DEFINITION
         .patch_parameter(
