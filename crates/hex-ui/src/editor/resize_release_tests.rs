@@ -1781,7 +1781,7 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
                 gpui::Hsla::from(gpui::rgb(if clip_selected {
                     crate::theme::color(crate::theme::PaletteRole::Primary)
                 } else {
-                    0x000000
+                    crate::theme::color(crate::theme::PaletteRole::ClipOutline)
                 }))
             );
             // A captured source never adopts whole-lane drop styling while
