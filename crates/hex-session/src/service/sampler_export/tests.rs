@@ -347,7 +347,7 @@ fn terminal_reclaims_on_idle_control_without_ui_export_polling() {
     let files = Files::new(false);
     let service = Service::with_native_reservation(16000, 16, 1024, reservation()).unwrap();
     event(&service);
-    let worker_id = service._worker.thread().id();
+    let worker_id = service.worker.as_ref().unwrap().thread().id();
     let (_observer, dropped) =
         hex_engine::native_device_resources::control_drop_probe::observe(worker_id);
     assign(&service, files.source.clone());
@@ -376,7 +376,7 @@ fn dropping_service_is_prompt_and_joined_control_reclaims_blocked_export_source(
     let files = Files::new(false);
     let service = Service::with_native_reservation(16000, 16, 1024, reservation()).unwrap();
     event(&service);
-    let worker_id = service._worker.thread().id();
+    let worker_id = service.worker.as_ref().unwrap().thread().id();
     let (_observer, dropped) =
         hex_engine::native_device_resources::control_drop_probe::observe(worker_id);
     assign(&service, files.source.clone());
