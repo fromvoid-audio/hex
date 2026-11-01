@@ -65,6 +65,8 @@ impl StreamPlayback<'_> {
                 sampler_console: false,
                 route_state_generation: r.session_route_state_generation(),
                 route_count: r.session_route_count(),
+                main_output_latency_frames: r.main_output_latency_frames(),
+                content_loop: r.automation_capture_loop(),
             }),
         }
     }
