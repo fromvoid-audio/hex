@@ -2779,6 +2779,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-sandbox"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "hex-engine",
+ "hex-preferences",
+ "hex-project",
+ "hex-widgets",
+]
+
+[[package]]
 name = "hex-session"
 version = "0.1.0"
 dependencies = [
