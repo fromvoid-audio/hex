@@ -31,15 +31,15 @@ impl WorkerAudioSink for FenceSink {
         _: hex_engine::AudioSourceContext,
         allow_playing: bool,
     ) -> Result<(), String> {
-        assert!(!allow_playing);
-        if self.playing.load(Ordering::Acquire) {
-            Err("stop playback before bouncing in place".into())
-        } else {
-            Ok(())
-        }
+        assert!(allow_playing, "in-place bounces never ask for Stop");
+        Ok(())
     }
     fn section_edit_ready(&mut self) -> Option<Result<ArrangementEditPosition, String>> {
-        Some(ArrangementEditPosition::from_frames(1, false, None))
+        Some(ArrangementEditPosition::from_frames(
+            1,
+            self.playing.load(Ordering::Acquire),
+            None,
+        ))
     }
     #[allow(clippy::too_many_arguments, clippy::result_large_err)]
     fn publish_resident(
@@ -53,8 +53,16 @@ impl WorkerAudioSink for FenceSink {
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
-            assert_eq!(playback.position(), 1, "keep the exact stopped cursor");
-            assert!(!playback.playing());
+            if self.playing.load(Ordering::Acquire) {
+                assert!(
+                    playback.live_restart_requested(),
+                    "a playing bake restarts at the cursor, never carries tails"
+                );
+            } else {
+                assert_eq!(playback.position(), 1, "keep the exact stopped cursor");
+                assert!(!playback.playing());
+                assert!(!playback.live_restart_requested());
+            }
         }
         self.inner.publish_resident(
             playback,
@@ -107,7 +115,7 @@ fn arrangement_bounce_publication_case(whole_track: bool) {
     let receive = || {
         service
             .events
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(crate::test_wait::HANG_BOUND)
             .unwrap()
     };
     let _ = receive();
@@ -169,12 +177,12 @@ fn arrangement_bounce_publication_case(whole_track: bool) {
         None
     };
     let revision = original.state.revision;
+    // The accepted bake runs while playing (Pulse #3784).
     for (stale, refuse, cancel, active) in [
         (true, false, false, false),
         (false, true, false, false),
         (false, false, true, false),
         (false, false, false, true),
-        (false, false, false, false),
     ] {
         playing.store(active, Ordering::Release);
         observed.refuse.store(refuse, Ordering::Release);
@@ -195,7 +203,7 @@ fn arrangement_bounce_publication_case(whole_track: bool) {
         let event = receive();
         assert!(event.bounce_complete.as_ref().unwrap().same_job(&control));
         assert!(event.playback.is_none(), "native custody stays out of UI");
-        if stale || refuse || cancel || active {
+        if stale || refuse || cancel {
             assert!(event.error.is_some());
             assert_eq!(event.state.project, original.state.project);
             assert_eq!(event.state.revision, revision);
@@ -230,11 +238,6 @@ fn arrangement_bounce_publication_case(whole_track: bool) {
         observed.publications.lock().unwrap().last().unwrap().1,
         ResidentPublicationPolicy::ArrangementEdit
     ));
-    playing.store(true, Ordering::Release);
-    service.submit(Request::Undo).unwrap();
-    let refused = receive();
-    assert!(refused.error.is_some());
-    assert!(refused.state.project.clip(clip).is_none());
     playing.store(false, Ordering::Release);
     service.submit(Request::Undo).unwrap();
     let undo = receive();
@@ -252,11 +255,6 @@ fn arrangement_bounce_publication_case(whole_track: bool) {
         ResidentPublicationPolicy::ArrangementEdit
     ));
     playing.store(true, Ordering::Release);
-    service.submit(Request::Redo).unwrap();
-    let refused = receive();
-    assert!(refused.error.is_some());
-    assert!(refused.state.project.clip(clip).is_some());
-    playing.store(false, Ordering::Release);
     service.submit(Request::Redo).unwrap();
     let redo = receive();
     assert!(redo.error.is_none(), "{:?}", redo.error);

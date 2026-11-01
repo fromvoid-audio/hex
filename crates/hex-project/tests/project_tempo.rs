@@ -563,3 +563,84 @@ fn retained_warped_sections_follow_global_tempo_with_atomic_preparation_and_hist
     assert_eq!(plain.project(), &before);
     assert!(plain.can_redo());
 }
+
+#[test]
+fn both_tempo_edits_keep_the_loop_brace_on_its_beats_and_undo_restores_it() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let frames = |editor: &Editor, n| editor.project().tempo_map().beat_to_frame(beat(n)).unwrap();
+    // A four-bar brace from bar 2 at the default 120 bpm.
+    let (start, end) = (frames(&editor, 4), frames(&editor, 20));
+    editor
+        .execute(Command::SetLoopRegion {
+            start,
+            end,
+            enabled: true,
+        })
+        .unwrap();
+    let original = editor.project().loop_region().unwrap();
+    for command in [
+        Command::SetProjectTempo { tempo: bpm(90) },
+        Command::SetTempoPoint {
+            beat: beat(2),
+            tempo: bpm(60),
+        },
+    ] {
+        let before = editor.project().loop_region().unwrap();
+        editor.execute(command).unwrap();
+        let region = editor.project().loop_region().unwrap();
+        let map = editor.project().tempo_map();
+        assert_eq!(map.frame_to_beat(region.start()).unwrap(), beat(4));
+        assert_eq!(map.frame_to_beat(region.end()).unwrap(), beat(20));
+        assert_eq!(region.start(), frames(&editor, 4));
+        assert_eq!(region.end(), frames(&editor, 20));
+        assert!(region.enabled());
+        assert_ne!(region, before, "the tempo edit moved the brace's frames");
+    }
+    let retimed = editor.project().loop_region();
+    assert!(editor.undo());
+    assert!(editor.undo());
+    assert_eq!(editor.project().loop_region(), Some(original));
+    assert!(editor.redo());
+    assert!(editor.redo());
+    assert_eq!(editor.project().loop_region(), retimed);
+}
+
+#[test]
+fn tempo_point_keeps_unwarped_audio_and_midi_at_the_same_beat_together() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let at_beat_eight = editor.project().tempo_map().beat_to_frame(beat(8)).unwrap();
+    let clip = audio(&mut editor, at_beat_eight, None);
+    audio(&mut editor, 0, None);
+    let midi_track = editor.project().tracks()[1].id();
+    let Created::Clip(midi) = editor
+        .execute(Command::PlaceMidiClip {
+            track: midi_track,
+            start: beat(8),
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("midi clip")
+    };
+    let before = editor.project().clone();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: beat(2),
+            tempo: bpm(60),
+        })
+        .unwrap();
+    let changed = editor.project();
+    let midi_start = changed
+        .tempo_map()
+        .beat_to_frame(changed.midi_clip(midi).unwrap().start())
+        .unwrap();
+    // Two beats at 120 bpm, then six beats at 60 bpm.
+    assert_eq!(midi_start, 24_000 * 2 + 48_000 * 6);
+    assert_eq!(changed.clip(clip).unwrap().start(), midi_start);
+    assert_eq!(
+        changed.clip(clip).unwrap().asset(),
+        before.clip(clip).unwrap().asset()
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+}

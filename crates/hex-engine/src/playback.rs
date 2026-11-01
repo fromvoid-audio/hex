@@ -395,6 +395,21 @@ impl Playback {
             .iter()
             .flat_map(|runtime| runtime.device_resource_leases())
     }
+    /// Control-side, before publication: a live handoff restarts this candidate
+    /// at the cursor instead of inheriting voices and tails. Returns false when
+    /// there is no Session runtime to restart.
+    pub fn request_live_restart(&mut self) -> bool {
+        self.session_runtime
+            .as_mut()
+            .map(|runtime| runtime.request_live_restart())
+            .is_some()
+    }
+    /// Whether `request_live_restart` applies to this candidate's live handoff.
+    pub fn live_restart_requested(&self) -> bool {
+        self.session_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.live_restart_requested())
+    }
     /// Existing Session runtime-buffer accounting on control, excluding immutable prepared graph,
     /// source PCM and factory backing. This is the same bounded host/DSP inventory used by preroll;
     /// it is not whole-graph DATA identity or native constructor provenance.

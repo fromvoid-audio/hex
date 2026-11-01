@@ -1022,7 +1022,7 @@ impl NumericControl {
             if self.marked.is_some() {
                 return;
             }
-            if let Ok(current) = self.spec.parse(&self.text)
+            if let Ok(current) = self.spec.parse_with_current(&self.text, Some(self.value))
                 && let Ok(value) = self.spec.step(current, direction, fine)
                 && let Ok(text) = self.spec.format(value)
             {
@@ -1115,7 +1115,7 @@ impl NumericControl {
         if !self.editing {
             return;
         }
-        match self.spec.parse(&self.text) {
+        match self.spec.parse_with_current(&self.text, Some(self.value)) {
             Ok(value) => {
                 let old = self.value;
                 if old != value {
@@ -1260,7 +1260,7 @@ impl NumericControl {
         if !self.text_modified && self.text == self.spec.format(self.value)? {
             Ok(self.value)
         } else {
-            self.spec.parse(&self.text)
+            self.spec.parse_with_current(&self.text, Some(self.value))
         }
     }
 
