@@ -10,7 +10,7 @@ ui-test-support = ["gpui/test-support"]
 
 [dependencies]
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
-hex-engine = { path = "../hex-engine" }
+hex-devices = { path = "../hex-devices" }
 hex-preferences = { path = "../hex-preferences" }
 hex-project = { path = "../hex-project" }
 hex-widgets = { path = "../hex-widgets" }
