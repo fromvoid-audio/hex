@@ -240,14 +240,14 @@ fn native_asset_import_model_id_exhaustion_preserves_custody_and_history() {
 fn native_asset_import_service_returns_actual_id_and_canceled_request_preserves_revision() {
     use crate::service::{Event, Request, Service};
     fn event(service: &Service) -> Event {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
         loop {
             match service.try_event() {
                 Ok(event) => return event,
                 Err(std::sync::mpsc::TryRecvError::Empty)
                     if std::time::Instant::now() < deadline =>
                 {
-                    std::thread::yield_now()
+                    crate::test_wait::pause()
                 }
                 Err(reason) => panic!("worker event: {reason}"),
             }
