@@ -2880,7 +2880,10 @@ impl EditorView {
             if let Some(intent) = group_copy_intent
                 && intent.is_current(self)
             {
-                self.select_copied_group(first, last, intent.count);
+                let count = self.state.as_ref().map_or(0, |state| {
+                    intent.expected_count(&state.project, first, last)
+                });
+                self.select_copied_group(first, last, count);
             }
         } else if let Some(hex_project::Created::Track(track)) = event.created {
             self.focused_return = None;

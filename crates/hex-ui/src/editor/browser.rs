@@ -431,7 +431,7 @@ fn browser_audio_drag_ghost(
         .border_1()
         .border_l(px(stroke))
         .border_r(px(0.0))
-        .border_color(rgb(0x000000))
+        .border_color(rgb(theme::color(theme::PaletteRole::ClipOutline)))
         .bg(rgb(theme::color(theme::PaletteRole::ClipFill)));
     if let Some((lines, start, end)) = grid {
         ghost = ghost.children(super::tracks::aligned_clip_grid_layer(
@@ -470,8 +470,17 @@ fn browser_audio_drag_ghost(
             .child(theme::text(payload.label.clone()))
             .child(theme::text(status)),
     );
-    super::tracks::pixel_boundary_shell(ghost, left, top, width, height, stroke, 0x000000, true)
-        .opacity(0.9)
+    super::tracks::pixel_boundary_shell(
+        ghost,
+        left,
+        top,
+        width,
+        height,
+        stroke,
+        theme::color(theme::PaletteRole::ClipOutline),
+        true,
+    )
+    .opacity(0.9)
 }
 
 fn browser_audio_drag_ghost_position(pointer: (f32, f32)) -> (f32, f32) {
