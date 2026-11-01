@@ -109,6 +109,7 @@ impl Channel {
                         b"HXVIQF02",
                         b"HXVIRR02",
                         b"HXVICS01",
+                        &protocol::CAPTURE_REFUSAL_MAGIC,
                         b"HXVIFL01",
                         b"HXVIGE01",
                         b"HXVIMD01",

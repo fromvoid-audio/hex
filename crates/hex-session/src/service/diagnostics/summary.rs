@@ -762,6 +762,9 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("import_device_asset_replacing_instrument"; ["track" => track.value(), "device" => device.value(), "expected_state_type" => expected_state.type_id().as_str(), "expected_state_state_version" => expected_state.state_version(), "expected_state_payload_bytes" => expected_state.payload().len(), "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
         }
+        Command::RelinkAssets(relinks) => {
+            describe!("relink_assets"; ["count" => relinks.len()]; omitted="paths")
+        }
         Command::RemoveAsset(value0) => {
             describe!("remove_asset"; ["value0" => value0.value()]; omitted="")
         }
@@ -1474,6 +1477,9 @@ pub(super) fn request(value: &Request) -> Description {
             value,
         } => {
             describe!("set_device_parameter"; ["device" => device.value(), "parameter" => parameter.value(), "value" => Parameter(value)]; omitted="")
+        }
+        Request::RelinkMedia(relinks) => {
+            describe!("relink_media"; ["count" => relinks.len()]; omitted="paths")
         }
         Request::Import(value0) => {
             describe!("import"; ["value0_redacted_bytes" => value0.as_os_str().len()]; omitted="")

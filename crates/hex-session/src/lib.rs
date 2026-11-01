@@ -39,6 +39,7 @@ mod source_overview;
 #[cfg(feature = "source-overview-test-support")]
 pub use source_overview::test_support as source_overview_test_support;
 pub use source_overview::{OriginalSourceOverview, OriginalSourceOverviews, SourceOverviewUsage};
+mod media_relink;
 mod resident_pcm;
 pub use native_assets::ResidentNativeReservation;
 mod verified_import;
@@ -548,7 +549,8 @@ impl Session {
             source_overviews = source_overviews.inserted(&overview_budget, id, overview)?;
         }
         device_comparison::validate_project(&project)?;
-        let asset_count = project.assets().count();
+        // Offline assets (missing at open) intentionally have no media.
+        let asset_count = project.assets().count() - project.offline_assets().count();
         let editor = Editor::new(project, history_capacity)?;
         if prepared_assets
             .len()
@@ -2081,6 +2083,8 @@ fn prepare_with_waveforms_using(
 
 #[cfg(test)]
 mod audio_edit_tests;
+#[cfg(test)]
+pub(crate) mod test_wait;
 
 fn tuning_prepared_transition(
     prepared: hex_engine::PreparedRevision,

@@ -345,6 +345,9 @@ impl SessionPlayback {
         mut demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         live: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if live && self.live_restart && self.candidate_admission_open {
+            return self.inherit_state_planned_once(previous, None, demand, true);
+        }
         match self.inherit_state_planned_once(previous, groups, demand.as_deref_mut(), false) {
             // An open admission proves the refusal came from the pure
             // preflight: neither runtime changed, so the reset handoff may
@@ -593,6 +596,16 @@ impl SessionPlayback {
         // Apply the interactive seek law at the kept cursor (device chains,
         // tails, compensation and mutable voices start empty) instead of
         // refusing every later revision until Stop.
+        //
+        // Private sampler scopes never reach this as a live edit (Pulse
+        // #3792). A `resource_scope` revision comes only from
+        // `ControlSamplerSources` (offline export and non-resident service
+        // snapshots). Every ordinary interactive constructor refuses it, and
+        // the resident desktop sampler carries only `device_resource_scope`.
+        // Only the CURRENT console runtime accepts it, and that runtime
+        // refuses every live handoff before planning. Its closed-stream
+        // demand preview may still plan here, so the exclusion keeps that
+        // preview a refusal like its commit.
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();

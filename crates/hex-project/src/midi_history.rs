@@ -1054,7 +1054,11 @@ fn same_shell(
         main_devices,
         tempo_map,
         meter_map,
+        offline_assets,
     } = a;
+    if offline_assets != &b.offline_assets {
+        return false;
+    }
     let death = match kind {
         Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => Some(clip),
         _ => None,

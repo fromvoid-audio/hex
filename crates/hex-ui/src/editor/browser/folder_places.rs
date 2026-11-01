@@ -113,3 +113,102 @@ impl EditorView {
         .detach();
     }
 }
+
+impl EditorView {
+    /// Custom places can be pointed at a moved folder; Home and Music are fixed.
+    pub(in crate::editor) fn browser_place_relocatable(&self, path: &std::path::Path) -> bool {
+        !self.browser.preferences_loading
+            && self.browser.preferences_writable
+            && self.browser.places.iter().any(|place| place == path)
+            && path != self.browser.home
+            && path != self.browser.music
+    }
+
+    /// Reported by the last completed sample scan; no per-frame filesystem checks.
+    pub(super) fn browser_place_missing(&self, path: &std::path::Path) -> bool {
+        self.browser.samples.missing_roots.contains(path)
+    }
+
+    pub(in crate::editor) fn prompt_relocate_browser_place(
+        &mut self,
+        old: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.browser_place_relocatable(&old) {
+            return;
+        }
+        let response = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("relocate place".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            let picked = response.await;
+            let _ = this.update(cx, |view, cx| {
+                match picked {
+                    Ok(Ok(Some(mut paths))) => {
+                        if let Some(new) = paths.pop() {
+                            view.relocate_browser_place(old, new, cx);
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        view.error = Some(
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string(),
+                            )
+                            .into(),
+                        )
+                    }
+                    _ => {}
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Point a place at its moved folder in place: list position, icon and hidden
+    /// state follow it, cataloged records are re-keyed by relative path, and a
+    /// rescan confirms the new folder. Sample files are never touched.
+    pub(in crate::editor) fn relocate_browser_place(
+        &mut self,
+        old: PathBuf,
+        new: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.browser_place_relocatable(&old) || old == new {
+            return;
+        }
+        if self.browser.places.contains(&new)
+            || new == self.browser.home
+            || new == self.browser.music
+        {
+            self.browser.places_status = Some("folder is already a place".into());
+            cx.notify();
+            return;
+        }
+        let Some(index) = self.browser.places.iter().position(|place| *place == old) else {
+            return;
+        };
+        if let Err(error) = self.browser.source_preferences.relocate(&old, new.clone()) {
+            self.browser.places_status = Some(places_error("could not relocate place", &error));
+            cx.notify();
+            return;
+        }
+        self.browser.places[index] = new.clone();
+        if let Some(icon) = self.browser.place_icons.remove(&old) {
+            self.browser.place_icons.insert(new.clone(), icon);
+        }
+        let mut catalog = self.browser.samples.catalog.clone();
+        catalog.relocate_root(&old, &new);
+        self.browser.samples.replace(catalog);
+        self.browser.samples.missing_roots.remove(&old);
+        if self.browser.section == BrowserSection::Place(old) {
+            self.select_browser_source(BrowserSection::Place(new), cx);
+        }
+        self.queue_browser_places_save(cx);
+        self.refresh_sample_catalog(cx);
+        cx.notify();
+    }
+}
