@@ -375,8 +375,8 @@ fn inharmonic_energy_db(output: &[StereoFrame], hz: f64, rate: u32) -> f64 {
     }
     10.0 * (inharmonic / fundamental).log10()
 }
-/// Pulse #3958: a 7 kHz sine at full drive and 48 kHz keeps every
-/// summed non-harmonic energy below -60 db relative to the fundamental.
+/// Pulse #3958: a 7 kHz sine at full drive and 48 kHz keeps summed
+/// non-harmonic energy below -60 db relative to the fundamental.
 #[test]
 fn full_drive_7khz_sine_aliasing_stays_below_minus_60_db() {
     let rate = 48_000;
