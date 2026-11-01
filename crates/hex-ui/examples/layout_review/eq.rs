@@ -135,7 +135,7 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
 }
 
 pub(super) fn model(fixture: &Fixture, cx: &gpui::App) -> Option<ResponseGraphModel> {
-    use hex_engine::eq::{EqState, Node, NodeId, NodeKind};
+    use hex_devices::eq::{EqState, Node, NodeId, NodeKind};
     let value = |i: usize| fixture.numbers[i].entity.read(cx).value() as f32;
     let mut state = EqState {
         mode: fixture.selectors[0].read(cx).selected() as u8,
@@ -173,7 +173,7 @@ pub(super) fn model(fixture: &Fixture, cx: &gpui::App) -> Option<ResponseGraphMo
         .map(|i| 20.0 * (1000.0_f32.ln() * i as f32 / 95.0).exp())
         .collect();
     let Ok(Some(response)) =
-        hex_engine::native_effect_frequency_response(&authored, 48000, &frequencies)
+        hex_devices::native_effect_frequency_response(&authored, 48000, &frequencies)
     else {
         return None;
     };
