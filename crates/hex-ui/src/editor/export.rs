@@ -230,7 +230,7 @@ impl EditorView {
                 self.export_pending = false;
                 self.export_control = None;
                 // Native message bodies preserve case-sensitive recovery paths;
-                // status chrome normalizes app text through theme::text.
+                // status chrome and the prompt normalize app text through theme::text.
                 let recovery_message = match &event.result {
                     Ok(report) => report.recovery_path.as_ref().map(|path| {
                         format!(
@@ -246,7 +246,7 @@ impl EditorView {
                         window.prompt(
                             PromptLevel::Info,
                             "export result",
-                            Some(&message),
+                            Some(&crate::theme::text(&message)),
                             &[PromptButton::new("ok")],
                             cx,
                         )

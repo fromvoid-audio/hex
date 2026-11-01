@@ -72,7 +72,7 @@ impl DisplayError {
             Some(failure) => format!(
                 "{}{}{}",
                 theme::text(format!("audio batch refused at file {} · ", failure.member)),
-                hex_session::service::text::verbatim(failure.path.display()),
+                failure.path.display(),
                 theme::text(format!(": {}", failure.explanation)),
             )
             .into(),
@@ -119,7 +119,7 @@ impl RecoveryTooltip {
             detail.push_str(&format!(
                 "{}{}",
                 theme::text(" · previous journal preserved at "),
-                hex_session::service::text::verbatim(preserved.display())
+                preserved.display()
             ));
         }
         detail.into()
