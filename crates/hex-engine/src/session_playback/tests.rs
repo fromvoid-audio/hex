@@ -4226,6 +4226,60 @@ fn live_handoff_restarts_an_unproven_chase_while_playing_or_paused() {
     }
 }
 
+/// In-place bounces (Pulse #3784) bake an instrument's output into PCM, so a
+/// live handoff must not carry that instrument's release tail on top of it.
+/// A requested restart starts empty at the cursor; ordinary inheritance keeps
+/// the removed note's tail.
+#[test]
+fn requested_live_restart_drops_a_removed_note_release_tail() {
+    use hex_project::{Command, Editor};
+
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 64,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let revision = |project: &hex_project::Project| {
+        revision_with_instrument_registry(project, Arc::clone(&table), &registry)
+    };
+    let mut editor =
+        Editor::new(with_test_instrument(&project(1.0, 0, 8 << 32), id, 0), 8).unwrap();
+    let note = editor.project().tracks()[0].midi_clips()[0].notes()[0].id();
+    let sounding = revision(editor.project());
+    editor.execute(Command::RemoveMidiNote(note)).unwrap();
+    let removed = revision(editor.project());
+    let handoff = |restart: bool| {
+        let mut playback = SessionPlayback::new(Arc::clone(&sounding)).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut [[0.0; 2]; 8]).unwrap();
+        let frame = playback.performance_frame();
+        let mut candidate = SessionPlayback::new(Arc::clone(&removed)).unwrap();
+        if restart {
+            candidate.request_live_restart();
+        }
+        assert_eq!(candidate.live_restart_requested(), restart);
+        candidate
+            .try_inherit_state_live_from(&mut playback)
+            .unwrap();
+        assert!(candidate.playing());
+        assert_eq!(candidate.performance_frame(), frame);
+        let mut pcm = [[0.0; 2]; 64];
+        candidate.render(&mut pcm).unwrap();
+        pcm
+    };
+    assert!(
+        handoff(false).iter().flatten().any(|sample| *sample != 0.0),
+        "ordinary inheritance keeps the removed note's tail"
+    );
+    assert_eq!(handoff(true), [[0.0; 2]; 64], "restart carries no tail");
+}
+
 #[test]
 fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
     use hex_lattice_contract::NativeDeviceMetadata as _;
