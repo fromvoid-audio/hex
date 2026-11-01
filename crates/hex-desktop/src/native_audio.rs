@@ -293,7 +293,13 @@ impl NativeAudioSink {
         }
     }
     fn deliver_open(&mut self) {
-        if self.sampler_blocks_client() {
+        if self.sampler_blocks_client()
+            || matches!(
+                self.pending_open_event,
+                Some(EditorAudioEvent::OutputReleased { .. })
+            )
+        {
+            // The release must reach the UI before the next open result.
             return;
         }
         let Some(snapshot) = self.desired.as_ref() else {
@@ -1240,7 +1246,16 @@ impl WorkerAudioSink for NativeAudioSink {
             if source.audio_mode() == DocumentAudioMode::VerifiedStreaming {
                 self.resident.discard_obsolete_pending(source.context());
             }
+            let old_output_identity = self.output_identity;
             self.relinquish_output();
+            if let Some(old_output_identity) = old_output_identity {
+                // The UI may hold this endpoint across the replacement; it must
+                // close it before a fresh output can take the lease.
+                self.pending_open_event = Some(EditorAudioEvent::OutputReleased {
+                    project_generation: generation,
+                    old_output_identity,
+                });
+            }
             self.request_open(Some(source.sample_rate()), None);
         }
         if previous != Some(generation) {
