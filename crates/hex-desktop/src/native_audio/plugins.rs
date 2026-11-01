@@ -195,6 +195,25 @@ impl Plugins {
         self.sources.clear();
         self.pool_held = false;
     }
+    /// No plugin insertion, restore, edit or reopen depends on the current
+    /// project, so its output may be kept for the next project.
+    pub fn rebind_ready(&self) -> bool {
+        self.pending.is_none()
+            && self.restore.is_none()
+            && self.reopen.is_none()
+            && self.edit.is_none()
+    }
+    /// The output stays open (and configured) for `generation`: retire every
+    /// source of another project through the ordinary Root return checks in
+    /// [`Self::poll`], so the old project's VST3 instances do not linger.
+    pub fn project_replaced(&mut self, generation: u64) {
+        for source in &mut self.sources {
+            if source.project_generation != generation {
+                source.accepted = false;
+                source.retiring = true;
+            }
+        }
+    }
     pub fn output_closed(&mut self) {
         self.configured = false;
         if let Some(restore) = self.restore.as_mut() {

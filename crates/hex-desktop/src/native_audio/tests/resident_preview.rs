@@ -310,6 +310,12 @@ pub(super) struct ResidentHarness {
     constructor_submitted: Option<(u64, AudioSourceContext)>,
     /// `OutputReleased` events in delivery order: (generation, old output).
     pub(super) released: Vec<(u64, u64)>,
+    /// `OutputRebound` events in delivery order: (generation, kept output).
+    pub(super) rebound: Vec<(u64, u64)>,
+    /// The kept output named by the last unconsumed `OutputRebound`.
+    unconsumed_rebound: Option<(u64, u64)>,
+    /// Set when `release_relinquished_output` found the output kept.
+    kept_output: Option<u64>,
     native_plugins: bool,
     pub(super) plugin_completed: Arc<AtomicU64>,
     pub(super) plugin_queued: Arc<AtomicBool>,
@@ -488,6 +494,9 @@ impl ResidentHarness {
             publication_refusals: Vec::new(),
             constructor_submitted: None,
             released: Vec::new(),
+            rebound: Vec::new(),
+            unconsumed_rebound: None,
+            kept_output: None,
             native_plugins,
             plugin_completed,
             plugin_queued,
@@ -572,6 +581,13 @@ impl ResidentHarness {
                     self.released
                         .push((project_generation, old_output_identity));
                 }
+                EditorAudioEvent::OutputRebound {
+                    project_generation,
+                    output_identity,
+                } => {
+                    self.rebound.push((project_generation, output_identity));
+                    self.unconsumed_rebound = Some((project_generation, output_identity));
+                }
                 _ => {}
             }
         }
@@ -624,15 +640,56 @@ impl ResidentHarness {
             std::thread::yield_now();
         }
     }
+    /// Follow the worker's outcome for a replaced output: when it kept the
+    /// output (`OutputRebound`) keep the endpoint and drop only the old
+    /// project's submissions; otherwise release the headless carrier and the
+    /// old client so the fresh output can open.
     pub(super) fn release_relinquished_output(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            self.pump();
+            if let Some((generation, output)) = self.unconsumed_rebound.take() {
+                assert_eq!(
+                    self.audio
+                        .as_ref()
+                        .and_then(|audio| audio.control.output_identity()),
+                    Some(output)
+                );
+                self.kept_output = Some(output);
+                self.submitted = self
+                    .submitted
+                    .filter(|(_, metadata)| metadata.context.project_generation == generation);
+                self.constructor_submitted = self
+                    .constructor_submitted
+                    .filter(|(_, context)| context.project_generation == generation);
+                return;
+            }
+            if self
+                .callback
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .shutdown_requested()
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "worker neither kept nor released the output"
+            );
+            std::thread::yield_now();
+        }
         let mut slot = self.callback.lock().unwrap();
-        assert!(slot.as_ref().unwrap().shutdown_requested());
         slot.take().unwrap().close();
         self.audio = None;
         self.submitted = None;
         self.constructor_submitted = None;
     }
     pub(super) fn wait_fresh_output(&mut self, old_output: u64) {
+        if self.kept_output.take() == Some(old_output) {
+            return; // The worker kept this output for the new project.
+        }
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             self.pump();

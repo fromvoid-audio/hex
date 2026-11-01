@@ -631,17 +631,9 @@ impl Harness {
                     .as_ref()
                     .unwrap()
                     .context();
-                if self
-                    .context
-                    .is_some_and(|old| old.project_generation != context.project_generation)
-                {
-                    // Same UI ordering: detach old endpoint on canonical
-                    // generation change, BEFORE waiting for new Opened.
-                    self.audio = None;
-                    if !self.observation.lock().unwrap().fresh_before_input_checked {
-                        self.backend.lock().unwrap().take();
-                    }
-                }
+                // Same UI ordering: the endpoint stays held across a
+                // generation change until the worker names the outcome; see
+                // `open` for OutputRebound/OutputReleased.
                 self.context = Some(context);
                 if self.rendered_setup.is_some() {
                     self.settle_rendered_setup(None);
@@ -730,12 +722,37 @@ impl Harness {
                     self.audio = Some(audio);
                     return;
                 }
+                Ok(EditorAudioEvent::OutputRebound {
+                    project_generation,
+                    output_identity,
+                }) if Some(project_generation) == self.context.map(|c| c.project_generation) => {
+                    assert_eq!(self.output_identity(), Some(output_identity));
+                    return;
+                }
+                Ok(EditorAudioEvent::OutputReleased {
+                    old_output_identity,
+                    ..
+                }) => {
+                    // Close the held endpoint (and the fixture callback that
+                    // models the native stream) so the fresh open can proceed.
+                    if self.output_identity() == Some(old_output_identity) {
+                        self.audio = None;
+                    }
+                    if !self.observation.lock().unwrap().fresh_before_input_checked {
+                        self.backend.lock().unwrap().take();
+                    }
+                }
                 Ok(EditorAudioEvent::Unavailable { error, .. }) => panic!("{error}"),
                 _ => {}
             }
             assert!(Instant::now() < deadline, "output did not open");
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+    fn output_identity(&self) -> Option<u64> {
+        self.audio
+            .as_ref()
+            .and_then(|audio| audio.control.output_identity())
     }
     fn render(&self) -> [hex_engine::Frame; 64] {
         let mut output = [[0.0; 2]; 64];

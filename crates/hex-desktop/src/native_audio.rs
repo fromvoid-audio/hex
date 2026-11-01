@@ -199,6 +199,66 @@ impl NativeAudioSink {
         self.blocked = None;
         self.sampler_budget_wait = None;
     }
+    /// Keep the delivered output for a new project generation when nothing on
+    /// it depends on the old project: both documents are Resident at the
+    /// output's rate and no sampler, preparation, verified custody or plugin
+    /// operation is in flight. Resets the per-project tracking that
+    /// [`Self::relinquish_output`] resets, keeps the output and its identity,
+    /// retires the old project's plugin sources through their ordinary return
+    /// checks and reports `OutputRebound`. Returns false (changing nothing) when
+    /// the caller must take the reopen path.
+    fn rebind_output(&mut self, source: &CanonicalAudioSourceSnapshot) -> bool {
+        let generation = source.context().project_generation;
+        let Some(output_identity) = self.output_identity else {
+            return false;
+        };
+        let eligible = source.audio_mode() == DocumentAudioMode::Resident
+            && self
+                .desired
+                .as_ref()
+                .is_some_and(|old| old.audio_mode() == DocumentAudioMode::Resident)
+            && self
+                .output
+                .as_ref()
+                .is_some_and(|output| output.sample_rate == source.sample_rate())
+            && self.output_generation.is_some()
+            && matches!(
+                self.pending_open_event,
+                None | Some(EditorAudioEvent::OutputRebound { .. })
+            )
+            && self.opening.is_none()
+            && !self.open_pending
+            && self.open_error.is_none()
+            && self.sampler.is_none()
+            && self.sampler_parameter.is_none()
+            && self.suspended_output.is_none()
+            && self.section_edit.is_none()
+            && self.preparation.is_none()
+            && self.domains.iter().all(Option::is_none)
+            && self.submitted.iter().all(Option::is_none)
+            && self.plugins.rebind_ready();
+        if !eligible {
+            return false;
+        }
+        self.plugins.project_replaced(generation);
+        self.resident.current_submission = None;
+        self.resident.applied_loop = None;
+        self.pending_observation = None;
+        self.pending_status_observation = None;
+        self.last_context = None;
+        self.verified_last = None;
+        self.verified_blocked = None;
+        self.last_state = None;
+        self.blocked = None;
+        self.sampler_budget_wait = None;
+        self.restart_request = None;
+        self.output_generation = Some(generation);
+        self.pending_open_event = Some(EditorAudioEvent::OutputRebound {
+            project_generation: generation,
+            output_identity,
+        });
+        true
+    }
     fn request_open(&mut self, rate: Option<u32>, request: Option<u64>) {
         self.opening = None;
         self.open_pending = true;
@@ -1245,6 +1305,11 @@ impl WorkerAudioSink for NativeAudioSink {
         if previous.is_some_and(|previous| previous != generation) {
             if source.audio_mode() == DocumentAudioMode::VerifiedStreaming {
                 self.resident.discard_obsolete_pending(source.context());
+            }
+            if self.rebind_output(&source) {
+                self.plugins.request_reopen(&source);
+                self.desired = Some(source);
+                return;
             }
             let old_output_identity = self.output_identity;
             self.relinquish_output();
