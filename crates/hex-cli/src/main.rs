@@ -19,8 +19,29 @@ use std::{error::Error, path::Path};
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("{}", error.to_string().to_lowercase());
+        let _ = write_error(&mut std::io::stderr().lock(), error.as_ref());
         std::process::exit(1);
+    }
+}
+fn write_error(output: &mut impl std::io::Write, error: &dyn Error) -> std::io::Result<()> {
+    writeln!(output, "{error}")
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn publication_conflict_keeps_recovery_paths_exact() {
+        let error = hex_export::ExportError::PublicationConflict {
+            path: "MiXeD/Output.wav".into(),
+            recovery_path: "MiXeD/Recovery.TMP".into(),
+        };
+        let mut output = Vec::new();
+        write_error(&mut output, &error).unwrap();
+        let message = String::from_utf8(output).unwrap();
+        assert!(message.contains("MiXeD/Output.wav"));
+        assert!(message.contains("MiXeD/Recovery.TMP"));
     }
 }
 fn run() -> Result<(), Box<dyn Error>> {

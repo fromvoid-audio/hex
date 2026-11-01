@@ -1016,7 +1016,7 @@ impl Service {
             None,
             Arc::new(|path, prepared, start, frames| {
                 hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
+                    .map_err(|error| error.to_string())
             }),
         )
     }
@@ -1035,7 +1035,7 @@ impl Service {
             Some(untitled_path),
             Arc::new(|path, prepared, start, frames| {
                 hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
+                    .map_err(|error| error.to_string())
             }),
         )
     }
@@ -1072,7 +1072,7 @@ impl Service {
             recovery,
             Arc::new(|path, prepared, start, frames| {
                 hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
+                    .map_err(|error| error.to_string())
             }),
             Some(audio),
         )
@@ -1092,7 +1092,7 @@ impl Service {
             recovery,
             Arc::new(|path, prepared, start, frames| {
                 hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|e| e.to_string().to_lowercase())
+                    .map_err(|e| e.to_string())
             }),
             Some(audio),
             Some(native),
@@ -1128,7 +1128,7 @@ impl Service {
             None,
             Arc::new(|path, prepared, start, frames| {
                 hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
+                    .map_err(|error| error.to_string())
             }),
             None,
             Some(reservation),
