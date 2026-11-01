@@ -132,6 +132,15 @@ with "changed modules ran no tests". Example targets (the device gallery) are
 skipped for module-scoped owners. Smaller, self-tested modules therefore mean
 faster merges; an untested module inherits its parent's often-large suite.
 
+A changed module *root* (for example `editor/mod.rs`, which declares many
+submodules) keeps its own tests and the submodules the change touches (another
+changed file) or names in its changed lines; the other submodules are skipped
+with `--skip module::child::`. If that would leave no test at all, the whole
+subtree runs. Module-scoped doctest steps run only when a changed file carries a
+doc example (a fenced block in `///` or `//!` comments). A reviewed runtime
+consumer that is itself the changed owner (for example hex-storage) is
+module-scoped like any owner.
+
 Python tooling follows the same rule. A changed `scripts/NAME.py` (or
 `scripts/NAME`) runs its own `test_NAME` module, and a changed
 `scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.

@@ -264,6 +264,8 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     # Owners test; every affected consumer still compiles and lints below.
     tested = boundary.get("test_packages", [])
     module_filters = boundary.get("module_filters", {})
+    module_skips = boundary.get("module_skips", {})
+    doc_examples = set(boundary.get("doc_example_owners", []))
 
     def scoped(argv: tuple[str, ...]) -> tuple[str, ...]:
         """Restrict a test command to the changed modules when every owner it tests is module-scoped."""
@@ -271,10 +273,12 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         if not owners or any(owner not in module_filters for owner in owners):
             return argv
         names = sorted({name for owner in owners for name in module_filters[owner]})
+        skips = sorted({name for owner in owners for name in module_skips.get(owner, [])})
         if argv[:2] == ("python3", "scripts/test_shards.py"):
             split = argv.index("--")
-            return (*argv[:split], *(a for name in names for a in ("--filter", name)), *argv[split:])
-        return (*argv, "--", *names)
+            return (*argv[:split], *(a for name in names for a in ("--filter", name)),
+                    *(a for name in skips for a in ("--skip", name)), *argv[split:])
+        return (*argv, "--", *names, *(a for name in skips for a in ("--skip", name)))
     if boundary["kind"] == "packages":
         if not tested or set(tested) - set(affected) or tests:
             raise ValueError("package boundary must test its owners within the affected closure")
@@ -289,6 +293,9 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
                 steps.append(Step(f"module-tests-{package}", scoped(("cargo", "test", "-p", package, "--locked"))))
         if single:
             for package in (p for p in tested if p in single):
+                # Module-scoped doctests run only when the changed files carry doc examples.
+                if package in module_filters and package not in doc_examples:
+                    continue
                 steps.append(Step("single-run-doctests" if package not in module_filters else f"module-doctests-{package}",
                                   scoped(("cargo", "test", "--doc", "-p", package, "--locked"))))
     elif boundary["kind"] == "compressor":

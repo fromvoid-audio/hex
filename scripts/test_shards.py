@@ -59,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--shards", type=int, required=True)
     parser.add_argument("--filter", action="append", default=[],
                         help="keep only tests whose name contains this substring (repeatable)")
+    parser.add_argument("--skip", action="append", default=[],
+                        help="drop tests whose name contains this substring (repeatable)")
     parser.add_argument("cargo", nargs=argparse.REMAINDER)
     arguments = parser.parse_args(argv)
     cargo = arguments.cargo[1:] if arguments.cargo[:1] == ["--"] else arguments.cargo
@@ -71,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
         names = list_tests(binary["executable"], binary["package_dir"], env)
         if arguments.filter:
             names = [name for name in names if any(f in name for f in arguments.filter)]
+        names = [name for name in names if not any(s in name for s in arguments.skip)]
         for index, group in enumerate(partition(names, arguments.shards)):
             jobs.append((f"{Path(binary['executable']).name} shard {index + 1}", binary, group))
 
