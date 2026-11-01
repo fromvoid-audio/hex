@@ -2126,6 +2126,9 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             let cut_frame = previous.arrangement_frame;
             let new_cut_frame = arrangement_cut;
+            let candidate_loop_end = self
+                .active_loop_region_at(new_cut_frame)
+                .map(hex_project::LoopRegion::end);
             let mut candidate_occurrences = [None; crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY];
             let mut candidate_occurrence_count = 0;
             if shared_sources::track_has_analytic_source(&self.revision, new_index) {
@@ -2188,6 +2191,8 @@ impl SessionPlayback {
                     let Some(index) = existing_index else {
                         continue;
                     };
+                    let candidate_end =
+                        candidate_loop_end.map_or(candidate_end, |end| candidate_end.min(end));
                     let elapsed = candidate_end
                         .checked_sub(new_cut_frame)
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
@@ -2215,27 +2220,27 @@ impl SessionPlayback {
                         if is_suppressed(previous, old_route.id, key) {
                             return;
                         }
-                        let voice_result =
-                            if shared_sources::track_has_analytic_source(&self.revision, new_index)
-                            {
-                                MidiReleaseVoice::from_finite_span_preserving_gate(
-                                    span.start,
-                                    span.gate_end,
-                                    span.end,
-                                    sampler.detach(&previous.analytic_continuations),
-                                    cut_frame,
-                                    previous.performance_frame,
-                                )
-                            } else {
-                                MidiReleaseVoice::from_finite_span(
-                                    span.start,
-                                    span.gate_end,
-                                    span.end,
-                                    sampler.detach(&previous.analytic_continuations),
-                                    cut_frame,
-                                    previous.performance_frame,
-                                )
-                            };
+                        let voice_result = if arrangement_cut == previous.arrangement_frame
+                            && shared_sources::track_has_analytic_source(&self.revision, new_index)
+                        {
+                            MidiReleaseVoice::from_finite_span_preserving_gate(
+                                span.start,
+                                span.gate_end,
+                                span.end,
+                                sampler.detach(&previous.analytic_continuations),
+                                cut_frame,
+                                previous.performance_frame,
+                            )
+                        } else {
+                            MidiReleaseVoice::from_finite_span(
+                                span.start,
+                                span.gate_end,
+                                span.end,
+                                sampler.detach(&previous.analytic_continuations),
+                                cut_frame,
+                                previous.performance_frame,
+                            )
+                        };
                         let voice = match voice_result {
                             Ok(Some(voice)) => voice,
                             Ok(None) => return,
@@ -2262,6 +2267,8 @@ impl SessionPlayback {
                                 failure = Some(SessionPlaybackError::ArithmeticOverflow);
                                 return;
                             };
+                            let candidate_end = candidate_loop_end
+                                .map_or(candidate_end, |end| candidate_end.min(end));
                             let Some(elapsed) = candidate_end.checked_sub(new_cut_frame) else {
                                 failure = Some(SessionPlaybackError::ArithmeticOverflow);
                                 return;
@@ -2606,12 +2613,22 @@ impl SessionPlayback {
                 .and_then(|index| midi_route_changed.get(index))
                 .copied()
                 .unwrap_or(false);
-            let remapped_gate = if route_changed {
+            let arrangement_remapped = arrangement_cut != previous.arrangement_frame
+                && contributor_index.is_some_and(|index| {
+                    effective_midi_route(&previous.revision, &previous.routes, index)
+                        .is_ok_and(|route| matches!(route.owner, RouteOwner::Arrangement))
+                });
+            let remapped_gate = if route_changed && !arrangement_remapped {
                 remap_release_gate(previous, self, entry, candidate_timing)?
             } else {
                 None
             };
-            let voice = if route_changed && entry.continuation.is_some() {
+            let voice = if arrangement_remapped {
+                entry
+                    .voice
+                    .reconcile_at(previous.performance_frame, None)
+                    .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?
+            } else if route_changed && entry.continuation.is_some() {
                 entry
                     .voice
                     .reconcile_at(previous.performance_frame, remapped_gate)
@@ -2624,7 +2641,7 @@ impl SessionPlayback {
             };
             let mut copied = *entry;
             copied.voice = voice;
-            if route_changed && remapped_gate.is_none() {
+            if arrangement_remapped || (route_changed && remapped_gate.is_none()) {
                 copied.continuation = None;
             }
             let old_index = contributor_index;
@@ -4643,9 +4660,7 @@ fn cut_arrangement_voices_for_remap(
     let performance = previous.performance_frame;
     for (old_index, _) in previous.routes.iter().enumerate() {
         let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
-        if old_route.owner != RouteOwner::Arrangement
-            || instrument_changed.get(old_index).copied().unwrap_or(true)
-        {
+        if old_route.owner != RouteOwner::Arrangement {
             continue;
         }
         let Some(new_index) = track_map
@@ -4656,7 +4671,9 @@ fn cut_arrangement_voices_for_remap(
             continue;
         };
         let mut failure = None;
-        if shared_sources::track_has_analytic_source(&previous.revision, old_index) {
+        if !instrument_changed.get(old_index).copied().unwrap_or(true)
+            && shared_sources::track_has_analytic_source(&previous.revision, old_index)
+        {
             let old_track = previous
                 .revision
                 .arrangement()

@@ -318,7 +318,15 @@ fn tempo_remap_after_instrument_changes_does_not_duplicate_old_note() {
     .unwrap();
     next.try_inherit_state_from(&mut middle).unwrap();
     assert_eq!(next.arrangement_frame(), 256);
+    let wrap = next.performance_frame() + (24_000 - 256);
+    assert!(!next.suppressions.is_empty());
+    assert!(next.suppressions.iter().all(|s| s.until_frame <= wrap));
     let mut output = [[0.0; 2]; 64];
     next.render(&mut output).unwrap();
-    assert_eq!(output, [[0.2; 2]; 64]);
+    assert_eq!(output[..8], [[0.2; 2]; 8]);
+    assert!(output[8..].iter().all(|frame| *frame == [0.0; 2]));
+    render_frames(&mut next, 512, 24_000 - 256 - 64);
+    let mut after_wrap = [[0.0; 2]; 1];
+    next.render(&mut after_wrap).unwrap();
+    assert_eq!(after_wrap, [[0.2; 2]]);
 }
