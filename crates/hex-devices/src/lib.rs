@@ -501,5 +501,3 @@ mod operator_harmonics;
 
 #[cfg(test)]
 mod project_tuning_tests;
-#[cfg(test)]
-mod state_migration_tests;

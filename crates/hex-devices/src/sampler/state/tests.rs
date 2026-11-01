@@ -486,3 +486,61 @@ fn disabled_classic_loop_remembers_range_across_codec_and_trim_without_implicit_
         "off is not permission for empty loop ranges"
     );
 }
+
+/// Historical states keep opening (Pulse #3956). In v1 (commit 57f122b59) a
+/// classic loop region existed only while looping; off stored (0, 0).
+#[test]
+fn sampler_v1_states_migrate_keeping_loop_behaviour_gains_and_source() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let source = vec![DeviceAssetReference {
+        slot: DeviceAssetSlot::new(SOURCE_SLOT).unwrap(),
+        asset: DeviceAssetKey::new(9).unwrap(),
+    }];
+    let authored = |loop_enabled| {
+        let mut state = SamplerState::for_source_frames(16).unwrap();
+        state.region = Region { start: 2, end: 14 };
+        state.mode = AuthoredMode::Classic {
+            loop_enabled,
+            loop_region: Region { start: 3, end: 11 },
+        };
+        state
+    };
+    let v1 = |loop_enabled: bool| {
+        let mut payload = authored(loop_enabled)
+            .to_native()
+            .unwrap()
+            .payload()
+            .to_vec();
+        if !loop_enabled {
+            payload[16..24].fill(0);
+        }
+        NativeDeviceState::new(TYPE_ID, 1, payload)
+            .unwrap()
+            .with_asset_references(source.clone())
+            .unwrap()
+            .with_output_gain_millidb(-1500)
+            .unwrap()
+    };
+    let definition = &super::super::catalog::DEFINITION;
+    for loop_enabled in [true, false] {
+        let old = v1(loop_enabled);
+        let migrated = definition.migrate_state(&old).unwrap();
+        assert_eq!(migrated.state_version(), STATE_VERSION);
+        assert_eq!(migrated.asset_references(), old.asset_references());
+        assert_eq!(migrated.output_gain_millidb(), -1500);
+        let mut expected = authored(loop_enabled);
+        if !loop_enabled {
+            // Off stays off; the dormant loop covers the playback region.
+            expected.mode = AuthoredMode::Classic {
+                loop_enabled: false,
+                loop_region: Region { start: 2, end: 14 },
+            };
+        }
+        assert_eq!(SamplerState::from_native(&migrated).unwrap(), expected);
+        assert_eq!(
+            definition.migrate_state(&migrated).unwrap(),
+            migrated,
+            "idempotent"
+        );
+    }
+}
