@@ -55,6 +55,20 @@ pub enum EditorAudioEvent {
         output_identity: u64,
         state: EditorPublicationState,
     },
+    /// Project replacement kept this output for `project_generation`. The UI
+    /// keeps the endpoint it held across the replacement when its identity
+    /// matches; otherwise it requests a fresh output.
+    OutputRebound {
+        project_generation: u64,
+        output_identity: u64,
+    },
+    /// Project replacement retires this output for `project_generation`. The
+    /// UI closes the endpoint it held across the replacement so the worker can
+    /// open a fresh output; the next `Opened`/`Unavailable` follows.
+    OutputReleased {
+        project_generation: u64,
+        old_output_identity: u64,
+    },
 }
 
 /// UI-safe summary of a worker-owned publication attempt.

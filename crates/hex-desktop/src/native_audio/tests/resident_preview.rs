@@ -308,6 +308,8 @@ pub(super) struct ResidentHarness {
     pub(super) unavailable: Vec<String>,
     pub(super) publication_refusals: Vec<String>,
     constructor_submitted: Option<(u64, AudioSourceContext)>,
+    /// `OutputReleased` events in delivery order: (generation, old output).
+    pub(super) released: Vec<(u64, u64)>,
     native_plugins: bool,
     pub(super) plugin_completed: Arc<AtomicU64>,
     pub(super) plugin_queued: Arc<AtomicBool>,
@@ -485,6 +487,7 @@ impl ResidentHarness {
             unavailable: Vec::new(),
             publication_refusals: Vec::new(),
             constructor_submitted: None,
+            released: Vec::new(),
             native_plugins,
             plugin_completed,
             plugin_queued,
@@ -560,6 +563,15 @@ impl ResidentHarness {
                     state: EditorPublicationState::Refused(error),
                     ..
                 } => self.publication_refusals.push(error),
+                EditorAudioEvent::OutputReleased {
+                    project_generation,
+                    old_output_identity,
+                } => {
+                    // Tests close the held endpoint with the headless carrier
+                    // in `release_relinquished_output`; record the outcome.
+                    self.released
+                        .push((project_generation, old_output_identity));
+                }
                 _ => {}
             }
         }

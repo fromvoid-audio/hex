@@ -96,6 +96,15 @@ fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -
     // both actual headless carriers and the old Client, then wait for the real exclusive Lease.
     h.release_relinquished_output();
     h.wait_fresh_output(old_output);
+    // The worker named the retired endpoint before opening the fresh one.
+    let generation = event
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context()
+        .project_generation;
+    assert_eq!(h.released.last(), Some(&(generation, old_output)));
     assert!(
         h.audio
             .as_ref()
