@@ -345,6 +345,27 @@ impl SessionPlayback {
         mut demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         live: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        // Do not let the live reset fallback cut active mutable Arrangement
+        // voices during a tempo change (Pulse #3935 / #4117).
+        if self.revision.arrangement().sample_rate()
+            == previous.revision.arrangement().sample_rate()
+            && !previous
+                .revision
+                .session()
+                .timing()
+                .same_map(self.revision.session().timing())
+            && previous.routes.iter().enumerate().any(|(index, _)| {
+                effective_midi_route(&previous.revision, &previous.routes, index)
+                    .is_ok_and(|route| matches!(route.owner, RouteOwner::Arrangement))
+                    && previous
+                        .mutable_instruments
+                        .get(index)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|runtime| runtime.proofs().next().is_some())
+            })
+        {
+            return Err(SessionPlaybackError::MutableInstrumentActive);
+        }
         if live && self.live_restart && self.candidate_admission_open {
             return self.inherit_state_planned_once(previous, None, demand, true);
         }
@@ -863,22 +884,6 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::Arrangement(
                 COMPENSATED_TIMING_CHANGED,
             ));
-        }
-        if arrangement_cut != previous.arrangement_frame
-            && previous.routes.iter().enumerate().any(|(index, _)| {
-                effective_midi_route(&previous.revision, &previous.routes, index)
-                    .is_ok_and(|route| matches!(route.owner, RouteOwner::Arrangement))
-                    && previous
-                        .mutable_instruments
-                        .get(index)
-                        .and_then(Option::as_ref)
-                        .is_some_and(|runtime| runtime.proofs().any(|proof| !proof.note_off_sent))
-            })
-        {
-            // Mutable gate proofs are frame deadlines on the donor's
-            // Arrangement cursor. Keep the old graph audible until its notes
-            // end; remapping them is Pulse #4117.
-            return Err(SessionPlaybackError::MutableInstrumentActive);
         }
         if timing_changed
             && old_loop.is_some()

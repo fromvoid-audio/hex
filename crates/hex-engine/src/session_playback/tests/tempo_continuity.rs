@@ -214,3 +214,53 @@ fn tempo_remap_with_instrument_reenable_releases_suppression_at_new_loop_end() {
     assert!(output[..until_wrap].iter().all(|frame| *frame == [0.0; 2]));
     assert_eq!(output[until_wrap], [0.2; 2]);
 }
+
+#[test]
+fn tempo_remap_refuses_a_still_releasing_mutable_instrument_atomically() {
+    use hex_lattice::NativeInstrumentDefinition;
+
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.tempo.release"),
+            levels: [0.2, 0.4],
+            release_frames: 128,
+        },
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let old_project = with_test_instrument(&project(1.0, 0, 1 << 32), definition.metadata.id, 0);
+    let mut edited = Editor::new(old_project.clone(), 8).unwrap();
+    edited
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    for (frame, released) in [(3_001, false), (24_001, true)] {
+        for live in [true, false] {
+            let mut previous = ordinary_mutable_playback(&old_project, &registry);
+            previous.apply(SessionPlaybackCommand::Play).unwrap();
+            render_frames(&mut previous, 64, frame);
+            assert!(
+                previous.mutable_instruments[0]
+                    .as_ref()
+                    .unwrap()
+                    .proofs()
+                    .any(|proof| proof.note_off_sent == released)
+            );
+            let before = previous.arrangement_frame();
+            let mut candidate = ordinary_mutable_playback(edited.project(), &registry);
+            let result = if live {
+                candidate.try_inherit_state_live_from(&mut previous)
+            } else {
+                candidate.try_inherit_state_from(&mut previous)
+            };
+            assert!(
+                matches!(result, Err(SessionPlaybackError::MutableInstrumentActive)),
+                "frame={frame} live={live}: {result:?}"
+            );
+            assert_eq!(previous.arrangement_frame(), before);
+            assert!(previous.playing());
+        }
+    }
+}
