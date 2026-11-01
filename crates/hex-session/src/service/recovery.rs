@@ -511,8 +511,9 @@ pub(super) fn checkpoint_project(
     document: Option<&DocumentHandle>,
     untitled_path: &Path,
     journal: &mut Option<hex_storage::Journal>,
-) -> Result<(), String> {
+) -> Result<Option<PathBuf>, String> {
     let path = checkpoint_path(document, untitled_path)?;
+    let project = project_for_save(session, base)?;
     if journal
         .as_ref()
         .is_none_or(|current| current.path() != path)
@@ -531,18 +532,27 @@ pub(super) fn checkpoint_project(
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
         }
-        *journal = Some(hex_storage::Journal::open(path).map_err(|e| e.to_string())?);
+        if let Some(token) = hex_storage::JournalRestartToken::capture_readable(path.clone())
+            .map_err(|e| e.to_string())?
+        {
+            let outcome = hex_storage::restart_journal(&token, &project);
+            *journal = outcome.journal;
+            outcome
+                .result
+                .map_err(|error| match outcome.preserved_path.as_ref() {
+                    Some(_) => format!(
+                        "{error}; previous recovery journal preserved beside its original slot"
+                    ),
+                    None => error.to_string(),
+                })?;
+            return Ok(outcome.preserved_path);
+        }
+        *journal = Some(hex_storage::Journal::open_empty(path).map_err(|e| e.to_string())?);
     }
-    let project = project_for_save(session, base)?;
     if let Some(journal) = journal {
-        let result = if document.is_none() {
-            journal.checkpoint_latest(&project)
-        } else {
-            journal.checkpoint(&project)
-        };
-        result.map_err(|e| e.to_string())?;
+        journal.checkpoint(&project).map_err(|e| e.to_string())?;
     }
-    Ok(())
+    Ok(None)
 }
 
 pub(super) fn absolute_document_path(path: &Path) -> Result<PathBuf, String> {

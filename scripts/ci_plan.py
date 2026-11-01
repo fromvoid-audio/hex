@@ -283,14 +283,18 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
     if missing:
         raise ValueError("reviewed runtime consumers missing from Cargo inventory: " + ", ".join(sorted(missing)))
     compressor = {"crates/hex-devices/src/compressor.rs", "crates/hex-devices/src/compressor/tests.rs"}
+    # hex-sandbox (design tool over hex-engine/hex-widgets) has no compressor
+    # code, fixtures or tests; it is linted with every other Cargo consumer.
     known_consumers = {"hex-devices", "hex-engine", "hex-audio", "hex-ui", "hex-storage",
-                       "hex-desktop", "hex-cli", "hex-export", "hex-session", "hex-media", "hex-stream"}
+                       "hex-desktop", "hex-cli", "hex-export", "hex-session", "hex-media", "hex-stream",
+                       "hex-sandbox"}
     reviewed_features = {"hex-engine": {"instrument-test-support"}, "hex-export": {"instrument-test-support"},
                          # Stream test hooks gate no compressor code or tests; compressor
                          # plans still lint those configurations (local-ci boundary_steps).
                          "hex-audio": {"allocation-probe", "stream-test-support"}, "hex-desktop": {"allocation-probe"},
                          "hex-ui": {"ui-test-support"}, "hex-session": {"source-overview-test-support"},
-                         "hex-stream": {"allocation-probe", "test-support"}}
+                         "hex-stream": {"allocation-probe", "test-support"},
+                         "hex-sandbox": {"ui-test-support"}}
     narrow = bool(executable) and set(executable) <= compressor and set(affected) <= known_consumers
     narrow = narrow and all(set(p["features"]) <= reviewed_features.get(p["name"], set())
                             for p in inventory if p["name"] in affected)
