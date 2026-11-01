@@ -73,6 +73,13 @@ pub(super) fn bind_keys(cx: &mut App) {
             RemoveHeaderTracks,
             Some("hex_track_header && !hex_text_editing"),
         ),
+        // Forward-delete owns the same header deletion; it must not fall
+        // through to the editor's clip deletion.
+        KeyBinding::new(
+            "delete",
+            RemoveHeaderTracks,
+            Some("hex_track_header && !hex_text_editing"),
+        ),
         KeyBinding::new("enter", CommitTrackName, Some("hex_track_name")),
         KeyBinding::new("escape", CancelTrackName, Some("hex_track_name")),
     ]);
