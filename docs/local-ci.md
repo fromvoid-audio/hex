@@ -111,6 +111,15 @@ consumer later breaks, the defect is a missing owner boundary test: add it at th
 owner. Package manifests and build scripts can change how consumers build, so they
 keep the whole affected closure's suites.
 
+**Profile-only root manifest changes.** A root `Cargo.toml` change whose
+every changed table is `[profile.NAME.package.MEMBER]` (a workspace member, never
+`"*"`) using only `opt-level`, `debug`, `codegen-units`, `incremental`,
+`split-debuginfo` or `strip` selects those members as if their crate roots
+changed: their whole suites test, consumers lint. These keys change codegen, not
+program meaning. Any other root-manifest change, including `debug-assertions`,
+`overflow-checks`, `panic`, `lto`, dependencies or workspace members, keeps the
+comprehensive audit.
+
 **Module scope.** Inside an owner, a changed `src/` file runs only the tests of
 its own Rust module subtree. The planner resolves `mod`/`#[path]` from the crate
 root and runs `cargo test … -- module::path::` in each of the owner's test
@@ -123,6 +132,15 @@ with "changed modules ran no tests". Example targets (the device gallery) are
 skipped for module-scoped owners. Smaller, self-tested modules therefore mean
 faster merges; an untested module inherits its parent's often-large suite.
 
+A changed module *root* (for example `editor/mod.rs`, which declares many
+submodules) keeps its own tests and the submodules the change touches (another
+changed file) or names in its changed lines; the other submodules are skipped
+with `--skip module::child::`. If that would leave no test at all, the whole
+subtree runs. Module-scoped doctest steps run only when a changed file carries a
+doc example (a fenced block in `///` or `//!` comments). A reviewed runtime
+consumer that is itself the changed owner (for example hex-storage) is
+module-scoped like any owner.
+
 Python tooling follows the same rule. A changed `scripts/NAME.py` (or
 `scripts/NAME`) runs its own `test_NAME` module, and a changed
 `scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
@@ -131,13 +149,19 @@ comprehensive discovery. Owner selections run through `scripts/python_shards.py`
 one process per test from a shared work queue (up to 12 workers), which brings
 `test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
 
+Module-scoped test steps build only the library (or, for a binary-only crate,
+the binaries): a `module::path::` filter can never match an integration test,
+example or bench, so building and linking those targets was pure overhead
+(hex-session has 28 test and 7 example targets, hex-storage 34).
+
 **One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
 build phase, under 60 s. local-ci sums executed test steps (wall time minus the
-reported build phase; carried steps excluded) into `test_budget` in the summary
-and fails the run when the sum exceeds the limit. The fix is to narrow the owner
-boundary, split the change, or speed up the slowest suite. While a known-slow
-owner suite is being fixed, pass `--over-budget-reason "Pulse #N …"`. The reason
-is recorded in the summary and the run may qualify.
+reported build phase; carried steps excluded) into `test_budget` in the summary.
+Exceeding the limit prints a warning naming the slowest steps; it does not fail
+the run, and a run that is otherwise green qualifies (user decision,
+1 November 2026; overruns are investigated in Pulse #4100). Record a recurring
+slow owner suite in Pulse, and optionally pass `--over-budget-reason "Pulse #N …"`
+to keep the reason in the summary.
 Mixed tooling/Rust changes combine comprehensive Python checks with affected Rust
 configurations. Contributor prose, including AGENTS.md, gets link/path checks;
 executable selector/runner policy gets comprehensive tooling tests and guards.
@@ -169,7 +193,12 @@ Packages whose only extra feature is reviewed as additive for tests (see
 feature and keep a separate doctest run; default-feature Clippy still applies.
 
 Package plans run the owners' default tests and applicable allocation/UI/export
-feature tests, and lint every consumer in each of those configurations. The
+feature tests. Consumers lint in two invocations: default features
+(`affected-clippy`, which keeps `cfg(not(feature))` branches compiling) and every
+reviewed feature configuration together (`affected-feature-clippy`). Separate
+per-feature lints recompiled the shared dependency chain each time (55–112 s
+against 38–42 s, measured 1 November 2026). Formatting checks only the changed
+owners' packages. The
 desktop build runs when hex-desktop owns the change. Feature combinations need reviewed contract rules; individual
 feature runs do not prove all combinations. Global manifests/lockfiles, toolchain,
 vendor, unowned resources and unknown inputs conservatively select the comprehensive

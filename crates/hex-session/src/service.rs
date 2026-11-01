@@ -16,6 +16,10 @@ use hex_export::ExportReport;
 pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
 use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
+/// Save As filename admission for the recovery files storage keeps beside a project.
+pub use hex_storage::project_name;
+/// Verbatim spans keep paths case-sensitive in lowercase status and error text.
+pub use hex_storage::text;
 use hex_tuning::ProjectTuning;
 mod arrangement_sections;
 #[cfg(test)]
@@ -84,8 +88,8 @@ mod stopped_playback_tests;
 use hex_storage::FileToken;
 use recovery::absolute_document_path;
 pub use recovery::{
-    LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart, leftover_recovery,
-    untitled_recovery_path,
+    LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart, kept_journal,
+    leftover_recovery, untitled_recovery_path,
 };
 use std::{
     collections::BTreeMap,
@@ -347,7 +351,7 @@ pub fn prepare_audio_preview(
         .map_err(|_| "converted frame count exceeds project range".to_owned())?;
     let waveform = Arc::new(
         hex_media::waveform::summarize_peaks(&audio, BROWSER_PREVIEW_BINS)
-            .map_err(|error| error.to_string().to_lowercase())?,
+            .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?,
     );
     Ok(AudioPreview {
         playback_frames,
@@ -369,7 +373,7 @@ pub fn prepare_sample_preview(
         path,
         Limits::new(BROWSER_PREVIEW_FILE_LIMIT, BROWSER_PREVIEW_FRAME_LIMIT),
     )
-    .map_err(|error| error.to_string().to_lowercase())?;
+    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     let audio = hex_media::resample(
         decoded.audio(),
         output_sample_rate,
@@ -378,7 +382,7 @@ pub fn prepare_sample_preview(
             max_output_frames: BROWSER_PREVIEW_FRAME_LIMIT,
         },
     )
-    .map_err(|error| error.to_string().to_lowercase())?;
+    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     Ok(audio)
 }
 
@@ -1020,7 +1024,7 @@ impl Service {
             None,
             Arc::new(|path, prepared, start, frames| {
                 hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
+                    .map_err(|error| error.to_string())
             }),
         )
     }
@@ -1039,7 +1043,7 @@ impl Service {
             Some(untitled_path),
             Arc::new(|path, prepared, start, frames| {
                 hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
+                    .map_err(|error| error.to_string())
             }),
         )
     }
@@ -1076,7 +1080,7 @@ impl Service {
             recovery,
             Arc::new(|path, prepared, start, frames| {
                 hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
+                    .map_err(|error| error.to_string())
             }),
             Some(audio),
         )
@@ -1096,7 +1100,7 @@ impl Service {
             recovery,
             Arc::new(|path, prepared, start, frames| {
                 hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|e| e.to_string().to_lowercase())
+                    .map_err(|e| e.to_string())
             }),
             Some(audio),
             Some(native),
@@ -1132,7 +1136,7 @@ impl Service {
             None,
             Arc::new(|path, prepared, start, frames| {
                 hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
+                    .map_err(|error| error.to_string())
             }),
             None,
             Some(reservation),
@@ -1675,6 +1679,70 @@ struct SaveCurrentCommit {
     error: Option<String>,
 }
 
+/// Save As onto the open document would skip Save's format-upgrade and
+/// older-reader consent checks, so it is refused; Save owns that replacement.
+fn is_open_document(document: &DocumentHandle, destination: &Path) -> bool {
+    document.path == destination
+        || matches!(
+            (std::fs::canonicalize(&document.path), std::fs::canonicalize(destination)),
+            (Ok(open), Ok(chosen)) if open == chosen
+        )
+}
+
+/// Save As: create `path`, or replace it when it already exists. The UI only
+/// sends an existing path after the OS replace prompt for that exact path.
+/// Both outcomes bind the document, including a published file whose
+/// durability could not be confirmed, so the next Save replaces it in place.
+fn save_document_as(
+    path: PathBuf,
+    project: &hex_project::Project,
+) -> Result<(DocumentHandle, SaveCurrentCommit), String> {
+    let lower = |error: hex_storage::StorageError| {
+        hex_storage::text::lowercase_outside_verbatim(&error.to_string())
+    };
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => {
+            let outcome = hex_storage::replace_confirmed(&path, project).map_err(lower)?;
+            let mut handle = DocumentHandle {
+                path,
+                token: outcome.token.clone(),
+            };
+            let commit = apply_current_save_outcome(&mut handle, outcome);
+            Ok((handle, commit))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let outcome = hex_storage::save_new_with_outcome(&path, project).map_err(lower)?;
+            let commit = match outcome.warning {
+                Some(warning) => SaveCurrentCommit {
+                    dirty: true,
+                    status: "project was published, but durability could not be confirmed",
+                    error: Some(format!(
+                        "complete project was published at {}, but could not {}: {}",
+                        hex_storage::text::verbatim(outcome.path.display()),
+                        warning.operation,
+                        warning.source
+                    )),
+                },
+                None => SaveCurrentCommit {
+                    dirty: false,
+                    status: "project saved",
+                    error: None,
+                },
+            };
+            Ok((
+                DocumentHandle {
+                    path: outcome.path,
+                    token: outcome.token,
+                },
+                commit,
+            ))
+        }
+        Err(error) => Err(hex_storage::text::lowercase_outside_verbatim(
+            &error.to_string(),
+        )),
+    }
+}
+
 fn apply_current_save_outcome(
     document: &mut DocumentHandle,
     outcome: hex_storage::ReplaceOutcome,
@@ -1687,10 +1755,10 @@ fn apply_current_save_outcome(
             status: "project was published, but durability could not be confirmed",
             error: Some(format!(
                 "complete project was published at {}, but could not {}: {}; recovery copy is at {}",
-                outcome.path.display(),
+                hex_storage::text::verbatim(outcome.path.display()),
                 warning.operation,
                 warning.source,
-                outcome.recovery_path.display()
+                hex_storage::text::verbatim(outcome.recovery_path.display())
             )),
         },
         None => SaveCurrentCommit {
@@ -1707,7 +1775,7 @@ fn compile(
 ) -> Result<Arc<PreparedRevision>, String> {
     session
         .compile_prepared_revision(previous)
-        .map_err(|error| error.to_string().to_lowercase())
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
 }
 
 fn project_source_for_runtime_input(
@@ -1719,7 +1787,7 @@ fn project_source_for_runtime_input(
         session
             .preview_tuning(snapshot.tuning, Some(canonical))
             .map(|(project, prepared)| (project, prepared, true))
-            .map_err(|error| error.to_string().to_lowercase())
+            .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
     } else {
         Ok((
             Arc::new(session.project().clone()),
@@ -1848,7 +1916,9 @@ fn run_tuning_library_operation_in_using(
                                     prepared = Some(artifact);
                                     Ok(())
                                 }
-                                Err(error) => Err(error.to_string().to_lowercase()),
+                                Err(error) => Err(hex_storage::text::lowercase_outside_verbatim(
+                                    &error.to_string(),
+                                )),
                             },
                             Err(error) => Err(error.to_string()),
                         }
@@ -1890,7 +1960,9 @@ fn run_tuning_library_operation_in_using(
                                     prepared = Some(artifact);
                                     Ok(())
                                 }
-                                Err(error) => Err(error.to_string().to_lowercase()),
+                                Err(error) => Err(hex_storage::text::lowercase_outside_verbatim(
+                                    &error.to_string(),
+                                )),
                             },
                             Err(error) => Err(error.to_string()),
                         }
@@ -2574,7 +2646,9 @@ fn run_worker(
                     Err("browser selection is not an instrument".into())
                 } else {
                     hex_engine::default_native_device_state_for_class(*class, *type_id)
-                        .map_err(|reason| reason.to_string().to_lowercase())
+                        .map_err(|reason| {
+                            hex_storage::text::lowercase_outside_verbatim(&reason.to_string())
+                        })
                         .and_then(|state| {
                             Ok(Command::InsertDefaultTrackWithDevice {
                                 before_track: None,
@@ -3703,7 +3777,9 @@ fn run_worker(
                                 resident_preview.as_ref(),
                             ),
                         )
-                        .map_err(|error| error.to_string().to_lowercase())
+                        .map_err(|error| {
+                            hex_storage::text::lowercase_outside_verbatim(&error.to_string())
+                        })
                     }) {
                         Ok((_, prepared)) => {
                             // No Created::Track focus response: this drop preserves prior selection.
@@ -3763,7 +3839,7 @@ fn run_worker(
                                         before,
                                         state,
                                     })
-                                    .map_err(|reason| reason.to_string().to_lowercase())
+                                    .map_err(|reason| hex_storage::text::lowercase_outside_verbatim(&reason.to_string()))
                                 }
                                 hex_engine::NativeDeviceClass::Instrument => session
                                     .project()
@@ -3773,7 +3849,7 @@ fn run_worker(
                                         let state = hex_engine::default_native_device_state_for_class(
                                             class, type_id,
                                         )
-                                        .map_err(|reason| reason.to_string().to_lowercase())?;
+                                        .map_err(|reason| hex_storage::text::lowercase_outside_verbatim(&reason.to_string()))?;
                                         if let Some(replacement) = replace {
                                             let Some(instrument) = target.instrument() else {
                                                 return Err("instrument replacement target no longer exists".into());
@@ -3798,7 +3874,7 @@ fn run_worker(
                                 type_id,
                             } => session
                                 .native_device_class(device)
-                                .map_err(|reason| reason.to_string().to_lowercase())
+                                .map_err(|reason| hex_storage::text::lowercase_outside_verbatim(&reason.to_string()))
                                 .and_then(|actual_class| {
                                     if actual_class != class {
                                         return Err("device drag class changed".to_owned());
@@ -3857,7 +3933,7 @@ fn run_worker(
                                     });
                                 }
                                 Ok(_) => status = Some("no change".into()),
-                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                Err(reason) => error = Some(hex_storage::text::lowercase_outside_verbatim(&reason.to_string())),
                             }
                         }
                         Err(reason) => error = Some(reason),
@@ -4986,10 +5062,14 @@ fn run_worker(
                                     status = Some("device added".into());
                                 }
                                 Ok(_) => status = Some("no change".into()),
-                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                Err(reason) => error = Some(hex_storage::text::lowercase_outside_verbatim(&reason.to_string())),
                             }
                         }
-                        Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                        Err(reason) => {
+                            error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                &reason.to_string(),
+                            ))
+                        }
                     }
                 }
                 Request::ReplaceNativeDevice {
@@ -4999,13 +5079,19 @@ fn run_worker(
                 } => {
                     let replacement = session
                         .native_device_class(device)
-                        .map_err(|reason| reason.to_string().to_lowercase())
+                        .map_err(|reason| {
+                            hex_storage::text::lowercase_outside_verbatim(&reason.to_string())
+                        })
                         .and_then(|actual_class| {
                             if actual_class != class {
                                 return Err("replacement class does not match device".to_owned());
                             }
                             hex_engine::default_native_device_state_for_class(class, *type_id)
-                                .map_err(|reason| reason.to_string().to_lowercase())
+                                .map_err(|reason| {
+                                    hex_storage::text::lowercase_outside_verbatim(
+                                        &reason.to_string(),
+                                    )
+                                })
                         });
                     match replacement {
                         Ok(state) => {
@@ -5033,7 +5119,7 @@ fn run_worker(
                                     status = Some("device replaced".into());
                                 }
                                 Ok(_) => status = Some("no change".into()),
-                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                Err(reason) => error = Some(hex_storage::text::lowercase_outside_verbatim(&reason.to_string())),
                             }
                         }
                         Err(reason) => error = Some(reason),
@@ -5106,7 +5192,11 @@ fn run_worker(
                                     );
                                 }
                                 Ok(_) => status = Some("no change".into()),
-                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                Err(reason) => {
+                                    error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                        &reason.to_string(),
+                                    ))
+                                }
                             }
                         }
                         Err(reason) => error = Some(reason),
@@ -5237,7 +5327,9 @@ fn run_worker(
                 } => {
                     let patched = session
                         .native_device_class(device)
-                        .map_err(|reason| reason.to_string().to_lowercase())
+                        .map_err(|reason| {
+                            hex_storage::text::lowercase_outside_verbatim(&reason.to_string())
+                        })
                         .and_then(|class| {
                             let entry = session
                                 .project()
@@ -5249,7 +5341,9 @@ fn run_worker(
                                 parameter,
                                 value,
                             )
-                            .map_err(|reason| reason.to_string().to_lowercase())
+                            .map_err(|reason| {
+                                hex_storage::text::lowercase_outside_verbatim(&reason.to_string())
+                            })
                         });
                     match patched {
                         Ok(state) => {
@@ -5284,7 +5378,7 @@ fn run_worker(
                                     status = Some("device parameter changed".into());
                                 }
                                 Ok(_) => status = Some("no change".into()),
-                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                Err(reason) => error = Some(hex_storage::text::lowercase_outside_verbatim(&reason.to_string())),
                             }
                         }
                         Err(reason) => error = Some(reason),
@@ -5328,7 +5422,7 @@ fn run_worker(
                                         if let Some(completion) = &mut midi_take_complete { completion.accepted = true; }
                                     }
                                     Ok(_) => { status = Some("empty midi take".into()); if let Some(completion) = &mut midi_take_complete { completion.accepted = true; } },
-                                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                    Err(reason) => error = Some(hex_storage::text::lowercase_outside_verbatim(&reason.to_string())),
                                 }
                             }
                             Ok(None) => {
@@ -5383,7 +5477,11 @@ fn run_worker(
                                 restore_prepared = Some(prepared);
                                 status = Some("gain recording target prepared".into());
                             }
-                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                            Err(reason) => {
+                                error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                    &reason.to_string(),
+                                ))
+                            }
                         }
                     }
                 }
@@ -5429,7 +5527,11 @@ fn run_worker(
                                 status = Some("gain edit committed".into());
                             }
                             Ok(_) => status = Some("no change".into()),
-                            Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                            Err(reason) => {
+                                error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                    &reason.to_string(),
+                                ))
+                            }
                         }
                     }
                 }
@@ -5696,7 +5798,11 @@ fn run_worker(
                             status = Some("edit committed".into());
                         }
                         Ok(_) => status = Some("no change".into()),
-                        Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                        Err(reason) => {
+                            error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                &reason.to_string(),
+                            ))
+                        }
                     }
                 }
                 request @ (Request::Undo | Request::Redo)
@@ -5893,7 +5999,11 @@ fn run_worker(
                         status = Some("undo committed".into());
                     }
                     Ok(None) => status = Some("nothing to undo".into()),
-                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                    Err(reason) => {
+                        error = Some(hex_storage::text::lowercase_outside_verbatim(
+                            &reason.to_string(),
+                        ))
+                    }
                 },
                 Request::Redo => match session.comparison_history(
                     true,
@@ -5926,7 +6036,11 @@ fn run_worker(
                         status = Some("redo committed".into());
                     }
                     Ok(None) => status = Some("nothing to redo".into()),
-                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                    Err(reason) => {
+                        error = Some(hex_storage::text::lowercase_outside_verbatim(
+                            &reason.to_string(),
+                        ))
+                    }
                 },
                 Request::SaveNew(path) => {
                     save_complete = true;
@@ -5949,10 +6063,21 @@ fn run_worker(
                         events.sampler_edit_audio(),
                     ) {
                         Ok(project) => match absolute_document_path(&path) {
-                            Ok(path) => match hex_storage::save_new_with_token(&path, &project) {
-                                Ok(token) => {
-                                    document = Some(DocumentHandle { path, token });
-                                    unsaved = false;
+                            Ok(path)
+                                if document
+                                    .as_ref()
+                                    .is_some_and(|handle| is_open_document(handle, &path)) =>
+                            {
+                                error = Some(
+                                    "save as chose the open project · use save to update it, or choose a new name"
+                                        .into(),
+                                );
+                            }
+                            Ok(path) => match save_document_as(path, &project) {
+                                Ok((handle, commit)) => {
+                                    document = Some(handle);
+                                    unsaved = commit.dirty;
+                                    error = commit.error;
                                     state = view_state_bound(
                                         &session,
                                         Arc::clone(&midi_preview),
@@ -5964,9 +6089,9 @@ fn run_worker(
                                             (Arc::clone(source), state.comparison_audio.clone())
                                         }),
                                     );
-                                    status = Some("project saved".into());
+                                    status = Some(commit.status.into());
                                 }
-                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                Err(reason) => error = Some(reason),
                             },
                             Err(reason) => error = Some(reason),
                         },
@@ -6031,7 +6156,11 @@ fn run_worker(
                                         error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
                                     }
                                     Ok(false) => {}
-                                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                    Err(reason) => {
+                                        error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                            &reason.to_string(),
+                                        ))
+                                    }
                                 }
                             }
                             // Preflight has not touched the original, recovery or token.
@@ -6058,7 +6187,11 @@ fn run_worker(
                                             }),
                                         );
                                     }
-                                    Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                    Err(reason) => {
+                                        error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                            &reason.to_string(),
+                                        ))
+                                    }
                                 }
                             }
                         }
@@ -7561,7 +7694,7 @@ fn import(
         return Err("resident audio frame limit reached".into());
     }
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -7570,14 +7703,14 @@ fn import(
             max_output_frames: output_limit,
         },
     )
-    .map_err(|error| error.to_string().to_lowercase())?;
+    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     admission
         .check_legacy_stage(session, std::slice::from_ref(&prepared))
         .map_err(|e| e.to_string())?;
     session
         .import_prepared_revision(prepared, previous)
         .map(|(_, revision)| revision)
-        .map_err(|error| error.to_string().to_lowercase())
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
 }
 
 fn import_to_track(
@@ -7614,7 +7747,7 @@ fn import_to_track(
         return Err("resident audio frame limit reached".into());
     }
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -7623,7 +7756,7 @@ fn import_to_track(
             max_output_frames: output_limit,
         },
     )
-    .map_err(|error| error.to_string().to_lowercase())?;
+    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     admission
         .check_legacy_stage(session, std::slice::from_ref(&prepared))
         .map_err(|e| e.to_string())?;
@@ -7634,7 +7767,7 @@ fn import_to_track(
     };
     imported
         .map(|(_, revision)| revision)
-        .map_err(|error| error.to_string().to_lowercase())
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
 }
 
 fn import_to_new_track(
@@ -7679,7 +7812,7 @@ fn import_to_new_track(
         return Err("resident audio frame limit reached".into());
     }
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -7688,14 +7821,14 @@ fn import_to_new_track(
             max_output_frames: output_limit,
         },
     )
-    .map_err(|error| error.to_string().to_lowercase())?;
+    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     admission
         .check_legacy_stage(session, std::slice::from_ref(&prepared))
         .map_err(|e| e.to_string())?;
     session
         .import_prepared_audio_track_at_revision(prepared, before_track, start, previous)
         .map(|(_, revision)| revision)
-        .map_err(|error| error.to_string().to_lowercase())
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
 }
 
 fn import_to_session(
@@ -7727,7 +7860,7 @@ fn import_to_session(
         return Err("resident audio frame limit reached".into());
     }
     let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -7736,14 +7869,14 @@ fn import_to_session(
             max_output_frames: output_limit,
         },
     )
-    .map_err(|error| error.to_string().to_lowercase())?;
+    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     admission
         .check_legacy_stage(session, std::slice::from_ref(&prepared))
         .map_err(|e| e.to_string())?;
     session
         .import_session_audio_clip_revision(prepared, track, scene, previous)
         .map(|(_, revision)| revision)
-        .map_err(|error| error.to_string().to_lowercase())
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
 }
 
 /// Registered presentation name, offered as the automatic track name on device
@@ -7753,7 +7886,7 @@ fn native_device_name(
     type_id: hex_lattice_contract::DeviceTypeId,
 ) -> Result<String, String> {
     hex_engine::native_device_catalog_for_class(class)
-        .map_err(|error| error.to_string().to_lowercase())?
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?
         .into_iter()
         .find(|entry| entry.type_id == type_id)
         .map_or_else(
@@ -7776,7 +7909,7 @@ fn arrangement_device_command(
 ) -> Result<Command, String> {
     use hex_engine::NativeDeviceClass;
     let state = hex_engine::default_native_device_state_for_class(class, type_id)
-        .map_err(|error| error.to_string().to_lowercase())?;
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     match destination {
         ArrangementDeviceDestination::NewTrack { before_track } => {
             Ok(Command::InsertDefaultTrackWithDevice {
@@ -7865,13 +7998,13 @@ mod service_tests {
                 start_playing: true,
             })
             .expect("admit seek");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         let result = loop {
             if let Some(result) = service.try_arrangement_seek_result() {
                 break result;
             }
             assert!(Instant::now() < deadline, "seek result did not arrive");
-            thread::yield_now();
+            crate::test_wait::pause();
         };
         assert_eq!(result.request_id, request_id);
         assert_eq!(result.mode, ArrangementSeekMode::LinearArrangement);
@@ -7913,7 +8046,7 @@ mod service_tests {
                 start_playing: false,
             })
             .expect("admit interactive seek");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         let result = loop {
             if let Some(result) = service.try_arrangement_seek_result() {
                 break result;
@@ -7922,7 +8055,7 @@ mod service_tests {
                 Instant::now() < deadline,
                 "interactive seek did not complete"
             );
-            thread::yield_now();
+            crate::test_wait::pause();
         };
         assert_eq!(result.request_id, request_id);
         assert_eq!(result.mode, ArrangementSeekMode::Interactive);
@@ -8033,13 +8166,13 @@ mod service_tests {
                 start_playing: false,
             })
             .expect("admit stateful interactive seek");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         let result = loop {
             if let Some(result) = service.try_arrangement_seek_result() {
                 break result;
             }
             assert!(Instant::now() < deadline, "stateful seek did not complete");
-            thread::yield_now();
+            crate::test_wait::pause();
         };
         assert_eq!(result.request_id, request_id);
         assert_eq!(result.mode, ArrangementSeekMode::Interactive);
@@ -11029,30 +11162,52 @@ mod service_tests {
         assert_eq!(retried.state.project.tracks()[0].midi_clips().len(), 2);
     }
 
+    #[track_caller]
     pub(super) fn next_event(service: &Service) -> Event {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            match service.try_event() {
-                Ok(event) => return event,
-                Err(TryRecvError::Empty) if Instant::now() < deadline => {
-                    thread::yield_now();
-                }
-                Err(error) => panic!("service event did not arrive: {error}"),
-            }
+        match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+            Ok(event) => event,
+            Err(error) => panic!("service event did not arrive: {error}"),
         }
     }
 
     fn next_export_event(service: &Service) -> ExportEvent {
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         loop {
             match service.try_export_event() {
                 Ok(event) => return event,
                 Err(TryRecvError::Empty) if Instant::now() < deadline => {
-                    thread::yield_now();
+                    crate::test_wait::pause();
                 }
                 Err(error) => panic!("export event did not arrive: {error}"),
             }
         }
+    }
+
+    #[test]
+    fn save_conflict_error_keeps_the_mixed_case_path_exact() {
+        let directory = TestDir::new();
+        let folder = directory.0.join("My Songs");
+        fs::create_dir(&folder).expect("mixed-case folder");
+        let path = folder.join("Live Set.hex");
+        hex_storage::save_new(&path, &Project::new(48_000).expect("project"))
+            .expect("write project");
+        let service = Service::new(48_000, 16, 32).expect("service");
+        let _ = next_event(&service);
+        service
+            .submit(Request::Open(path.clone()))
+            .expect("open project");
+        assert!(next_event(&service).error.is_none());
+        let mut changed = fs::read(&path).expect("read project");
+        changed.push(b' ');
+        fs::write(&path, changed).expect("external change");
+        service
+            .submit(Request::SaveCurrent)
+            .expect("conflicting save");
+        let error = next_event(&service).error.expect("conflict error");
+        assert_eq!(
+            text::plain(&error),
+            format!("project changed outside hex at {}", path.display())
+        );
     }
 
     #[test]
@@ -11087,7 +11242,7 @@ mod service_tests {
             commit.status,
             "project was published, but durability could not be confirmed"
         );
-        let warning = commit.error.expect("visible durability warning");
+        let warning = text::plain(&commit.error.expect("visible durability warning"));
         assert!(warning.contains(&format!(
             "complete project was published at {}",
             path.display()
@@ -11100,6 +11255,49 @@ mod service_tests {
             .expect("next Save Current must match the committed token");
         assert!(next.warning.is_none());
         assert_eq!(next.path, path);
+    }
+
+    #[test]
+    fn save_as_onto_an_existing_project_replaces_it_and_binds_the_document() {
+        let directory = TestDir::new();
+        let existing = directory.0.join("existing.hex");
+        let previous = Project::new(44_100).expect("previous project");
+        hex_storage::save_new(&existing, &previous).expect("existing project");
+        let foreign = directory.0.join("notes.hex");
+        fs::write(&foreign, b"not a hex project").expect("foreign file");
+
+        let service = Service::new(48_000, 32, 8_000_000).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "replacing".into(),
+            }))
+            .unwrap();
+        let edited = next_event(&service);
+
+        service.submit(Request::SaveNew(foreign.clone())).unwrap();
+        let refused = next_event(&service);
+        let reason = refused.error.expect("non-project destination refused");
+        assert!(reason.contains("choose another name"), "{reason}");
+        assert_eq!(fs::read(&foreign).unwrap(), b"not a hex project");
+        assert!(refused.state.document_path.is_none());
+
+        service.submit(Request::SaveNew(existing.clone())).unwrap();
+        let saved = next_event(&service);
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        assert_eq!(
+            saved.state.document_path.as_deref(),
+            Some(existing.as_path())
+        );
+        assert_eq!(hex_storage::load(&existing).unwrap(), *edited.state.project);
+        assert_eq!(
+            hex_storage::load_recovery(&existing).unwrap().project,
+            previous
+        );
+
+        service.submit(Request::SaveCurrent).unwrap();
+        let current = next_event(&service);
+        assert!(current.error.is_none(), "{:?}", current.error);
     }
 
     #[test]
@@ -11116,8 +11314,9 @@ mod service_tests {
             Arc::new(move |path, project, start, frames| {
                 entered.wait();
                 release.wait();
-                hex_export::render_prepared_new(path, Arc::clone(project), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
+                hex_export::render_prepared_new(path, Arc::clone(project), start, frames).map_err(
+                    |error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()),
+                )
             })
         };
         let service = Service::with_exporter(48_000, 16, 8, exporter).expect("service");

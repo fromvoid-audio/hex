@@ -129,7 +129,7 @@ fn restart_with_hooks(
     outcome
 }
 
-fn preserve(path: &Path, bytes: &[u8]) -> Result<PathBuf, StorageError> {
+pub(super) fn preserve(path: &Path, bytes: &[u8]) -> Result<PathBuf, StorageError> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     for _ in 0..64 {
         let directory = parent(path).join(format!(

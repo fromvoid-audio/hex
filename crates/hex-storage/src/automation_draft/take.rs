@@ -106,7 +106,12 @@ impl CompletedAutomationTake {
     }
 
     pub fn from_completed_on_control(mut source: CompletedDraft) -> Result<Self, String> {
-        let invalid = |reason| format!("automation take at {}: {reason}", source.path().display());
+        let invalid = |reason| {
+            format!(
+                "automation take at {}: {reason}",
+                crate::text::verbatim(source.path().display())
+            )
+        };
         if source.provenance().sample_rate != source.source().sample_rate() {
             return Err(invalid("capture and source sample rates differ"));
         }
@@ -129,7 +134,7 @@ impl CompletedAutomationTake {
                 if clock.sample_rate != source.source().sample_rate() {
                     return Err(format!(
                         "automation take at {}: captured clock rate differs from source",
-                        source.path().display()
+                        crate::text::verbatim(source.path().display())
                     ));
                 }
                 clock.loop_region
@@ -138,12 +143,15 @@ impl CompletedAutomationTake {
             None => {
                 return Err(format!(
                     "automation take at {}: wrapped draft has no captured loop context; retain it for recovery",
-                    source.path().display()
+                    crate::text::verbatim(source.path().display())
                 ));
             }
         };
         let mapping = ClockMapping::new(first, end, region).map_err(|reason| {
-            format!("automation take at {}: {reason}", source.path().display())
+            format!(
+                "automation take at {}: {reason}",
+                crate::text::verbatim(source.path().display())
+            )
         })?;
         let mut ordinal = 0;
         let mut count = count;
@@ -152,12 +160,15 @@ impl CompletedAutomationTake {
                 let clock = mapping
                     .clock_at(event.performance_frame)
                     .map_err(|reason| {
-                        format!("automation take at {}: {reason}", source.path().display())
+                        format!(
+                            "automation take at {}: {reason}",
+                            crate::text::verbatim(source.path().display())
+                        )
                     })?;
                 if clock != event_clock(*event) {
                     return Err(format!(
                         "automation take at {}: application clock is discontinuous",
-                        source.path().display()
+                        crate::text::verbatim(source.path().display())
                     ));
                 }
             }
