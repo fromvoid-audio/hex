@@ -147,6 +147,8 @@ mod user_errors;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
 mod midi_loop_notes;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod midi_loop_profile;
 mod midi_ruler;
 mod midi_scene;
 mod midi_selection;
@@ -944,6 +946,7 @@ pub(super) struct EditorView {
     overview_waveform_cache: Rc<std::cell::RefCell<overview_waveform::Cache>>,
     pub(in crate::editor) waveform_geometry_cache:
         Rc<std::cell::RefCell<waveform_geometry::WaveformGeometryCache>>,
+    midi_visible_notes: std::cell::RefCell<midi_loop_notes::VisibleNotesCache>,
     active_clip_drag: Option<drag::ClipDrag>,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
@@ -1683,6 +1686,7 @@ impl EditorView {
             waveform_geometry_cache: Rc::new(std::cell::RefCell::new(
                 waveform_geometry::WaveformGeometryCache::default(),
             )),
+            midi_visible_notes: Default::default(),
             active_clip_drag: None,
             active_browser_audio_drag: None,
             active_native_device_drag: None,

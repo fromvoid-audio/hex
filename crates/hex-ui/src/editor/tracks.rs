@@ -2279,14 +2279,25 @@ impl EditorView {
                 } else {
                     span
                 };
-                let visible = super::midi_loop_notes::visible_notes(
-                    &state.project,
-                    clip,
-                    visible_start,
-                    visible_end,
-                    merge_frames,
-                )
-                .ok();
+                let visible = match self.midi_visible_notes.try_borrow_mut() {
+                    Ok(mut cache) => cache.get(
+                        &state.project,
+                        clip,
+                        visible_start,
+                        visible_end,
+                        merge_frames,
+                    ),
+                    // Re-entrant build: compute without the cache.
+                    Err(_) => super::midi_loop_notes::visible_notes(
+                        &state.project,
+                        clip,
+                        visible_start,
+                        visible_end,
+                        merge_frames,
+                    )
+                    .ok()
+                    .map(std::rc::Rc::new),
+                };
                 let fit = visible.as_ref().map_or_else(
                     || super::midi_thumbnail::PitchFit::from_pitches([]),
                     |visible| visible.fit,

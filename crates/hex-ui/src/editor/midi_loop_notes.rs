@@ -10,8 +10,11 @@
 //! occurrence admission limit, so an admitted clip is never truncated. Notes
 //! of one pitch that touch within one display pixel are merged, which bounds
 //! painted quads by visible pixels and pitches rather than by repeats.
+//! `VisibleNotesCache` reuses a clip's result while its project snapshot and
+//! visible window are unchanged, so resting repaints skip the walk.
 use super::midi_thumbnail::PitchFit;
-use hex_project::{BeatTime, Invalid, MidiClip, Project};
+use hex_project::{BeatTime, ClipId, Invalid, MidiClip, Project};
+use std::{collections::HashMap, rc::Rc, sync::Arc};
 
 /// Per-clip visible-occurrence walk bound (the admission limit).
 pub(super) const MAX_VISIBLE_OCCURRENCES: usize = 65_536;
@@ -113,6 +116,63 @@ pub(super) fn visible_notes(
         intervals,
         fit: PitchFit::from_pitches(pitches),
     })
+}
+
+/// Visible frames and merge gap one cached result was computed for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Window {
+    start: u64,
+    end: u64,
+    merge_frames: u64,
+}
+
+/// Last visible notes per clip for one immutable project snapshot.
+///
+/// Holding the snapshot `Arc` keeps cached clips immutable and rules out a
+/// reused address matching a different project. Entries are bounded by the
+/// snapshot's clip count (one per clip, replaced when its window changes) and
+/// are all dropped when a different snapshot is drawn. A refused walk is
+/// cached as `None` so an over-limit clip is not re-walked every frame.
+#[derive(Default)]
+pub(super) struct VisibleNotesCache {
+    project: Option<Arc<Project>>,
+    entries: HashMap<ClipId, (Window, Option<Rc<VisibleNotes>>)>,
+}
+
+impl VisibleNotesCache {
+    /// `visible_notes` for `clip`, reused when the snapshot and window match.
+    pub(super) fn get(
+        &mut self,
+        project: &Arc<Project>,
+        clip: &MidiClip,
+        visible_start: u64,
+        visible_end: u64,
+        merge_frames: u64,
+    ) -> Option<Rc<VisibleNotes>> {
+        if !self
+            .project
+            .as_ref()
+            .is_some_and(|cached| Arc::ptr_eq(cached, project))
+        {
+            self.entries.clear();
+            self.project = Some(Arc::clone(project));
+        }
+        let window = Window {
+            start: visible_start,
+            end: visible_end,
+            merge_frames,
+        };
+        if let Some((cached, notes)) = self.entries.get(&clip.id())
+            && *cached == window
+        {
+            return notes.clone();
+        }
+        let notes = visible_notes(project, clip, visible_start, visible_end, merge_frames)
+            .ok()
+            .map(Rc::new);
+        self.entries.insert(clip.id(), (window, notes.clone()));
+        notes
+    }
 }
 
 #[cfg(test)]
@@ -259,6 +319,45 @@ mod tests {
         let coarse = visible_notes(project, clip, start, end, end - start).unwrap();
         assert!(coarse.intervals.len() < exact.intervals.len());
         assert_eq!(coarse.intervals.len(), 2, "one span per sounding pitch");
+    }
+
+    #[test]
+    fn cache_reuses_only_the_same_snapshot_and_window() {
+        let (mut editor, id) = looped_clip();
+        let project = Arc::new(editor.project().clone());
+        let clip = project.midi_clip(id).unwrap();
+        let mut cache = VisibleNotesCache::default();
+        let first = cache.get(&project, clip, 0, 400_000, 100).unwrap();
+        let again = cache.get(&project, clip, 0, 400_000, 100).unwrap();
+        assert!(
+            Rc::ptr_eq(&first, &again),
+            "resting repaint reuses the walk"
+        );
+        let scrolled = cache.get(&project, clip, 50_000, 450_000, 100).unwrap();
+        assert!(!Rc::ptr_eq(&first, &scrolled));
+        assert_eq!(
+            scrolled.intervals,
+            visible_notes(&project, clip, 50_000, 450_000, 100)
+                .unwrap()
+                .intervals
+        );
+        // An edit publishes a new snapshot; the old result must not be reused.
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: beats(4),
+                tempo: Tempo::new(60_000_000).unwrap(),
+            })
+            .unwrap();
+        let edited = Arc::new(editor.project().clone());
+        let clip = edited.midi_clip(id).unwrap();
+        let fresh = cache.get(&edited, clip, 50_000, 450_000, 100).unwrap();
+        assert_eq!(
+            fresh.intervals,
+            visible_notes(&edited, clip, 50_000, 450_000, 100)
+                .unwrap()
+                .intervals
+        );
+        assert_ne!(fresh.intervals, scrolled.intervals);
     }
 
     /// Rendered regression for the user report: the resting Arrangement clip
