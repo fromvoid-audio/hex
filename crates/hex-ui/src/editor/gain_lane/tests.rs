@@ -134,13 +134,15 @@ fn presentation_distinguishes_local_drafts_canonical_pending_and_exact_applied_r
     );
 }
 #[cfg(feature = "ui-test-support")]
-mod native {
+pub(in crate::editor) mod native {
     use super::*;
     use gpui::{
         Modifiers, MouseButton, TestAppContext, VisualTestContext, point as gpui_point, px, size,
     };
     use std::sync::Arc;
-    fn window(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<EditorView>, TrackId) {
+    pub(in crate::editor) fn window(
+        cx: &mut TestAppContext,
+    ) -> (gpui::AnyWindowHandle, Entity<EditorView>, TrackId) {
         cx.update(super::super::super::bind_editor_keys);
         let (project, track, _) = project();
         let preview = Arc::new(hex_engine::GainAutomationPreview::prepare(&project).unwrap());
@@ -428,18 +430,6 @@ mod native {
             assert_eq!(view.selected_track, Some(track));
             assert!(!view.clip_view_open);
             assert_eq!(view.gain_lane.selected, Some(BeatTime::from_raw(1)));
-        });
-    }
-    #[gpui::test]
-    fn redo_cancels_gain_draft_without_submitting_history(cx: &mut TestAppContext) {
-        let (handle, entity, _) = window(cx);
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        entity.update(&mut visual, |view, cx| {
-            let point = view.gain_point().unwrap();
-            assert!(view.begin_gain_draft(Some(point.beat), point));
-            view.history_action(hex_session::service::Request::Redo, cx);
-            assert!(view.gain_lane.draft.is_none());
-            assert_eq!(view.worker_requests_pending, 0);
         });
     }
     #[gpui::test]

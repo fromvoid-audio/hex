@@ -1668,3 +1668,28 @@ impl Render for EditorView {
             })
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tests {
+    use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn redo_cancels_gain_draft_without_submitting_history(cx: &mut TestAppContext) {
+        let (handle, entity, _) = crate::editor::gain_lane::tests::native::window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("gain-point-value-value").unwrap();
+        visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-shift-z");
+        visual.run_until_parked();
+        entity.update(&mut visual, |view, cx| {
+            assert!(view.gain_lane.draft.is_none());
+            assert!(!view.gain_numeric_editing(cx));
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+    }
+}
