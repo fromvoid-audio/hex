@@ -45,8 +45,7 @@ pub use native_assets::ResidentNativeReservation;
 mod verified_import;
 use audio_sources::MediaBank;
 pub use audio_sources::{
-    AudioSourceBinding, DocumentAudioMode, MAX_STREAMED_FILE_BYTES, MAX_STREAMED_SOURCE_FRAMES,
-    SourcePlanReservation, VerifiedAudioFile,
+    AudioSourceBinding, DocumentAudioMode, SourcePlanReservation, VerifiedAudioFile,
 };
 mod comparison_transition;
 mod device_comparison;

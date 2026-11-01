@@ -77,8 +77,6 @@ mod format_upgrade_tests;
 #[cfg(test)]
 #[path = "service/limiter_tests.rs"]
 mod limiter_tests;
-#[cfg(test)]
-mod long_source_tests;
 pub mod missing_media;
 pub mod preset;
 mod recovery;
@@ -109,9 +107,8 @@ const REQUEST_CAPACITY: usize = 32;
 #[cfg(test)]
 mod snapshot_queue_tests;
 const EVENT_CAPACITY: usize = 2;
-/// Per-file resident decode caps. Larger WAV sources are diverted to verified streaming.
-pub(crate) const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
-pub(crate) const IMPORT_FRAME_LIMIT: usize = 8_000_000;
+const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
+const IMPORT_FRAME_LIMIT: usize = 8_000_000;
 // Browser audition is independent of canonical resident-import admission. Bound
 // encoded input to 512 MiB and each decoded/converted stereo buffer to 256 MiB.
 // Source and converted PCM can coexist during conversion (512 MiB total);
