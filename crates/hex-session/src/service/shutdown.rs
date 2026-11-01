@@ -129,7 +129,7 @@ mod tests {
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
             // Only its duration matters; the terminal is never observed.
-            Arc::new(move |_, _, _, _| {
+            Arc::new(move |_, _, _, _, _, _, _| {
                 entered.wait();
                 release.wait();
                 Err("held export released".into())
