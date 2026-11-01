@@ -342,10 +342,10 @@ fn fft(re: &mut [f64], im: &mut [f64]) {
         len <<= 1;
     }
 }
-/// Largest non-harmonic spectral peak relative to the fundamental, in db.
+/// Total non-harmonic spectral energy relative to the fundamental, in db.
 /// A 4-term Blackman-Harris window (-92 db sidelobes) over the last 65536
 /// frames; bins within 8 of any harmonic of `hz` (or dc) count as harmonic.
-fn largest_inharmonic_db(output: &[StereoFrame], hz: f64, rate: u32) -> f64 {
+fn inharmonic_energy_db(output: &[StereoFrame], hz: f64, rate: u32) -> f64 {
     const N: usize = 1 << 16;
     let frames = &output[output.len() - N..];
     let mut re: Vec<f64> = frames
@@ -363,24 +363,20 @@ fn largest_inharmonic_db(output: &[StereoFrame], hz: f64, rate: u32) -> f64 {
     let bin_hz = f64::from(rate) / N as f64;
     let power = |k: usize| re[k] * re[k] + im[k] * im[k];
     let fundamental_bin = (hz / bin_hz).round() as usize;
-    let fundamental = (fundamental_bin - 8..=fundamental_bin + 8)
-        .map(power)
-        .fold(0.0, f64::max);
-    let mut worst = 0.0_f64;
+    let fundamental: f64 = (fundamental_bin - 8..=fundamental_bin + 8).map(power).sum();
+    let mut inharmonic = 0.0_f64;
     for k in 9..N / 2 {
         let f = k as f64 * bin_hz;
         let nearest = (f / hz).round() * hz;
         if ((f - nearest) / bin_hz).abs() <= 8.0 {
             continue;
         }
-        worst = worst.max(power(k));
+        inharmonic += power(k);
     }
-    10.0 * (worst / fundamental).log10()
+    10.0 * (inharmonic / fundamental).log10()
 }
 /// Pulse #3958: a 7 kHz sine at full drive and 48 kHz keeps every
-/// non-harmonic (aliased) component below -60 db relative to the fundamental.
-/// The former 4x linear-interpolation path measured -23.1 db (tone 0.5) and
-/// -24.6 db (tone 1.0).
+/// summed non-harmonic energy below -60 db relative to the fundamental.
 #[test]
 fn full_drive_7khz_sine_aliasing_stays_below_minus_60_db() {
     let rate = 48_000;
@@ -389,7 +385,10 @@ fn full_drive_7khz_sine_aliasing_stays_below_minus_60_db() {
         let mut s = patch(&state(), parameter::DRIVE, 1.0);
         s = patch(&s, parameter::DRY_WET, 1.0);
         s = patch(&s, parameter::TONE, tone);
-        let worst = largest_inharmonic_db(&render(&s, rate, &input), 7000.0, rate);
-        assert!(worst < -60.0, "tone {tone}: inharmonic peak {worst:.1} db");
+        let energy = inharmonic_energy_db(&render(&s, rate, &input), 7000.0, rate);
+        assert!(
+            energy < -60.0,
+            "tone {tone}: inharmonic energy {energy:.1} db"
+        );
     }
 }
