@@ -477,7 +477,7 @@ mod tests {
             run_export_worker(
                 work_rx,
                 events_tx,
-                Arc::new(|_, _, _, _| Err("unexpected asset-free exporter".into())),
+                Arc::new(|_, _, _, _, _, _, _| Err("unexpected asset-free exporter".into())),
                 finished_tx,
                 Arc::new(AtomicBool::new(false)),
                 worker_hook,
