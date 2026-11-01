@@ -156,6 +156,7 @@ mod midi_thumbnail;
 mod midi_velocity;
 mod midi_velocity_randomize;
 mod midi_velocity_ui;
+mod midi_wheel;
 mod mixer;
 mod musical_audio_controls;
 mod musical_time;
@@ -817,6 +818,7 @@ pub(super) struct EditorView {
     piano_view_clip: Option<(u64, ClipId)>,
     piano_zoom_wheel_accum: f32,
     piano_pitch_wheel_accum: f32,
+    piano_pitch_scroll_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
     pub(in crate::editor) piano_pitch_low: u8,
@@ -1556,6 +1558,7 @@ impl EditorView {
             piano_view_clip: None,
             piano_zoom_wheel_accum: 0.0,
             piano_pitch_wheel_accum: 0.0,
+            piano_pitch_scroll_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
                 .unwrap_or(hex_project::BeatTime::ONE),
