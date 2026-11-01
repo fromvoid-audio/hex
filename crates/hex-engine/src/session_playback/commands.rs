@@ -4,6 +4,32 @@ mod pause_analytic;
 
 impl SessionPlayback {
     pub fn apply(&mut self, command: SessionPlaybackCommand) -> Result<(), SessionPlaybackError> {
+        self.admits_transport(&command)?;
+        self.candidate_admission_open = false;
+        if self.linear_arrangement_export
+            && matches!(
+                command,
+                SessionPlaybackCommand::LaunchClip { .. }
+                    | SessionPlaybackCommand::CueMidiClip { .. }
+                    | SessionPlaybackCommand::LaunchScene { .. }
+                    | SessionPlaybackCommand::StopTrack { .. }
+                    | SessionPlaybackCommand::StopAllClips { .. }
+                    | SessionPlaybackCommand::BackToArrangement { .. }
+                    | SessionPlaybackCommand::CancelPending { .. }
+            )
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.apply_admitted(command)
+    }
+
+    /// Refusals that depend only on this runtime's prepared shape, not on its
+    /// clock or voice state. A declicked Pause/Stop is checked here when it is
+    /// requested, before its fade begins.
+    pub(crate) fn admits_transport(
+        &self,
+        command: &SessionPlaybackCommand,
+    ) -> Result<(), SessionPlaybackError> {
         if self.current_sampler_console
             && matches!(
                 command,
@@ -25,21 +51,13 @@ impl SessionPlayback {
                 "sampler supports frame-zero offline export only",
             ));
         }
-        self.candidate_admission_open = false;
-        if self.linear_arrangement_export
-            && matches!(
-                command,
-                SessionPlaybackCommand::LaunchClip { .. }
-                    | SessionPlaybackCommand::CueMidiClip { .. }
-                    | SessionPlaybackCommand::LaunchScene { .. }
-                    | SessionPlaybackCommand::StopTrack { .. }
-                    | SessionPlaybackCommand::StopAllClips { .. }
-                    | SessionPlaybackCommand::BackToArrangement { .. }
-                    | SessionPlaybackCommand::CancelPending { .. }
-            )
-        {
-            return Err(SessionPlaybackError::InvalidCommand);
-        }
+        Ok(())
+    }
+
+    fn apply_admitted(
+        &mut self,
+        command: SessionPlaybackCommand,
+    ) -> Result<(), SessionPlaybackError> {
         match command {
             SessionPlaybackCommand::Play => self.playing = true,
             SessionPlaybackCommand::Pause => {
