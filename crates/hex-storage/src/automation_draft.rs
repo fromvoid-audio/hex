@@ -10,8 +10,12 @@
 //!
 //! The file itself carries a cooperative exclusive writer/shared reader lock.
 //! Locks release on close; neither owner deletes files on drop. Readers require
-//! writer quiescence and report missing, torn or corrupt terminals visibly. An
-//! integrity chain detects accidental damage, not malicious authenticated input.
+//! writer quiescence and report missing, torn or corrupt terminals visibly.
+//! A reader waits at most [`READER_LOCK_BOUND`] for that quiescence: a process
+//! spawn anywhere in this process briefly duplicates every descriptor, including
+//! close-on-exec ones, so a just-closed writer can keep its lock until the child
+//! execs. A lock still held after the bound is [`StorageError::Busy`]. An
+//! //! integrity chain detects accidental damage, not malicious authenticated input.
 //! Provider capability/adoption and source path normalization belong to Session;
 //! this owner checks neutral source inventory and refuses relative media paths.
 //! The closed completed-take reader also owns semantic clock validation and bounded
@@ -29,6 +33,8 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    thread,
+    time::{Duration, Instant},
 };
 
 const MAGIC: &[u8; 8] = b"HEXADFT\0";
@@ -39,6 +45,11 @@ const RECORD_BYTES: usize = 96;
 const PAYLOAD_BYTES: usize = 64;
 const MAX_METADATA_BYTES: u64 = 1024;
 pub const MAX_APPEND_EVENTS: usize = 64;
+/// Longest a reader waits for a released writer lock before reporting busy.
+/// It covers a concurrent spawn's descriptor copy, not an active writer.
+pub const READER_LOCK_BOUND: Duration = Duration::from_secs(1);
+const LOCK_RETRY_PAUSE: Duration = Duration::from_millis(1);
+const READER_BUSY: &str = "automation draft is still locked by its writer · nothing was read · retry after recording ends";
 
 mod completed;
 pub use completed::CompletedDraft;
@@ -515,15 +526,25 @@ impl DraftReader {
     /// EOF without a terminal is interrupted; damaged tails retain their valid
     /// prefix. Header damage/future versions refuse before exposing source state.
     pub fn open(path: impl AsRef<Path>, limits: DraftReadLimits) -> Result<Self, DraftError> {
-        let path = path.as_ref();
-        Self::open_inner(path, limits).map_err(|source| DraftError {
+        Self::open_within(path.as_ref(), limits, READER_LOCK_BOUND)
+    }
+    fn open_within(
+        path: &Path,
+        limits: DraftReadLimits,
+        lock_bound: Duration,
+    ) -> Result<Self, DraftError> {
+        Self::open_inner(path, limits, lock_bound).map_err(|source| DraftError {
             path: path.to_path_buf(),
             progress: DraftProgress::default(),
             published: true,
             source: Box::new(source),
         })
     }
-    fn open_inner(path: &Path, limits: DraftReadLimits) -> Result<Self, StorageError> {
+    fn open_inner(
+        path: &Path,
+        limits: DraftReadLimits,
+        lock_bound: Duration,
+    ) -> Result<Self, StorageError> {
         let metadata = fs::symlink_metadata(path)?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             return Err(StorageError::Invalid(
@@ -531,7 +552,7 @@ impl DraftReader {
             ));
         }
         let mut file = File::open(path)?;
-        fs2::FileExt::try_lock_shared(&file)?;
+        lock_shared_within(&file, lock_bound)?;
         let mut prefix = [0; PREFIX_BYTES];
         file.read_exact(&mut prefix)?;
         if &prefix[..8] != MAGIC || prefix[12..16] != [0; 4] {
@@ -1108,3 +1129,17 @@ fn decode_record(record: &[u8; RECORD_BYTES]) -> Result<Record, StorageError> {
 
 #[cfg(test)]
 mod tests;
+
+/// Take a shared lock, retrying contention until `bound` elapses. Only
+/// `WouldBlock` retries; other lock failures and a still-held lock are reported.
+fn lock_shared_within(file: &File, bound: Duration) -> Result<(), StorageError> {
+    let start = Instant::now();
+    loop {
+        match fs2::FileExt::try_lock_shared(file) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() != io::ErrorKind::WouldBlock => return Err(error.into()),
+            Err(_) if start.elapsed() >= bound => return Err(StorageError::Busy(READER_BUSY)),
+            Err(_) => thread::sleep(LOCK_RETRY_PAUSE),
+        }
+    }
+}

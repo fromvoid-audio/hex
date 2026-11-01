@@ -366,9 +366,12 @@ fn locking_collision_publication_failure_and_drop_preserve_original_files() {
     let path = dir.path();
     let (source, target, provenance) = fixture();
     let writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+    let Err(busy) = DraftReader::open_within(&path, limits(), Duration::from_millis(20)) else {
+        panic!("held writer lock must refuse the reader")
+    };
     assert!(
-        DraftReader::open(&path, limits()).is_err(),
-        "exclusive writer excludes shared readers"
+        matches!(*busy.source, StorageError::Busy(_)),
+        "an active exclusive writer excludes shared readers as busy: {busy:?}"
     );
     let original = fs::read(&path).unwrap();
     assert!(DraftWriter::create_new(&path, &source, target, provenance).is_err());
@@ -738,4 +741,28 @@ fn actual_process_exit_releases_writer_lock_and_recovers_the_exact_durable_prefi
         assert_eq!(*actual, Some(event(index as u64)));
     }
     assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
+fn reader_waits_for_a_lock_held_by_a_spawned_childs_descriptor_copy() {
+    // A concurrent spawn duplicates every descriptor until the child execs, so
+    // a dropped writer's lock can briefly outlive it. The clone stands in for
+    // that copy deterministically: same open file description, same lock.
+    let dir = TestDir::new();
+    let path = dir.path();
+    let (source, target, provenance) = fixture();
+    let writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+    let inherited = writer.file.try_clone().unwrap();
+    drop(writer);
+    let Err(busy) = DraftReader::open_within(&path, limits(), Duration::ZERO) else {
+        panic!("held writer lock must refuse the reader")
+    };
+    assert!(matches!(*busy.source, StorageError::Busy(_)), "{busy:?}");
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(30));
+        drop(inherited);
+    });
+    let reader = open(&path);
+    assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
+    release.join().unwrap();
 }

@@ -72,6 +72,9 @@ pub enum StorageError {
         source: io::Error,
     },
     Invalid(&'static str),
+    /// A cooperative file lock stayed held by another owner beyond the bounded
+    /// wait; nothing was read or changed, so retrying later is safe.
+    Busy(&'static str),
     /// The document bytes differ from the snapshot captured when it was loaded.
     Conflict {
         path: PathBuf,
@@ -116,7 +119,7 @@ impl fmt::Display for StorageError {
             }
             Self::Io(error) => write!(f, "project file error: {error}"),
             Self::Json(error) => write!(f, "invalid project json: {error}"),
-            Self::Invalid(reason) => f.write_str(reason),
+            Self::Invalid(reason) | Self::Busy(reason) => f.write_str(reason),
             Self::Conflict { path } => {
                 write!(
                     f,
@@ -153,7 +156,7 @@ impl std::error::Error for StorageError {
             Self::JournalLockRelease { source, .. } => Some(source),
             Self::Io(e) => Some(e),
             Self::Json(e) => Some(e),
-            Self::Invalid(_) | Self::Conflict { .. } => None,
+            Self::Invalid(_) | Self::Busy(_) | Self::Conflict { .. } => None,
             Self::PublishedButNotDurable { source, .. }
             | Self::RecoveryBackupPublished { source, .. } => Some(source),
         }
