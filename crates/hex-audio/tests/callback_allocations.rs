@@ -14,6 +14,8 @@ mod project_tuning;
 #[path = "../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;
+#[path = "callback_allocations/transport_fade.rs"]
+mod transport_fade;
 use probe::{compare_output, measured_block, measured_shutdown};
 
 use allocation_counter::{AllocationInfo, measure};
