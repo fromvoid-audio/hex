@@ -212,33 +212,40 @@ fn current_format_audio_and_mixed_overlap_refuses_instead_of_normalizing() {
 }
 
 #[test]
-fn colliding_tempo_change_refuses_before_preparation_and_preserves_redo() {
+fn colliding_tempo_point_crops_the_audio_tail_like_a_global_tempo_edit() {
     let mut f = fixture();
     f.editor.execute(midi(f.track, 2_000, 400)).unwrap();
-    f.editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
-    assert!(f.editor.undo());
     let before = f.editor.project().clone();
     let mut prepared = false;
-    let result = f.editor.execute_prepared::<_, Invalid>(
-        Command::SetTempoPoint {
-            beat: BeatTime::ZERO,
-            tempo: Tempo::new(480_000_000).unwrap(),
-        },
-        |_| {
-            prepared = true;
-            Ok(())
-        },
+    // Four times faster: the MIDI clip's beat now lands at frame 500, inside
+    // the audio clip's old 1,000-frame span. Onsets stay on their beats and
+    // only the colliding audio tail is cropped, as for `SetProjectTempo`.
+    f.editor
+        .execute_prepared::<_, Invalid>(
+            Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(480_000_000).unwrap(),
+            },
+            |_| {
+                prepared = true;
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert!(prepared);
+    let changed = f.editor.project();
+    let audio = changed.clip(f.original).unwrap();
+    assert_eq!((audio.start(), audio.duration()), (0, 500));
+    assert_eq!(audio.asset(), f.asset);
+    assert_eq!(
+        changed
+            .tempo_map()
+            .beat_to_frame(changed.tracks()[0].midi_clips()[0].start())
+            .unwrap(),
+        500
     );
-    assert!(
-        result
-            .as_ref()
-            .err()
-            .is_some_and(|e| e.0.contains("overlap")),
-        "colliding tempo accepted: {result:?}"
-    );
-    assert!(!prepared);
+    assert!(f.editor.undo());
     assert_eq!(f.editor.project(), &before);
-    assert!(f.editor.can_redo());
 }
 
 #[test]
