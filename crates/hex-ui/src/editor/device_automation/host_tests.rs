@@ -704,6 +704,10 @@ const SHIFT: Modifiers = Modifiers {
     platform: false,
     function: false,
 };
+const SHIFT_CMD: Modifiers = Modifiers {
+    platform: true,
+    ..SHIFT
+};
 
 fn lane_point(
     visual: &mut VisualTestContext,
@@ -785,22 +789,22 @@ fn three_point_lane(
 }
 
 #[gpui::test]
-fn lane_marquee_selects_inside_points_and_shift_adds_while_cmd_toggles(cx: &mut TestAppContext) {
+fn lane_shift_marquee_selects_inside_points_while_shift_cmd_toggles(cx: &mut TestAppContext) {
     let (mut visual, editor, device, target, points) = three_point_lane(cx);
     let beats: Vec<_> = points.iter().map(|point| point.beat).collect();
     let before = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
     // Drag right-to-left over the first two points.
     let from = lane_point(&mut visual, device, target, [0.5, 0.95]);
     let to = lane_point(&mut visual, device, target, [0.1, 0.05]);
-    lane_drag(&mut visual, from, to, Modifiers::default());
+    lane_drag(&mut visual, from, to, SHIFT);
     assert_eq!(selected_beats(&visual, &editor), beats[..2]);
     let from = lane_point(&mut visual, device, target, [0.7, 0.05]);
     let to = lane_point(&mut visual, device, target, [0.9, 0.95]);
-    lane_drag(&mut visual, from, to, SHIFT);
+    lane_drag(&mut visual, from, to, SHIFT_CMD);
     assert_eq!(selected_beats(&visual, &editor), beats);
     let from = lane_point(&mut visual, device, target, [0.1, 0.05]);
     let to = lane_point(&mut visual, device, target, [0.3, 0.95]);
-    lane_drag(&mut visual, from, to, CMD);
+    lane_drag(&mut visual, from, to, SHIFT_CMD);
     assert_eq!(selected_beats(&visual, &editor), beats[1..]);
     pump(&mut visual, &editor);
     editor.read_with(&visual, |view, _| {
@@ -818,7 +822,7 @@ fn lane_group_move_and_delete_each_undo_in_one_step(cx: &mut TestAppContext) {
     let (mut visual, editor, device, target, points) = three_point_lane(cx);
     let from = lane_point(&mut visual, device, target, [0.1, 0.05]);
     let to = lane_point(&mut visual, device, target, [0.5, 0.95]);
-    lane_drag(&mut visual, from, to, Modifiers::default());
+    lane_drag(&mut visual, from, to, SHIFT);
     assert_eq!(selected_beats(&visual, &editor).len(), 2);
 
     // Dragging one selected point moves both by the same value delta.
@@ -846,7 +850,7 @@ fn lane_group_move_and_delete_each_undo_in_one_step(cx: &mut TestAppContext) {
 
     let from = lane_point(&mut visual, device, target, [0.3, 0.05]);
     let to = lane_point(&mut visual, device, target, [0.9, 0.95]);
-    lane_drag(&mut visual, from, to, Modifiers::default());
+    lane_drag(&mut visual, from, to, SHIFT);
     assert_eq!(selected_beats(&visual, &editor).len(), 2);
     editor.update(&mut visual, |view, cx| {
         assert!(view.delete_device_automation_point(cx))
@@ -856,6 +860,32 @@ fn lane_group_move_and_delete_each_undo_in_one_step(cx: &mut TestAppContext) {
     editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
     pump(&mut visual, &editor);
     assert_eq!(lane_points(&visual, &editor, device, target), points);
+}
+
+#[gpui::test]
+fn lane_plain_blank_drag_adds_a_point_and_drags_it_without_a_marquee(cx: &mut TestAppContext) {
+    let (mut visual, editor, device, target, points) = three_point_lane(cx);
+    // Unsnapped (Cmd) so the dragged point lands exactly under the pointer.
+    let from = lane_point(&mut visual, device, target, [0.6, 0.5]);
+    let to = lane_point(&mut visual, device, target, [0.6, 0.2]);
+    visual.simulate_mouse_down(from, MouseButton::Left, CMD);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.automation_view.devices.marquee.is_none());
+        assert!(view.automation_view.devices.draft.is_some());
+    });
+    // Shift arriving after the press must not turn the gesture into a band.
+    visual.simulate_mouse_move(to, Some(MouseButton::Left), SHIFT_CMD);
+    visual.simulate_mouse_up(to, MouseButton::Left, SHIFT_CMD);
+    visual.run_until_parked();
+    pump(&mut visual, &editor);
+    let after = lane_points(&visual, &editor, device, target);
+    assert_eq!(after.len(), points.len() + 1, "the press added one point");
+    let added = after
+        .iter()
+        .find(|point| !points.contains(point))
+        .expect("new point");
+    assert!(added.value.get() > 0.7, "the drag raised the new point");
+    assert_eq!(selected_beats(&visual, &editor), [added.beat]);
 }
 
 /// The bound control displays the in-flight gesture value before canonical state.
