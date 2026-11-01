@@ -1,8 +1,9 @@
 //! Sparse EQ editing. Opaque edits use atomic canonical state replacement;
 //! scalar graph drags use the existing paired-parameter gesture protocol.
 //! Selection is view state: `selected` drives the footer controls and a
-//! marquee `group` (shift adds, cmd toggles) holds a multi-selection. A blank
-//! click creates a node; a blank drag draws the marquee. Dragging a grouped
+//! marquee `group` holds a multi-selection. A blank press creates a node;
+//! shift-drag draws a marquee, and shift-cmd toggles its hits. Shift-press on
+//! a node adds it to the group. Dragging a grouped
 //! node moves the group as one parameter-snapshot gesture, and removal deletes
 //! the group in one atomic replacement, so one Undo reverts either.
 use super::*;
