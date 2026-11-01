@@ -9,6 +9,14 @@
 //! Does not schedule projects, access devices/files, retain host resource ownership or host
 //! foreign plugins. Preparation is control work; processing borrows validated inputs and must
 //! remain bounded and allocation-free.
+//!
+//! # Subnormal policy
+//! Hex never sets flush-to-zero/denormals-are-zero; callbacks run with the platform's
+//! default floating-point mode on both arm64 and x86-64. Apple Silicon handles subnormals
+//! without a large penalty, but x86-64 may stall on them, so every recursive history must
+//! flush near-silent or subnormal state explicitly (for example reverb `clean`, EQ/utility
+//! `quiet`, the delay loop floor and the operator lowpass proof) instead of relying on
+//! the hardware.
 mod parameter_binding;
 mod response;
 
