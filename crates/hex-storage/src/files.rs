@@ -1,4 +1,4 @@
-use crate::{StorageError, decode, encode};
+use crate::{ReplaceWarning, StorageError, decode, encode};
 use hex_project::Project;
 use std::{
     fs::{self, File, OpenOptions},
@@ -133,6 +133,40 @@ pub fn save_new_with_token(
     path: impl AsRef<Path>,
     project: &Project,
 ) -> Result<FileToken, StorageError> {
+    durable_token(save_with_finish(
+        path.as_ref(),
+        project,
+        finish_publication,
+    )?)
+}
+
+fn durable_token(outcome: SaveNewOutcome) -> Result<FileToken, StorageError> {
+    match outcome.warning {
+        None => Ok(outcome.token),
+        Some(warning) => Err(StorageError::PublishedButNotDurable {
+            path: outcome.path,
+            operation: warning.operation,
+            source: warning.source,
+        }),
+    }
+}
+
+/// A new project that is complete and visible at `path`. `warning` reports a
+/// failed temporary cleanup or directory sync after publication; the token
+/// still matches the published bytes, so callers can bind the document.
+#[derive(Debug)]
+pub struct SaveNewOutcome {
+    pub path: PathBuf,
+    pub token: FileToken,
+    pub warning: Option<ReplaceWarning>,
+}
+
+/// Create a new project like [`save_new_with_token`], but return a published
+/// file with its token and durability warning instead of an error.
+pub fn save_new_with_outcome(
+    path: impl AsRef<Path>,
+    project: &Project,
+) -> Result<SaveNewOutcome, StorageError> {
     save_with_finish(path.as_ref(), project, finish_publication)
 }
 
@@ -142,7 +176,7 @@ fn save_with_finish(
     path: &Path,
     project: &Project,
     finish: impl FnOnce(&Path, &Path) -> Result<(), FinishError>,
-) -> Result<FileToken, StorageError> {
+) -> Result<SaveNewOutcome, StorageError> {
     if path.file_name().is_none() {
         return Err(StorageError::Invalid("project target needs a filename"));
     }
@@ -167,6 +201,7 @@ fn save_with_finish(
     let mut temporary = None;
     for _ in 0..32 {
         let id = NEXT_TEMP.fetch_add(1, Relaxed);
+        // `crate::temporaries` sweeps this exact pattern once it is stale.
         let candidate = parent.join(format!(".hex-pending-{}-{id}", std::process::id()));
         match OpenOptions::new()
             .write(true)
@@ -188,14 +223,16 @@ fn save_with_finish(
     file.sync_all()?;
     drop(file);
     fs::hard_link(&temporary.0, path)?;
-    finish(&temporary.0, path).map_err(|(operation, source)| {
-        StorageError::PublishedButNotDurable {
-            path: path.to_path_buf(),
-            operation,
-            source,
-        }
-    })?;
-    Ok(FileToken::from_validated_bytes(Arc::from(bytes)))
+    let warning = finish(&temporary.0, path)
+        .err()
+        .map(|(operation, source)| ReplaceWarning { operation, source });
+    // Best effort: leaked temporaries never fail a completed save.
+    let _ = crate::temporaries::sweep_stale_temporaries(parent);
+    Ok(SaveNewOutcome {
+        path: path.to_path_buf(),
+        token: FileToken::from_validated_bytes(Arc::from(bytes)),
+        warning,
+    })
 }
 
 pub(crate) fn finish_publication(temporary: &Path, path: &Path) -> Result<(), FinishError> {
@@ -610,7 +647,7 @@ mod tests {
         let dir = TestDir::new();
         let path = dir.0.join("saved.hex");
         let project = Project::new(48_000).expect("project");
-        let error = save_with_finish(&path, &project, |temporary, destination| {
+        let outcome = save_with_finish(&path, &project, |temporary, destination| {
             assert_eq!(load(destination).expect("published document"), project);
             fs::remove_file(temporary).expect("cleanup succeeds");
             Err((
@@ -618,7 +655,17 @@ mod tests {
                 std::io::Error::other("injected sync failure"),
             ))
         })
-        .expect_err("durability failure must be explicit");
+        .expect("published outcome");
+        let warning = outcome.warning.as_ref().expect("durability warning");
+        assert_eq!(warning.operation, "synchronize the project directory");
+        // The returned token adopts the published file, so a session can bind
+        // it and the next replacement succeeds.
+        outcome
+            .token
+            .check_unchanged(&path)
+            .expect("adoptable token");
+        let token = outcome.token.clone();
+        let error = durable_token(outcome).expect_err("durability failure must be explicit");
         assert!(
             matches!(&error, StorageError::PublishedButNotDurable { path: saved, .. } if saved == &path)
         );
@@ -635,6 +682,34 @@ mod tests {
         assert!(
             matches!(save_new(&path, &project), Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists)
         );
+        let replacement = Project::new(44_100).expect("replacement");
+        crate::replace_existing(&path, &token, &replacement).expect("next save");
+        assert_eq!(load(&path).expect("replaced"), replacement);
+    }
+
+    #[test]
+    fn confirmed_replacement_only_overwrites_a_valid_project_and_keeps_recovery() {
+        let dir = TestDir::new();
+        let path = dir.0.join("existing.hex");
+        let previous = Project::new(48_000).expect("project");
+        save_new(&path, &previous).expect("existing project");
+        let replacement = Project::new(44_100).expect("replacement");
+        let outcome = crate::replace_confirmed(&path, &replacement).expect("confirmed save as");
+        assert_eq!(load(&path).expect("replaced"), replacement);
+        outcome.token.check_unchanged(&path).expect("bound token");
+        assert_eq!(
+            crate::load_recovery(&path).expect("recovery").project,
+            previous
+        );
+
+        let other = dir.0.join("notes.hex");
+        fs::write(&other, b"not a hex project").expect("foreign file");
+        assert!(matches!(
+            crate::replace_confirmed(&other, &replacement),
+            Err(StorageError::Invalid(reason)) if reason.contains("choose another name")
+        ));
+        assert_eq!(fs::read(&other).expect("untouched"), b"not a hex project");
+        assert!(!crate::recovery_path(&other).expect("sidecar path").exists());
     }
 
     #[cfg(unix)]

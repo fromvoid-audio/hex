@@ -182,6 +182,17 @@ pub(crate) fn record_ui_install(cx: &App, revision: u64, install: std::time::Dur
     }
 }
 
+/// Selection counts and focus flags that route `g`; no names or project content.
+pub(crate) fn record_group_selection(cx: &App, route: &str) {
+    if let Some(Ok(handle)) = cx
+        .try_global::<SessionDiagnostics>()
+        .filter(|d| d.action_observer.is_some())
+        .map(|d| &d.handle)
+    {
+        let _ = handle.record(&format!("action_diag v=1 stage=group_selection {route}"));
+    }
+}
+
 pub(crate) fn actions_enabled(cx: &App) -> bool {
     cx.try_global::<SessionDiagnostics>()
         .is_some_and(|d| d.action_observer.is_some())
