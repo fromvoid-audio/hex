@@ -1452,6 +1452,47 @@ class ModuleScopeTests(unittest.TestCase):
             self.assertNotIn("device-gallery-tests", steps)
             self.assertTrue(any(s.argv[:2] == ("cargo", "clippy") for s in steps.values()))
 
+class ProfileManifestTests(unittest.TestCase):
+    """Profile-only root manifest changes test the retuned packages (policy v6)."""
+
+    def repo(self, directory: Path, before: str, after: str) -> tuple[str, str]:
+        run = lambda *args: subprocess.run(["git", *args], cwd=directory, check=True, capture_output=True)
+        run("init", "-q")
+        run("config", "user.email", "ci@example.invalid")
+        run("config", "user.name", "ci")
+        (directory / "Cargo.toml").write_text(before)
+        run("add", "Cargo.toml")
+        run("commit", "-qm", "base")
+        base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=directory, text=True).strip()
+        (directory / "Cargo.toml").write_text(after)
+        run("commit", "-qam", "change")
+        return base, subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=directory, text=True).strip()
+
+    def test_only_codegen_keys_of_named_members_narrow(self):
+        inventory = [{"name": "hex-storage", "manifest": "crates/hex-storage/Cargo.toml", "features": {},
+                      "dependencies": [], "targets": []}]
+        before = ('[workspace]\nmembers = ["crates/*"] # all\n\n[profile.dev.package."*"]\nopt-level = 2\n')
+        cases = {
+            '[profile.dev.package.hex-storage]\nopt-level = 1 # faster large-document suites\n': ["hex-storage"],
+            '[profile.dev.package."hex-storage"]\ndebug = 1\ncodegen-units = 16\n': ["hex-storage"],
+            '[profile.dev.package.hex-storage]\ndebug-assertions = false\n': None,
+            '[profile.dev.package.hex-storage]\noverflow-checks = false\n': None,
+            '[profile.dev.package.unknown-crate]\nopt-level = 1\n': None,
+            '[profile.release]\nlto = true\n': None,
+        }
+        for addition, expected in cases.items():
+            with self.subTest(addition=addition), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                base, source = self.repo(root, before, before + "\n" + addition)
+                self.assertEqual(plan.profile_only_packages(root, base, source, inventory), expected)
+        for after in (before.replace("opt-level = 2", "opt-level = 1"),  # the "*" table
+                      before.replace('["crates/*"]', '["crates/*", "tools"]')):
+            with self.subTest(after=after), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                base, source = self.repo(root, before, after)
+                self.assertIsNone(plan.profile_only_packages(root, base, source, inventory))
+        self.assertEqual(plan.strip_toml_comment('name = "a#b" # note'), 'name = "a#b" ')
+
 
 if __name__ == "__main__":
     unittest.main()
