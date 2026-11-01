@@ -8,13 +8,13 @@ pub const SINC_CONVERSION_V1: u32 = 1;
 pub const SINC_CONVERSION_V2: u32 = 2;
 
 /// Conversion law recorded for newly imported media: identity at the project
-/// rate, otherwise the current default sinc law. Existing assets keep the
-/// version they were saved with; only new imports use this.
+/// rate, otherwise sinc v2 (decided 1 November 2026, Pulse #3953). Existing
+/// assets keep the version they were saved with; only new imports use this.
 pub const fn import_conversion_version(source_sample_rate: u32, project_sample_rate: u32) -> u32 {
     if source_sample_rate == project_sample_rate {
         IDENTITY_CONVERSION
     } else {
-        SINC_CONVERSION_V1
+        SINC_CONVERSION_V2
     }
 }
 
@@ -80,7 +80,7 @@ mod tests {
             IDENTITY_CONVERSION
         );
         let converted = import_conversion_version(44_100, 48_000);
-        assert_eq!(converted, super::SINC_CONVERSION_V1);
+        assert_eq!(converted, super::SINC_CONVERSION_V2);
         assert!(validate_conversion_metadata(44_100, 44_100, 48_000, 48_000, converted).is_ok());
     }
 
