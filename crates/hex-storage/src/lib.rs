@@ -20,6 +20,7 @@ pub use journal::{
 mod audio_edit;
 mod replacement;
 mod schema;
+mod temporaries;
 pub use files::{FileToken, load, load_with_token, save_new, save_new_with_token};
 use hex_project::Project;
 pub use replacement::{
