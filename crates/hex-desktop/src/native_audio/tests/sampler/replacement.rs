@@ -463,7 +463,13 @@ fn sampler_replacement_stale_cancel_corrupt_postseal_and_tight_frames_preserve_o
             ))));
             assert_eq!(h.render()[0], [0.125, -0.25]);
             let refused = h.next();
-            assert!(refused.error.as_ref().unwrap().contains("stop playback"));
+            assert!(
+                refused
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("sampler edit audio changed")
+            );
             gain::unchanged(&before, &refused);
             h.audio.as_ref().unwrap().control.stop();
             h.render();
