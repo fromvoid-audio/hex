@@ -107,10 +107,25 @@ impl DecodedAudio {
     }
 }
 
+/// Readable extent of a WAV whose audio data is truncated or ends in a partial
+/// frame. Such files are refused by default; [`recover_wav_file`] imports the
+/// readable whole frames only after an explicit recovery choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WavTruncation {
+    /// Complete frames present in the file.
+    pub readable_frames: u64,
+    /// Declared data bytes absent before physical end of file.
+    pub missing_bytes: u64,
+    /// Bytes of a trailing incomplete frame that recovery discards.
+    pub partial_frame_bytes: u64,
+}
+
 #[derive(Debug)]
 pub enum ImportError {
     Io(io::Error),
     Invalid(&'static str),
+    /// Audio data is truncated or ends in a partial frame; readable frames remain.
+    Truncated(WavTruncation),
     LimitExceeded(&'static str),
     AllocationFailed,
     SourceChanged,
@@ -122,6 +137,14 @@ impl fmt::Display for ImportError {
         match self {
             Self::Io(error) => write!(f, "could not read media file: {error}"),
             Self::Invalid(reason) => write!(f, "invalid or unsupported media: {reason}"),
+            Self::Truncated(truncation) => write!(
+                f,
+                "wav audio data is incomplete ({} bytes missing, {} bytes of a partial frame); \
+                 recover readable frames to import its {} complete frames",
+                truncation.missing_bytes,
+                truncation.partial_frame_bytes,
+                truncation.readable_frames
+            ),
             Self::LimitExceeded(reason) => write!(f, "media limit exceeded: {reason}"),
             Self::AllocationFailed => f.write_str("could not allocate media buffer"),
             Self::SourceChanged => f.write_str("source file changed while it was being read"),
@@ -135,6 +158,7 @@ impl std::error::Error for ImportError {
         match self {
             Self::Io(error) => Some(error),
             Self::Invalid(_)
+            | Self::Truncated(_)
             | Self::LimitExceeded(_)
             | Self::AllocationFailed
             | Self::SourceChanged
@@ -172,6 +196,30 @@ pub fn decode_wav_file(
         frames,
         file_identity,
     })
+}
+
+/// Read and decode a WAV file, explicitly recovering the readable whole frames of
+/// truncated or partial-frame audio data. Returns the truncation report when
+/// frames were dropped so the caller can tell the user about the fidelity loss.
+/// Malformed headers and block-compressed (ADPCM) truncation are still refused.
+pub fn recover_wav_file(
+    path: impl AsRef<Path>,
+    limits: Limits,
+) -> Result<(DecodedAudio, Option<WavTruncation>), ImportError> {
+    let path = path.as_ref().to_path_buf();
+    let mut file = File::open(&path)?;
+    let bytes = read_bounded(&mut file, limits.max_file_bytes)?;
+    let ((audio, sample_rate, frames), truncation) =
+        wav::decode_recoverable(&bytes, limits.max_frames)?;
+    Ok((
+        DecodedAudio {
+            path,
+            audio,
+            sample_rate,
+            frames,
+        },
+        truncation,
+    ))
 }
 
 /// Decode an in-memory RIFF/WAVE file under caller-provided byte and frame limits.

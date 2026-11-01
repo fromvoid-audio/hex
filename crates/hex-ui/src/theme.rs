@@ -307,9 +307,15 @@ pub fn load_fonts(cx: &App) -> Result<(), String> {
 /// then removes the marks. Pass bare paths, project IDs or saved names unmarked
 /// only through `verbatim`, never as plain text.
 pub fn text(value: impl AsRef<str>) -> SharedString {
-    use hex_session::service::text;
-    text::plain(&text::lowercase_outside_verbatim(value.as_ref())).into()
+    verbatim_text::plain(&verbatim_text::lowercase_outside_verbatim(value.as_ref())).into()
 }
+
+// hex-sandbox compiles this file by path without depending on hex-session or
+// hex-storage, so compile hex-storage's dependency-free text module the same way.
+// Producers in other crates use `verbatim`; this copy only consumes marks.
+#[allow(dead_code)]
+#[path = "../../hex-storage/src/text.rs"]
+mod verbatim_text;
 
 /// Reusable element palette for tracks, collections and other semantic markers.
 /// Fixed, restrained hues are mixed with the active neutral surfaces.
@@ -439,7 +445,7 @@ mod tests {
     fn text_lowercases_app_text_but_keeps_marked_paths_exact() {
         let message = format!(
             "Project Changed Outside Hex At {}",
-            hex_session::service::text::verbatim("/Users/Me/My Songs/Live Set.hex")
+            super::verbatim_text::verbatim("/Users/Me/My Songs/Live Set.hex")
         );
         assert_eq!(
             text(message).as_ref(),
