@@ -435,7 +435,11 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let key = BrowserItemKey::Plugin(row.module.clone(), row.cid);
-        let tooltip = format!("{}\n{}", row.module.display(), row.status);
+        let tooltip = format!(
+            "{}\n{}",
+            hex_session::service::text::verbatim(row.module.display()),
+            row.status
+        );
         div()
             .id(("browser-vst3", index))
             .debug_selector(move || format!("browser-vst3-row-{index}"))

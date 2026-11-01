@@ -4,6 +4,11 @@ use super::*;
 use hex_lattice_contract::{DeviceContractError as Error, DeviceTypeId, NativeDeviceState};
 
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sampler");
+/// Current state version. Supported saved versions (Pulse #3956):
+/// - v1 (20 Oct 2026): a classic loop region existed only while looping; off
+///   stored (0, 0). It migrates with the loop off and a dormant loop region
+///   equal to the playback region, so it plays exactly as before.
+/// - v2 (21 Oct 2026): the classic loop region is kept while the loop is off.
 pub const STATE_VERSION: u32 = 2;
 pub const SOURCE_SLOT: u32 = 1;
 const PREFIX: usize = 96;
@@ -251,9 +256,11 @@ impl SamplerState {
         if state.type_id() != TYPE_ID {
             return Err(Error::WrongDeviceType);
         }
-        if state.state_version() != STATE_VERSION {
-            return Err(Error::InvalidStateVersion);
-        }
+        let legacy = match state.state_version() {
+            1 => true,
+            STATE_VERSION => false,
+            _ => return Err(Error::InvalidStateVersion),
+        };
         if state.asset_references().len() > 1
             || state
                 .asset_references()
@@ -291,12 +298,20 @@ impl SamplerState {
         } else {
             GateMode::Trigger
         };
+        let unset = Region { start: 0, end: 0 };
         if (bytes[0] != 3 && (count != 0 || bytes[5] != 0))
-            || (bytes[0] > 1 && loop_region != (Region { start: 0, end: 0 }))
+            || (bytes[0] > 1 && loop_region != unset)
             || (bytes[0] <= 1 && gate != GateMode::Gate)
+            // v1 stored loop coordinates only while a classic loop was on.
+            || (legacy && bytes[0] == 0 && loop_region != unset)
         {
             return Err(Error::MalformedState);
         }
+        let loop_region = if legacy && bytes[0] == 0 {
+            region
+        } else {
+            loop_region
+        };
         let mode = match bytes[0] {
             0 | 1 => AuthoredMode::Classic {
                 loop_enabled: bytes[0] == 1,
