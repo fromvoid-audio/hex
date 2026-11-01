@@ -39,7 +39,7 @@ impl NumericDisplayCodec {
             }
             _ => spec,
         };
-        spec.with_codec(
+        spec.with_contextual_codec(
             move |value| match self {
                 Self::Percent => format!("{}%", format_number(value * 100.0, 2)),
                 Self::Balance => format_side(value, "l", "r"),
@@ -54,7 +54,7 @@ impl NumericDisplayCodec {
                 Self::Seconds => format!("{} s", format_number(value, 2)),
                 Self::Ratio => format!("{}:1", format_number(value, 2)),
             },
-            move |text| match self {
+            move |text, current| match self {
                 Self::Number => text
                     .trim()
                     .strip_suffix('x')
@@ -81,8 +81,14 @@ impl NumericDisplayCodec {
                     let text = text.trim();
                     let (number, factor) = if let Some(ms) = text.strip_suffix("ms") {
                         (ms, 0.001)
+                    } else if let Some(seconds) = text.strip_suffix('s') {
+                        (seconds, 1.0)
+                    } else if current.is_some_and(|value| value < 1.0) {
+                        // A bare number follows the readout: "250 ms" shows
+                        // milliseconds, so typing 300 means 300 ms.
+                        (text, 0.001)
                     } else {
-                        (text.strip_suffix('s').unwrap_or(text), 1.0)
+                        (text, 1.0)
                     };
                     number
                         .trim()
@@ -278,6 +284,11 @@ mod tests {
         assert_eq!(time.parse("80 ms").unwrap(), 0.08);
         assert_eq!(time.parse("2 s").unwrap(), 2.0);
         assert!(time.parse("121 s").is_err());
+        // A bare number follows the unit the readout currently shows.
+        assert_eq!(time.parse_with_current("300", Some(0.25)).unwrap(), 0.3);
+        assert_eq!(time.parse_with_current("3", Some(2.0)).unwrap(), 3.0);
+        assert_eq!(time.parse_with_current("2 s", Some(0.25)).unwrap(), 2.0);
+        assert!(time.parse_with_current("abc", Some(0.25)).is_err());
     }
 
     #[test]
