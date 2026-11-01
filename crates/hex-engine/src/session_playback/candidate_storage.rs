@@ -74,6 +74,7 @@ impl SessionPlayback {
             current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open,
+            live_restart: _,
         } = self;
         if midi_admission.is_some()
             || live_expression.is_some()
