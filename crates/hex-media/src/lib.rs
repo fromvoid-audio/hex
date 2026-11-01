@@ -17,6 +17,8 @@ use std::{
 };
 
 mod adpcm;
+mod file_identity;
+pub use file_identity::SourceFileIdentity;
 mod native_source;
 pub use native_source::{NativeDecodedAudio, NativeSourceRefusal};
 mod resample;
@@ -69,6 +71,7 @@ pub struct DecodedAudio {
     audio: Audio,
     sample_rate: u32,
     frames: usize,
+    file_identity: Option<SourceFileIdentity>,
 }
 
 impl DecodedAudio {
@@ -91,6 +94,12 @@ impl DecodedAudio {
     /// The decoded output is always stereo; mono input is duplicated.
     pub const fn channels(&self) -> u16 {
         2
+    }
+
+    /// Length and modification time of the file that was read, or `None` when
+    /// the platform reports no modification time. In-memory only; never saved.
+    pub const fn file_identity(&self) -> Option<SourceFileIdentity> {
+        self.file_identity
     }
 
     pub fn into_audio(self) -> Audio {
@@ -138,7 +147,7 @@ impl fmt::Display for ImportError {
             ),
             Self::LimitExceeded(reason) => write!(f, "media limit exceeded: {reason}"),
             Self::AllocationFailed => f.write_str("could not allocate media buffer"),
-            Self::SourceChanged => f.write_str("source changed during verified media access"),
+            Self::SourceChanged => f.write_str("source file changed while it was being read"),
             Self::Cancelled => f.write_str("media verification cancelled"),
         }
     }
@@ -166,33 +175,44 @@ impl From<io::Error> for ImportError {
 
 /// Read and decode a WAV file, rejecting input above the caller's byte limit.
 /// At most one sentinel byte beyond the limit is read to detect an oversized file.
+/// The open handle's length and modification time must be identical before and
+/// after the read, and match the bytes read, or the decode reports
+/// [`ImportError::SourceChanged`]; see [`DecodedAudio::file_identity`].
 pub fn decode_wav_file(
     path: impl AsRef<Path>,
     limits: Limits,
 ) -> Result<DecodedAudio, ImportError> {
     let path = path.as_ref().to_path_buf();
     let mut file = File::open(&path)?;
+    let before = file_identity::Observation::of(&file.metadata()?);
     let bytes = read_bounded(&mut file, limits.max_file_bytes)?;
+    let after = file_identity::Observation::of(&file.metadata()?);
+    let file_identity = file_identity::stable_identity(before, after, bytes.len())?;
     let (audio, sample_rate, frames) = decode_wav_inner(&bytes, limits.max_frames)?;
     Ok(DecodedAudio {
         path,
         audio,
         sample_rate,
         frames,
+        file_identity,
     })
 }
 
 /// Read and decode a WAV file, explicitly recovering the readable whole frames of
 /// truncated or partial-frame audio data. Returns the truncation report when
 /// frames were dropped so the caller can tell the user about the fidelity loss.
-/// Malformed headers and block-compressed (ADPCM) truncation are still refused.
+/// Malformed headers and block-compressed (ADPCM) truncation are still refused,
+/// and the same file-identity check as [`decode_wav_file`] applies.
 pub fn recover_wav_file(
     path: impl AsRef<Path>,
     limits: Limits,
 ) -> Result<(DecodedAudio, Option<WavTruncation>), ImportError> {
     let path = path.as_ref().to_path_buf();
     let mut file = File::open(&path)?;
+    let before = file_identity::Observation::of(&file.metadata()?);
     let bytes = read_bounded(&mut file, limits.max_file_bytes)?;
+    let after = file_identity::Observation::of(&file.metadata()?);
+    let file_identity = file_identity::stable_identity(before, after, bytes.len())?;
     let ((audio, sample_rate, frames), truncation) =
         wav::decode_recoverable(&bytes, limits.max_frames)?;
     Ok((
@@ -201,6 +221,7 @@ pub fn recover_wav_file(
             audio,
             sample_rate,
             frames,
+            file_identity,
         },
         truncation,
     ))
