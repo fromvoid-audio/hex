@@ -47,7 +47,7 @@ fn review_ratio_mixed_fixed_and_velocity_paths_refuse_zero_phase_quantization() 
     assert!(
         context
             .prepare_note_with_tuning(0, 127, Some(&nyquist))
-            .is_err()
+            .is_ok()
     );
 }
 
@@ -189,10 +189,59 @@ fn fixed_shapes_keep_pitch_independent_caps_and_defensive_validation() {
         [OperatorTuning::fixed(12_000.0, 2.0).expect("valid domain"); 4],
         [OperatorWaveform::Sine; 4],
     );
-    assert!(nyquist.prepare_note(0, 127).is_err());
+    assert!(nyquist.prepare_note(0, 127).is_ok());
     let below = configuration(
         [OperatorTuning::fixed(11_999.0, 2.0).expect("below"); 4],
         [OperatorWaveform::Sine; 4],
     );
     assert!(below.prepare_note(127, 127).is_ok());
+}
+
+/// Pulse #3957: a modulator at or above nyquist is silenced for that note only.
+/// The note renders exactly like the same patch with that modulator muted.
+#[test]
+fn nyquist_modulator_is_silenced_for_that_note_only() {
+    let mut modulation = [[0.0; 4]; 4];
+    modulation[3][0] = 1.0;
+    let routing = Routing::new(modulation, [1.0, 0.0, 0.0, 0.0]).expect("routing");
+    let envelopes = [OperatorEnvelope::new(1.0, 1.0, 1.0, 0.0, 0.0, 0.0).expect("envelope"); 4];
+    let oscillators = |modulator_level| {
+        let mut oscillators = [Oscillator::new(1.0, 1.0, 0.0).expect("oscillator"); 4];
+        oscillators[3] = Oscillator::new(16.0, modulator_level, 0.0).expect("modulator");
+        oscillators
+    };
+    let table = SineTable::new();
+    for shapes in [[OperatorWaveform::Sine; 4], [OperatorWaveform::Square; 4]] {
+        let prepare = |modulator_level| {
+            PreparedOperatorConfiguration::new_with_waveforms(
+                44_100,
+                oscillators(modulator_level),
+                routing,
+                envelopes,
+                shapes,
+            )
+            .expect("configuration")
+        };
+        let (patch, muted) = (prepare(1.0), prepare(0.0));
+        let render = |context: &PreparedOperatorConfiguration, pitch| {
+            let note = context.prepare_note(pitch, 100).expect("note admitted");
+            (0..64)
+                .map(|age| context.sample(&table, &note, age, u64::MAX))
+                .collect::<Vec<_>>()
+        };
+        let high = render(&patch, 120);
+        assert!(high.iter().any(|sample| *sample != 0.0));
+        assert_eq!(high, render(&muted, 120), "{shapes:?}");
+        assert_ne!(render(&patch, 60), render(&muted, 60), "{shapes:?}");
+        // The silenced note stays valid across the shared-context payload.
+        let note = patch.prepare_note(120, 100).expect("note admitted");
+        assert!(patch.note_matches_configuration(&note));
+        let decoded = PreparedOperatorNote::from_shared_payload(&note.into_shared_payload());
+        assert_eq!(decoded, Some(note));
+        let lfo = patch.prepare_lfo_note(120, 100).expect("lfo note admitted");
+        assert_eq!(
+            PreparedOperatorConfiguration::lfo_steps(&lfo)[3],
+            super::tuning::SILENCED_STEP
+        );
+    }
 }
