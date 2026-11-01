@@ -81,7 +81,7 @@ impl RecoveryTracker {
         context: RecoveryContext<'_>,
         unsaved: bool,
         changed: bool,
-    ) -> Result<(), String> {
+    ) -> Result<Option<PathBuf>, String> {
         let path = checkpoint_path(context.document, context.untitled)?;
         if self
             .failure
@@ -99,12 +99,12 @@ impl RecoveryTracker {
             if result.is_ok() {
                 *context.journal = None;
             }
-            result
+            result.map(|()| None)
         } else if changed {
             if self.failure.as_ref().is_some_and(|f| f.can_restart()) {
                 // The UI retains the actionable failure. Re-decoding this exact
                 // unsupported slot for every successful edit cannot repair it.
-                return Ok(());
+                return Ok(None);
             }
             checkpoint_project(
                 context.session,
@@ -114,10 +114,10 @@ impl RecoveryTracker {
                 context.journal,
             )
         } else {
-            return Ok(());
+            return Ok(None);
         };
         match &result {
-            Ok(()) => self.clear(),
+            Ok(_) => self.clear(),
             Err(reason) => self.failed(path, context.generation, reason.clone(), None),
         }
         result
