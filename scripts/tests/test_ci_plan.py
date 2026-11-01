@@ -42,8 +42,9 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(len(probes), 1)
         self.assertEqual(probes[0].argv, ("cargo", "test", "-p", "hex-plugin-host",
                                          "--features", "allocation-probe", "--locked"))
-        self.assertTrue(any(s.argv[:4] == ("cargo", "clippy", "-p", "hex-plugin-host")
-                            and "allocation-probe" in s.argv for s in selected))
+        lint = next(s for s in selected if s.step_id == "affected-feature-clippy")
+        self.assertEqual(lint.argv[:4], ("cargo", "clippy", "-p", "hex-plugin-host"))
+        self.assertIn("hex-plugin-host/allocation-probe", lint.argv[lint.argv.index("--features") + 1])
         self.assertFalse(any(s.step_id.startswith("feature-") and "allocation-probe" in s.argv
                              for s in selected), "the real owning probe runs once")
 
@@ -565,7 +566,9 @@ class ScopeTests(unittest.TestCase):
         resolved = {"scope": scope, "affected_packages": affected,
                     "boundary": boundary, "cargo_inventory": inventory}
         steps = ci.planned_steps(resolved)
-        self.assertEqual(steps[:len(ci.QUICK_STEPS)], ci.QUICK_STEPS)
+        # Quick checks keep their order; formatting is scoped to the changed owners.
+        self.assertEqual([s.step_id for s in steps[:len(ci.QUICK_STEPS)]], [s.step_id for s in ci.QUICK_STEPS])
+        self.assertNotIn("--all", steps[[s.step_id for s in steps].index("format")].argv)
         self.assertEqual(steps[len(ci.QUICK_STEPS)].step_id, "runner-tests")
         commands = [s.argv for s in steps]
         self.assertTrue(all(s.requires_tests for s in steps if s.argv[:2] == ("cargo", "test")))
@@ -578,10 +581,10 @@ class ScopeTests(unittest.TestCase):
         self.assertFalse(any("operator" in a for a in commands))
         # Reviewed stream hooks are linted, never silently skipped, but their
         # unrelated full suites are not run for a compressor-only change.
-        stream = [a for a in commands if "stream-test-support" in a]
+        stream = [a for a in commands if any("stream-test-support" in arg for arg in a)]
         self.assertTrue(stream)
         self.assertTrue(all(a[:2] == ("cargo", "clippy") for a in stream))
-        self.assertTrue(any("test-support" in a and "hex-stream" in a and a[1] == "clippy" for a in commands))
+        self.assertTrue(any("hex-stream/test-support" in ",".join(a) and a[1] == "clippy" for a in commands))
         self.assertIn("hex-midi", boundary["excluded_packages"])
         with tempfile.TemporaryDirectory() as directory:
             fixture_root = Path(directory)
@@ -611,7 +614,8 @@ class ScopeTests(unittest.TestCase):
                 # changes keep the probe configuration compiling via clippy.
                 build_input = change.endswith(("Cargo.toml", "build.rs"))
                 self.assertEqual(any(s.step_id == "audio-allocation-probe" for s in selected), build_input)
-                self.assertTrue(any(s.step_id == "audio-feature-clippy" for s in selected))
+                self.assertTrue(any(s.step_id == "affected-feature-clippy"
+                                    and "hex-audio/allocation-probe" in ",".join(s.argv) for s in selected))
         for broken in ({**boundary, "lint_packages": []},
                        {**boundary, "lint_packages": ["missing"]},
                        {**boundary, "tests": []},
@@ -957,8 +961,9 @@ class SingleRunFeatureTests(unittest.TestCase):
         for name in ("hex-session", "hex-ui", "hex-desktop"):
             self.assertIn(name, steps["affected-clippy"].argv)
         self.assertNotIn("desktop-allocation-probe", steps)
-        self.assertIn("hex-desktop", steps["audio-feature-clippy"].argv)
-        self.assertIn("hex-ui", steps["ui-feature-clippy"].argv)
+        features = steps["affected-feature-clippy"].argv[steps["affected-feature-clippy"].argv.index("--features") + 1]
+        self.assertIn("hex-desktop/allocation-probe", features)
+        self.assertIn("hex-ui/ui-test-support", features)
         self.assertFalse(any(s.argv[1] == "test" and "hex-ui" in s.argv for s in steps.values()))
         self.assertFalse(steps["single-run-doctests"].requires_tests)
         # A build input keeps every consumer's suites.
@@ -1430,6 +1435,55 @@ class ModuleScopeTests(unittest.TestCase):
             (root / "crates/owner/src/plain.rs").write_text('include!("generated.rs");\n')
             self.assertEqual(select("crates/owner/src/parent/child.rs"), {})
 
+    def test_module_roots_skip_untouched_unnamed_submodules_but_never_leave_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = self.crate(root)
+            parent = "crates/owner/src/parent.rs"
+            filters = plan.module_test_filters(root, [parent], inventory, ["owner"])
+            self.assertEqual(filters, {"owner": ["parent::"]})
+            skips = lambda lines, *extra: plan.module_test_skips(
+                root, [parent, *extra], inventory, ["owner"], filters, {parent: lines})
+            # parent.rs has its own test: an edit naming no child skips both children.
+            self.assertEqual(skips("fn helper_changed() {}"),
+                             {"owner": ["parent::child::", "parent::untested::"]})
+            # Naming a child (or touching its file) keeps it.
+            self.assertEqual(skips("use child::Thing;"), {"owner": ["parent::untested::"]})
+            self.assertEqual(skips("fn x() {}", "crates/owner/src/parent/child.rs"),
+                             {"owner": ["parent::untested::"]})
+            # Without the root's own tests and with no kept child tests, nothing is skipped.
+            (root / parent).write_text("mod child;\nmod untested;\n")
+            self.assertEqual(skips("fn helper_changed() {}"), {})
+
+    def test_runtime_consumer_owner_gets_module_filters_and_doc_examples_gate_doctests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = self.crate(root)
+            inventory[0]["name"] = "hex-storage"  # a reviewed runtime consumer, here the owner
+            path = "crates/owner/src/parent/child.rs"
+            self.assertEqual(plan.module_test_filters(root, [path], inventory, ["hex-storage"]),
+                             {"hex-storage": ["parent::child::"]})
+            self.assertEqual(plan.doc_example_owners(root, [path], inventory), [])
+            (root / path).write_text("/// ```\n/// assert!(true);\n/// ```\npub fn f() {}\n")
+            self.assertEqual(plan.doc_example_owners(root, [path], inventory), ["hex-storage"])
+        inventory = [{"name": "hex-session", "manifest": "crates/hex-session/Cargo.toml",
+                      "features": {"source-overview-test-support": []}, "dependencies": [], "targets": []}]
+        boundary = {"kind": "packages", "tests": [], "test_packages": ["hex-session"],
+                    "lint_packages": ["hex-session"], "single_run": {"hex-session": "source-overview-test-support"},
+                    "module_filters": {"hex-session": ["service::"]},
+                    "module_skips": {"hex-session": ["service::other::"]}, "doc_example_owners": []}
+        steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": ["hex-session"], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": []})}
+        self.assertNotIn("module-doctests-hex-session", steps)
+        feature = next(s for s in steps.values() if ci.runs_rust_tests(s.argv))
+        self.assertEqual(feature.argv[-3:], ("service::", "--skip", "service::other::"))
+        steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": ["hex-session"],
+            "boundary": {**boundary, "doc_example_owners": ["hex-session"]},
+            "cargo_inventory": inventory, "paths": []})}
+        self.assertIn("module-doctests-hex-session", steps)
+
     def test_scoped_steps_append_filters_skip_examples_and_drop_per_step_zero_guard(self):
         inventory = [{"name": "hex-desktop", "manifest": "crates/hex-desktop/Cargo.toml",
                       "features": {"allocation-probe": []}, "dependencies": [], "targets": []},
@@ -1447,6 +1501,9 @@ class ModuleScopeTests(unittest.TestCase):
                 with self.subTest(step=step.step_id):
                     self.assertIn(filters[0], step.argv)
                     self.assertFalse(step.requires_tests)
+                    # Only the unit-test target can match a module path.
+                    self.assertTrue({"--lib", "--bins"} & set(step.argv))
+                    self.assertNotIn("--all-targets", step.argv)
                     if step.argv[:2] == ("python3", "scripts/test_shards.py"):
                         self.assertLess(step.argv.index("--filter"), step.argv.index("--"))
             self.assertNotIn("device-gallery-tests", steps)

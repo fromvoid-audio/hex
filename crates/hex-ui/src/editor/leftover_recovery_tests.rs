@@ -13,13 +13,12 @@ impl Drop for Dir {
     }
 }
 fn dir() -> Dir {
+    // Parallel tests can share a clock tick; a counter keeps directories distinct.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
         "hex-leftover-ui-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&path).unwrap();
     Dir(path)
@@ -44,7 +43,8 @@ fn leave_untitled_journal(slot: &std::path::Path) -> Vec<u8> {
             name: "unsaved".into(),
         }))
         .unwrap();
-    assert!(next().error.is_none());
+    let edited = next();
+    assert!(edited.error.is_none(), "{:?}", edited.error);
     std::fs::read(slot).unwrap()
 }
 
@@ -134,4 +134,72 @@ fn startup_offers_the_leftover_keep_leaves_it_and_recover_opens_it(cx: &mut gpui
         assert!(std::time::Instant::now() < deadline, "recovered project");
         std::thread::yield_now();
     }
+}
+
+#[gpui::test]
+fn discard_needs_confirmation_and_sets_the_work_aside_where_it_can_be_reopened(
+    cx: &mut gpui::TestAppContext,
+) {
+    let root = dir();
+    let slot = root.0.join("recovery/untitled.hex-journal");
+    let bytes = leave_untitled_journal(&slot);
+    let (handle, editor) = editor_window(cx, Project::new(48_000).unwrap(), Arc::default());
+    editor.update(cx, |view, _| {
+        view.service = Service::with_recovery(48_000, 8, 128, slot.clone()).unwrap();
+    });
+    let offer = |cx: &mut gpui::TestAppContext| {
+        editor.update(cx, |view, _| view.check_leftover_recovery(None));
+        let deadline = crate::test_wait::hang_deadline();
+        while !cx.has_pending_prompt() {
+            cx.update_window(handle, |_, window, cx| {
+                editor.update(cx, |view, cx| view.reconcile_leftover_recovery(window, cx))
+            })
+            .unwrap();
+            cx.run_until_parked();
+            assert!(std::time::Instant::now() < deadline, "leftover offer");
+            std::thread::yield_now();
+        }
+    };
+    // Cancelling the confirmation keeps everything in place.
+    offer(cx);
+    cx.simulate_prompt_answer("discard…");
+    cx.run_until_parked();
+    assert!(cx.has_pending_prompt(), "discard asks for confirmation");
+    cx.simulate_prompt_answer("cancel");
+    cx.run_until_parked();
+    assert_eq!(std::fs::read(&slot).unwrap(), bytes);
+    // Confirmed discard sets the journal aside, byte-exact, and stops offering it.
+    offer(cx);
+    cx.simulate_prompt_answer("discard…");
+    cx.run_until_parked();
+    cx.simulate_prompt_answer("discard");
+    cx.run_until_parked();
+    assert!(!slot.exists(), "no longer offered");
+    let status = editor.read_with(cx, |view, _| {
+        hex_session::service::text::plain(&view.status)
+    });
+    let kept = PathBuf::from(
+        status
+            .strip_prefix("unsaved work set aside at ")
+            .expect(&status),
+    );
+    assert_eq!(std::fs::read(&kept).unwrap(), bytes);
+    assert!(hex_session::service::leftover_recovery(&slot, None).is_none());
+    // The kept folder reopens through file > recover kept session….
+    let folder = kept.parent().unwrap();
+    assert!(
+        matches!(hex_session::service::kept_journal(folder).unwrap(),
+                     ProjectSource::Journal(path) if path == kept)
+    );
+    assert!(matches!(hex_session::service::kept_journal(&kept).unwrap(),
+                     ProjectSource::Journal(path) if path == kept));
+    std::fs::copy(&kept, folder.join("second.hex-journal")).unwrap();
+    assert!(
+        hex_session::service::kept_journal(folder).is_err(),
+        "ambiguous folder refuses"
+    );
+    assert!(
+        hex_session::service::kept_journal(&root.0).is_err(),
+        "folder without a journal refuses"
+    );
 }
