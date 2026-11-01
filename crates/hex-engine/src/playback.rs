@@ -1628,17 +1628,17 @@ impl Playback {
 
     /// Preserve legacy finite transport behavior. Native publication uses the
     /// fallible companion to carry Session routes and reject unsafe demotions.
-    /// A changed tempo map keeps the cursor's Arrangement beat, as the
-    /// fallible companion does; a cursor this infallible path cannot convert
-    /// keeps its frame.
-    pub fn inherit_transport(&mut self, previous: &Self) {
-        self.position =
-            remapped_linear_position(&self.project, &previous.project, previous.position())
-                .unwrap_or_else(|_| previous.position());
+    /// A changed tempo map keeps the cursor's Arrangement beat. Refusal
+    /// leaves this transport unchanged when the conversion cannot be proven.
+    pub fn inherit_transport(&mut self, previous: &Self) -> Result<(), PlaybackHandoffError> {
+        let position =
+            remapped_linear_position(&self.project, &previous.project, previous.position())?;
+        self.position = position;
         self.performance_frame = previous.performance_frame();
         self.performance_clock_exhausted = previous.performance_clock_exhausted();
         self.playing = previous.playing();
         self.inherit_metronome(previous);
+        Ok(())
     }
 
     fn inherit_metronome(&mut self, previous: &Self) {
@@ -2416,8 +2416,8 @@ impl Playback {
 
 /// The legacy finite cursor at the donor cursor's Arrangement beat when the
 /// tempo map changed (Pulse #4118, #4135); an unchanged map keeps the frame.
-/// Every legacy cursor handoff (linear, promotion, demotion and the
-/// infallible transport copy) uses it. A cursor
+/// Every legacy cursor handoff (linear, promotion, demotion and transport
+/// copy) uses it. Frame zero remains beat zero even without timing metadata. A cursor
 /// inside the donor's active loop that remaps at or after the candidate loop
 /// end wraps by whole loop lengths, as the finite loop renderer does. Linear
 /// MIDI renders statelessly from the cursor, so a held note continues as the
@@ -2429,13 +2429,13 @@ fn remapped_linear_position(
 ) -> Result<u64, PlaybackHandoffError> {
     use crate::MidiTiming as _;
     let conversion = || PlaybackHandoffError::Session(crate::SessionPlaybackError::TempoConversion);
-    if next.tempo_map == previous.tempo_map {
+    if position == 0 || next.tempo_map == previous.tempo_map {
         return Ok(position);
     }
     let (Some(new_timing), Some(old_timing)) =
         (next.midi_volume_timing(), previous.midi_volume_timing())
     else {
-        return Ok(position);
+        return Err(conversion());
     };
     let beat = old_timing
         .frame_to_beat(position)

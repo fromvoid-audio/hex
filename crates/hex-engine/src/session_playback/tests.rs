@@ -3,6 +3,7 @@ use crate::routed_midi_fixture;
 mod authored_history;
 mod cue;
 mod interactive_start;
+mod release_timeline;
 mod tempo_continuity;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
@@ -6714,11 +6715,11 @@ fn changing_session_instrument_identity_carries_old_held_voice_once() {
     let replaced = with_replaced_instrument_id(&original);
     let mut candidate = SessionPlayback::new(revision(&replaced, table)).unwrap();
     candidate.try_inherit_state_from(&mut previous).unwrap();
-    assert!(
-        candidate.releases.iter().any(|entry| {
-            entry.track_id == candidate.routes[0].id && entry.continuation.is_some()
-        })
-    );
+    assert!(candidate.releases.iter().any(|entry| {
+        entry.track_id == candidate.routes[0].id
+            && entry.continuation.is_some()
+            && entry.timeline == ReleaseTimeline::Session
+    }));
 
     let mut expected = [[0.0; 2]; 128];
     let mut actual = [[0.0; 2]; 128];
@@ -7130,6 +7131,52 @@ fn instrument_edit_suppressions_end_at_the_loop_wrap_across_block_sizes() {
 }
 
 #[test]
+fn retained_arrangement_release_ends_when_a_later_edit_enables_a_loop() {
+    use hex_lattice::NativeInstrumentDefinition;
+    let definition = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.edit.enable_loop"),
+        levels: [0.2, 0.4],
+        release_frames: 8,
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let unlooped = project(1.0, 0, 8 << 32);
+    let mut snapshot = unlooped.snapshot();
+    snapshot.loop_region = Some(LoopRegion::new(0, 1_200, true).unwrap());
+    let looped = legacy_project_from_snapshot(snapshot).unwrap();
+    for block in [1, 64, 512] {
+        let prepare = |project: &Project, state| {
+            SessionPlayback::new(revision_with_instrument_registry(
+                &with_test_instrument(project, definition.id, state),
+                Arc::clone(&table),
+                &registry,
+            ))
+            .unwrap()
+        };
+        let mut old = prepare(&unlooped, 0);
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut samples = vec![[0.0; 2]; 301];
+        for chunk in samples.chunks_mut(block) {
+            old.render(chunk).unwrap();
+        }
+        let mut changed = prepare(&unlooped, 1);
+        changed.try_inherit_state_from(&mut old).unwrap();
+        let mut samples = vec![[0.0; 2]; 300];
+        for chunk in samples.chunks_mut(block) {
+            changed.render(chunk).unwrap();
+        }
+        let mut next = prepare(&looped, 0);
+        next.try_inherit_state_from(&mut changed).unwrap();
+        let mut samples = vec![[0.0; 2]; 600];
+        for chunk in samples.chunks_mut(block) {
+            next.render(chunk).unwrap();
+        }
+        assert_eq!(samples[599], [0.2; 2], "block={block}");
+    }
+}
+
+#[test]
 fn arrangement_handoff_suppresses_through_candidate_release_end() {
     use hex_lattice::NativeInstrumentDefinition;
 
@@ -7433,6 +7480,10 @@ fn repeated_arrangement_instrument_edits_do_not_recapture_suppressed_occurrences
         .try_inherit_state_from(&mut second_revision)
         .unwrap();
     assert_eq!(third_revision.releases.len(), 1);
+    assert_eq!(
+        third_revision.releases[0].timeline,
+        ReleaseTimeline::Arrangement
+    );
     let mut after_two_edits = [[0.0; 2]; 64];
     third_revision.render(&mut after_two_edits).unwrap();
     assert_eq!(after_two_edits, [[0.2; 2]; 64]);

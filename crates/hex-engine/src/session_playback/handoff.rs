@@ -345,6 +345,27 @@ impl SessionPlayback {
         mut demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         live: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        // Do not let the live reset fallback cut active mutable Arrangement
+        // voices during a tempo change (Pulse #3935 / #4117).
+        if self.revision.arrangement().sample_rate()
+            == previous.revision.arrangement().sample_rate()
+            && !previous
+                .revision
+                .session()
+                .timing()
+                .same_map(self.revision.session().timing())
+            && previous.routes.iter().enumerate().any(|(index, _)| {
+                effective_midi_route(&previous.revision, &previous.routes, index)
+                    .is_ok_and(|route| matches!(route.owner, RouteOwner::Arrangement))
+                    && previous
+                        .mutable_instruments
+                        .get(index)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|runtime| runtime.proofs().next().is_some())
+            })
+        {
+            return Err(SessionPlaybackError::MutableInstrumentActive);
+        }
         if live && self.live_restart && self.candidate_admission_open {
             return self.inherit_state_planned_once(previous, None, demand, true);
         }
@@ -888,22 +909,6 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::Arrangement(
                 COMPENSATED_TIMING_CHANGED,
             ));
-        }
-        if arrangement_cut != previous.arrangement_frame
-            && previous.routes.iter().enumerate().any(|(index, _)| {
-                effective_midi_route(&previous.revision, &previous.routes, index)
-                    .is_ok_and(|route| matches!(route.owner, RouteOwner::Arrangement))
-                    && previous
-                        .mutable_instruments
-                        .get(index)
-                        .and_then(Option::as_ref)
-                        .is_some_and(|runtime| runtime.proofs().any(|proof| !proof.note_off_sent))
-            })
-        {
-            // Mutable gate proofs are frame deadlines on the donor's
-            // Arrangement cursor. Keep the old graph audible until its notes
-            // end; remapping them is Pulse #4117.
-            return Err(SessionPlaybackError::MutableInstrumentActive);
         }
         if timing_changed
             && old_loop.is_some()
@@ -1832,6 +1837,7 @@ impl SessionPlayback {
                                         self.release_capacity,
                                         &mut next_order,
                                         ReleaseEntry {
+                                            timeline: ReleaseTimeline::Arrangement,
                                             source_origin: ReleaseSourceOrigin::capture(
                                                 &previous.revision,
                                                 old_index,
@@ -2146,16 +2152,13 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             let cut_frame = previous.arrangement_frame;
             let new_cut_frame = arrangement_cut;
-            // A candidate occurrence ends at the loop wrap: the next pass is a
-            // new onset and must sound (Pulse #4124, #4135). Suppressions match
-            // every pass, so their end is bounded by the wrap's performance
-            // frame rather than the note's unwrapped end.
-            let wrap_frame = self
+            let candidate_loop_end = self
                 .active_loop_region_at(new_cut_frame)
-                .map(|region| {
-                    previous
-                        .performance_frame
-                        .checked_add(region.end() - new_cut_frame)
+                .map(hex_project::LoopRegion::end);
+            let wrap_frame = candidate_loop_end
+                .map(|end| {
+                    end.checked_sub(new_cut_frame)
+                        .and_then(|remaining| previous.performance_frame.checked_add(remaining))
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)
                 })
                 .transpose()?;
@@ -2222,6 +2225,8 @@ impl SessionPlayback {
                     let Some(index) = existing_index else {
                         continue;
                     };
+                    let candidate_end =
+                        candidate_loop_end.map_or(candidate_end, |end| candidate_end.min(end));
                     let elapsed = candidate_end
                         .checked_sub(new_cut_frame)
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
@@ -2231,7 +2236,7 @@ impl SessionPlayback {
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                     if let Some(suppression) = self.suppression_scratch.get_mut(index) {
                         suppression.until_frame =
-                            suppression.until_frame.max(until_wrap(candidate_end));
+                            until_wrap(suppression.until_frame.max(candidate_end));
                     }
                 }
             }
@@ -2250,30 +2255,27 @@ impl SessionPlayback {
                         if is_suppressed(previous, old_route.id, key) {
                             return;
                         }
-                        let voice_result =
-                            if shared_sources::track_has_analytic_source(&self.revision, new_index)
-                            {
-                                MidiReleaseVoice::from_finite_span_preserving_gate(
-                                    span.start,
-                                    span.gate_end,
-                                    span.end,
-                                    sampler.detach(&previous.analytic_continuations),
-                                    cut_frame,
-                                    previous.performance_frame,
-                                )
-                            } else {
-                                MidiReleaseVoice::from_finite_span(
-                                    span.start,
-                                    span.gate_end,
-                                    span.end,
-                                    sampler.detach(&previous.analytic_continuations),
-                                    cut_frame,
-                                    previous.performance_frame,
-                                )
-                            };
-                        // The released occurrence ends at the wrap, as
-                        // unedited looped playback ends it; neither its
-                        // unwrapped gate nor its tail sounds over the next pass.
+                        let voice_result = if arrangement_cut == previous.arrangement_frame
+                            && shared_sources::track_has_analytic_source(&self.revision, new_index)
+                        {
+                            MidiReleaseVoice::from_finite_span_preserving_gate(
+                                span.start,
+                                span.gate_end,
+                                span.end,
+                                sampler.detach(&previous.analytic_continuations),
+                                cut_frame,
+                                previous.performance_frame,
+                            )
+                        } else {
+                            MidiReleaseVoice::from_finite_span(
+                                span.start,
+                                span.gate_end,
+                                span.end,
+                                sampler.detach(&previous.analytic_continuations),
+                                cut_frame,
+                                previous.performance_frame,
+                            )
+                        };
                         let voice = match voice_result {
                             Ok(Some(voice)) => {
                                 wrap_frame.map_or(voice, |wrap| voice.ending_by(wrap))
@@ -2302,6 +2304,8 @@ impl SessionPlayback {
                                 failure = Some(SessionPlaybackError::ArithmeticOverflow);
                                 return;
                             };
+                            let candidate_end = candidate_loop_end
+                                .map_or(candidate_end, |end| candidate_end.min(end));
                             let Some(elapsed) = candidate_end.checked_sub(new_cut_frame) else {
                                 failure = Some(SessionPlaybackError::ArithmeticOverflow);
                                 return;
@@ -2324,6 +2328,7 @@ impl SessionPlayback {
                             self.release_capacity,
                             &mut next_order,
                             ReleaseEntry {
+                                timeline: ReleaseTimeline::Arrangement,
                                 source_origin: ReleaseSourceOrigin::capture(
                                     &previous.revision,
                                     old_index,
@@ -2419,18 +2424,20 @@ impl SessionPlayback {
                 // Re-enabling an instrument must not chase notes already in
                 // progress; exact-boundary and later onsets remain eligible.
                 // The loop wrap ends this pass: the next pass is a new onset
-                // and must sound (Pulse #4124). `until_wrap` bounds it at the
-                // candidate wrap, measured from the candidate cut.
+                // and must sound (Pulse #4124).
+                let loop_end = self
+                    .active_loop_region_at(new_cut_frame)
+                    .map(hex_project::LoopRegion::end);
                 let mut failure = None;
                 new_track
                     .for_each_active_midi_span(new_cut_frame, |span, _| {
                         if span.start >= new_cut_frame {
                             return;
                         }
+                        let end = loop_end.map_or(span.end, |loop_end| span.end.min(loop_end));
                         let until_frame = match previous
                             .performance_frame
-                            .checked_add(span.end.saturating_sub(new_cut_frame))
-                            .map(until_wrap)
+                            .checked_add(end.saturating_sub(new_cut_frame))
                         {
                             Some(frame) => frame,
                             None => {
@@ -2646,12 +2653,21 @@ impl SessionPlayback {
                 .and_then(|index| midi_route_changed.get(index))
                 .copied()
                 .unwrap_or(false);
-            let remapped_gate = if route_changed {
+            let arrangement_remapped = arrangement_cut != previous.arrangement_frame
+                && entry.timeline == ReleaseTimeline::Arrangement;
+            let remapped_gate = if route_changed && !arrangement_remapped {
                 remap_release_gate(previous, self, entry, candidate_timing)?
             } else {
                 None
             };
-            let voice = if route_changed && entry.continuation.is_some() {
+            let voice = if arrangement_remapped {
+                // A retained release can have advanced while musical time was
+                // paused; cut at its actual source age, not the raw clock.
+                entry
+                    .voice
+                    .reconcile_at(entry.sample_frame(previous.performance_frame)?, None)
+                    .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?
+            } else if route_changed && entry.continuation.is_some() {
                 entry
                     .voice
                     .reconcile_at(previous.performance_frame, remapped_gate)
@@ -2663,8 +2679,26 @@ impl SessionPlayback {
                 continue;
             };
             let mut copied = *entry;
-            copied.voice = voice;
-            if route_changed && remapped_gate.is_none() {
+            copied.voice = if entry.timeline == ReleaseTimeline::Arrangement {
+                let wrap = self
+                    .active_loop_region_at(arrangement_cut)
+                    .map(|region| {
+                        region
+                            .end()
+                            .checked_sub(arrangement_cut)
+                            .and_then(|remaining| previous.performance_frame.checked_add(remaining))
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)
+                    })
+                    .transpose()?;
+                if let Some(wrap) = wrap.filter(|wrap| entry.end_frame() > *wrap) {
+                    voice.ending_by(entry.sample_frame(wrap)?)
+                } else {
+                    voice
+                }
+            } else {
+                voice
+            };
+            if arrangement_remapped || (route_changed && remapped_gate.is_none()) {
                 copied.continuation = None;
             }
             let old_index = contributor_index;
@@ -2838,6 +2872,7 @@ impl SessionPlayback {
                         self.release_capacity,
                         &mut next_order,
                         ReleaseEntry {
+                            timeline: ReleaseTimeline::Session,
                             source_origin: ReleaseSourceOrigin::capture(
                                 &previous.revision,
                                 old_index,
@@ -4691,9 +4726,7 @@ fn cut_arrangement_voices_for_remap(
         .transpose()?;
     for (old_index, _) in previous.routes.iter().enumerate() {
         let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
-        if old_route.owner != RouteOwner::Arrangement
-            || instrument_changed.get(old_index).copied().unwrap_or(true)
-        {
+        if old_route.owner != RouteOwner::Arrangement {
             continue;
         }
         let Some(new_index) = track_map
@@ -4704,7 +4737,9 @@ fn cut_arrangement_voices_for_remap(
             continue;
         };
         let mut failure = None;
-        if shared_sources::track_has_analytic_source(&previous.revision, old_index) {
+        if !instrument_changed.get(old_index).copied().unwrap_or(true)
+            && shared_sources::track_has_analytic_source(&previous.revision, old_index)
+        {
             let old_track = previous
                 .revision
                 .arrangement()
@@ -4743,6 +4778,7 @@ fn cut_arrangement_voices_for_remap(
                     };
                     let entry = (|| -> Result<ReleaseEntry, SessionPlaybackError> {
                         Ok(ReleaseEntry {
+                            timeline: ReleaseTimeline::Arrangement,
                             source_origin: ReleaseSourceOrigin::capture(
                                 &previous.revision,
                                 old_index,
