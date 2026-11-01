@@ -630,7 +630,32 @@ impl SessionPlayback {
         let relocate = (planned_transfer.is_none() || force_restart)
             && !self.current_sampler_console
             && !self.revision.requires_control_sampler_sources();
-        let paused_cursor = (relocate && !previous.playing).then_some(previous.arrangement_frame);
+        // A paused cursor keeps its Arrangement beat across an edited base
+        // tempo map, like the running handoff below (Pulse #4118).
+        let paused_cursor = if relocate && !previous.playing {
+            Some(
+                if self
+                    .revision
+                    .session()
+                    .timing()
+                    .same_map(previous.revision.session().timing())
+                {
+                    previous.arrangement_frame
+                } else {
+                    candidate_arrangement_cut(
+                        previous,
+                        &base_timing_for(
+                            self.revision.session(),
+                            self.periodic_tempo_at(previous.arrangement_frame),
+                        ),
+                        self.loop_region(),
+                    )?
+                    .0
+                },
+            )
+        } else {
+            None
+        };
         // Running: the same law at the next block boundary, but the transport
         // clock, loop pass and Session launches continue unchanged. Audio
         // restarts there (tails/PDC empty, gate-active notes chased); the user

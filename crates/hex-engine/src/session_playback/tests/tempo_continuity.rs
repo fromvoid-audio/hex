@@ -157,6 +157,110 @@ fn remapped_suppression_ends_at_the_loop_wrap_so_the_next_pass_sounds() {
 }
 
 #[test]
+fn paused_restart_relocates_to_the_same_arrangement_beat() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let cut = 3_001;
+    for looped in [false, true] {
+        for block in [1, 64, 512] {
+            let region = |micro_bpm| looped.then(|| beat_loop(micro_bpm)).flatten();
+            let old_project = arrangement_at(120_000_000, region(120_000_000));
+            let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            render_frames(&mut old, block, cut);
+            old.apply(SessionPlaybackCommand::Pause).unwrap();
+            let beat = arrangement_beat(&old);
+            let slower = revision(
+                &arrangement_at(60_000_000, region(60_000_000)),
+                Arc::clone(&table),
+            );
+            let mut next = SessionPlayback::new(slower).unwrap();
+            // The live reset handoff installs the paused cursor directly.
+            next.request_live_restart();
+            next.try_inherit_state_live_from(&mut old).unwrap();
+            assert!(!next.playing(), "looped={looped} block={block}");
+            assert_eq!(
+                next.arrangement_frame(),
+                2 * cut as u64,
+                "looped={looped} block={block}"
+            );
+            assert_eq!(arrangement_beat(&next), beat);
+        }
+    }
+}
+
+fn render_linear(playback: &mut crate::playback::Playback, block: usize, mut frames: usize) {
+    let mut buffer = vec![[0.0; 2]; block];
+    while frames > 0 {
+        let width = block.min(frames);
+        playback.render(&mut buffer[..width]).unwrap();
+        frames -= width;
+    }
+}
+
+fn linear_at(project: &Project, table: &Arc<hex_devices::SineTable>) -> crate::playback::Playback {
+    let revision = revision(project, Arc::clone(table));
+    crate::playback::Playback::from_shared(Arc::clone(revision.arrangement()))
+}
+
+#[test]
+fn legacy_linear_tempo_edit_keeps_the_arrangement_beat() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let cut = 3_001;
+    for looped in [false, true] {
+        for block in [1, 64, 512] {
+            let region = |micro_bpm| looped.then(|| beat_loop(micro_bpm)).flatten();
+            let mut old = linear_at(&arrangement_at(120_000_000, region(120_000_000)), &table);
+            old.apply(PlaybackCommand::Play);
+            render_linear(&mut old, block, cut);
+            assert_eq!(old.position(), cut as u64);
+            let mut next = linear_at(&arrangement_at(60_000_000, region(60_000_000)), &table);
+            next.try_inherit_runtime_from(&mut old).unwrap();
+            assert!(next.playing(), "looped={looped} block={block}");
+            assert_eq!(
+                next.position(),
+                2 * cut as u64,
+                "looped={looped} block={block}"
+            );
+            render_linear(&mut next, block, 1_000);
+            assert_eq!(next.position(), 2 * cut as u64 + 1_000);
+        }
+    }
+    // A cursor remapped past an unretimed loop end wraps inside the loop.
+    let region = Some((0, 4_800));
+    let mut old = linear_at(&arrangement_at(120_000_000, region), &table);
+    old.apply(PlaybackCommand::Play);
+    render_linear(&mut old, 64, 4_500);
+    let mut next = linear_at(&arrangement_at(60_000_000, region), &table);
+    next.try_inherit_runtime_from(&mut old).unwrap();
+    assert_eq!(next.position(), 9_000 - 4_800);
+}
+
+#[test]
+fn legacy_linear_held_note_continues_without_retrigger_and_ends_at_its_new_gate() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    // One note over beats 0..1: frames 0..24_000 at 120 bpm, 0..48_000 at 60.
+    let note = |micro_bpm| project_at_tempo(0.5, 0, 1 << 32, Tempo::new(micro_bpm).unwrap());
+    let mut old = linear_at(&note(120_000_000), &table);
+    old.apply(PlaybackCommand::Play);
+    render_linear(&mut old, 64, 3_001);
+    let mut next = linear_at(&note(60_000_000), &table);
+    next.try_inherit_runtime_from(&mut old).unwrap();
+    assert_eq!(next.position(), 6_002);
+    // The held note keeps sounding from its remapped position (no gap)...
+    let mut held = vec![[0.0; 2]; 48_000 - 6_002];
+    next.render(&mut held).unwrap();
+    assert!(held[..64].iter().all(|frame| *frame != [0.0; 2]));
+    // ...releases at the new gate (beat 1) and does not sound again.
+    let mut after = vec![[0.0; 2]; 48_000];
+    next.render(&mut after).unwrap();
+    assert!(
+        after[after.len() - 4_096..]
+            .iter()
+            .all(|frame| *frame == [0.0; 2])
+    );
+}
+
+#[test]
 fn tempo_remap_with_instrument_reenable_releases_suppression_at_new_loop_end() {
     use hex_lattice::NativeInstrumentDefinition;
 

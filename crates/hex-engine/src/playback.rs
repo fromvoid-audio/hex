@@ -1843,13 +1843,15 @@ impl Playback {
                         crate::SessionPlaybackError::DeviceRuntime,
                     ));
                 }
+                let position =
+                    remapped_linear_position(&self.project, &previous.project, previous.position)?;
                 if let (Some(candidate), Some(old)) = (
                     self.linear_runtime.as_mut(),
                     previous.linear_runtime.as_ref(),
                 ) {
                     candidate.inherit_from(&self.project, old, &previous.project);
                 }
-                self.position = previous.position;
+                self.position = position;
                 self.performance_frame = previous.performance_frame;
                 self.performance_clock_exhausted = previous.performance_clock_exhausted;
                 self.playing = previous.playing;
@@ -2403,6 +2405,49 @@ impl Playback {
             runtime.render_without_pages(&self.project, &mut self.position, self.playing, output)
         }
     }
+}
+
+/// The legacy finite cursor at the donor cursor's Arrangement beat when the
+/// tempo map changed (Pulse #4118); an unchanged map keeps the frame. A cursor
+/// inside the donor's active loop that remaps at or after the candidate loop
+/// end wraps by whole loop lengths, as the finite loop renderer does. Linear
+/// MIDI renders statelessly from the cursor, so a held note continues as the
+/// candidate's occurrence at that beat and ends at its remapped gate.
+fn remapped_linear_position(
+    next: &Project,
+    previous: &Project,
+    position: u64,
+) -> Result<u64, PlaybackHandoffError> {
+    use crate::MidiTiming as _;
+    let conversion = || PlaybackHandoffError::Session(crate::SessionPlaybackError::TempoConversion);
+    if next.tempo_map == previous.tempo_map {
+        return Ok(position);
+    }
+    let (Some(new_timing), Some(old_timing)) =
+        (next.midi_volume_timing(), previous.midi_volume_timing())
+    else {
+        return Ok(position);
+    };
+    let beat = old_timing
+        .frame_to_beat(position)
+        .map_err(|_| conversion())?;
+    let frame = new_timing.beat_to_frame(beat).map_err(|_| conversion())?;
+    let looped = previous
+        .loop_region()
+        .is_some_and(|region| region.enabled() && position < region.end());
+    let Some(region) = next
+        .loop_region()
+        .filter(|region| looped && region.enabled() && frame >= region.end())
+    else {
+        return Ok(frame);
+    };
+    let length = region
+        .end()
+        .checked_sub(region.start())
+        .filter(|length| *length > 0)
+        .ok_or_else(conversion)?;
+    let offset = frame.checked_sub(region.start()).ok_or_else(conversion)?;
+    Ok(region.start() + offset % length)
 }
 
 fn legacy_arrangement_state_cannot_be_seeded(previous: &Playback) -> bool {
