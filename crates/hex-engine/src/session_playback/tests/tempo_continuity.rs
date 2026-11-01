@@ -199,6 +199,41 @@ fn remapped_release_of_a_note_longer_than_the_loop_ends_at_the_wrap() {
 }
 
 #[test]
+fn remapped_release_follows_only_the_candidate_loop_when_one_side_loops() {
+    // Pulse #4135: the wrap that bounds a released donor voice is the
+    // candidate's. A donor-only loop leaves the full tail; a candidate-only
+    // loop ends the tail at the candidate wrap so its next pass sounds alone.
+    let table = Arc::new(hex_devices::SineTable::new());
+    let region = Some((0, 4_800));
+    let release = |donor, candidate, block| {
+        let mut old = SessionPlayback::new(revision(
+            &arrangement_at(120_000_000, donor),
+            Arc::clone(&table),
+        ))
+        .unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        render_frames(&mut old, block, 2_395);
+        let mut next = SessionPlayback::new(revision(
+            &arrangement_at(60_000_000, candidate),
+            Arc::clone(&table),
+        ))
+        .unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        assert_eq!(next.arrangement_frame(), 4_790, "block={block}");
+        assert_eq!(next.releases.len(), 1, "block={block}");
+        let tail = next.releases[0].end_frame() - next.performance_frame();
+        (next, tail)
+    };
+    for block in [1, 64, 512] {
+        let (donor_only, full_tail) = release(region, None, block);
+        assert!(donor_only.active_loop_region().is_none());
+        assert!(full_tail > 10, "block={block}");
+        let (_, bounded_tail) = release(None, region, block);
+        assert_eq!(bounded_tail, 10, "block={block}");
+    }
+}
+
+#[test]
 fn paused_restart_relocates_to_the_same_arrangement_beat() {
     let table = Arc::new(hex_devices::SineTable::new());
     let cut = 3_001;
