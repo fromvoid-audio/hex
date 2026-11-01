@@ -1,5 +1,7 @@
 //! Pulse #3949: sources past the per-file resident decode caps stream, and the
 //! operations that would turn a streamed clip into resident PCM refuse cleanly.
+//! Pulse #4143: sources only the resident decoder reads (ADPCM) get the same
+//! limit and explanation in browser audition and import.
 use super::*;
 use crate::{AudioSourceBinding, DocumentAudioMode, SourcePlanReservation};
 use std::{fs, io::Write, sync::atomic::AtomicU64};
@@ -35,6 +37,31 @@ impl Files {
         let mut file = fs::File::create(&path).unwrap();
         file.write_all(&header).unwrap();
         file.set_len(44 + u64::from(padded)).unwrap();
+        path
+    }
+    /// Sparse IMA ADPCM mono (zero blocks decode to silence): resident-only audio.
+    fn adpcm_wav(&self, name: &str, blocks: u32) -> PathBuf {
+        const ALIGN: u32 = 256;
+        const SAMPLES_PER_BLOCK: u32 = (ALIGN - 4) * 2 + 1;
+        let path = self.0.join(name);
+        let data = blocks * ALIGN;
+        let mut header = Vec::from(*b"RIFF");
+        header.extend_from_slice(&(40 + data).to_le_bytes());
+        header.extend_from_slice(b"WAVEfmt ");
+        header.extend_from_slice(&20u32.to_le_bytes());
+        header.extend_from_slice(&0x11u16.to_le_bytes());
+        header.extend_from_slice(&1u16.to_le_bytes());
+        header.extend_from_slice(&48_000u32.to_le_bytes());
+        header.extend_from_slice(&(48_000 * ALIGN / SAMPLES_PER_BLOCK).to_le_bytes());
+        header.extend_from_slice(&(ALIGN as u16).to_le_bytes());
+        header.extend_from_slice(&4u16.to_le_bytes());
+        header.extend_from_slice(&2u16.to_le_bytes());
+        header.extend_from_slice(&(SAMPLES_PER_BLOCK as u16).to_le_bytes());
+        header.extend_from_slice(b"data");
+        header.extend_from_slice(&data.to_le_bytes());
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(&header).unwrap();
+        file.set_len(header.len() as u64 + u64::from(data)).unwrap();
         path
     }
 }
@@ -198,4 +225,35 @@ fn streamed_source_past_the_edit_domain_imports_and_reopens_complete() {
         imported.state.project.snapshot()
     );
     assert_eq!(streamed_frames(&reopened), u64::from(frames));
+}
+
+#[test]
+fn resident_only_audio_has_one_limit_and_explanation_for_audition_and_import() {
+    let files = Files::new();
+    // 15,842 blocks x 505 frames = 8,000,210 frames: just past the resident cap.
+    let long = files.adpcm_wav("long-adpcm.wav", 15_842);
+    let short = files.adpcm_wav("short-adpcm.wav", 4);
+    let audition = prepare_sample_preview(&long, 48_000)
+        .map(|audio| audio.frames().len())
+        .unwrap_err();
+    assert!(
+        audition.contains("8000000 frames") && audition.contains("convert it to pcm"),
+        "audition must name the limit and recovery: {audition}"
+    );
+    assert_eq!(
+        prepare_sample_preview(&short, 48_000)
+            .unwrap()
+            .frames()
+            .len(),
+        4 * 505
+    );
+
+    let service = service_in(DocumentAudioMode::Resident);
+    service.submit(Request::Import(long)).unwrap();
+    let refused = next(&service);
+    assert_eq!(refused.error.as_deref(), Some(audition.as_str()));
+    assert!(refused.state.project.tracks().is_empty());
+    service.submit(Request::Import(short)).unwrap();
+    let imported = next(&service);
+    assert!(imported.error.is_none(), "{:?}", imported.error);
 }

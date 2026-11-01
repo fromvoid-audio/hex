@@ -1113,7 +1113,7 @@ pub(super) fn import_file(
         return Err(SessionError::Invalid("resident audio frame limit reached"));
     }
     let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
+    let decoded = super::decode_resident_import(path)?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -1172,7 +1172,7 @@ pub(super) fn decode_relinks(
             return Err(SessionError::Invalid("relink cancelled"));
         }
         let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
-        let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
+        let decoded = super::decode_resident_import(path)?;
         prepared.push((
             asset,
             PreparedImport::at_rate(

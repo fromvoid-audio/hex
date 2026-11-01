@@ -112,6 +112,25 @@ const EVENT_CAPACITY: usize = 2;
 /// Per-file resident decode caps. Larger WAV sources are diverted to verified streaming.
 pub(crate) const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
 pub(crate) const IMPORT_FRAME_LIMIT: usize = 8_000_000;
+/// The shared refusal for sources that only the resident decoder reads (ADPCM WAV).
+/// Fixed-frame WAV past these caps streams instead, so only those sources reach it.
+pub(crate) const RESIDENT_ONLY_LIMIT: &str = "resident audio import is limited to 64 mib and \
+    8000000 frames per file (about 2:46 at 48 khz); adpcm wav cannot stream, so convert it \
+    to pcm or float wav to import or audition longer audio";
+/// Resident import decode under the per-file caps. Every resident import path and
+/// browser audition of a non-streamable source share this, so they agree.
+pub(crate) fn decode_resident_import(
+    path: impl AsRef<Path>,
+) -> Result<hex_media::DecodedAudio, hex_media::ImportError> {
+    decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT)).map_err(|error| {
+        match error {
+            hex_media::ImportError::LimitExceeded(_) => {
+                hex_media::ImportError::LimitExceeded(RESIDENT_ONLY_LIMIT)
+            }
+            other => other,
+        }
+    })
+}
 // Browser audition is independent of canonical resident-import admission. Bound
 // encoded input to 512 MiB and each decoded/converted stereo buffer to 256 MiB.
 // Source and converted PCM can coexist during conversion (512 MiB total);
@@ -365,17 +384,30 @@ pub fn prepare_audio_preview(
 
 /// Decode a bounded browser one-shot on a background worker, independent of
 /// canonical project/history. PCM is finite stereo at the actual output rate.
-/// Supports WAV files up to 512 MiB, with at most 33,554,432 frames both before
-/// and after conversion (256 MiB per stereo f32 buffer). Never truncates a source
-/// to fit. Resident import retains its separate, smaller resource ceilings.
+/// Supports streamable (fixed-frame) WAV files up to 512 MiB, with at most
+/// 33,554,432 frames both before and after conversion (256 MiB per stereo f32
+/// buffer); import streams those. A source only the resident decoder reads (ADPCM)
+/// keeps the resident import caps and refusal, so audition never admits a file that
+/// import refuses (Pulse #4143). Never truncates a source to fit.
 pub fn prepare_sample_preview(
     path: impl AsRef<Path>,
     output_sample_rate: u32,
 ) -> Result<hex_engine::Audio, String> {
-    let decoded = decode_wav_file(
+    let path = path.as_ref();
+    // Unbounded header probe: failure means not streamable (or malformed), never a limit.
+    let streamable = hex_media::WavFrameReader::open(
         path,
-        Limits::new(BROWSER_PREVIEW_FILE_LIMIT, BROWSER_PREVIEW_FRAME_LIMIT),
+        hex_media::WavReaderLimits::new(u64::MAX, u64::MAX, 32, 4096),
     )
+    .is_ok();
+    let decoded = if streamable {
+        decode_wav_file(
+            path,
+            Limits::new(BROWSER_PREVIEW_FILE_LIMIT, BROWSER_PREVIEW_FRAME_LIMIT),
+        )
+    } else {
+        decode_resident_import(path)
+    }
     .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     let audio = hex_media::resample(
         decoded.audio(),
@@ -4434,7 +4466,7 @@ fn run_worker(
                             resident_seek.as_ref(),
                             resident_preview.as_ref(),
                         );
-                        decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+                        decode_resident_import(path)
                             .map_err(|reason| reason.to_string())
                             .and_then(|decoded| {
                                 session
@@ -7702,7 +7734,7 @@ fn import(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+    let decoded = decode_resident_import(path)
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     let prepared = PreparedImport::at_rate(
         decoded,
@@ -7755,7 +7787,7 @@ fn import_to_track(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+    let decoded = decode_resident_import(path)
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     let prepared = PreparedImport::at_rate(
         decoded,
@@ -7820,7 +7852,7 @@ fn import_to_new_track(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+    let decoded = decode_resident_import(path)
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     let prepared = PreparedImport::at_rate(
         decoded,
@@ -7868,7 +7900,7 @@ fn import_to_session(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+    let decoded = decode_resident_import(path)
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     let prepared = PreparedImport::at_rate(
         decoded,
