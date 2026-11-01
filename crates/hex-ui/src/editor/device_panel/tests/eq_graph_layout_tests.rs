@@ -8,11 +8,11 @@ impl Drop for BrowserRoot {
 }
 // Match the existing exclusive output lease for these private headless fixtures.
 // No global environment/settings mutation, backend redesign or lease bypass.
+/// The process-wide headless output's single test serializer. A second,
+/// independent mutex let its holders open or retire the output concurrently
+/// with `serial_output` holders, stalling retirement (Pulse #3857).
 pub(in crate::editor) fn status_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    SERIAL
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    hex_audio::worker_fixture::serial_output()
 }
 pub(super) fn headless_status_output() -> (
     hex_audio::WorkerPreparedOutput,

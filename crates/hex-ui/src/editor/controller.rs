@@ -3162,6 +3162,9 @@ impl EditorView {
         self.normalize_completed_trim_viewport(retired_trim);
         self.apply_created_note_selection(created_note_selection);
         self.apply_completed_midi_step(midi_step_complete);
+        if let Some(path) = &successfully_opened_path {
+            self.check_leftover_recovery(Some(path.clone()));
+        }
         successfully_opened_path
     }
 
