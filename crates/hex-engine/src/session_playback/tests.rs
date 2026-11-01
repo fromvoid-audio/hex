@@ -6714,11 +6714,11 @@ fn changing_session_instrument_identity_carries_old_held_voice_once() {
     let replaced = with_replaced_instrument_id(&original);
     let mut candidate = SessionPlayback::new(revision(&replaced, table)).unwrap();
     candidate.try_inherit_state_from(&mut previous).unwrap();
-    assert!(
-        candidate.releases.iter().any(|entry| {
-            entry.track_id == candidate.routes[0].id && entry.continuation.is_some()
-        })
-    );
+    assert!(candidate.releases.iter().any(|entry| {
+        entry.track_id == candidate.routes[0].id
+            && entry.continuation.is_some()
+            && entry.timeline == ReleaseTimeline::Session
+    }));
 
     let mut expected = [[0.0; 2]; 128];
     let mut actual = [[0.0; 2]; 128];
@@ -7348,6 +7348,10 @@ fn repeated_arrangement_instrument_edits_do_not_recapture_suppressed_occurrences
         .try_inherit_state_from(&mut second_revision)
         .unwrap();
     assert_eq!(third_revision.releases.len(), 1);
+    assert_eq!(
+        third_revision.releases[0].timeline,
+        ReleaseTimeline::Arrangement
+    );
     let mut after_two_edits = [[0.0; 2]; 64];
     third_revision.render(&mut after_two_edits).unwrap();
     assert_eq!(after_two_edits, [[0.2; 2]; 64]);
