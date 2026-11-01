@@ -269,6 +269,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     tested = boundary.get("test_packages", [])
     module_filters = boundary.get("module_filters", {})
     module_skips = boundary.get("module_skips", {})
+    by_name = {p["name"]: p for p in inventory}
     doc_examples = set(boundary.get("doc_example_owners", []))
 
     def scoped(argv: tuple[str, ...]) -> tuple[str, ...]:
@@ -278,6 +279,12 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
             return argv
         names = sorted({name for owner in owners for name in module_filters[owner]})
         skips = sorted({name for owner in owners for name in module_skips.get(owner, [])})
+        # Module paths name only unit tests in the library or binary; integration
+        # tests, examples and benches would build and link only to match nothing.
+        if "--doc" not in argv and not {"--test", "--example", "--bench", "--lib", "--bins"} & set(argv):
+            kinds = {kind for owner in owners for target in by_name[owner]["targets"] for kind in target["kind"]}
+            selector = ("--lib",) if "lib" in kinds else ("--bins",)
+            argv = (*(a for a in argv if a != "--all-targets"), *selector)
         if argv[:2] == ("python3", "scripts/test_shards.py"):
             split = argv.index("--")
             return (*argv[:split], *(a for name in names for a in ("--filter", name)),
