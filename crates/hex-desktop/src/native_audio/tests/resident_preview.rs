@@ -316,6 +316,9 @@ pub(super) struct ResidentHarness {
     unconsumed_rebound: Option<(u64, u64)>,
     /// Set when `release_relinquished_output` found the output kept.
     kept_output: Option<u64>,
+    /// Audio revisions continue on a kept output: callers' `after = 0` means
+    /// "after the rebind", so `applied` never returns an older submission.
+    revision_floor: u64,
     native_plugins: bool,
     pub(super) plugin_completed: Arc<AtomicU64>,
     pub(super) plugin_queued: Arc<AtomicBool>,
@@ -497,6 +500,7 @@ impl ResidentHarness {
             rebound: Vec::new(),
             unconsumed_rebound: None,
             kept_output: None,
+            revision_floor: 0,
             native_plugins,
             plugin_completed,
             plugin_queued,
@@ -656,6 +660,11 @@ impl ResidentHarness {
                     Some(output)
                 );
                 self.kept_output = Some(output);
+                self.revision_floor = self
+                    .audio
+                    .as_ref()
+                    .and_then(EditorAudio::status)
+                    .map_or(0, |status| status.applied_revision.load(Acquire));
                 self.submitted = self
                     .submitted
                     .filter(|(_, metadata)| metadata.context.project_generation == generation);
@@ -682,6 +691,7 @@ impl ResidentHarness {
         }
         let mut slot = self.callback.lock().unwrap();
         slot.take().unwrap().close();
+        self.revision_floor = 0;
         self.audio = None;
         self.submitted = None;
         self.constructor_submitted = None;
@@ -829,6 +839,7 @@ impl ResidentHarness {
         (entered, resume, observed_busy)
     }
     pub(super) fn applied(&mut self, after: u64) -> (u64, ResidentPublicationMetadata) {
+        let after = after.max(self.revision_floor);
         let end = Instant::now() + Duration::from_secs(10);
         loop {
             self.pump();
