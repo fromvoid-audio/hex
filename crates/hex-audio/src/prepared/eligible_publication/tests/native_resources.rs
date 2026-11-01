@@ -64,13 +64,7 @@ fn native_flag_without_actual_carriers_and_resource_pressure_refuse_before_consu
             .unwrap()
             .accounting_complete
     );
-    assert_eq!(
-        control
-            .audio_candidate_domain_usage()
-            .unwrap()
-            .occupied_domains,
-        0
-    );
+    assert_eq!(observed_usage(&control).occupied_domains, 0);
     drop(refused);
     drop(control);
     drop(data);

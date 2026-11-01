@@ -90,6 +90,8 @@ pub enum Error {
     Timeout,
     Worker(u32),
     Custody(CustodyError),
+    /// Non-terminal: nothing was captured or saved and the plugin keeps running.
+    StateExceedsLimit(protocol::StateCaptureRefusal),
     Preparation {
         cause: Box<Error>,
         exit: Option<std::process::ExitStatus>,
@@ -109,6 +111,7 @@ impl std::fmt::Display for Error {
             Self::Timeout => out.write_str("instance supervision timed out"),
             Self::Worker(n) => write!(out, "instance worker refused operation: {n}"),
             Self::Custody(s) => write!(out, "instance child custody is unconfirmed: {s}"),
+            Self::StateExceedsLimit(refusal) => refusal.fmt(out),
             Self::Preparation { cause, .. } => write!(out, "instance preparation failed: {cause}"),
         }
     }
