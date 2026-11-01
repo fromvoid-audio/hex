@@ -21,11 +21,14 @@ mod audio_edit;
 mod replacement;
 mod schema;
 mod temporaries;
-pub use files::{FileToken, load, load_with_token, save_new, save_new_with_token};
+pub use files::{
+    FileToken, SaveNewOutcome, load, load_with_token, save_new, save_new_with_outcome,
+    save_new_with_token,
+};
 use hex_project::Project;
 pub use replacement::{
     RecoveryDocument, ReplaceOutcome, ReplaceWarning, load_recovery, recovery_path,
-    replace_existing,
+    replace_confirmed, replace_existing,
 };
 use std::{fmt, io, path::PathBuf};
 

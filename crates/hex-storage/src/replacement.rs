@@ -88,6 +88,26 @@ pub fn replace_existing(
     })
 }
 
+/// Replace an existing project the user explicitly chose to overwrite, such as
+/// Save As onto an existing name after the OS replace prompt. Only a file that
+/// currently loads as a valid hex project is replaced, through
+/// [`replace_existing`], so its bytes become the recovery generation. Anything
+/// else (another format, a newer hex schema, a symbolic link) is refused and
+/// left untouched.
+pub fn replace_confirmed(
+    target: impl AsRef<Path>,
+    project: &Project,
+) -> Result<ReplaceOutcome, StorageError> {
+    let target = target.as_ref();
+    let (_, token) = crate::load_with_token(target).map_err(|error| match error {
+        StorageError::Io(error) => StorageError::Io(error),
+        _ => StorageError::Invalid(
+            "save as can only replace an existing hex project this version can open; choose another name",
+        ),
+    })?;
+    replace_existing(target, &token, project)
+}
+
 fn replace_with_hooks(
     target: &Path,
     expected: &FileToken,
