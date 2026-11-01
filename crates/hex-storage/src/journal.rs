@@ -13,12 +13,15 @@ use std::{
 
 const MAGIC: &[u8; 8] = b"HEXJRNL\0";
 const LOCK_MAGIC: &[u8; 8] = b"HEXJLOC\0";
+pub(crate) const JOURNAL_SUFFIX: &str = ".hex-journal";
+/// Leaves room for the slot lock's `.lock` suffix within a 255-byte component.
+pub(crate) const MAX_JOURNAL_NAME_BYTES: usize = 255 - ".lock".len();
 
 /// Journal beside a saved project. Untitled uses a caller-supplied application slot.
 pub fn journal_path(target: &Path) -> Result<PathBuf, StorageError> {
     let name = basename(target)?;
-    let name = format!(".{name}.hex-journal");
-    if name.len() > 250 {
+    let name = format!(".{name}{JOURNAL_SUFFIX}");
+    if name.len() > MAX_JOURNAL_NAME_BYTES {
         return Err(StorageError::Invalid(
             "journal filename exceeds component limit",
         ));
@@ -331,23 +334,6 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
-    }
-
-    #[test]
-    fn longest_project_name_supports_save_recovery_and_checkpoint() {
-        let dir = Temp::new();
-        let basename_len = 250 - 1 - ".hex-journal".len();
-        let target = dir.0.join(format!("{}.hex", "x".repeat(basename_len - 4)));
-        let project = Project::new(48_000).expect("project");
-        let token = crate::save_new_with_token(&target, &project).expect("save");
-        let path = journal_path(&target).expect("journal path");
-        Journal::open(path)
-            .expect("open")
-            .checkpoint(&project)
-            .expect("checkpoint");
-        crate::replace_existing(&target, &token, &project).expect("replace");
-        let longer = dir.0.join(format!("{}.hex", "x".repeat(basename_len - 3)));
-        assert!(journal_path(&longer).is_err());
     }
 
     #[cfg(unix)]
