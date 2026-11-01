@@ -233,7 +233,7 @@ fn plot(
     cx: &mut Context<EditorView>,
 ) -> gpui::Stateful<Div> {
     let target = entry.target;
-    let all_points = view.automation_view.devices.points(state, target);
+    let all_points = view.automation_view.devices.points_ref(state, target);
     // Include one neighbor at each edge so clipping preserves interpolation.
     let first = all_points
         .partition_point(|point| {
@@ -258,8 +258,8 @@ fn plot(
     let selected = view.automation_view.devices.selected.clone();
     let project = state.project.clone();
     let revision = state.revision;
-    let base = view.live_device_automation_base(&entry);
     let dotted = all_points.is_empty();
+    let base = view.live_device_automation_base(&entry);
     let entity = cx.entity();
     let label = entry.label.clone();
     div()
@@ -326,33 +326,45 @@ fn plot(
                             px(rect[0]),
                             px(rect[1] + (1.0 - first_value) * (rect[3] - 8.0) + 4.0),
                         ));
+                        let positions: Vec<_> = points
+                            .iter()
+                            .filter_map(|value| Some((value, xy(value.beat, value.value.get())?)))
+                            .collect();
+                        let columns: Vec<_> = positions
+                            .iter()
+                            .map(|(_, position)| {
+                                (f32::from(position.x) - rect[0], f32::from(position.y))
+                            })
+                            .collect();
+                        let kept = super::plot_geometry::column_vertices(&columns);
                         let mut previous = None;
-                        for value in &points {
-                            if let Some(position) = xy(value.beat, value.value.get()) {
-                                if let Some((old, shape)) = previous {
-                                    if shape == AutomationInterpolation::Step || entry.is_discrete()
-                                    {
-                                        path.line_to(point(position.x, old));
-                                    }
+                        for &index in &kept {
+                            let (value, position) = positions[index];
+                            if let Some((old, shape)) = previous {
+                                if shape == AutomationInterpolation::Step || entry.is_discrete() {
+                                    path.line_to(point(position.x, old));
                                 }
-                                path.line_to(position);
-                                previous = Some((position.y, value.outgoing));
-                                if bounds.contains(&position) {
-                                    let mut marker = PathBuilder::stroke(px(
-                                        if selected.as_ref().is_some_and(|selected| {
-                                            selected.contains(target, value.beat)
-                                        }) {
-                                            3.0
-                                        } else {
-                                            2.0
-                                        },
-                                    ));
-                                    marker.move_to(point(position.x - px(2.0), position.y));
-                                    marker.line_to(point(position.x + px(2.0), position.y));
-                                    if let Ok(marker) = marker.build() {
-                                        window.paint_path(marker, color);
-                                    }
-                                }
+                            }
+                            path.line_to(position);
+                            previous = Some((position.y, value.outgoing));
+                        }
+                        // One marker per kept vertex, plus every selected point so selection
+                        // feedback survives the column reduction.
+                        let mut next_kept = kept.iter().peekable();
+                        for (index, (value, position)) in positions.iter().enumerate() {
+                            let is_kept = next_kept.next_if(|kept| **kept == index).is_some();
+                            let is_selected = selected
+                                .as_ref()
+                                .is_some_and(|selected| selected.contains(target, value.beat));
+                            if !(is_kept || is_selected) || !bounds.contains(position) {
+                                continue;
+                            }
+                            let mut marker =
+                                PathBuilder::stroke(px(if is_selected { 3.0 } else { 2.0 }));
+                            marker.move_to(point(position.x - px(2.0), position.y));
+                            marker.line_to(point(position.x + px(2.0), position.y));
+                            if let Ok(marker) = marker.build() {
+                                window.paint_path(marker, color);
                             }
                         }
                         if let Some((y, _)) = previous {

@@ -11,6 +11,7 @@
 #[cfg(all(test, feature = "ui-test-support"))]
 mod host_tests;
 mod paint;
+mod plot_geometry;
 mod read_selection;
 #[cfg(test)]
 mod tests;
@@ -506,22 +507,25 @@ impl Lanes {
             .find(|entry| entry.target == target)
     }
     fn points(&self, state: &ViewState, target: Target) -> Vec<AutomationPoint> {
+        self.points_ref(state, target).to_vec()
+    }
+    /// Displayed points (draft, then pending, then canonical) without copying.
+    fn points_ref<'a>(&'a self, state: &'a ViewState, target: Target) -> &'a [AutomationPoint] {
         if let Some(draft) = self.draft.as_ref().filter(|draft| draft.target == target) {
-            return draft.points.clone();
+            return &draft.points;
         }
         if let Some(pending) = self
             .pending
             .as_ref()
             .filter(|pending| pending.target == target)
         {
-            return pending.points.clone();
+            return &pending.points;
         }
         state
             .project
             .device(target.device)
             .and_then(|device| device.automation_target(target.kind))
-            .map(|lane| lane.points.clone())
-            .unwrap_or_default()
+            .map_or(&[], |lane| lane.points.as_slice())
     }
 }
 
