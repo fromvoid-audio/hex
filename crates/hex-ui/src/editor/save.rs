@@ -258,7 +258,12 @@ impl EditorView {
                             }
                         }
                         Ok(Err(error)) => {
-                            view.error = Some(error.to_string().to_lowercase().into())
+                            view.error = Some(
+                                hex_session::service::text::lowercase_outside_verbatim(
+                                    &error.to_string(),
+                                )
+                                .into(),
+                            )
                         }
                         _ => {}
                     }

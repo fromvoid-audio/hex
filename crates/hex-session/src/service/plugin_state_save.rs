@@ -184,5 +184,6 @@ pub(super) fn project_with_captures(
             source_device.state = saved_state;
         }
     }
-    hex_project::Project::from_snapshot(snapshot).map_err(|error| error.to_string().to_lowercase())
+    hex_project::Project::from_snapshot(snapshot)
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
 }
