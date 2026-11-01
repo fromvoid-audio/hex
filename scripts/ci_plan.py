@@ -17,11 +17,12 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 4
+POLICY_VERSION = 5
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
 RUNTIME_CONSUMERS = {"hex-devices": {"hex-storage"}}
+RUNTIME_CONSUMER_NAMES = {name for names in RUNTIME_CONSUMERS.values() for name in names}
 TOOLING = {
     "launch", "scripts/launch-restart.py", "scripts/hex-test-build.py",
     "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
@@ -231,6 +232,102 @@ def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[s
     return found
 
 
+TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
+MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
+PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
+
+
+def module_paths(source_root: Path) -> dict[Path, str] | None:
+    """Rust module path of every file reachable from the crate root.
+
+    Walks top-level `mod NAME;` declarations from lib.rs (or main.rs), resolving
+    `#[path]` as rustc does. Returns None when the crate includes source text
+    (`include!`), so a module filter can never miss included tests.
+    """
+    root_file = next((source_root / name for name in ("lib.rs", "main.rs")
+                      if (source_root / name).is_file()), None)
+    if root_file is None:
+        return None
+    paths: dict[Path, str] = {root_file.resolve(): ""}
+    pending = [root_file.resolve()]
+    while pending:
+        parent = pending.pop()
+        text = parent.read_text(errors="replace")
+        if "include!(" in text:
+            return None
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            match = MOD_LINE.fullmatch(line.rstrip())
+            if not match:
+                continue
+            attributes, cursor = [], index - 1
+            while cursor >= 0 and lines[cursor].startswith(("#[", "//")):
+                attributes.append(lines[cursor].strip())
+                cursor -= 1
+            name = match.group(3)
+            explicit = next((PATH_ATTRIBUTE.fullmatch(a).group(1) for a in attributes
+                             if PATH_ATTRIBUTE.fullmatch(a)), None)
+            base = parent.parent if parent.name in {"mod.rs", "lib.rs", "main.rs"} else parent.with_suffix("")
+            targets = [parent.parent / explicit] if explicit else [base / f"{name}.rs", base / name / "mod.rs"]
+            target = next((t.resolve() for t in targets if t.is_file()), None)
+            if target is None or target in paths:
+                continue
+            prefix = paths[parent]
+            paths[target] = f"{prefix}::{name}" if prefix else name
+            pending.append(target)
+    return paths
+
+
+def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
+                        tested: list[str]) -> dict[str, list[str]]:
+    """Per-owner libtest filters for module-scoped merges (user policy, 1 November 2026).
+
+    A changed `src/` file selects the tests of its own module subtree, named
+    `module::path::`. When that subtree declares no tests, the nearest ancestor
+    module with tests is selected instead, so a change never merges untested.
+    A crate root, an unresolved file, an `include!`, a non-`src/` input or a
+    reviewed runtime consumer keeps the whole package (absent from the result).
+    """
+    filters: dict[str, set[str]] = {}
+    whole: set[str] = set()
+    resolved: dict[str, dict[Path, str] | None] = {}
+    executable = [p for p in paths if not metadata_path(p)]
+    for path in executable:
+        owner = owner_package(path, inventory)
+        if owner not in tested:
+            continue
+        package = next(p for p in inventory if p["name"] == owner)
+        directory = (root / Path(package["manifest"]).parent).resolve()
+        file = (root / path).resolve()
+        if not path.endswith(".rs") or not file.is_file() or file.relative_to(directory).parts[0] != "src":
+            whole.add(owner)
+            continue
+        if owner not in resolved:
+            resolved[owner] = module_paths(directory / "src")
+        modules = resolved[owner]
+        module = None if modules is None else modules.get(file)
+        if not module:
+            whole.add(owner)
+            continue
+        def has_tests(candidate: str) -> bool:
+            return any(TEST_ATTRIBUTE.search(f.read_text(errors="replace"))
+                       for f, name in modules.items()
+                       if name == candidate or name.startswith(candidate + "::"))
+        while module and not has_tests(module):
+            module = module.rpartition("::")[0]
+        if not module:
+            whole.add(owner)
+        else:
+            filters.setdefault(owner, set()).add(module + "::")
+    selected = {}
+    for owner, names in filters.items():
+        if owner in whole:
+            continue
+        # A filter already covered by a broader selected module is redundant.
+        selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
+    return selected
+
+
 def test_only_owner(root: Path, path: str, inventory: list[dict]) -> str | None:
     """Owner of a Rust file no other package can observe, or None when unproven.
 
@@ -317,7 +414,10 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
             {"package": "hex-ui", "lib": True, "filter": "compressor", "features": "ui-test-support"},
         ]
     tested = owner_test_packages(paths, inventory, affected)
+    module_filters = {} if narrow else module_test_filters(
+        root, paths, inventory, [p for p in tested if p not in RUNTIME_CONSUMER_NAMES])
     return {"kind": "compressor" if narrow else "packages", "tests": tests,
+            "module_filters": module_filters,
             "test_packages": [] if narrow else tested,
             "single_run": {} if narrow else single_run_packages(root, tested, inventory),
             "lint_packages": affected,
@@ -416,7 +516,7 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
                   profile, [path for path in paths if not metadata_path(path)],
                   inventory, UI_PACKAGES, python_tests.available_modules(root)),
               "qualifies_merge": profile in {"merge", "full", "release"}}
-    if scope == "rust":
+    if scope in {"rust", "ui"}:
         result["boundary"] = boundary_selection(root, paths, inventory, affected)
     if profile == "health":
         result["health"] = health_selection(paths, inventory)

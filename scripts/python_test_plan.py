@@ -111,6 +111,16 @@ def select(profile: str, paths: list[str], inventory: list[dict],
                              + ", ".join(native))
     if set(modules) != REVIEWED_MODULES:
         return comprehensive("new, missing or unregistered Python test module")
+    owned = tooling_owner_modules(paths, modules)
+    if owned:
+        # A shared case inside a selected module already runs with that module.
+        shared = [name for name in SHARED_TESTS if name.split(".")[0] not in owned]
+        selectors = sorted({*owned, "test_python_test_plan", *shared})
+        return {"mode": "shared", "selected_groups": sorted({"shared-invariants", "test_python_test_plan", *owned}),
+                "excluded_groups": [name for name in modules if name not in owned and name != "test_python_test_plan"],
+                "test_selectors": selectors,
+                "reasons": ["tooling owner boundary: each changed script's own test module plus shared "
+                            "invariants (user policy, 1 November 2026): " + ", ".join(owned)]}
     categories = set()
     for path in paths:
         if not path.endswith(".rs") or path.endswith("/build.rs"):
@@ -136,6 +146,33 @@ def select(profile: str, paths: list[str], inventory: list[dict],
             "test_selectors": selectors,
             "reasons": ["ordinary app-only " + next(iter(categories))
                         + " Rust inputs; shared invariants retained, unaffected tooling suites excluded"]}
+
+
+# Scripts whose tests live in another module than test_<stem>.
+OWNER_TEST_MODULES = {"scripts/test_shards.py": "test_ci_plan"}
+
+
+def tooling_owner_modules(paths: list[str], modules: list[str]) -> list[str]:
+    """Test modules owning every changed tooling path, or [] when any path is unowned.
+
+    `scripts/NAME.py` (or `scripts/NAME`) is owned by `test_NAME` with hyphens as
+    underscores; a changed `scripts/tests/test_X.py` owns itself. Any other
+    input, or a script without its own test module, keeps comprehensive discovery.
+    """
+    owned = set()
+    for path in paths:
+        if path in OWNER_TEST_MODULES:
+            module = OWNER_TEST_MODULES[path]
+        elif path.startswith("scripts/tests/test_") and path.endswith(".py") and path.count("/") == 2:
+            module = Path(path).stem
+        elif path.startswith("scripts/") and path.count("/") == 1 and Path(path).suffix in {".py", ""}:
+            module = "test_" + Path(path).stem.replace("-", "_")
+        else:
+            return []
+        if module not in modules:
+            return []
+        owned.add(module)
+    return sorted(owned)
 
 
 def argv(selection: dict) -> tuple[str, ...]:

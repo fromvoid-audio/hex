@@ -111,6 +111,24 @@ consumer later breaks, the defect is a missing owner boundary test: add it at th
 owner. Package manifests and build scripts can change how consumers build, so they
 keep the whole affected closure's suites.
 
+**Module scope.** Inside an owner, a changed `src/` file runs only the tests of
+its own Rust module subtree. The planner resolves `mod`/`#[path]` from the crate
+root and runs `cargo test … -- module::path::` in each of the owner's test
+configurations, including sharded ones via `test_shards.py --filter`. A module
+with no tests of its own selects its nearest ancestor module that has tests.
+The crate root, `include!`, non-`src/` inputs and manifests keep whole-crate
+tests. One configuration may hold none of a module's tests, so module-scoped
+steps are checked together: a merge whose changed modules pass no test fails
+with "changed modules ran no tests". Example targets (the device gallery) are
+skipped for module-scoped owners. Smaller, self-tested modules therefore mean
+faster merges; an untested module inherits its parent's often-large suite.
+
+Python tooling follows the same rule. A changed `scripts/NAME.py` (or
+`scripts/NAME`) runs its own `test_NAME` module, and a changed
+`scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
+Scripts without their own test module, config files and unknown inputs keep
+comprehensive discovery.
+
 **One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
 build phase, under 60 s. local-ci sums executed test steps (wall time minus the
 reported build phase; carried steps excluded) into `test_budget` in the summary
