@@ -1300,3 +1300,83 @@ fn clip_activation_releases_real_sampler_gates_and_retriggers_window_without_cal
     callback.begin_block();
     control.reclaim();
 }
+
+#[test]
+fn one_voice_sampler_retrigger_steals_its_release_without_callback_allocation() {
+    // A one-voice looping sampler with a 16-frame release retriggers at
+    // frame 4000 (one quarter at 120 bpm, 8 kHz). Prepare admits it by held
+    // density; the callback steals the release into the declick pool.
+    let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+    let mut sources = ResidentDeviceAssets::default();
+    let asset = source(&mut editor, &mut sources, 0.25);
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let original =
+        hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(
+            1024, asset, 0.002,
+        )
+        .unwrap();
+    let mut state = hex_devices::sampler::state::SamplerState::from_native(&original).unwrap();
+    state.voices = 1;
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: state.replace_in(&original).unwrap(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(2).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    for (start, pitch) in [(BeatTime::ZERO, 60), (BeatTime::ONE, 72)] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration: BeatTime::ONE,
+                pitch,
+                channel: 0,
+                velocity: 127,
+            })
+            .unwrap();
+    }
+    let (mut control, mut callback) = channel(8000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(limits())
+        .unwrap();
+    control.publish(compile(&editor, &sources)).unwrap();
+    control.command_with_ticket(PlaybackCommand::Play).unwrap();
+    let held = block(&mut callback);
+    assert!(held.iter().all(|frame| frame[0] > 0.0));
+    for _ in 1..125 {
+        block(&mut callback);
+    }
+    let steal = block(&mut callback);
+    assert!(
+        steal.iter().all(|frame| frame[0] > 0.0),
+        "no gap at the steal"
+    );
+    assert!(
+        steal[0][0] > held[0][0],
+        "the declicked release sounds beside the new voice"
+    );
+    assert_eq!(
+        steal[31], held[31],
+        "the stolen release has retired beside the one new held voice"
+    );
+    control.request_shutdown();
+    callback.begin_block();
+    control.reclaim();
+}

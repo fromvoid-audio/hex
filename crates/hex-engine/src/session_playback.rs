@@ -1592,6 +1592,7 @@ impl SessionPlayback {
                                 factory.max_release_tail_frames(),
                                 factory.max_events_per_block(),
                                 factory.max_active_occurrences(),
+                                false,
                             )?
                         } else {
                             0
@@ -1624,6 +1625,7 @@ impl SessionPlayback {
                         factory.max_release_tail_frames(),
                         factory.max_events_per_block(),
                         factory.max_active_occurrences(),
+                        factory.steals_releasing_voices(),
                     )?;
                     source_voice_envelopes[receiver_index] = u16::try_from(
                         usize::from(source_voice_envelopes[receiver_index]).max(loop_voices),

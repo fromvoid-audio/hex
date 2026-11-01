@@ -385,6 +385,7 @@ mod tests {
             max_active_occurrences: max_voices,
             max_release_tail_frames: 0,
             supports_clip_volume: false,
+            steals_releasing_voices: false,
         }
     }
 
