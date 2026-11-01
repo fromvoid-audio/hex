@@ -2623,9 +2623,11 @@ impl SessionPlayback {
                 None
             };
             let voice = if arrangement_remapped {
+                // A retained release can have advanced while musical time was
+                // paused; cut at its actual source age, not the raw clock.
                 entry
                     .voice
-                    .reconcile_at(previous.performance_frame, None)
+                    .reconcile_at(entry.sample_frame(previous.performance_frame)?, None)
                     .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?
             } else if route_changed && entry.continuation.is_some() {
                 entry
