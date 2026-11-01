@@ -78,18 +78,14 @@ fn stopband(version: ResampleVersion, from: u32, to: u32, hz: f64) -> f64 {
 }
 
 #[test]
-fn v2_removes_every_aliasing_tone_below_minus_90_db() {
+fn v2_rejects_sampled_aliasing_tones_below_minus_90_db() {
     for hz in [22_100.0, 22_500.0, 23_000.0, 23_900.0] {
         let level = stopband(ResampleVersion::V2, 48_000, 44_100, hz);
         assert!(level <= -90.0, "48k->44.1k {hz} Hz leaks {level:.1} dB");
     }
-    for hz in [10_000.0, 30_000.0, 47_000.0] {
-        let level = stopband(ResampleVersion::V2, 96_000, 44_100, hz + 22_100.0);
-        assert!(
-            level <= -90.0,
-            "96k->44.1k {} Hz leaks {level:.1} dB",
-            hz + 22_100.0
-        );
+    for hz in [22_100.0, 32_100.0, 43_900.0, 47_000.0] {
+        let level = stopband(ResampleVersion::V2, 96_000, 44_100, hz);
+        assert!(level <= -90.0, "96k->44.1k {hz} Hz leaks {level:.1} dB");
     }
 }
 
