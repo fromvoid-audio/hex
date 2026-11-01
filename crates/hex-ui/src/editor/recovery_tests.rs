@@ -974,19 +974,9 @@ fn refused_latency_edit_in_midi_project_shows_waiting_until_applied_or_stopped(
 fn streamed_sampler_edit_while_playing_stops_and_resumes_at_its_frame(
     cx: &mut gpui::TestAppContext,
 ) {
-    let deadline = crate::test_wait::hang_deadline();
-    let (mut output, mut backend) = loop {
-        match hex_audio::worker_fixture::open(48_000) {
-            Ok(output) => break output,
-            Err(error)
-                if error == "audio output is open or still shutting down"
-                    && Instant::now() < deadline =>
-            {
-                std::thread::yield_now()
-            }
-            Err(error) => panic!("{error}"),
-        }
-    };
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
     // A long silent clip keeps the fixture transport playing.
     let audio = hex_engine::Audio::new(48_000, vec![[0.0; 2]; 48_000]).unwrap();
     let graph = Playback::from_shared(Arc::new(
@@ -1087,4 +1077,8 @@ fn streamed_sampler_edit_while_playing_stops_and_resumes_at_its_frame(
             "{position} vs {frame}"
         );
     });
+    // Release the shared headless output for other fixture tests.
+    backend.close();
+    drop(output);
+    editor.update(cx, |view, _| view.audio = None);
 }
