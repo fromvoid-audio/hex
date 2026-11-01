@@ -43,6 +43,38 @@ impl LeftoverRecovery {
     pub fn unchanged(&self) -> bool {
         fingerprint(&self.journal).is_some_and(|current| current == self.fingerprint)
     }
+
+    /// Explicit, confirmed discard: the journal moves into a kept-copies folder
+    /// beside its slot and stops being offered. Nothing recoverable is deleted.
+    /// Returns the kept copy, which `kept_journal` can open later.
+    pub fn discard(&self) -> Result<PathBuf, String> {
+        if !self.unchanged() {
+            return Err("recovery journal changed since it was found".into());
+        }
+        hex_storage::Journal::open(self.journal.clone())
+            .and_then(|mut journal| journal.set_aside())
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Resolve a kept recovery copy picked by the user: a `.hex-journal` file, or a
+/// kept-copies folder holding exactly one (its file may be a hidden dot-file).
+pub fn kept_journal(picked: &Path) -> Result<ProjectSource, String> {
+    let journal = if picked.is_dir() {
+        let mut found = std::fs::read_dir(picked)
+            .map_err(|error| error.to_string())?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file() && path.to_string_lossy().ends_with(".hex-journal"));
+        match (found.next(), found.next()) {
+            (Some(path), None) => path,
+            _ => return Err("choose a kept copy folder holding one recovery journal".into()),
+        }
+    } else {
+        picked.to_path_buf()
+    };
+    hex_storage::load_journal(&journal).map_err(|error| error.to_string())?;
+    Ok(ProjectSource::Journal(journal))
 }
 
 fn fingerprint(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {

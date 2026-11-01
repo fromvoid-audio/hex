@@ -2,7 +2,7 @@
 //! Detection is a read-only worker-side query; recovery reuses the explicit
 //! open path, and declining leaves the journal to the copy-on-first-edit rule.
 use super::{EditorView, theme};
-use gpui::{Context, PromptButton, PromptLevel, Window};
+use gpui::{AppContext as _, Context, PromptButton, PromptLevel, Window};
 use hex_session::service::{LeftoverRecovery, Request};
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -116,12 +116,22 @@ impl EditorView {
             Some(&detail),
             &[
                 PromptButton::new(theme::text("recover")),
+                PromptButton::new(theme::text("discard…")),
                 PromptButton::cancel(theme::text("keep for later")),
             ],
             cx,
         );
+        let handle = window.window_handle();
         cx.spawn(async move |this, cx| {
             let answer = answer.await.ok();
+            if answer == Some(1) {
+                let _ = cx.update_window(handle, |_, window, cx| {
+                    let _ = this.update(cx, |view, cx| {
+                        view.confirm_leftover_discard(found, generation, window, cx);
+                    });
+                });
+                return;
+            }
             let _ = this.update(cx, |view, cx| {
                 if answer != Some(0) {
                     view.status = "unsaved work kept for later".into();
@@ -142,6 +152,56 @@ impl EditorView {
                         },
                         cx,
                     );
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+}
+
+impl EditorView {
+    /// Discard needs its own confirmation. It sets the journal aside into a
+    /// kept-copies folder rather than deleting it, and says where.
+    fn confirm_leftover_discard(
+        &mut self,
+        found: LeftoverRecovery,
+        generation: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let title = theme::text("discard unsaved work?");
+        let detail = theme::text(
+            "hex stops offering these changes and moves them into a kept-copies folder beside the recovery journal. you can still open them with file > recover kept session….",
+        );
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &title,
+            Some(&detail),
+            &[
+                PromptButton::new(theme::text("discard")),
+                PromptButton::cancel(theme::text("cancel")),
+            ],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            let answer = answer.await.ok();
+            let _ = this.update(cx, |view, cx| {
+                if answer != Some(0) {
+                    view.status = "unsaved work kept for later".into();
+                } else if !view.leftover_offer_current(generation) {
+                    view.error = Some("project changed · unsaved work kept".into());
+                } else {
+                    match found.discard() {
+                        Ok(kept) => {
+                            view.status = format!("unsaved work set aside at {}", kept.display());
+                        }
+                        Err(reason) => {
+                            view.error = Some(
+                                format!("could not discard: {reason} · unsaved work kept").into(),
+                            );
+                        }
+                    }
                 }
                 cx.notify();
             });
