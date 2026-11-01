@@ -136,20 +136,21 @@ def select(profile: str, paths: list[str], inventory: list[dict],
         if not relative.startswith(("src/", "tests/", "examples/", "benches/")):
             return comprehensive("input is outside supported Cargo source directories: " + path)
         categories.add("ui" if name in ui_packages else "core")
-    if len(categories) != 1:
-        return comprehensive("mixed UI/core inputs retain comprehensive Python coverage")
+    # UI and core Rust inputs reach the same shared invariants; a change touching
+    # both needs no unrelated tooling suites either (owner policy, 1 November 2026).
     selectors = [*SHARED_TESTS, "test_python_test_plan"]
     return {"mode": "shared", "selected_groups": ["shared-invariants", "test_python_test_plan"],
             "excluded_groups": [*(name for name in modules
                                    if name not in {"test_ci_plan", "test_python_test_plan"}),
                                 "test_ci_plan:remaining-cases"],
             "test_selectors": selectors,
-            "reasons": ["ordinary app-only " + next(iter(categories))
+            "reasons": ["ordinary app-only " + "/".join(sorted(categories))
                         + " Rust inputs; shared invariants retained, unaffected tooling suites excluded"]}
 
 
 # Scripts whose tests live in another module than test_<stem>.
-OWNER_TEST_MODULES = {"scripts/test_shards.py": "test_ci_plan"}
+OWNER_TEST_MODULES = {"scripts/test_shards.py": "test_ci_plan",
+                      "scripts/python_shards.py": "test_python_test_plan"}
 
 
 def tooling_owner_modules(paths: list[str], modules: list[str]) -> list[str]:
@@ -184,4 +185,5 @@ def argv(selection: dict) -> tuple[str, ...]:
     if not isinstance(selectors, list) or not selectors or any(
             not isinstance(name, str) or not name for name in selectors):
         raise ValueError("Python test selection is empty or malformed")
-    return ("python3", "-c", UNITTEST_BOOTSTRAP, *selectors)
+    # Owner selections run as concurrent single-test processes (Pulse #4001).
+    return ("python3", "scripts/python_shards.py", "--", *selectors)
