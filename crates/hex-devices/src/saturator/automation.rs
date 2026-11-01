@@ -74,11 +74,13 @@ impl SaturatorRuntime {
             sample_rate,
             drive_gain,
             output_gain,
+            gain_ramp_remaining,
         } = self;
         base.check_inline_ownership();
         controls.check_inline(SaturatorSettings::check_inline);
         settings.check_inline();
-        let _: (&u32, &f64, &f64) = (sample_rate, drive_gain, output_gain);
+        let _: (&u32, &f64, &f64, &u32) =
+            (sample_rate, drive_gain, output_gain, gain_ramp_remaining);
     }
     pub(super) fn apply_automation(
         &mut self,

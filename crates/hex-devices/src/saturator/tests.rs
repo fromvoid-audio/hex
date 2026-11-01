@@ -481,3 +481,83 @@ fn shared_binding_retarget_and_subset_restore_base_with_unchanged_drive() {
         assert_eq!(retry, expected);
     }
 }
+
+/// Pulse #4085: a direct drive/output edit ramps its linear gains over 5 ms at
+/// every sample rate, with bounded per-sample steps and block-size invariance.
+#[test]
+fn direct_gain_edit_ramps_across_handoff_at_every_rate() {
+    let old_state = SATURATOR_DEFINITION.default_state().unwrap();
+    let new_state = patch(
+        &patch(&old_state, parameter::DRIVE, ParameterValue::Float(12.0)),
+        parameter::OUTPUT,
+        ParameterValue::Float(-6.0),
+    );
+    let prepare = |state: &NativeDeviceState, rate| {
+        SaturatorDefinition::prepare_owned(state, rate, &[])
+            .unwrap()
+            .create_runtime()
+    };
+    let gains = |runtime: &dyn NativeProcessorRuntime| {
+        let runtime = runtime.as_any().downcast_ref::<SaturatorRuntime>().unwrap();
+        (runtime.drive_gain, runtime.output_gain)
+    };
+    let resources = &hex_lattice::EMPTY_DEVICE_RESOURCES;
+    for rate in [8_000, 44_100, 48_000, 192_000] {
+        let old = prepare(&old_state, rate);
+        let (old_drive, old_output) = gains(old.as_ref());
+        let target = SaturatorDefinition::prepare_owned(&new_state, rate, &[]).unwrap();
+        let ramp = rate.div_ceil(200) as usize;
+        assert!(
+            (ramp as f64 / f64::from(rate) - 0.005).abs() <= 1.0 / f64::from(rate),
+            "rate={rate}: {ramp} frames"
+        );
+        let mut runtime = target.create_runtime();
+        runtime.copy_history_from(old.as_ref());
+        let mut audio = vec![[0.01_f32, -0.02]; ramp + 8];
+        // Steps are measured from the gains the previous runtime last used.
+        let (mut drive, mut output) = (old_drive, old_output);
+        let (mut largest_drive, mut largest_output) = (0.0_f64, 0.0_f64);
+        for frame in audio.iter_mut() {
+            runtime.process_block(std::slice::from_mut(frame), resources);
+            let (next_drive, next_output) = gains(runtime.as_ref());
+            largest_drive = largest_drive.max((next_drive - drive).abs());
+            largest_output = largest_output.max((next_output - output).abs());
+            (drive, output) = (next_drive, next_output);
+        }
+        assert_eq!((drive, output), (target.drive_gain, target.output_gain));
+        let tolerance = 1.0 + 1.0e-9;
+        assert!(
+            largest_drive <= (target.drive_gain - old_drive).abs() / ramp as f64 * tolerance,
+            "rate={rate}: drive step {largest_drive}"
+        );
+        assert!(
+            largest_output <= (target.output_gain - old_output).abs() / ramp as f64 * tolerance,
+            "rate={rate}: output step {largest_output}"
+        );
+        // Block partitions and scratch-twin handoffs follow the same trajectory.
+        let mut chunked = target.create_runtime();
+        chunked.copy_history_from(old.as_ref());
+        let mut chunked_audio = vec![[0.01_f32, -0.02]; ramp + 8];
+        let mut offset = 0;
+        for size in [1_usize, 7, 64, 128].into_iter().cycle() {
+            if offset == chunked_audio.len() {
+                break;
+            }
+            let end = (offset + size).min(chunked_audio.len());
+            let mut twin = target.create_runtime();
+            twin.copy_history_from(chunked.as_ref());
+            twin.process_block(&mut chunked_audio[offset..end], resources);
+            chunked = twin;
+            offset = end;
+        }
+        assert_eq!(audio, chunked_audio, "rate={rate}");
+        // Reset jumps straight to the targets.
+        let mut reset = target.create_runtime();
+        reset.copy_history_from(old.as_ref());
+        reset.reset();
+        assert_eq!(
+            gains(reset.as_ref()),
+            (target.drive_gain, target.output_gain)
+        );
+    }
+}
