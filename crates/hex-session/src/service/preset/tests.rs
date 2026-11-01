@@ -25,15 +25,10 @@ impl Drop for Directory {
     }
 }
 fn event(service: &Service) -> Event {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        match service.try_event() {
-            Ok(event) => return event,
-            Err(std::sync::mpsc::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(1))
-            }
-            Err(error) => panic!("preset worker: {error}"),
-        }
+    // Blocks on the event channel; bounded only against hangs.
+    match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("event: worker event absent: {error}"),
     }
 }
 fn owner(event: &Event, device: DeviceId, class: NativeDeviceClass) -> Owner {
