@@ -83,7 +83,10 @@ pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 mod stopped_playback_tests;
 use hex_storage::FileToken;
 use recovery::absolute_document_path;
-pub use recovery::{ProjectSource, RecoveryFailure, RecoveryRestart, untitled_recovery_path};
+pub use recovery::{
+    LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart, kept_journal,
+    leftover_recovery, untitled_recovery_path,
+};
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -969,6 +972,7 @@ pub struct Service {
     arrangement_seek: Option<ArrangementSeekWorker>,
     resident_seek_results: Option<Receiver<ResidentArrangementSeekResult>>,
     resident_seek_count: AtomicUsize,
+    recovery_slot: Option<PathBuf>,
     _worker: JoinHandle<()>,
 }
 
@@ -1186,6 +1190,7 @@ impl Service {
         native: Option<crate::ResidentNativeReservation>,
         overview_budget: crate::source_overview::OverviewBudget,
     ) -> Result<Self, ServiceError> {
+        let recovery_slot = recovery.clone();
         let shutdown = Arc::new(AtomicBool::new(false));
         let session = if audio.is_none() {
             Some(
@@ -1333,6 +1338,7 @@ impl Service {
             arrangement_seek,
             resident_seek_results: Some(seek_results_rx),
             resident_seek_count: AtomicUsize::new(0),
+            recovery_slot,
             _worker: worker,
         })
     }
@@ -1442,6 +1448,11 @@ impl Service {
     }
 
     /// Poll for one committed state or operation result without waiting.
+    /// The untitled automatic-recovery slot, when this service checkpoints one.
+    pub fn recovery_slot(&self) -> Option<&Path> {
+        self.recovery_slot.as_deref()
+    }
+
     pub fn try_event(&self) -> Result<Event, TryRecvError> {
         self.events.try_recv()
     }
@@ -7014,12 +7025,19 @@ fn run_worker(
                 unsaved,
                 revision != revision_before_request,
             );
-            if let Err(reason) = journal_result {
-                let message = format!("automatic recovery: {reason}");
-                error = Some(match error {
-                    Some(existing) => format!("{existing}; {message}"),
-                    None => message,
-                });
+            match journal_result {
+                Ok(Some(_)) => {
+                    status =
+                        Some("previous recovery journal preserved beside its original slot".into());
+                }
+                Ok(None) => {}
+                Err(reason) => {
+                    let message = format!("automatic recovery: {reason}");
+                    error = Some(match error {
+                        Some(existing) => format!("{existing}; {message}"),
+                        None => message,
+                    });
+                }
             }
         }
         if let Some(preview) = resident_preview.as_ref() {
@@ -11248,6 +11266,7 @@ mod service_tests {
             arrangement_seek: None,
             resident_seek_results: None,
             resident_seek_count: AtomicUsize::new(0),
+            recovery_slot: None,
             _worker: thread::spawn(|| {}),
         };
         assert!(matches!(

@@ -19,7 +19,10 @@ struct Entry {
     geometry: Arc<WaveformGeometry>,
 }
 impl Cache {
+    // Only layout_review's sample tests read this; hex-sandbox includes this
+    // module without them, so its test build would otherwise flag it unused.
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(super) fn retained(&self) -> Option<Arc<WaveformGeometry>> {
         self.entry.as_ref().map(|entry| Arc::clone(&entry.geometry))
     }

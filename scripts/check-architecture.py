@@ -33,6 +33,8 @@ ALLOWED = {
     'hex-library': set(),
     'hex-preferences': set(),
     'hex-widgets': set(),
+    # Disposable native preview mounts the production UI owners, without audio/session.
+    'hex-sandbox': {'hex-devices', 'hex-preferences', 'hex-project', 'hex-widgets'},
     # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
     'hex-audio': {'hex-engine', 'hex-stream', 'hex-plugin-host', 'hex-plugin-state', 'hex-plugin-scan', 'hex-lattice', 'hex-lattice-contract'},
     'hex-ui': {'hex-plugin-catalog', 'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
@@ -49,8 +51,8 @@ DEV_ALLOWED = {
     'hex-storage': {'hex-plugin-state'},
     # Real decoded WAV -> sealed source scope -> sampler PCM oracles only.
     'hex-media': {'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
-    # Verified-mode source limits for real worker/key-handler failure fixtures only.
-    'hex-ui': {'hex-media'},
+    # Verified worker/key-handler fixtures and the legacy native EQ gallery example.
+    'hex-ui': {'hex-media', 'hex-devices'},
     'hex-engine': {'hex-tuning'},
     'hex-session': {'hex-tuning'},
     # Actual Session -> native adapter fixtures, never a production editor model.
@@ -59,8 +61,8 @@ DEV_ALLOWED = {
     'hex-audio': {'hex-project', 'hex-storage', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning', 'hex-devices', 'hex-plugin-scan', 'hex-plugin-state'},
     'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning'},
 }
-BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
-              'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},
+BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets', 'hex-sandbox'},
+              'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets', 'hex-sandbox'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream', 'hex-plugin-host'},
               # Safe macOS joining-transport scheduling, never callback calls.
               'qos-threads': {'hex-audio'},

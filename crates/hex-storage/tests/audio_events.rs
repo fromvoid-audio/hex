@@ -73,8 +73,11 @@ fn events_roundtrip_and_strict_complete_overlay_rejects_loss_and_bad_references(
     assert!(hex_storage::decode(duplicate.as_bytes()).is_err());
 }
 
+/// Dense per-clip event inventories survive encode/decode exactly. Documents
+/// above the former 8 MiB reader limit are covered once, through save, replace,
+/// recovery and journal, by `tests/provenance.rs`.
 #[test]
-fn dense_event_serialization_roundtrips_above_the_former_document_limit() {
+fn dense_event_serialization_roundtrips_without_loss() {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
     let Created::Imported { clip, .. } = editor
         .execute(Command::ImportAudioTrack {
@@ -113,7 +116,7 @@ fn dense_event_serialization_roundtrips_above_the_former_document_limit() {
     };
     let mut template = audio_clips[0].clone();
     template.edit = Some(root);
-    *audio_clips = (0..256)
+    *audio_clips = (0..16)
         .map(|i| {
             let mut clip = template.clone();
             clip.id = 1000 + i;
@@ -124,7 +127,6 @@ fn dense_event_serialization_roundtrips_above_the_former_document_limit() {
     snapshot.next_id = 2000;
     let project = Project::from_snapshot(snapshot).unwrap();
     let bytes = hex_storage::encode(&project).unwrap();
-    assert!(bytes.len() > hex_storage::LEGACY_READER_DOCUMENT_BYTES);
     assert_eq!(hex_storage::decode(&bytes).unwrap(), project);
 }
 
