@@ -2146,6 +2146,20 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             let cut_frame = previous.arrangement_frame;
             let new_cut_frame = arrangement_cut;
+            // A candidate occurrence ends at the loop wrap: the next pass is a
+            // new onset and must sound (Pulse #4124, #4135). Suppressions match
+            // every pass, so their end is bounded by the wrap's performance
+            // frame rather than the note's unwrapped end.
+            let wrap_frame = self
+                .active_loop_region_at(new_cut_frame)
+                .map(|region| {
+                    previous
+                        .performance_frame
+                        .checked_add(region.end() - new_cut_frame)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)
+                })
+                .transpose()?;
+            let until_wrap = |frame: u64| wrap_frame.map_or(frame, |wrap| frame.min(wrap));
             let mut candidate_occurrences = [None; crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY];
             let mut candidate_occurrence_count = 0;
             if shared_sources::track_has_analytic_source(&self.revision, new_index) {
@@ -2216,17 +2230,25 @@ impl SessionPlayback {
                         .checked_add(elapsed)
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                     if let Some(suppression) = self.suppression_scratch.get_mut(index) {
-                        suppression.until_frame = suppression.until_frame.max(candidate_end);
+                        suppression.until_frame =
+                            suppression.until_frame.max(until_wrap(candidate_end));
                     }
                 }
             }
             if shared_sources::track_has_analytic_source(&previous.revision, old_index) {
+                // The released occurrence also ends at the donor's loop wrap,
+                // as unedited looped playback ends it; its unwrapped gate
+                // would otherwise sound over the next pass.
+                let old_loop_end = previous
+                    .active_loop_region_at(cut_frame)
+                    .map(hex_project::LoopRegion::end);
                 let mut failure = None;
                 old_track
                     .for_each_active_midi_span(cut_frame, |span, sampler| {
                         if span.start >= cut_frame {
                             return;
                         }
+                        let wrapped = |frame: u64| old_loop_end.map_or(frame, |end| frame.min(end));
                         let key = ContinuationKey {
                             clip: span.clip,
                             note: span.note,
@@ -2240,8 +2262,8 @@ impl SessionPlayback {
                             {
                                 MidiReleaseVoice::from_finite_span_preserving_gate(
                                     span.start,
-                                    span.gate_end,
-                                    span.end,
+                                    wrapped(span.gate_end),
+                                    wrapped(span.end),
                                     sampler.detach(&previous.analytic_continuations),
                                     cut_frame,
                                     previous.performance_frame,
@@ -2249,8 +2271,8 @@ impl SessionPlayback {
                             } else {
                                 MidiReleaseVoice::from_finite_span(
                                     span.start,
-                                    span.gate_end,
-                                    span.end,
+                                    wrapped(span.gate_end),
+                                    wrapped(span.end),
                                     sampler.detach(&previous.analytic_continuations),
                                     cut_frame,
                                     previous.performance_frame,
@@ -2380,9 +2402,11 @@ impl SessionPlayback {
                                         iteration: span.iteration,
                                         loop_pass: 0,
                                     },
-                                    candidate_end_frame.map_or(voice.end_frame(), |end| {
-                                        end.max(voice.end_frame())
-                                    }),
+                                    until_wrap(
+                                        candidate_end_frame.map_or(voice.end_frame(), |end| {
+                                            end.max(voice.end_frame())
+                                        }),
+                                    ),
                                 ),
                             )
                         {
