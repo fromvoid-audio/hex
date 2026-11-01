@@ -90,12 +90,41 @@ pub fn load_with_token(path: impl AsRef<Path>) -> Result<(Project, FileToken), S
     Ok((project, FileToken::from_validated_bytes(bytes.into())))
 }
 
+/// Read a project document or recovery sidecar of at most
+/// [`crate::MAX_PROJECT_DOCUMENT_BYTES`] plus [`ENVELOPE_HEADROOM`].
 pub(super) fn read_document(path: &Path) -> Result<Vec<u8>, StorageError> {
-    read_bytes(File::open(path)?)
+    read_bounded(path, crate::MAX_PROJECT_DOCUMENT_BYTES + ENVELOPE_HEADROOM)
 }
 
-/// Grow owned I/O buffers fallibly without an arbitrary document-size ceiling.
-/// Read in chunks rather than trusting filesystem metadata or framed lengths.
+/// Recovery sidecars frame a document with a header and its target file name.
+const ENVELOPE_HEADROOM: usize = 64 * 1024;
+
+/// Refuse oversized files from metadata before reading, then read at most one
+/// byte past `limit`, so a file growing after the check is refused too.
+fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, StorageError> {
+    let file = File::open(path)?;
+    let too_large = || {
+        std::io::Error::new(
+            std::io::ErrorKind::FileTooLarge,
+            format!(
+                "{} exceeds the {} mib project document limit",
+                path.display(),
+                limit / (1024 * 1024)
+            ),
+        )
+    };
+    let limit_u64 = u64::try_from(limit).map_err(|_| too_large())?;
+    if file.metadata()?.len() > limit_u64 {
+        return Err(too_large().into());
+    }
+    let bytes = read_bytes(file.take(limit_u64.saturating_add(1)))?;
+    if bytes.len() > limit {
+        return Err(too_large().into());
+    }
+    Ok(bytes)
+}
+
+/// Grow owned I/O buffers fallibly in chunks; callers bound the reader.
 fn read_bytes(mut reader: impl Read) -> Result<Vec<u8>, StorageError> {
     let mut bytes = Vec::new();
     let mut chunk = [0_u8; 64 * 1024];
@@ -280,6 +309,36 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn sparse_multi_gigabyte_file_is_refused_before_reading() {
+        let dir = TestDir::new();
+        let path = dir.0.join("huge.hex");
+        let file = File::create(&path).expect("sparse fixture");
+        file.set_len(4 << 30).expect("sparse length");
+        drop(file);
+        let started = std::time::Instant::now();
+        let Err(StorageError::Io(error)) = load(&path) else {
+            panic!("oversized document must be refused as a file error");
+        };
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(error.kind(), std::io::ErrorKind::FileTooLarge);
+        let message = error.to_string();
+        assert!(message.contains("huge.hex") && message.contains("512 mib"));
+        assert_eq!(fs::metadata(&path).expect("kept").len(), 4 << 30);
+    }
+
+    #[test]
+    fn bounded_read_accepts_the_limit_and_refuses_one_byte_more() {
+        let dir = TestDir::new();
+        let path = dir.0.join("bounded.hex");
+        fs::write(&path, [b'x'; 16]).expect("fixture");
+        assert_eq!(read_bounded(&path, 16).expect("at limit").len(), 16);
+        let Err(StorageError::Io(error)) = read_bounded(&path, 15) else {
+            panic!("one byte over the limit must be refused");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::FileTooLarge);
     }
 
     #[test]
