@@ -27,6 +27,86 @@ pub fn untitled_recovery_path() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join("Library/Application Support/hex/recovery/untitled.hex-journal"))
 }
 
+/// A readable journal left by a session that ended without saving or discarding
+/// it (Pulse #3990). Detection is read-only: nothing is adopted, written or
+/// checkpointed, so declining leaves the slot to the copy-on-first-edit rule.
+#[derive(Clone, Debug)]
+pub struct LeftoverRecovery {
+    /// Explicit recovery source for the existing open path.
+    pub source: ProjectSource,
+    pub journal: PathBuf,
+    fingerprint: (u64, Option<std::time::SystemTime>),
+}
+impl LeftoverRecovery {
+    /// False once anything rewrote the slot after detection, for example this
+    /// session's own first checkpoint; recovering then would open the wrong work.
+    pub fn unchanged(&self) -> bool {
+        fingerprint(&self.journal).is_some_and(|current| current == self.fingerprint)
+    }
+
+    /// Explicit, confirmed discard: the journal moves into a kept-copies folder
+    /// beside its slot and stops being offered. Nothing recoverable is deleted.
+    /// Returns the kept copy, which `kept_journal` can open later.
+    pub fn discard(&self) -> Result<PathBuf, String> {
+        if !self.unchanged() {
+            return Err("recovery journal changed since it was found".into());
+        }
+        hex_storage::Journal::open(self.journal.clone())
+            .and_then(|mut journal| journal.set_aside())
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Resolve a kept recovery copy picked by the user: a `.hex-journal` file, or a
+/// kept-copies folder holding exactly one (its file may be a hidden dot-file).
+pub fn kept_journal(picked: &Path) -> Result<ProjectSource, String> {
+    let journal = if picked.is_dir() {
+        let mut found = std::fs::read_dir(picked)
+            .map_err(|error| error.to_string())?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file() && path.to_string_lossy().ends_with(".hex-journal"));
+        match (found.next(), found.next()) {
+            (Some(path), None) => path,
+            _ => return Err("choose a kept copy folder holding one recovery journal".into()),
+        }
+    } else {
+        picked.to_path_buf()
+    };
+    hex_storage::load_journal(&journal).map_err(|error| error.to_string())?;
+    Ok(ProjectSource::Journal(journal))
+}
+
+fn fingerprint(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    metadata
+        .is_file()
+        .then(|| (metadata.len(), metadata.modified().ok()))
+}
+
+/// Find a readable leftover journal for the untitled slot (`document` None) or
+/// beside a saved `document`. Missing, unreadable or unrecognized slots return
+/// None: an unreadable journal stays with the existing failure/restart path.
+pub fn leftover_recovery(untitled: &Path, document: Option<&Path>) -> Option<LeftoverRecovery> {
+    let (journal, source) = match document {
+        Some(document) => (
+            hex_storage::journal_path(document).ok()?,
+            ProjectSource::SavedJournal(document.to_path_buf()),
+        ),
+        None => (
+            untitled.to_path_buf(),
+            ProjectSource::Journal(untitled.to_path_buf()),
+        ),
+    };
+    let before = fingerprint(&journal)?;
+    hex_storage::load_journal(&journal).ok()?;
+    (fingerprint(&journal)? == before).then_some(LeftoverRecovery {
+        source,
+        journal,
+        fingerprint: before,
+    })
+}
+
 pub(super) type OpenCandidate = (Session, PathBuf, Option<DocumentHandle>, bool);
 
 pub(super) fn read_source(
@@ -511,8 +591,9 @@ pub(super) fn checkpoint_project(
     document: Option<&DocumentHandle>,
     untitled_path: &Path,
     journal: &mut Option<hex_storage::Journal>,
-) -> Result<(), String> {
+) -> Result<Option<PathBuf>, String> {
     let path = checkpoint_path(document, untitled_path)?;
+    let project = project_for_save(session, base)?;
     if journal
         .as_ref()
         .is_none_or(|current| current.path() != path)
@@ -531,18 +612,27 @@ pub(super) fn checkpoint_project(
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
         }
-        *journal = Some(hex_storage::Journal::open(path).map_err(|e| e.to_string())?);
+        if let Some(token) = hex_storage::JournalRestartToken::capture_readable(path.clone())
+            .map_err(|e| e.to_string())?
+        {
+            let outcome = hex_storage::restart_journal(&token, &project);
+            *journal = outcome.journal;
+            outcome
+                .result
+                .map_err(|error| match outcome.preserved_path.as_ref() {
+                    Some(_) => format!(
+                        "{error}; previous recovery journal preserved beside its original slot"
+                    ),
+                    None => error.to_string(),
+                })?;
+            return Ok(outcome.preserved_path);
+        }
+        *journal = Some(hex_storage::Journal::open_empty(path).map_err(|e| e.to_string())?);
     }
-    let project = project_for_save(session, base)?;
     if let Some(journal) = journal {
-        let result = if document.is_none() {
-            journal.checkpoint_latest(&project)
-        } else {
-            journal.checkpoint(&project)
-        };
-        result.map_err(|e| e.to_string())?;
+        journal.checkpoint(&project).map_err(|e| e.to_string())?;
     }
-    Ok(())
+    Ok(None)
 }
 
 pub(super) fn absolute_document_path(path: &Path) -> Result<PathBuf, String> {
