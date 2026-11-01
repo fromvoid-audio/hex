@@ -201,14 +201,18 @@ pub fn decode_wav_file(
 /// Read and decode a WAV file, explicitly recovering the readable whole frames of
 /// truncated or partial-frame audio data. Returns the truncation report when
 /// frames were dropped so the caller can tell the user about the fidelity loss.
-/// Malformed headers and block-compressed (ADPCM) truncation are still refused.
+/// Malformed headers and block-compressed (ADPCM) truncation are still refused,
+/// and the same file-identity check as [`decode_wav_file`] applies.
 pub fn recover_wav_file(
     path: impl AsRef<Path>,
     limits: Limits,
 ) -> Result<(DecodedAudio, Option<WavTruncation>), ImportError> {
     let path = path.as_ref().to_path_buf();
     let mut file = File::open(&path)?;
+    let before = file_identity::Observation::of(&file.metadata()?);
     let bytes = read_bounded(&mut file, limits.max_file_bytes)?;
+    let after = file_identity::Observation::of(&file.metadata()?);
+    let file_identity = file_identity::stable_identity(before, after, bytes.len())?;
     let ((audio, sample_rate, frames), truncation) =
         wav::decode_recoverable(&bytes, limits.max_frames)?;
     Ok((
@@ -217,6 +221,7 @@ pub fn recover_wav_file(
             audio,
             sample_rate,
             frames,
+            file_identity,
         },
         truncation,
     ))
