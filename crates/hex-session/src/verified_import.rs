@@ -164,6 +164,11 @@ impl Session {
             else {
                 return Ok(None);
             };
+            // A source beyond the per-file resident decode caps can never become
+            // resident PCM, however much working set remains: stream it instead.
+            if exceeds_resident_decode(path, reader.source_frames())? {
+                return self.verify_import(path.to_path_buf()).map(Some);
+            }
             let output = hex_project::converted_frame_count(
                 reader.source_frames(),
                 reader.sample_rate(),
@@ -417,6 +422,17 @@ impl Session {
     }
 }
 
+/// True when the resident decoder's per-file byte/frame caps would refuse this source.
+pub(crate) fn exceeds_resident_decode(
+    path: &std::path::Path,
+    source_frames: u64,
+) -> Result<bool, SessionError> {
+    let bytes = std::fs::metadata(path)
+        .map_err(|_| SessionError::Invalid("could not read audio file metadata"))?
+        .len();
+    Ok(bytes > crate::service::IMPORT_FILE_LIMIT as u64
+        || source_frames > crate::service::IMPORT_FRAME_LIMIT as u64)
+}
 // File-backed sources use the same typed prepared-import commands and destination
 // laws as decoded sources. IDs/default track behavior remain owned by the project.
 fn verified_import_command(
