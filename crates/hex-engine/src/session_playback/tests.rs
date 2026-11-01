@@ -7145,34 +7145,39 @@ fn retained_arrangement_release_ends_when_a_later_edit_enables_a_loop() {
     let mut snapshot = unlooped.snapshot();
     snapshot.loop_region = Some(LoopRegion::new(0, 1_200, true).unwrap());
     let looped = legacy_project_from_snapshot(snapshot).unwrap();
-    for block in [1, 64, 512] {
-        let prepare = |project: &Project, state| {
-            SessionPlayback::new(revision_with_instrument_registry(
-                &with_test_instrument(project, definition.id, state),
-                Arc::clone(&table),
-                &registry,
-            ))
-            .unwrap()
-        };
-        let mut old = prepare(&unlooped, 0);
-        old.apply(SessionPlaybackCommand::Play).unwrap();
-        let mut samples = vec![[0.0; 2]; 301];
-        for chunk in samples.chunks_mut(block) {
-            old.render(chunk).unwrap();
+    for (candidate_state, expected) in [(0, 0.2), (1, 0.4)] {
+        for block in [1, 64, 512] {
+            let prepare = |project: &Project, state| {
+                SessionPlayback::new(revision_with_instrument_registry(
+                    &with_test_instrument(project, definition.id, state),
+                    Arc::clone(&table),
+                    &registry,
+                ))
+                .unwrap()
+            };
+            let mut old = prepare(&unlooped, 0);
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut samples = vec![[0.0; 2]; 301];
+            for chunk in samples.chunks_mut(block) {
+                old.render(chunk).unwrap();
+            }
+            let mut changed = prepare(&unlooped, 1);
+            changed.try_inherit_state_from(&mut old).unwrap();
+            let mut samples = vec![[0.0; 2]; 300];
+            for chunk in samples.chunks_mut(block) {
+                changed.render(chunk).unwrap();
+            }
+            let mut next = prepare(&looped, candidate_state);
+            next.try_inherit_state_from(&mut changed).unwrap();
+            let mut samples = vec![[0.0; 2]; 600];
+            for chunk in samples.chunks_mut(block) {
+                next.render(chunk).unwrap();
+            }
+            assert_eq!(
+                samples[599], [expected; 2],
+                "block={block} state={candidate_state}"
+            );
         }
-        let mut changed = prepare(&unlooped, 1);
-        changed.try_inherit_state_from(&mut old).unwrap();
-        let mut samples = vec![[0.0; 2]; 300];
-        for chunk in samples.chunks_mut(block) {
-            changed.render(chunk).unwrap();
-        }
-        let mut next = prepare(&looped, 0);
-        next.try_inherit_state_from(&mut changed).unwrap();
-        let mut samples = vec![[0.0; 2]; 600];
-        for chunk in samples.chunks_mut(block) {
-            next.render(chunk).unwrap();
-        }
-        assert_eq!(samples[599], [0.2; 2], "block={block}");
     }
 }
 
