@@ -263,3 +263,151 @@ fn copied_whole_clips_survive_destination_click_repeated_paste_undo_and_text_foc
         });
     }
 }
+
+#[gpui::test]
+fn pasted_clip_group_is_selected_and_unrequested_batch_births_are_not(cx: &mut TestAppContext) {
+    use std::collections::BTreeSet;
+    cx.update(super::bind_editor_keys);
+    let files = super::external_audio_drop_ui_test::BatchFiles::new();
+    let path = files.wav("group.wav", 48_000, 48_000);
+    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    next(&service);
+    service.submit(Request::Import(path)).unwrap();
+    let imported = next(&service);
+    let source = imported.state.project.tracks()[0].id();
+    let first = imported.state.project.tracks()[0].clips()[0].id();
+    service
+        .submit(Request::Edit(Command::CopyClipTo {
+            clip: first,
+            track: source,
+            start: 96_000,
+        }))
+        .unwrap();
+    let second = next(&service)
+        .state
+        .project
+        .track(source)
+        .unwrap()
+        .clips()
+        .iter()
+        .find(|c| c.start() == 96_000)
+        .unwrap()
+        .id();
+    for name in ["destination", "other"] {
+        service
+            .submit(Request::Edit(Command::AddTrack { name: name.into() }))
+            .unwrap();
+        if name == "destination" {
+            next(&service);
+        }
+    }
+    let state = next(&service).state;
+    let target = state.project.tracks()[1].id();
+    let other = state.project.tracks()[2].id();
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new(window, cx, service, Err("offline UI test".into()))
+            });
+            editor.update(cx, |view, cx| {
+                view.state = Some(state);
+                view.snap_grid = SnapGrid::Off;
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    click(
+        &mut visual,
+        Box::leak(format!("clip-name-{}", first.value()).into_boxed_str()),
+        Modifiers::default(),
+    );
+    click(
+        &mut visual,
+        Box::leak(format!("clip-name-{}", second.value()).into_boxed_str()),
+        shift,
+    );
+    visual.simulate_keystrokes("cmd-c");
+    pump(&editor, &mut visual);
+    destination(&editor, &mut visual, target, 0.55);
+    visual.simulate_keystrokes("cmd-v");
+    pump(&editor, &mut visual);
+    let pasted = editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let pasted: BTreeSet<_> = project
+            .track(target)
+            .unwrap()
+            .clips()
+            .iter()
+            .map(|c| c.id())
+            .collect();
+        assert_eq!(pasted.len(), 2);
+        assert_eq!(
+            view.selected_clip_ids()
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            pasted,
+            "paste selects exactly the pasted clips"
+        );
+        assert!(view.selected_clip.is_some_and(|c| pasted.contains(&c)));
+        pasted
+    });
+    let coherent = |view: &EditorView| {
+        let project = &view.state.as_ref().unwrap().project;
+        view.selected_clip_ids().iter().all(|id| {
+            project
+                .tracks()
+                .iter()
+                .any(|t| t.clips().iter().any(|c| c.id() == *id))
+        })
+    };
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert!(project.track(target).unwrap().clips().is_empty());
+        assert!(coherent(view), "undo leaves no removed clip selected");
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(coherent(view), "redo keeps the selection on live clips");
+    });
+    // Reselect one pasted clip, then make an unrequested batch copy: its
+    // births must not replace the user's selection.
+    let anchor = *pasted.iter().next().unwrap();
+    click(
+        &mut visual,
+        Box::leak(format!("clip-name-{}", anchor.value()).into_boxed_str()),
+        Modifiers::default(),
+    );
+    let before = editor.read_with(&visual, |view, _| {
+        (view.selected_clip, view.selected_clip_ids())
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::MoveClipsWithOverwrite {
+            clips: pasted.iter().copied().collect(),
+            anchor,
+            track: other,
+            position: hex_project::ClipGroupPosition::Audio(0),
+            copy: true,
+        })));
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(other).unwrap().clips().len(), 2);
+        assert_eq!(
+            (view.selected_clip, view.selected_clip_ids()),
+            before,
+            "unrequested batch births leave the selection alone"
+        );
+    });
+}
