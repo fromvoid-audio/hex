@@ -194,7 +194,10 @@ impl EditorView {
                 } else {
                     match found.discard() {
                         Ok(kept) => {
-                            view.status = format!("unsaved work set aside at {}", kept.display());
+                            view.status = format!(
+                                "unsaved work set aside at {}",
+                                hex_session::service::text::verbatim(kept.display())
+                            );
                         }
                         Err(reason) => {
                             view.error = Some(

@@ -302,9 +302,13 @@ pub fn load_fonts(cx: &App) -> Result<(), String> {
     Ok(())
 }
 
-/// Display normalization only. Never use this for paths, project IDs, or saved names.
+/// Display normalization only. Lowercases app text but keeps spans marked with
+/// `hex_session::service::text::verbatim` (paths, saved names) exactly as written,
+/// then removes the marks. Pass bare paths, project IDs or saved names unmarked
+/// only through `verbatim`, never as plain text.
 pub fn text(value: impl AsRef<str>) -> SharedString {
-    value.as_ref().to_lowercase().into()
+    use hex_session::service::text;
+    text::plain(&text::lowercase_outside_verbatim(value.as_ref())).into()
 }
 
 /// Reusable element palette for tracks, collections and other semantic markers.
@@ -429,6 +433,19 @@ mod tests {
         fn drop(&mut self) {
             apply_preferences(self.0);
         }
+    }
+
+    #[test]
+    fn text_lowercases_app_text_but_keeps_marked_paths_exact() {
+        let message = format!(
+            "Project Changed Outside Hex At {}",
+            hex_session::service::text::verbatim("/Users/Me/My Songs/Live Set.hex")
+        );
+        assert_eq!(
+            text(message).as_ref(),
+            "project changed outside hex at /Users/Me/My Songs/Live Set.hex"
+        );
+        assert_eq!(text("Plain Status").as_ref(), "plain status");
     }
 
     #[test]
