@@ -2,7 +2,7 @@
 //! Run the disposable native widget and device-layout catalog using the real UI owners.
 //!
 //! # Dependencies
-//! Uses GPUI and shared widgets, preferences, project colors and engine EQ preview data.
+//! Uses GPUI and shared widgets, preferences, project colors and prepared device EQ queries.
 //!
 //! # Does not own
 //! Does not open projects, initialize audio, write preferences or own application state.
