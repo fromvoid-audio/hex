@@ -136,15 +136,15 @@ def select(profile: str, paths: list[str], inventory: list[dict],
         if not relative.startswith(("src/", "tests/", "examples/", "benches/")):
             return comprehensive("input is outside supported Cargo source directories: " + path)
         categories.add("ui" if name in ui_packages else "core")
-    if len(categories) != 1:
-        return comprehensive("mixed UI/core inputs retain comprehensive Python coverage")
+    # UI and core Rust inputs reach the same shared invariants; a change touching
+    # both needs no unrelated tooling suites either (owner policy, 1 November 2026).
     selectors = [*SHARED_TESTS, "test_python_test_plan"]
     return {"mode": "shared", "selected_groups": ["shared-invariants", "test_python_test_plan"],
             "excluded_groups": [*(name for name in modules
                                    if name not in {"test_ci_plan", "test_python_test_plan"}),
                                 "test_ci_plan:remaining-cases"],
             "test_selectors": selectors,
-            "reasons": ["ordinary app-only " + next(iter(categories))
+            "reasons": ["ordinary app-only " + "/".join(sorted(categories))
                         + " Rust inputs; shared invariants retained, unaffected tooling suites excluded"]}
 
 
