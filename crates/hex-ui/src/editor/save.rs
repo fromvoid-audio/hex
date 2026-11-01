@@ -50,13 +50,17 @@ fn save_admission(
     }
 }
 
-fn prepare_save_path(mut path: PathBuf) -> Result<PathBuf, &'static str> {
+/// Final Save As target, or a display message. Storage owns the filename
+/// limit for the recovery files it keeps beside the project; its message
+/// marks the chosen name verbatim.
+fn prepare_save_path(mut path: PathBuf) -> Result<PathBuf, String> {
     if path.extension().is_none() {
         path.set_extension("hex");
     }
     if path.as_os_str().len() > MAX_PROJECT_PATH_BYTES {
-        return Err("project path exceeds the 4096-byte limit");
+        return Err("project path exceeds the 4096-byte limit".into());
     }
+    hex_session::service::project_name::check(&path).map_err(|error| error.to_string())?;
     Ok(path)
 }
 
@@ -372,7 +376,13 @@ mod tests {
         let too_long = PathBuf::from(format!("{}.hex", "x".repeat(4_096)));
         assert_eq!(
             prepare_save_path(too_long),
-            Err("project path exceeds the 4096-byte limit")
+            Err("project path exceeds the 4096-byte limit".into())
         );
+        // 80 CJK characters fit one component but not the journal lock beside it.
+        let name = format!("Take {}.hex", "界".repeat(80));
+        let message = prepare_save_path(PathBuf::from(&name)).expect_err("long name");
+        let shown = crate::theme::text(&message);
+        assert!(shown.contains(&name), "{shown}");
+        assert!(shown.contains("choose a name of at most"), "{shown}");
     }
 }
