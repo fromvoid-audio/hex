@@ -167,6 +167,7 @@ fn save_with_finish(
     let mut temporary = None;
     for _ in 0..32 {
         let id = NEXT_TEMP.fetch_add(1, Relaxed);
+        // `crate::temporaries` sweeps this exact pattern once it is stale.
         let candidate = parent.join(format!(".hex-pending-{}-{id}", std::process::id()));
         match OpenOptions::new()
             .write(true)
@@ -195,6 +196,8 @@ fn save_with_finish(
             source,
         }
     })?;
+    // Best effort: leaked temporaries never fail a completed save.
+    let _ = crate::temporaries::sweep_stale_temporaries(parent);
     Ok(FileToken::from_validated_bytes(Arc::from(bytes)))
 }
 
