@@ -169,6 +169,7 @@ impl Project {
         }
         // Clamp one shared delta at time zero, never individual members.
         let delta = requested_delta.max(-i128::from(earliest));
+        let beat_delta = all_midi_beat_delta(self, &selected, anchor, position)?;
         let mut result = Vec::new();
         result
             .try_reserve_exact(ids.len())
@@ -200,16 +201,18 @@ impl Project {
                 .iter()
                 .filter(|c| selected.contains(&c.id()))
             {
-                let frame = translated(self.tempo_map().beat_to_frame(clip.start())?, delta)?;
-                let start = midi_start(
-                    self,
-                    clip.start(),
-                    frame,
-                    delta,
-                    requested_delta,
-                    clip.id() == anchor,
-                    position,
-                )?;
+                let start = match beat_delta {
+                    Some(beat_delta) => shifted_beat(clip.start(), beat_delta)?,
+                    None => midi_start(
+                        self,
+                        clip.start(),
+                        translated(self.tempo_map().beat_to_frame(clip.start())?, delta)?,
+                        delta,
+                        requested_delta,
+                        clip.id() == anchor,
+                        position,
+                    )?,
+                };
                 let end = BeatTime::from_raw(
                     start
                         .raw()
@@ -237,6 +240,50 @@ impl Project {
 }
 pub(super) fn translated(frame: u64, delta: i128) -> Result<u64, Invalid> {
     u64::try_from(i128::from(frame) + delta)
+        .map_err(|_| Invalid("whole clip group exceeds timeline bounds"))
+}
+
+/// An all-MIDI group moves by one exact beat delta, clamped so its earliest
+/// member stays at or after beat zero, exactly as single-clip MIDI movement
+/// does. Mixed groups return `None` and share one frame delta instead, because
+/// audio members are frame-anchored.
+fn all_midi_beat_delta(
+    project: &Project,
+    selected: &BTreeSet<ClipId>,
+    anchor: ClipId,
+    position: ClipGroupPosition,
+) -> Result<Option<i128>, Invalid> {
+    let ClipGroupPosition::Midi(destination) = position else {
+        return Ok(None);
+    };
+    let anchor = project
+        .midi_clip(anchor)
+        .ok_or(Invalid("midi anchor is stale"))?
+        .start();
+    let mut earliest = anchor;
+    for track in project.tracks() {
+        if track.clips().iter().any(|c| selected.contains(&c.id())) {
+            return Ok(None);
+        }
+        for clip in track
+            .midi_clips()
+            .iter()
+            .filter(|c| selected.contains(&c.id()))
+        {
+            earliest = earliest.min(clip.start());
+        }
+    }
+    Ok(Some(midi_beat_delta(anchor, destination, earliest)))
+}
+
+/// The requested anchor beat delta, clamped at beat zero for `earliest`.
+pub(super) fn midi_beat_delta(anchor: BeatTime, destination: BeatTime, earliest: BeatTime) -> i128 {
+    (i128::from(destination.raw()) - i128::from(anchor.raw())).max(-i128::from(earliest.raw()))
+}
+
+pub(super) fn shifted_beat(beat: BeatTime, delta: i128) -> Result<BeatTime, Invalid> {
+    u64::try_from(i128::from(beat.raw()) + delta)
+        .map(BeatTime::from_raw)
         .map_err(|_| Invalid("whole clip group exceeds timeline bounds"))
 }
 

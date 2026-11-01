@@ -165,7 +165,7 @@ impl fmt::Display for DraftError {
         write!(
             f,
             "automation draft at {}: {} ({} durable events)",
-            self.path.display(),
+            crate::text::verbatim(self.path.display()),
             self.source,
             self.progress.durable_events
         )
