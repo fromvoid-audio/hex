@@ -1391,6 +1391,66 @@ class MergeTestBudgetTests(unittest.TestCase):
         self.assertEqual(ci.merge_test_budget(steps, "Pulse #1 slow ui suite")["over_budget_reason"],
                          "Pulse #1 slow ui suite")
 
+class ModuleScopeTests(unittest.TestCase):
+    """Module-scoped owner tests (user policy, 1 November 2026)."""
+
+    def crate(self, root: Path) -> list[dict]:
+        files = {
+            "src/lib.rs": "mod parent;\nmod plain;\n#[cfg(test)]\n#[path = \"plain_tests.rs\"]\nmod plain_tests;\n",
+            "src/parent.rs": "mod child;\nmod untested;\n#[test] fn parent_case() {}\n",
+            "src/parent/child.rs": "#[cfg(test)] mod tests { #[test] fn child_case() {} }\n",
+            "src/parent/untested.rs": "pub fn helper() {}\n",
+            "src/plain.rs": "pub fn plain() {}\n",
+            "src/plain_tests.rs": "#[test] fn plain_case() {}\n",
+        }
+        for name, text in files.items():
+            path = root / "crates/owner" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        return [{"name": "owner", "manifest": "crates/owner/Cargo.toml", "features": {},
+                 "dependencies": [], "targets": []}]
+
+    def test_changed_modules_select_their_own_or_nearest_tested_subtree(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = self.crate(root)
+            select = lambda *paths: plan.module_test_filters(root, list(paths), inventory, ["owner"])
+            self.assertEqual(select("crates/owner/src/parent/child.rs"), {"owner": ["parent::child::"]})
+            # No tests of its own: the nearest ancestor with tests.
+            self.assertEqual(select("crates/owner/src/parent/untested.rs"), {"owner": ["parent::"]})
+            # A broader selected module subsumes a narrower one.
+            self.assertEqual(select("crates/owner/src/parent.rs", "crates/owner/src/parent/child.rs"),
+                             {"owner": ["parent::"]})
+            # #[path] files map to their declared module.
+            self.assertEqual(select("crates/owner/src/plain_tests.rs"), {"owner": ["plain_tests::"]})
+            # No tested ancestor below the root, the root itself, or non-src inputs: whole crate.
+            self.assertEqual(select("crates/owner/src/plain.rs"), {})
+            self.assertEqual(select("crates/owner/src/lib.rs", "crates/owner/src/parent/child.rs"), {})
+            self.assertEqual(select("crates/owner/tests/it.rs"), {})
+            (root / "crates/owner/src/plain.rs").write_text('include!("generated.rs");\n')
+            self.assertEqual(select("crates/owner/src/parent/child.rs"), {})
+
+    def test_scoped_steps_append_filters_skip_examples_and_drop_per_step_zero_guard(self):
+        inventory = [{"name": "hex-desktop", "manifest": "crates/hex-desktop/Cargo.toml",
+                      "features": {"allocation-probe": []}, "dependencies": [], "targets": []},
+                     {"name": "hex-ui", "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": []}, "dependencies": [], "targets": []}]
+        for owner, filters in (("hex-desktop", ["native_audio::"]), ("hex-ui", ["editor::x::"])):
+            boundary = {"kind": "packages", "tests": [], "test_packages": [owner], "lint_packages": [owner],
+                        "single_run": {}, "module_filters": {owner: filters}}
+            steps = {s.step_id: s for s in ci.planned_steps({
+                "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                "cargo_inventory": inventory, "paths": []})}
+            tests = [s for s in steps.values() if ci.runs_rust_tests(s.argv)]
+            self.assertTrue(tests)
+            for step in tests:
+                with self.subTest(step=step.step_id):
+                    self.assertIn(filters[0], step.argv)
+                    self.assertFalse(step.requires_tests)
+                    if step.argv[:2] == ("python3", "scripts/test_shards.py"):
+                        self.assertLess(step.argv.index("--filter"), step.argv.index("--"))
+            self.assertNotIn("device-gallery-tests", steps)
+            self.assertTrue(any(s.argv[:2] == ("cargo", "clippy") for s in steps.values()))
 
 
 if __name__ == "__main__":

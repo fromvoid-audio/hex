@@ -280,8 +280,11 @@ runtime consumers with no Cargo edge. Every Cargo consumer must still compile an
 lint, but consumer test suites are not rerun. Rely on the owner's boundary tests
 to guarantee behaviour downstream. When a consumer later breaks, the defect is a
 missing owner boundary test: add the regression at the owner instead of widening
-merge checks. Keep each merge's test setup and execution, excluding build time,
-under one minute. `scripts/local-ci.py --profile merge` enforces this budget (see
+merge checks. Within an owner crate, merges test only the changed modules'
+own test subtrees (a module without tests falls back to its nearest tested
+ancestor), so give each module its own boundary tests and split large modules
+along their responsibilities. Keep each merge's test setup and execution,
+excluding build time, under one minute. `scripts/local-ci.py --profile merge` enforces this budget (see
 `docs/local-ci.md`). An over-budget owner suite is a test-design bug: record it in
 Pulse and pass its reason with `--over-budget-reason` until it is fixed.
 
