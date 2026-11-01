@@ -155,3 +155,62 @@ fn remapped_suppression_ends_at_the_loop_wrap_so_the_next_pass_sounds() {
     next.render(&mut pass).unwrap();
     assert!(pass.iter().any(|frame| *frame != [0.0; 2]));
 }
+
+#[test]
+fn tempo_remap_with_instrument_reenable_releases_suppression_at_new_loop_end() {
+    use hex_lattice::NativeInstrumentDefinition;
+
+    let definition = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.tempo.reenable"),
+        levels: [0.2, 0.4],
+        release_frames: 8,
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
+    snapshot.loop_region = Some(LoopRegion::new(0, 12_000, true).unwrap());
+    let enabled = with_test_instrument(
+        &legacy_project_from_snapshot(snapshot).unwrap(),
+        definition.id,
+        0,
+    );
+    let mut disabled_snapshot = enabled.snapshot();
+    disabled_snapshot.tracks[0]
+        .instrument
+        .as_mut()
+        .unwrap()
+        .bypassed = true;
+    let disabled = Project::from_legacy_snapshot(disabled_snapshot).unwrap();
+    let mut edited = Editor::new(enabled, 8).unwrap();
+    edited
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+
+    let mut previous = SessionPlayback::new(revision_with_instrument_registry(
+        &disabled,
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    render_frames(&mut previous, 64, 3_001);
+    let mut next = SessionPlayback::new(revision_with_instrument_registry(
+        edited.project(),
+        table,
+        &registry,
+    ))
+    .unwrap();
+    next.try_inherit_state_from(&mut previous).unwrap();
+    assert_eq!(next.arrangement_frame(), 6_002);
+    let until_wrap = 24_000 - 6_002;
+    let mut output = vec![[0.0; 2]; until_wrap + 64];
+    for chunk in output.chunks_mut(64) {
+        next.render(chunk).unwrap();
+    }
+    assert!(output[..until_wrap].iter().all(|frame| *frame == [0.0; 2]));
+    assert_eq!(output[until_wrap], [0.2; 2]);
+}

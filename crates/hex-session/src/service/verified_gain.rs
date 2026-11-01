@@ -124,7 +124,10 @@ mod tests {
         time::Duration,
     };
     fn next(service: &Service) -> Event {
-        service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+        service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap()
     }
     fn send(service: &Service, request: Request) -> Event {
         service.submit(request).unwrap();
@@ -257,7 +260,7 @@ mod tests {
         fn close(&mut self) {}
     }
     fn await_count(observed: &Mutex<Observed>, count: usize) {
-        let until = std::time::Instant::now() + Duration::from_secs(2);
+        let until = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
         while observed.lock().unwrap().sources.len() < count {
             assert!(
                 std::time::Instant::now() < until,

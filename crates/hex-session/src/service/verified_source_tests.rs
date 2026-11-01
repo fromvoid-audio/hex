@@ -1,7 +1,7 @@
 //! Actual verified readers + canonical worker; no native ownership is inferred.
 use super::*;
 use crate::{AudioSourceBinding, DocumentAudioMode, SourcePlanReservation};
-use std::{fs, sync::atomic::AtomicU64, time::Duration};
+use std::{fs, sync::atomic::AtomicU64};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Files(PathBuf);
 impl Files {
@@ -57,7 +57,10 @@ fn reservation(count: usize) -> SourcePlanReservation {
     }
 }
 fn next(service: &Service) -> Event {
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap()
 }
 fn run(service: &Service, request: Request) -> Event {
     service.submit(request).unwrap();
@@ -450,7 +453,7 @@ fn canonical_verified_bindings_survive_save_as_and_changed_bytes_require_explici
     assert!(next(&service).playback.is_none());
     let completion = service
         .export_events
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(crate::test_wait::HANG_BOUND)
         .unwrap();
     assert!(
         completion

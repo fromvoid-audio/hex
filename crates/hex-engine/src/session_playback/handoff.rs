@@ -2371,15 +2371,21 @@ impl SessionPlayback {
             } else if shared_sources::track_has_analytic_source(&self.revision, new_index) {
                 // Re-enabling an instrument must not chase notes already in
                 // progress; exact-boundary and later onsets remain eligible.
+                // The loop wrap ends this pass: the next pass is a new onset
+                // and must sound (Pulse #4124).
+                let loop_end = self
+                    .active_loop_region_at(new_cut_frame)
+                    .map(hex_project::LoopRegion::end);
                 let mut failure = None;
                 new_track
                     .for_each_active_midi_span(new_cut_frame, |span, _| {
                         if span.start >= new_cut_frame {
                             return;
                         }
+                        let end = loop_end.map_or(span.end, |loop_end| span.end.min(loop_end));
                         let until_frame = match previous
                             .performance_frame
-                            .checked_add(span.end.saturating_sub(new_cut_frame))
+                            .checked_add(end.saturating_sub(new_cut_frame))
                         {
                             Some(frame) => frame,
                             None => {

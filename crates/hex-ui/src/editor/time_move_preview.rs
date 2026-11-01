@@ -129,7 +129,7 @@ pub(super) fn passive_audio_fragment(
         .border_l(px(if has_border { stroke } else { 0.0 }))
         .border_r(px(0.0))
         .debug_selector(move || selector.clone())
-        .border_color(rgb(0x000000))
+        .border_color(rgb(theme::color(theme::PaletteRole::ClipOutline)))
         .bg(rgb(fill));
     if let Some(header) = compact_header {
         return Some(super::tracks::clip_boundary_shell(
@@ -137,8 +137,8 @@ pub(super) fn passive_audio_fragment(
             left as f32,
             width as f32,
             stroke,
-            0x000000,
-            0x000000,
+            theme::color(theme::PaletteRole::ClipOutline),
+            theme::color(theme::PaletteRole::ClipOutline),
             true,
             has_border,
             0.0,
@@ -170,8 +170,8 @@ pub(super) fn passive_audio_fragment(
         left as f32,
         width as f32,
         stroke,
-        0x000000,
-        0x000000,
+        theme::color(theme::PaletteRole::ClipOutline),
+        theme::color(theme::PaletteRole::ClipOutline),
         true,
         has_border,
         0.0,
@@ -212,7 +212,7 @@ pub(super) fn passive_midi_fragment(
         .border_r(px(0.0))
         .debug_selector(move || format!("{selector}-{}", clip_id.value()))
         .bg(rgb(fill))
-        .border_color(rgb(0x000000));
+        .border_color(rgb(theme::color(theme::PaletteRole::ClipOutline)));
     if let Some(header) = compact_header {
         return (
             Some(super::tracks::clip_boundary_shell(
@@ -220,8 +220,8 @@ pub(super) fn passive_midi_fragment(
                 left as f32,
                 width as f32,
                 stroke,
-                0x000000,
-                0x000000,
+                theme::color(theme::PaletteRole::ClipOutline),
+                theme::color(theme::PaletteRole::ClipOutline),
                 true,
                 has_border,
                 0.0,
@@ -288,8 +288,8 @@ pub(super) fn passive_midi_fragment(
             left as f32,
             width as f32,
             stroke,
-            0x000000,
-            0x000000,
+            theme::color(theme::PaletteRole::ClipOutline),
+            theme::color(theme::PaletteRole::ClipOutline),
             true,
             has_border,
             0.0,
