@@ -13,12 +13,15 @@ use std::{
 
 const MAGIC: &[u8; 8] = b"HEXJRNL\0";
 const LOCK_MAGIC: &[u8; 8] = b"HEXJLOC\0";
+pub(crate) const JOURNAL_SUFFIX: &str = ".hex-journal";
+/// Leaves room for the slot lock's `.lock` suffix within a 255-byte component.
+pub(crate) const MAX_JOURNAL_NAME_BYTES: usize = 255 - ".lock".len();
 
 /// Journal beside a saved project. Untitled uses a caller-supplied application slot.
 pub fn journal_path(target: &Path) -> Result<PathBuf, StorageError> {
     let name = basename(target)?;
-    let name = format!(".{name}.hex-journal");
-    if name.len() > 250 {
+    let name = format!(".{name}{JOURNAL_SUFFIX}");
+    if name.len() > MAX_JOURNAL_NAME_BYTES {
         return Err(StorageError::Invalid(
             "journal filename exceeds component limit",
         ));
