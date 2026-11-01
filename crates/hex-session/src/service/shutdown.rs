@@ -128,16 +128,11 @@ mod tests {
         let exporter: Exporter = {
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
-            Arc::new(move |path, project, _, frames| {
+            // Only its duration matters; the terminal is never observed.
+            Arc::new(move |_, _, _, _| {
                 entered.wait();
                 release.wait();
-                Ok(ExportReport {
-                    path: path.to_path_buf(),
-                    sample_rate: project.arrangement().sample_rate(),
-                    frames,
-                    data_bytes: 0,
-                    recovery_path: None,
-                })
+                Err("held export released".into())
             })
         };
         let mut service = Service::with_exporter(48_000, 8, 8, exporter).unwrap();
