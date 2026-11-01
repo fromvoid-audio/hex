@@ -21,14 +21,14 @@ pub const V2_STOPBAND_DB: f64 = 100.0;
 const MAX_KERNEL_TABLE_BYTES: usize = 13 * 1_024 * 1_024;
 
 /// Versioned sample-rate conversion law. Each version's output is fixed once
-/// shipped; saved media records which one produced its derived audio.
+/// shipped. Callers must add saved-format support before persisting v2 media.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResampleVersion {
     V1,
     V2,
 }
 
-/// Cloneable, control-side handle to a prepared v1 sinc kernel.
+/// Cloneable, control-side handle to a prepared sinc kernel.
 ///
 /// Clones share one immutable table. There is no global cache; callers decide
 /// when to reuse a kernel and must keep its final drop off the audio callback.
