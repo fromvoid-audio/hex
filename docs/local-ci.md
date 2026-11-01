@@ -149,6 +149,11 @@ comprehensive discovery. Owner selections run through `scripts/python_shards.py`
 one process per test from a shared work queue (up to 12 workers), which brings
 `test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
 
+Module-scoped test steps build only the library (or, for a binary-only crate,
+the binaries): a `module::path::` filter can never match an integration test,
+example or bench, so building and linking those targets was pure overhead
+(hex-session has 28 test and 7 example targets, hex-storage 34).
+
 **One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
 build phase, under 60 s. local-ci sums executed test steps (wall time minus the
 reported build phase; carried steps excluded) into `test_budget` in the summary

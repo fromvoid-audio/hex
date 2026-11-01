@@ -1501,6 +1501,9 @@ class ModuleScopeTests(unittest.TestCase):
                 with self.subTest(step=step.step_id):
                     self.assertIn(filters[0], step.argv)
                     self.assertFalse(step.requires_tests)
+                    # Only the unit-test target can match a module path.
+                    self.assertTrue({"--lib", "--bins"} & set(step.argv))
+                    self.assertNotIn("--all-targets", step.argv)
                     if step.argv[:2] == ("python3", "scripts/test_shards.py"):
                         self.assertLess(step.argv.index("--filter"), step.argv.index("--"))
             self.assertNotIn("device-gallery-tests", steps)
