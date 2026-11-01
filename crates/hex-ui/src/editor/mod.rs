@@ -146,6 +146,7 @@ mod missing_media;
 mod user_errors;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
+mod midi_loop_notes;
 mod midi_ruler;
 mod midi_scene;
 mod midi_selection;
