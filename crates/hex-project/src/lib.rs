@@ -129,7 +129,7 @@ mod edit;
 pub use clip_fragment::{preview_clip_fragment, preview_clip_fragment_with_tempo};
 pub use conversion::{
     IDENTITY_CONVERSION, SINC_CONVERSION_V1, SINC_CONVERSION_V2, converted_frame_count,
-    validate_conversion_metadata,
+    import_conversion_version, validate_conversion_metadata,
 };
 mod history;
 mod instrument_history;

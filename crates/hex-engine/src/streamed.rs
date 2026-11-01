@@ -1,6 +1,9 @@
 //! Streamed-source identity and the narrow borrowed page interface used by render.
 use crate::{Frame, Invalid};
-use hex_project::{AssetId, IDENTITY_CONVERSION, SINC_CONVERSION_V1, validate_conversion_metadata};
+use hex_project::{
+    AssetId, IDENTITY_CONVERSION, SINC_CONVERSION_V1, SINC_CONVERSION_V2,
+    validate_conversion_metadata,
+};
 
 /// Fixed project-rate page size shared by the engine and `hex-stream`.
 pub const STREAM_PAGE_FRAMES: usize = 4096;
@@ -59,7 +62,10 @@ impl StreamedSourceMetadata {
         if key.generation == 0 {
             return Err(Invalid("stream source generation must be positive"));
         }
-        if conversion_version != IDENTITY_CONVERSION && conversion_version != SINC_CONVERSION_V1 {
+        if !matches!(
+            conversion_version,
+            IDENTITY_CONVERSION | SINC_CONVERSION_V1 | SINC_CONVERSION_V2
+        ) {
             return Err(Invalid("unsupported streamed conversion version"));
         }
         Ok(Self {

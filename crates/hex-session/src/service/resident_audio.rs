@@ -1146,8 +1146,8 @@ pub(super) fn import_file(
     Ok(prepared)
 }
 
-/// Decode found files for an in-place relink. Each is resampled like an import;
-/// the session transaction then checks them against the saved asset metadata.
+/// Decode found files for an in-place relink. Each is resampled with its asset's
+/// saved conversion law; the session transaction then checks the saved metadata.
 pub(super) fn decode_relinks(
     session: &Session,
     relinks: BTreeMap<hex_project::AssetId, PathBuf>,
@@ -1172,16 +1172,22 @@ pub(super) fn decode_relinks(
             return Err(SessionError::Invalid("relink cancelled"));
         }
         let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
+        let conversion = session
+            .project()
+            .asset(asset)
+            .ok_or(SessionError::Invalid("relinked media no longer exists"))?
+            .conversion_version();
         let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
         prepared.push((
             asset,
-            PreparedImport::at_rate(
+            PreparedImport::for_conversion(
                 decoded,
                 session.project().sample_rate(),
                 ResampleLimits {
                     max_source_frames: IMPORT_FRAME_LIMIT,
                     max_output_frames: output_limit,
                 },
+                conversion,
             )?,
         ));
     }

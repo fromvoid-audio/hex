@@ -87,6 +87,11 @@ impl ResamplePlan {
         kernel.shares_allocation_with(other)
     }
 
+    /// Source halo on each side of an output center for this plan's kernel.
+    pub fn kernel_support_radius(&self) -> usize {
+        self.kernel.support_radius()
+    }
+
     pub fn new(
         source_rate: u32,
         target_rate: u32,

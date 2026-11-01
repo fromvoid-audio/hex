@@ -63,13 +63,15 @@ fn asset(created: Created) -> AssetId {
 fn mixed_rate_source_survives_derivation_history_and_open_with_exact_budget() {
     let decoded = decoded(32_000, 12);
     let original = decoded.audio().clone();
-    let expected = resample(
+    let law = hex_project::import_conversion_version(32_000, 16_000);
+    let expected = resample_with_version(
         &original,
         16_000,
         ResampleLimits {
             max_source_frames: 1024,
             max_output_frames: 1024,
         },
+        hex_media::ResampleVersion::for_conversion(law).unwrap(),
     )
     .unwrap();
     let mut session = Session::new(16_000, 16, 18).unwrap();
