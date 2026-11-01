@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 3
+POLICY_VERSION = 4
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -283,14 +283,18 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
     if missing:
         raise ValueError("reviewed runtime consumers missing from Cargo inventory: " + ", ".join(sorted(missing)))
     compressor = {"crates/hex-devices/src/compressor.rs", "crates/hex-devices/src/compressor/tests.rs"}
+    # hex-sandbox (design tool over hex-engine/hex-widgets) has no compressor
+    # code, fixtures or tests; it is linted with every other Cargo consumer.
     known_consumers = {"hex-devices", "hex-engine", "hex-audio", "hex-ui", "hex-storage",
-                       "hex-desktop", "hex-cli", "hex-export", "hex-session", "hex-media", "hex-stream"}
+                       "hex-desktop", "hex-cli", "hex-export", "hex-session", "hex-media", "hex-stream",
+                       "hex-sandbox"}
     reviewed_features = {"hex-engine": {"instrument-test-support"}, "hex-export": {"instrument-test-support"},
                          # Stream test hooks gate no compressor code or tests; compressor
                          # plans still lint those configurations (local-ci boundary_steps).
                          "hex-audio": {"allocation-probe", "stream-test-support"}, "hex-desktop": {"allocation-probe"},
                          "hex-ui": {"ui-test-support"}, "hex-session": {"source-overview-test-support"},
-                         "hex-stream": {"allocation-probe", "test-support"}}
+                         "hex-stream": {"allocation-probe", "test-support"},
+                         "hex-sandbox": {"ui-test-support"}}
     narrow = bool(executable) and set(executable) <= compressor and set(affected) <= known_consumers
     narrow = narrow and all(set(p["features"]) <= reviewed_features.get(p["name"], set())
                             for p in inventory if p["name"] in affected)
@@ -312,15 +316,35 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
             {"package": "hex-audio", "test": "allocation_probe_calibration", "filter": "", "features": "allocation-probe"},
             {"package": "hex-ui", "lib": True, "filter": "compressor", "features": "ui-test-support"},
         ]
+    tested = owner_test_packages(paths, inventory, affected)
     return {"kind": "compressor" if narrow else "packages", "tests": tests,
-            "test_packages": [] if narrow else affected,
-            "single_run": {} if narrow else single_run_packages(root, affected, inventory),
+            "test_packages": [] if narrow else tested,
+            "single_run": {} if narrow else single_run_packages(root, tested, inventory),
             "lint_packages": affected,
             "excluded_behavior_packages": sorted(set(affected) - {t["package"] for t in tests}) if narrow else [],
             "excluded_configurations": (["unrelated instrument/export and whole UI/audio suites: compressor-only implementation; unchanged shared host/registration/build inputs"] if narrow else []),
             "excluded_packages": sorted({p["name"] for p in inventory} - set(affected)),
             "rationale": ("unchanged host interfaces/registration; real compressor host, history, allocation, save/reopen and UI consumers; other device behavior omitted; all Cargo consumers linted"
-                          if narrow else "owner plus transitive normal/dev/build/optional/target and reviewed runtime consumers; full package tests and relevant feature configurations; no module isolation assumed")}
+                          if narrow else "owner packages and reviewed runtime consumers test in every configuration; every transitive Cargo consumer compiles and lints; consumer suites rely on the owner's boundary tests")}
+
+
+def owner_test_packages(paths: list[str], inventory: list[dict], affected: list[str]) -> list[str]:
+    """Packages whose test suites a merge runs: the boundary owners.
+
+    The owning crate's tests guard its public contract. Cargo consumers still
+    compile and lint against it, but their suites are not rerun: a consumer
+    regression is a missing owner boundary test, fixed there (user policy,
+    1 November 2026). Reviewed runtime consumers without a Cargo edge test too.
+    A manifest or build-script change can alter how consumers build, so it keeps
+    the whole affected closure.
+    """
+    executable = [p for p in paths if not metadata_path(p)]
+    if any(p.endswith(("Cargo.toml", "/build.rs")) for p in executable):
+        return sorted(affected)
+    owners = {owner for p in executable if (owner := owner_package(p, inventory))}
+    owners |= {consumer for owner in set(owners) for consumer in RUNTIME_CONSUMERS.get(owner, set())}
+    tested = sorted(owners & set(affected))
+    return tested or sorted(affected)
 
 
 def health_selection(paths: list[str], inventory: list[dict]) -> dict:
