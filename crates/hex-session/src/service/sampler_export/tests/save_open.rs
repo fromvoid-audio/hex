@@ -466,7 +466,7 @@ fn held_export_and_new_original_reconstruction_share_one_finite_union() {
         release.send(()).unwrap();
         assert!(export_event(&service).result.is_ok());
         if frames == 7 {
-            let end = Instant::now() + Duration::from_secs(2);
+            let end = Instant::now() + crate::test_wait::HANG_BOUND;
             loop {
                 service.submit(Request::Open(saved.clone())).unwrap();
                 let retried = event(&service);
