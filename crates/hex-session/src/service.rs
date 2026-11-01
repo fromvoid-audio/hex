@@ -833,6 +833,8 @@ pub enum Request {
     RestoreStoppedPlayback,
     /// Worker-local continuation of the existing stopped restoration request.
     ContinueStoppedPlaybackRestore,
+    /// Whole-project Main export: exactly `ExportRange { start: 0, frames: None }`
+    /// on Main, create-new, so its causal length includes declared finite tails.
     Export(PathBuf),
     /// Explicit half-open Arrangement range; worker captures the current revision.
     ExportRange {
@@ -845,7 +847,41 @@ pub enum Request {
     },
 }
 
+/// Fields of the one canonical export request shape.
+type ExportRangeParts = (
+    PathBuf,
+    u64,
+    Option<u64>,
+    hex_export::ExportSignal,
+    hex_export::ExportControl,
+    bool,
+);
+
 impl Request {
+    /// The canonical `ExportRange` parts of an export request; `Export` is its
+    /// automatic whole-project Main spelling. Other requests return `None`.
+    fn into_export_range(self) -> Option<ExportRangeParts> {
+        match self {
+            Request::Export(path) => Some((
+                path,
+                0,
+                None,
+                hex_export::ExportSignal::Main,
+                hex_export::ExportControl::default(),
+                false,
+            )),
+            Request::ExportRange {
+                path,
+                start,
+                frames,
+                signal,
+                control,
+                overwrite,
+            } => Some((path, start, frames, signal, control, overwrite)),
+            _ => None,
+        }
+    }
+
     /// Control requests that must observe the completed parameter gesture.
     /// Project replacement keeps previews intact until candidate publication;
     /// only the successful `project_replaced` path retires their ownership.
@@ -984,9 +1020,38 @@ impl Drop for Service {
     }
 }
 
+/// Ordinary controlled range renderer: path, revision, start, frames, signal,
+/// control and publication. Tests substitute it to observe worker custody.
 type Exporter = Arc<
-    dyn Fn(&Path, &Arc<PreparedRevision>, u64, u64) -> Result<ExportReport, String> + Send + Sync,
+    dyn Fn(
+            &Path,
+            &Arc<PreparedRevision>,
+            u64,
+            u64,
+            hex_export::ExportSignal,
+            &hex_export::ExportControl,
+            &hex_export::Publication,
+        ) -> Result<ExportReport, String>
+        + Send
+        + Sync,
 >;
+
+fn canonical_exporter() -> Exporter {
+    Arc::new(
+        |path, prepared, start, frames, signal, control, publication| {
+            hex_export::render_prepared_with_policy(
+                path,
+                Arc::clone(prepared),
+                start,
+                frames,
+                signal,
+                control,
+                publication,
+            )
+            .map_err(|error| error.to_string())
+        },
+    )
+}
 
 struct ExportJob {
     job_id: u64,
@@ -1020,10 +1085,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             None,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string())
-            }),
+            canonical_exporter(),
         )
     }
 
@@ -1039,10 +1101,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             Some(untitled_path),
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string())
-            }),
+            canonical_exporter(),
         )
     }
 
@@ -1076,10 +1135,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             recovery,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string())
-            }),
+            canonical_exporter(),
             Some(audio),
         )
     }
@@ -1096,10 +1152,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             recovery,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|e| e.to_string())
-            }),
+            canonical_exporter(),
             Some(audio),
             Some(native),
         )
@@ -1132,10 +1185,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             None,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string())
-            }),
+            canonical_exporter(),
             None,
             Some(reservation),
         )
@@ -6195,112 +6245,62 @@ fn run_worker(
                         }
                     }
                 }
-                Request::Export(path) => {
-                    status = Some("export queued".into());
-                    let clip_end = compiled
-                        .as_ref()
-                        .and_then(|(_, prepared)| prepared.arrangement().audible_end_frame())
-                        .unwrap_or(0);
-                    let job = match (compiled.as_ref(), clip_end) {
-                        (_, 0) => Err("nothing to export".to_owned()),
-                        (Some((compiled_revision, prepared)), frames)
-                            if *compiled_revision == revision =>
-                        {
-                            Ok(ExportJob {
-                                job_id: 0,
-                                streamed: None,
-                                sources: None,
-                                resources: None,
-                                revision,
-                                path: path.clone(),
-                                prepared: Arc::clone(prepared),
-                                frames,
-                                controlled: None,
-                            })
+                request @ (Request::Export(_) | Request::ExportRange { .. }) => {
+                    // Both spellings are export requests, so their parts always exist.
+                    if let Some((path, start, frames, signal, control, overwrite)) =
+                        request.into_export_range()
+                    {
+                        let job = match compiled.as_ref() {
+                            Some((compiled_revision, prepared))
+                                if *compiled_revision == revision =>
+                            {
+                                hex_export::controlled_frame_count(
+                                    prepared.arrangement(),
+                                    start,
+                                    frames,
+                                    &signal,
+                                )
+                                .map_err(|error| error.to_string())
+                                .map(|frames| ExportJob {
+                                    job_id: 0,
+                                    streamed: None,
+                                    sources: None,
+                                    resources: None,
+                                    revision,
+                                    path: path.clone(),
+                                    prepared: Arc::clone(prepared),
+                                    frames,
+                                    controlled: Some((start, signal, control, overwrite)),
+                                })
+                            }
+                            _ => Err("latest project revision has not compiled".to_owned()),
                         }
-                        _ => Err("latest project revision has not compiled".to_owned()),
-                    }
-                    .and_then(|mut job| {
-                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
-                            || job.prepared.arrangement().contains_streamed_sources()
-                        {
-                            job.streamed = Some(streamed_export::StreamedExportJob::capture(
-                                &session,
-                                &state.project,
-                                project_generation,
-                                revision,
-                                events.streamed_exporter(),
-                            )?);
-                        }
-                        Ok(job)
-                    });
-                    match job {
-                        Ok(job) => export_job = Some(job),
-                        Err(reason) => {
-                            export_completion = Some(ExportEvent {
-                                revision,
-                                path,
-                                result: Err(reason),
-                            });
-                        }
-                    }
-                }
-                Request::ExportRange {
-                    path,
-                    start,
-                    frames,
-                    signal,
-                    control,
-                    overwrite,
-                } => {
-                    let job = match compiled.as_ref() {
-                        Some((compiled_revision, prepared)) if *compiled_revision == revision => {
-                            hex_export::controlled_frame_count(
-                                prepared.arrangement(),
-                                start,
-                                frames,
-                                &signal,
-                            )
-                            .map_err(|error| error.to_string())
-                            .map(|frames| ExportJob {
-                                job_id: 0,
-                                streamed: None,
-                                sources: None,
-                                resources: None,
-                                revision,
-                                path: path.clone(),
-                                prepared: Arc::clone(prepared),
-                                frames,
-                                controlled: Some((start, signal, control, overwrite)),
-                            })
-                        }
-                        _ => Err("latest project revision has not compiled".to_owned()),
-                    }
-                    .and_then(|mut job| {
-                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
-                            || job.prepared.arrangement().contains_streamed_sources()
-                        {
-                            job.streamed = Some(streamed_export::StreamedExportJob::capture(
-                                &session,
-                                &state.project,
-                                project_generation,
-                                revision,
-                                events.streamed_exporter(),
-                            )?);
-                        }
-                        Ok(job)
-                    });
-                    match job {
-                        Ok(job) => {
-                            status = Some("export queued".into());
-                            export_job = Some(job);
-                        }
-                        Err(reason) => {
-                            export_completion = Some(ExportEvent {
-                                revision,
-                                path,
-                                result: Err(reason),
-                            })
+                        .and_then(|mut job| {
+                            if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                                || job.prepared.arrangement().contains_streamed_sources()
+                            {
+                                job.streamed = Some(streamed_export::StreamedExportJob::capture(
+                                    &session,
+                                    &state.project,
+                                    project_generation,
+                                    revision,
+                                    events.streamed_exporter(),
+                                )?);
+                            }
+                            Ok(job)
+                        });
+                        match job {
+                            Ok(job) => {
+                                status = Some("export queued".into());
+                                export_job = Some(job);
+                            }
+                            Err(reason) => {
+                                export_completion = Some(ExportEvent {
+                                    revision,
+                                    path,
+                                    result: Err(reason),
+                                })
+                            }
                         }
                     }
                 }
@@ -7607,27 +7607,33 @@ fn run_export_worker(
                         )
                     })
                     .map_err(|e| e.to_string())
-            } else if let Some((start, signal, control, overwrite)) = job.controlled {
+            } else {
+                // Every service request carries controlled parts; a bare job
+                // renders as the automatic whole-project Main export.
+                let (start, signal, control, overwrite) = job.controlled.unwrap_or_else(|| {
+                    (
+                        0,
+                        hex_export::ExportSignal::Main,
+                        hex_export::ExportControl::default(),
+                        false,
+                    )
+                });
                 let policy = if overwrite {
                     hex_export::Publication::confirmed_save(&job.path)
                 } else {
                     Ok(hex_export::Publication::CreateNew)
                 };
-                policy
-                    .and_then(|policy| {
-                        hex_export::render_prepared_with_policy(
-                            &job.path,
-                            job.prepared,
-                            start,
-                            job.frames,
-                            signal,
-                            &control,
-                            &policy,
-                        )
-                    })
-                    .map_err(|e| e.to_string())
-            } else {
-                exporter(&job.path, &job.prepared, 0, job.frames)
+                policy.map_err(|e| e.to_string()).and_then(|policy| {
+                    exporter(
+                        &job.path,
+                        &job.prepared,
+                        start,
+                        job.frames,
+                        signal,
+                        &control,
+                        &policy,
+                    )
+                })
             };
             (
                 job.job_id,
@@ -10296,7 +10302,7 @@ mod service_tests {
         );
         assert_eq!(
             next_export_event(&service).result.unwrap_err(),
-            "nothing to export"
+            "invalid wav export: invalid export range"
         );
         let replace_key = GestureKey {
             generation: 1,
@@ -11314,13 +11320,24 @@ mod service_tests {
         let exporter: Exporter = {
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
-            Arc::new(move |path, project, start, frames| {
-                entered.wait();
-                release.wait();
-                hex_export::render_prepared_new(path, Arc::clone(project), start, frames).map_err(
-                    |error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()),
-                )
-            })
+            Arc::new(
+                move |path, project, start, frames, signal, control, publication| {
+                    entered.wait();
+                    release.wait();
+                    hex_export::render_prepared_with_policy(
+                        path,
+                        Arc::clone(project),
+                        start,
+                        frames,
+                        signal,
+                        control,
+                        publication,
+                    )
+                    .map_err(|error| {
+                        hex_storage::text::lowercase_outside_verbatim(&error.to_string())
+                    })
+                },
+            )
         };
         let service = Service::with_exporter(48_000, 16, 8, exporter).expect("service");
         let _ = next_event(&service);
@@ -11441,9 +11458,55 @@ mod service_tests {
         assert_eq!(result.path, path);
         assert_eq!(
             result.result.expect_err("empty project refusal"),
-            "nothing to export"
+            "invalid wav export: invalid export range"
         );
         assert!(!result.path.exists());
+    }
+
+    #[test]
+    fn whole_project_export_matches_automatic_export_range_including_effect_tail() {
+        let directory = TestDir::new();
+        let source = directory.0.join("tail.wav");
+        fs::write(&source, wav_mono(&[16_384, -8_192])).unwrap();
+        let service = Service::new(48_000, 8, 8).unwrap();
+        next_event(&service);
+        service.submit(Request::Import(source)).unwrap();
+        let track = next_event(&service).state.project.tracks()[0].id();
+        let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+            "hex.reverb",
+        ))
+        .unwrap();
+        service
+            .submit(Request::Edit(Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            }))
+            .unwrap();
+        assert!(next_event(&service).error.is_none());
+        let whole = directory.0.join("whole.wav");
+        service.submit(Request::Export(whole.clone())).unwrap();
+        next_event(&service);
+        let exported = next_export_event(&service).result.unwrap();
+        let range = directory.0.join("range.wav");
+        service
+            .submit(Request::ExportRange {
+                path: range.clone(),
+                start: 0,
+                frames: None,
+                signal: ExportSignal::Main,
+                control: ExportControl::default(),
+                overwrite: false,
+            })
+            .unwrap();
+        next_event(&service);
+        let ranged = next_export_event(&service).result.unwrap();
+        // The automatic range drains the reverb's declared tail past the 2-frame clip.
+        assert!(exported.frames > 2, "{}", exported.frames);
+        assert_eq!(exported.frames, ranged.frames);
+        let bytes = fs::read(whole).unwrap();
+        assert_eq!(bytes.len() as u64, 44 + exported.frames * 4);
+        assert_eq!(bytes, fs::read(range).unwrap());
     }
 
     #[test]
@@ -12186,7 +12249,7 @@ mod service_tests {
         let exporter: Exporter = {
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
-            Arc::new(move |path, project, _, frames| {
+            Arc::new(move |path, project, _, frames, _, _, _| {
                 entered.wait();
                 release.wait();
                 let _ = finished_sender.send(());
