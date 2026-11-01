@@ -42,6 +42,14 @@ pub struct Journal {
 }
 
 impl Journal {
+    /// Claim an empty slot without adopting a checkpoint published by another writer.
+    pub fn open_empty(path: PathBuf) -> Result<Self, StorageError> {
+        if read(&path)?.is_some() {
+            return Err(StorageError::Conflict { path });
+        }
+        Ok(Self { path, bytes: None })
+    }
+
     /// Adopt only a recognized, valid journal. Unknown files are preserved.
     pub fn open(path: PathBuf) -> Result<Self, StorageError> {
         let bytes = read(&path)?;

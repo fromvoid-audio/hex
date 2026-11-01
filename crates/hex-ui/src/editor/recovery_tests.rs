@@ -966,3 +966,197 @@ fn refused_latency_edit_in_midi_project_shows_waiting_until_applied_or_stopped(
         );
     });
 }
+
+/// Pulse #3784: a streamed document replaces its sampler output only while
+/// stopped. A playing edit stops first and resumes at the same frame once it
+/// settles, even when the worker refuses it; it never asks the user to stop.
+#[gpui::test]
+fn streamed_sampler_edit_while_playing_stops_and_resumes_at_its_frame(
+    cx: &mut gpui::TestAppContext,
+) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    // A long silent clip keeps the fixture transport playing.
+    let audio = hex_engine::Audio::new(48_000, vec![[0.0; 2]; 48_000]).unwrap();
+    let graph = Playback::from_shared(Arc::new(
+        hex_engine::Project::new(
+            48_000,
+            vec![
+                hex_engine::Track::new(
+                    vec![hex_engine::Clip::new(audio, 0, 48_000, false).unwrap()],
+                    1.0,
+                    false,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap(),
+    ));
+    output
+        .publication
+        .control()
+        .unwrap()
+        .publish(graph)
+        .unwrap();
+    let client = output.take_client().unwrap();
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    let transport = |view: &EditorView| {
+        let status = view.audio.as_ref().unwrap().control.status().unwrap();
+        (
+            status.playing.load(std::sync::atomic::Ordering::Acquire),
+            status.position.load(std::sync::atomic::Ordering::Acquire),
+        )
+    };
+    let frame = editor.update(cx, |view, _| {
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "streamed fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::VerifiedStreaming,
+        });
+        view.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
+        view.applied_project_revision = view.state.as_ref().map(|state| state.revision);
+        view.queue_audio_command(hex_engine::PlaybackCommand::Play);
+        for _ in 0..4 {
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        }
+        let (playing, frame) = transport(view);
+        assert!(playing && frame > 0);
+        let revision = view.state.as_ref().unwrap().revision;
+        assert!(view.enqueue(Request::SamplerEdit(
+            hex_session::service::SamplerEdit::History(hex_session::service::SamplerHistoryEdit {
+                request_id: 1,
+                project_generation: view.project_generation,
+                revision,
+                redo: false,
+                cancel: Arc::new(AtomicBool::new(false)),
+            }),
+        )));
+        assert_eq!(view.sampler_edit_resume, Some(frame));
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert!(!transport(view).0, "the edit stops playback first");
+        frame
+    });
+    // The fixture has no worker sink: settle the worker's refusal, then
+    // stand in for the native stopped restore and its applied acknowledgement.
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        if editor.update(cx, |view, cx| {
+            view.tick(cx);
+            !view.edit_pending()
+        }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "sampler edit settle hang guard");
+        std::thread::yield_now();
+    }
+    editor.update(cx, |view, _| {
+        assert_eq!(view.sampler_edit_resume, Some(frame));
+        assert!(
+            !view.tick_sampler_edit_resume(),
+            "waits for the stopped restore"
+        );
+        view.stopped_playback_restore = None;
+        view.applied_project_revision = view.state.as_ref().map(|state| state.revision);
+        assert!(view.tick_sampler_edit_resume());
+        assert!(view.sampler_edit_resume.is_none());
+    });
+    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    editor.update(cx, |view, _| {
+        let (playing, position) = transport(view);
+        assert!(playing, "playback resumes after the edit settles");
+        assert!(
+            position >= frame && position <= frame + 128,
+            "{position} vs {frame}"
+        );
+    });
+    // Release the shared headless output for other fixture tests.
+    backend.close();
+    drop(output);
+    editor.update(cx, |view, _| view.audio = None);
+}
+
+/// Pulse #3784: Play pressed while the stopped restore renews effects (for
+/// example vst3) is held rather than refused, then starts once the restore
+/// settles. A later Stop cancels the held Play.
+#[gpui::test]
+fn play_during_stopped_restore_starts_once_the_restore_settles(cx: &mut gpui::TestAppContext) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let audio = hex_engine::Audio::new(48_000, vec![[0.0; 2]; 48_000]).unwrap();
+    let graph = Playback::from_shared(Arc::new(
+        hex_engine::Project::new(
+            48_000,
+            vec![
+                hex_engine::Track::new(
+                    vec![hex_engine::Clip::new(audio, 0, 48_000, false).unwrap()],
+                    1.0,
+                    false,
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap(),
+    ));
+    output
+        .publication
+        .control()
+        .unwrap()
+        .publish(graph)
+        .unwrap();
+    let client = output.take_client().unwrap();
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    let playing = |view: &EditorView| {
+        view.audio
+            .as_ref()
+            .unwrap()
+            .control
+            .status()
+            .unwrap()
+            .playing
+            .load(std::sync::atomic::Ordering::Acquire)
+    };
+    editor.update(cx, |view, _| {
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "restore fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        let restoring = Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing);
+        // A Stop while held cancels the deferred Play.
+        view.stopped_playback_restore = restoring;
+        view.queue_audio_command(hex_engine::PlaybackCommand::Play);
+        assert!(view.deferred_play.is_some());
+        view.queue_audio_command(hex_engine::PlaybackCommand::Stop);
+        assert!(view.deferred_play.is_none());
+        view.queue_audio_command(hex_engine::PlaybackCommand::Play);
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(view.status.contains("playback starts when ready"));
+        assert!(!view.tick_deferred_play(), "held while restoring");
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert!(!playing(view));
+        view.stopped_playback_restore = None;
+        assert!(view.tick_deferred_play());
+        assert!(view.deferred_play.is_none());
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert!(playing(view), "held play starts after the restore");
+    });
+    // Release the shared headless output for other fixture tests.
+    backend.close();
+    drop(output);
+    editor.update(cx, |view, _| view.audio = None);
+}
