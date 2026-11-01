@@ -187,15 +187,15 @@ fn supported_rates_and_dense_fractional_meter_markers_terminate() {
                 .collect(),
         )
         .unwrap();
-        let mut metronome = Metronome::prepare(rate).unwrap();
+        let mut metronome = Metronome::prepare(rate, 0).unwrap();
         metronome.set_enabled(true);
         let mut output = vec![[0.0; 2]; rate as usize];
         metronome.mix(&timing, &meter, 0, None, &mut output);
         assert_eq!(output[0], [0.16; 2]);
         assert!(output.iter().flatten().all(|sample| sample.is_finite()));
     }
-    assert!(Metronome::prepare(0).is_err());
-    assert!(Metronome::prepare(192_001).is_err());
+    assert!(Metronome::prepare(0, 0).is_err());
+    assert!(Metronome::prepare(192_001, 0).is_err());
     let mut legacy = Playback::new(crate::Project::new(8_000, Vec::new()).unwrap());
     assert_eq!(
         legacy.try_apply_action(PlaybackAction::SetMetronome(true)),
