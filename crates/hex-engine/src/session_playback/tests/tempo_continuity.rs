@@ -264,3 +264,61 @@ fn tempo_remap_refuses_a_still_releasing_mutable_instrument_atomically() {
         }
     }
 }
+
+#[test]
+fn tempo_remap_after_instrument_changes_does_not_duplicate_old_note() {
+    use hex_lattice::NativeInstrumentDefinition;
+    let first = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.tempo.repeat-a"),
+        levels: [0.2, 0.4],
+        release_frames: 8,
+    };
+    let second = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.tempo.repeat-b"),
+        levels: [0.7, 0.9],
+        release_frames: 8,
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 2] = [&first, &second];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
+    snapshot.loop_region = Some(LoopRegion::new(0, 12_000, true).unwrap());
+    let base = legacy_project_from_snapshot(snapshot).unwrap();
+    let first_project = with_test_instrument(&base, first.id, 0);
+    let second_project = with_test_instrument(&base, second.id, 0);
+    let mut previous = SessionPlayback::new(revision_with_instrument_registry(
+        &first_project,
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    render_frames(&mut previous, 64, 64);
+    let mut middle = SessionPlayback::new(revision_with_instrument_registry(
+        &second_project,
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    middle.try_inherit_state_from(&mut previous).unwrap();
+    render_frames(&mut middle, 64, 64);
+
+    let mut edited = Editor::new(first_project, 8).unwrap();
+    edited
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(revision_with_instrument_registry(
+        edited.project(),
+        table,
+        &registry,
+    ))
+    .unwrap();
+    next.try_inherit_state_from(&mut middle).unwrap();
+    assert_eq!(next.arrangement_frame(), 256);
+    let mut output = [[0.0; 2]; 64];
+    next.render(&mut output).unwrap();
+    assert_eq!(output, [[0.2; 2]; 64]);
+}
