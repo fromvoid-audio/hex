@@ -2155,6 +2155,14 @@ impl SessionPlayback {
             let candidate_loop_end = self
                 .active_loop_region_at(new_cut_frame)
                 .map(hex_project::LoopRegion::end);
+            let wrap_frame = candidate_loop_end
+                .map(|end| {
+                    end.checked_sub(new_cut_frame)
+                        .and_then(|remaining| previous.performance_frame.checked_add(remaining))
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)
+                })
+                .transpose()?;
+            let until_wrap = |frame: u64| wrap_frame.map_or(frame, |wrap| frame.min(wrap));
             let mut candidate_occurrences = [None; crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY];
             let mut candidate_occurrence_count = 0;
             if shared_sources::track_has_analytic_source(&self.revision, new_index) {
@@ -2227,7 +2235,8 @@ impl SessionPlayback {
                         .checked_add(elapsed)
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                     if let Some(suppression) = self.suppression_scratch.get_mut(index) {
-                        suppression.until_frame = suppression.until_frame.max(candidate_end);
+                        suppression.until_frame =
+                            until_wrap(suppression.until_frame.max(candidate_end));
                     }
                 }
             }
@@ -2268,7 +2277,9 @@ impl SessionPlayback {
                             )
                         };
                         let voice = match voice_result {
-                            Ok(Some(voice)) => voice,
+                            Ok(Some(voice)) => {
+                                wrap_frame.map_or(voice, |wrap| voice.ending_by(wrap))
+                            }
                             Ok(None) => return,
                             Err(_) => {
                                 failure = Some(SessionPlaybackError::ArithmeticOverflow);
@@ -2394,9 +2405,11 @@ impl SessionPlayback {
                                         iteration: span.iteration,
                                         loop_pass: 0,
                                     },
-                                    candidate_end_frame.map_or(voice.end_frame(), |end| {
-                                        end.max(voice.end_frame())
-                                    }),
+                                    until_wrap(
+                                        candidate_end_frame.map_or(voice.end_frame(), |end| {
+                                            end.max(voice.end_frame())
+                                        }),
+                                    ),
                                 ),
                             )
                         {
@@ -2666,7 +2679,25 @@ impl SessionPlayback {
                 continue;
             };
             let mut copied = *entry;
-            copied.voice = voice;
+            copied.voice = if entry.timeline == ReleaseTimeline::Arrangement {
+                let wrap = self
+                    .active_loop_region_at(arrangement_cut)
+                    .map(|region| {
+                        region
+                            .end()
+                            .checked_sub(arrangement_cut)
+                            .and_then(|remaining| previous.performance_frame.checked_add(remaining))
+                            .ok_or(SessionPlaybackError::ArithmeticOverflow)
+                    })
+                    .transpose()?;
+                if let Some(wrap) = wrap.filter(|wrap| entry.end_frame() > *wrap) {
+                    voice.ending_by(entry.sample_frame(wrap)?)
+                } else {
+                    voice
+                }
+            } else {
+                voice
+            };
             if arrangement_remapped || (route_changed && remapped_gate.is_none()) {
                 copied.continuation = None;
             }
@@ -4685,6 +4716,14 @@ fn cut_arrangement_voices_for_remap(
     } = candidate;
     let old_cut = previous.arrangement_frame;
     let performance = previous.performance_frame;
+    // The candidate's next pass starts at this performance frame.
+    let wrap_frame = loop_end
+        .map(|end| {
+            end.checked_sub(candidate_cut)
+                .and_then(|remaining| performance.checked_add(remaining))
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)
+        })
+        .transpose()?;
     for (old_index, _) in previous.routes.iter().enumerate() {
         let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
         if old_route.owner != RouteOwner::Arrangement {
@@ -4728,7 +4767,9 @@ fn cut_arrangement_voices_for_remap(
                         old_cut,
                         performance,
                     ) {
-                        Ok(Some(voice)) => voice,
+                        // Its tail must not sound over the candidate's next
+                        // pass; unedited looped playback stops at the wrap.
+                        Ok(Some(voice)) => wrap_frame.map_or(voice, |wrap| voice.ending_by(wrap)),
                         Ok(None) => return,
                         Err(_) => {
                             failure = Some(SessionPlaybackError::ArithmeticOverflow);

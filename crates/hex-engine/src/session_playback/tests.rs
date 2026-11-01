@@ -7046,6 +7046,142 @@ fn arrangement_instrument_edits_keep_old_occurrence_once_and_use_new_law_afterwa
 }
 
 #[test]
+fn instrument_edit_suppressions_end_at_the_loop_wrap_across_block_sizes() {
+    use hex_lattice::NativeInstrumentDefinition;
+
+    // Pulse #4135: the held note (beats 0..8) outlasts the loop over frames
+    // 0..1_200. Two configuration edits before the wrap release the old
+    // occurrence and then extend its carried suppression. Neither may outlive
+    // the wrap: the next pass is a new onset and sounds under the new law.
+    let definition = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.edit.loop"),
+        levels: [0.2, 0.4],
+        release_frames: 8,
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut looped = project(1.0, 0, 8 << 32).snapshot();
+    looped.loop_region = Some(LoopRegion::new(0, 1_200, true).unwrap());
+    let looped = legacy_project_from_snapshot(looped).unwrap();
+    let states = [0, 1, 0];
+    let cuts = [301, 601];
+    let wrap = 1_200;
+    let mut outputs = Vec::new();
+    for block in [1, 64, 512] {
+        let prepare = |state| {
+            SessionPlayback::new(revision_with_instrument_registry(
+                &with_test_instrument(&looped, definition.id, state),
+                Arc::clone(&table),
+                &registry,
+            ))
+            .unwrap()
+        };
+        let mut playback = prepare(states[0]);
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut output = Vec::new();
+        let mut buffer = vec![[0.0; 2]; block];
+        for (edit, cut) in cuts.iter().enumerate() {
+            while playback.performance_frame() < *cut {
+                let width = block.min(usize::try_from(cut - playback.performance_frame()).unwrap());
+                playback.render(&mut buffer[..width]).unwrap();
+                output.extend_from_slice(&buffer[..width]);
+            }
+            let mut candidate = prepare(states[edit + 1]);
+            candidate.try_inherit_state_from(&mut playback).unwrap();
+            assert!(
+                candidate
+                    .suppressions
+                    .iter()
+                    .all(|entry| entry.until_frame <= wrap),
+                "block={block} edit={edit}: {:?}",
+                candidate
+                    .suppressions
+                    .iter()
+                    .map(|entry| entry.until_frame)
+                    .collect::<Vec<_>>()
+            );
+            playback = candidate;
+        }
+        while playback.performance_frame() < wrap + 64 {
+            let width =
+                block.min(usize::try_from(wrap + 64 - playback.performance_frame()).unwrap());
+            playback.render(&mut buffer[..width]).unwrap();
+            output.extend_from_slice(&buffer[..width]);
+        }
+        // The held occurrence keeps its old law until the wrap, as unedited
+        // playback would, and the next pass starts again under the last
+        // configuration (the same law here): no doubled or silenced pass.
+        let mut reference = prepare(states[0]);
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut expected = vec![[0.0; 2]; output.len()];
+        for chunk in expected.chunks_mut(block) {
+            reference.render(chunk).unwrap();
+        }
+        assert_eq!(
+            output[usize::try_from(wrap).unwrap()],
+            [0.2; 2],
+            "block={block}"
+        );
+        assert_eq!(output, expected, "block={block}");
+        outputs.push(output);
+    }
+    assert_eq!(outputs[0], outputs[1]);
+    assert_eq!(outputs[0], outputs[2]);
+}
+
+#[test]
+fn retained_arrangement_release_ends_when_a_later_edit_enables_a_loop() {
+    use hex_lattice::NativeInstrumentDefinition;
+    let definition = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.edit.enable_loop"),
+        levels: [0.2, 0.4],
+        release_frames: 8,
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let unlooped = project(1.0, 0, 8 << 32);
+    let mut snapshot = unlooped.snapshot();
+    snapshot.loop_region = Some(LoopRegion::new(0, 1_200, true).unwrap());
+    let looped = legacy_project_from_snapshot(snapshot).unwrap();
+    for (candidate_state, expected) in [(0, 0.2), (1, 0.4)] {
+        for block in [1, 64, 512] {
+            let prepare = |project: &Project, state| {
+                SessionPlayback::new(revision_with_instrument_registry(
+                    &with_test_instrument(project, definition.id, state),
+                    Arc::clone(&table),
+                    &registry,
+                ))
+                .unwrap()
+            };
+            let mut old = prepare(&unlooped, 0);
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut samples = vec![[0.0; 2]; 301];
+            for chunk in samples.chunks_mut(block) {
+                old.render(chunk).unwrap();
+            }
+            let mut changed = prepare(&unlooped, 1);
+            changed.try_inherit_state_from(&mut old).unwrap();
+            let mut samples = vec![[0.0; 2]; 300];
+            for chunk in samples.chunks_mut(block) {
+                changed.render(chunk).unwrap();
+            }
+            let mut next = prepare(&looped, candidate_state);
+            next.try_inherit_state_from(&mut changed).unwrap();
+            let mut samples = vec![[0.0; 2]; 600];
+            for chunk in samples.chunks_mut(block) {
+                next.render(chunk).unwrap();
+            }
+            assert_eq!(
+                samples[599], [expected; 2],
+                "block={block} state={candidate_state}"
+            );
+        }
+    }
+}
+
+#[test]
 fn arrangement_handoff_suppresses_through_candidate_release_end() {
     use hex_lattice::NativeInstrumentDefinition;
 

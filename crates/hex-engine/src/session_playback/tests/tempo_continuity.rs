@@ -157,6 +157,83 @@ fn remapped_suppression_ends_at_the_loop_wrap_so_the_next_pass_sounds() {
 }
 
 #[test]
+fn remapped_release_of_a_note_longer_than_the_loop_ends_at_the_wrap() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    // Pulse #4135: the held note (beats 0..8) outlasts the loop over frames
+    // 0..4_800. The cut remaps to 10 frames before the candidate wrap, so the
+    // released donor voice's 2_400-frame tail would sound over the next pass.
+    let region = Some((0, 4_800));
+    let candidate = arrangement_at(60_000_000, region);
+    // A fresh pass from the loop start: what the next pass must sound like.
+    let mut fresh = SessionPlayback::new(revision(&candidate, Arc::clone(&table))).unwrap();
+    fresh.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = vec![[0.0; 2]; 2_560];
+    fresh.render(&mut expected).unwrap();
+    // Control: unedited looped playback ends the occurrence at the wrap.
+    let mut unedited = SessionPlayback::new(revision(&candidate, Arc::clone(&table))).unwrap();
+    unedited.apply(SessionPlaybackCommand::Play).unwrap();
+    render_frames(&mut unedited, 512, 4_800);
+    let mut wrapped = vec![[0.0; 2]; 2_560];
+    unedited.render(&mut wrapped).unwrap();
+    assert_eq!(wrapped, expected, "unedited wrap");
+    for block in [1, 64, 512] {
+        let mut old = SessionPlayback::new(revision(
+            &arrangement_at(120_000_000, region),
+            Arc::clone(&table),
+        ))
+        .unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        render_frames(&mut old, block, 2_395);
+        let mut next = SessionPlayback::new(revision(&candidate, Arc::clone(&table))).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        assert_eq!(next.arrangement_frame(), 4_790, "block={block}");
+        let wrap = next.performance_frame() + 10;
+        render_frames(&mut next, block, 10);
+        assert_eq!(next.performance_frame(), wrap);
+        let mut after = vec![[0.0; 2]; 2_560];
+        for chunk in after.chunks_mut(block) {
+            next.render(chunk).unwrap();
+        }
+        assert_eq!(after, expected, "block={block}");
+    }
+}
+
+#[test]
+fn remapped_release_follows_only_the_candidate_loop_when_one_side_loops() {
+    // Pulse #4135: the wrap that bounds a released donor voice is the
+    // candidate's. A donor-only loop leaves the full tail; a candidate-only
+    // loop ends the tail at the candidate wrap so its next pass sounds alone.
+    let table = Arc::new(hex_devices::SineTable::new());
+    let region = Some((0, 4_800));
+    let release = |donor, candidate, block| {
+        let mut old = SessionPlayback::new(revision(
+            &arrangement_at(120_000_000, donor),
+            Arc::clone(&table),
+        ))
+        .unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        render_frames(&mut old, block, 2_395);
+        let mut next = SessionPlayback::new(revision(
+            &arrangement_at(60_000_000, candidate),
+            Arc::clone(&table),
+        ))
+        .unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        assert_eq!(next.arrangement_frame(), 4_790, "block={block}");
+        assert_eq!(next.releases.len(), 1, "block={block}");
+        let tail = next.releases[0].end_frame() - next.performance_frame();
+        (next, tail)
+    };
+    for block in [1, 64, 512] {
+        let (donor_only, full_tail) = release(region, None, block);
+        assert!(donor_only.active_loop_region().is_none());
+        assert!(full_tail > 10, "block={block}");
+        let (_, bounded_tail) = release(None, region, block);
+        assert_eq!(bounded_tail, 10, "block={block}");
+    }
+}
+
+#[test]
 fn paused_restart_relocates_to_the_same_arrangement_beat() {
     let table = Arc::new(hex_devices::SineTable::new());
     let cut = 3_001;
@@ -480,10 +557,11 @@ fn tempo_remap_preserves_session_tail_after_return_to_arrangement() {
             tempo: Tempo::new(60_000_000).unwrap(),
         })
         .unwrap();
+    let mut snapshot = edited.project().snapshot();
+    snapshot.loop_region = Some(LoopRegion::new(0, 300, true).unwrap());
+    let candidate = legacy_project_from_snapshot(snapshot).unwrap();
     let mut next = SessionPlayback::new(revision_with_instrument_registry(
-        edited.project(),
-        table,
-        &registry,
+        &candidate, table, &registry,
     ))
     .unwrap();
     next.try_inherit_state_from(&mut previous).unwrap();
