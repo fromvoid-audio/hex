@@ -35,10 +35,12 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
+/// Schema64 admits sinc v2 media conversion metadata; earlier schemas carry only
+/// identity and sinc v1 assets and migrate unchanged.
 /// Schema63 records automatic track names; earlier names migrate as user-set.
 /// Schema62 adds independent MIDI clip gain; schema61 migrates at unity.
 /// Schema59 is a reserved incompatible development layout and remains unsupported.
-pub const CURRENT_SCHEMA_VERSION: u32 = 63;
+pub const CURRENT_SCHEMA_VERSION: u32 = 64;
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -178,13 +180,14 @@ impl From<serde_json::Error> for StorageError {
 /// independent MIDI note activation (schema56), and independent audio event
 /// activation, including retained roots (schema57), and bounded nested audio
 /// sources (schema58), consistent shared audio event projections (schema60),
-/// independent audio event gain (schema61), MIDI clip gain (schema62), and
-/// automatic track name origin (schema63).
+/// independent audio event gain (schema61), MIDI clip gain (schema62),
+/// automatic track name origin (schema63), and sinc v2 media conversion
+/// metadata (schema64).
 /// Schema59 is reserved and explicitly refused.
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::track_name_origin::encode(project)?)
+    encode_document(&schema::conversion_v2::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -200,6 +203,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::conversion_v2::require_v1_conversions(project)?;
     schema::track_name_origin::require_user_names(project)?;
     schema::midi_clip_gain::require_unity(project)?;
     schema::event_gain::require_unity(project)?;
@@ -297,6 +301,8 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
     Ok(output.0)
 }
 /// Open current and evidenced historical schemas without file/media I/O.
+/// Schema64 catalog rows may carry sinc v2 conversion; a v2 row in any earlier
+/// schema refuses. Schema63 and older migrate their identity/v1 assets unchanged.
 /// Schema55 requires authored/base read selection on every device envelope.
 /// Schema53 and older select authored curves. Schema54 belongs to the evidenced
 /// unmerged printed-output branch a4c1a99c2 and is explicitly unsupported here;
@@ -354,7 +360,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        CURRENT_SCHEMA_VERSION => schema::track_name_origin::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::conversion_v2::decode(bytes),
+        63 => schema::track_name_origin::decode(bytes),
         62 => schema::midi_clip_gain::decode(bytes),
         61 => schema::event_gain::decode(bytes),
         60 => schema::alias_projection_v60::decode(bytes),
@@ -394,6 +401,11 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
+    if header.version < 64 && schema::conversion_v2::require_v1_conversions(&project).is_err() {
+        return Err(StorageError::Invalid(
+            "historical project schema contains unsupported media conversion metadata; original file unchanged",
+        ));
+    }
     if header.version < 52 {
         schema::clip_aliases::require_legacy_compatible(&project)?;
     }

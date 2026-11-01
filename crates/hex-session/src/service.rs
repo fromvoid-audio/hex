@@ -69,6 +69,8 @@ pub use plugin_effect::{
 use request_cancellation::QueuedRequest;
 pub use request_cancellation::RequestCancellation;
 #[cfg(test)]
+mod conversion_selection_tests;
+#[cfg(test)]
 mod correlated_save_tests;
 #[cfg(test)]
 mod effect_bus_tests;

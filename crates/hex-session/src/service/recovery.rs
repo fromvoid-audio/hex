@@ -265,7 +265,9 @@ pub(super) fn open_source_with_limits(
             } else {
                 project_dir.join(asset.path())
             };
-            let source = candidate.verify_import(path).map_err(|e| e.to_string())?;
+            let source = candidate
+                .verify_asset(path, asset)
+                .map_err(|e| e.to_string())?;
             if !source.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
             }
@@ -314,7 +316,7 @@ pub(super) fn open_source_with_limits(
             && let Some(candidate) = file_candidate.as_mut()
         {
             let file = candidate
-                .verify_import(media_path)
+                .verify_asset(media_path, asset)
                 .map_err(|e| e.to_string())?;
             if !file.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
@@ -451,7 +453,7 @@ pub(super) fn open_source_with_limits(
         } else {
             remaining_frames
         };
-        let prepared = PreparedImport::at_rate(
+        let prepared = PreparedImport::for_conversion(
             decoded,
             project.sample_rate(),
             ResampleLimits {
@@ -459,6 +461,7 @@ pub(super) fn open_source_with_limits(
                 max_output_frames: usize::try_from(output_allowance)
                     .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?,
             },
+            asset.conversion_version(),
         )
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
         remaining_frames = remaining_frames
