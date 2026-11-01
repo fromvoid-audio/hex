@@ -1334,3 +1334,40 @@ fn resident_offline_media_opens_silent_and_relinks_in_place_with_undo() {
         "undo returns the clip to silence"
     );
 }
+
+/// A same-rate Resident Open keeps the delivered output (#4133). Each project
+/// alone fits the resident frame budget but both together do not, so the
+/// switch also shows admission does not count the old project against the new.
+#[test]
+fn same_rate_open_keeps_output_and_admits_a_budget_sized_successor() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(400_000);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    h.run(Request::Import(files.wav(48_000, 250_000)));
+    h.applied(applied);
+    let path = files.0.join("budget-sized.hex");
+    h.run(Request::SaveNew(path.clone()));
+    let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let opened = h.run(Request::Open(path));
+    assert!(opened.project_replaced);
+    let generation = opened
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context()
+        .project_generation;
+    h.release_relinquished_output();
+    assert_eq!(h.rebound, [(generation, old)]);
+    assert!(h.released.is_empty(), "kept output is never released");
+    let (_, metadata) = h.applied(0);
+    assert_eq!(
+        h.audio.as_ref().unwrap().control.output_identity(),
+        Some(old)
+    );
+    assert_eq!(metadata.context.project_generation, generation);
+    assert_eq!(metadata.context.editor_revision, opened.state.revision);
+    assert!(h.publication_refusals.is_empty());
+}
