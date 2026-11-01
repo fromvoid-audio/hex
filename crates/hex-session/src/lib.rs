@@ -2083,6 +2083,8 @@ fn prepare_with_waveforms_using(
 
 #[cfg(test)]
 mod audio_edit_tests;
+#[cfg(test)]
+pub(crate) mod test_wait;
 
 fn tuning_prepared_transition(
     prepared: hex_engine::PreparedRevision,

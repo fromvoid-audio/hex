@@ -1725,7 +1725,7 @@ impl gpui::Render for NumericControl {
                     .rounded_none()
                     .bg(rgb(style.background))
                     .border_color(rgb(if self.invalid_text {
-                        0xff554c
+                        style.invalid
                     } else {
                         style.border
                     })),
@@ -2137,7 +2137,7 @@ fn value_field_sized(
         .justify_center()
         .border_1()
         .border_color(if invalid {
-            rgb(0xff554c)
+            rgb(style.invalid)
         } else {
             gpui::rgba(0)
         })
@@ -2219,7 +2219,7 @@ fn filled_slider(
                 .inset_0()
                 .border_1()
                 .border_color(rgb(if field.invalid {
-                    0xff554c
+                    field.style.invalid
                 } else {
                     field.style.border
                 })),
