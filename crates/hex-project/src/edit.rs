@@ -1394,11 +1394,9 @@ pub(crate) fn preview_edge_trim(
             let media_remaining = asset_playback_frames - source_end;
             let timeline_remaining = u64::MAX - end;
             let extension = media_remaining.min(timeline_remaining);
-            let minimum_reduction = clip
-                .duration
-                .saturating_sub(1)
-                .min(clip.source_length.saturating_sub(1));
-            let minimum_end = end - minimum_reduction;
+            // A one-shot may outlive its source with a silent tail. Shortening
+            // consumes that silence first and only then the audible source.
+            let minimum_end = end - clip.duration.saturating_sub(1);
             let maximum_end = end + extension;
             let new_end = frame.clamp(minimum_end, maximum_end);
             if new_end >= end {
@@ -1411,12 +1409,12 @@ pub(crate) fn preview_edge_trim(
                     0,
                 )
             } else {
-                let reduction = end - new_end;
+                let duration = clip.duration - (end - new_end);
                 (
                     clip.start,
-                    clip.duration - reduction,
+                    duration,
                     clip.source_offset,
-                    clip.source_length - reduction,
+                    clip.source_length.min(duration),
                     0,
                 )
             }
@@ -1533,6 +1531,13 @@ pub(crate) fn split_clip_at_tempo(
     tempo: &crate::TempoMap,
 ) -> Result<(Clip, Clip), Invalid> {
     let Some(edit) = &original.edit else {
+        if cuts_silent_tail(original, frame) {
+            // A raw source offset cannot advance past the audible interval, so
+            // crop a captured retained domain, as `retained_audio_fragment` does.
+            let mut captured = original.clone();
+            captured.edit = Some(crate::AudioClipEdit::capture(original).into());
+            return split_clip_at_tempo(&captured, frame, right_id, tempo);
+        }
         return split_clip_at(original, frame, right_id);
     };
     let end = original
@@ -1581,6 +1586,15 @@ pub(crate) fn split_clip_at_tempo(
     crate::audio_edit::project_clip(&mut left, tempo)?;
     crate::audio_edit::project_clip(&mut right, tempo)?;
     Ok((left, right))
+}
+
+/// Whether `frame` falls inside a raw one-shot's silent tail, past its source.
+pub(crate) fn cuts_silent_tail(clip: &Clip, frame: u64) -> bool {
+    clip.edit.is_none()
+        && !clip.looping
+        && frame
+            .checked_sub(clip.start)
+            .is_some_and(|offset| offset >= clip.source_length && offset < clip.duration)
 }
 
 /// Crop one retained interval through the existing typed split law.
