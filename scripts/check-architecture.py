@@ -34,7 +34,7 @@ ALLOWED = {
     'hex-preferences': set(),
     'hex-widgets': set(),
     # Disposable native preview mounts the production UI owners, without audio/session.
-    'hex-sandbox': {'hex-engine', 'hex-preferences', 'hex-project', 'hex-widgets'},
+    'hex-sandbox': {'hex-devices', 'hex-preferences', 'hex-project', 'hex-widgets'},
     # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
     'hex-audio': {'hex-engine', 'hex-stream', 'hex-plugin-host', 'hex-plugin-state', 'hex-plugin-scan', 'hex-lattice', 'hex-lattice-contract'},
     'hex-ui': {'hex-plugin-catalog', 'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
@@ -51,8 +51,8 @@ DEV_ALLOWED = {
     'hex-storage': {'hex-plugin-state'},
     # Real decoded WAV -> sealed source scope -> sampler PCM oracles only.
     'hex-media': {'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
-    # Verified-mode source limits for real worker/key-handler failure fixtures only.
-    'hex-ui': {'hex-media'},
+    # Verified worker/key-handler fixtures and the legacy native EQ gallery example.
+    'hex-ui': {'hex-media', 'hex-devices'},
     'hex-engine': {'hex-tuning'},
     'hex-session': {'hex-tuning'},
     # Actual Session -> native adapter fixtures, never a production editor model.
