@@ -24,8 +24,8 @@ fn reservation() -> SourcePlanReservation {
     SourcePlanReservation {
         reader: hex_media::VerifiedWavReaderLimits {
             reader: hex_media::WavReaderLimits {
-                max_file_bytes: crate::MAX_STREAMED_FILE_BYTES,
-                max_source_frames: crate::MAX_STREAMED_SOURCE_FRAMES,
+                max_file_bytes: 1 << 20,
+                max_source_frames: 1 << 20,
                 max_header_count: 32,
                 max_window_frames: 4096,
             },

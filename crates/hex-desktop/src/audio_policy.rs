@@ -71,11 +71,9 @@ impl AudioPolicy {
         let stream = hex_stream::StreamConfig::initial();
         SourcePlanReservation {
             reader: hex_media::VerifiedWavReaderLimits::new(
-                // Streamed originals are not resident PCM: their bound is the
-                // session's streaming contract, not the 64 MiB / 8M resident cap.
                 hex_media::WavReaderLimits::new(
-                    hex_session::MAX_STREAMED_FILE_BYTES,
-                    hex_session::MAX_STREAMED_SOURCE_FRAMES,
+                    64 * 1024 * 1024,
+                    MAX_SOURCE_FRAMES,
                     32,
                     // Output pages are not source windows: downsampling also
                     // needs the resampler halo. The worker already reserves

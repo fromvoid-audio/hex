@@ -29,16 +29,6 @@ pub enum DocumentAudioMode {
     Resident,
     VerifiedStreaming,
 }
-/// Largest original a verified streaming binding may reference. Streaming keeps one
-/// SHA-256 digest per 64 KiB page (2 MiB of manifest at this cap, inside the 64 MiB
-/// manifest budget) and never holds whole-file PCM, so this is far above the 64 MiB
-/// resident decode cap; classic RIFF sizes are 32-bit.
-pub const MAX_STREAMED_FILE_BYTES: u64 = u32::MAX as u64;
-/// Largest source extent a verified streaming binding may reference. Four clip
-/// domains admit 192 kHz originals in a 48 kHz project. Plain placement and playback
-/// stream any admitted extent; domain-bound edits (views, stretch, fades, grouping)
-/// keep their explicit [`hex_project::MAX_AUDIO_DOMAIN_FRAMES`] refusals.
-pub const MAX_STREAMED_SOURCE_FRAMES: u64 = hex_project::MAX_AUDIO_DOMAIN_FRAMES * 4;
 /// Metadata-only preparation bounds, independent of resident duration. An ordinary
 /// document may also reserve these for file-backed clip bindings without changing
 /// its document mode. No native custody, publication or readiness follows.
@@ -55,8 +45,8 @@ impl SourcePlanReservation {
             || self.max_retained_sources > hex_project::MAX_ASSETS
             || self.max_path_bytes == 0
             || self.max_manifest_bytes == 0
-            || self.reader.reader.max_file_bytes > MAX_STREAMED_FILE_BYTES
-            || self.reader.reader.max_source_frames > MAX_STREAMED_SOURCE_FRAMES
+            || self.reader.reader.max_file_bytes > 64 * 1024 * 1024
+            || self.reader.reader.max_source_frames > 8_000_000
             || self.reader.reader.max_file_bytes == 0
             || self.reader.reader.max_source_frames == 0
             || self.reader.reader.max_header_count == 0
