@@ -12,6 +12,9 @@ use std::any::Any;
 mod automation;
 
 pub const AUTO_PAN_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.auto-pan");
+/// Current state version. Supported saved versions (Pulse #3956):
+/// - v1 (11 Oct 2026, 12 bytes): no waveform; migrates to Sine, v1's only LFO.
+/// - v2 (18 Oct 2026, 16 bytes): adds the waveform choice.
 pub const AUTO_PAN_STATE_VERSION: u32 = 2;
 const STATE_BYTES: usize = 16;
 const MIN_SAMPLE_RATE: u32 = 8_000;
@@ -172,11 +175,13 @@ fn decode(state: &NativeDeviceState) -> Result<AutoPanSettings, DeviceContractEr
     if state.type_id() != AUTO_PAN_TYPE_ID {
         return Err(DeviceContractError::WrongDeviceType);
     }
-    if state.state_version() != AUTO_PAN_STATE_VERSION {
-        return Err(DeviceContractError::UnsupportedStateVersion);
-    }
+    let expected = match state.state_version() {
+        1 => 12,
+        AUTO_PAN_STATE_VERSION => STATE_BYTES,
+        _ => return Err(DeviceContractError::UnsupportedStateVersion),
+    };
     let bytes = state.payload();
-    if bytes.len() != STATE_BYTES {
+    if bytes.len() != expected {
         return Err(DeviceContractError::MalformedState);
     }
     let read = |offset| {
@@ -191,11 +196,15 @@ fn decode(state: &NativeDeviceState) -> Result<AutoPanSettings, DeviceContractEr
         amount: read(0),
         rate_hz: read(4),
         right_phase_degrees: read(8),
-        waveform: Waveform::from_choice(u32::from_le_bytes(
-            bytes[12..16]
-                .try_into()
-                .map_err(|_| DeviceContractError::MalformedState)?,
-        ))?,
+        waveform: if expected == STATE_BYTES {
+            Waveform::from_choice(u32::from_le_bytes(
+                bytes[12..16]
+                    .try_into()
+                    .map_err(|_| DeviceContractError::MalformedState)?,
+            ))?
+        } else {
+            Waveform::Sine
+        },
     };
     validate(settings)?;
     Ok(settings)

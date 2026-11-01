@@ -309,9 +309,11 @@ impl EditorView {
             Err(error) => {
                 self.pending_restart_request = None;
                 self.error = Some(
-                    format!("could not restart audio · {error:?}")
-                        .to_lowercase()
-                        .into(),
+                    format!(
+                        "could not restart audio · {}",
+                        super::user_errors::submit(&error)
+                    )
+                    .into(),
                 );
                 self.status = "audio unavailable".into();
                 false
@@ -2099,6 +2101,8 @@ impl EditorView {
         visible_change |= self.finish_audio_recovery_tick();
         visible_change |= self.tick_track_meters(Instant::now());
         visible_change |= self.tick_latency_rebuild();
+        visible_change |= self.tick_sampler_edit_resume();
+        visible_change |= self.tick_deferred_play();
         self.observe_audio_frame(frame, visible_change, Instant::now())
     }
 
@@ -3160,6 +3164,9 @@ impl EditorView {
         self.normalize_completed_trim_viewport(retired_trim);
         self.apply_created_note_selection(created_note_selection);
         self.apply_completed_midi_step(midi_step_complete);
+        if let Some(path) = &successfully_opened_path {
+            self.check_leftover_recovery(Some(path.clone()));
+        }
         successfully_opened_path
     }
 
@@ -3191,7 +3198,21 @@ impl EditorView {
         };
         let selection = self.created_note_selection_intent(&request);
         let pending_before = self.worker_requests_pending;
+        let resume = self.sampler_edit_resume_frame(&request);
+        if resume.is_some() {
+            self.stop();
+        }
         let accepted = self.enqueue_request(request, false);
+        if let Some(frame) = resume {
+            // A refused submission resumes at once; otherwise once it settles.
+            self.sampler_edit_resume = Some(frame);
+            if accepted {
+                replace_status(
+                    &mut self.status,
+                    "applying sampler edit · playback will resume",
+                );
+            }
+        }
         if accepted && let Some(mut selection) = selection {
             self.bind_created_selection_terminal(&mut selection);
             self.pending_created_note_selection = Some(selection);
@@ -3978,6 +3999,8 @@ impl EditorView {
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
             self.latency_rebuild = None;
+            self.sampler_edit_resume = None;
+            self.deferred_play = None;
         }
         if self.section_install_pending()
             && (intent_desired_playing(action) == Some(true)
@@ -3987,7 +4010,11 @@ impl EditorView {
             return;
         }
         if self.stopped_playback_restore.is_some() && intent_desired_playing(action) == Some(true) {
-            self.error = Some("restoring stopped playback · wait before playing".into());
+            self.deferred_play = Some((action, revision, self.project_generation));
+            replace_status(
+                &mut self.status,
+                "restoring stopped playback · playback starts when ready",
+            );
             return;
         }
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
@@ -4136,6 +4163,57 @@ impl EditorView {
     /// Rebuild only a current, rejected canonical graph. A fresh graph drops
     /// effect history, so retain the user's transport intent and never restart
     /// a superseded project, output or explicit transport action.
+    /// A streamed document's sampler edit replaces its output only while
+    /// stopped, so a playing edit stops first and resumes here at the same
+    /// frame (audio restarts at the cursor). Resident documents apply live.
+    fn sampler_edit_resume_frame(&self, request: &Request) -> Option<u64> {
+        if !matches!(request, Request::SamplerEdit(_))
+            || self.document_audio_mode != hex_session::DocumentAudioMode::VerifiedStreaming
+        {
+            return None;
+        }
+        let status = self.audio.as_ref()?.control.status()?;
+        status
+            .playing
+            .load(Acquire)
+            .then(|| status.position.load(Acquire))
+    }
+
+    pub(super) fn tick_sampler_edit_resume(&mut self) -> bool {
+        let Some(frame) = self.sampler_edit_resume else {
+            return false;
+        };
+        if self.edit_pending()
+            || !self.pending_audio_commands.is_empty()
+            || self.stopped_playback_restore.is_some()
+            || self.audio.is_none()
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|state| self.applied_project_revision != Some(state.revision))
+        {
+            return false;
+        }
+        self.sampler_edit_resume = None;
+        self.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+        true
+    }
+
+    /// Start a Play held behind the stopped restore once that restore
+    /// settles, whether it succeeded or failed; a replaced project drops it.
+    pub(super) fn tick_deferred_play(&mut self) -> bool {
+        if self.stopped_playback_restore.is_some() {
+            return false;
+        }
+        let Some((action, revision, generation)) = self.deferred_play.take() else {
+            return false;
+        };
+        if generation == self.project_generation {
+            self.queue_playback_action(action, revision);
+        }
+        true
+    }
+
     pub(super) fn tick_latency_rebuild(&mut self) -> bool {
         use super::audio_admission::LatencyRebuild;
         let Some(rebuild) = self.latency_rebuild else {
