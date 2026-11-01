@@ -95,6 +95,7 @@ mod tests {
         let response = native_effect_frequency_response(&state, 48_000, &[500.0, 1_000.0])
             .unwrap()
             .unwrap();
+        assert_eq!(response.len(), 2);
         assert!(response.iter().flatten().all(|m| (*m - 1.0).abs() < 1e-6));
         for frequencies in [
             &[][..],
@@ -103,12 +104,26 @@ mod tests {
             &[1_000.0, 500.0][..],
             &[1_000.0, 1_000.0][..],
             &[f32::NAN][..],
-            &[1.0; 257][..],
+            &[f32::INFINITY][..],
+            &[-1.0][..],
         ] {
             assert_eq!(
                 native_effect_frequency_response(&state, 48_000, frequencies),
                 Err(NativeResponseError::InvalidFrequencyRange)
             );
         }
+        // Keep the count boundary independent of the ordering validation.
+        let frequencies: Vec<_> = (1..=257).map(|index| index as f32).collect();
+        assert_eq!(
+            native_effect_frequency_response(&state, 48_000, &frequencies),
+            Err(NativeResponseError::InvalidFrequencyRange)
+        );
+        assert_eq!(
+            native_effect_frequency_response(&state, 48_000, &frequencies[..256])
+                .unwrap()
+                .unwrap()
+                .len(),
+            256
+        );
     }
 }
