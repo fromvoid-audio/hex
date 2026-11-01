@@ -12,6 +12,8 @@ pub mod automation_draft;
 mod files;
 mod journal;
 pub mod preset;
+pub mod project_name;
+pub mod text;
 pub mod tuning_library;
 pub use journal::{
     Journal, JournalRestartOutcome, JournalRestartToken, journal_path, load_journal,
@@ -105,7 +107,7 @@ impl fmt::Display for StorageError {
                 write!(
                     f,
                     "{state} at {}; journal lock release failed: {source}",
-                    path.display()
+                    crate::text::verbatim(path.display())
                 )?;
                 if let Some(error) = operation_error {
                     write!(f, "; operation reported: {error}")?;
@@ -116,7 +118,11 @@ impl fmt::Display for StorageError {
             Self::Json(error) => write!(f, "invalid project json: {error}"),
             Self::Invalid(reason) => f.write_str(reason),
             Self::Conflict { path } => {
-                write!(f, "project changed outside hex at {}", path.display())
+                write!(
+                    f,
+                    "project changed outside hex at {}",
+                    crate::text::verbatim(path.display())
+                )
             }
             Self::PublishedButNotDurable {
                 path,
@@ -125,7 +131,7 @@ impl fmt::Display for StorageError {
             } => write!(
                 f,
                 "project was published at {} but could not {operation}: {source}",
-                path.display()
+                crate::text::verbatim(path.display())
             ),
             Self::RecoveryBackupPublished {
                 path,
@@ -135,8 +141,8 @@ impl fmt::Display for StorageError {
             } => write!(
                 f,
                 "recovery copy for {} was published at {}, but could not {operation}: {source}",
-                path.display(),
-                recovery_path.display()
+                crate::text::verbatim(path.display()),
+                crate::text::verbatim(recovery_path.display())
             ),
         }
     }

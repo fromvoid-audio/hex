@@ -2,12 +2,11 @@
 use super::*;
 use hex_engine::{NativeDeviceClass, playback::PlaybackCommand};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
-use std::time::Duration;
 
 fn next(service: &Service) -> Event {
     service
         .events
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(crate::test_wait::HANG_BOUND)
         .expect("worker response")
 }
 fn submit(service: &Service, request: Request) -> Event {
