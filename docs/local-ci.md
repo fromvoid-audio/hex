@@ -111,6 +111,15 @@ consumer later breaks, the defect is a missing owner boundary test: add it at th
 owner. Package manifests and build scripts can change how consumers build, so they
 keep the whole affected closure's suites.
 
+**Profile-only root manifest changes.** A root `Cargo.toml` change whose
+every changed table is `[profile.NAME.package.MEMBER]` (a workspace member, never
+`"*"`) using only `opt-level`, `debug`, `codegen-units`, `incremental`,
+`split-debuginfo` or `strip` selects those members as if their crate roots
+changed: their whole suites test, consumers lint. These keys change codegen, not
+program meaning. Any other root-manifest change, including `debug-assertions`,
+`overflow-checks`, `panic`, `lto`, dependencies or workspace members, keeps the
+comprehensive audit.
+
 **Module scope.** Inside an owner, a changed `src/` file runs only the tests of
 its own Rust module subtree. The planner resolves `mod`/`#[path]` from the crate
 root and runs `cargo test … -- module::path::` in each of the owner's test
