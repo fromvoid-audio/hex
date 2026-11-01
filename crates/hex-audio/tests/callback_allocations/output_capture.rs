@@ -260,6 +260,65 @@ fn automated_saturator_callback_publication_and_late_failure_retry_are_allocatio
         .map_err(|_| "saturator allocation probe panicked")?
         .map_err(Into::into)
 }
+/// Pulse #4101: a direct Utility gain edit changes only the host-owned static
+/// matrix. The published handoff starts the 5 ms matrix ramp, and the ramping
+/// callback blocks allocate and free nothing.
+#[test]
+fn direct_utility_gain_edit_matrix_ramp_is_allocation_free() -> Result<(), Box<dyn Error>> {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| run_direct_utility_edit_probe().map_err(|e| e.to_string()))?
+        .join()
+        .map_err(|_| "direct utility allocation probe panicked")?
+        .map_err(Into::into)
+}
+fn run_direct_utility_edit_probe() -> Result<(), Box<dyn Error>> {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let (project, track, _) = source()?;
+    let mut editor = Editor::new(project, 16)?;
+    let device = editor.project().track(track).ok_or("track")?.devices()[0].id();
+    let state = UTILITY_DEFINITION.default_state()?;
+    editor.execute(Command::ReplaceDeviceState {
+        device,
+        state: state.clone(),
+    })?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "publish")?;
+    control
+        .command_with_ticket(PlaybackCommand::Play)
+        .map_err(|_| "play")?;
+    let mut output = [[0.0; 2]; 512];
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
+    editor.execute(Command::ReplaceDeviceState {
+        device,
+        state: UTILITY_DEFINITION.patch_parameter(
+            &state,
+            parameter::GAIN,
+            ParameterValue::Float(0.25),
+        )?,
+    })?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "replacement")?;
+    // Small blocks keep the 5 ms ramp active across several callbacks.
+    let mut small = [[0.0; 2]; 64];
+    for _ in 0..8 {
+        measured_block(&mut callback, &mut small);
+    }
+    assert!(control.status.rejected_revision().is_none());
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
 #[test]
 fn automated_auto_pan_callback_publication_and_late_failure_retry_are_allocation_free()
 -> Result<(), Box<dyn Error>> {
