@@ -3,6 +3,7 @@ use crate::routed_midi_fixture;
 mod authored_history;
 mod cue;
 mod interactive_start;
+mod tempo_continuity;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
 use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
@@ -9497,6 +9498,8 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
     let routes = failed.routes.clone();
     let release_end = failed.releases[0].voice.end_frame();
     let route_generation = failed.route_state_generation();
+    // The 500 bpm edit remaps the Arrangement cut by beat (Pulse #3935).
+    let arrangement_frame = failed.arrangement_frame();
     let mut pages = MissingPages::default();
     let mut output = [[9.0; 2]; 512];
     assert_eq!(
@@ -9506,7 +9509,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
     assert_eq!(output, [[0.0; 2]; 512]);
     assert_eq!(pages.0, [(stream_source.key(), 0)]);
     assert_eq!(failed.performance_frame(), 1);
-    assert_eq!(failed.arrangement_frame(), 1);
+    assert_eq!(failed.arrangement_frame(), arrangement_frame);
     assert_eq!(failed.route_state_generation(), route_generation);
     assert_eq!(failed.routes, routes);
     assert_eq!(failed.release_voice_count(), 1);
