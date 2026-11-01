@@ -263,19 +263,34 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     tests = boundary["tests"]
     # Owners test; every affected consumer still compiles and lints below.
     tested = boundary.get("test_packages", [])
+    module_filters = boundary.get("module_filters", {})
+
+    def scoped(argv: tuple[str, ...]) -> tuple[str, ...]:
+        """Restrict a test command to the changed modules when every owner it tests is module-scoped."""
+        owners = [argv[i + 1] for i, arg in enumerate(argv) if arg == "-p"]
+        if not owners or any(owner not in module_filters for owner in owners):
+            return argv
+        names = sorted({name for owner in owners for name in module_filters[owner]})
+        if argv[:2] == ("python3", "scripts/test_shards.py"):
+            split = argv.index("--")
+            return (*argv[:split], *(a for name in names for a in ("--filter", name)), *argv[split:])
+        return (*argv, "--", *names)
     if boundary["kind"] == "packages":
         if not tested or set(tested) - set(affected) or tests:
             raise ValueError("package boundary must test its owners within the affected closure")
         # Reviewed additive test features run once, with the feature (below);
         # their doctests stay here because --all-targets feature runs omit them.
         single = boundary.get("single_run", {})
-        defaults = tuple(arg for p in tested if p not in single for arg in ("-p", p))
+        defaults = tuple(arg for p in tested if p not in single and p not in module_filters for arg in ("-p", p))
         if defaults:
             steps.append(Step("affected-tests", ("cargo", "test", *defaults, "--locked")))
+        for package in tested:
+            if package in module_filters and package not in single:
+                steps.append(Step(f"module-tests-{package}", scoped(("cargo", "test", "-p", package, "--locked"))))
         if single:
-            steps.append(Step("single-run-doctests", ("cargo", "test", "--doc",
-                                                      *(arg for p in tested if p in single for arg in ("-p", p)),
-                                                      "--locked")))
+            for package in (p for p in tested if p in single):
+                steps.append(Step("single-run-doctests" if package not in module_filters else f"module-doctests-{package}",
+                                  scoped(("cargo", "test", "--doc", "-p", package, "--locked"))))
     elif boundary["kind"] == "compressor":
         if not tests:
             raise ValueError("device boundary has no contract targets")
@@ -308,11 +323,15 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         selected = [p for p in owners if p in scope]
         if not selected or boundary["kind"] == "compressor" and runs_rust_tests(step.argv):
             continue
+        # Example targets are separate crates: a src module filter cannot name
+        # their tests. A module-scoped owner's own module tests cover the change.
+        if "--example" in step.argv and runs_rust_tests(step.argv) and all(p in module_filters for p in selected):
+            continue
         argv = list(step.argv)
         for owner in set(owners) - set(selected):
             index = argv.index(owner)
             del argv[index - 1:index + 1]
-        steps.append(Step(step.step_id, tuple(argv)))
+        steps.append(Step(step.step_id, scoped(tuple(argv)) if runs_rust_tests(step.argv) else tuple(argv)))
     for package in inventory:
         if package["name"] not in affected:
             continue
@@ -325,9 +344,10 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         commands = ("clippy",) if boundary["kind"] == "compressor" or package["name"] not in tested else ("test", "clippy")
         for index, feature in enumerate(sorted(extra)):
             for command in commands:
+                argv = ("cargo", command, "-p", package["name"], "--features", feature, "--all-targets", "--locked",
+                        *(("--", "-D", "warnings") if command == "clippy" else ()))
                 steps.append(Step(f"feature-{command}-{package['name']}-{index}",
-                                  ("cargo", command, "-p", package["name"], "--features", feature, "--all-targets", "--locked",
-                                   *(("--", "-D", "warnings") if command == "clippy" else ()))))
+                                  scoped(argv) if command == "test" else argv))
     if "hex-desktop" in (tested if boundary["kind"] == "packages" else affected):
         steps.append(next(s for s in FULL_STEPS if s.step_id == "desktop-build"))
     return tuple(steps)
@@ -372,6 +392,9 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                                   "--base", plan["base"], "--source", plan["source"])),)
     elif scope == "tooling":
         steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"))
+    elif scope == "ui" and plan.get("boundary"):
+        # UI owners follow the same owner/module boundary as Rust packages.
+        steps = boundary_steps(plan)
     elif scope == "ui":
         steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"),
                  Step("ui-default-tests", ("cargo", "test", "-p", "hex-ui", "-p", "hex-widgets", "--locked")),
@@ -386,8 +409,18 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                       ci_plan.python_tests.argv(plan["python_tests"])
                       if s.step_id == "runner-tests" and "python_tests" in plan else s.argv,
                       s.uses_cargo_target,
-                      (runs_rust_tests(s.argv) and "--doc" not in s.argv)
+                      (runs_rust_tests(s.argv) and "--doc" not in s.argv and not module_scoped(s.argv))
                       or s.step_id == "runner-tests") for s in steps)
+
+
+def module_scoped(argv: tuple[str, ...]) -> bool:
+    """A test command restricted to changed modules by a libtest filter.
+
+    One configuration may hold none of a module's tests (for example a
+    feature-gated test module), so these steps are checked together instead:
+    a merge whose module-scoped steps pass no test at all fails."""
+    return "--filter" in argv or ("--" in argv and argv[:2] == ("cargo", "test")
+                                   and any(a.endswith("::") for a in argv[argv.index("--") + 1:]))
 
 
 def utc_now() -> str:
@@ -2137,6 +2170,15 @@ class LocalCiRunner:
                             raise ValueError("continuation execution inputs changed during checks")
                     except (ValueError, OSError, KeyError, TypeError) as error:
                         self.summary["resume_error"] = str(error)
+                        failed = True
+                if self.mode == "merge" and not failed:
+                    scoped_passed = [sum(entry.get("test_results", {}).get("rust_passed_by_binary", []))
+                                     for entry in self.summary["steps"]
+                                     if isinstance(entry, dict) and module_scoped(tuple(entry.get("argv") or ()))
+                                     and "--doc" not in (entry.get("argv") or ())]
+                    if scoped_passed and sum(scoped_passed) <= 0:
+                        self.summary["module_scope_error"] = (
+                            "changed modules ran no tests: add boundary tests to the changed module")
                         failed = True
                 if self.mode == "merge" and not failed:
                     budget = merge_test_budget(self.summary["steps"], self.over_budget_reason)
