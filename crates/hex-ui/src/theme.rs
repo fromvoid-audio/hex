@@ -162,8 +162,8 @@ impl ThemeTokens {
             raised: darken(background, 6),
             hover: lighten(background, 12),
             border: darken(background, 17),
-            // Black keeps the shipped contrast against every clip fill.
-            clip_outline: 0x000000,
+            // Keep outlines dark against clip fills while following custom backgrounds.
+            clip_outline: mix(0x000000, darken(background, 42), 0.25),
             muted: mix(background, text, 0.68),
             primary_dark: mix(background, primary, 0.08),
             waveform: contrast_text(mix(primary, text, 0.15), text),
@@ -494,6 +494,7 @@ mod tests {
         assert_eq!(color(PaletteRole::Text), defaults.text.packed());
         assert_eq!(color(PaletteRole::Primary), defaults.primary.packed());
         assert_eq!(color(PaletteRole::Secondary), defaults.secondary.packed());
+        assert_eq!(color(PaletteRole::ClipOutline), 0x000000);
         assert!(colors_are_legible(defaults));
         assert!(contrast_ratio(color(PaletteRole::ClipFill), color(PaletteRole::ClipText)) >= 4.5);
         assert!(
@@ -502,6 +503,16 @@ mod tests {
                 color(PaletteRole::SecondaryText)
             ) >= 4.5
         );
+    }
+
+    #[test]
+    fn clip_outline_follows_custom_background() {
+        let _restore = RestoreTheme(preferences());
+        apply_preferences(hex_preferences::ThemePreferences {
+            background: hex_preferences::RgbColor::new(0x80, 0x70, 0x60),
+            ..hex_preferences::ThemePreferences::default()
+        });
+        assert_eq!(color(PaletteRole::ClipOutline), 0x16120e);
     }
 
     #[test]
