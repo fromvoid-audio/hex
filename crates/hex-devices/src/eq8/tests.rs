@@ -113,7 +113,8 @@ fn each_filter_shape_has_finite_prepared_response_and_expected_gain_or_cut() {
 
 #[test]
 fn prepared_processor_is_fixed_bounded_zero_latency_and_rate_safe() {
-    const { assert!(EQ8_RUNTIME_BYTES <= 4_096) };
+    // Fixed inline storage, including the channel-mode crossfade (Pulse #4106).
+    const { assert!(EQ8_RUNTIME_BYTES <= 8_192) };
     for rate in [8_000, 22_050, 44_100, 48_000, 96_000, 192_000] {
         let settings = decode(&EQ8_DEFINITION.default_state().unwrap()).unwrap();
         let prepared = PreparedEq8::new(settings, rate).unwrap();
@@ -640,7 +641,8 @@ fn changing_audition_selection_crossfades_through_normal_and_resets_history() {
 
 #[test]
 fn audition_history_crossfades_copies_and_partitions_with_live_coefficients() {
-    const { assert!(EQ8_RUNTIME_BYTES <= 4_096) };
+    // Fixed inline storage, including the channel-mode crossfade (Pulse #4106).
+    const { assert!(EQ8_RUNTIME_BYTES <= 8_192) };
     let mut old_state = EQ8_DEFINITION.default_state().unwrap();
     old_state = patch_band(old_state, 0, 1, 0, 450.0, 8.0);
     old_state = patch_band(old_state, 0, 5, 0, 3_200.0, -5.0);
@@ -834,7 +836,9 @@ fn registered_runtime_chain_accepts_routing_change_and_resets_incompatible_lanes
     let mut next = chain_for(next_state);
     assert!(next.can_inherit_from(&old));
     next.inherit_from(&old);
-    assert!(next.committed_range_is_quiescent(0..1));
+    // The new lanes start empty, but the outgoing routing still crossfades
+    // out (Pulse #4106), so the entry is not quiescent until the fade ends.
+    assert!(!next.committed_range_is_quiescent(0..1));
     next.begin_block();
     let mut output = [[0.25, -0.1]; 32];
     next.process_block(&mut output).unwrap();
@@ -1005,4 +1009,83 @@ fn registered_eq8_can_transfer_only_the_held_selector_to_a_compatible_candidate(
         selection,
     ));
     assert!(!excluded.processor_audition_is_active(owner, 19, EQ8_TYPE_ID, selection));
+}
+
+/// Pulse #4106: a stereo/left-right/mid-side switch during playback crossfades
+/// out of the previous routing instead of restarting every lane from zero
+/// history. With a +12 dB bell on a sine the output's largest per-sample step
+/// across the switch stays near the steady-state step, at several rates and
+/// block sizes, and the fade ends on the new routing.
+#[test]
+fn channel_mode_switch_crossfades_without_a_discontinuity() {
+    let bell = |state: NativeDeviceState, bank: usize| patch_band(state, bank, 0, 0, 1_000.0, 12.0);
+    // Every mode pair, each with its active bank carrying the bell.
+    let modes = |mode: u32| {
+        let state = EQ8_DEFINITION
+            .patch_parameter(
+                &EQ8_DEFINITION.default_state().unwrap(),
+                parameter::MODE,
+                ParameterValue::Choice(mode),
+            )
+            .unwrap();
+        match mode {
+            0 => bell(state, 0),
+            1 => bell(bell(state, 1), 2),
+            _ => bell(state, 3),
+        }
+    };
+    for rate in [44_100_u32, 48_000, 192_000] {
+        let sine = |frame: usize| {
+            let time = frame as f64 / f64::from(rate);
+            let a = (std::f64::consts::TAU * 1_000.0 * time).sin();
+            let b = (std::f64::consts::TAU * 1_000.0 * time + 1.3).sin();
+            [(0.2 * a) as f32, (0.15 * b) as f32]
+        };
+        let warm = rate as usize / 10;
+        let after = 4 * mode_fade_frames(rate) as usize;
+        for (from, to) in [(0, 2), (2, 0), (1, 2), (2, 1), (0, 1), (1, 0)] {
+            let old_prepared = PreparedEq8::new(decode(&modes(from)).unwrap(), rate).unwrap();
+            let new_prepared = PreparedEq8::new(decode(&modes(to)).unwrap(), rate).unwrap();
+            let mut old = old_prepared.runtime();
+            let before: Vec<_> = (0..warm).map(|f| old.process_frame(sine(f))).collect();
+            let steady_step = |frames: &[StereoFrame]| {
+                frames
+                    .windows(2)
+                    .flat_map(|w| (0..2).map(move |c| (w[1][c] - w[0][c]).abs()))
+                    .fold(0.0_f32, f32::max)
+            };
+            let render = |block: usize| {
+                let mut runtime = new_prepared.runtime();
+                // Lanes restart empty; the outgoing routing fades out.
+                assert!(!runtime.inherit_history_from(&old));
+                assert!(runtime.mode_fade.is_active());
+                let mut frames: Vec<_> = (warm..warm + after).map(sine).collect();
+                for chunk in frames.chunks_mut(block) {
+                    let mut next = new_prepared.runtime();
+                    assert!(next.inherit_history_from(&runtime));
+                    next.process(chunk);
+                    runtime = next;
+                }
+                assert!(!runtime.mode_fade.is_active());
+                frames
+            };
+            let switched = render(1);
+            for block in [7, 64, 128] {
+                assert_eq!(
+                    render(block),
+                    switched,
+                    "rate={rate} {from}->{to} block={block}"
+                );
+            }
+            let mut joined = before[warm - 64..].to_vec();
+            joined.extend_from_slice(&switched);
+            let steady = steady_step(&before[warm - 2_048.min(warm)..])
+                .max(steady_step(&switched[switched.len() / 2..]));
+            let largest = steady_step(&joined);
+            assert!(
+                largest <= steady * 1.25,
+                "rate={rate} {from}->{to}: step {largest} vs steady {steady}"
+            );
+        }
+    }
 }

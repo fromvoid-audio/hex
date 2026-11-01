@@ -430,6 +430,7 @@ impl PreparedEq8 {
             audition_request: None,
             audition_mix: 0.0,
             audition_history: [[[0.0; 2]; 4]; 2],
+            mode_fade: ModeFade::INACTIVE,
         }
     }
 }
@@ -490,9 +491,105 @@ pub struct Eq8Runtime {
     audition_request: Option<Eq8AuditionSelection>,
     audition_mix: f64,
     audition_history: [[[f64; 2]; 4]; 2],
+    mode_fade: ModeFade,
 }
 
 const COEFFICIENT_SMOOTH_FRAMES: u16 = 256;
+
+/// Frames for a channel-mode crossfade: 256 at 48 kHz, scaled by rate.
+fn mode_fade_frames(sample_rate: u32) -> u32 {
+    let frames = (u64::from(sample_rate) * 256).div_ceil(48_000).max(1);
+    u32::try_from(frames).unwrap_or(u32::MAX)
+}
+
+/// The outgoing routing after a stereo/left-right/mid-side switch (Pulse
+/// #4106). Lane histories cannot be reinterpreted under a new routing, so the
+/// previous routing keeps filtering with its frozen effective coefficients,
+/// history and gain while the output crossfades linearly into the new routing,
+/// which starts from empty history. The crossfade ends exactly on the new
+/// routing, then the outgoing history is cleared. Fixed inline storage; no
+/// allocation. An outgoing audition contribution is not carried.
+#[derive(Clone, Copy, Debug)]
+struct ModeFade {
+    mode: ChannelMode,
+    gain: f64,
+    coefficients: [[[Coefficients; 4]; BAND_COUNT]; 2],
+    history: [[[[f64; 2]; 4]; BAND_COUNT]; 2],
+    remaining: u32,
+    total: u32,
+}
+
+impl ModeFade {
+    const INACTIVE: Self = Self {
+        mode: ChannelMode::Stereo,
+        gain: 1.0,
+        coefficients: [[[Coefficients::IDENTITY; 4]; BAND_COUNT]; 2],
+        history: [[[[0.0; 2]; 4]; BAND_COUNT]; 2],
+        remaining: 0,
+        total: 0,
+    };
+
+    fn from_outgoing(previous: &Eq8Runtime, sample_rate: u32) -> Self {
+        let total = mode_fade_frames(sample_rate);
+        Self {
+            mode: previous.mode,
+            gain: previous.current_gain,
+            coefficients: previous.coefficients,
+            history: previous.history,
+            remaining: total,
+            total,
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        self.remaining > 0
+    }
+
+    fn blend(&mut self, input: StereoFrame, current: StereoFrame) -> StereoFrame {
+        if !self.is_active() {
+            return current;
+        }
+        let source = route_input(self.mode, input);
+        let mut filtered = source;
+        for (channel, value) in filtered.iter_mut().enumerate() {
+            for band in 0..BAND_COUNT {
+                *value = process_band(
+                    *value,
+                    &self.coefficients[channel][band],
+                    &mut self.history[channel][band],
+                );
+            }
+        }
+        let outgoing = route_output(self.mode, filtered);
+        self.remaining -= 1;
+        if self.remaining == 0 {
+            self.history = [[[[0.0; 2]; 4]; BAND_COUNT]; 2];
+            return current;
+        }
+        let weight = f64::from(self.remaining) / f64::from(self.total);
+        std::array::from_fn(|channel| {
+            let incoming = f64::from(current[channel]);
+            finite_f32(incoming + (outgoing[channel] * self.gain - incoming) * weight)
+        })
+    }
+}
+
+fn route_input(mode: ChannelMode, input: StereoFrame) -> [f64; 2] {
+    match mode {
+        ChannelMode::Stereo | ChannelMode::LeftRight => [f64::from(input[0]), f64::from(input[1])],
+        ChannelMode::MidSide => [
+            (f64::from(input[0]) + f64::from(input[1])) * 0.5,
+            (f64::from(input[0]) - f64::from(input[1])) * 0.5,
+        ],
+    }
+}
+
+fn route_output(mode: ChannelMode, filtered: [f64; 2]) -> [f64; 2] {
+    match mode {
+        ChannelMode::Stereo | ChannelMode::LeftRight => filtered,
+        ChannelMode::MidSide => [filtered[0] + filtered[1], filtered[0] - filtered[1]],
+    }
+}
 
 impl Eq8Runtime {
     /// Request a transient band audition. Invalid or disabled bands leave the
@@ -510,17 +607,14 @@ impl Eq8Runtime {
     }
 
     pub fn process_frame(&mut self, input: StereoFrame) -> StereoFrame {
+        let current = self.process_current_routing(input);
+        self.mode_fade.blend(input, current)
+    }
+
+    fn process_current_routing(&mut self, input: StereoFrame) -> StereoFrame {
         self.advance_coefficients();
         self.advance_audition();
-        let source = match self.mode {
-            ChannelMode::Stereo | ChannelMode::LeftRight => {
-                [f64::from(input[0]), f64::from(input[1])]
-            }
-            ChannelMode::MidSide => [
-                (f64::from(input[0]) + f64::from(input[1])) * 0.5,
-                (f64::from(input[0]) - f64::from(input[1])) * 0.5,
-            ],
-        };
+        let source = route_input(self.mode, input);
         let mut filtered = source;
         for (channel, filtered_channel) in filtered.iter_mut().enumerate() {
             for band in 0..BAND_COUNT {
@@ -541,10 +635,7 @@ impl Eq8Runtime {
                 });
             }
         }
-        let output = match self.mode {
-            ChannelMode::Stereo | ChannelMode::LeftRight => filtered,
-            ChannelMode::MidSide => [filtered[0] + filtered[1], filtered[0] - filtered[1]],
-        };
+        let output = route_output(self.mode, filtered);
         let normal = [
             finite_f32(output[0] * self.current_gain),
             finite_f32(output[1] * self.current_gain),
@@ -605,6 +696,7 @@ impl Eq8Runtime {
         self.audition_selection = None;
         self.audition_request = None;
         self.audition_mix = 0.0;
+        self.mode_fade = ModeFade::INACTIVE;
     }
 
     pub fn inherit_history_from(&mut self, previous: &Self) -> bool {
@@ -613,11 +705,14 @@ impl Eq8Runtime {
             false
         } else if self.mode != previous.mode {
             // The lane interpretation changes (stereo/LR/MS), so previous
-            // histories cannot be reused safely. The configuration handoff is
-            // still bounded and valid; begin the new routing with empty state.
+            // histories cannot be reused in the new routing. Start it empty
+            // and crossfade out of the previous routing (see `ModeFade`).
             self.reset();
+            // Lane histories are not inherited (false); only the fade is.
+            self.mode_fade = ModeFade::from_outgoing(previous, self.sample_rate);
             false
         } else {
+            self.mode_fade = previous.mode_fade;
             self.current_gain = previous.current_gain;
             let same_target =
                 *previous.target == *self.target && previous.target_gain == self.target_gain;
@@ -730,7 +825,8 @@ impl Eq8Runtime {
     }
 
     pub fn is_quiescent(&self) -> bool {
-        self.audition_selection.is_none()
+        !self.mode_fade.is_active()
+            && self.audition_selection.is_none()
             && self.audition_request.is_none()
             && self.audition_mix == 0.0
             && self
