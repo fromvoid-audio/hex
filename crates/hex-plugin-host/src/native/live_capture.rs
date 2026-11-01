@@ -13,7 +13,10 @@ impl Prepared {
     /// Begin one bounded current component/controller capture while processing
     /// continues. The acknowledgement means only that this exact request was
     /// admitted; the caller must poll through this same original worker. A
-    /// second begin refuses without disturbing the first operation. Startup and
+    /// second begin refuses without disturbing the first operation. An
+    /// `Error::StateExceedsLimit` refusal, here or from a poll, retires only this
+    /// operation: the instance keeps processing and a later capture may begin.
+    /// Every other failure stays terminal. Startup and
     /// canonical state remain unchanged. Ordinary PCM progress checks the same
     /// capture deadline, so an abandoned operation cannot live indefinitely.
     pub fn begin_state_capture_on_worker(&mut self) -> Result<()> {
@@ -39,6 +42,10 @@ impl Prepared {
             Ok(Some(_)) => {
                 self.refuse_live_capture(Error::Protocol("live capture completed before admission"))
             }
+            Err(Error::StateExceedsLimit(refusal)) => {
+                self.live_capture_sequence = operation;
+                Err(Error::StateExceedsLimit(refusal))
+            }
             Err(cause) => self.refuse_live_capture(cause),
         }
     }
@@ -59,6 +66,10 @@ impl Prepared {
                     self.live_capture = None;
                 }
                 Ok(state)
+            }
+            Err(Error::StateExceedsLimit(refusal)) => {
+                self.live_capture = None;
+                Err(Error::StateExceedsLimit(refusal))
             }
             Err(cause) => self.refuse_live_capture(cause),
         }
@@ -100,6 +111,16 @@ impl Prepared {
                 self.packet.body()?,
                 self.config.binding,
             )?));
+        }
+        if self.packet.magic() == protocol::CAPTURE_REFUSAL_MAGIC {
+            let refusal = protocol::capture_refusal(
+                self.packet.body()?,
+                &self.config,
+                self.sequence,
+                pending.operation,
+            )?;
+            token.check()?;
+            return Err(Error::StateExceedsLimit(refusal));
         }
         if self.packet.magic() != b"HXVLCA01" {
             return Err(Error::Protocol("missing live capture acknowledgement"));
