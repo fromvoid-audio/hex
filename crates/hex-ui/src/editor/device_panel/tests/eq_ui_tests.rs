@@ -32,7 +32,7 @@ fn fixture(legacy: bool) -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     (service, state, track, device)
 }
 /// Option on a blank press keeps the held create-and-shape gesture; a plain
-/// blank drag draws the marquee and a plain click creates.
+/// blank press creates and only a shift blank drag draws the marquee.
 const OPTION_CREATE: Modifiers = Modifiers {
     control: false,
     alt: true,

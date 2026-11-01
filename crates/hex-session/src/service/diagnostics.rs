@@ -572,7 +572,7 @@ mod tests {
         // Initial state predates observer installation and has no fabricated request.
         let initial = service
             .events
-            .recv_timeout(std::time::Duration::from_secs(3))
+            .recv_timeout(crate::test_wait::HANG_BOUND)
             .unwrap();
         let records = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&records);
@@ -595,7 +595,7 @@ mod tests {
         }
         let event = service
             .events
-            .recv_timeout(std::time::Duration::from_secs(3))
+            .recv_timeout(crate::test_wait::HANG_BOUND)
             .unwrap();
         assert!(event.request_complete);
         assert!(event.error.is_some());
@@ -673,7 +673,7 @@ mod tests {
                 sink.lock().unwrap().push((event.request, event.stage));
             })))
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
         let mut admitted = 0;
         while admitted < 8 {
             assert!(
@@ -684,7 +684,7 @@ mod tests {
                 name: "fixture".into(),
             })) {
                 Ok(()) => admitted += 1,
-                Err(SubmitError::Full(_)) | Err(SubmitError::Busy(_)) => std::thread::yield_now(),
+                Err(SubmitError::Full(_)) | Err(SubmitError::Busy(_)) => crate::test_wait::pause(),
                 Err(SubmitError::Closed(_)) => panic!("service closed"),
             }
         }
@@ -698,12 +698,12 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "event backpressure was not observed"
             );
-            std::thread::yield_now();
+            crate::test_wait::pause();
         }
         for revision in 0..=8 {
             let event = service
                 .events
-                .recv_timeout(std::time::Duration::from_secs(3))
+                .recv_timeout(crate::test_wait::HANG_BOUND)
                 .unwrap();
             assert_eq!(event.state.revision, revision);
             assert_eq!(event.state.project.tracks().len(), revision as usize);

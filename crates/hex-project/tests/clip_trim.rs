@@ -167,12 +167,93 @@ fn edge_trim_preserves_one_shot_silent_tail_and_clamps_to_legal_edges() {
             frame: 15,
         })
         .unwrap();
+    // The three-frame silent tail is consumed before any audible source.
     let right = editor.project().clip(clip).unwrap();
-    assert_eq!((right.duration(), right.source_length()), (7, 4));
-    assert_eq!(right.duration() - right.source_length(), 3);
+    assert_eq!((right.duration(), right.source_length()), (7, 7));
     assert_eq!(right.source_offset(), 2);
     assert!(editor.undo());
     assert_eq!(editor.project().clip(clip).unwrap(), &trimmed);
+}
+
+/// Loop on, extend right past the source, loop off: a 100-frame one-shot at
+/// frame 10 whose 10-frame source is followed by 90 silent frames.
+fn silent_tail_fixture() -> (Editor, hex_project::ClipId) {
+    let (mut editor, clip) = editor_with_clip(true, 10, 10, 0, 10, 100);
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: TrimEdge::Right,
+            frame: 110,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetClipLooping {
+            clip,
+            looping: false,
+        })
+        .unwrap();
+    let tail = editor.project().clip(clip).unwrap();
+    assert_eq!((tail.duration(), tail.source_length()), (100, 10));
+    (editor, clip)
+}
+
+#[test]
+fn one_shot_right_trim_shortens_silent_tail_before_source() {
+    let (mut editor, clip) = silent_tail_fixture();
+    for (frame, expected) in [(105, (95, 10)), (20, (10, 10)), (15, (5, 5)), (0, (1, 1))] {
+        let preview = editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .preview_edge_trim(TrimEdge::Right, frame, 100)
+            .unwrap();
+        editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Right,
+                frame,
+            })
+            .unwrap();
+        let trimmed = editor.project().clip(clip).unwrap();
+        assert_eq!(trimmed, &preview, "frame {frame}");
+        assert_eq!(
+            (trimmed.duration(), trimmed.source_length()),
+            expected,
+            "frame {frame}"
+        );
+        assert_eq!((trimmed.start(), trimmed.source_offset()), (10, 0));
+    }
+}
+
+#[test]
+fn split_inside_one_shot_silent_tail_succeeds_and_undoes_exactly() {
+    for fades in [None, Some((2, 30))] {
+        let (mut editor, clip) = silent_tail_fixture();
+        if let Some((fade_in, fade_out)) = fades {
+            editor
+                .execute(Command::SetClipFades {
+                    clip,
+                    fade_in,
+                    fade_out,
+                })
+                .unwrap();
+        }
+        let before = editor.project().clone();
+        let right = match editor
+            .execute(Command::SplitClip { clip, frame: 50 })
+            .unwrap()
+        {
+            Created::Clip(id) => id,
+            other => panic!("unexpected result: {other:?}"),
+        };
+        let left = editor.project().clip(clip).unwrap();
+        let tail = editor.project().clip(right).unwrap();
+        assert_eq!((left.start(), left.duration()), (10, 40), "{fades:?}");
+        assert_eq!((tail.start(), tail.duration()), (50, 60), "{fades:?}");
+        assert!(editor.undo());
+        // Identity allocation is never rewound; all authored state is restored.
+        assert_eq!(editor.project().tracks(), before.tracks(), "{fades:?}");
+    }
 }
 
 #[test]

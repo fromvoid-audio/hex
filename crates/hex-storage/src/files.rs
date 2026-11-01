@@ -209,6 +209,14 @@ fn save_with_finish(
     if path.file_name().is_none() {
         return Err(StorageError::Invalid("project target needs a filename"));
     }
+    // Every later save and checkpoint derives sibling names from this one, so
+    // admit only a name they can all use. Callers preflight with
+    // `project_name::check` for a message naming the file.
+    if crate::project_name::check(path).is_err() {
+        return Err(StorageError::Invalid(
+            "project name is too long to keep recovery files beside it; choose a shorter name",
+        ));
+    }
     // Refuse known collisions before serialization or temporary-file work. The
     // final hard link still enforces create-new atomically against races.
     match fs::symlink_metadata(path) {
