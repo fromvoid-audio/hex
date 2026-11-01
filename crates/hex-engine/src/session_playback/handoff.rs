@@ -839,6 +839,15 @@ impl SessionPlayback {
             .frame_to_beat(previous.performance_frame)
             .map_err(|_| SessionPlaybackError::TempoConversion)?;
         let timing_changed = !same_base || !same_periodic;
+        // Arrangement content is beat-anchored, so an edited base tempo map
+        // keeps the cursor's beat, not its frame (Pulse #3935). Old-revision
+        // queries keep `previous.arrangement_frame`; candidate queries and the
+        // installed cursor use this cut. An unchanged map keeps the same frame.
+        let (arrangement_cut, arrangement_cut_pass) = if same_base {
+            (previous.arrangement_frame, previous.arrangement_loop_pass)
+        } else {
+            candidate_arrangement_cut(previous, &new_base_view, self.loop_region())?
+        };
         // A loop-only edit keeps the canonical base map, paused or playing.
         // Delayed stamps already carry their own beats, and the candidate's
         // anchor keeps new stamps continuous at the cut; the planner below
@@ -854,6 +863,22 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::Arrangement(
                 COMPENSATED_TIMING_CHANGED,
             ));
+        }
+        if arrangement_cut != previous.arrangement_frame
+            && previous.routes.iter().enumerate().any(|(index, _)| {
+                effective_midi_route(&previous.revision, &previous.routes, index)
+                    .is_ok_and(|route| matches!(route.owner, RouteOwner::Arrangement))
+                    && previous
+                        .mutable_instruments
+                        .get(index)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|runtime| runtime.proofs().any(|proof| !proof.note_off_sent))
+            })
+        {
+            // Mutable gate proofs are frame deadlines on the donor's
+            // Arrangement cursor. Keep the old graph audible until its notes
+            // end; remapping them is Pulse #4117.
+            return Err(SessionPlaybackError::MutableInstrumentActive);
         }
         if timing_changed
             && old_loop.is_some()
@@ -1425,9 +1450,8 @@ impl SessionPlayback {
                 RouteOwner::Arrangement => {
                     let mut active = false;
                     new_track
-                        .for_each_active_midi_span(previous.arrangement_frame, |span, _| {
-                            active |= span.start < previous.arrangement_frame
-                                && span.end > previous.arrangement_frame;
+                        .for_each_active_midi_span(arrangement_cut, |span, _| {
+                            active |= span.start < arrangement_cut && span.end > arrangement_cut;
                         })
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     active
@@ -2096,12 +2120,13 @@ impl SessionPlayback {
                 .get(new_index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             let cut_frame = previous.arrangement_frame;
+            let new_cut_frame = arrangement_cut;
             let mut candidate_occurrences = [None; crate::midi_template::MIDI_SPAN_BUFFER_CAPACITY];
             let mut candidate_occurrence_count = 0;
             if shared_sources::track_has_analytic_source(&self.revision, new_index) {
                 let mut overflow = false;
                 new_track
-                    .for_each_active_midi_span(cut_frame, |candidate, _| {
+                    .for_each_active_midi_span(new_cut_frame, |candidate, _| {
                         if let Some(slot) =
                             candidate_occurrences.get_mut(candidate_occurrence_count)
                         {
@@ -2159,7 +2184,7 @@ impl SessionPlayback {
                         continue;
                     };
                     let elapsed = candidate_end
-                        .checked_sub(cut_frame)
+                        .checked_sub(new_cut_frame)
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                     let candidate_end = previous
                         .performance_frame
@@ -2232,7 +2257,7 @@ impl SessionPlayback {
                                 failure = Some(SessionPlaybackError::ArithmeticOverflow);
                                 return;
                             };
-                            let Some(elapsed) = candidate_end.checked_sub(cut_frame) else {
+                            let Some(elapsed) = candidate_end.checked_sub(new_cut_frame) else {
                                 failure = Some(SessionPlaybackError::ArithmeticOverflow);
                                 return;
                             };
@@ -2348,13 +2373,13 @@ impl SessionPlayback {
                 // progress; exact-boundary and later onsets remain eligible.
                 let mut failure = None;
                 new_track
-                    .for_each_active_midi_span(cut_frame, |span, _| {
-                        if span.start >= cut_frame {
+                    .for_each_active_midi_span(new_cut_frame, |span, _| {
+                        if span.start >= new_cut_frame {
                             return;
                         }
                         let until_frame = match previous
                             .performance_frame
-                            .checked_add(span.end.saturating_sub(cut_frame))
+                            .checked_add(span.end.saturating_sub(new_cut_frame))
                         {
                             Some(frame) => frame,
                             None => {
@@ -2384,6 +2409,25 @@ impl SessionPlayback {
                     return Err(error);
                 }
             }
+        }
+        if arrangement_cut != previous.arrangement_frame {
+            let loop_end = self
+                .active_loop_region_at(arrangement_cut)
+                .map(hex_project::LoopRegion::end);
+            cut_arrangement_voices_for_remap(
+                previous,
+                RemapCandidate {
+                    revision: &self.revision,
+                    releases: &mut self.release_scratch,
+                    suppressions: &mut self.suppression_scratch,
+                    capacity: self.release_capacity,
+                    cut: arrangement_cut,
+                    loop_end,
+                },
+                &track_map,
+                &arrangement_instrument_changed,
+                &mut next_order,
+            )?;
         }
         for (new_index, fresh_install) in fresh_mutable_install
             .iter()
@@ -3405,7 +3449,13 @@ impl SessionPlayback {
         // These copies are private scratch. Every provider refusal precedes any
         // source/runtime mutation; bank samplers remain immutable and interned.
         for release in &mut self.release_scratch {
-            retune_inline_release(previous, &self.revision, &self.route_scratch, release)?;
+            retune_inline_release(
+                previous,
+                &self.revision,
+                &self.route_scratch,
+                arrangement_cut,
+                release,
+            )?;
             if !release.voice.sampler().is_current() {
                 continue;
             }
@@ -3647,9 +3697,9 @@ impl SessionPlayback {
                     demand.ordinary,
                     &self.route_scratch,
                     previous.performance_frame,
-                    previous.arrangement_frame,
+                    arrangement_cut,
                     generation,
-                    previous.arrangement_loop_pass,
+                    arrangement_cut_pass,
                     demand.playing.unwrap_or(previous.playing),
                     demand.maximum_frames,
                     &mut demand.visit,
@@ -4071,8 +4121,8 @@ impl SessionPlayback {
         self.release_order_scratch = next_order;
         std::mem::swap(&mut self.suppressions, &mut self.suppression_scratch);
         self.performance_frame = previous.performance_frame;
-        self.arrangement_frame = previous.arrangement_frame;
-        self.arrangement_loop_pass = previous.arrangement_loop_pass;
+        self.arrangement_frame = arrangement_cut;
+        self.arrangement_loop_pass = arrangement_cut_pass;
         self.interactive_start_frame = previous.interactive_start_frame;
         self.playing = previous.playing;
         // Preparing the first live input can activate a stopped candidate
@@ -4546,6 +4596,196 @@ fn remap_release_gate(
         .map_err(|_| SessionPlaybackError::TempoConversion)
 }
 
+/// Candidate scratch written by `cut_arrangement_voices_for_remap`.
+struct RemapCandidate<'a> {
+    revision: &'a PreparedRevision,
+    releases: &'a mut Vec<ReleaseEntry>,
+    suppressions: &'a mut Vec<MidiOccurrenceSuppression>,
+    capacity: usize,
+    cut: u64,
+    /// The candidate's active loop end at `cut`; occurrences wrap there.
+    loop_end: Option<u64>,
+}
+
+/// The defined discontinuity for a remapped Arrangement cut (Pulse #3935).
+/// Each analytic/inline Arrangement voice still held at the donor's cut is
+/// released there (its gate ends at the cut and only its release tail
+/// sounds). Candidate occurrences whose onset precedes the remapped cut
+/// are suppressed until they end, so nothing is chased or retriggered.
+/// Removed tracks and instrument edits keep their own release paths.
+fn cut_arrangement_voices_for_remap(
+    previous: &SessionPlayback,
+    candidate: RemapCandidate<'_>,
+    track_map: &[usize; MAX_TRACKS],
+    instrument_changed: &[bool; MAX_TRACKS],
+    next_order: &mut u64,
+) -> Result<(), SessionPlaybackError> {
+    let RemapCandidate {
+        revision,
+        releases,
+        suppressions,
+        capacity,
+        cut: candidate_cut,
+        loop_end,
+    } = candidate;
+    let old_cut = previous.arrangement_frame;
+    let performance = previous.performance_frame;
+    for (old_index, _) in previous.routes.iter().enumerate() {
+        let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
+        if old_route.owner != RouteOwner::Arrangement
+            || instrument_changed.get(old_index).copied().unwrap_or(true)
+        {
+            continue;
+        }
+        let Some(new_index) = track_map
+            .get(old_index)
+            .copied()
+            .filter(|index| *index != usize::MAX)
+        else {
+            continue;
+        };
+        let mut failure = None;
+        if shared_sources::track_has_analytic_source(&previous.revision, old_index) {
+            let old_track = previous
+                .revision
+                .arrangement()
+                .tracks()
+                .get(old_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            old_track
+                .for_each_active_midi_span(old_cut, |span, sampler| {
+                    if failure.is_some() || span.start >= old_cut {
+                        return;
+                    }
+                    let key = ContinuationKey {
+                        clip: span.clip,
+                        note: span.note,
+                        iteration: span.iteration,
+                    };
+                    if is_suppressed(previous, old_route.id, key) {
+                        return;
+                    }
+                    let voice = match MidiReleaseVoice::from_finite_span(
+                        span.start,
+                        span.gate_end,
+                        span.end,
+                        sampler.detach(&previous.analytic_continuations),
+                        old_cut,
+                        performance,
+                    ) {
+                        Ok(Some(voice)) => voice,
+                        Ok(None) => return,
+                        Err(_) => {
+                            failure = Some(SessionPlaybackError::ArithmeticOverflow);
+                            return;
+                        }
+                    };
+                    let entry = (|| -> Result<ReleaseEntry, SessionPlaybackError> {
+                        Ok(ReleaseEntry {
+                            source_origin: ReleaseSourceOrigin::capture(
+                                &previous.revision,
+                                old_index,
+                            ),
+                            monitor_offset: 0,
+                            location: ReleaseLocation::new(new_index, None)?,
+                            track_id: old_route.id,
+                            order: 0,
+                            mix: gain_recording::effective_mix(
+                                old_track,
+                                old_cut,
+                                previous.revision.gain_recording_track(),
+                                previous.gain_recording_override,
+                            ),
+                            clip_gain: super::clip_gain::at_cut(
+                                previous,
+                                old_index,
+                                old_route.owner,
+                                span.clip,
+                                old_cut,
+                                performance,
+                            )?
+                            .0,
+                            continuation: None,
+                            inline_tuning_owned: false,
+                            voice,
+                        })
+                    })();
+                    if let Err(error) = entry
+                        .and_then(|entry| append_release(releases, capacity, next_order, entry))
+                    {
+                        failure = Some(error);
+                    }
+                })
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+        }
+        if failure.is_none() && shared_sources::track_has_analytic_source(revision, new_index) {
+            let new_track = revision
+                .arrangement()
+                .tracks()
+                .get(new_index)
+                .ok_or(SessionPlaybackError::UnknownTrack)?;
+            new_track
+                .for_each_active_midi_span(candidate_cut, |span, _| {
+                    if failure.is_some() || span.start >= candidate_cut {
+                        return;
+                    }
+                    // The loop wrap ends this pass; a later pass is a new onset.
+                    let end = loop_end.map_or(span.end, |loop_end| span.end.min(loop_end));
+                    let Some(until_frame) =
+                        performance.checked_add(end.saturating_sub(candidate_cut))
+                    else {
+                        failure = Some(SessionPlaybackError::ArithmeticOverflow);
+                        return;
+                    };
+                    if let Err(error) = add_or_extend_suppression(
+                        suppressions,
+                        capacity,
+                        MidiOccurrenceSuppression::analytic(
+                            crate::mutable_instrument::MutableOccurrenceKey {
+                                track: old_route.id,
+                                clip: span.clip,
+                                note: span.note,
+                                iteration: span.iteration,
+                                loop_pass: 0,
+                            },
+                            until_frame,
+                        ),
+                    ) {
+                        failure = Some(error);
+                    }
+                })
+                .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// The candidate frame and loop pass at the donor cursor's Arrangement beat.
+/// A cursor inside the donor's active loop stays inside the candidate loop: a
+/// remapped frame at or after its end wraps as rendering would, one pass per
+/// whole loop length.
+fn candidate_arrangement_cut(
+    previous: &SessionPlayback,
+    candidate_timing: &impl crate::MidiTiming,
+    candidate_loop: Option<hex_project::LoopRegion>,
+) -> Result<(u64, u64), SessionPlaybackError> {
+    use crate::MidiTiming as _;
+    let beat = base_timing_for(previous.revision.session(), previous.periodic_tempo())
+        .frame_to_beat(previous.arrangement_frame)
+        .map_err(|_| SessionPlaybackError::TempoConversion)?;
+    let frame = candidate_timing
+        .beat_to_frame(beat)
+        .map_err(|_| SessionPlaybackError::TempoConversion)?;
+    let pass = previous.arrangement_loop_pass;
+    match candidate_loop.filter(|_| previous.active_loop_region().is_some()) {
+        Some(region) => super::render::normalize_loop_cursor(frame, region, pass),
+        None => Ok((frame, pass)),
+    }
+}
+
 fn inline_tuning_owner_matches(source: &crate::Track, target: &crate::Track) -> bool {
     source.instrument_id == target.instrument_id
         && source.instrument_state == target.instrument_state
@@ -4561,6 +4801,7 @@ fn retune_inline_release(
     previous: &SessionPlayback,
     candidate: &PreparedRevision,
     routes: &[TrackRoute],
+    candidate_cut: u64,
     release: &mut ReleaseEntry,
 ) -> Result<(), SessionPlaybackError> {
     use crate::midi_note_bank::PreparedMidiNote;
@@ -4598,7 +4839,7 @@ fn retune_inline_release(
         RouteOwner::Arrangement => {
             let mut sampler = None;
             target
-                .for_each_active_midi_span(previous.arrangement_frame, |span, prepared| {
+                .for_each_active_midi_span(candidate_cut, |span, prepared| {
                     if span.clip == owned.key.clip
                         && span.note == owned.key.note
                         && span.iteration == owned.key.iteration
