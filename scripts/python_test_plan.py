@@ -149,7 +149,8 @@ def select(profile: str, paths: list[str], inventory: list[dict],
 
 
 # Scripts whose tests live in another module than test_<stem>.
-OWNER_TEST_MODULES = {"scripts/test_shards.py": "test_ci_plan"}
+OWNER_TEST_MODULES = {"scripts/test_shards.py": "test_ci_plan",
+                      "scripts/python_shards.py": "test_python_test_plan"}
 
 
 def tooling_owner_modules(paths: list[str], modules: list[str]) -> list[str]:
@@ -184,4 +185,5 @@ def argv(selection: dict) -> tuple[str, ...]:
     if not isinstance(selectors, list) or not selectors or any(
             not isinstance(name, str) or not name for name in selectors):
         raise ValueError("Python test selection is empty or malformed")
-    return ("python3", "-c", UNITTEST_BOOTSTRAP, *selectors)
+    # Owner selections run as concurrent single-test processes (Pulse #4001).
+    return ("python3", "scripts/python_shards.py", "--", *selectors)
