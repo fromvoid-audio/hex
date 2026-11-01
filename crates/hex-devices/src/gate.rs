@@ -21,9 +21,9 @@ const MAX_SAMPLE_RATE: u32 = 192_000;
 /// dips below the return level around every zero crossing. With no hold the
 /// gate closed there and chattered. Holding at least 5 ms rides through those
 /// dips (a sine at amplitude `a` stays below return `r` for
-/// `2 asin(r / a) / omega`, about 3.9 ms at 40 Hz just above a 5 dB
-/// hysteresis), so the hold control's range below 5 ms acts as 5 ms. Tones
-/// far below 40 Hz that sit just above the threshold can still exceed it.
+/// `2 asin(r / a) / omega`, about 4.75 ms at 40 Hz just above a 5 dB
+/// hysteresis), so the hold control's range below 5 ms acts as 5 ms. Lower
+/// tones, or a return level close to the threshold, can still exceed it.
 /// This is a hex decision, not a measured reference behaviour.
 const MIN_HOLD_MS: f32 = 5.0;
 

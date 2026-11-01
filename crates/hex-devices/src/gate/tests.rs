@@ -454,26 +454,29 @@ fn floor_edit_when_settled_closed_ramps_and_runtime_has_no_output_tail() {
 /// minimum internal hold keeps a 40 Hz sine at -6 dBFS fully open.
 #[test]
 fn hold_zero_rides_through_low_frequency_zero_crossings() {
-    let state = state_with(-40.0, -45.0, -60.0, 1.0, 0.0, 1.0);
-    for sample_rate in [8_000_u32, 44_100, 48_000, 192_000] {
-        let amplitude = db_gain(-6.0);
-        let mut frames: Vec<StereoFrame> = (0..sample_rate as usize)
-            .map(|frame| {
-                let phase = std::f64::consts::TAU * 40.0 * frame as f64 / f64::from(sample_rate);
-                let value = (amplitude * phase.sin()) as f32;
-                [value, -value]
-            })
-            .collect();
-        let input = frames.clone();
-        runtime(&state, sample_rate)
-            .process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
-        // After the 1 ms attack the gain is exactly 1 for the rest of the tone.
-        let settled = sample_rate as usize / 500;
-        for (index, (out, original)) in frames.iter().zip(&input).enumerate().skip(settled) {
-            assert_eq!(
-                out, original,
-                "rate={sample_rate} frame={index}: gate moved"
-            );
+    for (threshold, return_level) in [(-40.0, -45.0), (-6.2, -11.2)] {
+        let state = state_with(threshold, return_level, -60.0, 1.0, 0.0, 1.0);
+        for sample_rate in [8_000_u32, 44_100, 48_000, 192_000] {
+            let amplitude = db_gain(-6.0);
+            let mut frames: Vec<StereoFrame> = (0..sample_rate as usize)
+                .map(|frame| {
+                    let phase =
+                        std::f64::consts::TAU * 40.0 * frame as f64 / f64::from(sample_rate);
+                    let value = (amplitude * phase.sin()) as f32;
+                    [value, -value]
+                })
+                .collect();
+            let input = frames.clone();
+            runtime(&state, sample_rate)
+                .process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            // Allow the first cycle to cross threshold and complete the attack.
+            let settled = sample_rate as usize / 40;
+            for (index, (out, original)) in frames.iter().zip(&input).enumerate().skip(settled) {
+                assert_eq!(
+                    out, original,
+                    "threshold={threshold} rate={sample_rate} frame={index}: gate moved"
+                );
+            }
         }
     }
 }
