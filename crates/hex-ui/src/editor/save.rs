@@ -57,6 +57,7 @@ fn prepare_save_path(mut path: PathBuf) -> Result<PathBuf, &'static str> {
     if path.as_os_str().len() > MAX_PROJECT_PATH_BYTES {
         return Err("project path exceeds the 4096-byte limit");
     }
+    hex_session::service::validate_save_target(&path)?;
     Ok(path)
 }
 
@@ -355,6 +356,11 @@ mod tests {
         assert_eq!(
             prepare_save_path(too_long),
             Err("project path exceeds the 4096-byte limit")
+        );
+        let long_name = PathBuf::from(format!("{}.hex", "界".repeat(80)));
+        assert_eq!(
+            prepare_save_path(long_name),
+            Err("project name cannot support recovery files; choose a shorter name")
         );
     }
 }

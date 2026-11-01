@@ -279,6 +279,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn longest_project_name_supports_save_recovery_and_checkpoint() {
+        let dir = Temp::new();
+        let basename_len = 250 - 1 - ".hex-journal".len();
+        let target = dir.0.join(format!("{}.hex", "x".repeat(basename_len - 4)));
+        let project = Project::new(48_000).expect("project");
+        let token = crate::save_new_with_token(&target, &project).expect("save");
+        let path = journal_path(&target).expect("journal path");
+        Journal::open(path)
+            .expect("open")
+            .checkpoint(&project)
+            .expect("checkpoint");
+        crate::replace_existing(&target, &token, &project).expect("replace");
+        let longer = dir.0.join(format!("{}.hex", "x".repeat(basename_len - 3)));
+        assert!(journal_path(&longer).is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn owned_lock_success_and_validation_error_release_inherited_descriptions() {

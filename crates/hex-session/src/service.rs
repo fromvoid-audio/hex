@@ -82,6 +82,15 @@ pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 #[cfg(test)]
 mod stopped_playback_tests;
 use hex_storage::FileToken;
+
+/// Check that a Save As target can also name its recovery and journal files.
+/// This is a path-shape preflight; filesystem publication can still fail.
+pub fn validate_save_target(path: &std::path::Path) -> Result<(), &'static str> {
+    hex_storage::recovery_path(path)
+        .and_then(|_| hex_storage::journal_path(path))
+        .map(|_| ())
+        .map_err(|_| "project name cannot support recovery files; choose a shorter name")
+}
 use recovery::absolute_document_path;
 pub use recovery::{ProjectSource, RecoveryFailure, RecoveryRestart, untitled_recovery_path};
 use std::{
