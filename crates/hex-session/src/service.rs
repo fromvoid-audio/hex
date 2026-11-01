@@ -32,6 +32,8 @@ mod comparison_audio;
 #[cfg(test)]
 mod console_track_tests;
 mod export_lane;
+mod shutdown;
+pub use shutdown::{DROP_SHUTDOWN_BOUND, ShutdownError};
 mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
 mod resident_audio;
@@ -835,6 +837,8 @@ pub enum Request {
     RestoreStoppedPlayback,
     /// Worker-local continuation of the existing stopped restoration request.
     ContinueStoppedPlaybackRestore,
+    /// Whole-project Main export: exactly `ExportRange { start: 0, frames: None }`
+    /// on Main, create-new, so its causal length includes declared finite tails.
     Export(PathBuf),
     /// Explicit half-open Arrangement range; worker captures the current revision.
     ExportRange {
@@ -847,7 +851,41 @@ pub enum Request {
     },
 }
 
+/// Fields of the one canonical export request shape.
+type ExportRangeParts = (
+    PathBuf,
+    u64,
+    Option<u64>,
+    hex_export::ExportSignal,
+    hex_export::ExportControl,
+    bool,
+);
+
 impl Request {
+    /// The canonical `ExportRange` parts of an export request; `Export` is its
+    /// automatic whole-project Main spelling. Other requests return `None`.
+    fn into_export_range(self) -> Option<ExportRangeParts> {
+        match self {
+            Request::Export(path) => Some((
+                path,
+                0,
+                None,
+                hex_export::ExportSignal::Main,
+                hex_export::ExportControl::default(),
+                false,
+            )),
+            Request::ExportRange {
+                path,
+                start,
+                frames,
+                signal,
+                control,
+                overwrite,
+            } => Some((path, start, frames, signal, control, overwrite)),
+            _ => None,
+        }
+    }
+
     /// Control requests that must observe the completed parameter gesture.
     /// Project replacement keeps previews intact until candidate publication;
     /// only the successful `project_replaced` path retires their ownership.
@@ -963,11 +1001,13 @@ impl std::error::Error for ServiceError {
 #[cfg(test)]
 type ExportTestHook = Arc<std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 
-/// UI-owned endpoints. Dropping both channels detaches the worker without joining it.
+/// UI-owned endpoints. `shutdown` stops and joins the session worker, which
+/// joins the export worker it owns; dropping calls it with a short bound.
 pub struct Service {
     #[cfg(test)]
     export_test_hook: ExportTestHook,
-    requests: request_cancellation::Sender,
+    /// `None` after shutdown, which disconnects an idle blocking worker.
+    requests: Option<request_cancellation::Sender>,
     events: diagnostics::EventReceiver,
     diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
@@ -977,18 +1017,50 @@ pub struct Service {
     resident_seek_results: Option<Receiver<ResidentArrangementSeekResult>>,
     resident_seek_count: AtomicUsize,
     recovery_slot: Option<PathBuf>,
-    _worker: JoinHandle<()>,
+    /// `None` once joined; kept after a timed-out shutdown for a later retry.
+    worker: Option<JoinHandle<()>>,
 }
 
 impl Drop for Service {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
+        // Bounded: an uncancellable job past the bound stays detached rather
+        // than blocking the dropping thread. Quit paths call `shutdown` first.
+        let _ = self.shutdown(DROP_SHUTDOWN_BOUND);
     }
 }
 
+/// Ordinary controlled range renderer: path, revision, start, frames, signal,
+/// control and publication. Tests substitute it to observe worker custody.
 type Exporter = Arc<
-    dyn Fn(&Path, &Arc<PreparedRevision>, u64, u64) -> Result<ExportReport, String> + Send + Sync,
+    dyn Fn(
+            &Path,
+            &Arc<PreparedRevision>,
+            u64,
+            u64,
+            hex_export::ExportSignal,
+            &hex_export::ExportControl,
+            &hex_export::Publication,
+        ) -> Result<ExportReport, String>
+        + Send
+        + Sync,
 >;
+
+fn canonical_exporter() -> Exporter {
+    Arc::new(
+        |path, prepared, start, frames, signal, control, publication| {
+            hex_export::render_prepared_with_policy(
+                path,
+                Arc::clone(prepared),
+                start,
+                frames,
+                signal,
+                control,
+                publication,
+            )
+            .map_err(|error| error.to_string())
+        },
+    )
+}
 
 struct ExportJob {
     job_id: u64,
@@ -1022,10 +1094,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             None,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string())
-            }),
+            canonical_exporter(),
         )
     }
 
@@ -1041,10 +1110,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             Some(untitled_path),
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string())
-            }),
+            canonical_exporter(),
         )
     }
 
@@ -1078,10 +1144,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             recovery,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string())
-            }),
+            canonical_exporter(),
             Some(audio),
         )
     }
@@ -1098,10 +1161,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             recovery,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|e| e.to_string())
-            }),
+            canonical_exporter(),
             Some(audio),
             Some(native),
         )
@@ -1134,10 +1194,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             None,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string())
-            }),
+            canonical_exporter(),
             None,
             Some(reservation),
         )
@@ -1333,7 +1390,10 @@ impl Service {
         Ok(Self {
             #[cfg(test)]
             export_test_hook,
-            requests: request_cancellation::Sender::new(request_tx, document_intent),
+            requests: Some(request_cancellation::Sender::new(
+                request_tx,
+                document_intent,
+            )),
             diagnostics: Arc::clone(&diagnostics),
             events: diagnostics::EventReceiver::new(event_rx, diagnostics),
             export_events: export_event_rx,
@@ -1343,7 +1403,7 @@ impl Service {
             resident_seek_results: Some(seek_results_rx),
             resident_seek_count: AtomicUsize::new(0),
             recovery_slot,
-            _worker: worker,
+            worker: Some(worker),
         })
     }
 
@@ -1376,9 +1436,10 @@ impl Service {
             return Err(SubmitError::Busy(request));
         }
         let diagnostic = self.diagnostics.begin(&request);
-        let result = self
-            .requests
-            .submit_traced_save(request, diagnostic, Some(correlation));
+        let result = match self.requests.as_ref() {
+            Some(requests) => requests.submit_traced_save(request, diagnostic, Some(correlation)),
+            None => Err(SubmitError::Closed(request)),
+        };
         self.diagnostics.returned(diagnostic, &result);
         result
     }
@@ -1423,7 +1484,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            return match try_submit_traced(&self.requests, request, diagnostic) {
+            return match try_submit_traced(self.requests.as_ref(), request, diagnostic) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.resident_seek_count.fetch_sub(1, Ordering::AcqRel);
@@ -1439,7 +1500,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            match try_submit_traced(&self.requests, request, diagnostic) {
+            match try_submit_traced(self.requests.as_ref(), request, diagnostic) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.export_busy.store(false, Ordering::Release);
@@ -1447,7 +1508,7 @@ impl Service {
                 }
             }
         } else {
-            try_submit_traced(&self.requests, request, diagnostic)
+            try_submit_traced(self.requests.as_ref(), request, diagnostic)
         }
     }
 
@@ -1552,11 +1613,14 @@ fn try_submit(sender: &request_cancellation::Sender, request: Request) -> Result
 }
 #[allow(clippy::result_large_err)]
 fn try_submit_traced(
-    sender: &request_cancellation::Sender,
+    sender: Option<&request_cancellation::Sender>,
     request: Request,
     diagnostic: Option<diagnostics::DiagnosticRequest>,
 ) -> Result<(), SubmitError> {
-    sender.submit_traced(request, diagnostic)
+    match sender {
+        Some(sender) => sender.submit_traced(request, diagnostic),
+        None => Err(SubmitError::Closed(request)),
+    }
 }
 
 fn view_state(
@@ -4922,10 +4986,14 @@ fn run_worker(
                                 resident_preview.as_ref(),
                             ),
                         ) {
-                            Ok((_, prepared)) => {
+                            Ok((result, prepared)) => {
                                 if session.project() != state.project.as_ref() {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
+                                }
+                                // Clip pastes report the clips they created.
+                                if matches!(clipboard, ArrangementClipboard::Clips(_)) {
+                                    created = Some(result);
                                 }
                                 status = Some(
                                     match clipboard {
@@ -4978,10 +5046,13 @@ fn run_worker(
                                 resident_preview.as_ref(),
                             ),
                         ) {
-                            Ok((_, prepared)) => {
+                            Ok((result, prepared)) => {
                                 if session.project() != state.project.as_ref() {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
+                                }
+                                if matches!(clipboard, ArrangementClipboard::Clips(_)) {
+                                    created = Some(result);
                                 }
                                 status = Some("time selection inserted".into());
                             }
@@ -6197,112 +6268,62 @@ fn run_worker(
                         }
                     }
                 }
-                Request::Export(path) => {
-                    status = Some("export queued".into());
-                    let clip_end = compiled
-                        .as_ref()
-                        .and_then(|(_, prepared)| prepared.arrangement().audible_end_frame())
-                        .unwrap_or(0);
-                    let job = match (compiled.as_ref(), clip_end) {
-                        (_, 0) => Err("nothing to export".to_owned()),
-                        (Some((compiled_revision, prepared)), frames)
-                            if *compiled_revision == revision =>
-                        {
-                            Ok(ExportJob {
-                                job_id: 0,
-                                streamed: None,
-                                sources: None,
-                                resources: None,
-                                revision,
-                                path: path.clone(),
-                                prepared: Arc::clone(prepared),
-                                frames,
-                                controlled: None,
-                            })
+                request @ (Request::Export(_) | Request::ExportRange { .. }) => {
+                    // Both spellings are export requests, so their parts always exist.
+                    if let Some((path, start, frames, signal, control, overwrite)) =
+                        request.into_export_range()
+                    {
+                        let job = match compiled.as_ref() {
+                            Some((compiled_revision, prepared))
+                                if *compiled_revision == revision =>
+                            {
+                                hex_export::controlled_frame_count(
+                                    prepared.arrangement(),
+                                    start,
+                                    frames,
+                                    &signal,
+                                )
+                                .map_err(|error| error.to_string())
+                                .map(|frames| ExportJob {
+                                    job_id: 0,
+                                    streamed: None,
+                                    sources: None,
+                                    resources: None,
+                                    revision,
+                                    path: path.clone(),
+                                    prepared: Arc::clone(prepared),
+                                    frames,
+                                    controlled: Some((start, signal, control, overwrite)),
+                                })
+                            }
+                            _ => Err("latest project revision has not compiled".to_owned()),
                         }
-                        _ => Err("latest project revision has not compiled".to_owned()),
-                    }
-                    .and_then(|mut job| {
-                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
-                            || job.prepared.arrangement().contains_streamed_sources()
-                        {
-                            job.streamed = Some(streamed_export::StreamedExportJob::capture(
-                                &session,
-                                &state.project,
-                                project_generation,
-                                revision,
-                                events.streamed_exporter(),
-                            )?);
-                        }
-                        Ok(job)
-                    });
-                    match job {
-                        Ok(job) => export_job = Some(job),
-                        Err(reason) => {
-                            export_completion = Some(ExportEvent {
-                                revision,
-                                path,
-                                result: Err(reason),
-                            });
-                        }
-                    }
-                }
-                Request::ExportRange {
-                    path,
-                    start,
-                    frames,
-                    signal,
-                    control,
-                    overwrite,
-                } => {
-                    let job = match compiled.as_ref() {
-                        Some((compiled_revision, prepared)) if *compiled_revision == revision => {
-                            hex_export::controlled_frame_count(
-                                prepared.arrangement(),
-                                start,
-                                frames,
-                                &signal,
-                            )
-                            .map_err(|error| error.to_string())
-                            .map(|frames| ExportJob {
-                                job_id: 0,
-                                streamed: None,
-                                sources: None,
-                                resources: None,
-                                revision,
-                                path: path.clone(),
-                                prepared: Arc::clone(prepared),
-                                frames,
-                                controlled: Some((start, signal, control, overwrite)),
-                            })
-                        }
-                        _ => Err("latest project revision has not compiled".to_owned()),
-                    }
-                    .and_then(|mut job| {
-                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
-                            || job.prepared.arrangement().contains_streamed_sources()
-                        {
-                            job.streamed = Some(streamed_export::StreamedExportJob::capture(
-                                &session,
-                                &state.project,
-                                project_generation,
-                                revision,
-                                events.streamed_exporter(),
-                            )?);
-                        }
-                        Ok(job)
-                    });
-                    match job {
-                        Ok(job) => {
-                            status = Some("export queued".into());
-                            export_job = Some(job);
-                        }
-                        Err(reason) => {
-                            export_completion = Some(ExportEvent {
-                                revision,
-                                path,
-                                result: Err(reason),
-                            })
+                        .and_then(|mut job| {
+                            if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                                || job.prepared.arrangement().contains_streamed_sources()
+                            {
+                                job.streamed = Some(streamed_export::StreamedExportJob::capture(
+                                    &session,
+                                    &state.project,
+                                    project_generation,
+                                    revision,
+                                    events.streamed_exporter(),
+                                )?);
+                            }
+                            Ok(job)
+                        });
+                        match job {
+                            Ok(job) => {
+                                status = Some("export queued".into());
+                                export_job = Some(job);
+                            }
+                            Err(reason) => {
+                                export_completion = Some(ExportEvent {
+                                    revision,
+                                    path,
+                                    result: Err(reason),
+                                })
+                            }
                         }
                     }
                 }
@@ -7609,27 +7630,33 @@ fn run_export_worker(
                         )
                     })
                     .map_err(|e| e.to_string())
-            } else if let Some((start, signal, control, overwrite)) = job.controlled {
+            } else {
+                // Every service request carries controlled parts; a bare job
+                // renders as the automatic whole-project Main export.
+                let (start, signal, control, overwrite) = job.controlled.unwrap_or_else(|| {
+                    (
+                        0,
+                        hex_export::ExportSignal::Main,
+                        hex_export::ExportControl::default(),
+                        false,
+                    )
+                });
                 let policy = if overwrite {
                     hex_export::Publication::confirmed_save(&job.path)
                 } else {
                     Ok(hex_export::Publication::CreateNew)
                 };
-                policy
-                    .and_then(|policy| {
-                        hex_export::render_prepared_with_policy(
-                            &job.path,
-                            job.prepared,
-                            start,
-                            job.frames,
-                            signal,
-                            &control,
-                            &policy,
-                        )
-                    })
-                    .map_err(|e| e.to_string())
-            } else {
-                exporter(&job.path, &job.prepared, 0, job.frames)
+                policy.map_err(|e| e.to_string()).and_then(|policy| {
+                    exporter(
+                        &job.path,
+                        &job.prepared,
+                        start,
+                        job.frames,
+                        signal,
+                        &control,
+                        &policy,
+                    )
+                })
             };
             (
                 job.job_id,
@@ -7953,6 +7980,8 @@ mod browser_instrument_tests;
 #[cfg(test)]
 mod clip_move_tests;
 #[cfg(test)]
+mod clip_paste_tests;
+#[cfg(test)]
 #[path = "service/track_reorder_tests.rs"]
 mod track_reorder_tests;
 
@@ -7998,13 +8027,13 @@ mod service_tests {
                 start_playing: true,
             })
             .expect("admit seek");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         let result = loop {
             if let Some(result) = service.try_arrangement_seek_result() {
                 break result;
             }
             assert!(Instant::now() < deadline, "seek result did not arrive");
-            thread::yield_now();
+            crate::test_wait::pause();
         };
         assert_eq!(result.request_id, request_id);
         assert_eq!(result.mode, ArrangementSeekMode::LinearArrangement);
@@ -8046,7 +8075,7 @@ mod service_tests {
                 start_playing: false,
             })
             .expect("admit interactive seek");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         let result = loop {
             if let Some(result) = service.try_arrangement_seek_result() {
                 break result;
@@ -8055,7 +8084,7 @@ mod service_tests {
                 Instant::now() < deadline,
                 "interactive seek did not complete"
             );
-            thread::yield_now();
+            crate::test_wait::pause();
         };
         assert_eq!(result.request_id, request_id);
         assert_eq!(result.mode, ArrangementSeekMode::Interactive);
@@ -8166,13 +8195,13 @@ mod service_tests {
                 start_playing: false,
             })
             .expect("admit stateful interactive seek");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         let result = loop {
             if let Some(result) = service.try_arrangement_seek_result() {
                 break result;
             }
             assert!(Instant::now() < deadline, "stateful seek did not complete");
-            thread::yield_now();
+            crate::test_wait::pause();
         };
         assert_eq!(result.request_id, request_id);
         assert_eq!(result.mode, ArrangementSeekMode::Interactive);
@@ -10298,7 +10327,7 @@ mod service_tests {
         );
         assert_eq!(
             next_export_event(&service).result.unwrap_err(),
-            "nothing to export"
+            "invalid wav export: invalid export range"
         );
         let replace_key = GestureKey {
             generation: 1,
@@ -11162,26 +11191,21 @@ mod service_tests {
         assert_eq!(retried.state.project.tracks()[0].midi_clips().len(), 2);
     }
 
+    #[track_caller]
     pub(super) fn next_event(service: &Service) -> Event {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            match service.try_event() {
-                Ok(event) => return event,
-                Err(TryRecvError::Empty) if Instant::now() < deadline => {
-                    thread::yield_now();
-                }
-                Err(error) => panic!("service event did not arrive: {error}"),
-            }
+        match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+            Ok(event) => event,
+            Err(error) => panic!("service event did not arrive: {error}"),
         }
     }
 
     fn next_export_event(service: &Service) -> ExportEvent {
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         loop {
             match service.try_export_event() {
                 Ok(event) => return event,
                 Err(TryRecvError::Empty) if Instant::now() < deadline => {
-                    thread::yield_now();
+                    crate::test_wait::pause();
                 }
                 Err(error) => panic!("export event did not arrive: {error}"),
             }
@@ -11316,13 +11340,24 @@ mod service_tests {
         let exporter: Exporter = {
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
-            Arc::new(move |path, project, start, frames| {
-                entered.wait();
-                release.wait();
-                hex_export::render_prepared_new(path, Arc::clone(project), start, frames).map_err(
-                    |error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()),
-                )
-            })
+            Arc::new(
+                move |path, project, start, frames, signal, control, publication| {
+                    entered.wait();
+                    release.wait();
+                    hex_export::render_prepared_with_policy(
+                        path,
+                        Arc::clone(project),
+                        start,
+                        frames,
+                        signal,
+                        control,
+                        publication,
+                    )
+                    .map_err(|error| {
+                        hex_storage::text::lowercase_outside_verbatim(&error.to_string())
+                    })
+                },
+            )
         };
         let service = Service::with_exporter(48_000, 16, 8, exporter).expect("service");
         let _ = next_event(&service);
@@ -11443,9 +11478,55 @@ mod service_tests {
         assert_eq!(result.path, path);
         assert_eq!(
             result.result.expect_err("empty project refusal"),
-            "nothing to export"
+            "invalid wav export: invalid export range"
         );
         assert!(!result.path.exists());
+    }
+
+    #[test]
+    fn whole_project_export_matches_automatic_export_range_including_effect_tail() {
+        let directory = TestDir::new();
+        let source = directory.0.join("tail.wav");
+        fs::write(&source, wav_mono(&[16_384, -8_192])).unwrap();
+        let service = Service::new(48_000, 8, 8).unwrap();
+        next_event(&service);
+        service.submit(Request::Import(source)).unwrap();
+        let track = next_event(&service).state.project.tracks()[0].id();
+        let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+            "hex.reverb",
+        ))
+        .unwrap();
+        service
+            .submit(Request::Edit(Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            }))
+            .unwrap();
+        assert!(next_event(&service).error.is_none());
+        let whole = directory.0.join("whole.wav");
+        service.submit(Request::Export(whole.clone())).unwrap();
+        next_event(&service);
+        let exported = next_export_event(&service).result.unwrap();
+        let range = directory.0.join("range.wav");
+        service
+            .submit(Request::ExportRange {
+                path: range.clone(),
+                start: 0,
+                frames: None,
+                signal: ExportSignal::Main,
+                control: ExportControl::default(),
+                overwrite: false,
+            })
+            .unwrap();
+        next_event(&service);
+        let ranged = next_export_event(&service).result.unwrap();
+        // The automatic range drains the reverb's declared tail past the 2-frame clip.
+        assert!(exported.frames > 2, "{}", exported.frames);
+        assert_eq!(exported.frames, ranged.frames);
+        let bytes = fs::read(whole).unwrap();
+        assert_eq!(bytes.len() as u64, 44 + exported.frames * 4);
+        assert_eq!(bytes, fs::read(range).unwrap());
     }
 
     #[test]
@@ -11456,10 +11537,10 @@ mod service_tests {
         let service = Service {
             diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
-            requests: request_cancellation::Sender::new(
+            requests: Some(request_cancellation::Sender::new(
                 requests,
                 Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            ),
+            )),
             events: diagnostics::EventReceiver::new(
                 events,
                 Arc::new(diagnostics::Hooks::default()),
@@ -11471,7 +11552,7 @@ mod service_tests {
             resident_seek_results: None,
             resident_seek_count: AtomicUsize::new(0),
             recovery_slot: None,
-            _worker: thread::spawn(|| {}),
+            worker: Some(thread::spawn(|| {})),
         };
         assert!(matches!(
             service.submit(Request::Export(PathBuf::from("busy.wav"))),
@@ -12188,7 +12269,7 @@ mod service_tests {
         let exporter: Exporter = {
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
-            Arc::new(move |path, project, _, frames| {
+            Arc::new(move |path, project, _, frames, _, _, _| {
                 entered.wait();
                 release.wait();
                 let _ = finished_sender.send(());

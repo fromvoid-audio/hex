@@ -207,6 +207,9 @@ pub(super) struct BrowserState {
     places_save_in_flight: bool,
     folder_bookmark_pending: bool,
     pending_places_save: Option<BrowserPlaces>,
+    /// Latest failure from a save that a queued save followed; reported when
+    /// the save chain ends so a later success cannot hide it.
+    unreported_places_save_error: Option<String>,
     pub(super) places_status: Option<String>,
     samples: samples::SampleBrowser,
     plugins: plugins::Plugins,
@@ -293,6 +296,7 @@ impl BrowserState {
             places_save_in_flight: false,
             folder_bookmark_pending: false,
             pending_places_save: None,
+            unreported_places_save_error: None,
             places_status: None,
             samples: samples::SampleBrowser::default(),
             plugins: plugins::Plugins::default(),
@@ -333,6 +337,12 @@ impl BrowserState {
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn test_preferences_path(&self) -> &std::path::Path {
         &self.preferences_path
+    }
+
+    /// Redirects later saves; an in-flight save keeps its captured path.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn set_test_preferences_path(&mut self, path: PathBuf) {
+        self.preferences_path = path;
     }
 
     #[cfg(feature = "ui-test-support")]
@@ -666,14 +676,25 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         self.browser.places_save_in_flight = false;
+        let error = result
+            .err()
+            .map(|error| places_error("could not save browser places", &error));
         if self.browser.pending_places_save.is_some() {
+            // A queued save supersedes the data, not the user's notice: show
+            // the failure now and keep the latest one until it is reported.
+            if let Some(error) = error {
+                self.browser.places_status = Some(error.clone());
+                self.browser.unreported_places_save_error = Some(error);
+            }
             self.start_browser_places_save(cx);
-        } else {
-            self.browser.places_status = Some(match result {
-                Ok(()) => "browser places saved".into(),
-                Err(error) => places_error("could not save browser places", &error),
-            });
+            return;
         }
+        let earlier = self.browser.unreported_places_save_error.take();
+        self.browser.places_status = Some(match (error, earlier) {
+            (Some(error), _) => error,
+            (None, Some(earlier)) => format!("{earlier} · a later save succeeded"),
+            (None, None) => "browser places saved".into(),
+        });
     }
 
     fn select_browser_source(&mut self, source: BrowserSection, cx: &mut Context<Self>) {

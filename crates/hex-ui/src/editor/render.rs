@@ -1378,6 +1378,10 @@ impl Render for EditorView {
                             view.midi_selection.clear();
                         }
                     }
+                    // A focused track header owns Delete; a clip selection
+                    // retained beside it is never its target.
+                    Some(super::session_grid::DeleteTarget::ArrangementClip(_))
+                        if view.track_header_focused(window) => {}
                     Some(super::session_grid::DeleteTarget::ArrangementClip(clip)) => {
                         let command = if view.selected_midi_clip_data().is_some() {
                             Command::RemoveMidiClip(clip)
