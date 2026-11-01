@@ -186,7 +186,13 @@ fn sampler_history_stale_cancel_playing_and_cancel_after_seal_preserve_history_a
     ));
     assert_eq!(h.render()[0], [0.0625, -0.125]);
     let refused = h.next();
-    assert!(refused.error.as_ref().unwrap().contains("stop playback"));
+    assert!(
+        refused
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("sampler edit audio changed")
+    );
     gain::unchanged(&before, &refused);
     h.audio.as_ref().unwrap().control.stop();
     h.render();
