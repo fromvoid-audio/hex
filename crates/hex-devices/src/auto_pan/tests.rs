@@ -655,10 +655,11 @@ fn shape_changes_crossfade_independent_steady_streams_without_clock_reset_or_blo
 #[test]
 fn shape_codec_semantics_preview_and_rapid_retarget_remain_validated() {
     let base = AUTO_PAN_DEFINITION.default_state().unwrap();
+    // v1 decodes (crate::state_migration_tests); its values are still validated.
     let legacy = NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, vec![0; 12]).unwrap();
     assert_eq!(
         AUTO_PAN_DEFINITION.migrate_state(&legacy),
-        Err(DeviceContractError::UnsupportedStateVersion)
+        Err(DeviceContractError::InvalidParameterValue)
     );
     for value in [
         ParameterValue::Choice(5),
@@ -818,4 +819,40 @@ fn wrapped_and_inflight_phase_retargets_follow_the_shortest_pcm_arc() {
             }
         }
     }
+}
+
+/// Historical states keep opening (Pulse #3956). The v1 layout (12 bytes)
+/// comes from commit 65e935227.
+#[test]
+fn auto_pan_v1_state_migrates_to_a_sine_waveform() {
+    let payload = [0.75_f32, 2.0, 90.0]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    let v1 = NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, payload).unwrap();
+    let registry = crate::native_registry().unwrap();
+    let migrated = registry.migrate_state(&v1).unwrap();
+    assert_eq!(
+        registry.migrate_state(&migrated).unwrap(),
+        migrated,
+        "idempotent"
+    );
+    assert_eq!(migrated.state_version(), AUTO_PAN_STATE_VERSION);
+    let read = |id| AUTO_PAN_DEFINITION.read_parameter(&migrated, id).unwrap();
+    assert_eq!(read(parameter::AMOUNT), ParameterValue::Float(0.75));
+    assert_eq!(
+        read(parameter::WAVEFORM),
+        ParameterValue::Choice(0),
+        "v1 was a sine LFO"
+    );
+    assert_eq!(
+        AUTO_PAN_DEFINITION
+            .migrate_state(&NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, vec![0; 16]).unwrap()),
+        Err(DeviceContractError::MalformedState)
+    );
+    assert_eq!(
+        AUTO_PAN_DEFINITION
+            .migrate_state(&NativeDeviceState::new(AUTO_PAN_TYPE_ID, 3, vec![0; 16]).unwrap()),
+        Err(DeviceContractError::UnsupportedStateVersion)
+    );
 }

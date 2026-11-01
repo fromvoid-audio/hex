@@ -475,7 +475,57 @@ impl Inputs<'_> {
         policy: ResidentPublicationPolicy,
         section_loop: Option<hex_project::LoopRegion>,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let mut playback = playback_with_loop(snapshot, section_loop)?;
+        let playback = playback_with_loop(snapshot, section_loop)?;
+        self.publish_tagged_playback(snapshot, project, sink, metadata, policy, playback)
+    }
+    /// An in-place bounce (or its Undo/Redo) adopts at the callback witness.
+    /// Stopped keeps the raw cursor; playing restarts audio live at the cursor,
+    /// so neither carried voices nor detached tails duplicate the baked PCM.
+    fn publish_fenced_bounce(
+        &self,
+        snapshot: &mut Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        context: hex_engine::AudioSourceContext,
+        position: ArrangementEditPosition,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        if !position.playing {
+            return self.publish_stopped_at_frame(snapshot, project, sink, context, position.frame);
+        }
+        let mut playback = playback_with_loop(snapshot, position.section_loop)?;
+        if !playback.request_live_restart() {
+            return Err(SessionError::Invalid(
+                "bounce in place has no live runtime to restart",
+            ));
+        }
+        let requires_preroll = snapshot.prepared.arrangement_seek_requires_preroll();
+        self.publish_tagged_playback(
+            snapshot,
+            project,
+            sink,
+            ResidentPublicationMetadata {
+                context,
+                device_preview: None,
+                tuning_preview: None,
+                seek_request: None,
+                stopped_restore: false,
+                computer_keyboard_request: None,
+                gain_recording_track: None,
+                requires_preroll,
+            },
+            ResidentPublicationPolicy::ArrangementEdit,
+            playback,
+        )
+    }
+    fn publish_tagged_playback(
+        &self,
+        snapshot: &mut Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+        mut playback: Playback,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
         let previous = snapshot.inputs.clone();
         let mut selected = previous.clone();
         selected.attach(project, &mut playback)?;
@@ -918,17 +968,30 @@ pub(super) fn prepare_import(
 ) -> Result<Snapshot, SessionError> {
     prepare_bounce_import(input, context, sink, admission, current, None, admit)
 }
-/// An in-place bounce uses the already-acquired stopped lease and a fresh
-/// reconstructed runtime, so carried live voices cannot duplicate baked tails.
+/// An in-place bounce passes the applied source context it fences after its
+/// render. The lease admits playing (Pulse #3784): a stopped witness keeps the
+/// raw cursor and a playing one restarts audio at the cursor, so carried live
+/// voices cannot duplicate baked tails. The caller cancels it on failure.
 pub(super) fn prepare_bounce_import(
     input: crate::import_batch::Preparation<'_>,
     context: hex_engine::AudioSourceContext,
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
     current: Option<&Snapshot>,
-    stopped: Option<u64>,
+    fence: Option<hex_engine::AudioSourceContext>,
     admit: &mut dyn FnMut() -> Result<(), SessionError>,
 ) -> Result<Snapshot, SessionError> {
+    let position = fence
+        .map(|source| {
+            crate::service::stopped_arrangement::acquire_position(
+                sink,
+                source,
+                input.shutdown,
+                None,
+                true,
+            )
+        })
+        .transpose()?;
     let inputs = Inputs {
         plugin_effect: None,
         restoring_plugin_state: false,
@@ -955,8 +1018,8 @@ pub(super) fn prepare_bounce_import(
         context,
     )?;
     admit()?;
-    if let Some(frame) = stopped {
-        inputs.publish_stopped_at_frame(&mut snapshot, input.project, sink, context, frame)?;
+    if let Some(position) = position {
+        inputs.publish_fenced_bounce(&mut snapshot, input.project, sink, context, position)?;
     } else {
         inputs.publish(&mut snapshot, input.project, sink, context)?;
     }
@@ -1177,7 +1240,7 @@ enum Transition {
     },
     BounceHistory {
         redo: bool,
-        frame: u64,
+        position: ArrangementEditPosition,
     },
 }
 
@@ -1762,17 +1825,17 @@ impl Session {
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
     }
-    pub(super) fn stopped_bounce_history_snapshot(
+    pub(super) fn bounce_history_snapshot(
         &mut self,
         redo: bool,
-        frame: u64,
+        position: ArrangementEditPosition,
         context: hex_engine::AudioSourceContext,
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
         self.resident_transition(
-            Transition::BounceHistory { redo, frame },
+            Transition::BounceHistory { redo, position },
             context,
             sink,
             admission,
@@ -2138,8 +2201,8 @@ impl Session {
         let table = self.sine_table();
         let transforms = &self.audio_transforms;
         let waveforms = &self.audio_clip_waveforms;
-        let stopped_bounce_frame = match &transition {
-            Transition::BounceHistory { frame, .. } => Some(*frame),
+        let bounce_position = match &transition {
+            Transition::BounceHistory { position, .. } => Some(*position),
             _ => None,
         };
         let stopped_cursor = match &transition {
@@ -2181,8 +2244,8 @@ impl Session {
             )?;
             let publish_started = Instant::now();
             prepare_time = publish_started - prepare_started;
-            if let Some(frame) = stopped_bounce_frame {
-                inputs.publish_stopped_at_frame(&mut snapshot, project, sink, context, frame)?;
+            if let Some(position) = bounce_position {
+                inputs.publish_fenced_bounce(&mut snapshot, project, sink, context, position)?;
             } else if let Some(cursor) = stopped_cursor {
                 inputs.publish_stopped_section(&mut snapshot, project, sink, context, cursor)?;
             } else if section_transition {

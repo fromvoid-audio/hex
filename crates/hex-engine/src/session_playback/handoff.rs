@@ -345,6 +345,9 @@ impl SessionPlayback {
         mut demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         live: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if live && self.live_restart && self.candidate_admission_open {
+            return self.inherit_state_planned_once(previous, None, demand, true);
+        }
         match self.inherit_state_planned_once(previous, groups, demand.as_deref_mut(), false) {
             // An open admission proves the refusal came from the pure
             // preflight: neither runtime changed, so the reset handoff may
