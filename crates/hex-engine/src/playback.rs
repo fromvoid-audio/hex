@@ -999,7 +999,11 @@ impl Playback {
         let prepared_revision = Arc::clone(runtime.prepared_revision());
         let project = Arc::clone(prepared_revision.arrangement());
         let metronome = (!runtime.is_linear_arrangement_export())
-            .then(|| Metronome::prepare(project.sample_rate()).ok().map(Box::new))
+            .then(|| {
+                Metronome::prepare(project.sample_rate(), project.main_latency_frames())
+                    .ok()
+                    .map(Box::new)
+            })
             .flatten();
         let position = runtime.arrangement_frame();
         let performance_frame = runtime.performance_frame();
@@ -1035,7 +1039,9 @@ impl Playback {
         session_unavailable: Option<crate::SessionPlaybackError>,
     ) -> Self {
         let project = Arc::clone(prepared_revision.arrangement());
-        let metronome = Metronome::prepare(project.sample_rate()).ok().map(Box::new);
+        let metronome = Metronome::prepare(project.sample_rate(), project.main_latency_frames())
+            .ok()
+            .map(Box::new);
         let refuses_unowned_prepared_fallback = session_runtime.is_none()
             && session_unavailable.is_some()
             && (prepared_revision.session().has_mutable_instruments()

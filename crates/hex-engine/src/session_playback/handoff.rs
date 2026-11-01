@@ -2418,6 +2418,9 @@ impl SessionPlayback {
             } else if shared_sources::track_has_analytic_source(&self.revision, new_index) {
                 // Re-enabling an instrument must not chase notes already in
                 // progress; exact-boundary and later onsets remain eligible.
+                // The loop wrap ends this pass: the next pass is a new onset
+                // and must sound (Pulse #4124). `until_wrap` bounds it at the
+                // candidate wrap, measured from the candidate cut.
                 let mut failure = None;
                 new_track
                     .for_each_active_midi_span(new_cut_frame, |span, _| {
@@ -2427,6 +2430,7 @@ impl SessionPlayback {
                         let until_frame = match previous
                             .performance_frame
                             .checked_add(span.end.saturating_sub(new_cut_frame))
+                            .map(until_wrap)
                         {
                             Some(frame) => frame,
                             None => {
