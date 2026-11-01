@@ -181,6 +181,38 @@ def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
     return result
 
 
+# Merge test-execution budget (user policy, 1 November 2026): owner-boundary
+# merge checks keep test setup and execution, excluding Cargo's build phase,
+# under one minute. Carried steps cost nothing in this run and are excluded.
+MERGE_TEST_BUDGET_SECONDS = 60.0
+
+
+def merge_test_budget(entries: list, reason: str | None) -> dict:
+    """Test-only seconds of executed test steps: wall time minus the build phase.
+
+    Harness overhead and doctest compilation count as test time, so this is a
+    conservative upper bound. Lint, format and build-only steps are excluded.
+    """
+    spent = []
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("execution") == "carried":
+            continue
+        timing = entry.get("timing_estimates") or {}
+        argv = tuple(entry.get("argv") or ())
+        tests = (runs_rust_tests(argv) or timing.get("rust_harness_seconds") is not None
+                 or timing.get("python_harness_seconds") is not None)
+        if not tests or not isinstance(entry.get("duration_seconds"), (int, float)):
+            continue
+        seconds = max(0.0, entry["duration_seconds"] - (timing.get("cargo_build_phase_seconds") or 0.0))
+        spent.append((round(seconds, 3), entry.get("step_id")))
+    total = round(sum(seconds for seconds, _ in spent), 3)
+    return {"limit_seconds": MERGE_TEST_BUDGET_SECONDS, "test_seconds": total,
+            "exceeded": total > MERGE_TEST_BUDGET_SECONDS,
+            "slowest": [{"step_id": step, "seconds": seconds}
+                        for seconds, step in sorted(spent, reverse=True)[:3]],
+            "over_budget_reason": reason}
+
+
 def edit_selection(inventory: list[dict], *, package: str, test_filter: str,
                    features: str = "", lib: bool = False, test: str | None = None) -> dict:
     """Validate an explicit edit target; omissions keep Cargo's package-wide behavior."""
@@ -229,18 +261,20 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     if any(path.endswith(("Cargo.toml", "/build.rs")) for path in plan.get("paths", [])):
         steps.append(next(s for s in FULL_STEPS if s.step_id == "dependency-future-lints"))
     tests = boundary["tests"]
+    # Owners test; every affected consumer still compiles and lints below.
+    tested = boundary.get("test_packages", [])
     if boundary["kind"] == "packages":
-        if sorted(boundary["test_packages"]) != sorted(affected) or tests:
-            raise ValueError("package boundary must test every affected consumer")
+        if not tested or set(tested) - set(affected) or tests:
+            raise ValueError("package boundary must test its owners within the affected closure")
         # Reviewed additive test features run once, with the feature (below);
         # their doctests stay here because --all-targets feature runs omit them.
         single = boundary.get("single_run", {})
-        defaults = tuple(arg for p in affected if p not in single for arg in ("-p", p))
+        defaults = tuple(arg for p in tested if p not in single for arg in ("-p", p))
         if defaults:
             steps.append(Step("affected-tests", ("cargo", "test", *defaults, "--locked")))
         if single:
             steps.append(Step("single-run-doctests", ("cargo", "test", "--doc",
-                                                      *(arg for p in affected if p in single for arg in ("-p", p)),
+                                                      *(arg for p in tested if p in single for arg in ("-p", p)),
                                                       "--locked")))
     elif boundary["kind"] == "compressor":
         if not tests:
@@ -269,7 +303,9 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         if "--features" not in step.argv:
             continue
         owners = [step.argv[i + 1] for i, arg in enumerate(step.argv) if arg == "-p"]
-        selected = [p for p in owners if p in affected]
+        # Feature test suites run for tested owners; feature lints for every consumer.
+        scope = tested if runs_rust_tests(step.argv) else affected
+        selected = [p for p in owners if p in scope]
         if not selected or boundary["kind"] == "compressor" and runs_rust_tests(step.argv):
             continue
         argv = list(step.argv)
@@ -286,13 +322,13 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         # need reviewed configuration rules rather than a guessed power set.
         # Compressor plans run reviewed contract tests, but still lint every
         # extra configuration so an unexercised cfg branch cannot stop compiling.
-        commands = ("clippy",) if boundary["kind"] == "compressor" else ("test", "clippy")
+        commands = ("clippy",) if boundary["kind"] == "compressor" or package["name"] not in tested else ("test", "clippy")
         for index, feature in enumerate(sorted(extra)):
             for command in commands:
                 steps.append(Step(f"feature-{command}-{package['name']}-{index}",
                                   ("cargo", command, "-p", package["name"], "--features", feature, "--all-targets", "--locked",
                                    *(("--", "-D", "warnings") if command == "clippy" else ()))))
-    if "hex-desktop" in affected:
+    if "hex-desktop" in (tested if boundary["kind"] == "packages" else affected):
         steps.append(next(s for s in FULL_STEPS if s.step_id == "desktop-build"))
     return tuple(steps)
 
@@ -559,8 +595,10 @@ class LocalCiRunner:
         plan: dict | None = None,
         resume_report: Path | None = None,
         carry_report: Path | None = None,
+        over_budget_reason: str | None = None,
     ) -> None:
         self.root = root.resolve()
+        self.over_budget_reason = over_budget_reason
         default_floor = DEFAULT_FULL_MIN_FREE_BYTES if mode in {"full", "merge", "release"} else 0
         self.min_free_bytes = default_floor if min_free_bytes is None else min_free_bytes
         if (
@@ -2100,6 +2138,11 @@ class LocalCiRunner:
                     except (ValueError, OSError, KeyError, TypeError) as error:
                         self.summary["resume_error"] = str(error)
                         failed = True
+                if self.mode == "merge" and not failed:
+                    budget = merge_test_budget(self.summary["steps"], self.over_budget_reason)
+                    self.summary["test_budget"] = budget
+                    if budget["exceeded"] and not self.over_budget_reason:
+                        failed = True
                 partial = self.mode == "quick" or self.plan and not self.plan["qualifies_merge"]
                 self.summary["verification_status"] = "failed" if failed else ("partial" if partial else "passed")
                 self.summary["status"] = self.summary["verification_status"]
@@ -2229,6 +2272,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source", help="exact current candidate commit for scoped checks")
     parser.add_argument("--reuse-report", type=Path,
                         help="explicit prior runtime certificate for a prose-only continuation")
+    parser.add_argument("--over-budget-reason",
+                        help="record why a merge run may exceed the one-minute test budget (cite the Pulse issue)")
     parser.add_argument("--carry-report", type=Path,
                         help="after merging a newer base, reuse unaffected steps of this passed merge summary")
     parser.add_argument("--resume-report", type=Path,
@@ -2305,6 +2350,7 @@ def main(argv: list[str] | None = None) -> int:
         plan=plan,
         resume_report=arguments.resume_report,
         carry_report=arguments.carry_report,
+        over_budget_reason=arguments.over_budget_reason,
     )
     try:
         exit_code = runner.run()
@@ -2317,6 +2363,14 @@ def main(argv: list[str] | None = None) -> int:
     carried = [s for s in runner.summary.get("steps", []) if isinstance(s, dict) and s.get("execution") == "carried"]
     if carried:
         print(f"{len(carried)} step(s) carried from {runner.summary['carry']['report']}, not re-executed")
+    budget = runner.summary.get("test_budget")
+    if isinstance(budget, dict) and budget.get("exceeded"):
+        slowest = ", ".join(f"{s['step_id']} {s['seconds']:.0f}s" for s in budget["slowest"])
+        verdict = (f"accepted: {budget['over_budget_reason']}" if budget.get("over_budget_reason") else
+                   "fails merge; narrow the owner boundary or speed up the slowest suites, "
+                   "or rerun with --over-budget-reason and file the slow suite in Pulse")
+        print(f"merge test time {budget['test_seconds']:.0f}s exceeds the "
+              f"{budget['limit_seconds']:.0f}s budget ({slowest}); {verdict}", file=sys.stderr)
     print(f"local ci {runner.summary['status']}: {runner.summary_path}")
     if mode == "health" and runner.summary["status"] == "failed":
         print(f"main is red after merge {plan['source']}: owning checks did not pass; "
