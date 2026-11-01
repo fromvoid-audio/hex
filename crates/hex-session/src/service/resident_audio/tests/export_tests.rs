@@ -3,7 +3,10 @@ use super::*;
 use std::time::Instant;
 
 fn receive(service: &Service) -> Event {
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap()
 }
 fn run(service: &Service, request: Request) -> Event {
     service.submit(request).unwrap();
@@ -153,7 +156,7 @@ fn ordinary_export_source_remains_charged_through_new_cancel_and_physical_comple
         release.send(()).unwrap();
         // Only the real worker's post-drop terminal (consumed by canonical control)
         // can release A. Do not poll the public ExportEvent before admission succeeds.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         loop {
             service.submit(import()).unwrap();
             let imported = receive(&service);
@@ -167,7 +170,7 @@ fn ordinary_export_source_remains_charged_through_new_cancel_and_physical_comple
         }
         let exported = service
             .export_events
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(crate::test_wait::HANG_BOUND)
             .unwrap();
         assert_eq!(exported.result.is_err(), cancel);
         if cancel {
