@@ -274,6 +274,20 @@ checks. Record the scope, exact source/base, commands, results and omissions wit
 reasons in the canonical PR. A small diff or passing mock alone does not establish
 isolation; tests do not mathematically guarantee unrelated code.
 
+Owner boundaries carry merge verification (user decision, 1 November 2026). A
+merge runs the test suites of the packages that own the change, plus reviewed
+runtime consumers with no Cargo edge. Every Cargo consumer must still compile and
+lint, but consumer test suites are not rerun. Rely on the owner's boundary tests
+to guarantee behaviour downstream. When a consumer later breaks, the defect is a
+missing owner boundary test: add the regression at the owner instead of widening
+merge checks. Within an owner crate, merges test only the changed modules'
+own test subtrees (a module without tests falls back to its nearest tested
+ancestor), so give each module its own boundary tests and split large modules
+along their responsibilities. Keep each merge's test setup and execution,
+excluding build time, under one minute. `scripts/local-ci.py --profile merge` enforces this budget (see
+`docs/local-ci.md`). An over-budget owner suite is a test-design bug: record it in
+Pulse and pass its reason with `--over-budget-reason` until it is fixed.
+
 Broaden only for a documented concrete impact or unresolved risk. Explain unknown
 selection, then resolve it by inspecting owners/consumers or conservatively check
 the uncertain area. Never silently count an unknown omission as covered. Neither

@@ -83,7 +83,10 @@ pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 mod stopped_playback_tests;
 use hex_storage::FileToken;
 use recovery::absolute_document_path;
-pub use recovery::{ProjectSource, RecoveryFailure, RecoveryRestart, untitled_recovery_path};
+pub use recovery::{
+    LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart, kept_journal,
+    leftover_recovery, untitled_recovery_path,
+};
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -969,6 +972,7 @@ pub struct Service {
     arrangement_seek: Option<ArrangementSeekWorker>,
     resident_seek_results: Option<Receiver<ResidentArrangementSeekResult>>,
     resident_seek_count: AtomicUsize,
+    recovery_slot: Option<PathBuf>,
     _worker: JoinHandle<()>,
 }
 
@@ -1186,6 +1190,7 @@ impl Service {
         native: Option<crate::ResidentNativeReservation>,
         overview_budget: crate::source_overview::OverviewBudget,
     ) -> Result<Self, ServiceError> {
+        let recovery_slot = recovery.clone();
         let shutdown = Arc::new(AtomicBool::new(false));
         let session = if audio.is_none() {
             Some(
@@ -1333,6 +1338,7 @@ impl Service {
             arrangement_seek,
             resident_seek_results: Some(seek_results_rx),
             resident_seek_count: AtomicUsize::new(0),
+            recovery_slot,
             _worker: worker,
         })
     }
@@ -1442,6 +1448,11 @@ impl Service {
     }
 
     /// Poll for one committed state or operation result without waiting.
+    /// The untitled automatic-recovery slot, when this service checkpoints one.
+    pub fn recovery_slot(&self) -> Option<&Path> {
+        self.recovery_slot.as_deref()
+    }
+
     pub fn try_event(&self) -> Result<Event, TryRecvError> {
         self.events.try_recv()
     }
@@ -1662,6 +1673,56 @@ struct SaveCurrentCommit {
     dirty: bool,
     status: &'static str,
     error: Option<String>,
+}
+
+/// Save As: create `path`, or replace it when it already exists. The UI only
+/// sends an existing path after the OS replace prompt for that exact path.
+/// Both outcomes bind the document, including a published file whose
+/// durability could not be confirmed, so the next Save replaces it in place.
+fn save_document_as(
+    path: PathBuf,
+    project: &hex_project::Project,
+) -> Result<(DocumentHandle, SaveCurrentCommit), String> {
+    let lower = |error: hex_storage::StorageError| error.to_string().to_lowercase();
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => {
+            let outcome = hex_storage::replace_confirmed(&path, project).map_err(lower)?;
+            let mut handle = DocumentHandle {
+                path,
+                token: outcome.token.clone(),
+            };
+            let commit = apply_current_save_outcome(&mut handle, outcome);
+            Ok((handle, commit))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let outcome = hex_storage::save_new_with_outcome(&path, project).map_err(lower)?;
+            let commit = match outcome.warning {
+                Some(warning) => SaveCurrentCommit {
+                    dirty: true,
+                    status: "project was published, but durability could not be confirmed",
+                    error: Some(format!(
+                        "complete project was published at {}, but could not {}: {}",
+                        outcome.path.display(),
+                        warning.operation,
+                        warning.source
+                    )),
+                },
+                None => SaveCurrentCommit {
+                    dirty: false,
+                    status: "project saved",
+                    error: None,
+                },
+            };
+            Ok((
+                DocumentHandle {
+                    path: outcome.path,
+                    token: outcome.token,
+                },
+                commit,
+            ))
+        }
+        Err(error) => Err(error.to_string().to_lowercase()),
+    }
 }
 
 fn apply_current_save_outcome(
@@ -5938,10 +5999,11 @@ fn run_worker(
                         events.sampler_edit_audio(),
                     ) {
                         Ok(project) => match absolute_document_path(&path) {
-                            Ok(path) => match hex_storage::save_new_with_token(&path, &project) {
-                                Ok(token) => {
-                                    document = Some(DocumentHandle { path, token });
-                                    unsaved = false;
+                            Ok(path) => match save_document_as(path, &project) {
+                                Ok((handle, commit)) => {
+                                    document = Some(handle);
+                                    unsaved = commit.dirty;
+                                    error = commit.error;
                                     state = view_state_bound(
                                         &session,
                                         Arc::clone(&midi_preview),
@@ -5953,9 +6015,9 @@ fn run_worker(
                                             (Arc::clone(source), state.comparison_audio.clone())
                                         }),
                                     );
-                                    status = Some("project saved".into());
+                                    status = Some(commit.status.into());
                                 }
-                                Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                                Err(reason) => error = Some(reason),
                             },
                             Err(reason) => error = Some(reason),
                         },
@@ -11092,6 +11154,49 @@ mod service_tests {
     }
 
     #[test]
+    fn save_as_onto_an_existing_project_replaces_it_and_binds_the_document() {
+        let directory = TestDir::new();
+        let existing = directory.0.join("existing.hex");
+        let previous = Project::new(44_100).expect("previous project");
+        hex_storage::save_new(&existing, &previous).expect("existing project");
+        let foreign = directory.0.join("notes.hex");
+        fs::write(&foreign, b"not a hex project").expect("foreign file");
+
+        let service = Service::new(48_000, 32, 8_000_000).expect("service");
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "replacing".into(),
+            }))
+            .unwrap();
+        let edited = next_event(&service);
+
+        service.submit(Request::SaveNew(foreign.clone())).unwrap();
+        let refused = next_event(&service);
+        let reason = refused.error.expect("non-project destination refused");
+        assert!(reason.contains("choose another name"), "{reason}");
+        assert_eq!(fs::read(&foreign).unwrap(), b"not a hex project");
+        assert!(refused.state.document_path.is_none());
+
+        service.submit(Request::SaveNew(existing.clone())).unwrap();
+        let saved = next_event(&service);
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        assert_eq!(
+            saved.state.document_path.as_deref(),
+            Some(existing.as_path())
+        );
+        assert_eq!(hex_storage::load(&existing).unwrap(), *edited.state.project);
+        assert_eq!(
+            hex_storage::load_recovery(&existing).unwrap().project,
+            previous
+        );
+
+        service.submit(Request::SaveCurrent).unwrap();
+        let current = next_event(&service);
+        assert!(current.error.is_none(), "{:?}", current.error);
+    }
+
+    #[test]
     fn export_keeps_edit_worker_responsive_and_returns_captured_revision_separately() {
         let directory = TestDir::new();
         let source = directory.0.join("source.wav");
@@ -11255,6 +11360,7 @@ mod service_tests {
             arrangement_seek: None,
             resident_seek_results: None,
             resident_seek_count: AtomicUsize::new(0),
+            recovery_slot: None,
             _worker: thread::spawn(|| {}),
         };
         assert!(matches!(

@@ -34,3 +34,11 @@ xattr = { path = "third_party/xattr" }
 # (31 October 2026). Release builds are unchanged.
 [profile.dev.package."*"]
 opt-level = 2
+
+# hex-storage instantiates serde_json's generic encoder/decoder, so that code
+# compiles at hex-storage's own opt-level. Its large-document suites decode 8 MiB
+# projects through every frozen schema layer: audio_events.rs fell from 49 s to
+# 16 s and provenance.rs from 47 s to 6 s at opt-level 1 (1 November 2026, Pulse
+# #4010). Debug assertions and overflow checks stay enabled.
+[profile.dev.package.hex-storage]
+opt-level = 1
