@@ -3,6 +3,7 @@ use crate::routed_midi_fixture;
 mod authored_history;
 mod cue;
 mod interactive_start;
+mod release_timeline;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
 use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
