@@ -258,7 +258,12 @@ impl EditorView {
                             }
                         }
                         Ok(Err(error)) => {
-                            view.error = Some(error.to_string().to_lowercase().into())
+                            view.error = Some(
+                                hex_session::service::text::lowercase_outside_verbatim(
+                                    &error.to_string(),
+                                )
+                                .into(),
+                            )
                         }
                         _ => {}
                     }
@@ -288,6 +293,10 @@ impl EditorView {
     }
 
     fn begin_save_new(&mut self, path: PathBuf) {
+        // The OS replace prompt confirmed only the exact chosen path. The
+        // session replaces an existing file, so never let an appended
+        // extension silently retarget the save onto another existing file.
+        let extension_added = path.extension().is_none();
         let path = match prepare_save_path(path) {
             Ok(path) => path,
             Err(message) => {
@@ -295,6 +304,15 @@ impl EditorView {
                 return;
             }
         };
+        if extension_added && std::fs::symlink_metadata(&path).is_ok() {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.error =
+                Some(format!("{name} already exists · choose it by name to replace it").into());
+            return;
+        }
         if self.enqueue_device_barrier(Request::SaveNew(path)) {
             self.saving_project = true;
             self.status = "saving project as".into();
