@@ -123,13 +123,15 @@ impl NumericDisplayCodec {
                     .trim()
                     .parse::<f64>()
                     .ok(),
-                Self::Hertz => text
-                    .trim()
-                    .strip_suffix("hz")
-                    .unwrap_or(text.trim())
-                    .trim()
-                    .parse::<f64>()
-                    .ok(),
+                Self::Hertz => {
+                    let text = text.trim().to_ascii_lowercase();
+                    let number = text.strip_suffix("hz").unwrap_or(&text).trim();
+                    let (number, factor) = match number.strip_suffix('k') {
+                        Some(number) => (number.trim(), 1_000.0),
+                        None => (number, 1.0),
+                    };
+                    number.parse::<f64>().ok().map(|value| value * factor)
+                }
             },
         )
     }
@@ -180,7 +182,7 @@ fn parse_side(text: &str, negative: &str, positive: &str) -> Option<f64> {
                 .map(|value| sign * value / 100.0);
         }
     }
-    text.parse::<f64>().ok()
+    text.parse::<f64>().ok().map(|value| value / 100.0)
 }
 
 #[cfg(test)]
@@ -336,6 +338,14 @@ mod tests {
         assert_eq!(mid_side.format(0.0).expect("neutral"), "0");
         assert_eq!(mid_side.format(1.0).expect("side endpoint"), "100 s");
         assert_eq!(mid_side.parse("100 m").expect("typed mid"), -1.0);
+        assert_eq!(mid_side.parse("20").unwrap(), 0.2);
+        assert_eq!(mid_side.parse("-20").unwrap(), -0.2);
+        assert!(mid_side.parse("101").is_err());
+        let balance = NumericDisplayCodec::Balance.apply(
+            NumericSpec::new(-1.0, 1.0, 0.0, NumericScale::Bipolar, 2, None::<&str>).unwrap(),
+        );
+        assert_eq!(balance.parse("20").unwrap(), 0.2);
+        assert_eq!(balance.parse("-20").unwrap(), -0.2);
 
         let hertz = NumericDisplayCodec::Hertz.apply(
             NumericSpec::new(
@@ -351,5 +361,19 @@ mod tests {
         assert_eq!(hertz.format(50.0).expect("low cutoff"), "50 hz");
         assert_eq!(hertz.parse("500 hz").expect("high cutoff"), 500.0);
         assert!(hertz.parse("NaN hz").is_err());
+        let wide_hertz = NumericDisplayCodec::Hertz.apply(
+            NumericSpec::new(
+                20.0,
+                20_000.0,
+                1_000.0,
+                NumericScale::Linear,
+                2,
+                None::<&str>,
+            )
+            .unwrap(),
+        );
+        assert_eq!(wide_hertz.parse("1k").unwrap(), 1_000.0);
+        assert_eq!(wide_hertz.parse("1 khz").unwrap(), 1_000.0);
+        assert!(wide_hertz.parse("nan khz").is_err());
     }
 }
