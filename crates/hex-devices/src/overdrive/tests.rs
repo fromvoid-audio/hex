@@ -147,10 +147,12 @@ fn registered_metadata_codec_and_invalid_inputs() {
 fn mix_is_exact_bypass_advances_history_and_blocks_are_invariant() {
     let input = sine(997.0, 48_000, 0.3, 2_049);
     let s = state();
-    assert_eq!(
-        render(&patch(&s, parameter::DRY_WET, 0.0), 48_000, &input),
-        input
-    );
+    // Zero mix is the exact dry signal, delayed by the declared latency.
+    let latency = prepared(&s, 48_000).algorithmic_latency_frames().unwrap() as usize;
+    assert_eq!(latency, oversampler::LATENCY_FRAMES);
+    let zero_mix = render(&patch(&s, parameter::DRY_WET, 0.0), 48_000, &input);
+    assert!(zero_mix[..latency].iter().all(|f| *f == [0.0; 2]));
+    assert_eq!(zero_mix[latency..], input[..input.len() - latency]);
     let expected = render(&s, 48_000, &input);
     let mut split = input.clone();
     let mut runtime = prepared(&s, 48_000).create_runtime();
@@ -304,5 +306,90 @@ fn filter_preview_matches_measured_runtime_band_response() {
             (f64::from(y) - actual_y).abs() < 0.002,
             "{hz}: {y} vs {actual_y}"
         );
+    }
+}
+
+/// In-place iterative radix-2 FFT (test oracle only).
+fn fft(re: &mut [f64], im: &mut [f64]) {
+    let n = re.len();
+    let mut j = 0;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j |= bit;
+        if i < j {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+    let mut len = 2;
+    while len <= n {
+        let angle = -std::f64::consts::TAU / len as f64;
+        for start in (0..n).step_by(len) {
+            for k in 0..len / 2 {
+                let (s, c) = (angle * k as f64).sin_cos();
+                let (a, b) = (start + k, start + k + len / 2);
+                let (tr, ti) = (re[b] * c - im[b] * s, re[b] * s + im[b] * c);
+                re[b] = re[a] - tr;
+                im[b] = im[a] - ti;
+                re[a] += tr;
+                im[a] += ti;
+            }
+        }
+        len <<= 1;
+    }
+}
+/// Largest non-harmonic spectral peak relative to the fundamental, in db.
+/// A 4-term Blackman-Harris window (-92 db sidelobes) over the last 65536
+/// frames; bins within 8 of any harmonic of `hz` (or dc) count as harmonic.
+fn largest_inharmonic_db(output: &[StereoFrame], hz: f64, rate: u32) -> f64 {
+    const N: usize = 1 << 16;
+    let frames = &output[output.len() - N..];
+    let mut re: Vec<f64> = frames
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let x = std::f64::consts::TAU * i as f64 / N as f64;
+            let w =
+                0.35875 - 0.48829 * x.cos() + 0.14128 * (2.0 * x).cos() - 0.01168 * (3.0 * x).cos();
+            f64::from(f[0]) * w
+        })
+        .collect();
+    let mut im = vec![0.0; N];
+    fft(&mut re, &mut im);
+    let bin_hz = f64::from(rate) / N as f64;
+    let power = |k: usize| re[k] * re[k] + im[k] * im[k];
+    let fundamental_bin = (hz / bin_hz).round() as usize;
+    let fundamental = (fundamental_bin - 8..=fundamental_bin + 8)
+        .map(power)
+        .fold(0.0, f64::max);
+    let mut worst = 0.0_f64;
+    for k in 9..N / 2 {
+        let f = k as f64 * bin_hz;
+        let nearest = (f / hz).round() * hz;
+        if ((f - nearest) / bin_hz).abs() <= 8.0 {
+            continue;
+        }
+        worst = worst.max(power(k));
+    }
+    10.0 * (worst / fundamental).log10()
+}
+/// Pulse #3958: a 7 kHz sine at full drive and 48 kHz keeps every
+/// non-harmonic (aliased) component below -60 db relative to the fundamental.
+/// The former 4x linear-interpolation path measured -23.1 db (tone 0.5) and
+/// -24.6 db (tone 1.0).
+#[test]
+fn full_drive_7khz_sine_aliasing_stays_below_minus_60_db() {
+    let rate = 48_000;
+    let input = sine(7000.0, rate, 1.0, (1 << 16) + 2048);
+    for tone in [0.5, 1.0] {
+        let mut s = patch(&state(), parameter::DRIVE, 1.0);
+        s = patch(&s, parameter::DRY_WET, 1.0);
+        s = patch(&s, parameter::TONE, tone);
+        let worst = largest_inharmonic_db(&render(&s, rate, &input), 7000.0, rate);
+        assert!(worst < -60.0, "tone {tone}: inharmonic peak {worst:.1} db");
     }
 }
