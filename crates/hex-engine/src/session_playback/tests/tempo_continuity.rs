@@ -523,6 +523,16 @@ fn legacy_transport_copy_refuses_missing_timing_without_mutation() {
     assert!(old.playing());
 }
 
+#[test]
+fn legacy_transport_copy_accepts_zero_without_timing_metadata() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let old = linear_at(&arrangement_at(120_000_000, None), &table);
+    let mut next = Playback::new(crate::Project::new(48_000, Vec::new()).unwrap());
+    next.apply(PlaybackCommand::Seek(77));
+    next.inherit_transport(&old).unwrap();
+    assert_eq!(next.position(), 0);
+}
+
 /// No note sounds at the tested cuts (one note over beats 12..13), so legacy
 /// state can be promoted to and demoted from a Session runtime.
 fn quiet_at(micro_bpm: u32, loop_region: Option<(u64, u64)>) -> Project {
