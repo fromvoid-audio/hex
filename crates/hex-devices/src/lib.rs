@@ -11,12 +11,11 @@
 //! remain bounded and allocation-free.
 //!
 //! # Subnormal policy
-//! Hex never sets flush-to-zero/denormals-are-zero; callbacks run with the platform's
-//! default floating-point mode on both arm64 and x86-64. Apple Silicon handles subnormals
-//! without a large penalty, but x86-64 may stall on them, so every recursive history must
-//! flush near-silent or subnormal state explicitly (for example reverb `clean`, EQ/utility
-//! `quiet`, the delay loop floor and the operator lowpass proof) instead of relying on
-//! the hardware.
+//! Hex does not configure flush-to-zero or denormals-are-zero and does not assume
+//! the floating-point mode inherited from a host or platform. Several recursive
+//! paths explicitly clear near-silent or subnormal state, including reverb, EQ,
+//! utility, delay and the operator lowpass. Performance effects depend on the
+//! hardware and workload and require measurement.
 mod parameter_binding;
 mod response;
 
