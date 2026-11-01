@@ -371,7 +371,9 @@ impl AnchoredSessionTempoView<'_> {
                 "anchored beat conversion overflow",
             ))?;
         if shifted < 0 {
-            return Ok(0);
+            return Err(PreparedTempoError::FrameToBeat(
+                "anchored beat precedes the beat domain",
+            ));
         }
         Ok((shifted as u128).min(TempoMap::BEAT_RANGE_SENTINEL))
     }
@@ -1205,5 +1207,26 @@ mod tests {
             assert_eq!(i128::from(effective.raw()), expected_raw);
             assert_eq!(anchored.beat_to_frame(effective).unwrap(), frame);
         }
+    }
+
+    #[test]
+    fn anchored_clock_rejects_frames_before_its_beat_domain() {
+        let map = PreparedTempoMap::prepare(
+            TempoMap::constant(48_000, tempo(120_000_000)).unwrap(),
+            48_000,
+        )
+        .unwrap();
+        let anchored = super::AnchoredSessionTempoView::new(
+            super::SessionBaseTimingView::Canonical(&map),
+            super::SessionClockAnchor {
+                cut_frame: 24_000,
+                old_beat: BeatTime::ZERO,
+                new_beat: BeatTime::ONE,
+            },
+        );
+        assert!(anchored.frame_to_beat(0).is_err());
+        assert!(anchored.beat_lower_bound_for_frame(0).is_err());
+        assert_eq!(anchored.frame_to_beat(24_000).unwrap(), BeatTime::ZERO);
+        assert_eq!(anchored.beat_to_frame(BeatTime::ZERO).unwrap(), 24_000);
     }
 }
