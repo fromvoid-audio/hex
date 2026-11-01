@@ -232,6 +232,15 @@ impl Runtime {
         let hq = settings.flag(HIGH_QUALITY);
         let alpha = 1.0 - (-1.0 / (f64::from(rate) * if hq { 0.02 } else { 0.01 })).exp();
         let fade_frames = rate.div_ceil(20);
+        let gains = |mix: f64| {
+            if settings.flag(EQUAL_LOUDNESS) {
+                let (wet, dry) = (mix * std::f64::consts::FRAC_PI_2).sin_cos();
+                (dry, wet)
+            } else {
+                (1.0 - mix, mix)
+            }
+        };
+        let (mut dry_gain, mut wet_gain) = gains(self.speculative.mix);
         for (offset, frame) in frames.iter_mut().enumerate() {
             let s = &mut self.speculative;
             if let Some(tempo) = clock
@@ -300,6 +309,7 @@ impl Runtime {
                     s.frequency = f64::from(settings.value(FREQUENCY));
                     s.width = f64::from(settings.value(WIDTH));
                 }
+                (dry_gain, wet_gain) = gains(s.mix);
             }
             let scalar = &*s;
             let mut wet = std::array::from_fn::<_, 2, _>(|lane| {
@@ -351,12 +361,6 @@ impl Runtime {
                     loop_input * (1.0 - s.filter_mix) + filtered * s.filter_mix
                 });
                 write[lane] = if value.abs() < 1e-12 { 0.0 } else { value };
-                let (dry_gain, wet_gain) = if settings.flag(EQUAL_LOUDNESS) {
-                    let (wet, dry) = (s.mix * std::f64::consts::FRAC_PI_2).sin_cos();
-                    (dry, wet)
-                } else {
-                    (1.0 - s.mix, s.mix)
-                };
                 frame[lane] = finite(dry[lane] * dry_gain + wet[lane] * wet_gain);
             }
             if s.valid == self.scratch.len() {
