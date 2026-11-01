@@ -9,6 +9,7 @@
 //! Does not schedule projects, access devices/files, retain host resource ownership or host
 //! foreign plugins. Preparation is control work; processing borrows validated inputs and must
 //! remain bounded and allocation-free.
+mod oversampling;
 mod parameter_binding;
 mod response;
 
