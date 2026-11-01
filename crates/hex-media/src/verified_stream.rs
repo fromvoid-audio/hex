@@ -15,6 +15,8 @@ const DIGEST_BYTES: usize = 32;
 // Control-worker stack staging only; no retained reader/page/manifest growth.
 const DECODE_BATCH_BYTES: usize = 8 * 1024;
 
+mod manifest_cache;
+
 /// Limits for verified sources. Manifest capacity is bounded independently of
 /// source bytes and is checked before hashing begins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,10 +38,15 @@ impl VerifiedWavReaderLimits {
 /// Fingerprints are durable bytes; changing a library/backend must preserve
 /// complete-file/page digests, rather than change source identities or schemas.
 ///
-/// Opening hashes the complete file once. It is not an atomic filesystem
-/// snapshot: concurrent writes with restored metadata can produce a hybrid
-/// manifest. Every later parser/data access verifies complete raw pages and
-/// serves the exact verified page bytes from one fixed scratch buffer.
+/// The first open of a file hashes it completely. It is not an atomic
+/// filesystem snapshot: concurrent writes with restored metadata can produce a
+/// hybrid manifest. A later open of an unchanged path (same length,
+/// modification time and, on Unix, device/inode) reuses that manifest from a
+/// bounded process-wide memo and reads only the pages its header scan touches;
+/// see `manifest_cache`. Every parser/data access verifies complete raw pages
+/// and serves the exact verified page bytes from one fixed scratch buffer, so a
+/// content edit that preserves that identity fails as `SourceChanged` when its
+/// page is read rather than at open.
 pub struct VerifiedWavReader {
     file: File,
     path: PathBuf,
@@ -83,12 +90,21 @@ impl VerifiedWavReader {
         if requested_manifest_bytes > limits.max_manifest_bytes {
             return Err(ImportError::LimitExceeded("verified page manifest bytes"));
         }
-        let preliminary_layout =
-            wav::scan(&mut file, captured_len, limits.reader.max_header_count)?;
-        preliminary_layout.format.require_fixed_frames()?;
-        if preliminary_layout.frames > limits.reader.max_source_frames {
-            return Err(ImportError::LimitExceeded("source frames"));
-        }
+        let key = manifest_cache::FileKey::of(&before, captured_modified);
+        let remembered = manifest_cache::lookup(&path, key, page_count);
+        // A remembered manifest skips the raw prescan and whole-file hash; the
+        // verified scan below still checks every header page it touches.
+        let preliminary_layout = match &remembered {
+            Some(_) => None,
+            None => {
+                let layout = wav::scan(&mut file, captured_len, limits.reader.max_header_count)?;
+                layout.format.require_fixed_frames()?;
+                if layout.frames > limits.reader.max_source_frames {
+                    return Err(ImportError::LimitExceeded("source frames"));
+                }
+                Some(layout)
+            }
+        };
         check_metadata(&file, captured_len, captured_modified)?;
         let mut page_digests = Vec::new();
         page_digests
@@ -103,29 +119,21 @@ impl VerifiedWavReader {
         }
 
         let mut scratch = [0_u8; PAGE_BYTES];
-        let mut whole_file = Sha256::new();
-        for page in 0..page_count {
-            if cancelled() {
-                return Err(ImportError::Cancelled);
+        let fingerprint = match &remembered {
+            Some(manifest) => {
+                page_digests.extend_from_slice(&manifest.pages);
+                manifest.fingerprint
             }
-            let page_start = page_start(page)?;
-            let page_len = page_len(captured_len, page_start)?;
-            check_metadata(&file, captured_len, captured_modified)?;
-            file.seek(SeekFrom::Start(page_start))?;
-            if let Err(error) = file.read_exact(&mut scratch[..page_len]) {
-                return Err(if error.kind() == io::ErrorKind::UnexpectedEof {
-                    ImportError::SourceChanged
-                } else {
-                    ImportError::Io(error)
-                });
-            }
-            check_metadata(&file, captured_len, captured_modified)?;
-            let page_digest: [u8; DIGEST_BYTES] = Sha256::digest(&scratch[..page_len]).into();
-            whole_file.update(&scratch[..page_len]);
-            page_digests.push(page_digest);
-        }
-        check_metadata(&file, captured_len, captured_modified)?;
-        let fingerprint: [u8; DIGEST_BYTES] = whole_file.finalize().into();
+            None => hash_pages(
+                &mut file,
+                captured_len,
+                captured_modified,
+                page_count,
+                &mut scratch,
+                &mut page_digests,
+                &mut cancelled,
+            )?,
+        };
         let layout = {
             check_metadata(&file, captured_len, captured_modified)?;
             let mut verified = VerifiedPageReader::new(
@@ -139,17 +147,19 @@ impl VerifiedWavReader {
             wav::scan(&mut verified, captured_len, limits.reader.max_header_count)
                 .map_err(map_verified_error)?
         };
-        {
-            if cancelled() {
-                return Err(ImportError::Cancelled);
-            }
-            check_metadata(&file, captured_len, captured_modified)?;
-            if layout != preliminary_layout {
-                return Err(ImportError::SourceChanged);
-            }
+        if cancelled() {
+            return Err(ImportError::Cancelled);
         }
+        check_metadata(&file, captured_len, captured_modified)?;
+        if preliminary_layout.is_some_and(|preliminary| preliminary != layout) {
+            return Err(ImportError::SourceChanged);
+        }
+        layout.format.require_fixed_frames()?;
         if layout.frames > limits.reader.max_source_frames {
             return Err(ImportError::LimitExceeded("source frames"));
+        }
+        if remembered.is_none() {
+            manifest_cache::record(&path, key, fingerprint, &page_digests);
         }
         Ok(Self {
             file,
@@ -400,6 +410,8 @@ impl<'a> VerifiedPageReader<'a> {
                 error
             });
         }
+        #[cfg(test)]
+        raw_page_reads::record();
         check_metadata(self.file, self.captured_len, self.captured_modified)
             .map_err(import_to_io)?;
         let actual: [u8; DIGEST_BYTES] = Sha256::digest(&self.scratch[..length]).into();
@@ -450,6 +462,59 @@ impl Seek for VerifiedPageReader<'_> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "verified seek overflow"))?;
         self.position = next;
         Ok(next)
+    }
+}
+
+/// Hash every raw page under stable metadata, returning the whole-file digest.
+fn hash_pages(
+    file: &mut File,
+    captured_len: u64,
+    captured_modified: SystemTime,
+    page_count: usize,
+    scratch: &mut [u8; PAGE_BYTES],
+    page_digests: &mut Vec<[u8; DIGEST_BYTES]>,
+    cancelled: &mut impl FnMut() -> bool,
+) -> Result<[u8; DIGEST_BYTES], ImportError> {
+    let mut whole_file = Sha256::new();
+    for page in 0..page_count {
+        if cancelled() {
+            return Err(ImportError::Cancelled);
+        }
+        let page_start = page_start(page)?;
+        let page_len = page_len(captured_len, page_start)?;
+        check_metadata(file, captured_len, captured_modified)?;
+        file.seek(SeekFrom::Start(page_start))?;
+        if let Err(error) = file.read_exact(&mut scratch[..page_len]) {
+            return Err(if error.kind() == io::ErrorKind::UnexpectedEof {
+                ImportError::SourceChanged
+            } else {
+                ImportError::Io(error)
+            });
+        }
+        #[cfg(test)]
+        raw_page_reads::record();
+        check_metadata(file, captured_len, captured_modified)?;
+        let page_digest: [u8; DIGEST_BYTES] = Sha256::digest(&scratch[..page_len]).into();
+        whole_file.update(&scratch[..page_len]);
+        page_digests.push(page_digest);
+    }
+    check_metadata(file, captured_len, captured_modified)?;
+    Ok(whole_file.finalize().into())
+}
+
+/// Per-thread count of raw pages read from disk, for read-cost tests.
+#[cfg(test)]
+pub(crate) mod raw_page_reads {
+    use std::cell::Cell;
+    thread_local! {
+        static READS: Cell<usize> = const { Cell::new(0) };
+    }
+    pub(super) fn record() {
+        READS.with(|reads| reads.set(reads.get() + 1));
+    }
+    /// Pages read on this thread since the last call.
+    pub(crate) fn take() -> usize {
+        READS.with(|reads| reads.replace(0))
     }
 }
 
