@@ -4,10 +4,10 @@ use super::{
     FitTimeline, GroupSelection, ImportAudio, InsertTimeSelection, LoopSelection, MidiOctaveDown,
     MidiOctaveUp, MoveLeft, MoveRight, NewProject, NewStreamingProject, NextTrack, OpenProject,
     OpenRecentProject, OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft,
-    PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave,
-    RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject,
-    SelectAllMidiNotes, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
-    TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
+    PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverKeptSession,
+    RecoverPreviousSave, RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack,
+    SaveAsProject, SaveProject, SelectAllMidiNotes, SplitClip, Stop, ToggleLoop,
+    ToggleMidiDrawMode, TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
@@ -1121,6 +1121,9 @@ impl Render for EditorView {
                     window,
                     cx,
                 )
+            }))
+            .on_action(cx.trace(|view, _: &RecoverKeptSession, window, cx| {
+                view.project_recovery_dialog(super::project_recovery::OpenKind::Kept, window, cx)
             }))
             .on_action(cx.trace(|view, _: &RecoverPreviousSave, window, cx| {
                 view.project_recovery_dialog(
