@@ -1628,17 +1628,17 @@ impl Playback {
 
     /// Preserve legacy finite transport behavior. Native publication uses the
     /// fallible companion to carry Session routes and reject unsafe demotions.
-    /// A changed tempo map keeps the cursor's Arrangement beat, as the
-    /// fallible companion does; a cursor this infallible path cannot convert
-    /// keeps its frame.
-    pub fn inherit_transport(&mut self, previous: &Self) {
-        self.position =
-            remapped_linear_position(&self.project, &previous.project, previous.position())
-                .unwrap_or_else(|_| previous.position());
+    /// A changed tempo map keeps the cursor's Arrangement beat. Refusal
+    /// leaves this transport unchanged when the conversion cannot be proven.
+    pub fn inherit_transport(&mut self, previous: &Self) -> Result<(), PlaybackHandoffError> {
+        let position =
+            remapped_linear_position(&self.project, &previous.project, previous.position())?;
+        self.position = position;
         self.performance_frame = previous.performance_frame();
         self.performance_clock_exhausted = previous.performance_clock_exhausted();
         self.playing = previous.playing();
         self.inherit_metronome(previous);
+        Ok(())
     }
 
     fn inherit_metronome(&mut self, previous: &Self) {
@@ -2435,7 +2435,7 @@ fn remapped_linear_position(
     let (Some(new_timing), Some(old_timing)) =
         (next.midi_volume_timing(), previous.midi_volume_timing())
     else {
-        return Ok(position);
+        return Err(conversion());
     };
     let beat = old_timing
         .frame_to_beat(position)

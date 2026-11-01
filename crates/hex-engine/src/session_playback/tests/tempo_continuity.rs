@@ -500,6 +500,29 @@ fn tempo_remap_preserves_session_tail_after_return_to_arrangement() {
     assert_eq!(actual, expected);
 }
 
+#[test]
+fn legacy_transport_copy_refuses_missing_timing_without_mutation() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut old = linear_at(&arrangement_at(120_000_000, None), &table);
+    old.apply(PlaybackCommand::Play);
+    render_linear(&mut old, 64, 3_001);
+    let mut next = Playback::new(crate::Project::new(48_000, Vec::new()).unwrap());
+    next.apply(PlaybackCommand::Seek(77));
+    let before = (next.position(), next.performance_frame(), next.playing());
+    assert!(matches!(
+        next.inherit_transport(&old),
+        Err(crate::playback::PlaybackHandoffError::Session(
+            SessionPlaybackError::TempoConversion
+        ))
+    ));
+    assert_eq!(
+        (next.position(), next.performance_frame(), next.playing()),
+        before
+    );
+    assert_eq!(old.position(), 3_001);
+    assert!(old.playing());
+}
+
 /// No note sounds at the tested cuts (one note over beats 12..13), so legacy
 /// state can be promoted to and demoted from a Session runtime.
 fn quiet_at(micro_bpm: u32, loop_region: Option<(u64, u64)>) -> Project {
@@ -564,7 +587,7 @@ fn legacy_promotion_and_demotion_keep_the_arrangement_beat() {
 }
 
 #[test]
-fn infallible_transport_copy_keeps_the_arrangement_beat() {
+fn transport_copy_keeps_the_arrangement_beat() {
     // Pulse #4135: the legacy `inherit_transport` follows the same remap.
     let table = Arc::new(hex_devices::SineTable::new());
     let cut = 3_001;
@@ -575,7 +598,7 @@ fn infallible_transport_copy_keeps_the_arrangement_beat() {
             old.apply(PlaybackCommand::Play);
             render_linear(&mut old, block, cut);
             let mut next = linear_at(&arrangement_at(60_000_000, region(60_000_000)), &table);
-            next.inherit_transport(&old);
+            next.inherit_transport(&old).unwrap();
             assert!(next.playing(), "looped={looped} block={block}");
             assert_eq!(
                 next.position(),
@@ -592,6 +615,6 @@ fn infallible_transport_copy_keeps_the_arrangement_beat() {
     old.apply(PlaybackCommand::Play);
     render_linear(&mut old, 64, cut);
     let mut next = linear_at(&project, &table);
-    next.inherit_transport(&old);
+    next.inherit_transport(&old).unwrap();
     assert_eq!(next.position(), cut as u64);
 }
