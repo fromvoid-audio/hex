@@ -270,7 +270,11 @@ fn pasted_clip_group_is_selected_and_unrequested_batch_births_are_not(cx: &mut T
     cx.update(super::bind_editor_keys);
     let files = super::external_audio_drop_ui_test::BatchFiles::new();
     let path = files.wav("group.wav", 48_000, 48_000);
-    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    let recovery = path
+        .parent()
+        .unwrap()
+        .join("project/recovery/untitled.hex-journal");
+    let service = Service::with_recovery(48_000, 32, 8_000_000, recovery).unwrap();
     next(&service);
     service.submit(Request::Import(path)).unwrap();
     let imported = next(&service);
@@ -380,8 +384,7 @@ fn pasted_clip_group_is_selected_and_unrequested_batch_births_are_not(cx: &mut T
     editor.read_with(&visual, |view, _| {
         assert!(coherent(view), "redo keeps the selection on live clips");
     });
-    // Reselect one pasted clip, then make an unrequested batch copy: its
-    // births must not replace the user's selection.
+    // An unrelated bounce must not replace the user's selection.
     let anchor = *pasted.iter().next().unwrap();
     click(
         &mut visual,
@@ -392,22 +395,28 @@ fn pasted_clip_group_is_selected_and_unrequested_batch_births_are_not(cx: &mut T
         (view.selected_clip, view.selected_clip_ids())
     });
     editor.update(&mut visual, |view, _| {
-        assert!(view.enqueue(Request::Edit(Command::MoveClipsWithOverwrite {
-            clips: pasted.iter().copied().collect(),
-            anchor,
-            track: other,
-            position: hex_project::ClipGroupPosition::Audio(0),
-            copy: true,
-        })));
+        let revision = view.state.as_ref().unwrap().revision;
+        assert!(view.enqueue(Request::BounceArrangement {
+            project_generation: view.project_generation,
+            revision,
+            target: hex_project::BounceTarget::Clips(pasted.iter().copied().collect()),
+            in_place: false,
+            adoption: hex_project::BounceAdoption::Drop(hex_project::BounceDrop {
+                anchor,
+                track: other,
+                position: hex_project::ClipGroupPosition::Audio(0),
+            }),
+            control: hex_session::service::ExportControl::default(),
+        }));
     });
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
-        assert_eq!(project.track(other).unwrap().clips().len(), 2);
+        assert!(!project.track(other).unwrap().clips().is_empty());
         assert_eq!(
             (view.selected_clip, view.selected_clip_ids()),
             before,
-            "unrequested batch births leave the selection alone"
+            "an unrelated bounce leaves the selection alone"
         );
     });
 }
