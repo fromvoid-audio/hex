@@ -309,9 +309,11 @@ impl EditorView {
             Err(error) => {
                 self.pending_restart_request = None;
                 self.error = Some(
-                    format!("could not restart audio · {error:?}")
-                        .to_lowercase()
-                        .into(),
+                    format!(
+                        "could not restart audio · {}",
+                        super::user_errors::submit(&error)
+                    )
+                    .into(),
                 );
                 self.status = "audio unavailable".into();
                 false
@@ -3043,9 +3045,9 @@ impl EditorView {
                 .playback
                 .as_ref()
                 .map(|playback| match playback.session_capability() {
-                    hex_engine::SessionCapability::Unavailable(error) => {
-                        Some(error.to_string().to_lowercase())
-                    }
+                    hex_engine::SessionCapability::Unavailable(error) => Some(
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+                    ),
                     _ => None,
                 });
         let mut stopped_restore_error = None;
@@ -3162,6 +3164,9 @@ impl EditorView {
         self.normalize_completed_trim_viewport(retired_trim);
         self.apply_created_note_selection(created_note_selection);
         self.apply_completed_midi_step(midi_step_complete);
+        if let Some(path) = &successfully_opened_path {
+            self.check_leftover_recovery(Some(path.clone()));
+        }
         successfully_opened_path
     }
 
