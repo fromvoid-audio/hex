@@ -166,6 +166,33 @@ pub(crate) fn record_key(cx: &App, event: &gpui::KeystrokeEvent) {
     }
 }
 
+/// Control-thread time to install one received session outcome into the view
+/// (`Editor::receive`), logged after that event's `ClientReceived` line. Paint
+/// and present are not included.
+pub(crate) fn record_ui_install(cx: &App, revision: u64, install: std::time::Duration) {
+    if let Some(Ok(handle)) = cx
+        .try_global::<SessionDiagnostics>()
+        .filter(|d| d.action_observer.is_some())
+        .map(|d| &d.handle)
+    {
+        let _ = handle.record(&format!(
+            "action_diag v=1 stage=ui_installed revision={revision} install_us={}",
+            install.as_micros()
+        ));
+    }
+}
+
+/// Selection counts and focus flags that route `g`; no names or project content.
+pub(crate) fn record_group_selection(cx: &App, route: &str) {
+    if let Some(Ok(handle)) = cx
+        .try_global::<SessionDiagnostics>()
+        .filter(|d| d.action_observer.is_some())
+        .map(|d| &d.handle)
+    {
+        let _ = handle.record(&format!("action_diag v=1 stage=group_selection {route}"));
+    }
+}
+
 pub(crate) fn actions_enabled(cx: &App) -> bool {
     cx.try_global::<SessionDiagnostics>()
         .is_some_and(|d| d.action_observer.is_some())
@@ -448,6 +475,15 @@ fn show_open_error(window: &mut Window, cx: &mut App, error: &str) {
         &answers,
         cx,
     ));
+}
+
+/// The installed session log file, when logging started.
+pub(crate) fn log_path(cx: &App) -> Option<std::path::PathBuf> {
+    cx.try_global::<SessionDiagnostics>()?
+        .handle
+        .as_ref()
+        .ok()
+        .map(DiagnosticsHandle::path)
 }
 
 pub(crate) fn record_state(cx: &mut App, status: &str, error: Option<&str>) -> Option<String> {

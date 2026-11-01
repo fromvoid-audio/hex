@@ -120,6 +120,7 @@ pub(in crate::service) fn bounce_arrangement(
     session: &mut Session,
     target: hex_project::BounceTarget,
     in_place: bool,
+    adoption: hex_project::BounceAdoption,
     directory: &Path,
     control: &hex_export::ExportControl,
     context: hex_engine::AudioSourceContext,
@@ -137,24 +138,13 @@ pub(in crate::service) fn bounce_arrangement(
     {
         return Err("disable live midi input and audition before bouncing in place".into());
     }
-    // Reuse the native stopped fence, never inherit outgoing voices that are
-    // now represented by the baked PCM. Command-B retains original ownership.
-    let stopped = if replaces_devices {
-        Some(
-            crate::service::stopped_arrangement::acquire(
-                sink,
-                hex_engine::AudioSourceContext {
-                    editor_revision: context.editor_revision.saturating_sub(1),
-                    ..context
-                },
-                &session.shutdown,
-                Some(control),
-            )
-            .map_err(|e| e.to_string())?,
-        )
-    } else {
-        None
-    };
+    // Fence the applied source only for adoption, never during the render, so
+    // transport stays free. Outgoing voices the baked PCM now represents are
+    // never inherited. Command-B retains original ownership.
+    let fence = replaces_devices.then_some(hex_engine::AudioSourceContext {
+        editor_revision: context.editor_revision.saturating_sub(1),
+        ..context
+    });
     let sink = std::cell::RefCell::new(sink);
     let captured = target.clone();
     let result = session.bounce_arrangement_using(
@@ -224,6 +214,7 @@ pub(in crate::service) fn bounce_arrangement(
                 .adopt_arrangement_bounce_using(
                     captured,
                     in_place,
+                    adoption,
                     files,
                     prepared,
                     current.as_ref().map(|s| s.prepared.as_ref()),
@@ -237,7 +228,7 @@ pub(in crate::service) fn bounce_arrangement(
                             &mut **sink,
                             admission,
                             current.as_ref(),
-                            stopped,
+                            fence,
                             &mut || {
                                 control.seal_prepared_adoption().map_err(|_| {
                                     SessionError::Invalid("bounce cancelled before adoption")
@@ -249,7 +240,7 @@ pub(in crate::service) fn bounce_arrangement(
                 .map_err(|e| e.to_string())
         },
     );
-    if result.is_err() && stopped.is_some() {
+    if result.is_err() && fence.is_some() {
         sink.try_borrow_mut()
             .map_err(|_| "bounce cancellation sink already borrowed")?
             .cancel_section_edit();
@@ -277,7 +268,7 @@ pub(in crate::service) fn bounce_history(
             "disable live midi input and audition before bounce history",
         ));
     }
-    let frame = crate::service::stopped_arrangement::acquire(
+    let position = crate::service::stopped_arrangement::acquire_position(
         sink,
         hex_engine::AudioSourceContext {
             editor_revision: context.editor_revision.saturating_sub(1),
@@ -285,10 +276,11 @@ pub(in crate::service) fn bounce_history(
         },
         &session.shutdown,
         None,
+        true,
     )?;
-    match session.stopped_bounce_history_snapshot(
+    match session.bounce_history_snapshot(
         redo,
-        frame,
+        position,
         context,
         sink,
         admission,

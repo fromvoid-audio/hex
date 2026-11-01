@@ -42,6 +42,7 @@ mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
 mod device_automation;
+mod leftover_recovery;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod navigation_metrics;
 mod plugin_effect;
@@ -52,6 +53,7 @@ pub(crate) use plugin_effect::fixture_view as plugin_effect_fixture_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_recovery_ui_test;
 mod section_launch;
+mod section_layout_preview;
 mod track_header;
 mod track_header_device_drop;
 mod track_hierarchy_indent;
@@ -140,6 +142,8 @@ mod midi_note_overwrite;
 mod midi_pan;
 mod midi_pitch_zoom;
 mod midi_recording;
+mod missing_media;
+mod user_errors;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
 mod midi_ruler;
@@ -384,6 +388,7 @@ actions!(
         RecoverUntitledProject,
         RecoverSavedProject,
         RecoverPreviousSave,
+        RecoverKeptSession,
         OpenSettings,
         OpenTuning,
         CloseTuning,
@@ -422,6 +427,7 @@ actions!(
         SplitClip,
         LoopSelection,
         BounceToNewTracks,
+        BounceAndMuteSources,
         ToggleLoop,
         ZoomIn,
         ZoomOut,
@@ -539,9 +545,16 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("e", SplitClip, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-l", ToggleLoop, Some("hex_editor && !hex_text_editing")),
+        // Live's `b` toggles draw mode; hex keeps that inside the midi editor
+        // (`hex_midi`). Arrangement has no draw mode, so `b` bounces there.
+        KeyBinding::new(
+            "b",
+            BounceToNewTracks,
+            Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events && !hex_device_selection"),
+        ),
         KeyBinding::new(
             "cmd-b",
-            BounceToNewTracks,
+            BounceAndMuteSources,
             Some("hex_editor && !hex_text_editing && !hex_midi && !hex_audio_events"),
         ),
         KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
@@ -742,6 +755,13 @@ pub(super) struct EditorView {
     recovery: RecoveryState,
     stopped_playback_restore: Option<audio_admission::StoppedPlaybackRestore>,
     latency_rebuild: Option<audio_admission::LatencyRebuild>,
+    leftover_recovery: leftover_recovery::State,
+    // Streamed documents replace their sampler output stopped; this frame
+    // resumes playback once that edit settles (Pulse #3784).
+    sampler_edit_resume: Option<u64>,
+    // Play requested while the stopped restore renews effects (for example
+    // vst3); it starts once that restore settles (Pulse #3784).
+    deferred_play: Option<(PlaybackAction, Option<u64>, u64)>,
     offline_cursor: u64,
     pub(in crate::editor) state: Option<Arc<ViewState>>,
     selected_track: Option<TrackId>,
@@ -858,6 +878,9 @@ pub(super) struct EditorView {
     close_prompt_open: bool,
     export_pending: bool,
     bounce_control: Option<hex_session::service::ExportControl>,
+    /// `b` is held during the active Arrangement clip drag; release bounces.
+    drag_bounce_held: bool,
+    pending_bounce_drop: Option<bounce::PendingBounceDrop>,
     pending_plugin_effect: Option<plugin_effect::PendingPluginEffect>,
     export_control: Option<hex_session::service::ExportControl>,
     export_window: Option<gpui::AnyWindowHandle>,
@@ -927,6 +950,8 @@ pub(super) struct EditorView {
     active_trim_drag: Option<trim::TrimDrag>,
     pending_trim: Option<trim::PendingTrim>,
     fade_key_held: bool,
+    /// Option held: the right clip header edge offers repeat-extend.
+    option_held: bool,
     time_selection_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
     pending_fade: Option<fade_handles::PendingFade>,
@@ -975,6 +1000,7 @@ pub(super) struct EditorView {
     recent_projects: RecentProjectsState,
     project_directory: project_directory::State,
     changelog: changelog::State,
+    missing_media: Option<missing_media::Panel>,
     theme_settings: theme_settings::ThemeSettingsState,
     audio_import_settings: audio_import_settings::State,
     tuning: tuning::TuningState,
@@ -983,6 +1009,9 @@ pub(super) struct EditorView {
     /// The selected clip a point cursor was deliberately placed inside; that
     /// cursor then outranks the clip's play start (see `selected_clip_play_start`).
     edit_cursor_in_selected_clip: Option<ClipId>,
+    /// The selected clip whose in-clip cursor a loop enable retired; the loop
+    /// start then keeps outranking that clip's play start until a new click.
+    loop_start_over_clip: Option<ClipId>,
     detail_context: Option<detail_context::DetailContext>,
     clip_paint_gesture: Option<clip_paint::ClipPaintGesture>,
     time_selection: Option<time_selection::TimeSelection>,
@@ -1009,6 +1038,8 @@ impl EditorView {
         view.audio_events = backend.audio_events;
         view.source_reservation = Some(backend.source_reservation);
         view.status = "preparing audio output".into();
+        // A session that ended unexpectedly may have left untitled work.
+        view.check_leftover_recovery(None);
         view
     }
 
@@ -1471,6 +1502,9 @@ impl EditorView {
             recovery: RecoveryState::default(),
             stopped_playback_restore: None,
             latency_rebuild: None,
+            leftover_recovery: Default::default(),
+            sampler_edit_resume: None,
+            deferred_play: None,
             offline_cursor: 0,
             selected_track: None,
             track_selection: selection::TrackSelection::default(),
@@ -1581,6 +1615,8 @@ impl EditorView {
             close_prompt_open: false,
             export_pending: false,
             bounce_control: None,
+            drag_bounce_held: false,
+            pending_bounce_drop: None,
             pending_plugin_effect: None,
             export_control: None,
             export_window: None,
@@ -1653,6 +1689,7 @@ impl EditorView {
             active_trim_drag: None,
             pending_trim: None,
             fade_key_held: false,
+            option_held: false,
             time_selection_key_held: false,
             active_fade_drag: None,
             pending_fade: None,
@@ -1692,12 +1729,14 @@ impl EditorView {
             recent_projects,
             project_directory,
             changelog: changelog::State::new(cx),
+            missing_media: None,
             theme_settings,
             audio_import_settings,
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
             edit_cursor: None,
             edit_cursor_in_selected_clip: None,
+            loop_start_over_clip: None,
             detail_context: None,
             clip_paint_gesture: None,
             time_selection: None,
@@ -1817,6 +1856,7 @@ impl EditorView {
     fn playback_start_frame(&self) -> u64 {
         // The user's placed position wins, even outside an enabled loop; the
         // acknowledged canonical loop only supplies a start when none is placed.
+        // Enabling the loop retires an earlier point cursor (Pulse #3838).
         // A whole-clip selection replaces the point cursor, not a time range.
         if let Some(selection) = self.normalized_time_selection() {
             return selection.start();

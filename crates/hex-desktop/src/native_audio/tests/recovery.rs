@@ -128,7 +128,7 @@ fn replacement_discards_pending_old_failure_and_correlates_new_result_under_back
 
 #[test]
 fn successful_open_without_confirmed_failure_keeps_output_and_emits_opened() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let service = Service::new(48_000, 16, MAX_RESIDENT_FRAMES).unwrap();
     let source = next_source(&service);
     let (events, receiver) = mpsc::sync_channel(1);

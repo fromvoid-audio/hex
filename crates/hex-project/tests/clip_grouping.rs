@@ -1671,6 +1671,7 @@ fn processed_repeated_audio_group_has_a_bounded_prepared_adoption_and_one_histor
     let command = |frames| Command::CommitArrangementBounce {
         target: target.clone(),
         in_place: true,
+        adoption: hex_project::BounceAdoption::NewTracks,
         files: vec![hex_project::BounceFile {
             source: hex_project::BounceSource::Arrangement,
             track,

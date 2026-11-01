@@ -1,4 +1,5 @@
 //! Explicit native recovery/relink dialogs; storage and media admission remain on workers.
+//! Missing media in the chosen source is resolved in the `missing_media` panel.
 use super::EditorView;
 use gpui::{Context, PathPromptOptions, PromptButton, PromptLevel, Window};
 use hex_session::service::{ProjectSource, Request};
@@ -10,6 +11,8 @@ pub(super) enum OpenKind {
     Untitled,
     SavedEdits,
     PreviousSave,
+    /// A copy kept by discard or copy-on-first-edit: a journal or its folder.
+    Kept,
 }
 
 impl EditorView {
@@ -53,7 +56,7 @@ impl EditorView {
         self.opening_project = true;
         self.pending_open_path = None;
         cx.spawn(async move |this, cx| {
-            let result: Result<Option<Request>, String> = async {
+            let result: Result<Option<ProjectSource>, String> = async {
                 if let Some(confirmation) = confirmation {
                     if confirmation.await.ok() != Some(1) {
                         return Ok(None);
@@ -66,9 +69,14 @@ impl EditorView {
                         .update(cx, |_, cx| {
                             cx.prompt_for_paths(PathPromptOptions {
                                 files: true,
-                                directories: false,
+                                // Kept copies may be hidden dot-files: their folder is accepted.
+                                directories: matches!(kind, OpenKind::Kept),
                                 multiple: false,
-                                prompt: Some("choose saved project".into()),
+                                prompt: Some(if matches!(kind, OpenKind::Kept) {
+                                    "choose kept session".into()
+                                } else {
+                                    "choose saved project".into()
+                                }),
                             })
                         })
                         .map_err(|e| e.to_string())?;
@@ -86,47 +94,27 @@ impl EditorView {
                         OpenKind::Relink => ProjectSource::Saved(path),
                         OpenKind::SavedEdits => ProjectSource::SavedJournal(path),
                         OpenKind::PreviousSave => ProjectSource::PreviousSave(path),
+                        OpenKind::Kept => hex_session::service::kept_journal(&path)?,
                         OpenKind::Untitled => return Ok(None),
                     }
                 };
-                let inspect_source = source.clone();
-                let missing = cx
-                    .background_executor()
-                    .spawn(async move { hex_session::service::missing_assets(&inspect_source) })
-                    .await?;
-                let mut relinks = BTreeMap::new();
-                for (asset, original) in missing {
-                    let response = this
-                        .update(cx, |_, cx| {
-                            cx.prompt_for_paths(PathPromptOptions {
-                                files: true,
-                                directories: false,
-                                multiple: false,
-                                prompt: Some(
-                                    format!("locate missing media · {}", original.display()).into(),
-                                ),
-                            })
-                        })
-                        .map_err(|e| e.to_string())?;
-                    let Some(mut paths) = response
-                        .await
-                        .map_err(|e| e.to_string())?
-                        .map_err(|e| e.to_string())?
-                    else {
-                        return Ok(None);
-                    };
-                    let Some(path) = paths.pop() else {
-                        return Ok(None);
-                    };
-                    relinks.insert(asset, path);
-                }
-                Ok(Some(Request::OpenWith { source, relinks }))
+                Ok(Some(source))
             }
             .await;
             let _ = this.update(cx, |view, cx| {
                 view.opening_project = false;
                 match result {
-                    Ok(Some(request)) => view.begin_open_request(request),
+                    // Missing files open the relink panel instead of failing.
+                    Ok(Some(source)) => view.open_checking_missing_media(
+                        source.clone(),
+                        hex_session::DocumentAudioMode::Resident,
+                        None,
+                        Request::OpenWith {
+                            source,
+                            relinks: BTreeMap::new(),
+                        },
+                        cx,
+                    ),
                     Ok(None) => view.status = "project recovery cancelled".into(),
                     Err(reason) => view.error = Some(reason.to_lowercase().into()),
                 }

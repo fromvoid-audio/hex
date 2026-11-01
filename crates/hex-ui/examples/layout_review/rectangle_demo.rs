@@ -149,7 +149,7 @@ impl RectangleDemo {
             return false;
         };
         let policy = if self.kind == Kind::Section {
-            RectangleSelectionPolicy::Toggle
+            RectangleSelectionPolicy::Section
         } else {
             RectangleSelectionPolicy::Range
         };

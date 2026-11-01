@@ -8,6 +8,7 @@ use crate::MediaBank;
 use hex_engine::native_device_resources::{
     DeviceResourceAdmission, DeviceResourcePhase, PreparedDeviceResources,
 };
+use std::time::{Duration, Instant};
 
 mod bounce;
 mod runtime_inputs;
@@ -474,7 +475,57 @@ impl Inputs<'_> {
         policy: ResidentPublicationPolicy,
         section_loop: Option<hex_project::LoopRegion>,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let mut playback = playback_with_loop(snapshot, section_loop)?;
+        let playback = playback_with_loop(snapshot, section_loop)?;
+        self.publish_tagged_playback(snapshot, project, sink, metadata, policy, playback)
+    }
+    /// An in-place bounce (or its Undo/Redo) adopts at the callback witness.
+    /// Stopped keeps the raw cursor; playing restarts audio live at the cursor,
+    /// so neither carried voices nor detached tails duplicate the baked PCM.
+    fn publish_fenced_bounce(
+        &self,
+        snapshot: &mut Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        context: hex_engine::AudioSourceContext,
+        position: ArrangementEditPosition,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        if !position.playing {
+            return self.publish_stopped_at_frame(snapshot, project, sink, context, position.frame);
+        }
+        let mut playback = playback_with_loop(snapshot, position.section_loop)?;
+        if !playback.request_live_restart() {
+            return Err(SessionError::Invalid(
+                "bounce in place has no live runtime to restart",
+            ));
+        }
+        let requires_preroll = snapshot.prepared.arrangement_seek_requires_preroll();
+        self.publish_tagged_playback(
+            snapshot,
+            project,
+            sink,
+            ResidentPublicationMetadata {
+                context,
+                device_preview: None,
+                tuning_preview: None,
+                seek_request: None,
+                stopped_restore: false,
+                computer_keyboard_request: None,
+                gain_recording_track: None,
+                requires_preroll,
+            },
+            ResidentPublicationPolicy::ArrangementEdit,
+            playback,
+        )
+    }
+    fn publish_tagged_playback(
+        &self,
+        snapshot: &mut Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+        mut playback: Playback,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
         let previous = snapshot.inputs.clone();
         let mut selected = previous.clone();
         selected.attach(project, &mut playback)?;
@@ -684,16 +735,38 @@ pub(super) fn execute_command(
     resident: &mut Option<Snapshot>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
+    execute_command_timed(
+        session, command, previous, context, events, resident, admission, None,
+    )
+}
+/// `execute_command` that reports resident transition phases when measured.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_command_timed(
+    session: &mut Session,
+    command: Command,
+    previous: Option<&PreparedRevision>,
+    context: hex_engine::AudioSourceContext,
+    events: &mut WorkerEvents,
+    resident: &mut Option<Snapshot>,
+    admission: sampler_export::Admission<'_>,
+    phases: Option<&mut super::diagnostics::SectionPhases>,
+) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
     if session.audio_mode() == DocumentAudioMode::Resident
         && let Some(sink) = events.resident_audio()
     {
-        let (created, snapshot) = session.command_resident_snapshot(
-            command,
-            context,
-            sink,
-            admission,
-            resident.as_ref(),
-        )?;
+        let (created, snapshot) = session
+            .resident_transition_timed(
+                Transition::Command(Box::new(command)),
+                context,
+                sink,
+                admission,
+                resident.as_ref(),
+                None,
+                phases,
+            )?
+            .ok_or(SessionError::Invalid(
+                "resident command produced no transition",
+            ))?;
         let prepared = Arc::clone(&snapshot.prepared);
         *resident = Some(snapshot);
         Ok((created, prepared))
@@ -895,17 +968,30 @@ pub(super) fn prepare_import(
 ) -> Result<Snapshot, SessionError> {
     prepare_bounce_import(input, context, sink, admission, current, None, admit)
 }
-/// An in-place bounce uses the already-acquired stopped lease and a fresh
-/// reconstructed runtime, so carried live voices cannot duplicate baked tails.
+/// An in-place bounce passes the applied source context it fences after its
+/// render. The lease admits playing (Pulse #3784): a stopped witness keeps the
+/// raw cursor and a playing one restarts audio at the cursor, so carried live
+/// voices cannot duplicate baked tails. The caller cancels it on failure.
 pub(super) fn prepare_bounce_import(
     input: crate::import_batch::Preparation<'_>,
     context: hex_engine::AudioSourceContext,
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
     current: Option<&Snapshot>,
-    stopped: Option<u64>,
+    fence: Option<hex_engine::AudioSourceContext>,
     admit: &mut dyn FnMut() -> Result<(), SessionError>,
 ) -> Result<Snapshot, SessionError> {
+    let position = fence
+        .map(|source| {
+            crate::service::stopped_arrangement::acquire_position(
+                sink,
+                source,
+                input.shutdown,
+                None,
+                true,
+            )
+        })
+        .transpose()?;
     let inputs = Inputs {
         plugin_effect: None,
         restoring_plugin_state: false,
@@ -932,8 +1018,8 @@ pub(super) fn prepare_bounce_import(
         context,
     )?;
     admit()?;
-    if let Some(frame) = stopped {
-        inputs.publish_stopped_at_frame(&mut snapshot, input.project, sink, context, frame)?;
+    if let Some(position) = position {
+        inputs.publish_fenced_bounce(&mut snapshot, input.project, sink, context, position)?;
     } else {
         inputs.publish(&mut snapshot, input.project, sink, context)?;
     }
@@ -1060,6 +1146,78 @@ pub(super) fn import_file(
     Ok(prepared)
 }
 
+/// Decode found files for an in-place relink. Each is resampled like an import;
+/// the session transaction then checks them against the saved asset metadata.
+pub(super) fn decode_relinks(
+    session: &Session,
+    relinks: BTreeMap<hex_project::AssetId, PathBuf>,
+    allowance: u64,
+) -> Result<Vec<(hex_project::AssetId, PreparedImport)>, SessionError> {
+    if session.audio_mode() != DocumentAudioMode::Resident {
+        return Err(SessionError::Invalid(
+            "relinking in place needs resident audio · reopen the project to relink",
+        ));
+    }
+    let output_limit = usize::try_from(allowance)
+        .map_err(|_| SessionError::Invalid("resident frame limit exceeds addressable range"))?;
+    if output_limit == 0 {
+        return Err(SessionError::Invalid("resident audio frame limit reached"));
+    }
+    let mut prepared = Vec::new();
+    prepared
+        .try_reserve_exact(relinks.len())
+        .map_err(|_| SessionError::Allocation)?;
+    for (asset, path) in relinks {
+        if session.shutdown.load(Ordering::Acquire) {
+            return Err(SessionError::Invalid("relink cancelled"));
+        }
+        let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
+        let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
+        prepared.push((
+            asset,
+            PreparedImport::at_rate(
+                decoded,
+                session.project().sample_rate(),
+                ResampleLimits {
+                    max_source_frames: IMPORT_FRAME_LIMIT,
+                    max_output_frames: output_limit,
+                },
+            )?,
+        ));
+    }
+    Ok(prepared)
+}
+
+/// Relink offline media through the resident native publication path.
+pub(super) fn relink_files(
+    session: &mut Session,
+    relinks: BTreeMap<hex_project::AssetId, PathBuf>,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    current: &mut Option<Snapshot>,
+) -> Result<Arc<PreparedRevision>, SessionError> {
+    let allowance = import_frame_allowance(session, sink, admission, current.as_ref())?;
+    let prepared = decode_relinks(session, relinks, allowance)?;
+    let expected = session.project().clone();
+    let mut accepted = None;
+    let revision = session.relink_offline_media_revision_using(
+        prepared,
+        &expected,
+        current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
+        || Ok(()),
+        |input, admit| {
+            let snapshot =
+                prepare_import(input, context, sink, admission, current.as_ref(), admit)?;
+            let prepared = Arc::clone(&snapshot.prepared);
+            accepted = Some(snapshot);
+            Ok(prepared)
+        },
+    )?;
+    *current = accepted;
+    Ok(revision)
+}
+
 enum Transition {
     Command(Box<Command>),
     PluginEffect {
@@ -1082,7 +1240,7 @@ enum Transition {
     },
     BounceHistory {
         redo: bool,
-        frame: u64,
+        position: ArrangementEditPosition,
     },
 }
 
@@ -1667,17 +1825,17 @@ impl Session {
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
     }
-    pub(super) fn stopped_bounce_history_snapshot(
+    pub(super) fn bounce_history_snapshot(
         &mut self,
         redo: bool,
-        frame: u64,
+        position: ArrangementEditPosition,
         context: hex_engine::AudioSourceContext,
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
         self.resident_transition(
-            Transition::BounceHistory { redo, frame },
+            Transition::BounceHistory { redo, position },
             context,
             sink,
             admission,
@@ -1704,6 +1862,86 @@ impl Session {
             })
     }
 
+    /// The next Undo/Redo step changes only section markers (Pulse #3823).
+    pub(super) fn section_history_marker_only(&self, redo: bool) -> bool {
+        !self.editor.next_section_history_requires_publication(redo)
+            && self
+                .editor
+                .inspect_history(redo, |source, target| {
+                    source.arrangement_sections() != target.arrangement_sections()
+                        && source.differs_only_in_arrangement_sections(target)
+                })
+                .unwrap_or(false)
+    }
+    /// Marker-only section edits and their history steps change no playback
+    /// input (Pulse #3823). Commit canonically and republish the current
+    /// resident preparation under the new editor revision. Publication still
+    /// runs because the native source context must follow the revision; only
+    /// `prepare_transition` is skipped. A failed publication leaves the current
+    /// snapshot and history unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn section_marker_transition(
+        &mut self,
+        command: Option<Command>,
+        redo: bool,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: &mut Snapshot,
+        phases: &mut super::diagnostics::SectionPhases,
+    ) -> Result<Option<(Created, Arc<PreparedRevision>)>, SessionError> {
+        let started = Instant::now();
+        let mut publish_time = Duration::ZERO;
+        let inputs = Inputs {
+            plugin_effect: None,
+            restoring_plugin_state: false,
+            preparing_edit: false,
+            predecessor: None,
+            native: NativeSamplerSources::Committed(&self.native_assets),
+            limits: self.native_reservation.ok_or(SessionError::Invalid(
+                "resident resource reservation unavailable",
+            ))?,
+            max_frames: self.max_resident_frames,
+            shutdown: &self.shutdown,
+            cancel: None,
+            admission,
+            current: None,
+            legacy: self
+                .media
+                .values()
+                .flat_map(|m| [&m.source_audio, &m.audio])
+                .collect(),
+        };
+        let publish = |source: &Project, project: &Project| {
+            if !source.differs_only_in_arrangement_sections(project) {
+                return Err(SessionError::Invalid(
+                    "section marker edit changed playback input",
+                ));
+            }
+            let publish_started = Instant::now();
+            inputs.publish(current, project, sink, context)?;
+            publish_time = publish_started.elapsed();
+            Ok(Arc::clone(&current.prepared))
+        };
+        let result = match command {
+            Some(command) => self
+                .editor
+                .execute_prepared_transition(command, publish)
+                .map(Some),
+            None => if redo {
+                self.editor.redo_prepared_transition(publish)
+            } else {
+                self.editor.undo_prepared_transition(publish)
+            }
+            .map(|prepared| prepared.map(|prepared| (Created::None, prepared))),
+        };
+        let finish_started = Instant::now();
+        sink.finish_resident_effect_edit(context, result.is_ok());
+        phases.finish = finish_started.elapsed();
+        phases.publish = publish_time;
+        phases.edit = (finish_started - started).saturating_sub(publish_time);
+        result
+    }
     pub(super) fn section_history_requires_publication(&self, redo: bool) -> bool {
         self.editor.next_section_history_requires_publication(redo)
             || self
@@ -1726,6 +1964,7 @@ impl Session {
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
+        phases: &mut super::diagnostics::SectionPhases,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
         let cursor = if position.playing {
             None
@@ -1753,7 +1992,15 @@ impl Session {
                 section_loop,
             },
         };
-        self.resident_transition(transition, context, sink, admission, current, None)
+        self.resident_transition_timed(
+            transition,
+            context,
+            sink,
+            admission,
+            current,
+            None,
+            Some(phases),
+        )
     }
     pub(super) fn command_resident_snapshot(
         &mut self,
@@ -1895,6 +2142,24 @@ impl Session {
         current: Option<&Snapshot>,
         cancel: Option<&AtomicBool>,
     ) -> Result<Option<(Created, Snapshot)>, SessionError> {
+        self.resident_transition_timed(transition, context, sink, admission, current, cancel, None)
+    }
+    /// `phases` receives control-worker durations; `edit` is the remainder of
+    /// the canonical transition around preparation and publication.
+    #[allow(clippy::too_many_arguments)]
+    fn resident_transition_timed(
+        &mut self,
+        transition: Transition,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+        cancel: Option<&AtomicBool>,
+        phases: Option<&mut super::diagnostics::SectionPhases>,
+    ) -> Result<Option<(Created, Snapshot)>, SessionError> {
+        let started = Instant::now();
+        let mut prepare_time = Duration::ZERO;
+        let mut publish_time = Duration::ZERO;
         if let Transition::Command(command)
         | Transition::PluginEffect { command, .. }
         | Transition::MidiCommand(command)
@@ -1936,8 +2201,8 @@ impl Session {
         let table = self.sine_table();
         let transforms = &self.audio_transforms;
         let waveforms = &self.audio_clip_waveforms;
-        let stopped_bounce_frame = match &transition {
-            Transition::BounceHistory { frame, .. } => Some(*frame),
+        let bounce_position = match &transition {
+            Transition::BounceHistory { position, .. } => Some(*position),
             _ => None,
         };
         let stopped_cursor = match &transition {
@@ -1965,6 +2230,7 @@ impl Session {
             } else {
                 context
             };
+            let prepare_started = Instant::now();
             let mut snapshot = inputs.prepare_transition(
                 source,
                 project,
@@ -1976,8 +2242,10 @@ impl Session {
                 waveforms,
                 context,
             )?;
-            if let Some(frame) = stopped_bounce_frame {
-                inputs.publish_stopped_at_frame(&mut snapshot, project, sink, context, frame)?;
+            let publish_started = Instant::now();
+            prepare_time = publish_started - prepare_started;
+            if let Some(position) = bounce_position {
+                inputs.publish_fenced_bounce(&mut snapshot, project, sink, context, position)?;
             } else if let Some(cursor) = stopped_cursor {
                 inputs.publish_stopped_section(&mut snapshot, project, sink, context, cursor)?;
             } else if section_transition {
@@ -2016,6 +2284,7 @@ impl Session {
             } else {
                 inputs.publish(&mut snapshot, project, sink, context)?;
             }
+            publish_time = publish_started.elapsed();
             Ok(snapshot)
         };
         let result = match transition {
@@ -2040,7 +2309,16 @@ impl Session {
                 result.map(|result| result.map(|snapshot| (Created::None, snapshot)))
             }
         };
+        let finish_started = Instant::now();
         sink.finish_resident_effect_edit(context, result.is_ok());
+        if let Some(phases) = phases {
+            phases.finish = finish_started.elapsed();
+            phases.prepare = prepare_time;
+            phases.publish = publish_time;
+            phases.edit = (finish_started - started)
+                .saturating_sub(prepare_time)
+                .saturating_sub(publish_time);
+        }
         result
     }
 }

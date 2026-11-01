@@ -1,7 +1,9 @@
 //! Revision-bound structural intent and the existing canonical resident transition.
 //! The short, bounded native handshake runs only on the control worker. It never
 //! waits for UI delivery, and priority Stop remains on the native command path.
+use super::diagnostics::SectionPhases;
 use super::*;
+use std::time::Instant;
 
 pub(super) fn is_command(command: &Command) -> bool {
     matches!(
@@ -57,9 +59,40 @@ pub(super) fn command(
         return session.command_prepared_revision(command, previous);
     }
     if !structural {
-        return resident_audio::execute_command(
-            session, command, previous, context, events, resident, admission,
+        // Marker-only edits take no callback lease; fence stays zero.
+        let mut phases = SectionPhases::default();
+        if session.audio_mode() == DocumentAudioMode::Resident
+            && let Some(sink) = events.resident_audio()
+            && let Some(current) = resident.as_mut()
+        {
+            let result = session
+                .section_marker_transition(
+                    Some(command),
+                    false,
+                    context,
+                    sink,
+                    admission,
+                    current,
+                    &mut phases,
+                )
+                .and_then(|result| {
+                    result.ok_or(SessionError::Invalid("section edit produced no candidate"))
+                });
+            events.record_section_phases(phases);
+            return result;
+        }
+        let result = resident_audio::execute_command_timed(
+            session,
+            command,
+            previous,
+            context,
+            events,
+            resident,
+            admission,
+            Some(&mut phases),
         );
+        events.record_section_phases(phases);
+        return result;
     }
     if previous.is_some_and(|prepared| prepared.gain_recording_track().is_some()) {
         return Err(SessionError::Invalid(
@@ -79,51 +112,18 @@ pub(super) fn command(
         }
         return session.command_prepared_revision(command, previous);
     }
-    let shutdown = Arc::clone(&session.shutdown);
-    let sink = events
-        .resident_audio()
-        .ok_or(SessionError::Invalid("native worker unavailable"))?;
-    let source_context = hex_engine::AudioSourceContext {
-        editor_revision: context.editor_revision.saturating_sub(1),
-        ..context
-    };
-    let position = super::stopped_arrangement::acquire_position(
-        sink,
-        source_context,
-        &shutdown,
-        None,
-        matches!(
-            &command,
-            Command::ReorderSectionBefore { .. }
-                | Command::ReorderSectionAfter { .. }
-                | Command::DuplicateArrangementSection(_)
-                | Command::DuplicateArrangementSectionAt { .. }
-        ),
-    )?;
-    let result = session.section_snapshot(
+    // Every section edit may run while playing: the callback's live handoff
+    // restarts audio at the cursor when history cannot carry over (#3784).
+    fenced_transition(
+        session,
         Some(command),
         false,
-        position,
         context,
-        sink,
+        events,
+        resident,
         admission,
-        resident.as_ref(),
-    );
-    match result {
-        Ok(Some((created, snapshot))) => {
-            let prepared = Arc::clone(&snapshot.prepared);
-            *resident = Some(snapshot);
-            Ok((created, prepared))
-        }
-        Ok(None) => {
-            sink.cancel_section_edit();
-            Err(SessionError::Invalid("section edit produced no candidate"))
-        }
-        Err(error) => {
-            sink.cancel_section_edit();
-            Err(error)
-        }
-    }
+    )?
+    .ok_or(SessionError::Invalid("section edit produced no candidate"))
 }
 #[allow(clippy::too_many_arguments)]
 pub(super) fn history(
@@ -134,6 +134,52 @@ pub(super) fn history(
     resident: &mut Option<resident_audio::Snapshot>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<Option<Arc<PreparedRevision>>, SessionError> {
+    Ok(
+        fenced_transition(session, None, redo, context, events, resident, admission)?
+            .map(|(_, prepared)| prepared),
+    )
+}
+/// Undo/Redo of a marker-only section step: republish without preparation.
+pub(super) fn marker_history(
+    session: &mut Session,
+    redo: bool,
+    context: hex_engine::AudioSourceContext,
+    events: &mut WorkerEvents,
+    resident: &mut Option<resident_audio::Snapshot>,
+    admission: sampler_export::Admission<'_>,
+) -> Result<Option<Arc<PreparedRevision>>, SessionError> {
+    let sink = events
+        .resident_audio()
+        .ok_or(SessionError::Invalid("native worker unavailable"))?;
+    let current = resident
+        .as_mut()
+        .ok_or(SessionError::Invalid("resident audio unavailable"))?;
+    let mut phases = SectionPhases::default();
+    let result = session.section_marker_transition(
+        None,
+        redo,
+        context,
+        sink,
+        admission,
+        current,
+        &mut phases,
+    );
+    events.record_section_phases(phases);
+    Ok(result?.map(|(_, prepared)| prepared))
+}
+/// One callback-fenced resident transition for an edit or its history step.
+/// The lease is cancelled unless a candidate commits; worker phases are
+/// recorded for the request's diagnostic outcome, including failures.
+#[allow(clippy::too_many_arguments)]
+fn fenced_transition(
+    session: &mut Session,
+    command: Option<Command>,
+    redo: bool,
+    context: hex_engine::AudioSourceContext,
+    events: &mut WorkerEvents,
+    resident: &mut Option<resident_audio::Snapshot>,
+    admission: sampler_export::Admission<'_>,
+) -> Result<Option<(Created, Arc<PreparedRevision>)>, SessionError> {
     let shutdown = Arc::clone(&session.shutdown);
     let sink = events
         .resident_audio()
@@ -142,31 +188,40 @@ pub(super) fn history(
         editor_revision: context.editor_revision.saturating_sub(1),
         ..context
     };
+    let mut phases = SectionPhases::default();
+    let fence = Instant::now();
     let position =
-        super::stopped_arrangement::acquire_position(sink, source_context, &shutdown, None, true)?;
-    match session.section_snapshot(
-        None,
-        redo,
-        position,
-        context,
-        sink,
-        admission,
-        resident.as_ref(),
-    ) {
-        Ok(Some((_, snapshot))) => {
-            let prepared = Arc::clone(&snapshot.prepared);
-            *resident = Some(snapshot);
-            Ok(Some(prepared))
+        super::stopped_arrangement::acquire_position(sink, source_context, &shutdown, None, true);
+    phases.fence = fence.elapsed();
+    // A refused or timed-out lease is already cancelled by `acquire_position`.
+    let committed = position.and_then(|position| {
+        match session.section_snapshot(
+            command,
+            redo,
+            position,
+            context,
+            sink,
+            admission,
+            resident.as_ref(),
+            &mut phases,
+        ) {
+            Ok(Some((created, snapshot))) => {
+                let prepared = Arc::clone(&snapshot.prepared);
+                *resident = Some(snapshot);
+                Ok(Some((created, prepared)))
+            }
+            Ok(None) => {
+                sink.cancel_section_edit();
+                Ok(None)
+            }
+            Err(error) => {
+                sink.cancel_section_edit();
+                Err(error)
+            }
         }
-        Ok(None) => {
-            sink.cancel_section_edit();
-            Ok(None)
-        }
-        Err(error) => {
-            sink.cancel_section_edit();
-            Err(error)
-        }
-    }
+    });
+    events.record_section_phases(phases);
+    committed
 }
 
 #[cfg(test)]

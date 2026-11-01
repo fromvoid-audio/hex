@@ -68,7 +68,7 @@ fn seek_pcm(
 
 #[test]
 fn loaded_resident_library_import_comparison_and_direct_source_requests_are_atomic() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(48_000, 8192);
     let mut bytes = fs::read(&path).unwrap();
@@ -328,7 +328,7 @@ fn loaded_resident_library_import_comparison_and_direct_source_requests_are_atom
 
 #[test]
 fn resource_free_library_import_and_audible_comparison_publish_native_graphs() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::new();
     h.next();
