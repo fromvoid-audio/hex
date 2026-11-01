@@ -1,10 +1,6 @@
 use super::*;
 use crate::import_batch_decode::{AudioBatchCancel, AudioBatchPhase};
-use std::{
-    fs,
-    sync::atomic::AtomicU64,
-    time::{Duration, Instant},
-};
+use std::{fs, sync::atomic::AtomicU64, time::Duration};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Files(PathBuf);
 impl Files {
@@ -45,14 +41,14 @@ impl Drop for Files {
         fs::remove_dir_all(&self.0).unwrap();
     }
 }
+/// Generous hang bound, not a latency budget: unoptimized batch decode and
+/// preparation can take several seconds per event on a loaded machine.
+const EVENT_BOUND: Duration = Duration::from_secs(60);
 fn event(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match service.try_event() {
-            Ok(e) => return e,
-            Err(TryRecvError::Empty) if Instant::now() < deadline => thread::yield_now(),
-            Err(error) => panic!("worker result absent: {error:?}"),
-        }
+    // Blocks on the event channel; the old 5 s yield-spin both raced and burnt CPU.
+    match service.events.recv_timeout(EVENT_BOUND) {
+        Ok(e) => e,
+        Err(error) => panic!("worker result absent after {EVENT_BOUND:?}: {error:?}"),
     }
 }
 fn service() -> (Service, Event) {
