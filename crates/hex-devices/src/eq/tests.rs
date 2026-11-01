@@ -743,3 +743,65 @@ fn legacy_shelf_semantics_report_actual_lane_refusals_without_disabling_authored
             .unwrap()
     );
 }
+#[test]
+fn channel_mode_switch_crossfades_without_a_discontinuity() {
+    // Pulse #4122: a stereo -> mid/side switch used to restart from empty
+    // history (or refuse inheritance), producing a step under a +12 dB bell.
+    let mut stereo = EqState::default();
+    stereo
+        .add(Node::new(NodeId::new(1).unwrap(), 1000.0, 12.0, 0).unwrap())
+        .unwrap();
+    stereo
+        .add(Node::new(NodeId::new(2).unwrap(), 1000.0, -6.0, 3).unwrap())
+        .unwrap();
+    let mut mid_side = stereo.clone();
+    mid_side.mode = 2;
+    for rate in [44_100_u32, 48_000, 192_000] {
+        for block in [1_usize, 64, 113] {
+            let before = runtime::PreparedEq::new(stereo.clone(), rate).unwrap();
+            let after = runtime::PreparedEq::new(mid_side.clone(), rate).unwrap();
+            let warm = rate as usize / 10;
+            let switched = 4 * rate as usize / 100;
+            let sine = |n: usize| {
+                let phase = std::f64::consts::TAU * 1000.0 * n as f64 / f64::from(rate);
+                [(0.5 * phase.sin()) as f32, (0.3 * phase.cos()) as f32]
+            };
+            let mut input: Vec<_> = (0..warm + switched).map(sine).collect();
+            let mut old = before.create_runtime();
+            for chunk in input[..warm].chunks_mut(block) {
+                old.process_block(chunk, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            }
+            let mut new = after.create_runtime();
+            assert!(new.can_copy_history_from(old.as_ref()));
+            assert!(new.can_retarget_parameters_from(old.as_ref()));
+            new.copy_history_from(old.as_ref());
+            let mut reference = after.create_runtime();
+            let mut expected: Vec<_> = input[warm..].to_vec();
+            for chunk in expected.chunks_mut(block) {
+                reference.process_block(chunk, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            }
+            let fade = (rate as usize * 256).div_ceil(48_000);
+            for chunk in input[warm..warm + fade - 1].chunks_mut(block) {
+                new.process_block(chunk, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            }
+            assert!(!new.is_quiescent(), "{rate} Hz block {block}");
+            for chunk in input[warm + fade - 1..].chunks_mut(block) {
+                new.process_block(chunk, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            }
+            // The crossfade ends exactly on the new routing from empty history.
+            assert_eq!(input[warm + fade..], expected[fade..], "{rate} Hz");
+            let step = |frames: &[StereoFrame]| {
+                frames
+                    .windows(2)
+                    .flat_map(|w| [(w[1][0] - w[0][0]).abs(), (w[1][1] - w[0][1]).abs()])
+                    .fold(0.0_f32, f32::max)
+            };
+            let steady = step(&input[warm / 2..warm]).max(step(&input[warm + fade..]));
+            let across = step(&input[warm - 1..warm + fade + 1]);
+            assert!(
+                across <= steady * 1.25,
+                "{rate} Hz block {block}: switch step {across} vs steady {steady}"
+            );
+        }
+    }
+}

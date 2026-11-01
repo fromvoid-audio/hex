@@ -260,6 +260,64 @@ fn automated_saturator_callback_publication_and_late_failure_retry_are_allocatio
         .map_err(|_| "saturator allocation probe panicked")?
         .map_err(Into::into)
 }
+/// Pulse #4122: a flexible EQ stereo to mid/side switch during playback
+/// captures the outgoing routing into fade storage allocated at runtime
+/// creation. The published handoff and the crossfading callback blocks
+/// allocate and free nothing.
+#[test]
+fn flexible_eq_channel_mode_switch_crossfade_is_allocation_free() -> Result<(), Box<dyn Error>> {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| run_flexible_eq_mode_switch_probe().map_err(|e| e.to_string()))?
+        .join()
+        .map_err(|_| "flexible eq mode switch allocation probe panicked")?
+        .map_err(Into::into)
+}
+fn run_flexible_eq_mode_switch_probe() -> Result<(), Box<dyn Error>> {
+    use hex_devices::eq::{EqState, Node, NodeId};
+    let (project, track, _) = source()?;
+    let mut editor = Editor::new(project, 16)?;
+    let device = editor.project().track(track).ok_or("track")?.devices()[0].id();
+    let mut settings = EqState::default();
+    settings.add(Node::new(NodeId::new(1)?, 1_000.0, 12.0, 0)?)?;
+    settings.add(Node::new(NodeId::new(2)?, 1_000.0, -6.0, 3)?)?;
+    editor.execute(Command::ReplaceDeviceState {
+        device,
+        state: settings.encode()?,
+    })?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "publish")?;
+    control
+        .command_with_ticket(PlaybackCommand::Play)
+        .map_err(|_| "play")?;
+    let mut output = [[0.0; 2]; 512];
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
+    settings.mode = 2;
+    editor.execute(Command::ReplaceDeviceState {
+        device,
+        state: settings.encode()?,
+    })?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "replacement")?;
+    // Small blocks keep the mode crossfade active across several callbacks.
+    let mut small = [[0.0; 2]; 64];
+    for _ in 0..8 {
+        measured_block(&mut callback, &mut small);
+    }
+    assert!(control.status.rejected_revision().is_none());
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
 #[test]
 fn automated_auto_pan_callback_publication_and_late_failure_retry_are_allocation_free()
 -> Result<(), Box<dyn Error>> {
