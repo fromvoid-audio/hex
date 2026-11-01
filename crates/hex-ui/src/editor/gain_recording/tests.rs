@@ -358,7 +358,7 @@ fn unexpected_gain_abort_remains_visible_and_keeps_its_custody_contract(cx: &mut
     editor.update(&mut visual, |view, _| {
         for (explicit_cancel, reason, expected) in [
             (false, AbortReason::Cancelled, "cancelled"),
-            (true, AbortReason::OutputFailed, "outputfailed"),
+            (true, AbortReason::OutputFailed, "the audio output failed"),
         ] {
             view.gain_recorder = Recorder::default();
             view.gain_recorder.track = Some(track);

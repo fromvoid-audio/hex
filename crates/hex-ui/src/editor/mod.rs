@@ -42,6 +42,7 @@ mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
 mod device_automation;
+mod leftover_recovery;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod navigation_metrics;
 mod plugin_effect;
@@ -142,6 +143,7 @@ mod midi_pan;
 mod midi_pitch_zoom;
 mod midi_recording;
 mod missing_media;
+mod user_errors;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
 mod midi_ruler;
@@ -386,6 +388,7 @@ actions!(
         RecoverUntitledProject,
         RecoverSavedProject,
         RecoverPreviousSave,
+        RecoverKeptSession,
         OpenSettings,
         OpenTuning,
         CloseTuning,
@@ -753,6 +756,7 @@ pub(super) struct EditorView {
     recovery: RecoveryState,
     stopped_playback_restore: Option<audio_admission::StoppedPlaybackRestore>,
     latency_rebuild: Option<audio_admission::LatencyRebuild>,
+    leftover_recovery: leftover_recovery::State,
     // Streamed documents replace their sampler output stopped; this frame
     // resumes playback once that edit settles (Pulse #3784).
     sampler_edit_resume: Option<u64>,
@@ -1035,6 +1039,8 @@ impl EditorView {
         view.audio_events = backend.audio_events;
         view.source_reservation = Some(backend.source_reservation);
         view.status = "preparing audio output".into();
+        // A session that ended unexpectedly may have left untitled work.
+        view.check_leftover_recovery(None);
         view
     }
 
@@ -1497,6 +1503,7 @@ impl EditorView {
             recovery: RecoveryState::default(),
             stopped_playback_restore: None,
             latency_rebuild: None,
+            leftover_recovery: Default::default(),
             sampler_edit_resume: None,
             deferred_play: None,
             offline_cursor: 0,

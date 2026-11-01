@@ -1022,7 +1022,7 @@ impl NumericControl {
             if self.marked.is_some() {
                 return;
             }
-            if let Ok(current) = self.spec.parse(&self.text)
+            if let Ok(current) = self.spec.parse_with_current(&self.text, Some(self.value))
                 && let Ok(value) = self.spec.step(current, direction, fine)
                 && let Ok(text) = self.spec.format(value)
             {
@@ -1115,7 +1115,7 @@ impl NumericControl {
         if !self.editing {
             return;
         }
-        match self.spec.parse(&self.text) {
+        match self.spec.parse_with_current(&self.text, Some(self.value)) {
             Ok(value) => {
                 let old = self.value;
                 if old != value {
@@ -1260,7 +1260,7 @@ impl NumericControl {
         if !self.text_modified && self.text == self.spec.format(self.value)? {
             Ok(self.value)
         } else {
-            self.spec.parse(&self.text)
+            self.spec.parse_with_current(&self.text, Some(self.value))
         }
     }
 
@@ -1725,7 +1725,7 @@ impl gpui::Render for NumericControl {
                     .rounded_none()
                     .bg(rgb(style.background))
                     .border_color(rgb(if self.invalid_text {
-                        0xff554c
+                        style.invalid
                     } else {
                         style.border
                     })),
@@ -2137,7 +2137,7 @@ fn value_field_sized(
         .justify_center()
         .border_1()
         .border_color(if invalid {
-            rgb(0xff554c)
+            rgb(style.invalid)
         } else {
             gpui::rgba(0)
         })
@@ -2219,7 +2219,7 @@ fn filled_slider(
                 .inset_0()
                 .border_1()
                 .border_color(rgb(if field.invalid {
-                    0xff554c
+                    field.style.invalid
                 } else {
                     field.style.border
                 })),

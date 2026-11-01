@@ -2528,6 +2528,60 @@ fn browser_preferences_coalesce_background_saves_and_preserve_corrupt_files(
 }
 
 #[gpui::test]
+fn browser_places_failed_save_survives_a_later_queued_success(cx: &mut TestAppContext) {
+    use gpui::VisualTestContext;
+    let directory = PreferencesTestDirectory::new();
+    let corrupt_path = directory.0.join("corrupt.json");
+    let good_path = directory.0.join("browser.json");
+    let bootstrap = cx.add_window(|_, _| Empty);
+    let handle = *bootstrap;
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let service = Service::new(48_000, 32, 8_000_000).expect("test service");
+            window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test(
+                    window,
+                    cx,
+                    service,
+                    Err("offline test".into()),
+                    corrupt_path.clone(),
+                    directory.0.join("recent-projects.json"),
+                )
+            })
+        })
+        .expect("editor window");
+    let visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    // Corrupt preferences are preserved, so the first save fails.
+    std::fs::write(&corrupt_path, b"not valid browser preferences").expect("corrupt fixture");
+    let first = directory.0.join("first-folder");
+    let second = directory.0.join("second-folder");
+    editor.update(cx, |view, cx| {
+        view.browser.places.push(first.clone());
+        view.queue_browser_places_save(cx);
+        // The queued save targets a writable file and succeeds.
+        view.browser.set_test_preferences_path(good_path.clone());
+        view.browser.places.push(second.clone());
+        view.queue_browser_places_save(cx);
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        hex_preferences::load(&good_path)
+            .expect("queued save")
+            .additional(),
+        &[first, second]
+    );
+    editor.read_with(cx, |view, _| {
+        let status = view.browser.places_status.as_deref().unwrap_or_default();
+        assert!(
+            status.contains("could not save browser places")
+                && status.contains("a later save succeeded"),
+            "earlier failure must stay visible after a queued success: {status:?}"
+        );
+    });
+}
+
+#[gpui::test]
 fn browser_sample_drop_above_first_track_shows_line_and_inserts_before_it(cx: &mut TestAppContext) {
     let (handle, editor, tracks, _directory, path) =
         browser_drag_fixture_with_tracks(cx, &["first", "second"]);
