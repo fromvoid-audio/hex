@@ -508,6 +508,7 @@ fn shared_source_transport_loop_admits_one_aggregate_voice_and_release_envelope(
                 factory.max_release_tail_frames(),
                 factory.max_events_per_block(),
                 factory.max_active_occurrences(),
+                false,
             ),
             Ok(44),
             "each contributor stays below the 64 voice limit"
@@ -1018,12 +1019,42 @@ fn mutable_transport_admission_respects_lower_device_event_and_voice_limits() {
         .expect("fixture transport loop");
 
     assert_eq!(
-        super::transport_loop_admission::admit_track(track, region, 16, 1, 64),
+        super::transport_loop_admission::admit_track(track, region, 16, 1, 64, false),
         Err(SessionPlaybackError::MutableInstrumentLoopDensity)
     );
     assert_eq!(
-        super::transport_loop_admission::admit_track(track, region, 16, 256, 1),
+        super::transport_loop_admission::admit_track(track, region, 16, 256, 1, false),
         Err(SessionPlaybackError::MutableInstrumentLoopDensity)
+    );
+    assert_eq!(
+        super::transport_loop_admission::admit_track(track, region, 16, 256, 1, true),
+        Err(SessionPlaybackError::MutableInstrumentLoopDensity),
+        "two held voices exceed one stealing voice too"
+    );
+}
+
+#[test]
+fn stealing_transport_loop_admission_bounds_held_voices_not_seam_releases() {
+    // The single chased loop note releases for longer than its silent gap,
+    // so each wrap's fresh chase overlaps the previous release.
+    let revision = prepare_mutable(&transport_loop_project(false));
+    let track = &revision.arrangement().tracks()[0];
+    let region = revision
+        .arrangement()
+        .loop_region()
+        .expect("fixture transport loop");
+    let admit = |voices, steals| {
+        super::transport_loop_admission::admit_track(track, region, 30_000, 256, voices, steals)
+    };
+    assert_eq!(admit(64, false), Ok(2), "releases cross the seam");
+    assert_eq!(
+        admit(1, false),
+        Err(SessionPlaybackError::MutableInstrumentLoopDensity)
+    );
+    assert_eq!(
+        admit(1, true),
+        Ok(2),
+        "only one voice is ever held; the envelope keeps the release"
     );
 }
 

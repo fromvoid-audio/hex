@@ -251,7 +251,8 @@ impl SessionPlayback {
                     .query_with_origin(origin, &timing, cut, end, &mut self.spans)
                     .map_err(SessionPlaybackError::Midi)?;
                 (
-                    prepared.work().active_voices,
+                    // Held density when the instrument steals releases.
+                    prepared.instrument_template().admitted_voices(),
                     self.spans.spans().filter(|s| s.start_frame == cut).count(),
                 )
             }

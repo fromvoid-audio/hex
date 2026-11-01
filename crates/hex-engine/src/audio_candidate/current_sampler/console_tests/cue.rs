@@ -1,7 +1,7 @@
 use super::*;
 use crate::{LaunchQuantization, PlaybackAction, SessionMidiOrigin, SessionPlaybackCommand};
 
-fn looping_source(
+pub(super) fn looping_source(
     notes: &[(BeatTime, BeatTime, u8, u8)],
     voices: u8,
 ) -> (
@@ -69,7 +69,7 @@ fn looping_source(
     }
     (editor, asset, track, clip)
 }
-fn source() -> crate::OwnedAudioSource {
+pub(super) fn source() -> crate::OwnedAudioSource {
     crate::OwnedAudioSource::try_resident(
         8000,
         vec![[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0; 2]],
