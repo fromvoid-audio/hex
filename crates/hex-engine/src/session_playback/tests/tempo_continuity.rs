@@ -259,3 +259,243 @@ fn legacy_linear_held_note_continues_without_retrigger_and_ends_at_its_new_gate(
             .all(|frame| *frame == [0.0; 2])
     );
 }
+
+#[test]
+fn tempo_remap_with_instrument_reenable_releases_suppression_at_new_loop_end() {
+    use hex_lattice::NativeInstrumentDefinition;
+
+    let definition = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.tempo.reenable"),
+        levels: [0.2, 0.4],
+        release_frames: 8,
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
+    snapshot.loop_region = Some(LoopRegion::new(0, 12_000, true).unwrap());
+    let enabled = with_test_instrument(
+        &legacy_project_from_snapshot(snapshot).unwrap(),
+        definition.id,
+        0,
+    );
+    let mut disabled_snapshot = enabled.snapshot();
+    disabled_snapshot.tracks[0]
+        .instrument
+        .as_mut()
+        .unwrap()
+        .bypassed = true;
+    let disabled = Project::from_legacy_snapshot(disabled_snapshot).unwrap();
+    let mut edited = Editor::new(enabled, 8).unwrap();
+    edited
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+
+    let mut previous = SessionPlayback::new(revision_with_instrument_registry(
+        &disabled,
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    render_frames(&mut previous, 64, 3_001);
+    let mut next = SessionPlayback::new(revision_with_instrument_registry(
+        edited.project(),
+        table,
+        &registry,
+    ))
+    .unwrap();
+    next.try_inherit_state_from(&mut previous).unwrap();
+    assert_eq!(next.arrangement_frame(), 6_002);
+    let until_wrap = 24_000 - 6_002;
+    let mut output = vec![[0.0; 2]; until_wrap + 64];
+    for chunk in output.chunks_mut(64) {
+        next.render(chunk).unwrap();
+    }
+    assert!(output[..until_wrap].iter().all(|frame| *frame == [0.0; 2]));
+    assert_eq!(output[until_wrap], [0.2; 2]);
+}
+
+#[test]
+fn tempo_remap_refuses_a_still_releasing_mutable_instrument_atomically() {
+    use hex_lattice::NativeInstrumentDefinition;
+
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.tempo.release"),
+            levels: [0.2, 0.4],
+            release_frames: 128,
+        },
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let old_project = with_test_instrument(&project(1.0, 0, 1 << 32), definition.metadata.id, 0);
+    let mut edited = Editor::new(old_project.clone(), 8).unwrap();
+    edited
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    for (frame, released) in [(3_001, false), (24_001, true)] {
+        for live in [true, false] {
+            let mut previous = ordinary_mutable_playback(&old_project, &registry);
+            previous.apply(SessionPlaybackCommand::Play).unwrap();
+            render_frames(&mut previous, 64, frame);
+            assert!(
+                previous.mutable_instruments[0]
+                    .as_ref()
+                    .unwrap()
+                    .proofs()
+                    .any(|proof| proof.note_off_sent == released)
+            );
+            let before = previous.arrangement_frame();
+            let mut candidate = ordinary_mutable_playback(edited.project(), &registry);
+            let result = if live {
+                candidate.try_inherit_state_live_from(&mut previous)
+            } else {
+                candidate.try_inherit_state_from(&mut previous)
+            };
+            assert!(
+                matches!(result, Err(SessionPlaybackError::MutableInstrumentActive)),
+                "frame={frame} live={live}: {result:?}"
+            );
+            assert_eq!(previous.arrangement_frame(), before);
+            assert!(previous.playing());
+        }
+    }
+}
+
+#[test]
+fn tempo_remap_after_instrument_changes_does_not_duplicate_old_note() {
+    use hex_lattice::NativeInstrumentDefinition;
+    let first = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.tempo.repeat-a"),
+        levels: [0.2, 0.4],
+        release_frames: 8,
+    };
+    let second = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.tempo.repeat-b"),
+        levels: [0.7, 0.9],
+        release_frames: 8,
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 2] = [&first, &second];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut snapshot = project(1.0, 0, 8 << 32).snapshot();
+    snapshot.loop_region = Some(LoopRegion::new(0, 12_000, true).unwrap());
+    let base = legacy_project_from_snapshot(snapshot).unwrap();
+    let first_project = with_test_instrument(&base, first.id, 0);
+    let second_project = with_test_instrument(&base, second.id, 0);
+    let mut previous = SessionPlayback::new(revision_with_instrument_registry(
+        &first_project,
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    render_frames(&mut previous, 64, 64);
+    let mut middle = SessionPlayback::new(revision_with_instrument_registry(
+        &second_project,
+        Arc::clone(&table),
+        &registry,
+    ))
+    .unwrap();
+    middle.try_inherit_state_from(&mut previous).unwrap();
+    render_frames(&mut middle, 64, 64);
+
+    let mut edited = Editor::new(first_project, 8).unwrap();
+    edited
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(revision_with_instrument_registry(
+        edited.project(),
+        table,
+        &registry,
+    ))
+    .unwrap();
+    next.try_inherit_state_from(&mut middle).unwrap();
+    assert_eq!(next.arrangement_frame(), 256);
+    let wrap = next.performance_frame() + (24_000 - 256);
+    assert!(!next.suppressions.is_empty());
+    assert!(next.suppressions.iter().all(|s| s.until_frame <= wrap));
+    let mut output = [[0.0; 2]; 64];
+    next.render(&mut output).unwrap();
+    assert_eq!(output[..8], [[0.2; 2]; 8]);
+    assert!(output[8..].iter().all(|frame| *frame == [0.0; 2]));
+    render_frames(&mut next, 512, 24_000 - 256 - 64);
+    let mut after_wrap = [[0.0; 2]; 1];
+    next.render(&mut after_wrap).unwrap();
+    assert_eq!(after_wrap, [[0.2; 2]]);
+}
+
+#[test]
+fn tempo_remap_preserves_session_tail_after_return_to_arrangement() {
+    use hex_lattice::NativeInstrumentDefinition;
+    let definition = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.tempo.session-tail"),
+        levels: [0.2, 0.4],
+        release_frames: 1_024,
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let base = session_only_project(&project(1.0, 0, 8 << 32));
+    let original = with_test_instrument(&base, definition.id, 0);
+    let old_revision = revision_with_instrument_registry(&original, Arc::clone(&table), &registry);
+    let clip = old_revision.session().midi_clips()[0].id;
+    let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    let mut reference = SessionPlayback::new(old_revision).unwrap();
+    for playback in [&mut previous, &mut reference] {
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        render_frames(playback, 64, 128);
+        playback
+            .apply(SessionPlaybackCommand::BackToArrangement {
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        assert!(
+            playback
+                .releases
+                .iter()
+                .any(|entry| entry.timeline == ReleaseTimeline::Session)
+        );
+    }
+    let mut edited = Editor::new(original, 8).unwrap();
+    edited
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let mut next = SessionPlayback::new(revision_with_instrument_registry(
+        edited.project(),
+        table,
+        &registry,
+    ))
+    .unwrap();
+    next.try_inherit_state_from(&mut previous).unwrap();
+    assert!(
+        next.releases
+            .iter()
+            .any(|entry| entry.timeline == ReleaseTimeline::Session)
+    );
+    let mut actual = [[0.0; 2]; 128];
+    let mut expected = actual;
+    next.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
+    assert_eq!(actual, expected);
+}

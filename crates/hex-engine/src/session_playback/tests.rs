@@ -3,6 +3,7 @@ use crate::routed_midi_fixture;
 mod authored_history;
 mod cue;
 mod interactive_start;
+mod release_timeline;
 mod tempo_continuity;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
@@ -6714,11 +6715,11 @@ fn changing_session_instrument_identity_carries_old_held_voice_once() {
     let replaced = with_replaced_instrument_id(&original);
     let mut candidate = SessionPlayback::new(revision(&replaced, table)).unwrap();
     candidate.try_inherit_state_from(&mut previous).unwrap();
-    assert!(
-        candidate.releases.iter().any(|entry| {
-            entry.track_id == candidate.routes[0].id && entry.continuation.is_some()
-        })
-    );
+    assert!(candidate.releases.iter().any(|entry| {
+        entry.track_id == candidate.routes[0].id
+            && entry.continuation.is_some()
+            && entry.timeline == ReleaseTimeline::Session
+    }));
 
     let mut expected = [[0.0; 2]; 128];
     let mut actual = [[0.0; 2]; 128];
@@ -7348,6 +7349,10 @@ fn repeated_arrangement_instrument_edits_do_not_recapture_suppressed_occurrences
         .try_inherit_state_from(&mut second_revision)
         .unwrap();
     assert_eq!(third_revision.releases.len(), 1);
+    assert_eq!(
+        third_revision.releases[0].timeline,
+        ReleaseTimeline::Arrangement
+    );
     let mut after_two_edits = [[0.0; 2]; 64];
     third_revision.render(&mut after_two_edits).unwrap();
     assert_eq!(after_two_edits, [[0.2; 2]; 64]);
@@ -7766,6 +7771,75 @@ fn arrangement_instrument_bypass_releases_old_voice_and_reenable_does_not_chase(
     let mut future_onset = [[0.0; 2]; 1];
     reenabled.render(&mut future_onset).unwrap();
     assert_eq!(future_onset[0], [0.2; 2]);
+}
+
+#[test]
+fn reenabled_instrument_suppression_ends_at_the_loop_wrap_across_block_sizes() {
+    use hex_lattice::NativeInstrumentDefinition;
+
+    // Pulse #4124: the held note (beats 0..8) outlasts the loop over frames
+    // 0..12_000. Re-enabling must not chase it, but the next pass sounds.
+    let definition = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.reenable.loop"),
+        levels: [0.2, 0.4],
+        release_frames: 8,
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut looped = project(1.0, 0, 8 << 32).snapshot();
+    looped.loop_region = Some(LoopRegion::new(0, 12_000, true).unwrap());
+    let enabled = with_test_instrument(
+        &legacy_project_from_snapshot(looped).unwrap(),
+        definition.id,
+        0,
+    );
+    let mut bypassed_snapshot = enabled.snapshot();
+    bypassed_snapshot.tracks[0]
+        .instrument
+        .as_mut()
+        .unwrap()
+        .bypassed = true;
+    let bypassed = Project::from_legacy_snapshot(bypassed_snapshot).unwrap();
+    let cut = 3_001;
+    let mut outputs = Vec::new();
+    for block in [1, 64, 512] {
+        let mut disabled = SessionPlayback::new(revision_with_instrument_registry(
+            &bypassed,
+            Arc::clone(&table),
+            &registry,
+        ))
+        .unwrap();
+        disabled.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut buffer = vec![[0.0; 2]; block];
+        let mut remaining = cut;
+        while remaining > 0 {
+            let width = block.min(remaining);
+            disabled.render(&mut buffer[..width]).unwrap();
+            remaining -= width;
+        }
+        let mut reenabled = SessionPlayback::new(revision_with_instrument_registry(
+            &enabled,
+            Arc::clone(&table),
+            &registry,
+        ))
+        .unwrap();
+        reenabled.try_inherit_state_from(&mut disabled).unwrap();
+        let mut output = vec![[0.0; 2]; 12_000 - cut + 64];
+        for chunk in output.chunks_mut(block) {
+            reenabled.render(chunk).unwrap();
+        }
+        // No chase before the wrap; the next pass starts the note again.
+        assert!(
+            output[..12_000 - cut]
+                .iter()
+                .all(|frame| *frame == [0.0; 2])
+        );
+        assert_eq!(output[12_000 - cut], [0.2; 2], "block={block}");
+        outputs.push(output);
+    }
+    assert_eq!(outputs[0], outputs[1]);
+    assert_eq!(outputs[0], outputs[2]);
 }
 
 #[test]
