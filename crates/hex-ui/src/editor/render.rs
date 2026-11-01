@@ -1308,6 +1308,12 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &GroupSelection, window, cx| {
+                if crate::diagnostics::actions_enabled(cx) {
+                    crate::diagnostics::record_group_selection(
+                        cx,
+                        &view.group_selection_route(window),
+                    );
+                }
                 if view.audio_event_focus.is_focused(window) {
                     view.event_group_selected();
                 } else if view.section_has_focus(window) {
