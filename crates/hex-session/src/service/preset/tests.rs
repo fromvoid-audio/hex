@@ -436,7 +436,7 @@ fn device_preset_refusals_preserve_revision_history_and_audio() {
 }
 
 #[test]
-fn device_preset_valid_native_state_can_fail_live_admission_without_mutation() {
+fn device_preset_with_an_above_nyquist_fixed_tone_loads_and_compiles() {
     let dir = Directory::new();
     let path = dir.0.join("nyquist.hex-device-preset.json");
     let (service, added, device) =
@@ -511,27 +511,14 @@ fn device_preset_valid_native_state_can_fail_live_admission_without_mutation() {
             path,
         })
         .unwrap();
-    let refused = event(&service);
-    assert!(
-        refused.error.is_some(),
-        "fixed frequency at nyquist must refuse"
-    );
-    assert_eq!(refused.state.project, before.state.project);
-    assert_eq!(refused.state.revision, before.state.revision);
-    assert!(refused.state.can_redo);
-    assert!(refused.playback.is_none());
-    service
-        .submit(Request::RestorePlayback { generation: 7 })
-        .unwrap();
-    let restored = event(&service);
-    assert!(std::sync::Arc::ptr_eq(
+    // A fixed tone at nyquist silences only that operator (Pulse #3957).
+    let loaded = event(&service);
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    assert_ne!(loaded.state.project, before.state.project);
+    let compiled = loaded.playback.expect("above-nyquist preset compiles");
+    assert!(!std::sync::Arc::ptr_eq(
         &artifact,
-        restored
-            .playback
-            .as_ref()
-            .unwrap()
-            .prepared_revision()
-            .unwrap()
+        compiled.prepared_revision().unwrap()
     ));
 }
 

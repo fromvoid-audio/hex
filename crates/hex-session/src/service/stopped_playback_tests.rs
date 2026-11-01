@@ -38,7 +38,7 @@ fn render(playback: &mut Playback) -> Vec<hex_engine::Frame> {
 }
 
 #[test]
-fn vector_b_tuning_refusal_preserves_canonical_sound_and_stop_can_restore_a_restarted_handoff() {
+fn vector_b_tuning_edits_keep_canonical_sound_and_stop_can_restore_a_restarted_handoff() {
     let service = Service::new(48_000, 16, 0).expect("service");
     next(&service);
     let added = submit(
@@ -110,19 +110,14 @@ fn vector_b_tuning_refusal_preserves_canonical_sound_and_stop_can_restore_a_rest
     active.apply(PlaybackCommand::Play);
     render(&mut active);
 
-    // B ratio 128 exceeds Nyquist for this authored A4. Compilation must leave
-    // the accepted state/history intact and the active graph still renderable.
-    let refused = patch(&service, device, 4, ParameterValue::Float(128.0));
-    assert!(
-        refused
-            .error
-            .as_deref()
-            .is_some_and(|reason| reason.contains("mutable instrument note is unsupported"))
-    );
-    assert!(refused.playback.is_none());
-    assert_eq!(refused.state.project, canonical.project);
-    assert_eq!(refused.state.revision, canonical.revision);
-    assert_eq!(refused.state.can_undo, canonical.can_undo);
+    // B ratio 128 exceeds Nyquist for this authored A4. Only that oscillator
+    // is silenced (Pulse #3957): the edit compiles and the note still sounds.
+    let silenced = patch(&service, device, 4, ParameterValue::Float(128.0));
+    assert!(silenced.error.is_none(), "{:?}", silenced.error);
+    assert_ne!(silenced.state.revision, canonical.revision);
+    let mut silenced = silenced.playback.expect("above-nyquist edit compiles");
+    silenced.apply(PlaybackCommand::Play);
+    render(&mut silenced);
     render(&mut active);
 
     // A supported B ratio compiles. Its filter histories cannot carry over, so
