@@ -1433,21 +1433,16 @@ pub(crate) fn preview_edge_trim(
     } else {
         clip.fade
     };
+    // Trim changes geometry only: activation, name, flavor, gain and edit
+    // settings come from the original so trimming never reactivates a clip.
     Ok(Clip {
-        active: true,
-        name: clip.name.clone(),
-        flavor: clip.flavor,
-        gain: clip.gain,
-        edit: clip.edit.clone(),
-        id: clip.id,
-        asset: clip.asset,
         start,
         duration,
         source_offset,
         source_length,
-        looping: clip.looping,
         source_phase,
         fade,
+        ..clip.clone()
     })
 }
 
@@ -1508,20 +1503,15 @@ pub(crate) fn split_clip_at(
         left.source_phase = 0;
     }
     let right = Clip {
-        active: original.active,
-        name: original.name.clone(),
-        flavor: original.flavor,
         id: right_id,
-        asset: original.asset,
         start: frame,
         duration: right_duration,
         source_offset: right_source_offset,
         source_length: right_source_length,
-        looping: original.looping,
         source_phase: right_phase,
-        gain: original.gain,
         edit: None,
         fade: right_fade,
+        ..original.clone()
     };
     Ok((left, right))
 }
