@@ -165,7 +165,12 @@ impl EditorView {
                     let _ = this.update(cx, |view, cx| {
                         view.export_dialog_open = false;
                         if let Ok(Err(error)) = picked {
-                            view.error = Some(error.to_string().to_lowercase().into());
+                            view.error = Some(
+                                hex_session::service::text::lowercase_outside_verbatim(
+                                    &error.to_string(),
+                                )
+                                .into(),
+                            );
                         }
                         cx.notify();
                     });
@@ -227,10 +232,12 @@ impl EditorView {
                 // Native message bodies preserve case-sensitive recovery paths;
                 // status chrome normalizes app text through theme::text.
                 let recovery_message = match &event.result {
-                    Ok(report) => report
-                        .recovery_path
-                        .as_ref()
-                        .map(|path| format!("previous file is preserved at {}", path.display())),
+                    Ok(report) => report.recovery_path.as_ref().map(|path| {
+                        format!(
+                            "previous file is preserved at {}",
+                            hex_session::service::text::verbatim(path.display())
+                        )
+                    }),
                     Err(error) => Some(error.clone()),
                 };
                 if let (Some(handle), Some(message)) = (self.export_window.take(), recovery_message)
@@ -258,7 +265,10 @@ impl EditorView {
                             report.frames,
                             report
                                 .recovery_path
-                                .map(|path| format!(" · previous file at {}", path.display()))
+                                .map(|path| format!(
+                                    " · previous file at {}",
+                                    hex_session::service::text::verbatim(path.display())
+                                ))
                                 .unwrap_or_default()
                         );
                         self.error = None;
