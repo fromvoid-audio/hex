@@ -80,17 +80,22 @@ fn envelope_releases_from_level_at_note_off_even_during_attack() {
         release_seconds: 4.0 / 8_000.0,
     };
     let v = voice(prepare(&pcm, 8_000, settings), 60);
-    assert_eq!(v.release_frames(), 4);
+    // Expectations derive from the prepared release so a host declick floor
+    // changes only its length, not the linear law under test.
+    let release = v.release_frames();
+    assert!(release >= 4);
     for (age, expected) in [0.0, 0.25, 0.5, 0.75, 1.0, 0.875, 0.75, 0.625, 0.5]
         .into_iter()
         .enumerate()
     {
         assert_eq!(v.sample(age as u64, 30), [expected; 2]);
     }
-    assert_eq!(v.sample(2, 2), [0.5; 2]);
-    assert_eq!(v.sample(3, 2), [0.375; 2]);
-    assert_eq!(v.sample(5, 2), [0.125; 2]);
-    assert_eq!(v.sample(6, 2), [0.0; 2]);
+    // Note-off during attack (level 0.5 at gate 2) ramps linearly to zero.
+    for step in 0..release {
+        let expected = (0.5 * (1.0 - step as f64 / release as f64)) as f32;
+        assert_eq!(v.sample(2 + step, 2), [expected; 2]);
+    }
+    assert_eq!(v.sample(2 + release, 2), [0.0; 2]);
     assert_eq!(v.sample(0, 0), [0.0; 2]);
 }
 
@@ -114,7 +119,11 @@ fn one_shot_trigger_ignores_note_off_gate_honors_it_and_velocity_zero_is_silent(
     };
     let gated = voice(prepare(&pcm, 8_000, settings), 60);
     assert_eq!(gated.sample(1, 2), pcm[1]);
-    assert_eq!(gated.sample(2, 2), [0.0; 2]);
+    // A gated one-shot ends at note-off plus its prepared release, bounded
+    // by the source's natural end.
+    let end = gated.end_age_frames(2).unwrap();
+    assert_eq!(end, (2 + gated.release_frames()).min(8));
+    assert_eq!(gated.sample(end, 2), [0.0; 2]);
 }
 
 #[test]
