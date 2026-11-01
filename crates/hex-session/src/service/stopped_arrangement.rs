@@ -2,15 +2,8 @@
 //! edits and in-place bounces. No runtime, source or resource custody lives here.
 use super::*;
 use std::time::{Duration, Instant};
-pub(super) fn acquire(
-    sink: &mut dyn WorkerAudioSink,
-    context: hex_engine::AudioSourceContext,
-    shutdown: &AtomicBool,
-    cancel: Option<&hex_export::ExportControl>,
-) -> Result<u64, SessionError> {
-    acquire_position(sink, context, shutdown, cancel, false).map(|position| position.frame)
-}
-/// One callback-observed lease; only section move/copy/history may allow playing.
+/// One callback-observed lease; section edits and in-place bounces (with
+/// their history) may allow playing.
 pub(super) fn acquire_position(
     sink: &mut dyn WorkerAudioSink,
     context: hex_engine::AudioSourceContext,

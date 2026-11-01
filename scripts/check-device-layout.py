@@ -205,15 +205,14 @@ def analyze(root: Path, *, gallery: bool = True) -> list[str]:
     errors.extend(chrome_errors(read(preview), str(preview)))
 
     if gallery:
-        entry = Path("crates/hex-ui/examples/layout_review.rs")
-        # This example deliberately includes the owning source module, rather
-        # than a gallery copy with matching function names. Keep that explicit
-        # module boundary reviewable; this is not general Rust name resolution.
-        source = (root / entry).read_text() if (root / entry).is_file() else ""
-        pattern = r'#\[\s*path\s*=\s*"([^"]+)"\s*\]\s*(?:#\[allow\(dead_code\)\]\s*)?mod\s+device_composition\s*;'
-        reference = re.search(pattern, source)
-        if not reference or (root / entry.parent / reference.group(1)).resolve() != (root / UI / "device_composition.rs").resolve():
-            errors.append(f"{entry}: include the owning src/device_composition.rs module")
+        # Both launch targets must mount the production owner, not a gallery copy.
+        # This checks the explicit module boundary, not general Rust resolution.
+        for entry in (Path("crates/hex-ui/examples/layout_review.rs"), Path("crates/hex-sandbox/src/main.rs")):
+            source = (root / entry).read_text() if (root / entry).is_file() else ""
+            pattern = r'#\[\s*path\s*=\s*"([^"]+)"\s*\]\s*(?:#\[allow\(dead_code\)\]\s*)?mod\s+device_composition\s*;'
+            reference = re.search(pattern, source)
+            if not reference or (root / entry.parent / reference.group(1)).resolve() != (root / UI / "device_composition.rs").resolve():
+                errors.append(f"{entry}: include the owning src/device_composition.rs module")
         path = Path("crates/hex-ui/examples/layout_review/compositions.rs")
         stream = read(path)
         errors.extend(chrome_errors(stream, str(path)))
