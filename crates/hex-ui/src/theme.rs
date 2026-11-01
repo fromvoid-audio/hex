@@ -112,6 +112,8 @@ pub enum PaletteRole {
     SecondaryText,
     Hover,
     Border,
+    /// Unselected clip boundary/outline stroke.
+    ClipOutline,
     Grid,
     Text,
     Muted,
@@ -135,6 +137,7 @@ struct ThemeTokens {
     raised: u32,
     hover: u32,
     border: u32,
+    clip_outline: u32,
     muted: u32,
     primary_dark: u32,
     waveform: u32,
@@ -159,6 +162,8 @@ impl ThemeTokens {
             raised: darken(background, 6),
             hover: lighten(background, 12),
             border: darken(background, 17),
+            // Black keeps the shipped contrast against every clip fill.
+            clip_outline: 0x000000,
             muted: mix(background, text, 0.68),
             primary_dark: mix(background, primary, 0.08),
             waveform: contrast_text(mix(primary, text, 0.15), text),
@@ -176,6 +181,7 @@ impl ThemeTokens {
             PaletteRole::SecondaryText => self.secondary_text,
             PaletteRole::Hover | PaletteRole::Grid => self.hover,
             PaletteRole::Border => self.border,
+            PaletteRole::ClipOutline => self.clip_outline,
             PaletteRole::Text => self.colors.text.packed(),
             PaletteRole::Muted => self.muted,
             PaletteRole::Primary => self.colors.primary.packed(),
@@ -196,6 +202,31 @@ thread_local! {
 
 pub fn color(role: PaletteRole) -> u32 {
     ACTIVE_THEME.with(|theme| theme.get().color(role))
+}
+
+/// Test-only injection of the clip-outline role. The returned guard restores
+/// the derived tokens of the active preferences when dropped.
+#[cfg(test)]
+#[allow(dead_code)]
+#[must_use]
+pub(crate) fn inject_test_clip_outline(outline: u32) -> TestClipOutline {
+    ACTIVE_THEME.with(|theme| {
+        let mut tokens = theme.get();
+        tokens.clip_outline = outline;
+        theme.set(tokens);
+    });
+    TestClipOutline
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) struct TestClipOutline;
+
+#[cfg(test)]
+impl Drop for TestClipOutline {
+    fn drop(&mut self) {
+        apply_preferences(preferences());
+    }
 }
 
 pub fn preferences() -> hex_preferences::ThemePreferences {
