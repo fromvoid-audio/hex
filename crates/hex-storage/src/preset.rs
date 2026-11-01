@@ -118,7 +118,7 @@ impl std::fmt::Display for Error {
             Self::PublishedButNotDurable { path, .. } => write!(
                 f,
                 "complete device preset exists at {}; directory cleanup or durability failed",
-                path.display()
+                crate::text::verbatim(path.display())
             ),
         }
     }

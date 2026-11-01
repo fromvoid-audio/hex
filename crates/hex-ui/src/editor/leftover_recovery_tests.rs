@@ -175,7 +175,9 @@ fn discard_needs_confirmation_and_sets_the_work_aside_where_it_can_be_reopened(
     cx.simulate_prompt_answer("discard");
     cx.run_until_parked();
     assert!(!slot.exists(), "no longer offered");
-    let status = editor.read_with(cx, |view, _| view.status.clone());
+    let status = editor.read_with(cx, |view, _| {
+        hex_session::service::text::plain(&view.status)
+    });
     let kept = PathBuf::from(
         status
             .strip_prefix("unsaved work set aside at ")

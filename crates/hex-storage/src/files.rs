@@ -108,7 +108,7 @@ fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, StorageError> {
             std::io::ErrorKind::FileTooLarge,
             format!(
                 "{} exceeds the {} mib project document limit",
-                path.display(),
+                crate::text::verbatim(path.display()),
                 limit / (1024 * 1024)
             ),
         )

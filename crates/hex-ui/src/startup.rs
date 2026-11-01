@@ -33,6 +33,8 @@ impl Render for Blank {
 }
 
 fn report(cx: &mut App, error: &str, quit: impl FnOnce(&mut App) + 'static) {
+    // Shown and logged verbatim; only the verbatim-span marks are removed.
+    let error = &hex_session::service::text::plain(error);
     eprintln!("{error}");
     if let Some(unavailable) = crate::diagnostics::record_state(cx, "startup failed", Some(error)) {
         eprintln!("{unavailable}");
