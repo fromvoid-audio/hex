@@ -163,7 +163,9 @@ impl EditorView {
                         state.writable = false;
                         state.error = Some(format!(
                             "could not load audio import settings · {}",
-                            error.to_string().to_lowercase()
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string()
+                            )
                         ));
                     }
                 }
@@ -204,7 +206,9 @@ impl EditorView {
                     Err(error) => {
                         state.error = Some(format!(
                             "could not save audio import settings · {}",
-                            error.to_string().to_lowercase()
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string()
+                            )
                         ))
                     }
                 }
