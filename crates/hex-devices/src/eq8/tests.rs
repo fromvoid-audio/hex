@@ -1054,6 +1054,16 @@ fn handoff_smoothing_time_is_rate_independent_with_bounded_gain_steps() {
             offset = end;
         }
         assert_eq!(whole_audio, chunked_audio, "rate={rate}");
+        let mut last_output = 0.25_f64 * old.current_gain;
+        for frame in &whole_audio {
+            let output = f64::from(frame[0]);
+            assert!(
+                (output - last_output).abs() <= 0.25 * step / frames as f64 + 1.0e-7,
+                "rate={rate}: audible gain step exceeded the ramp"
+            );
+            last_output = output;
+        }
+        assert!((last_output - 0.25 * runtime.target_gain).abs() < 1.0e-7);
         assert_eq!(runtime.smooth_remaining, 0);
         assert_eq!(runtime.current_gain, runtime.target_gain);
         assert!(
