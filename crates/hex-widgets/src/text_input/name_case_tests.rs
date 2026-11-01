@@ -18,6 +18,8 @@ fn config() -> TextInputConfig {
         focus_marker: 0xaaaaaa,
         dial_rail: 0,
         hover: 0x404040,
+        selection: 0x3350a0,
+        invalid: 0xff554c,
         font_size: 12.0,
         text_case: crate::TextCase::Lowercase,
     };
@@ -70,6 +72,32 @@ fn fixture(cx: &mut TestAppContext, original: &str) -> (gpui::AnyWindowHandle, E
         .unwrap()
         .read_with(cx, |view, _| view.input.clone());
     (*handle, input)
+}
+
+#[gpui::test]
+fn selection_highlight_paints_the_injected_style_color(cx: &mut TestAppContext) {
+    const SELECTION: u32 = 0x2a6f3b;
+    let handle = cx.add_window(|window, cx| {
+        let input = cx.new(|cx| {
+            let mut config = config();
+            config.style.selection = SELECTION;
+            let mut input = TextInput::new(cx, config);
+            input.set_text("kick", cx);
+            input.select_all_text(cx);
+            input
+        });
+        input.update(cx, |input, _| input.focus(window));
+        NameCaseRoot { input }
+    });
+    let visual = &mut VisualTestContext::from_window(*handle, cx);
+    visual.run_until_parked();
+    let fills = visual.rendered_filled_quads("clip-name-input");
+    assert!(
+        fills
+            .iter()
+            .any(|(_, fill)| *fill == gpui::Background::from(gpui::rgb(SELECTION))),
+        "selection must follow ControlStyle::selection: {fills:?}"
+    );
 }
 
 #[gpui::test]

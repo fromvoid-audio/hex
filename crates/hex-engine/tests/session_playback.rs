@@ -121,6 +121,16 @@ fn fixture_with_session_note_duration(
             velocity: 96,
         })
         .expect("Session note");
+    if let Some(position) = multi_tempo_at {
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: beat(position),
+                tempo: Tempo::new(90_000_000).expect("tempo"),
+            })
+            .expect("tempo marker");
+    }
+    // The loop is given in frames, so set it after the tempo marker: a tempo
+    // edit keeps an existing loop brace on its beats and would move its end.
     if let Some((start, end)) = loop_region {
         editor
             .execute(Command::SetLoopRegion {
@@ -129,14 +139,6 @@ fn fixture_with_session_note_duration(
                 enabled: true,
             })
             .expect("loop region");
-    }
-    if let Some(position) = multi_tempo_at {
-        editor
-            .execute(Command::SetTempoPoint {
-                beat: beat(position),
-                tempo: Tempo::new(90_000_000).expect("tempo"),
-            })
-            .expect("tempo marker");
     }
     let revision = Arc::new(
         PreparedRevision::prepare(
@@ -2047,6 +2049,15 @@ fn offset_one_frame_arrangement_loop_prepares_and_renders_session_source() {
 #[test]
 fn four_quarter_launch_quantization_uses_the_repeated_tempo_across_a_seam() {
     let fixture = fixture(Some((0, 48_000)), Some(1));
+    // Premise: the 48 000-frame loop crosses the beat-1 tempo seam, so one pass
+    // is 1.75 beats and the fourth beat falls 0.5 beats into the third pass.
+    assert_eq!(
+        fixture
+            .project
+            .loop_region()
+            .map(|region| (region.start(), region.end())),
+        Some((0, 48_000))
+    );
     let mut playback = SessionPlayback::new(Arc::clone(&fixture.revision)).expect("kernel");
     playback.apply(SessionPlaybackCommand::Play).expect("play");
     let mut prefix = vec![[0.0; 2]; 47_999];

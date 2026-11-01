@@ -75,13 +75,7 @@ fn first_play(grouped: bool, stop_pending: bool) {
             },
         )
         .unwrap();
-    assert_eq!(
-        control
-            .audio_candidate_domain_usage()
-            .unwrap()
-            .occupied_domains,
-        1
-    );
+    assert_eq!(observed_usage(&control).occupied_domains, 1);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
         match control
@@ -103,13 +97,7 @@ fn first_play(grouped: bool, stop_pending: bool) {
         control.poll_audio_candidate_domain_preparation(domain),
         Err("candidate publication queue is full")
     );
-    assert_eq!(
-        control
-            .audio_candidate_domain_usage()
-            .unwrap()
-            .occupied_domains,
-        1
-    );
+    assert_eq!(observed_usage(&control).occupied_domains, 1);
     data.owner_mut()
         .unwrap()
         .run(|callback, _| callback.begin_block()); // only exact loan transfer
@@ -1435,7 +1423,7 @@ fn changed_file_pending_domain_refuses_without_loan_or_ack_and_keeps_pool_until_
             },
         )
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + LIFECYCLE_BOUND;
     loop {
         match control
             .poll_audio_candidate_domain_preparation(token)
@@ -1448,18 +1436,12 @@ fn changed_file_pending_domain_refuses_without_loan_or_ack_and_keeps_pool_until_
             other => panic!("unexpected preparation: {other:?}"),
         }
         assert!(std::time::Instant::now() < deadline);
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     // A normal verification refusal is accepted cleanup, not a poisoned Root
     // or a fabricated page/installation success. The real pool stays charged.
     assert!(control.candidate_root.eligible_claims_open());
-    assert_eq!(
-        control
-            .audio_candidate_domain_usage()
-            .unwrap()
-            .occupied_domains,
-        1
-    );
+    assert_eq!(observed_usage(&control).occupied_domains, 1);
     let measured = allocation_counter::measure(|| {
         data.owner_mut()
             .unwrap()
@@ -1482,7 +1464,7 @@ fn changed_file_pending_domain_refuses_without_loan_or_ack_and_keeps_pool_until_
             break;
         }
         assert!(std::time::Instant::now() < deadline);
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     drop(owner);
     drop(data);
