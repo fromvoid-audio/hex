@@ -1430,6 +1430,55 @@ class ModuleScopeTests(unittest.TestCase):
             (root / "crates/owner/src/plain.rs").write_text('include!("generated.rs");\n')
             self.assertEqual(select("crates/owner/src/parent/child.rs"), {})
 
+    def test_module_roots_skip_untouched_unnamed_submodules_but_never_leave_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = self.crate(root)
+            parent = "crates/owner/src/parent.rs"
+            filters = plan.module_test_filters(root, [parent], inventory, ["owner"])
+            self.assertEqual(filters, {"owner": ["parent::"]})
+            skips = lambda lines, *extra: plan.module_test_skips(
+                root, [parent, *extra], inventory, ["owner"], filters, {parent: lines})
+            # parent.rs has its own test: an edit naming no child skips both children.
+            self.assertEqual(skips("fn helper_changed() {}"),
+                             {"owner": ["parent::child::", "parent::untested::"]})
+            # Naming a child (or touching its file) keeps it.
+            self.assertEqual(skips("use child::Thing;"), {"owner": ["parent::untested::"]})
+            self.assertEqual(skips("fn x() {}", "crates/owner/src/parent/child.rs"),
+                             {"owner": ["parent::untested::"]})
+            # Without the root's own tests and with no kept child tests, nothing is skipped.
+            (root / parent).write_text("mod child;\nmod untested;\n")
+            self.assertEqual(skips("fn helper_changed() {}"), {})
+
+    def test_runtime_consumer_owner_gets_module_filters_and_doc_examples_gate_doctests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inventory = self.crate(root)
+            inventory[0]["name"] = "hex-storage"  # a reviewed runtime consumer, here the owner
+            path = "crates/owner/src/parent/child.rs"
+            self.assertEqual(plan.module_test_filters(root, [path], inventory, ["hex-storage"]),
+                             {"hex-storage": ["parent::child::"]})
+            self.assertEqual(plan.doc_example_owners(root, [path], inventory), [])
+            (root / path).write_text("/// ```\n/// assert!(true);\n/// ```\npub fn f() {}\n")
+            self.assertEqual(plan.doc_example_owners(root, [path], inventory), ["hex-storage"])
+        inventory = [{"name": "hex-session", "manifest": "crates/hex-session/Cargo.toml",
+                      "features": {"source-overview-test-support": []}, "dependencies": [], "targets": []}]
+        boundary = {"kind": "packages", "tests": [], "test_packages": ["hex-session"],
+                    "lint_packages": ["hex-session"], "single_run": {"hex-session": "source-overview-test-support"},
+                    "module_filters": {"hex-session": ["service::"]},
+                    "module_skips": {"hex-session": ["service::other::"]}, "doc_example_owners": []}
+        steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": ["hex-session"], "boundary": boundary,
+            "cargo_inventory": inventory, "paths": []})}
+        self.assertNotIn("module-doctests-hex-session", steps)
+        feature = next(s for s in steps.values() if ci.runs_rust_tests(s.argv))
+        self.assertEqual(feature.argv[-3:], ("service::", "--skip", "service::other::"))
+        steps = {s.step_id: s for s in ci.planned_steps({
+            "scope": "rust", "affected_packages": ["hex-session"],
+            "boundary": {**boundary, "doc_example_owners": ["hex-session"]},
+            "cargo_inventory": inventory, "paths": []})}
+        self.assertIn("module-doctests-hex-session", steps)
+
     def test_scoped_steps_append_filters_skip_examples_and_drop_per_step_zero_guard(self):
         inventory = [{"name": "hex-desktop", "manifest": "crates/hex-desktop/Cargo.toml",
                       "features": {"allocation-probe": []}, "dependencies": [], "targets": []},
