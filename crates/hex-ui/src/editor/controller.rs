@@ -22,6 +22,8 @@ use std::{
 };
 
 #[cfg(all(test, feature = "ui-test-support"))]
+mod export_refusal_tests;
+#[cfg(all(test, feature = "ui-test-support"))]
 mod project_replacement_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod verified_gain_tests;
@@ -1077,6 +1079,18 @@ impl EditorView {
         self.session_routes.clear();
     }
 
+    /// Retire editor export custody for an `Export` or `ExportRange` the
+    /// service refused before admission; no export event will ever arrive.
+    fn retire_unsubmitted_export(&mut self, request: &Request) {
+        if matches!(request, Request::Export(_) | Request::ExportRange { .. }) {
+            self.export_pending = false;
+            if let Some(control) = self.export_control.take() {
+                control.cancel();
+            }
+            self.export_window = None;
+        }
+    }
+
     pub(super) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
         if crate::diagnostics::actions_enabled(cx) {
             let query_bytes = self.browser.search.read(cx).text().len();
@@ -1313,9 +1327,7 @@ impl EditorView {
                         if loop_request {
                             self.pending_loop = None;
                         }
-                        if matches!(request, Request::Export(_)) {
-                            self.export_pending = false;
-                        }
+                        self.retire_unsubmitted_export(&request);
                         clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
                         if group_copy_request {
                             self.pending_group_copy = None;
@@ -1384,9 +1396,7 @@ impl EditorView {
                             }
                             self.audio_batch_progress = None;
                         }
-                        if matches!(request, Request::Export(_)) {
-                            self.export_pending = false;
-                        }
+                        self.retire_unsubmitted_export(&request);
                         if matches!(
                             request,
                             Request::SaveNew(_)
