@@ -147,7 +147,9 @@ impl Plugins {
                 Stage::Fence => match control.stopped_edit_fence_state(restore.fence) {
                     StoppedEditFenceState::Pending => {}
                     StoppedEditFenceState::Refused => {
-                        return Err("stop playback before restoring vst3 effects".into());
+                        // The editor holds Play until this restore settles;
+                        // another transport source started playback first.
+                        return Err("playback started before vst3 effects were restored".into());
                     }
                     StoppedEditFenceState::Ready => restore.stage = Stage::Return,
                 },
