@@ -23,8 +23,8 @@ pub(in crate::prepared) mod stream_fixture;
 mod utility_fixture;
 use crate::prepared::candidate_tests::{anchored, candidate, finish, recover, serial};
 
-/// Hang bound for lifecycle progress in these tests; normal runs take milliseconds.
-const LIFECYCLE_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
+/// Bound lifecycle waits so a broken handoff fails promptly; normal runs take milliseconds.
+const LIFECYCLE_BOUND: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The nonblocking usage query is None while a lifecycle pass holds the bank
 /// (#4029). Wait for an actual observation; never infer zero from None.
