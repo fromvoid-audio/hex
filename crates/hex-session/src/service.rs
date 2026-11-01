@@ -11266,6 +11266,7 @@ mod service_tests {
             arrangement_seek: None,
             resident_seek_results: None,
             resident_seek_count: AtomicUsize::new(0),
+            recovery_slot: None,
             _worker: thread::spawn(|| {}),
         };
         assert!(matches!(
