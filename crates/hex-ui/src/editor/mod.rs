@@ -752,6 +752,9 @@ pub(super) struct EditorView {
     recovery: RecoveryState,
     stopped_playback_restore: Option<audio_admission::StoppedPlaybackRestore>,
     latency_rebuild: Option<audio_admission::LatencyRebuild>,
+    // Streamed documents replace their sampler output stopped; this frame
+    // resumes playback once that edit settles (Pulse #3784).
+    sampler_edit_resume: Option<u64>,
     offline_cursor: u64,
     pub(in crate::editor) state: Option<Arc<ViewState>>,
     selected_track: Option<TrackId>,
@@ -1490,6 +1493,7 @@ impl EditorView {
             recovery: RecoveryState::default(),
             stopped_playback_restore: None,
             latency_rebuild: None,
+            sampler_edit_resume: None,
             offline_cursor: 0,
             selected_track: None,
             track_selection: selection::TrackSelection::default(),
