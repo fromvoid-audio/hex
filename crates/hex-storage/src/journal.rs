@@ -237,8 +237,37 @@ fn decode(path: &Path, bytes: &[u8]) -> Result<Project, StorageError> {
     let mut envelope = bytes[..bytes.len() - 8].to_vec();
     envelope[..8].copy_from_slice(b"HEXRCVY\0");
     let (project, _token): (Project, FileToken) =
-        replacement::decode_envelope(&envelope, &basename(path)?)?;
+        replacement::decode_envelope(&envelope, &bound_name(path, &envelope)?)?;
     Ok(project)
+}
+
+/// The target name a journal at `path` may carry. A case-only or Unicode-
+/// normalization rename leaves the old name inside the checkpoint; adopt it only
+/// when that stored name still reaches this same file on this filesystem.
+fn bound_name(path: &Path, envelope: &[u8]) -> Result<String, StorageError> {
+    let name = basename(path)?;
+    let (stored, _) = replacement::parse_envelope(envelope)?;
+    let plain_component = Path::new(stored).file_name() == Some(stored.as_ref());
+    if stored != name && plain_component && same_file(path, &parent(path).join(stored)) {
+        return Ok(stored.to_owned());
+    }
+    Ok(name)
+}
+
+fn same_file(left: &Path, right: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (fs::symlink_metadata(left), fs::symlink_metadata(right)) {
+            (Ok(left), Ok(right)) => left.dev() == right.dev() && left.ino() == right.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (left, right);
+        false
+    }
 }
 
 fn basename(path: &Path) -> Result<String, StorageError> {
@@ -698,5 +727,34 @@ mod tests {
             },
         );
         panic!("child must terminate at injected boundary");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_reached_through_an_equivalent_name_is_adopted() {
+        let dir = Temp::new();
+        let old = dir.0.join(".song.hex.hex-journal");
+        let renamed = dir.0.join(".Song.hex.hex-journal");
+        let first = Project::new(48_000).expect("project");
+        Journal::open(old.clone())
+            .expect("open")
+            .checkpoint(&first)
+            .expect("checkpoint");
+
+        let copy = dir.0.join(".other.hex.hex-journal");
+        fs::copy(&old, &copy).expect("copied journal");
+        let error = load_journal(&copy).expect_err("foreign journal refused");
+        assert!(error.to_string().contains("use save as"));
+        if fs::symlink_metadata(&renamed).is_err() {
+            eprintln!("skipped: temp volume is case-sensitive");
+            return;
+        }
+        assert_eq!(load_journal(&renamed).expect("adopted journal"), first);
+        let second = Project::new(44_100).expect("project");
+        Journal::open(renamed.clone())
+            .expect("adopt")
+            .checkpoint(&second)
+            .expect("checkpoint under new name");
+        assert_eq!(load_journal(&renamed).expect("new checkpoint"), second);
     }
 }
