@@ -255,9 +255,9 @@ fn same_basic_permissions(left: &Permissions, right: &Permissions) -> bool {
 /// What occupies a project's recovery sidecar path.
 enum SidecarState {
     Absent,
-    /// A valid envelope bound to this exact target name.
+    /// A recognized envelope bound to this exact target name.
     Owned(Vec<u8>),
-    /// A valid envelope bound to another target name, such as the pre-rename
+    /// A recognized envelope bound to another target name, such as the pre-rename
     /// name after a case-only rename on a case-insensitive volume.
     Foreign {
         stored_basename: String,
@@ -280,9 +280,12 @@ fn inspect_recovery(path: &Path, basename: &str) -> Result<SidecarState, Storage
                 ));
             }
             let bytes = read_document(path)?;
-            let (stored_basename, payload) = parse_envelope(&bytes)?;
-            // Validate the payload either way: unrecognized files stay untouched.
-            let _ = decode(payload)?;
+            // Recognizing the framing and bound name is enough to own a
+            // generation. Its payload is never decoded here: decoding cost a
+            // full project parse per save, and a payload that a stricter build
+            // no longer accepts must not block saving the project it backs up.
+            // Unrecognized or future-framed files are still refused untouched.
+            let (stored_basename, _payload) = parse_envelope(&bytes)?;
             if stored_basename == basename {
                 Ok(SidecarState::Owned(bytes))
             } else {
@@ -629,6 +632,35 @@ mod tests {
         );
         assert!(!recovery_path(&target).expect("sidecar path").exists());
         assert_eq!(fs::read_dir(&directory.0).expect("list files").count(), 1);
+    }
+
+    #[test]
+    fn undecodable_payload_in_a_recognized_sidecar_does_not_block_save() {
+        let directory = TestDir::new();
+        let target = directory.0.join("strict.hex");
+        let previous = project(48_000);
+        save_new(&target, &previous).expect("initial project");
+        let (_, token) = load_with_token(&target).expect("token");
+        let sidecar = recovery_path(&target).expect("sidecar path");
+        let foreign = encode_envelope("other.hex", b"{\"version\":1}").expect("envelope");
+        fs::write(&sidecar, &foreign).expect("undecodable foreign generation");
+        replace_existing(&target, &token, &project(44_100)).expect("save past foreign");
+        let moved = directory.0.join(".other.hex.hex-recovery.moved-1");
+        assert_eq!(fs::read(moved).expect("set aside"), foreign);
+
+        let (_, token) = load_with_token(&target).expect("token");
+        let previous_bytes = token.0.to_vec();
+        fs::write(
+            &sidecar,
+            encode_envelope("strict.hex", b"not a project").expect("envelope"),
+        )
+        .expect("undecodable owned generation");
+        let replacement = project(96_000);
+        replace_existing(&target, &token, &replacement).expect("save past owned");
+        assert_eq!(load(&target).expect("saved"), replacement);
+        let recovered = load_recovery(&target).expect("fresh generation");
+        assert_eq!(recovered.token.0.as_ref(), previous_bytes);
+        assert_eq!(recovered.project, project(44_100));
     }
 
     #[test]
