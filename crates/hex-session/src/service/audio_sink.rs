@@ -997,6 +997,30 @@ mod tests {
         wait(|| observed.closed.lock().unwrap().is_some());
         assert_ne!(observed.closed.lock().unwrap().unwrap(), caller);
     }
+    /// Session construction after audio negotiation can fail; the worker then
+    /// has no state to publish, so disconnection must carry the reason.
+    #[test]
+    fn failed_session_construction_reports_startup_failure_on_disconnect() {
+        let observed = Arc::new(Observation::default());
+        // History capacity 0 is refused by the canonical editor.
+        let service = Service::with_audio_sink(
+            0,
+            0,
+            None,
+            Box::new(Sink {
+                observed,
+                fail: false,
+            }),
+        )
+        .unwrap();
+        wait(|| matches!(service.try_event(), Err(mpsc::TryRecvError::Disconnected)));
+        assert_eq!(
+            service.startup_failure(),
+            Some(
+                "project session could not start: project edit failed: history capacity must be 1..128"
+            )
+        );
+    }
     #[test]
     fn restart_is_generation_checked_worker_only_and_does_not_edit_canonical_state() {
         let observed = Arc::new(Observation::default());

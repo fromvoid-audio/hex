@@ -977,6 +977,7 @@ pub struct Service {
     resident_seek_results: Option<Receiver<ResidentArrangementSeekResult>>,
     resident_seek_count: AtomicUsize,
     recovery_slot: Option<PathBuf>,
+    startup_failure: Arc<std::sync::OnceLock<String>>,
     _worker: JoinHandle<()>,
 }
 
@@ -1259,6 +1260,8 @@ impl Service {
             })
             .map_err(ServiceError::Worker)?;
         let worker_shutdown = Arc::clone(&shutdown);
+        let startup_failure = Arc::new(std::sync::OnceLock::new());
+        let worker_startup_failure = Arc::clone(&startup_failure);
         let worker = thread::Builder::new()
             .name("hex-session".into())
             // Structural stopped publications reuse the bounded preroll constructor.
@@ -1277,15 +1280,22 @@ impl Service {
                             Ok(rate) => (rate, None),
                             Err(error) => (48_000, Some(error)),
                         };
-                        let Ok(session) = Session::new_with_audio_mode_in_overview_domain(
+                        let session = match Session::new_with_audio_mode_in_overview_domain(
                             rate,
                             history_capacity,
                             max_resident_frames,
                             DocumentAudioMode::Resident,
                             events.ordinary_source_reservation(),
                             overview_budget.clone(),
-                        ) else {
-                            return;
+                        ) {
+                            Ok(session) => session,
+                            Err(error) => {
+                                // No state can be published; disconnection
+                                // carries this reason to the client.
+                                let _ = worker_startup_failure
+                                    .set(format!("project session could not start: {error}"));
+                                return;
+                            }
                         };
                         if let Some(error) = error {
                             events.startup_failed(error);
@@ -1297,19 +1307,22 @@ impl Service {
                                     events.startup_failed(format!(
                                         "native resident reservation unavailable: {reason}"
                                     ));
-                                    let Ok(session) =
-                                        Session::new_with_audio_mode_in_overview_domain(
-                                            rate,
-                                            history_capacity,
-                                            max_resident_frames,
-                                            DocumentAudioMode::Resident,
-                                            events.ordinary_source_reservation(),
-                                            overview_budget.clone(),
-                                        )
-                                    else {
-                                        return;
-                                    };
-                                    session
+                                    match Session::new_with_audio_mode_in_overview_domain(
+                                        rate,
+                                        history_capacity,
+                                        max_resident_frames,
+                                        DocumentAudioMode::Resident,
+                                        events.ordinary_source_reservation(),
+                                        overview_budget.clone(),
+                                    ) {
+                                        Ok(session) => session,
+                                        Err(error) => {
+                                            let _ = worker_startup_failure.set(format!(
+                                                "project session could not start: {error}"
+                                            ));
+                                            return;
+                                        }
+                                    }
                                 }
                             },
                             None => session,
@@ -1343,8 +1356,16 @@ impl Service {
             resident_seek_results: Some(seek_results_rx),
             resident_seek_count: AtomicUsize::new(0),
             recovery_slot,
+            startup_failure,
             _worker: worker,
         })
+    }
+
+    /// Why the worker stopped before publishing its initial state, when it did.
+    /// Set before the worker drops its event sender, so it is readable once
+    /// [`Service::try_event`] reports disconnection.
+    pub fn startup_failure(&self) -> Option<&str> {
+        self.startup_failure.get().map(String::as_str)
     }
 
     /// Submit without waiting for worker capacity.
@@ -11471,6 +11492,7 @@ mod service_tests {
             resident_seek_results: None,
             resident_seek_count: AtomicUsize::new(0),
             recovery_slot: None,
+            startup_failure: Default::default(),
             _worker: thread::spawn(|| {}),
         };
         assert!(matches!(

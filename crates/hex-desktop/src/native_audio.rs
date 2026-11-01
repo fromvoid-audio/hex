@@ -100,6 +100,9 @@ pub(super) struct NativeAudioSink {
     requested_rate: Option<u32>,
     restart_request: Option<u64>,
     open_error: Option<String>,
+    /// Bound on the initial open; a device that never answers must not keep
+    /// the session from publishing its first state.
+    startup_open_deadline: std::time::Duration,
     next_catalog: u64,
     domains: [Option<Domain>; 2],
     preparation: Option<Preparation>,
@@ -121,6 +124,10 @@ pub(super) struct NativeAudioSink {
     #[cfg(all(test, feature = "allocation-probe"))]
     lifecycle_status: Option<fn() -> Option<hex_audio::AudioLifecycleFailure>>,
 }
+/// How long the session worker waits for the first output before starting
+/// without audio.
+const STARTUP_OPEN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+const STARTUP_OPEN_TIMEOUT: &str = "audio output did not open in time; editing continues without audio. use restart audio to retry";
 impl NativeAudioSink {
     fn new(events: SyncSender<EditorAudioEvent>) -> Self {
         Self {
@@ -151,6 +158,7 @@ impl NativeAudioSink {
             requested_rate: None,
             restart_request: None,
             open_error: None,
+            startup_open_deadline: STARTUP_OPEN_DEADLINE,
             next_catalog: 1,
             domains: std::array::from_fn(|_| None),
             preparation: None,
@@ -1188,10 +1196,20 @@ impl WorkerAudioSink for NativeAudioSink {
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
         self.plugins.initialize();
         self.request_open(None, None);
+        let deadline = std::time::Instant::now() + self.startup_open_deadline;
         loop {
             if shutdown.load(Acquire) {
                 self.close();
                 return Err("audio startup cancelled".into());
+            }
+            if std::time::Instant::now() >= deadline {
+                // Abandon only this result request: the lifecycle owner retires
+                // a late stream. Editing continues offline; restart audio retries.
+                self.opening = None;
+                self.open_pending = false;
+                let error = STARTUP_OPEN_TIMEOUT.to_owned();
+                self.open_error = Some(error.clone());
+                return Err(error);
             }
             self.poll_open();
             if let Some(output) = self.output.as_ref() {

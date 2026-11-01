@@ -389,7 +389,11 @@ impl EditorView {
                     .px_2()
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text("loading")),
+                    .child(theme::text(if self.service.startup_failure().is_some() {
+                        "startup failed"
+                    } else {
+                        "loading"
+                    })),
             );
         }
         let narrow = f32::from(window.viewport_size().width) < header::WIDE_TOOLBAR_MIN_WIDTH;

@@ -1089,6 +1089,18 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if self.state.is_none() {
+                        // Without an initial state the window would stay on
+                        // "loading"; surface why the project never started.
+                        let reason = self
+                            .service
+                            .startup_failure()
+                            .unwrap_or("project worker stopped before loading");
+                        visible_change |= replace_error(
+                            &mut self.error,
+                            &format!("{reason} · restart hex to try again"),
+                        );
+                    }
                     self.midi_service_disconnected();
                     self.gain_take_service_disconnected();
                     if self.cancel_new_preparation() {
