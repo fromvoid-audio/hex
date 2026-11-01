@@ -499,3 +499,99 @@ fn tempo_remap_preserves_session_tail_after_return_to_arrangement() {
     assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
     assert_eq!(actual, expected);
 }
+
+/// No note sounds at the tested cuts (one note over beats 12..13), so legacy
+/// state can be promoted to and demoted from a Session runtime.
+fn quiet_at(micro_bpm: u32, loop_region: Option<(u64, u64)>) -> Project {
+    let tempo = Tempo::new(micro_bpm).unwrap();
+    let mut snapshot = project_at_tempo(0.5, 12 << 32, 1 << 32, tempo).snapshot();
+    snapshot.loop_region =
+        loop_region.map(|(start, end)| LoopRegion::new(start, end, true).unwrap());
+    legacy_project_from_snapshot(snapshot).unwrap()
+}
+
+fn prepared_at(
+    project: &Project,
+    table: &Arc<hex_devices::SineTable>,
+) -> crate::playback::Playback {
+    crate::playback::Playback::try_from_prepared_with_session(revision(project, Arc::clone(table)))
+        .unwrap()
+}
+
+#[test]
+fn legacy_promotion_and_demotion_keep_the_arrangement_beat() {
+    // Pulse #4135: the legacy-to-Session promotion and Session-to-legacy
+    // demotion arms keep the beat across a tempo-map change, like #4118.
+    let table = Arc::new(hex_devices::SineTable::new());
+    let cut = 3_001;
+    for looped in [false, true] {
+        for block in [1, 64, 512] {
+            let region = |micro_bpm| looped.then(|| beat_loop(micro_bpm)).flatten();
+            let context = format!("looped={looped} block={block}");
+
+            let mut legacy = linear_at(&quiet_at(120_000_000, region(120_000_000)), &table);
+            legacy.apply(PlaybackCommand::Play);
+            render_linear(&mut legacy, block, cut);
+            let mut promoted = prepared_at(&quiet_at(60_000_000, region(60_000_000)), &table);
+            promoted.try_inherit_runtime_from(&mut legacy).unwrap();
+            assert!(promoted.playing(), "{context}");
+            assert_eq!(promoted.position(), 2 * cut as u64, "promotion {context}");
+            assert_eq!(promoted.performance_frame(), cut as u64, "{context}");
+            render_linear(&mut promoted, block, 1_000);
+            assert_eq!(promoted.position(), 2 * cut as u64 + 1_000, "{context}");
+
+            let mut session = prepared_at(&quiet_at(120_000_000, region(120_000_000)), &table);
+            session.apply(PlaybackCommand::Play);
+            render_linear(&mut session, block, cut);
+            assert_eq!(session.position(), cut as u64);
+            let mut demoted = linear_at(&quiet_at(60_000_000, region(60_000_000)), &table);
+            demoted.try_inherit_runtime_from(&mut session).unwrap();
+            assert!(demoted.playing(), "{context}");
+            assert_eq!(demoted.position(), 2 * cut as u64, "demotion {context}");
+            assert_eq!(demoted.performance_frame(), cut as u64, "{context}");
+            render_linear(&mut demoted, block, 1_000);
+            assert_eq!(demoted.position(), 2 * cut as u64 + 1_000, "{context}");
+        }
+    }
+    // A remapped promotion past an unretimed loop end wraps inside the loop.
+    let region = Some((0, 4_800));
+    let mut legacy = linear_at(&quiet_at(120_000_000, region), &table);
+    legacy.apply(PlaybackCommand::Play);
+    render_linear(&mut legacy, 64, 4_500);
+    let mut promoted = prepared_at(&quiet_at(60_000_000, region), &table);
+    promoted.try_inherit_runtime_from(&mut legacy).unwrap();
+    assert_eq!(promoted.position(), 9_000 - 4_800);
+}
+
+#[test]
+fn infallible_transport_copy_keeps_the_arrangement_beat() {
+    // Pulse #4135: the legacy `inherit_transport` follows the same remap.
+    let table = Arc::new(hex_devices::SineTable::new());
+    let cut = 3_001;
+    for looped in [false, true] {
+        for block in [1, 64, 512] {
+            let region = |micro_bpm| looped.then(|| beat_loop(micro_bpm)).flatten();
+            let mut old = linear_at(&arrangement_at(120_000_000, region(120_000_000)), &table);
+            old.apply(PlaybackCommand::Play);
+            render_linear(&mut old, block, cut);
+            let mut next = linear_at(&arrangement_at(60_000_000, region(60_000_000)), &table);
+            next.inherit_transport(&old);
+            assert!(next.playing(), "looped={looped} block={block}");
+            assert_eq!(
+                next.position(),
+                2 * cut as u64,
+                "looped={looped} block={block}"
+            );
+            render_linear(&mut next, block, 1_000);
+            assert_eq!(next.position(), 2 * cut as u64 + 1_000);
+        }
+    }
+    // An unchanged map keeps the frame exactly.
+    let project = arrangement_at(120_000_000, None);
+    let mut old = linear_at(&project, &table);
+    old.apply(PlaybackCommand::Play);
+    render_linear(&mut old, 64, cut);
+    let mut next = linear_at(&project, &table);
+    next.inherit_transport(&old);
+    assert_eq!(next.position(), cut as u64);
+}
