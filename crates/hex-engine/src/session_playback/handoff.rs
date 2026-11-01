@@ -1812,6 +1812,7 @@ impl SessionPlayback {
                                         self.release_capacity,
                                         &mut next_order,
                                         ReleaseEntry {
+                                            timeline: ReleaseTimeline::Arrangement,
                                             source_origin: ReleaseSourceOrigin::capture(
                                                 &previous.revision,
                                                 old_index,
@@ -2291,6 +2292,7 @@ impl SessionPlayback {
                             self.release_capacity,
                             &mut next_order,
                             ReleaseEntry {
+                                timeline: ReleaseTimeline::Arrangement,
                                 source_origin: ReleaseSourceOrigin::capture(
                                     &previous.revision,
                                     old_index,
@@ -2614,10 +2616,7 @@ impl SessionPlayback {
                 .copied()
                 .unwrap_or(false);
             let arrangement_remapped = arrangement_cut != previous.arrangement_frame
-                && contributor_index.is_some_and(|index| {
-                    effective_midi_route(&previous.revision, &previous.routes, index)
-                        .is_ok_and(|route| matches!(route.owner, RouteOwner::Arrangement))
-                });
+                && entry.timeline == ReleaseTimeline::Arrangement;
             let remapped_gate = if route_changed && !arrangement_remapped {
                 remap_release_gate(previous, self, entry, candidate_timing)?
             } else {
@@ -2815,6 +2814,7 @@ impl SessionPlayback {
                         self.release_capacity,
                         &mut next_order,
                         ReleaseEntry {
+                            timeline: ReleaseTimeline::Session,
                             source_origin: ReleaseSourceOrigin::capture(
                                 &previous.revision,
                                 old_index,
@@ -4710,6 +4710,7 @@ fn cut_arrangement_voices_for_remap(
                     };
                     let entry = (|| -> Result<ReleaseEntry, SessionPlaybackError> {
                         Ok(ReleaseEntry {
+                            timeline: ReleaseTimeline::Arrangement,
                             source_origin: ReleaseSourceOrigin::capture(
                                 &previous.revision,
                                 old_index,
