@@ -39,7 +39,7 @@ mod layout;
 
 // Preference diagnostics remain useful without unbounded field/path text in UI tooltips.
 fn places_error(prefix: &str, error: &hex_preferences::PreferencesError) -> String {
-    let reason = error.to_string().to_lowercase();
+    let reason = hex_session::service::text::lowercase_outside_verbatim(&error.to_string());
     let mut message = format!(
         "{prefix} · {}",
         reason.chars().take(160).collect::<String>()
@@ -1373,7 +1373,9 @@ impl EditorView {
                 }
                 Err(error) => {
                     self.browser.listing = None;
-                    self.browser.error = Some(error.to_string().to_lowercase());
+                    self.browser.error = Some(
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+                    );
                     self.browser.loading = false;
                 }
             }
@@ -1818,7 +1820,11 @@ impl EditorView {
                 ] {
                     entries.extend(
                         hex_engine::native_device_catalog_for_class(class)
-                            .map_err(|error| error.to_string().to_lowercase())?
+                            .map_err(|error| {
+                                hex_session::service::text::lowercase_outside_verbatim(
+                                    &error.to_string(),
+                                )
+                            })?
                             .into_iter()
                             .map(|entry| (class, entry)),
                     );
@@ -2530,7 +2536,12 @@ impl EditorView {
         }
         let tooltip = self.browser.tree.error(&path).map_or_else(
             || path.to_string_lossy().into_owned(),
-            |error| format!("{} · {error}", path.display()),
+            |error| {
+                format!(
+                    "{} · {error}",
+                    hex_session::service::text::verbatim(path.display())
+                )
+            },
         );
         row.tooltip(move |_, cx| layout::browser_label_tooltip(&tooltip, cx))
             .child(
@@ -2748,7 +2759,14 @@ impl EditorView {
                             }
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
+                    Ok(Err(error)) => {
+                        view.error = Some(
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string(),
+                            )
+                            .into(),
+                        )
+                    }
                     _ => {}
                 }
                 cx.notify();

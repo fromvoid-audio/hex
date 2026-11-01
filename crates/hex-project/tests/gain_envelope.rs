@@ -38,6 +38,13 @@ fn edits_history_identity_owner_removal_and_manual_refusal_are_atomic() {
     })
     .unwrap();
     let before = e.project().clone();
+    e.execute(Command::MoveTrackGainPoint {
+        track,
+        from: BeatTime::ZERO,
+        to: BeatTime::ZERO,
+    })
+    .unwrap();
+    assert_eq!(e.project(), &before);
     for command in [
         Command::MoveTrackGainPoint {
             track,
