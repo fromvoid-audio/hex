@@ -1783,6 +1783,7 @@ impl SessionPlayback {
                                         self.release_capacity,
                                         &mut next_order,
                                         ReleaseEntry {
+                                            timeline: ReleaseTimeline::Arrangement,
                                             source_origin: ReleaseSourceOrigin::capture(
                                                 &previous.revision,
                                                 old_index,
@@ -2254,6 +2255,7 @@ impl SessionPlayback {
                             self.release_capacity,
                             &mut next_order,
                             ReleaseEntry {
+                                timeline: ReleaseTimeline::Arrangement,
                                 source_origin: ReleaseSourceOrigin::capture(
                                     &previous.revision,
                                     old_index,
@@ -2749,6 +2751,7 @@ impl SessionPlayback {
                         self.release_capacity,
                         &mut next_order,
                         ReleaseEntry {
+                            timeline: ReleaseTimeline::Session,
                             source_origin: ReleaseSourceOrigin::capture(
                                 &previous.revision,
                                 old_index,
