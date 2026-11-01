@@ -122,7 +122,7 @@ fn main() {
                 .and_then(|backend| hex_ui::open_editor_backend(cx, backend))
         };
         if let Err(error) = result {
-            eprintln!("{}", error.to_lowercase());
+            eprintln!("{}", hex_session::service::text::plain(&error));
             cx.quit();
             return;
         }

@@ -180,7 +180,7 @@ impl fmt::Display for AudioBatchError {
             } => write!(
                 f,
                 "audio batch refused at file {member} · {}: {source}",
-                path.display()
+                hex_storage::text::verbatim(path.display())
             ),
         }
     }

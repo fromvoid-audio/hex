@@ -462,10 +462,11 @@ fn mix_codec_rejects_legacy_nonfinite_and_preserves_host_metadata() {
             .patch_parameter(&original, parameter::DRY_WET, ParameterValue::Bool(true))
             .is_err()
     );
+    // v1 decodes (crate::state_migration_tests); its values are still validated.
     let legacy = NativeDeviceState::new(COMPRESSOR_TYPE_ID, 1, vec![0; 24]).unwrap();
     assert_eq!(
         registry.migrate_state(&legacy),
-        Err(DeviceContractError::UnsupportedStateVersion)
+        Err(DeviceContractError::InvalidParameterValue)
     );
     for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.1, 1.1] {
         let mut bytes = original.payload().to_vec();
@@ -901,12 +902,13 @@ fn rms_state_validation_invalid_frames_and_static_detector_preview_are_truthful(
                 .is_err()
         );
     }
+    // Older versions decode (crate::state_migration_tests); zero values stay invalid.
     for (version, len) in [(1, 24), (2, 28)] {
         assert_eq!(
             registry().migrate_state(
                 &NativeDeviceState::new(COMPRESSOR_TYPE_ID, version, vec![0; len]).unwrap()
             ),
-            Err(DeviceContractError::UnsupportedStateVersion)
+            Err(DeviceContractError::InvalidParameterValue)
         );
     }
     let rms = mode(&base, 1);
@@ -1270,4 +1272,71 @@ fn rms_floor_partition_history_retarget_invalid_frames_and_reset_remain_coherent
         runtime(&base, rate).process_block(&mut fresh, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert_eq!(actual, fresh, "reset retains exact original Peak PCM");
     }
+}
+
+/// Historical states keep opening (Pulse #3956). Layouts come from commits
+/// d236adc6e (v1, 24 bytes) and 1ce92988b (v2, 28 bytes).
+#[test]
+fn compressor_v1_and_v2_states_migrate_with_their_original_behaviour() {
+    let state = |version, values: &[f32]| {
+        let payload = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        NativeDeviceState::new(COMPRESSOR_TYPE_ID, version, payload).unwrap()
+    };
+    // The registry is the engine's path when a saved project is reopened.
+    let registry = crate::native_registry().unwrap();
+    let migrate = |old: &NativeDeviceState| {
+        let migrated = registry.migrate_state(old).unwrap();
+        assert_eq!(
+            registry.migrate_state(&migrated).unwrap(),
+            migrated,
+            "idempotent"
+        );
+        migrated
+    };
+    let read =
+        |state: &NativeDeviceState, id| COMPRESSOR_DEFINITION.read_parameter(state, id).unwrap();
+    let migrated = migrate(&state(1, &[-24.0, 4.0, 10.0, 120.0, 6.0, 2.0]));
+    assert_eq!(migrated.state_version(), COMPRESSOR_STATE_VERSION);
+    assert_eq!(
+        read(&migrated, parameter::THRESHOLD),
+        ParameterValue::Float(-24.0)
+    );
+    assert_eq!(
+        read(&migrated, parameter::MAKEUP),
+        ParameterValue::Float(2.0)
+    );
+    assert_eq!(
+        read(&migrated, parameter::DRY_WET),
+        ParameterValue::Float(1.0),
+        "v1 was fully wet"
+    );
+    assert_eq!(
+        read(&migrated, parameter::DETECTOR),
+        ParameterValue::Choice(0),
+        "v1/v2 were Peak"
+    );
+    let migrated = migrate(&state(2, &[-24.0, 4.0, 10.0, 120.0, 6.0, 2.0, 0.25]));
+    assert_eq!(
+        read(&migrated, parameter::DRY_WET),
+        ParameterValue::Float(0.25)
+    );
+    assert_eq!(
+        read(&migrated, parameter::DETECTOR),
+        ParameterValue::Choice(0)
+    );
+    for (version, length) in [(1, 28), (2, 24), (2, 32), (3, 28)] {
+        let malformed =
+            NativeDeviceState::new(COMPRESSOR_TYPE_ID, version, vec![0; length]).unwrap();
+        assert_eq!(
+            COMPRESSOR_DEFINITION.migrate_state(&malformed),
+            Err(DeviceContractError::MalformedState)
+        );
+    }
+    assert_eq!(
+        COMPRESSOR_DEFINITION.migrate_state(&state(4, &[0.0; 9])),
+        Err(DeviceContractError::UnsupportedStateVersion)
+    );
 }
