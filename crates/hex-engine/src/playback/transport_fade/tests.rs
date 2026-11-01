@@ -98,6 +98,24 @@ fn fade_length_scales_with_rate_and_is_at_least_one_frame() {
 }
 
 #[test]
+fn render_failure_after_fade_clears_the_complete_output_buffer() {
+    let mut playback = linear_playback();
+    declicked(&mut playback, PlaybackCommand::Play);
+    declicked(&mut playback, PlaybackCommand::Pause);
+    let mut output = [[0.5; 2]; F + 8];
+    let result = playback.render_declicked(&mut output, |_, part, offset| {
+        part.fill([0.75; 2]);
+        if offset == 0 {
+            Ok(())
+        } else {
+            Err(crate::Invalid("injected render refusal"))
+        }
+    });
+    assert!(result.is_err());
+    assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+}
+
+#[test]
 fn pause_stop_and_resume_ramp_a_dc_clip_identically_for_every_block_size() {
     for (name, make) in [
         ("session", session_playback as fn() -> Playback),

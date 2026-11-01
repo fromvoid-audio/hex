@@ -2467,7 +2467,7 @@ impl Playback {
             let playing = self.playing();
             let chunk = &mut output[offset..end];
             if let Err(error) = part(self, chunk, offset) {
-                output[..offset].fill([0.0; 2]);
+                output.fill([0.0; 2]);
                 return Err(error);
             }
             let completed = self.transport_fade.apply(chunk, frames);
