@@ -17,6 +17,18 @@ use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
 
 impl EditorView {
+    pub(super) fn history_action(&mut self, request: SessionRequest, cx: &mut Context<Self>) {
+        if !self.cancel_sampler_drafts(cx)
+            && !self.cancel_gain_draft(cx)
+            && super::device_panel::finalize_controls(self, cx)
+        {
+            self.cancel_duplicate_chain();
+            self.cancel_queued_section();
+            self.enqueue_device_barrier(request);
+        }
+        cx.notify();
+    }
+
     fn duplicate_key(
         &mut self,
         kind: super::duplicate::DuplicateKind,
@@ -1143,25 +1155,10 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &Undo, _, cx| {
-                if !view.cancel_sampler_drafts(cx)
-                    && !view.cancel_gain_draft(cx)
-                    && super::device_panel::finalize_controls(view, cx)
-                {
-                    view.cancel_duplicate_chain();
-                    view.cancel_queued_section();
-                    view.enqueue_device_barrier(SessionRequest::Undo);
-                }
-                cx.notify();
+                view.history_action(SessionRequest::Undo, cx);
             }))
             .on_action(cx.trace(|view, _: &Redo, _, cx| {
-                if !view.cancel_sampler_drafts(cx)
-                    && super::device_panel::finalize_controls(view, cx)
-                {
-                    view.cancel_duplicate_chain();
-                    view.cancel_queued_section();
-                    view.enqueue_device_barrier(SessionRequest::Redo);
-                }
-                cx.notify();
+                view.history_action(SessionRequest::Redo, cx);
             }))
             .on_action(cx.trace(|view, _: &MoveLeft, window, cx| {
                 view.cancel_duplicate_chain();

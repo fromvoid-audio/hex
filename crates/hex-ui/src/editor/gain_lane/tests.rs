@@ -431,6 +431,18 @@ mod native {
         });
     }
     #[gpui::test]
+    fn redo_cancels_gain_draft_without_submitting_history(cx: &mut TestAppContext) {
+        let (handle, entity, _) = window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        entity.update(&mut visual, |view, cx| {
+            let point = view.gain_point().unwrap();
+            assert!(view.begin_gain_draft(Some(point.beat), point));
+            view.history_action(hex_session::service::Request::Redo, cx);
+            assert!(view.gain_lane.draft.is_none());
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+    }
+    #[gpui::test]
     fn reopening_details_closes_local_lane_without_consuming_history(cx: &mut TestAppContext) {
         let (handle, entity, _) = window(cx);
         let mut visual = VisualTestContext::from_window(handle, cx);
