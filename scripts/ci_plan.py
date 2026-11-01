@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 5
+POLICY_VERSION = 6
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -468,6 +468,83 @@ def health_selection(paths: list[str], inventory: list[dict]) -> dict:
     return {"packages": sorted(owners), "python": python, "workspace_inputs": workspace}
 
 
+# Build-speed and debug-info profile keys: they change codegen, never program
+# semantics. debug-assertions, overflow-checks, panic, lto and rpath stay unreviewed.
+PROFILE_SAFE_KEYS = {"opt-level", "debug", "codegen-units", "incremental", "split-debuginfo", "strip"}
+PROFILE_PACKAGE = re.compile(r'profile\.[A-Za-z0-9_-]+\.package\."?([A-Za-z0-9_-]+)"?')
+
+
+def strip_toml_comment(line: str) -> str:
+    quote = None
+    for index, char in enumerate(line):
+        if quote:
+            quote = None if char == quote else quote
+        elif char in "\"'":
+            quote = char
+        elif char == "#":
+            return line[:index]
+    return line
+
+
+def manifest_sections(text: str) -> dict[str, list[str]] | None:
+    """Root-manifest tables to their meaningful lines; None when not plainly parseable."""
+    sections: dict[str, list[str]] = {"": []}
+    current = ""
+    for raw in text.splitlines():
+        line = strip_toml_comment(raw).strip()
+        if not line:
+            continue
+        if line.startswith("["):
+            if not line.endswith("]") or line.startswith("[["):
+                return None
+            current = line.strip("[] ")
+            if current in sections:
+                return None
+            sections[current] = []
+        else:
+            sections[current].append(line)
+    return sections
+
+
+def profile_only_packages(root: Path, base: str, source: str, inventory: list[dict]) -> list[str] | None:
+    """Workspace packages named by a root-manifest change that only retunes their profiles.
+
+    Every changed table must be `[profile.NAME.package.MEMBER]` (never `"*"`) using
+    only PROFILE_SAFE_KEYS. Such a change alters how those packages compile, not
+    what they mean, so their own suites verify it (user policy, 1 November 2026).
+    Anything else returns None and keeps the comprehensive audit.
+    """
+    def read(revision: str) -> str | None:
+        result = subprocess.run(["git", "show", f"{revision}:Cargo.toml"], cwd=root, capture_output=True)
+        return result.stdout.decode(errors="replace") if result.returncode == 0 else None
+
+    old_text, new_text = read(base), read(source)
+    old = None if old_text is None else manifest_sections(old_text)
+    new = None if new_text is None else manifest_sections(new_text)
+    if old is None or new is None:
+        return None
+    names = {package["name"] for package in inventory}
+    packages = set()
+    for header in sorted(set(old) | set(new)):
+        if old.get(header) == new.get(header):
+            continue
+        match = PROFILE_PACKAGE.fullmatch(header)
+        if not match or match.group(1) not in names:
+            return None
+        for line in [*old.get(header, []), *new.get(header, [])]:
+            key = line.split("=", 1)[0].strip().strip('"') if "=" in line else None
+            if key not in PROFILE_SAFE_KEYS:
+                return None
+        packages.add(match.group(1))
+    return sorted(packages) or None
+
+
+def crate_root_path(package: str, inventory: list[dict], root: Path) -> str | None:
+    directory = Path(next(p for p in inventory if p["name"] == package)["manifest"]).parent
+    return next((str(directory / "src" / name) for name in ("lib.rs", "main.rs")
+                 if (root / directory / "src" / name).is_file()), None)
+
+
 def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
             allow_same_tree_merge: bool = False) -> dict:
     if profile not in {"edit", "merge", "full", "release", "health"}:
@@ -494,8 +571,18 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
         require_qualifying_inputs(inputs)
     if profile == "health" and git(root, "rev-parse", "--verify", source_sha + "^1").decode().strip() != base_sha:
         raise ValueError("health checks a merge commit against its first parent: use --base SOURCE^1")
-    scope, affected, reasons = classify(paths, inventory)
-    executable = [p for p in paths if not metadata_path(p)]
+    # A profile-only root-manifest change selects the retuned packages as if
+    # their crate roots changed: their whole suites test, consumers lint.
+    selection_paths = paths
+    profile_packages = profile_only_packages(root, base_sha, source_sha, inventory) if "Cargo.toml" in paths else None
+    profile_roots = [crate_root_path(p, inventory, root) for p in profile_packages or []]
+    if profile_packages and all(profile_roots):
+        selection_paths = [p for p in paths if p != "Cargo.toml"] + profile_roots
+    scope, affected, reasons = classify(selection_paths, inventory)
+    if selection_paths is not paths:
+        reasons.append("profile-only root manifest change: owner suites of " + ", ".join(profile_packages)
+                       + " (codegen keys only; semantics unchanged)")
+    executable = [p for p in selection_paths if not metadata_path(p)]
     if profile == "merge" and scope in {"rust", "ui"} and executable:
         owners = [test_only_owner(root, p, inventory) for p in executable]
         if all(owners):
@@ -513,11 +600,11 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
               "affected_packages": affected, "cargo_inventory": inventory,
               "runtime_inputs": inputs,
               "python_tests": python_tests.select(
-                  profile, [path for path in paths if not metadata_path(path)],
+                  profile, [path for path in selection_paths if not metadata_path(path)],
                   inventory, UI_PACKAGES, python_tests.available_modules(root)),
               "qualifies_merge": profile in {"merge", "full", "release"}}
     if scope in {"rust", "ui"}:
-        result["boundary"] = boundary_selection(root, paths, inventory, affected)
+        result["boundary"] = boundary_selection(root, selection_paths, inventory, affected)
     if profile == "health":
         result["health"] = health_selection(paths, inventory)
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
