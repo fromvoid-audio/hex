@@ -477,7 +477,7 @@ mod tests {
             run_export_worker(
                 work_rx,
                 events_tx,
-                Arc::new(|_, _, _, _| Err("unexpected asset-free exporter".into())),
+                Arc::new(|_, _, _, _, _, _, _| Err("unexpected asset-free exporter".into())),
                 finished_tx,
                 Arc::new(AtomicBool::new(false)),
                 worker_hook,
@@ -539,7 +539,7 @@ mod tests {
             } else {
                 assert!(result.result.unwrap_err().contains("notification failed"));
                 assert!(lane.active.is_some());
-                let end = Instant::now() + Duration::from_secs(5);
+                let end = Instant::now() + crate::test_wait::HANG_BOUND;
                 while !lane.worker.as_ref().unwrap().is_finished() && Instant::now() < end {
                     thread::sleep(Duration::from_millis(1));
                 }
