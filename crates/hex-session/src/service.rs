@@ -1675,6 +1675,16 @@ struct SaveCurrentCommit {
     error: Option<String>,
 }
 
+/// Save As onto the open document would skip Save's format-upgrade and
+/// older-reader consent checks, so it is refused; Save owns that replacement.
+fn is_open_document(document: &DocumentHandle, destination: &Path) -> bool {
+    document.path == destination
+        || matches!(
+            (std::fs::canonicalize(&document.path), std::fs::canonicalize(destination)),
+            (Ok(open), Ok(chosen)) if open == chosen
+        )
+}
+
 /// Save As: create `path`, or replace it when it already exists. The UI only
 /// sends an existing path after the OS replace prompt for that exact path.
 /// Both outcomes bind the document, including a published file whose
@@ -5999,6 +6009,16 @@ fn run_worker(
                         events.sampler_edit_audio(),
                     ) {
                         Ok(project) => match absolute_document_path(&path) {
+                            Ok(path)
+                                if document
+                                    .as_ref()
+                                    .is_some_and(|handle| is_open_document(handle, &path)) =>
+                            {
+                                error = Some(
+                                    "save as chose the open project · use save to update it, or choose a new name"
+                                        .into(),
+                                );
+                            }
                             Ok(path) => match save_document_as(path, &project) {
                                 Ok((handle, commit)) => {
                                     document = Some(handle);
