@@ -655,10 +655,11 @@ fn shape_changes_crossfade_independent_steady_streams_without_clock_reset_or_blo
 #[test]
 fn shape_codec_semantics_preview_and_rapid_retarget_remain_validated() {
     let base = AUTO_PAN_DEFINITION.default_state().unwrap();
+    // v1 decodes (crate::state_migration_tests); its values are still validated.
     let legacy = NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, vec![0; 12]).unwrap();
     assert_eq!(
         AUTO_PAN_DEFINITION.migrate_state(&legacy),
-        Err(DeviceContractError::UnsupportedStateVersion)
+        Err(DeviceContractError::InvalidParameterValue)
     );
     for value in [
         ParameterValue::Choice(5),

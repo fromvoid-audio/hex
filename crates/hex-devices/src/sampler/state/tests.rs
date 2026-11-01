@@ -118,9 +118,19 @@ fn malformed_truncated_reserved_nonfinite_and_unsupported_formats_refuse() {
             .is_err()
         );
     }
+    // v1 decodes (crate::state_migration_tests) but never stored loop
+    // coordinates while a classic loop was off; newer versions refuse.
+    if valid.payload()[0] == 0 && valid.payload()[16..24] != [0; 8] {
+        assert_eq!(
+            SamplerState::from_native(
+                &NativeDeviceState::new(TYPE_ID, 1, valid.payload().to_vec()).unwrap()
+            ),
+            Err(Error::MalformedState)
+        );
+    }
     assert_eq!(
         SamplerState::from_native(
-            &NativeDeviceState::new(TYPE_ID, 1, valid.payload().to_vec()).unwrap()
+            &NativeDeviceState::new(TYPE_ID, 3, valid.payload().to_vec()).unwrap()
         ),
         Err(Error::InvalidStateVersion)
     );

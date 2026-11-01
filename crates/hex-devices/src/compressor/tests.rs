@@ -462,10 +462,11 @@ fn mix_codec_rejects_legacy_nonfinite_and_preserves_host_metadata() {
             .patch_parameter(&original, parameter::DRY_WET, ParameterValue::Bool(true))
             .is_err()
     );
+    // v1 decodes (crate::state_migration_tests); its values are still validated.
     let legacy = NativeDeviceState::new(COMPRESSOR_TYPE_ID, 1, vec![0; 24]).unwrap();
     assert_eq!(
         registry.migrate_state(&legacy),
-        Err(DeviceContractError::UnsupportedStateVersion)
+        Err(DeviceContractError::InvalidParameterValue)
     );
     for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.1, 1.1] {
         let mut bytes = original.payload().to_vec();
@@ -901,12 +902,13 @@ fn rms_state_validation_invalid_frames_and_static_detector_preview_are_truthful(
                 .is_err()
         );
     }
+    // Older versions decode (crate::state_migration_tests); zero values stay invalid.
     for (version, len) in [(1, 24), (2, 28)] {
         assert_eq!(
             registry().migrate_state(
                 &NativeDeviceState::new(COMPRESSOR_TYPE_ID, version, vec![0; len]).unwrap()
             ),
-            Err(DeviceContractError::UnsupportedStateVersion)
+            Err(DeviceContractError::InvalidParameterValue)
         );
     }
     let rms = mode(&base, 1);
