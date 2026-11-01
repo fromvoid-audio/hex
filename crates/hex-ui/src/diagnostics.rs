@@ -477,6 +477,15 @@ fn show_open_error(window: &mut Window, cx: &mut App, error: &str) {
     ));
 }
 
+/// The installed session log file, when logging started.
+pub(crate) fn log_path(cx: &App) -> Option<std::path::PathBuf> {
+    cx.try_global::<SessionDiagnostics>()?
+        .handle
+        .as_ref()
+        .ok()
+        .map(DiagnosticsHandle::path)
+}
+
 pub(crate) fn record_state(cx: &mut App, status: &str, error: Option<&str>) -> Option<String> {
     cx.try_global::<SessionDiagnostics>()?;
     cx.update_global::<SessionDiagnostics, _>(|diagnostics, _| {

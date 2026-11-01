@@ -1,6 +1,6 @@
 //! Correlated saves refuse stale document ownership before touching files.
 use super::*;
-use std::{fs, sync::atomic::AtomicU64, time::Duration};
+use std::{fs, sync::atomic::AtomicU64};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Files(PathBuf);
@@ -23,7 +23,7 @@ impl Drop for Files {
 fn next(service: &Service) -> Event {
     service
         .events
-        .recv_timeout(Duration::from_secs(10))
+        .recv_timeout(crate::test_wait::HANG_BOUND)
         .unwrap()
 }
 
