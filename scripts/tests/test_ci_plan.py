@@ -42,8 +42,9 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(len(probes), 1)
         self.assertEqual(probes[0].argv, ("cargo", "test", "-p", "hex-plugin-host",
                                          "--features", "allocation-probe", "--locked"))
-        self.assertTrue(any(s.argv[:4] == ("cargo", "clippy", "-p", "hex-plugin-host")
-                            and "allocation-probe" in s.argv for s in selected))
+        lint = next(s for s in selected if s.step_id == "affected-feature-clippy")
+        self.assertEqual(lint.argv[:4], ("cargo", "clippy", "-p", "hex-plugin-host"))
+        self.assertIn("hex-plugin-host/allocation-probe", lint.argv[lint.argv.index("--features") + 1])
         self.assertFalse(any(s.step_id.startswith("feature-") and "allocation-probe" in s.argv
                              for s in selected), "the real owning probe runs once")
 
@@ -565,7 +566,9 @@ class ScopeTests(unittest.TestCase):
         resolved = {"scope": scope, "affected_packages": affected,
                     "boundary": boundary, "cargo_inventory": inventory}
         steps = ci.planned_steps(resolved)
-        self.assertEqual(steps[:len(ci.QUICK_STEPS)], ci.QUICK_STEPS)
+        # Quick checks keep their order; formatting is scoped to the changed owners.
+        self.assertEqual([s.step_id for s in steps[:len(ci.QUICK_STEPS)]], [s.step_id for s in ci.QUICK_STEPS])
+        self.assertNotIn("--all", steps[[s.step_id for s in steps].index("format")].argv)
         self.assertEqual(steps[len(ci.QUICK_STEPS)].step_id, "runner-tests")
         commands = [s.argv for s in steps]
         self.assertTrue(all(s.requires_tests for s in steps if s.argv[:2] == ("cargo", "test")))
@@ -578,10 +581,10 @@ class ScopeTests(unittest.TestCase):
         self.assertFalse(any("operator" in a for a in commands))
         # Reviewed stream hooks are linted, never silently skipped, but their
         # unrelated full suites are not run for a compressor-only change.
-        stream = [a for a in commands if "stream-test-support" in a]
+        stream = [a for a in commands if any("stream-test-support" in arg for arg in a)]
         self.assertTrue(stream)
         self.assertTrue(all(a[:2] == ("cargo", "clippy") for a in stream))
-        self.assertTrue(any("test-support" in a and "hex-stream" in a and a[1] == "clippy" for a in commands))
+        self.assertTrue(any("hex-stream/test-support" in ",".join(a) and a[1] == "clippy" for a in commands))
         self.assertIn("hex-midi", boundary["excluded_packages"])
         with tempfile.TemporaryDirectory() as directory:
             fixture_root = Path(directory)
@@ -611,7 +614,8 @@ class ScopeTests(unittest.TestCase):
                 # changes keep the probe configuration compiling via clippy.
                 build_input = change.endswith(("Cargo.toml", "build.rs"))
                 self.assertEqual(any(s.step_id == "audio-allocation-probe" for s in selected), build_input)
-                self.assertTrue(any(s.step_id == "audio-feature-clippy" for s in selected))
+                self.assertTrue(any(s.step_id == "affected-feature-clippy"
+                                    and "hex-audio/allocation-probe" in ",".join(s.argv) for s in selected))
         for broken in ({**boundary, "lint_packages": []},
                        {**boundary, "lint_packages": ["missing"]},
                        {**boundary, "tests": []},
@@ -957,8 +961,9 @@ class SingleRunFeatureTests(unittest.TestCase):
         for name in ("hex-session", "hex-ui", "hex-desktop"):
             self.assertIn(name, steps["affected-clippy"].argv)
         self.assertNotIn("desktop-allocation-probe", steps)
-        self.assertIn("hex-desktop", steps["audio-feature-clippy"].argv)
-        self.assertIn("hex-ui", steps["ui-feature-clippy"].argv)
+        features = steps["affected-feature-clippy"].argv[steps["affected-feature-clippy"].argv.index("--features") + 1]
+        self.assertIn("hex-desktop/allocation-probe", features)
+        self.assertIn("hex-ui/ui-test-support", features)
         self.assertFalse(any(s.argv[1] == "test" and "hex-ui" in s.argv for s in steps.values()))
         self.assertFalse(steps["single-run-doctests"].requires_tests)
         # A build input keeps every consumer's suites.
