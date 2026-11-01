@@ -4,10 +4,10 @@ use super::{
     FitTimeline, GroupSelection, ImportAudio, InsertTimeSelection, LoopSelection, MidiOctaveDown,
     MidiOctaveUp, MoveLeft, MoveRight, NewProject, NewStreamingProject, NextTrack, OpenProject,
     OpenRecentProject, OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft,
-    PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave,
-    RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject,
-    SelectAllMidiNotes, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
-    TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
+    PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverKeptSession,
+    RecoverPreviousSave, RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack,
+    SaveAsProject, SaveProject, SelectAllMidiNotes, SplitClip, Stop, ToggleLoop,
+    ToggleMidiDrawMode, TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
@@ -472,6 +472,7 @@ impl Render for EditorView {
         self.restore_sampler_parameter_focus(window);
         self.reconcile_project_open(window, cx);
         self.reconcile_format_upgrade_prompt(window, cx);
+        self.reconcile_leftover_recovery(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
         super::browser_input::restyle(&self.browser.search, cx);
@@ -1121,6 +1122,9 @@ impl Render for EditorView {
                     cx,
                 )
             }))
+            .on_action(cx.trace(|view, _: &RecoverKeptSession, window, cx| {
+                view.project_recovery_dialog(super::project_recovery::OpenKind::Kept, window, cx)
+            }))
             .on_action(cx.trace(|view, _: &RecoverPreviousSave, window, cx| {
                 view.project_recovery_dialog(
                     super::project_recovery::OpenKind::PreviousSave,
@@ -1308,6 +1312,12 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &GroupSelection, window, cx| {
+                if crate::diagnostics::actions_enabled(cx) {
+                    crate::diagnostics::record_group_selection(
+                        cx,
+                        &view.group_selection_route(window),
+                    );
+                }
                 if view.audio_event_focus.is_focused(window) {
                     view.event_group_selected();
                 } else if view.section_has_focus(window) {
