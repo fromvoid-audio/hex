@@ -182,8 +182,10 @@ def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
 
 
 # Merge test-execution budget (user policy, 1 November 2026): owner-boundary
-# merge checks keep test setup and execution, excluding Cargo's build phase,
-# under one minute. Carried steps cost nothing in this run and are excluded.
+# merge checks aim to keep test setup and execution, excluding Cargo's build
+# phase, under one minute. Exceeding it is a warning, not a merge failure (user
+# decision, 1 November 2026; overruns are investigated in Pulse #4100). Carried
+# steps cost nothing in this run and are excluded.
 MERGE_TEST_BUDGET_SECONDS = 60.0
 
 
@@ -2214,10 +2216,8 @@ class LocalCiRunner:
                             "changed modules ran no tests: add boundary tests to the changed module")
                         failed = True
                 if self.mode == "merge" and not failed:
-                    budget = merge_test_budget(self.summary["steps"], self.over_budget_reason)
-                    self.summary["test_budget"] = budget
-                    if budget["exceeded"] and not self.over_budget_reason:
-                        failed = True
+                    self.summary["test_budget"] = merge_test_budget(
+                        self.summary["steps"], self.over_budget_reason)
                 partial = self.mode == "quick" or self.plan and not self.plan["qualifies_merge"]
                 self.summary["verification_status"] = "failed" if failed else ("partial" if partial else "passed")
                 self.summary["status"] = self.summary["verification_status"]
@@ -2348,7 +2348,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reuse-report", type=Path,
                         help="explicit prior runtime certificate for a prose-only continuation")
     parser.add_argument("--over-budget-reason",
-                        help="record why a merge run may exceed the one-minute test budget (cite the Pulse issue)")
+                        help="record why a merge run exceeds the one-minute test budget (cite the Pulse issue)")
     parser.add_argument("--carry-report", type=Path,
                         help="after merging a newer base, reuse unaffected steps of this passed merge summary")
     parser.add_argument("--resume-report", type=Path,
@@ -2441,10 +2441,9 @@ def main(argv: list[str] | None = None) -> int:
     budget = runner.summary.get("test_budget")
     if isinstance(budget, dict) and budget.get("exceeded"):
         slowest = ", ".join(f"{s['step_id']} {s['seconds']:.0f}s" for s in budget["slowest"])
-        verdict = (f"accepted: {budget['over_budget_reason']}" if budget.get("over_budget_reason") else
-                   "fails merge; narrow the owner boundary or speed up the slowest suites, "
-                   "or rerun with --over-budget-reason and file the slow suite in Pulse")
-        print(f"merge test time {budget['test_seconds']:.0f}s exceeds the "
+        verdict = (f"reason: {budget['over_budget_reason']}" if budget.get("over_budget_reason") else
+                   "not a merge failure; record a recurring slow suite in Pulse")
+        print(f"warning: merge test time {budget['test_seconds']:.0f}s exceeds the "
               f"{budget['limit_seconds']:.0f}s budget ({slowest}); {verdict}", file=sys.stderr)
     print(f"local ci {runner.summary['status']}: {runner.summary_path}")
     if mode == "health" and runner.summary["status"] == "failed":

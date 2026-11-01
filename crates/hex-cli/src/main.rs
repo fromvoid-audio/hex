@@ -20,7 +20,7 @@ use std::{error::Error, path::Path};
 fn main() {
     if let Err(error) = run() {
         // Error text carries case-sensitive paths; never lowercase it.
-        eprintln!("{error}");
+        eprintln!("{}", hex_storage::text::plain(&error.to_string()));
         std::process::exit(1);
     }
 }

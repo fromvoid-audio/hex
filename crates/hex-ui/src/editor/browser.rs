@@ -39,7 +39,7 @@ mod layout;
 
 // Preference diagnostics remain useful without unbounded field/path text in UI tooltips.
 fn places_error(prefix: &str, error: &hex_preferences::PreferencesError) -> String {
-    let reason = error.to_string().to_lowercase();
+    let reason = hex_session::service::text::lowercase_outside_verbatim(&error.to_string());
     let mut message = format!(
         "{prefix} · {}",
         reason.chars().take(160).collect::<String>()
@@ -207,6 +207,9 @@ pub(super) struct BrowserState {
     places_save_in_flight: bool,
     folder_bookmark_pending: bool,
     pending_places_save: Option<BrowserPlaces>,
+    /// Latest failure from a save that a queued save followed; reported when
+    /// the save chain ends so a later success cannot hide it.
+    unreported_places_save_error: Option<String>,
     pub(super) places_status: Option<String>,
     samples: samples::SampleBrowser,
     plugins: plugins::Plugins,
@@ -293,6 +296,7 @@ impl BrowserState {
             places_save_in_flight: false,
             folder_bookmark_pending: false,
             pending_places_save: None,
+            unreported_places_save_error: None,
             places_status: None,
             samples: samples::SampleBrowser::default(),
             plugins: plugins::Plugins::default(),
@@ -333,6 +337,12 @@ impl BrowserState {
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn test_preferences_path(&self) -> &std::path::Path {
         &self.preferences_path
+    }
+
+    /// Redirects later saves; an in-flight save keeps its captured path.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn set_test_preferences_path(&mut self, path: PathBuf) {
+        self.preferences_path = path;
     }
 
     #[cfg(feature = "ui-test-support")]
@@ -421,7 +431,7 @@ fn browser_audio_drag_ghost(
         .border_1()
         .border_l(px(stroke))
         .border_r(px(0.0))
-        .border_color(rgb(0x000000))
+        .border_color(rgb(theme::color(theme::PaletteRole::ClipOutline)))
         .bg(rgb(theme::color(theme::PaletteRole::ClipFill)));
     if let Some((lines, start, end)) = grid {
         ghost = ghost.children(super::tracks::aligned_clip_grid_layer(
@@ -460,8 +470,17 @@ fn browser_audio_drag_ghost(
             .child(theme::text(payload.label.clone()))
             .child(theme::text(status)),
     );
-    super::tracks::pixel_boundary_shell(ghost, left, top, width, height, stroke, 0x000000, true)
-        .opacity(0.9)
+    super::tracks::pixel_boundary_shell(
+        ghost,
+        left,
+        top,
+        width,
+        height,
+        stroke,
+        theme::color(theme::PaletteRole::ClipOutline),
+        true,
+    )
+    .opacity(0.9)
 }
 
 fn browser_audio_drag_ghost_position(pointer: (f32, f32)) -> (f32, f32) {
@@ -657,14 +676,25 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         self.browser.places_save_in_flight = false;
+        let error = result
+            .err()
+            .map(|error| places_error("could not save browser places", &error));
         if self.browser.pending_places_save.is_some() {
+            // A queued save supersedes the data, not the user's notice: show
+            // the failure now and keep the latest one until it is reported.
+            if let Some(error) = error {
+                self.browser.places_status = Some(error.clone());
+                self.browser.unreported_places_save_error = Some(error);
+            }
             self.start_browser_places_save(cx);
-        } else {
-            self.browser.places_status = Some(match result {
-                Ok(()) => "browser places saved".into(),
-                Err(error) => places_error("could not save browser places", &error),
-            });
+            return;
         }
+        let earlier = self.browser.unreported_places_save_error.take();
+        self.browser.places_status = Some(match (error, earlier) {
+            (Some(error), _) => error,
+            (None, Some(earlier)) => format!("{earlier} · a later save succeeded"),
+            (None, None) => "browser places saved".into(),
+        });
     }
 
     fn select_browser_source(&mut self, source: BrowserSection, cx: &mut Context<Self>) {
@@ -1373,7 +1403,9 @@ impl EditorView {
                 }
                 Err(error) => {
                     self.browser.listing = None;
-                    self.browser.error = Some(error.to_string().to_lowercase());
+                    self.browser.error = Some(
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+                    );
                     self.browser.loading = false;
                 }
             }
@@ -1818,7 +1850,11 @@ impl EditorView {
                 ] {
                     entries.extend(
                         hex_engine::native_device_catalog_for_class(class)
-                            .map_err(|error| error.to_string().to_lowercase())?
+                            .map_err(|error| {
+                                hex_session::service::text::lowercase_outside_verbatim(
+                                    &error.to_string(),
+                                )
+                            })?
                             .into_iter()
                             .map(|entry| (class, entry)),
                     );
@@ -2530,7 +2566,12 @@ impl EditorView {
         }
         let tooltip = self.browser.tree.error(&path).map_or_else(
             || path.to_string_lossy().into_owned(),
-            |error| format!("{} · {error}", path.display()),
+            |error| {
+                format!(
+                    "{} · {error}",
+                    hex_session::service::text::verbatim(path.display())
+                )
+            },
         );
         row.tooltip(move |_, cx| layout::browser_label_tooltip(&tooltip, cx))
             .child(
@@ -2748,7 +2789,14 @@ impl EditorView {
                             }
                         }
                     }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
+                    Ok(Err(error)) => {
+                        view.error = Some(
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string(),
+                            )
+                            .into(),
+                        )
+                    }
                     _ => {}
                 }
                 cx.notify();
