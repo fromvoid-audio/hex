@@ -6,10 +6,42 @@
 //! A global replacement deliberately replaces retained warped section clocks:
 //! their original domain/crop stays intact, while processing follows the new
 //! constant map at the current musical placement. Warp-off roots stay frozen.
-use crate::{AudioClipTiming, BeatTime, Invalid, Project, Tempo, TempoMap};
+//! A tempo-point edit keeps the same onsets and tail crops but leaves live
+//! musical timing live. Both edits keep the loop brace on its musical
+//! endpoints, so loop wraps stay on the same bar lines.
+use crate::{AudioClipTiming, BeatTime, Invalid, LoopRegion, Project, Tempo, TempoMap, TempoPoint};
 use std::sync::Arc;
 
 impl Project {
+    pub(crate) fn set_tempo_point(&mut self, point: TempoPoint) -> Result<(), Invalid> {
+        let map = self.tempo_map.replace_point(point)?;
+        if self.tempo_map == map {
+            return Ok(());
+        }
+        // A structural reorder retains complete processing roots from their
+        // original tempo context. Rebase is not yet supported; silently
+        // projecting a new length would trim/pad their PCM.
+        if self.tracks.iter().flat_map(|t| t.clips()).any(|clip| {
+            clip.audio_edit()
+                .is_some_and(|edit| edit.processing_projection.is_some())
+        }) {
+            return Err(Invalid(
+                "tempo changes after audio section reorder require an unsupported processing rebase; undo the reorder first",
+            ));
+        }
+        let old = Arc::new(self.tempo_map.clone());
+        let mut candidate = self.clone();
+        candidate.tempo_map = map;
+        for track in &mut candidate.tracks {
+            retime_track_for_tempo_point(track, &old, &candidate.tempo_map)?;
+        }
+        candidate.loop_region =
+            retime_loop_region(candidate.loop_region, &old, &candidate.tempo_map)?;
+        Project::from_snapshot(candidate.snapshot())?;
+        *self = candidate;
+        Ok(())
+    }
+
     pub(crate) fn set_project_tempo(&mut self, tempo: Tempo) -> Result<(), Invalid> {
         let map = TempoMap::constant(self.sample_rate(), tempo)?;
         if self.tempo_map == map {
@@ -36,12 +68,58 @@ impl Project {
             }
             retime_track(track, &old, &candidate.tempo_map)?;
         }
+        candidate.loop_region =
+            retime_loop_region(candidate.loop_region, &old, &candidate.tempo_map)?;
         // Includes combined audio/MIDI occupancy and every current-format
         // invariant. Refusal leaves source, IDs, history and the old map intact.
         Project::from_snapshot(candidate.snapshot())?;
         *self = candidate;
         Ok(())
     }
+}
+
+/// Keep a frame-stored loop brace on its musical endpoints across a tempo-map
+/// replacement, as section reorder does. An edit that would quantize the
+/// brace to an empty region is refused rather than dropping the loop.
+fn retime_loop_region(
+    region: Option<LoopRegion>,
+    old: &TempoMap,
+    map: &TempoMap,
+) -> Result<Option<LoopRegion>, Invalid> {
+    region
+        .map(|region| {
+            LoopRegion::new(
+                map.beat_to_frame(old.frame_to_beat(region.start())?)?,
+                map.beat_to_frame(old.frame_to_beat(region.end())?)?,
+                region.enabled(),
+            )
+        })
+        .transpose()
+}
+
+/// Apply a tempo-point map replacement to one track's audio. Unlike a global
+/// replacement, live musical timing stays live: `project_clip` already moves
+/// it, its view and fades by beat. Clips it would leave on their old frames
+/// (no retained edit, or plain frame timing) keep their musical onset here,
+/// then colliding tails crop under the same law as a global tempo edit.
+fn retime_track_for_tempo_point(
+    track: &mut crate::Track,
+    old: &TempoMap,
+    map: &TempoMap,
+) -> Result<(), Invalid> {
+    for clip in &mut track.content.audio_clips {
+        let frame_anchored = clip.edit.as_deref().is_none_or(|edit| {
+            matches!(edit.timing, AudioClipTiming::Frames)
+                && !edit.domain.warp_enabled
+                && edit.content_view.is_none()
+                && edit.placement.is_none()
+        });
+        if frame_anchored {
+            clip.start = map.beat_to_frame(old.frame_to_beat(clip.start)?)?;
+        }
+        crate::audio_edit::project_clip(clip, map)?;
+    }
+    crop_colliding_tails(track, map)
 }
 
 /// Reproject one independently captured track using the same onset/crop law as

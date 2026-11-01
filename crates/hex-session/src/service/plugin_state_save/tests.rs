@@ -239,13 +239,10 @@ fn save_capture_refusal_preserves_existing_file_dirty_state_and_new_destination(
         }
     }
     fn event(service: &Service) -> Event {
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        loop {
-            if let Ok(event) = service.try_event() {
-                return event;
-            }
-            assert!(std::time::Instant::now() < until);
-            std::thread::yield_now();
+        // Blocks on the event channel; bounded only against hangs.
+        match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+            Ok(event) => event,
+            Err(error) => panic!("event: worker event absent: {error}"),
         }
     }
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
