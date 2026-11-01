@@ -169,8 +169,9 @@ assert unittest.defaultTestLoader.loadTestsFromTestCase(instance.NativeInstanceT
                 self.assertEqual(result["excluded_groups"], [])
 
     def test_mixed_inputs_and_unregistered_rename_endpoint_cannot_take_fast_path(self):
+        # Mixed UI/core Rust inputs share the same invariants as either alone.
+        self.assertEqual(selection(["crates/hex-ui/src/a.rs", "crates/hex-engine/src/a.rs"])["mode"], "shared")
         for paths in (
-            ["crates/hex-ui/src/a.rs", "crates/hex-engine/src/a.rs"],
             ["crates/hex-ui/src/a.rs", "launch"],
             ["crates/hex-engine/src/a.rs", "unknown/renamed.rs"],
         ):
