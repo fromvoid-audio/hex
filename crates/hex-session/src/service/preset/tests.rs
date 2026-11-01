@@ -523,6 +523,112 @@ fn device_preset_with_an_above_nyquist_fixed_tone_loads_and_compiles() {
 }
 
 #[test]
+fn device_preset_valid_native_state_can_fail_live_admission_without_mutation() {
+    let dir = Directory::new();
+    let path = dir.0.join("long-release.hex-device-preset.json");
+    let (service, added, device) =
+        fixture(NativeDeviceClass::Instrument, "hex.instrument.operator");
+    let track = added.state.project.tracks()[0].id();
+    service
+        .submit(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::from_quarters(12).unwrap(),
+        }))
+        .unwrap();
+    let placed = event(&service);
+    assert!(placed.error.is_none(), "{:?}", placed.error);
+    let clip = placed.state.project.tracks()[0].midi_clips()[0].id();
+    // 65 short notes an eighth of a beat apart fit the 64-voice track
+    // capacity with the default release tails.
+    for index in 0..65_u8 {
+        service
+            .submit(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: hex_project::BeatTime::from_ratio(u64::from(index), 8).unwrap(),
+                duration: hex_project::BeatTime::from_ratio(1, 32).unwrap(),
+                pitch: 36 + index % 48,
+                channel: 0,
+                velocity: 100,
+            }))
+            .unwrap();
+        let added = event(&service);
+        assert!(added.error.is_none(), "{:?}", added.error);
+    }
+    service
+        .submit(Request::Edit(Command::AddScene {
+            name: "redo guard".into(),
+        }))
+        .unwrap();
+    event(&service);
+    service.submit(Request::Undo).unwrap();
+    let before = event(&service);
+    assert!(before.state.can_redo);
+    let artifact = before
+        .playback
+        .as_ref()
+        .unwrap()
+        .prepared_revision()
+        .unwrap()
+        .clone();
+    // Maximum release tails overlap all 65 notes: valid state, refused density.
+    let mut state = before.state.project.device(device).unwrap().state().clone();
+    for release in [38, 44, 50, 56] {
+        // Operator 1-4 release, at its 60 s maximum.
+        state = hex_engine::patch_native_device_parameter_for_class(
+            NativeDeviceClass::Instrument,
+            &state,
+            ParameterId::from_static(release),
+            ParameterValue::Float(60.0),
+        )
+        .unwrap();
+    }
+    hex_engine::native_device_view_for_class(NativeDeviceClass::Instrument, &state)
+        .expect("valid native metadata; admission is stricter");
+    hex_storage::preset::save_new(
+        &path,
+        &Preset {
+            comparison: None,
+            class: DeviceClass::Instrument,
+            state,
+        },
+    )
+    .unwrap();
+    service
+        .submit(Request::LoadDevicePreset {
+            owner: owner(&before, device, NativeDeviceClass::Instrument),
+            path,
+        })
+        .unwrap();
+    let refused = event(&service);
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("voice density")),
+        "{:?}",
+        refused.error
+    );
+    assert_eq!(refused.state.project, before.state.project);
+    assert_eq!(refused.state.revision, before.state.revision);
+    assert!(refused.state.can_redo);
+    assert!(refused.playback.is_none());
+    service
+        .submit(Request::RestorePlayback { generation: 7 })
+        .unwrap();
+    let restored = event(&service);
+    assert!(std::sync::Arc::ptr_eq(
+        &artifact,
+        restored
+            .playback
+            .as_ref()
+            .unwrap()
+            .prepared_revision()
+            .unwrap()
+    ));
+}
+
+#[test]
 fn comparison_preset_roundtrip_restores_both_variants_but_not_global_trims_or_bypass() {
     use hex_project::{DeviceComparisonAction as Action, DeviceVariant as Slot};
     for (class, type_name) in [

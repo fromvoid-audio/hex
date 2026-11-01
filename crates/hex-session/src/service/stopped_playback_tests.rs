@@ -38,6 +38,67 @@ fn render(playback: &mut Playback) -> Vec<hex_engine::Frame> {
 }
 
 #[test]
+fn refused_compile_preserves_canonical_state_history_and_active_sound() {
+    // The default sine instrument still refuses pitches at or above nyquist.
+    let service = Service::new(8_000, 16, 0).expect("service");
+    next(&service);
+    let added = submit(
+        &service,
+        Request::Edit(Command::InsertTrackWithDevice {
+            name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        }),
+    );
+    let track = added.state.project.tracks()[0].id();
+    let clip = submit(
+        &service,
+        Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::from_raw(4 << 32),
+        }),
+    )
+    .state
+    .project
+    .tracks()[0]
+        .midi_clips()[0]
+        .id();
+    let note = |pitch| {
+        Request::Edit(Command::AddMidiNote {
+            clip,
+            start: hex_project::BeatTime::ZERO,
+            duration: hex_project::BeatTime::from_raw(2 << 32),
+            pitch,
+            channel: 0,
+            velocity: 100,
+        })
+    };
+    let before = submit(&service, note(60));
+    assert!(before.error.is_none(), "{:?}", before.error);
+    let canonical = Arc::clone(&before.state);
+    let mut active = before.playback.unwrap();
+    active.apply(PlaybackCommand::Play);
+    render(&mut active);
+
+    let refused = submit(&service, note(127));
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("cannot be prepared by its instrument")),
+        "{:?}",
+        refused.error
+    );
+    assert!(refused.playback.is_none());
+    assert_eq!(refused.state.project, canonical.project);
+    assert_eq!(refused.state.revision, canonical.revision);
+    assert_eq!(refused.state.can_undo, canonical.can_undo);
+    render(&mut active);
+}
+
+#[test]
 fn vector_b_tuning_edits_keep_canonical_sound_and_stop_can_restore_a_restarted_handoff() {
     let service = Service::new(48_000, 16, 0).expect("service");
     next(&service);
