@@ -157,6 +157,48 @@ fn remapped_suppression_ends_at_the_loop_wrap_so_the_next_pass_sounds() {
 }
 
 #[test]
+fn remapped_release_of_a_note_longer_than_the_loop_ends_at_the_wrap() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    // Pulse #4135: the held note (beats 0..8) outlasts the loop over frames
+    // 0..4_800. The cut remaps to 10 frames before the candidate wrap, so the
+    // released donor voice's 2_400-frame tail would sound over the next pass.
+    let region = Some((0, 4_800));
+    let candidate = arrangement_at(60_000_000, region);
+    // A fresh pass from the loop start: what the next pass must sound like.
+    let mut fresh = SessionPlayback::new(revision(&candidate, Arc::clone(&table))).unwrap();
+    fresh.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = vec![[0.0; 2]; 2_560];
+    fresh.render(&mut expected).unwrap();
+    // Control: unedited looped playback ends the occurrence at the wrap.
+    let mut unedited = SessionPlayback::new(revision(&candidate, Arc::clone(&table))).unwrap();
+    unedited.apply(SessionPlaybackCommand::Play).unwrap();
+    render_frames(&mut unedited, 512, 4_800);
+    let mut wrapped = vec![[0.0; 2]; 2_560];
+    unedited.render(&mut wrapped).unwrap();
+    assert_eq!(wrapped, expected, "unedited wrap");
+    for block in [1, 64, 512] {
+        let mut old = SessionPlayback::new(revision(
+            &arrangement_at(120_000_000, region),
+            Arc::clone(&table),
+        ))
+        .unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        render_frames(&mut old, block, 2_395);
+        let mut next = SessionPlayback::new(revision(&candidate, Arc::clone(&table))).unwrap();
+        next.try_inherit_state_from(&mut old).unwrap();
+        assert_eq!(next.arrangement_frame(), 4_790, "block={block}");
+        let wrap = next.performance_frame() + 10;
+        render_frames(&mut next, block, 10);
+        assert_eq!(next.performance_frame(), wrap);
+        let mut after = vec![[0.0; 2]; 2_560];
+        for chunk in after.chunks_mut(block) {
+            next.render(chunk).unwrap();
+        }
+        assert_eq!(after, expected, "block={block}");
+    }
+}
+
+#[test]
 fn paused_restart_relocates_to_the_same_arrangement_beat() {
     let table = Arc::new(hex_devices::SineTable::new());
     let cut = 3_001;

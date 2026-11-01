@@ -2236,19 +2236,12 @@ impl SessionPlayback {
                 }
             }
             if shared_sources::track_has_analytic_source(&previous.revision, old_index) {
-                // The released occurrence also ends at the donor's loop wrap,
-                // as unedited looped playback ends it; its unwrapped gate
-                // would otherwise sound over the next pass.
-                let old_loop_end = previous
-                    .active_loop_region_at(cut_frame)
-                    .map(hex_project::LoopRegion::end);
                 let mut failure = None;
                 old_track
                     .for_each_active_midi_span(cut_frame, |span, sampler| {
                         if span.start >= cut_frame {
                             return;
                         }
-                        let wrapped = |frame: u64| old_loop_end.map_or(frame, |end| frame.min(end));
                         let key = ContinuationKey {
                             clip: span.clip,
                             note: span.note,
@@ -2262,8 +2255,8 @@ impl SessionPlayback {
                             {
                                 MidiReleaseVoice::from_finite_span_preserving_gate(
                                     span.start,
-                                    wrapped(span.gate_end),
-                                    wrapped(span.end),
+                                    span.gate_end,
+                                    span.end,
                                     sampler.detach(&previous.analytic_continuations),
                                     cut_frame,
                                     previous.performance_frame,
@@ -2271,15 +2264,20 @@ impl SessionPlayback {
                             } else {
                                 MidiReleaseVoice::from_finite_span(
                                     span.start,
-                                    wrapped(span.gate_end),
-                                    wrapped(span.end),
+                                    span.gate_end,
+                                    span.end,
                                     sampler.detach(&previous.analytic_continuations),
                                     cut_frame,
                                     previous.performance_frame,
                                 )
                             };
+                        // The released occurrence ends at the wrap, as
+                        // unedited looped playback ends it; neither its
+                        // unwrapped gate nor its tail sounds over the next pass.
                         let voice = match voice_result {
-                            Ok(Some(voice)) => voice,
+                            Ok(Some(voice)) => {
+                                wrap_frame.map_or(voice, |wrap| voice.ending_by(wrap))
+                            }
                             Ok(None) => return,
                             Err(_) => {
                                 failure = Some(SessionPlaybackError::ArithmeticOverflow);
@@ -4679,6 +4677,14 @@ fn cut_arrangement_voices_for_remap(
     } = candidate;
     let old_cut = previous.arrangement_frame;
     let performance = previous.performance_frame;
+    // The candidate's next pass starts at this performance frame.
+    let wrap_frame = loop_end
+        .map(|end| {
+            end.checked_sub(candidate_cut)
+                .and_then(|remaining| performance.checked_add(remaining))
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)
+        })
+        .transpose()?;
     for (old_index, _) in previous.routes.iter().enumerate() {
         let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
         if old_route.owner != RouteOwner::Arrangement
@@ -4722,7 +4728,9 @@ fn cut_arrangement_voices_for_remap(
                         old_cut,
                         performance,
                     ) {
-                        Ok(Some(voice)) => voice,
+                        // Its tail must not sound over the candidate's next
+                        // pass; unedited looped playback stops at the wrap.
+                        Ok(Some(voice)) => wrap_frame.map_or(voice, |wrap| voice.ending_by(wrap)),
                         Ok(None) => return,
                         Err(_) => {
                             failure = Some(SessionPlaybackError::ArithmeticOverflow);
