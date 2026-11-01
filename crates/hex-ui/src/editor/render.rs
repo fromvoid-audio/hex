@@ -555,6 +555,8 @@ impl Render for EditorView {
         let trim_pointer_entity = cx.entity();
         let midi_trim_pointer_entity = cx.entity();
         div()
+            // Pointer presses leave the idle poll cadence before any handler runs.
+            .capture_any_mouse_down(cx.listener(|view, _, window, cx| view.wake_poll(window, cx)))
             .when(crate::diagnostics::actions_enabled(cx), |root| {
                 root.capture_any_mouse_down(|event, _, cx| {
                     crate::diagnostics::record_pointer(
