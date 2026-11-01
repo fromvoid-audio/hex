@@ -172,6 +172,31 @@ impl Journal {
         lock.finish_with(&self.path, change, result, release)
     }
 
+    /// Explicit user discard of an observed leftover checkpoint (Pulse #3990).
+    /// Under the slot lock the exact bytes are copied into a new private
+    /// preserved-recovery sibling directory before the slot is removed, so a
+    /// discard never deletes recoverable work. Returns the kept copy's path.
+    pub fn set_aside(&mut self) -> Result<PathBuf, StorageError> {
+        let lock = lock_slot(&self.path)?;
+        let mut change = JournalChange::Unchanged;
+        let mut kept = None;
+        let result = (|| {
+            self.check()?;
+            let bytes = self
+                .bytes
+                .as_deref()
+                .ok_or(StorageError::Invalid("no recovery journal to set aside"))?;
+            kept = Some(restart::preserve(&self.path, bytes)?);
+            fs::remove_file(&self.path)?;
+            self.bytes = None;
+            change = JournalChange::CheckpointCleared;
+            replacement::sync_parent(parent(&self.path))?;
+            Ok(())
+        })();
+        lock.finish_with(&self.path, change, result, SlotLock::unlock)?;
+        kept.ok_or(StorageError::Invalid("no recovery journal to set aside"))
+    }
+
     fn check(&self) -> Result<(), StorageError> {
         if read(&self.path)? != self.bytes {
             return Err(StorageError::Conflict {
@@ -526,6 +551,26 @@ mod tests {
             b"external sixteen"
         );
         assert_eq!(fs::read(&path).expect("checkpoint remains"), recreated);
+    }
+
+    #[test]
+    fn set_aside_keeps_exact_bytes_and_refuses_a_changed_slot() {
+        let dir = Temp::new();
+        let path = dir.0.join("untitled.hex-journal");
+        let crashed = Project::new(48_000).expect("crashed");
+        Journal::open(path.clone())
+            .expect("open")
+            .checkpoint_latest(&crashed)
+            .expect("checkpoint");
+        let bytes = fs::read(&path).expect("leftover");
+        let mut stale = Journal::open(path.clone()).expect("observe");
+        let mut leftover = Journal::open(path.clone()).expect("observe");
+        let kept = leftover.set_aside().expect("set aside");
+        assert!(!path.exists(), "slot cleared");
+        assert_eq!(fs::read(&kept).expect("kept"), bytes);
+        assert_eq!(load_journal(&kept).expect("kept loads"), crashed);
+        assert!(stale.set_aside().is_err(), "a changed slot refuses");
+        assert_eq!(fs::read(&kept).expect("kept unchanged"), bytes);
     }
 
     #[test]

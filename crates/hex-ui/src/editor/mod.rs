@@ -387,6 +387,7 @@ actions!(
         RecoverUntitledProject,
         RecoverSavedProject,
         RecoverPreviousSave,
+        RecoverKeptSession,
         OpenSettings,
         OpenTuning,
         CloseTuning,

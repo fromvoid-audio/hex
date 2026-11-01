@@ -84,8 +84,8 @@ mod stopped_playback_tests;
 use hex_storage::FileToken;
 use recovery::absolute_document_path;
 pub use recovery::{
-    LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart, leftover_recovery,
-    untitled_recovery_path,
+    LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart, kept_journal,
+    leftover_recovery, untitled_recovery_path,
 };
 use std::{
     collections::BTreeMap,
