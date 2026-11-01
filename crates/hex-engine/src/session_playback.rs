@@ -519,6 +519,9 @@ pub struct SessionPlayback {
     current_sampler_console: bool,
     route_state_generation: u64,
     candidate_admission_open: bool,
+    // Control-side request that the live handoff restart at the cursor rather
+    // than carry voices or detached tails the candidate already represents.
+    live_restart: bool,
 }
 
 impl fmt::Debug for SessionPlayback {
@@ -898,6 +901,7 @@ impl SessionPlayback {
             current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open: _,
+            live_restart: _,
         } = self;
         // Fresh Main metadata must match before any location is emitted.
         // A real owning transfer can later leave an allocation-free empty
@@ -1993,6 +1997,7 @@ impl SessionPlayback {
             current_sampler_console: false,
             route_state_generation: 0,
             candidate_admission_open: true,
+            live_restart: false,
         })
     }
 
@@ -2306,6 +2311,17 @@ impl SessionPlayback {
         }
         self.require_fresh_candidate()?;
         self.inherit_state_live(previous, None)
+    }
+
+    /// Make a later live handoff restart at the cursor (voices and tails
+    /// reset, gate-active notes chased) without first trying to carry state.
+    /// In-place bounces need this: their baked PCM already contains the old
+    /// instrument and effect output, so detached tails would sound twice.
+    pub fn request_live_restart(&mut self) {
+        self.live_restart = true;
+    }
+    pub fn live_restart_requested(&self) -> bool {
+        self.live_restart
     }
 
     pub(crate) fn inherit_candidate_groups(

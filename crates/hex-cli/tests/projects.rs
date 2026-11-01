@@ -476,3 +476,27 @@ fn persisted_balance_and_master_gain_reach_the_shared_wav_renderer() {
     }
     assert_eq!(rendered.frames(), 3);
 }
+
+#[test]
+fn path_bearing_errors_keep_the_exact_mixed_case_path() {
+    let directory = TempDir::new();
+    let project = directory.path().join("MiXeD Case").join("Huge.HEX");
+    fs::create_dir(project.parent().unwrap()).expect("mixed-case directory");
+    fs::File::create(&project)
+        .and_then(|file| file.set_len(1 << 30))
+        .expect("sparse oversized project");
+    let output = directory.path().join("Out.wav");
+    let result = ProcessCommand::new(env!("CARGO_BIN_EXE_hex-cli"))
+        .arg("render-project")
+        .arg(&project)
+        .arg(&output)
+        .output()
+        .expect("run cli");
+    assert!(!result.status.success());
+    let stderr = String::from_utf8(result.stderr).expect("utf-8 stderr");
+    assert!(
+        stderr.contains(project.to_str().expect("utf-8 path")),
+        "{stderr}"
+    );
+    assert!(!output.exists());
+}
