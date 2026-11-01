@@ -647,3 +647,65 @@ fn profile_alias_gain_history() {
         timings[200], timings[380], timings[396], timings[399]
     );
 }
+
+/// Pulse #3966: commands that replace, delete or re-kind a member outside the
+/// shared-edit scope must still detach it, so the project reopens and the
+/// surviving sibling stays editable.
+#[test]
+fn conversion_section_delete_and_overwrite_detach_members_and_keep_the_project_reopenable() {
+    for case in ["convert", "delete section", "overwrite"] {
+        let (mut editor, track, original) = midi();
+        let alias = duplicate(&mut editor, original);
+        match case {
+            "convert" => {
+                let frames = editor.project().midi_bounce_range(original).unwrap().1;
+                editor
+                    .execute(Command::ConvertMidiClipToAudio {
+                        clip: original,
+                        path: std::env::temp_dir().join("hex-alias-bounce.wav"),
+                        frames,
+                    })
+                    .unwrap();
+            }
+            "delete section" => {
+                let Created::ArrangementSection(section) = editor
+                    .execute(Command::AddArrangementSection {
+                        name: "intro".into(),
+                        color: crate::ElementColor::Rose,
+                        start: beat(0),
+                        end: beat(4),
+                    })
+                    .unwrap()
+                else {
+                    panic!("section")
+                };
+                editor
+                    .execute(Command::DeleteArrangementSection(section))
+                    .unwrap();
+            }
+            _ => {
+                editor
+                    .execute(Command::PlaceMidiClipWithOverwrite {
+                        track,
+                        start: beat(0),
+                        length: beat(4),
+                    })
+                    .unwrap();
+            }
+        }
+        Project::from_snapshot(editor.project().snapshot())
+            .unwrap_or_else(|error| panic!("{case}: reopen refused: {error:?}"));
+        editor
+            .execute(Command::AddMidiNote {
+                clip: alias,
+                start: beat(2),
+                duration: beat(1),
+                pitch: 64,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap_or_else(|error| panic!("{case}: sibling edit refused: {error:?}"));
+        Project::from_snapshot(editor.project().snapshot())
+            .unwrap_or_else(|error| panic!("{case}: reopen after edit refused: {error:?}"));
+    }
+}
