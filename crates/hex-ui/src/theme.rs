@@ -162,8 +162,8 @@ impl ThemeTokens {
             raised: darken(background, 6),
             hover: lighten(background, 12),
             border: darken(background, 17),
-            // Preserve the default black while following lighter custom backgrounds.
-            clip_outline: darken(background, 42),
+            // Keep outlines dark against clip fills while following custom backgrounds.
+            clip_outline: mix(0x000000, darken(background, 42), 0.25),
             muted: mix(background, text, 0.68),
             primary_dark: mix(background, primary, 0.08),
             waveform: contrast_text(mix(primary, text, 0.15), text),
@@ -512,7 +512,7 @@ mod tests {
             background: hex_preferences::RgbColor::new(0x80, 0x70, 0x60),
             ..hex_preferences::ThemePreferences::default()
         });
-        assert_eq!(color(PaletteRole::ClipOutline), 0x564636);
+        assert_eq!(color(PaletteRole::ClipOutline), 0x16120e);
     }
 
     #[test]
