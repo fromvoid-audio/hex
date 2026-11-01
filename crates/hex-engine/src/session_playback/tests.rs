@@ -12059,19 +12059,17 @@ fn interactive_arrangement_preroll_accepts_loops_and_checks_cancellation() {
                 .unwrap_err(),
                 ArrangementPrerollError::Cancelled
             );
-            // Even though 1408 normalizes to 384, admission still requires the
-            // caller's original explicit work budget before doing any replay.
-            assert_eq!(
-                SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
-                    looped,
-                    1408,
-                    384,
-                    true,
-                    &AtomicBool::new(false),
-                )
-                .unwrap_err(),
-                ArrangementPrerollError::WorkBudgetExceeded,
-            );
+            // No prefix replays, so a post-loop destination needs no replay
+            // work budget and keeps its absolute cursor.
+            let post_loop = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                looped,
+                1408,
+                0,
+                true,
+                &AtomicBool::new(false),
+            )
+            .expect("interactive seek renders no prefix");
+            assert_eq!(post_loop.arrangement_frame(), 1408);
         })
         .unwrap()
         .join()
@@ -12128,6 +12126,96 @@ fn assert_preroll_continuation(prepared: &Arc<PreparedRevision>, target: u64, in
     candidate.render(&mut actual).unwrap();
     assert_eq!(actual, expected, "preroll mismatch at frame {target}");
     assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+}
+
+#[test]
+fn interactive_and_section_destinations_exceed_the_linear_replay_ceiling() {
+    // 120 bpm at 48 kHz: beat 1398 starts at frame 33_552_000, so the
+    // destination lands inside the clip's first held note.
+    let destination = MAX_ARRANGEMENT_PREROLL_FRAMES * 4 + 37;
+    let mut snapshot = project(0.5, 0, 1 << 32).snapshot();
+    let (TrackContentSnapshot::Instrument(clips)
+    | TrackContentSnapshot::Hybrid {
+        midi_clips: clips, ..
+    }) = &mut snapshot.tracks[0].content
+    else {
+        panic!("fixture track holds midi clips");
+    };
+    clips[0].start_raw = 1398 << 32;
+    let prepared = revision(
+        &Project::from_legacy_snapshot(snapshot).unwrap(),
+        Arc::new(hex_devices::SineTable::new()),
+    );
+    // Linear export still replays the prefix and keeps its work ceiling.
+    assert_eq!(
+        SessionPlayback::prepare_arrangement_preroll_from_revision(
+            Arc::clone(&prepared),
+            destination,
+            MAX_ARRANGEMENT_PREROLL_FRAMES,
+            true,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err(),
+        ArrangementPrerollError::WorkBudgetExceeded
+    );
+    thread::Builder::new()
+        .name("hex-engine-long-seek-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let mut expected = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+            expected.play_from(destination).unwrap();
+            let mut expected_audio = [[0.0; 2]; 129];
+            expected.render(&mut expected_audio).unwrap();
+            assert!(expected_audio.iter().any(|frame| *frame != [0.0; 2]));
+            for start_playing in [true, false] {
+                let mut candidate =
+                    SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                        Arc::clone(&prepared),
+                        destination,
+                        destination,
+                        start_playing,
+                        &AtomicBool::new(false),
+                    )
+                    .expect("interactive seek beyond the replay ceiling");
+                assert_eq!(candidate.arrangement_frame(), destination);
+                assert_eq!(candidate.playing(), start_playing);
+                if !start_playing {
+                    candidate.apply(SessionPlaybackCommand::Play).unwrap();
+                }
+                let mut actual = [[0.0; 2]; 129];
+                candidate.render(&mut actual).unwrap();
+                assert_eq!(
+                    actual, expected_audio,
+                    "held note is chased at {destination}"
+                );
+            }
+            let region = LoopRegion::new(destination, destination + 4096, true).unwrap();
+            let section = SessionPlayback::prepare_section_arrangement_preroll(
+                Arc::clone(&prepared),
+                None,
+                region,
+                destination,
+                &AtomicBool::new(false),
+            )
+            .expect("section launch beyond the replay ceiling");
+            assert_eq!(section.arrangement_frame(), destination);
+            assert!(section.playing());
+            // Play-from arithmetic still bounds the destination.
+            assert_eq!(
+                SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                    prepared,
+                    u64::MAX,
+                    u64::MAX,
+                    true,
+                    &AtomicBool::new(false),
+                )
+                .unwrap_err(),
+                ArrangementPrerollError::Playback(SessionPlaybackError::ArithmeticOverflow)
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
