@@ -1702,3 +1702,97 @@ fn section_outcomes_report_worker_phases() {
         );
     }
 }
+#[test]
+fn marker_only_edits_and_history_republish_without_preparation() {
+    use hex_session::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let mut h = ResidentHarness::new();
+    let outcomes = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&outcomes);
+    h.service
+        .set_diagnostic_observer(Arc::new(DiagnosticObserver::new(move |event| {
+            if matches!(event.stage, DiagnosticStage::OutcomeReady { .. }) {
+                sink.lock().unwrap().push(event.details.clone());
+            }
+        })))
+        .unwrap();
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let track = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "song".into(),
+    }));
+    (applied, _) = h.applied(applied);
+    let Some(Created::Track(track)) = track.created else {
+        panic!("track");
+    };
+    let clip = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::from_quarters(8).unwrap(),
+    }));
+    (applied, _) = h.applied(applied);
+    let tracks = clip.state.project.tracks().to_vec();
+    let prepare_us = |outcomes: &Mutex<Vec<String>>| -> u64 {
+        let details = outcomes.lock().unwrap().last().cloned().unwrap();
+        details
+            .split_whitespace()
+            .find_map(|f| f.strip_prefix("section_prepare_us=")?.parse().ok())
+            .unwrap_or_else(|| panic!("section_prepare_us missing from {details:?}"))
+    };
+    outcomes.lock().unwrap().clear();
+    let (added, intro) = add(&mut h, clip.state.revision, "intro", 0, 4);
+    assert_eq!(prepare_us(&outcomes), 0, "add marker");
+    assert_eq!(added.state.revision, clip.state.revision + 1);
+    // Every marker edit still publishes, so the native context follows the
+    // revision; `applied` waits for the callback to install each one.
+    (applied, _) = h.applied(applied);
+    let mut states = Vec::new();
+    let mut revision = added.state.revision;
+    for command in [
+        Command::MoveArrangementSectionMarker {
+            section: intro,
+            start: BeatTime::from_quarters(1).unwrap(),
+        },
+        Command::RenameArrangementSection {
+            section: intro,
+            name: "verse".into(),
+        },
+    ] {
+        outcomes.lock().unwrap().clear();
+        let event = h.run(section_request(revision, command));
+        assert_eq!(prepare_us(&outcomes), 0);
+        assert_eq!(event.state.revision, revision + 1);
+        assert_eq!(event.state.project.tracks(), tracks);
+        (applied, _) = h.applied(applied);
+        revision = event.state.revision;
+        states.push(Arc::clone(&event.state.project));
+    }
+    // A structural edit after marker-only republication takes its fenced lease.
+    outcomes.lock().unwrap().clear();
+    let duplicated = run_callback(
+        &mut h,
+        section_request(revision, Command::DuplicateArrangementSection(intro)),
+    );
+    assert!(duplicated.error.is_none(), "{:?}", duplicated.error);
+    assert!(prepare_us(&outcomes) > 0, "structural edits still prepare");
+    (applied, _) = h.applied(applied);
+    // History keeps the ID allocator advanced; compare everything else.
+    let same = |actual: &hex_project::Project, expected: &hex_project::Project| {
+        let mut actual = actual.snapshot();
+        actual.next_id = expected.snapshot().next_id;
+        assert_eq!(actual, expected.snapshot());
+    };
+    let undone = run_callback(&mut h, Request::Undo);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    same(&undone.state.project, &states[1]);
+    (applied, _) = h.applied(applied);
+    // Undo/Redo of the rename republish without preparation and restore exactly.
+    for (request, expected) in [(Request::Undo, &states[0]), (Request::Redo, &states[1])] {
+        outcomes.lock().unwrap().clear();
+        let event = run_callback(&mut h, request);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        assert_eq!(prepare_us(&outcomes), 0);
+        same(&event.state.project, expected);
+        (applied, _) = h.applied(applied);
+    }
+}

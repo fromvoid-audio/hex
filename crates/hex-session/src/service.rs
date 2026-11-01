@@ -703,6 +703,9 @@ pub enum Request {
         value: hex_lattice_contract::ParameterValue,
     },
     Import(PathBuf),
+    /// Point offline assets at found files as one undoable edit. The files are
+    /// decoded on the worker and must match the saved rate and frame count.
+    RelinkMedia(BTreeMap<hex_project::AssetId, PathBuf>),
     /// Decode and atomically admit an unassigned original native source.
     ImportDeviceAsset {
         path: PathBuf,
@@ -4390,6 +4393,58 @@ fn run_worker(
                         Err(reason) => error = Some(reason.to_string()),
                     }
                 }
+                Request::RelinkMedia(relinks) => {
+                    let count = relinks.len();
+                    let result = if events.resident_publication_enabled() {
+                        events
+                            .resident_audio()
+                            .ok_or(SessionError::Invalid("native worker unavailable"))
+                            .and_then(|sink| {
+                                resident_audio::relink_files(
+                                    &mut session,
+                                    relinks,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision.saturating_add(1),
+                                    },
+                                    sink,
+                                    export_lane.admission_with_resident_owners(
+                                        compiled.as_ref().map(|(_, prepared)| {
+                                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                                sources: current_sources.as_ref(),
+                                                prepared: Some(prepared),
+                                            }
+                                        }),
+                                        resident_seek.as_ref(),
+                                        resident_preview.as_ref(),
+                                    ),
+                                    &mut resident_snapshot,
+                                )
+                            })
+                    } else {
+                        let allowance = session
+                            .max_resident_frames()
+                            .saturating_sub(session.resident_frames());
+                        resident_audio::decode_relinks(&session, relinks, allowance).and_then(
+                            |prepared| {
+                                let expected = session.project().clone();
+                                session.relink_offline_media_revision(
+                                    prepared,
+                                    &expected,
+                                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                )
+                            },
+                        )
+                    };
+                    match result {
+                        Ok(prepared) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some(format!("relinked {count} files"));
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
                 Request::Import(path) => match import(
                     &mut session,
                     path,
@@ -5721,6 +5776,43 @@ fn run_worker(
                 }
                 request @ (Request::Undo | Request::Redo)
                     if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                        && resident_snapshot.is_some()
+                        && session
+                            .section_history_marker_only(matches!(&request, Request::Redo)) =>
+                {
+                    let admission = export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, prepared)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(prepared),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
+                    match arrangement_sections::marker_history(
+                        &mut session,
+                        matches!(request, Request::Redo),
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision.saturating_add(1),
+                        },
+                        &mut events,
+                        &mut resident_snapshot,
+                        admission,
+                    ) {
+                        Ok(Some(prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("section history committed".into());
+                        }
+                        Ok(None) => status = Some("no history change".into()),
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
+                request @ (Request::Undo | Request::Redo)
+                    if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident =>
                 {
                     let admission = export_lane.admission_with_resident_owners(
@@ -6922,12 +7014,19 @@ fn run_worker(
                 unsaved,
                 revision != revision_before_request,
             );
-            if let Err(reason) = journal_result {
-                let message = format!("automatic recovery: {reason}");
-                error = Some(match error {
-                    Some(existing) => format!("{existing}; {message}"),
-                    None => message,
-                });
+            match journal_result {
+                Ok(Some(_)) => {
+                    status =
+                        Some("previous recovery journal preserved beside its original slot".into());
+                }
+                Ok(None) => {}
+                Err(reason) => {
+                    let message = format!("automatic recovery: {reason}");
+                    error = Some(match error {
+                        Some(existing) => format!("{existing}; {message}"),
+                        None => message,
+                    });
+                }
             }
         }
         if let Some(preview) = resident_preview.as_ref() {

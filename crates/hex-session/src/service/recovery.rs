@@ -129,6 +129,7 @@ pub(super) fn open_source_with_limits(
         }
         project = Project::from_snapshot(snapshot).map_err(|e| e.to_string())?;
     }
+    project = with_missing_media_offline(project, &project_dir)?;
     if mode == DocumentAudioMode::Resident
         && project.sample_rate() != current.project().sample_rate()
     {
@@ -138,7 +139,7 @@ pub(super) fn open_source_with_limits(
         DocumentAudioMode::Resident => reservation.or(current.source_plan_reservation()),
         DocumentAudioMode::VerifiedStreaming => reservation,
     };
-    let required_pcm = project.assets().try_fold(0u64, |total, asset| {
+    let required_pcm = online_assets(&project).try_fold(0u64, |total, asset| {
         let frames = if asset.source_sample_rate() == project.sample_rate() {
             asset.playback_frames()
         } else {
@@ -178,7 +179,7 @@ pub(super) fn open_source_with_limits(
         .map_err(|e| e.to_string())?
         .with_shutdown(Arc::clone(&current.shutdown));
         // Verify every retained asset, including unused records, without decoding PCM.
-        for asset in project.assets() {
+        for asset in online_assets(&project) {
             let path = if asset.path().is_absolute() {
                 asset.path().to_path_buf()
             } else {
@@ -217,9 +218,9 @@ pub(super) fn open_source_with_limits(
         .map_err(|_| "could not reserve decoded media table".to_owned())?;
     let mut originals = hex_engine::native_device_resources::ResidentDeviceAssets::default();
     let mut remaining_frames = frame_allowance;
-    // Load unreferenced assets too: the editor can place them later, so missing
-    // media in any asset record rejects the candidate instead of dropping it.
-    for asset in project.assets() {
+    // Load unreferenced assets too: the editor can place them later. Missing
+    // media is either offline (recorded on the project) or rejects the candidate.
+    for asset in online_assets(&project) {
         let media_path = if asset.path().is_absolute() {
             asset.path().to_path_buf()
         } else {
@@ -454,6 +455,38 @@ pub(super) fn open_source_with_limits(
     ))
 }
 
+fn online_assets(project: &Project) -> impl Iterator<Item = &hex_project::Asset> {
+    project
+        .assets()
+        .filter(|asset| !project.asset_offline(asset.id()))
+}
+
+/// Mark ordinary assets whose files are absent as offline so the project opens
+/// with their clips silent; nothing is dropped and paths are kept. Missing
+/// device or Session-grid media is still refused (see
+/// [`Project::with_offline_assets`]), and an existing path that cannot be
+/// inspected is left for the loader to report.
+fn with_missing_media_offline(project: Project, base: &Path) -> Result<Project, String> {
+    let missing: Vec<_> = project
+        .assets()
+        .filter(|asset| {
+            let path = if asset.path().is_absolute() {
+                asset.path().to_path_buf()
+            } else {
+                base.join(asset.path())
+            };
+            matches!(std::fs::metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+        })
+        .map(|asset| asset.id())
+        .collect();
+    if missing.is_empty() {
+        return Ok(project);
+    }
+    project
+        .with_offline_assets(missing)
+        .map_err(|error| format!("missing media: {error}"))
+}
+
 /// Keep every materialized processing dependency resident, including retained
 /// grouped roots. File selection must not turn a valid saved edit into an
 /// unsupported streamed transform merely because another plain asset is large.
@@ -478,8 +511,9 @@ pub(super) fn checkpoint_project(
     document: Option<&DocumentHandle>,
     untitled_path: &Path,
     journal: &mut Option<hex_storage::Journal>,
-) -> Result<(), String> {
+) -> Result<Option<PathBuf>, String> {
     let path = checkpoint_path(document, untitled_path)?;
+    let project = project_for_save(session, base)?;
     if journal
         .as_ref()
         .is_none_or(|current| current.path() != path)
@@ -498,18 +532,27 @@ pub(super) fn checkpoint_project(
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
         }
-        *journal = Some(hex_storage::Journal::open(path).map_err(|e| e.to_string())?);
+        if let Some(token) = hex_storage::JournalRestartToken::capture_readable(path.clone())
+            .map_err(|e| e.to_string())?
+        {
+            let outcome = hex_storage::restart_journal(&token, &project);
+            *journal = outcome.journal;
+            outcome
+                .result
+                .map_err(|error| match outcome.preserved_path.as_ref() {
+                    Some(_) => format!(
+                        "{error}; previous recovery journal preserved beside its original slot"
+                    ),
+                    None => error.to_string(),
+                })?;
+            return Ok(outcome.preserved_path);
+        }
+        *journal = Some(hex_storage::Journal::open_empty(path).map_err(|e| e.to_string())?);
     }
-    let project = project_for_save(session, base)?;
     if let Some(journal) = journal {
-        let result = if document.is_none() {
-            journal.checkpoint_latest(&project)
-        } else {
-            journal.checkpoint(&project)
-        };
-        result.map_err(|e| e.to_string())?;
+        journal.checkpoint(&project).map_err(|e| e.to_string())?;
     }
-    Ok(())
+    Ok(None)
 }
 
 pub(super) fn absolute_document_path(path: &Path) -> Result<PathBuf, String> {

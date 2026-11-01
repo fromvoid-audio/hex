@@ -202,6 +202,33 @@ impl EditorView {
                     .child(theme::text(&self.status)),
             );
         }
+        let offline = self
+            .state
+            .as_ref()
+            .map_or(0, |state| state.project.offline_assets().count());
+        if offline > 0 {
+            bar = bar.child(
+                div()
+                    .id("missing-media-indicator")
+                    .debug_selector(|| "missing-media-indicator".into())
+                    .px_1()
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|view, _, _, cx| view.missing_media_show_offline(cx)))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
+                            description: theme::text(
+                                "these files were missing when the project opened; \
+                                 their clips play silence. click to relink them",
+                            ),
+                        })
+                        .into()
+                    })
+                    .child(theme::text(format!("missing files: {offline}"))),
+            );
+        }
         if let Some(label) = self.update_label() {
             bar = bar.child(
                 div()
@@ -1121,6 +1148,7 @@ impl Render for EditorView {
                     && super::device_panel::finalize_controls(view, cx)
                 {
                     view.cancel_duplicate_chain();
+                    view.cancel_queued_section();
                     view.enqueue_device_barrier(SessionRequest::Undo);
                 }
                 cx.notify();
@@ -1130,6 +1158,7 @@ impl Render for EditorView {
                     && super::device_panel::finalize_controls(view, cx)
                 {
                     view.cancel_duplicate_chain();
+                    view.cancel_queued_section();
                     view.enqueue_device_barrier(SessionRequest::Redo);
                 }
                 cx.notify();
@@ -1279,6 +1308,12 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &GroupSelection, window, cx| {
+                if crate::diagnostics::actions_enabled(cx) {
+                    crate::diagnostics::record_group_selection(
+                        cx,
+                        &view.group_selection_route(window),
+                    );
+                }
                 if view.audio_event_focus.is_focused(window) {
                     view.event_group_selected();
                 } else if view.section_has_focus(window) {

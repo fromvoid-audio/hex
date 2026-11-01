@@ -17,7 +17,8 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-/// Maximum render work a request may ask the engine to perform.
+/// Maximum prefix replay a request may ask the engine to perform. Interactive
+/// and section destinations replay no prefix and are not limited by it.
 pub const MAX_SEEK_WORK_FRAMES: u64 = MAX_ARRANGEMENT_PREROLL_FRAMES;
 /// Dedicated control-side preparation stack for the bounded runtime
 /// constructor and preroll renderer. This reservation is independent of the
@@ -1047,6 +1048,41 @@ mod tests {
             Err(ArrangementPrerollError::WorkBudgetExceeded)
         ));
         assert!(Arc::ptr_eq(&result.prepared_revision, &graph));
+    }
+
+    #[test]
+    fn interactive_and_section_seeks_exceed_the_linear_replay_budget() {
+        let graph = prepared();
+        let worker = ArrangementSeekWorker::new().expect("seek worker");
+        let destination = MAX_SEEK_WORK_FRAMES * 4 + 37;
+        let region = hex_project::LoopRegion::new(destination, destination + 4096, true).unwrap();
+        for (mode, expected) in [
+            (ArrangementSeekMode::Interactive, Ok(destination)),
+            (ArrangementSeekMode::SectionLoop(region), Ok(destination)),
+            (
+                ArrangementSeekMode::LinearArrangement,
+                Err(ArrangementPrerollError::WorkBudgetExceeded),
+            ),
+        ] {
+            // Resident seeks submit the full replay budget, never the destination.
+            worker
+                .submit(ArrangementSeekSpec {
+                    mode,
+                    destination_frame: destination,
+                    work_budget_frames: MAX_SEEK_WORK_FRAMES,
+                    start_playing: true,
+                    ..spec(Arc::clone(&graph), 3)
+                })
+                .expect("bounded request");
+            wait_for_ready(&worker);
+            let result = worker.try_result().expect("seek result");
+            assert_eq!(result.mode, mode);
+            assert_eq!(
+                result.result.map(|playback| playback.position()),
+                expected,
+                "{mode:?}"
+            );
+        }
     }
 
     #[test]

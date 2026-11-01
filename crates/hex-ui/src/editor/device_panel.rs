@@ -1995,7 +1995,7 @@ fn render_effect(
             cx,
         ))
         .child(rendered)
-        .child(device_meter::render(view, device))
+        .child(device_meter::render(view, device, cx))
 }
 
 impl EditorView {
@@ -2683,7 +2683,7 @@ fn render_instrument(
             cx,
         ))
         .child(rendered)
-        .child(device_meter::render(view, device))
+        .child(device_meter::render(view, device, cx))
 }
 
 fn instrument_actions(

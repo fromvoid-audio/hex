@@ -219,7 +219,15 @@ pub(crate) fn isolated(
     snapshot.master_gain = 1.0;
     snapshot.retain_clip_aliases_after_projection();
     snapshot.retain_automatic_track_names_after_projection();
-    Project::from_snapshot(snapshot).map_err(|e| e.to_string())
+    // Snapshots exclude runtime availability; offline clips stay silent here too.
+    let isolated = Project::from_snapshot(snapshot).map_err(|e| e.to_string())?;
+    let offline: Vec<_> = project
+        .offline_assets()
+        .filter(|id| isolated.asset(*id).is_some())
+        .collect();
+    isolated
+        .with_offline_assets(offline)
+        .map_err(|e| e.to_string())
 }
 
 impl Session {

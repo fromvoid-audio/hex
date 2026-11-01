@@ -1123,6 +1123,7 @@ impl EditorView {
         if !self.edit_pending() {
             self.midi_step.cancel_pending();
         }
+        visible_change |= self.submit_queued_section();
         visible_change |= self.poll_editor_audio_events(cx);
         visible_change |= self.poll_export(cx);
         visible_change |= self.pump_tuning_gesture();
@@ -2098,6 +2099,8 @@ impl EditorView {
         visible_change |= self.finish_audio_recovery_tick();
         visible_change |= self.tick_track_meters(Instant::now());
         visible_change |= self.tick_latency_rebuild();
+        visible_change |= self.tick_sampler_edit_resume();
+        visible_change |= self.tick_deferred_play();
         self.observe_audio_frame(frame, visible_change, Instant::now())
     }
 
@@ -3190,7 +3193,21 @@ impl EditorView {
         };
         let selection = self.created_note_selection_intent(&request);
         let pending_before = self.worker_requests_pending;
+        let resume = self.sampler_edit_resume_frame(&request);
+        if resume.is_some() {
+            self.stop();
+        }
         let accepted = self.enqueue_request(request, false);
+        if let Some(frame) = resume {
+            // A refused submission resumes at once; otherwise once it settles.
+            self.sampler_edit_resume = Some(frame);
+            if accepted {
+                replace_status(
+                    &mut self.status,
+                    "applying sampler edit · playback will resume",
+                );
+            }
+        }
         if accepted && let Some(mut selection) = selection {
             self.bind_created_selection_terminal(&mut selection);
             self.pending_created_note_selection = Some(selection);
@@ -3438,6 +3455,7 @@ impl EditorView {
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
                 | Request::ImportToSession { .. }
+                | Request::RelinkMedia(_)
                 | Request::Open(_)
                 | Request::OpenWith { .. }
                 | Request::NewWithAudioMode { .. }
@@ -3976,6 +3994,8 @@ impl EditorView {
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
             self.latency_rebuild = None;
+            self.sampler_edit_resume = None;
+            self.deferred_play = None;
         }
         if self.section_install_pending()
             && (intent_desired_playing(action) == Some(true)
@@ -3985,7 +4005,11 @@ impl EditorView {
             return;
         }
         if self.stopped_playback_restore.is_some() && intent_desired_playing(action) == Some(true) {
-            self.error = Some("restoring stopped playback · wait before playing".into());
+            self.deferred_play = Some((action, revision, self.project_generation));
+            replace_status(
+                &mut self.status,
+                "restoring stopped playback · playback starts when ready",
+            );
             return;
         }
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
@@ -4134,6 +4158,57 @@ impl EditorView {
     /// Rebuild only a current, rejected canonical graph. A fresh graph drops
     /// effect history, so retain the user's transport intent and never restart
     /// a superseded project, output or explicit transport action.
+    /// A streamed document's sampler edit replaces its output only while
+    /// stopped, so a playing edit stops first and resumes here at the same
+    /// frame (audio restarts at the cursor). Resident documents apply live.
+    fn sampler_edit_resume_frame(&self, request: &Request) -> Option<u64> {
+        if !matches!(request, Request::SamplerEdit(_))
+            || self.document_audio_mode != hex_session::DocumentAudioMode::VerifiedStreaming
+        {
+            return None;
+        }
+        let status = self.audio.as_ref()?.control.status()?;
+        status
+            .playing
+            .load(Acquire)
+            .then(|| status.position.load(Acquire))
+    }
+
+    pub(super) fn tick_sampler_edit_resume(&mut self) -> bool {
+        let Some(frame) = self.sampler_edit_resume else {
+            return false;
+        };
+        if self.edit_pending()
+            || !self.pending_audio_commands.is_empty()
+            || self.stopped_playback_restore.is_some()
+            || self.audio.is_none()
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|state| self.applied_project_revision != Some(state.revision))
+        {
+            return false;
+        }
+        self.sampler_edit_resume = None;
+        self.queue_audio_command(PlaybackCommand::PlayFrom(frame));
+        true
+    }
+
+    /// Start a Play held behind the stopped restore once that restore
+    /// settles, whether it succeeded or failed; a replaced project drops it.
+    pub(super) fn tick_deferred_play(&mut self) -> bool {
+        if self.stopped_playback_restore.is_some() {
+            return false;
+        }
+        let Some((action, revision, generation)) = self.deferred_play.take() else {
+            return false;
+        };
+        if generation == self.project_generation {
+            self.queue_playback_action(action, revision);
+        }
+        true
+    }
+
     pub(super) fn tick_latency_rebuild(&mut self) -> bool {
         use super::audio_admission::LatencyRebuild;
         let Some(rebuild) = self.latency_rebuild else {
@@ -4204,8 +4279,10 @@ impl EditorView {
                 .and_then(|audio| audio.control.output_identity())
                 != Some(output)
         {
+            // A newer revision or output publishes on its own; its admission
+            // reports any further refusal.
             self.latency_rebuild = None;
-            return false;
+            return self.clear_latency_waiting();
         }
         match rebuild {
             LatencyRebuild::Unresolved { .. } => false,
@@ -4237,13 +4314,14 @@ impl EditorView {
                 };
                 if self.applied_project_revision == Some(project.revision) {
                     self.latency_rebuild = None;
-                    return false;
+                    return self.clear_latency_waiting();
                 }
                 if !playing {
                     // Paused: the callback applies the new latency layout at
                     // the kept cursor. Republish the refused current revision
                     // once rather than leaving audio on the old graph.
                     self.latency_rebuild = None;
+                    self.clear_latency_waiting();
                     if self.enqueue(Request::RepublishPausedPlayback) {
                         self.status = "applying latency change at the paused cursor".into();
                     }
@@ -4256,7 +4334,9 @@ impl EditorView {
                 }
                 // A fresh runtime cuts mutable voices. Until their live-input
                 // custody can be restored explicitly, MIDI projects wait for
-                // Pause (republish above) or Stop instead of dropping notes.
+                // Pause (republish above) or Stop (`stop` restores the current
+                // revision) instead of dropping notes. Say so: the committed
+                // edit is not audible yet (Pulse #3793).
                 if self.state.as_ref().is_some_and(|state| {
                     state
                         .project
@@ -4264,7 +4344,7 @@ impl EditorView {
                         .iter()
                         .any(|track| track.instrument().is_some() || !track.midi_clips().is_empty())
                 }) {
-                    return false;
+                    return replace_error(&mut self.error, LATENCY_EDIT_WAITING);
                 }
                 let Some(status) = self.audio.as_ref().and_then(|audio| audio.control.status())
                 else {
@@ -4325,8 +4405,22 @@ impl EditorView {
         }
     }
 
+    /// Retire the waiting notice once its refused revision is applied,
+    /// superseded or handed to a paused republish.
+    fn clear_latency_waiting(&mut self) -> bool {
+        if self.error.as_deref() == Some(LATENCY_EDIT_WAITING) {
+            self.error = None;
+            true
+        } else {
+            false
+        }
+    }
+
     pub(super) fn stop(&mut self) {
         self.latency_rebuild = None;
+        // Stop restores the refused revision below, or a pending edit
+        // publishes it while stopped.
+        self.clear_latency_waiting();
         self.midi_step.cancel_pending();
         // Stop explicitly discards voice histories. A previously refused edit
         // or restoration can now install the canonical sound without inheriting
@@ -4803,6 +4897,11 @@ fn fault_with_action_errors(
     }
     diagnostic.to_owned()
 }
+
+/// Shown while a refused latency edit in an instrument/MIDI project waits for
+/// Pause or Stop, which apply it without cutting sounding voices.
+pub(super) const LATENCY_EDIT_WAITING: &str =
+    "edit waiting · latency layout could not change live · applies on pause or stop";
 
 fn replace_error(error: &mut Option<super::display_error::DisplayError>, message: &str) -> bool {
     if error.as_deref() == Some(message) {
