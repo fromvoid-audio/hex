@@ -187,7 +187,12 @@ Packages whose only extra feature is reviewed as additive for tests (see
 feature and keep a separate doctest run; default-feature Clippy still applies.
 
 Package plans run the owners' default tests and applicable allocation/UI/export
-feature tests, and lint every consumer in each of those configurations. The
+feature tests. Consumers lint in two invocations: default features
+(`affected-clippy`, which keeps `cfg(not(feature))` branches compiling) and every
+reviewed feature configuration together (`affected-feature-clippy`). Separate
+per-feature lints recompiled the shared dependency chain each time (55–112 s
+against 38–42 s, measured 1 November 2026). Formatting checks only the changed
+owners' packages. The
 desktop build runs when hex-desktop owns the change. Feature combinations need reviewed contract rules; individual
 feature runs do not prove all combinations. Global manifests/lockfiles, toolchain,
 vendor, unowned resources and unknown inputs conservatively select the comprehensive
