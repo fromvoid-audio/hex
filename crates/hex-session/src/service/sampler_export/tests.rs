@@ -74,19 +74,14 @@ fn reservation() -> crate::ResidentNativeReservation {
     }
 }
 fn event(s: &Service) -> Event {
-    let end = Instant::now() + Duration::from_secs(5);
-    loop {
-        match s.try_event() {
-            Ok(e) => return e,
-            Err(TryRecvError::Empty) if Instant::now() < end => {
-                thread::sleep(Duration::from_millis(1))
-            }
-            Err(e) => panic!("worker event {e}"),
-        }
+    // Blocks on the event channel; bounded only against hangs.
+    match s.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("event: worker event absent: {error}"),
     }
 }
 fn export_event(s: &Service) -> ExportEvent {
-    let end = Instant::now() + Duration::from_secs(5);
+    let end = Instant::now() + crate::test_wait::HANG_BOUND;
     loop {
         match s.try_export_event() {
             Ok(e) => return e,
