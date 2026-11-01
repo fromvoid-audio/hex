@@ -115,9 +115,11 @@ pub(super) fn title_bar(
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .on_click(|event, window, cx| {
+            // Follow the macOS "double-click a window's title bar to" setting
+            // (zoom, minimize or nothing) rather than forcing fullscreen.
             if event.standard_click() && event.click_count() == 2 {
                 cx.stop_propagation();
-                window.toggle_fullscreen();
+                window.titlebar_double_click();
             }
         })
         .child(lights)
@@ -193,7 +195,7 @@ mod ui_tests {
     use std::sync::Arc;
 
     #[gpui::test]
-    fn title_double_click_enters_and_exits_fullscreen(cx: &mut TestAppContext) {
+    fn title_double_click_never_toggles_fullscreen(cx: &mut TestAppContext) {
         let (handle, _editor) = super::super::clip_drag_ui_test::editor_window(
             cx,
             Project::new(48_000).expect("project"),
@@ -206,13 +208,13 @@ mod ui_tests {
             title.origin.x + title.size.width / 2.0,
             title.origin.y + title.size.height / 2.0,
         );
-        for (button, click_count, expected) in [
-            (MouseButton::Left, 1, false),
-            (MouseButton::Right, 2, false),
-            (MouseButton::Left, 2, true),
-            (MouseButton::Left, 3, true),
-            (MouseButton::Left, 1, true),
-            (MouseButton::Left, 2, false),
+        // The test platform's titlebar action is a no-op; the macOS action
+        // follows the system zoom/minimize setting and never enters fullscreen.
+        for (button, click_count) in [
+            (MouseButton::Left, 1),
+            (MouseButton::Right, 2),
+            (MouseButton::Left, 2),
+            (MouseButton::Left, 3),
         ] {
             visual.simulate_event(MouseDownEvent {
                 position,
@@ -227,7 +229,7 @@ mod ui_tests {
                 button,
                 click_count,
             });
-            assert_eq!(visual.update(|window, _| window.is_fullscreen()), expected);
+            assert!(!visual.update(|window, _| window.is_fullscreen()));
         }
     }
 

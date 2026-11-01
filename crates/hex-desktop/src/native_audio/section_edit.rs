@@ -8,7 +8,6 @@ pub(super) struct Pending {
     fence: StoppedEditFence,
     output: u64,
     submitted: Option<u64>,
-    allow_playing: bool,
 }
 impl NativeAudioSink {
     pub(super) fn begin_section_edit(
@@ -54,7 +53,6 @@ impl NativeAudioSink {
             fence,
             output,
             submitted: None,
-            allow_playing,
         });
         Ok(())
     }
@@ -74,12 +72,11 @@ impl NativeAudioSink {
         }
         match control.stopped_edit_fence_state(pending.fence) {
             StoppedEditFenceState::Pending => None,
-            StoppedEditFenceState::Refused => Some(Err(if pending.allow_playing {
-                "arrangement playback changed before section edit"
-            } else {
-                "stop playback before editing the arrangement"
+            // Transport changed under the gate; the edit refuses without
+            // asking for Stop, and the next edit may simply retry.
+            StoppedEditFenceState::Refused => {
+                Some(Err("arrangement playback changed before the edit".into()))
             }
-            .into())),
             StoppedEditFenceState::Ready => Some(
                 control
                     .arrangement_edit_position(pending.fence)

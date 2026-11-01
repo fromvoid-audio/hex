@@ -432,9 +432,11 @@ impl EditorView {
                 }
                 if !expected_cancel {
                     self.error = Some(
-                        format!("gain take aborted · {reason:?} · original lane retained")
-                            .to_lowercase()
-                            .into(),
+                        format!(
+                            "gain take aborted · {} · original lane retained",
+                            super::user_errors::gain_abort(reason)
+                        )
+                        .into(),
                     );
                 }
             }
