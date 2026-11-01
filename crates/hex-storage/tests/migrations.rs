@@ -423,3 +423,32 @@ fn historical_nested_fields_refuse_missing_unknown_or_mixed_layouts() {
         assert!(decode(duplicate.as_bytes()).is_err());
     }
 }
+
+/// Opening parses a document once and threads that value down the frozen
+/// schema chain (Pulse #4015). Layout cannot reach a lower layer, and the
+/// single duplicate-field check of the original bytes still refuses nested
+/// duplicates that the shared value would otherwise collapse.
+#[test]
+fn single_parse_chain_is_layout_independent_and_refuses_nested_duplicates() {
+    let fixtures: [&[u8]; 6] = [
+        V34,
+        include_bytes!("fixtures/clip-activation/schema39-audio-ae200f3c.json"),
+        include_bytes!("fixtures/track-groups/schema43-flat-tracks-15957517.json"),
+        include_bytes!("fixtures/native-sources/schema48-console-loop-677a00f4.json"),
+        include_bytes!("fixtures/alias-projection/schema58-inactive-event.json"),
+        include_bytes!("fixtures/midi-clip-gain/schema61.json"),
+    ];
+    for bytes in fixtures {
+        let project = decode(bytes).unwrap();
+        for document in [bytes.to_vec(), encode(&project).unwrap()] {
+            let value: Value = serde_json::from_slice(&document).unwrap();
+            let pretty = serde_json::to_vec_pretty(&value).unwrap();
+            assert_eq!(decode(&pretty).unwrap(), project);
+            let compact = String::from_utf8(serde_json::to_vec(&value).unwrap()).unwrap();
+            let track = compact.find("\"tracks\":[{").unwrap() + "\"tracks\":[{".len();
+            let mut duplicate = compact.clone();
+            duplicate.insert_str(track, "\"name\":\"duplicate\",");
+            assert!(decode(duplicate.as_bytes()).is_err());
+        }
+    }
+}

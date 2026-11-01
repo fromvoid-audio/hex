@@ -342,6 +342,9 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// violating current model invariants refuse rather than lose musical data.
 /// Newer/unknown fields, duplicate keys and malformed inventories refuse.
 /// Saving uses the current schema through existing atomic publication/recovery.
+/// From schema30 upward the migration chain parses the bytes once (after one
+/// duplicate-field check) and each frozen layer adapts that single value in
+/// place; layers never re-serialize the document for the next one.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     #[derive(serde::Deserialize)]
     struct CurrentHeader<'a> {
