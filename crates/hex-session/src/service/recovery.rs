@@ -27,6 +27,54 @@ pub fn untitled_recovery_path() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join("Library/Application Support/hex/recovery/untitled.hex-journal"))
 }
 
+/// A readable journal left by a session that ended without saving or discarding
+/// it (Pulse #3990). Detection is read-only: nothing is adopted, written or
+/// checkpointed, so declining leaves the slot to the copy-on-first-edit rule.
+#[derive(Clone, Debug)]
+pub struct LeftoverRecovery {
+    /// Explicit recovery source for the existing open path.
+    pub source: ProjectSource,
+    pub journal: PathBuf,
+    fingerprint: (u64, Option<std::time::SystemTime>),
+}
+impl LeftoverRecovery {
+    /// False once anything rewrote the slot after detection, for example this
+    /// session's own first checkpoint; recovering then would open the wrong work.
+    pub fn unchanged(&self) -> bool {
+        fingerprint(&self.journal).is_some_and(|current| current == self.fingerprint)
+    }
+}
+
+fn fingerprint(path: &Path) -> Option<(u64, Option<std::time::SystemTime>)> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    metadata
+        .is_file()
+        .then(|| (metadata.len(), metadata.modified().ok()))
+}
+
+/// Find a readable leftover journal for the untitled slot (`document` None) or
+/// beside a saved `document`. Missing, unreadable or unrecognized slots return
+/// None: an unreadable journal stays with the existing failure/restart path.
+pub fn leftover_recovery(untitled: &Path, document: Option<&Path>) -> Option<LeftoverRecovery> {
+    let (journal, source) = match document {
+        Some(document) => (
+            hex_storage::journal_path(document).ok()?,
+            ProjectSource::SavedJournal(document.to_path_buf()),
+        ),
+        None => (
+            untitled.to_path_buf(),
+            ProjectSource::Journal(untitled.to_path_buf()),
+        ),
+    };
+    let before = fingerprint(&journal)?;
+    hex_storage::load_journal(&journal).ok()?;
+    (fingerprint(&journal)? == before).then_some(LeftoverRecovery {
+        source,
+        journal,
+        fingerprint: before,
+    })
+}
+
 pub(super) type OpenCandidate = (Session, PathBuf, Option<DocumentHandle>, bool);
 
 pub(super) fn read_source(
