@@ -758,6 +758,8 @@ pub(super) struct EditorView {
     restart_request_id: u64,
     pending_restart_request: Option<(u64, u64)>,
     pending_recovery_generation: Option<u64>,
+    /// Output whose default route changed and still awaits its recovery.
+    route_follow: Option<u64>,
     pending_audio_result: Option<PendingEditorAudioResult>,
     pending_publication_observation: Option<PendingEditorPublicationObservation>,
     document_audio_mode: hex_session::DocumentAudioMode,
@@ -1495,6 +1497,7 @@ impl EditorView {
             restart_request_id: 0,
             pending_restart_request: None,
             pending_recovery_generation: None,
+            route_follow: None,
             pending_audio_result: None,
             pending_publication_observation: None,
             document_audio_mode: hex_session::DocumentAudioMode::Resident,
