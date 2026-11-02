@@ -145,6 +145,11 @@ pub trait OwnedProcessorRuntime: Any + Send {
     fn can_retarget_parameters_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {
         false
     }
+    /// Owned counterpart of `NativeProcessorRuntime::transition_busy_from`
+    /// (Pulse #4178), evaluated against the previous COMMITTED history only.
+    fn transition_busy_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {
+        false
+    }
     /// Optional selector capability must update both histories atomically.
     fn transient_audition(&mut self) -> Option<&mut dyn NativeProcessorAudition> {
         None

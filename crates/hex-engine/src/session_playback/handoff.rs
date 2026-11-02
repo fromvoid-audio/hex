@@ -379,6 +379,41 @@ impl SessionPlayback {
             result => result,
         }
     }
+    /// Whether any same-identity device chain must defer this handoff until
+    /// the predecessor's committed live transitions drain (Pulse #4178).
+    /// Pairs track chains by route identity and Return chains by bus identity,
+    /// as the planner does; read-only, bounded and allocation-free.
+    pub(super) fn device_transition_busy(&self, previous: &Self) -> bool {
+        let tracks = self
+            .routes
+            .iter()
+            .zip(&self.device_chains)
+            .any(|(route, chain)| {
+                previous
+                    .routes
+                    .iter()
+                    .position(|old| old.id == route.id)
+                    .and_then(|index| previous.device_chains.get(index))
+                    .is_some_and(|old| chain.transition_busy_from(old))
+            });
+        let returns = self
+            .revision
+            .arrangement()
+            .return_buses()
+            .iter()
+            .zip(&self.return_chains)
+            .any(|(bus, chain)| {
+                previous
+                    .revision
+                    .arrangement()
+                    .return_buses()
+                    .iter()
+                    .position(|old| old.id == bus.id)
+                    .and_then(|index| previous.return_chains.get(index))
+                    .is_some_and(|old| chain.transition_busy_from(old))
+            });
+        tracks || returns || self.main_chain.transition_busy_from(&previous.main_chain)
+    }
     fn inherit_state_planned_once(
         &mut self,
         previous: &mut Self,
@@ -396,6 +431,11 @@ impl SessionPlayback {
             || previous.analytic_continuations.len() != MAX_TRACKS
         {
             return Err(SessionPlaybackError::SharedAnalyticContext);
+        }
+        // Before every inheritance, tail or reset classification (Pulse
+        // #4178): even the reset handoff transfers Main history.
+        if self.device_transition_busy(previous) {
+            return Err(SessionPlaybackError::DeviceTransitionBusy);
         }
         if self
             .compensation

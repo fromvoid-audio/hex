@@ -139,6 +139,13 @@ pub enum SessionPlaybackError {
     /// The retained group path is still processing an outgoing tail. The
     /// publication owner can retry once the predecessor drains or stops.
     GroupTailRoutingBusy,
+    /// A device runtime's fixed live-transition capacity (outgoing routing or
+    /// audition branches) is full (Pulse #4178). The pure preflight refused
+    /// before any ownership change; the publication owner retries after
+    /// rendering advances the committed transitions. Never answered by a
+    /// reset, detached tail or fresh runtime, which would drop or duplicate
+    /// an audible branch.
+    DeviceTransitionBusy,
     MutableInstrumentRuntime,
     MutableInstrumentDiagnostic(&'static str),
     MutableInstrumentEvents,
@@ -184,6 +191,9 @@ impl SessionPlaybackError {
             }
             Self::GroupTailRoutingBusy => {
                 "group routing change is waiting for an outgoing tail · stop or wait for it to finish"
+            }
+            Self::DeviceTransitionBusy => {
+                "device change is waiting for an audible transition to finish"
             }
             Self::MutableInstrumentRuntime => {
                 "session playback mutable instrument runtime is unavailable"
