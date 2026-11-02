@@ -17,6 +17,18 @@ use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
 
 impl EditorView {
+    pub(super) fn history_action(&mut self, request: SessionRequest, cx: &mut Context<Self>) {
+        if !self.cancel_sampler_drafts(cx)
+            && !self.cancel_gain_draft(cx)
+            && super::device_panel::finalize_controls(self, cx)
+        {
+            self.cancel_duplicate_chain();
+            self.cancel_queued_section();
+            self.enqueue_device_barrier(request);
+        }
+        cx.notify();
+    }
+
     fn duplicate_key(
         &mut self,
         kind: super::duplicate::DuplicateKind,
@@ -473,6 +485,7 @@ impl Render for EditorView {
         self.reconcile_project_open(window, cx);
         self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_leftover_recovery(window, cx);
+        self.reconcile_truncated_import_offer(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
         super::browser_input::restyle(&self.browser.search, cx);
@@ -1149,25 +1162,10 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &Undo, _, cx| {
-                if !view.cancel_sampler_drafts(cx)
-                    && !view.cancel_gain_draft(cx)
-                    && super::device_panel::finalize_controls(view, cx)
-                {
-                    view.cancel_duplicate_chain();
-                    view.cancel_queued_section();
-                    view.enqueue_device_barrier(SessionRequest::Undo);
-                }
-                cx.notify();
+                view.history_action(SessionRequest::Undo, cx);
             }))
             .on_action(cx.trace(|view, _: &Redo, _, cx| {
-                if !view.cancel_sampler_drafts(cx)
-                    && super::device_panel::finalize_controls(view, cx)
-                {
-                    view.cancel_duplicate_chain();
-                    view.cancel_queued_section();
-                    view.enqueue_device_barrier(SessionRequest::Redo);
-                }
-                cx.notify();
+                view.history_action(SessionRequest::Redo, cx);
             }))
             .on_action(cx.trace(|view, _: &MoveLeft, window, cx| {
                 view.cancel_duplicate_chain();
@@ -1380,6 +1378,10 @@ impl Render for EditorView {
                             view.midi_selection.clear();
                         }
                     }
+                    // A focused track header owns Delete; a clip selection
+                    // retained beside it is never its target.
+                    Some(super::session_grid::DeleteTarget::ArrangementClip(_))
+                        if view.track_header_focused(window) => {}
                     Some(super::session_grid::DeleteTarget::ArrangementClip(clip)) => {
                         let command = if view.selected_midi_clip_data().is_some() {
                             Command::RemoveMidiClip(clip)
@@ -1667,5 +1669,30 @@ impl Render for EditorView {
                         ),
                 )
             })
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tests {
+    use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn redo_cancels_gain_draft_without_submitting_history(cx: &mut TestAppContext) {
+        let (handle, entity, _) = crate::editor::gain_lane::tests::native::window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("gain-point-value-value").unwrap();
+        visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-shift-z");
+        visual.run_until_parked();
+        entity.update(&mut visual, |view, cx| {
+            assert!(view.gain_lane.draft.is_none());
+            assert!(!view.gain_numeric_editing(cx));
+            assert_eq!(view.worker_requests_pending, 0);
+        });
     }
 }

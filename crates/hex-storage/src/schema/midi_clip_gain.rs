@@ -66,8 +66,10 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: Value) -> Result<Project, StorageError> {
     if value.get("version").and_then(Value::as_u64) != Some(62) {
         return Err(StorageError::Invalid("invalid midi clip gain schema"));
     }
@@ -76,7 +78,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         .and_then(|v| v.remove("midi_clip_gains"))
         .ok_or(StorageError::Invalid("midi clip gain inventory missing"))?;
     value["version"] = 61.into();
-    let project = super::event_gain::decode(&serde_json::to_vec(&value)?)?;
+    let project = super::event_gain::decode_value(value)?;
     let mut snapshot = project.snapshot();
     let mut clip_count = 0usize;
     visit(&mut snapshot, |_, _| clip_count += 1);
