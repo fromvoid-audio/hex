@@ -105,6 +105,7 @@ mod device_gesture;
 mod device_panel;
 mod device_preset;
 mod dialogs;
+mod disk_overload;
 mod display_error;
 mod drag;
 mod drag_autoscroll;
@@ -758,6 +759,10 @@ pub(super) struct EditorView {
     restart_request_id: u64,
     pending_restart_request: Option<(u64, u64)>,
     pending_recovery_generation: Option<u64>,
+    /// Output whose default route changed and still awaits its recovery.
+    route_follow: Option<u64>,
+    /// Vst3 devices the current output reports as degraded.
+    degraded_plugins: crate::editor_backend::DegradedDevices,
     pending_audio_result: Option<PendingEditorAudioResult>,
     pending_publication_observation: Option<PendingEditorPublicationObservation>,
     document_audio_mode: hex_session::DocumentAudioMode,
@@ -930,6 +935,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
     redraw_gate: RedrawGate,
     output_meter_frame: Option<refresh::AudioFrame>,
+    disk_overload: disk_overload::DiskOverload,
     pub(in crate::editor) project_generation: u64,
     clip_view_open: bool,
     device_panel_active: bool,
@@ -1495,6 +1501,8 @@ impl EditorView {
             restart_request_id: 0,
             pending_restart_request: None,
             pending_recovery_generation: None,
+            route_follow: None,
+            degraded_plugins: Default::default(),
             pending_audio_result: None,
             pending_publication_observation: None,
             document_audio_mode: hex_session::DocumentAudioMode::Resident,
@@ -1657,6 +1665,7 @@ impl EditorView {
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
             redraw_gate: RedrawGate::default(),
             output_meter_frame: None,
+            disk_overload: disk_overload::DiskOverload::default(),
             project_generation: 0,
             clip_view_open: true,
             device_panel_active: false,

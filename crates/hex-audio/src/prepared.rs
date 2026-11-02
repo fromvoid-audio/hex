@@ -574,6 +574,11 @@ pub struct Status {
     pub stream_applied_command_prefix: AtomicU64,
     /// Best-effort render telemetry, never a readiness/ownership receipt.
     pub stream_buffering: AtomicBool,
+    /// Monotonic count of callbacks that held streamed playback silent while
+    /// the transport was already playing with no Play/action pre-roll pending:
+    /// disk pages arrived too late for audible output. Counted per output;
+    /// a replacement output starts from zero. Best-effort telemetry.
+    pub stream_starved_callbacks: AtomicU64,
     /// Latest streamed launch accepted into actual PendingRoute scheduling.
     pub stream_scheduled_command: AtomicU64,
     /// Latest scheduled launch whose actual due route/render chunk committed.
@@ -788,6 +793,7 @@ impl Status {
             consumed_command: AtomicU64::new(0),
             stream_applied_command_prefix: AtomicU64::new(0),
             stream_buffering: AtomicBool::new(false),
+            stream_starved_callbacks: AtomicU64::new(0),
             stream_scheduled_command: AtomicU64::new(0),
             stream_activated_command: AtomicU64::new(0),
             stream_invalidated_schedule: AtomicU64::new(0),
@@ -4347,6 +4353,12 @@ impl Callback {
             );
             let action_pending = active.has_stream_action();
             let capacity_conflict = active.capacity_conflict();
+            streaming::count_starvation(
+                &self.status,
+                self.stream_pending_play.is_some(),
+                action_pending,
+                &outcome,
+            );
             self.resolve_recovery_seek(action_pending, outcome.action_rejection);
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
@@ -4422,6 +4434,12 @@ impl Callback {
             );
             let action_pending = active.has_stream_action();
             let capacity_conflict = active.capacity_conflict();
+            streaming::count_starvation(
+                &self.status,
+                self.stream_pending_play.is_some(),
+                action_pending,
+                &outcome,
+            );
             self.resolve_recovery_seek(action_pending, outcome.action_rejection);
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;

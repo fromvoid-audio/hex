@@ -53,6 +53,43 @@ impl EditorView {
         }
     }
 
+    /// Moves a changed default output route (#4131) through the same recovery
+    /// as restart audio: the cursor is kept and the graph restored, and
+    /// playback stays stopped. Waits without an error while a dialog, load,
+    /// pending seek, restart or recovery is active; drops the request when
+    /// the named output is no longer current.
+    pub(super) fn follow_output_route(&mut self) -> bool {
+        let Some(identity) = self.route_follow else {
+            return false;
+        };
+        if self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.output_identity())
+            != Some(identity)
+        {
+            self.route_follow = None;
+            return false;
+        }
+        if self.close_prompt_open
+            || self.opening_project
+            || self.save_dialog_open
+            || self.export_dialog_open
+            || self.state.is_none()
+            || self.seek_pending()
+            || self.recovery.generation().is_some()
+            || self.pending_restart_request.is_some()
+        {
+            return false;
+        }
+        self.route_follow = None;
+        self.recover_audio();
+        if self.pending_recovery_generation.is_some() {
+            self.status = "audio output changed · reopening".into();
+        }
+        true
+    }
+
     pub(super) fn poll_audio_recovery(&mut self) -> bool {
         false
     }

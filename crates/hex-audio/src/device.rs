@@ -97,6 +97,9 @@ pub struct WorkerPreparedOutput {
     pub sample_rate: u32,
     pub label: String,
     pub spectrum_error: Option<String>,
+    /// Default route this output opened on, when the backend reported it.
+    /// Compare with [`crate::OutputRouteWatch`] to follow route changes.
+    pub route: Option<crate::OutputRoute>,
 }
 impl WorkerPreparedOutput {
     /// Blocking device setup, intended only for the existing lifecycle worker.
@@ -145,6 +148,7 @@ pub(crate) struct Opened {
     label: String,
     spectrum: Option<SpectrumReader>,
     spectrum_error: Option<String>,
+    route: Option<crate::OutputRoute>,
 }
 impl Opened {
     pub(crate) fn into_legacy(self) -> Result<PreparedOutput, String> {
@@ -168,6 +172,7 @@ impl Opened {
             sample_rate: self.sample_rate,
             label: self.label,
             spectrum_error: self.spectrum_error,
+            route: self.route,
         })
     }
 }
@@ -184,6 +189,7 @@ pub(crate) fn open_prepared(
         .default_output_device()
         .ok_or("no default audio output device")?;
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
+    let route = crate::output_route::route_of(&device);
     let mut config = supported.config();
     let device_rate = config.sample_rate;
     // A converting backend runs the stream at the project rate; the device's
@@ -343,6 +349,7 @@ pub(crate) fn open_prepared(
         label,
         spectrum,
         spectrum_error,
+        route,
     })
 }
 
@@ -667,6 +674,7 @@ pub(crate) fn headless_worker_output_with_outcomes(
             sample_rate: rate,
             label: "headless constructor fixture".into(),
             spectrum_error: None,
+            route: None,
         },
         crate::worker_fixture::HeadlessBackend::new(data, errors),
     ))

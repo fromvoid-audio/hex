@@ -375,6 +375,13 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
             old_output_identity,
             target,
         } => format!("stage=output_relinquish output={old_output_identity} target={target:?}"),
+        E::OutputRouteChanged { output_identity } => {
+            format!("stage=output_route_changed output={output_identity}")
+        }
+        E::DegradedPlugins {
+            output_identity,
+            devices,
+        } => format!("stage=degraded_plugins output={output_identity} devices={devices:?}"),
         E::Publication {
             context,
             output_identity,
