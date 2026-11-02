@@ -29,6 +29,30 @@ use std::{
 /// Confirmed terminal failure on the exclusive lifecycle lane. This is an
 /// observation only: custody remains retained until process exit. Ordinary
 /// shutdown, device-open errors and queue pressure are not terminal failures.
+///
+/// # Recoverability (#4132)
+///
+/// Every kind stays latched for the life of the process; none is cleared by a
+/// later pass, a restart request or another output's success. Each records
+/// custody the lane deliberately never releases, so clearing the observation
+/// could not make a reopen possible. It would only replace "save your project
+/// and restart hex" with an open that waits forever.
+///
+/// - `Retirement`: a stream that could not be proved disposed (a destructor
+///   unwound, or an exposed backend lost its handle) or a quarantined
+///   retirement. Its callback may still be reachable, so the exclusive output
+///   lease stays with that custody and the destructor is never retried.
+/// - `Cleanup`: a candidate/domain owner failed or unwound. Failed owners are
+///   retained and never re-run, so no later pass can complete them. Their
+///   root's retirement therefore never completes, and the lease stays held.
+/// - `MismatchedOwner`: the lane received a root other than its retained
+///   cleanup root. It keeps both owners and stops dispatching, so it cannot
+///   serve another open.
+///
+/// Recoverable conditions are not lifecycle failures and never set this
+/// status. These are device-open errors (including the typed rate mismatch),
+/// a busy or full queue, and a stream pause the backend refused, which the
+/// lane retries. They use the ordinary bounded restart/recovery open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum AudioLifecycleFailure {
@@ -46,7 +70,8 @@ impl LifecycleStatus {
         Self(AtomicU8::new(0))
     }
     fn fail(&self, failure: AudioLifecycleFailure) {
-        // Preserve the first failing owner; there is no reset/retry operation.
+        // Preserve the first failing owner. There is deliberately no reset or
+        // retry operation (see `AudioLifecycleFailure` recoverability).
         let _ = self.0.compare_exchange(0, failure as u8, AcqRel, Acquire);
     }
     pub(crate) fn failure(&self) -> Option<AudioLifecycleFailure> {
@@ -1551,5 +1576,89 @@ mod tests {
         assert!(matches!(result, Some(Ok(()))));
         assert_eq!(attempts.load(Acquire), 3);
         assert!(opened_rx.try_recv().is_ok());
+    }
+
+    /// #4132: no later successful pass clears any confirmed failure kind.
+    #[test]
+    fn every_confirmed_failure_stays_latched_after_later_successful_passes() {
+        for failure in [
+            AudioLifecycleFailure::Retirement,
+            AudioLifecycleFailure::Cleanup,
+            AudioLifecycleFailure::MismatchedOwner,
+        ] {
+            let status = LifecycleStatus::new();
+            status.fail(failure);
+            // A later retirement that completes normally.
+            assert!(RetirementProgress::default().advance(&status, || Ok(true)));
+            // A later cleanup pass over a root with no remaining work.
+            let root = crate::candidate_custody::CandidateRoot::new(2).unwrap();
+            assert!(finish_cleanup_observed(&root, &status));
+            // A later dispatch of the matching retained root.
+            assert!(!mismatched_cleanup(Some(&root), &root.clone(), &status));
+            assert_eq!(status.failure(), Some(failure));
+        }
+    }
+
+    /// #4132: a failed retirement keeps the exclusive lease with its custody,
+    /// so a recovery open on the lane is never delivered while it is held,
+    /// and the latched status survives the open attempts.
+    #[test]
+    fn failed_retirement_keeps_the_lease_so_no_recovery_open_is_delivered() {
+        let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<(), ()>>(2);
+        let state = Arc::new(OpenState::new());
+        let status = Arc::new(LifecycleStatus::new());
+        let worker_status = Arc::clone(&status);
+        let lane_status = Arc::clone(&status);
+        let occupied = Arc::new(AtomicBool::new(true));
+        let worker_occupied = Arc::clone(&occupied);
+        let open_occupied = Arc::clone(&occupied);
+        let attempts = Arc::new(AtomicU64::new(0));
+        let worker_attempts = Arc::clone(&attempts);
+        let (release, held) = mpsc::channel::<()>();
+        let lane = thread::spawn(move || {
+            run_lifecycle_observed(
+                receiver,
+                || worker_occupied.load(Acquire),
+                move |_, _| {
+                    worker_attempts.fetch_add(1, AcqRel);
+                    // The lease is held by the failed custody below.
+                    (!open_occupied.load(Acquire)).then_some(Ok(()))
+                },
+                |()| {
+                    let mut progress = RetirementProgress::default();
+                    assert!(!progress.advance(&worker_status, || Err(())));
+                    // Production retains this custody until process exit;
+                    // the fixture holds it until the test has observed.
+                    let _ = held.recv();
+                },
+                &lane_status,
+            );
+        });
+        assert!(sender.try_send(LifecycleMessage::Retire((), None)).is_ok());
+        let mut waiter = enqueue_open(&sender, &state, Some(48_000)).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(200);
+        while Instant::now() < deadline {
+            assert!(waiter.try_take().unwrap().is_none(), "no output delivered");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(status.failure(), Some(AudioLifecycleFailure::Retirement));
+        // A second open is refused while the first is still pending.
+        assert_eq!(
+            enqueue_open(&sender, &state, Some(48_000)).err(),
+            Some(RecoveryOpenError::Busy)
+        );
+        // Even once the lane runs again, the still-held lease admits no output.
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        while Instant::now() < deadline {
+            assert!(waiter.try_take().unwrap().is_none(), "no output delivered");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(attempts.load(Acquire) > 0, "the open was attempted");
+        assert_eq!(status.failure(), Some(AudioLifecycleFailure::Retirement));
+        assert!(occupied.load(Acquire));
+        drop(waiter);
+        drop(sender);
+        lane.join().unwrap();
     }
 }
