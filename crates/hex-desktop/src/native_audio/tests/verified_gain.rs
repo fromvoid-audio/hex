@@ -1,7 +1,15 @@
 //! Actual default native consumer in explicit verified mode. Only output creation
 //! is replaced by the existing headless backend; reader/page/publication stay real.
 use super::*;
+use crate::native_audio::tests::{Files, Harness, Observation, ObservedSink, native_fixture};
+use hex_engine::PlaybackCommand;
 use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
+use hex_session::service::Request;
+use std::{
+    fs,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 fn actual_native_harness() -> Harness {
     let backend = Arc::new(Mutex::new(None));

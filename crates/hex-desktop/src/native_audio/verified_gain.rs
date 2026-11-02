@@ -118,3 +118,7 @@ impl NativeAudioSink {
         }
     }
 }
+
+#[cfg(all(test, feature = "allocation-probe"))]
+#[path = "tests/verified_gain.rs"]
+mod tests;
