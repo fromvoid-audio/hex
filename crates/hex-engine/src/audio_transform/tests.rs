@@ -10,6 +10,8 @@ mod group;
 
 #[path = "tests/aliases.rs"]
 mod aliases;
+#[path = "tests/content_resampler.rs"]
+mod content_resampler;
 #[path = "tests/content_reverse.rs"]
 mod content_reverse;
 #[path = "tests/musical_sharing.rs"]

@@ -15,8 +15,8 @@
 //! The field lives in the shared audio domain record, so visible clips, alias
 //! representatives (the law is content data, not an alias payload key) and
 //! retained event roots all carry it through their existing codecs. An older
-//! document containing the field is refused. Directed content-view rendering is
-//! not versioned here and remains v1.
+//! document containing the field is refused. Directed content views name their
+//! own read law in schema66 (`schema::content_view_resampler`).
 use crate::{Project, StorageError};
 use hex_project::{AudioClipContent, Clip};
 use serde_json::Value;

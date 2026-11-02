@@ -447,6 +447,7 @@ pub(crate) fn reset_region(
                     .map_or(edit.view_end - edit.view_start, |p| p.outer_length.length()),
                 view.window.reversed,
             )?,
+            read_resampler: view.read_resampler,
         });
     }
     clip.edit = Some(Arc::new(edit));
