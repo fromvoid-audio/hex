@@ -1220,7 +1220,7 @@ fn instrument_render_is_partition_seek_pause_and_stop_invariant() {
     playing_graph.apply(PlaybackCommand::Play);
     let replacement_project = compile::project(editor.project(), &BTreeMap::new()).unwrap();
     let mut replacement = Playback::new(replacement_project);
-    replacement.inherit_transport(&playing_graph);
+    replacement.inherit_transport(&playing_graph).unwrap();
     assert_eq!(replacement.position(), 5_000);
     assert!(replacement.playing());
     let mut replacement_output = [[0.0; 2]; 128];

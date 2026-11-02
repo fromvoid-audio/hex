@@ -212,8 +212,8 @@ fn supported_rates_and_dense_fractional_meter_markers_terminate() {
 fn prepared_toggle_cannot_survive_demotion_to_legacy_or_linear_export() {
     let source = revision(None);
     let old = playing(Arc::clone(&source));
-    let mut legacy = Playback::new(crate::Project::new(8_000, Vec::new()).unwrap());
-    legacy.inherit_transport(&old);
+    let mut legacy = Playback::from_shared(Arc::clone(&old.project));
+    legacy.inherit_transport(&old).unwrap();
     assert!(!legacy.metronome_enabled());
     assert_eq!(
         legacy.try_apply_action(PlaybackAction::SetMetronome(true)),
@@ -222,7 +222,7 @@ fn prepared_toggle_cannot_survive_demotion_to_legacy_or_linear_export() {
     let mut runtime = SessionPlayback::new_linear_arrangement_export(source).unwrap();
     runtime.apply(SessionPlaybackCommand::Play).unwrap();
     let mut export = Playback::from_arrangement_preroll(runtime).unwrap();
-    export.inherit_transport(&old);
+    export.inherit_transport(&old).unwrap();
     assert!(!export.metronome_enabled());
     assert_eq!(
         export.try_apply_action(PlaybackAction::SetMetronome(true)),

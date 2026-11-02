@@ -64,6 +64,8 @@ pub enum JournalChange {
 pub enum StorageError {
     Io(io::Error),
     Json(serde_json::Error),
+    /// Another owner currently holds the automation draft's exclusive lock.
+    AutomationDraftBusy(io::Error),
     /// The operation's visible state is retained; lock cleanup failed.
     JournalLockRelease {
         path: PathBuf,
@@ -115,6 +117,9 @@ impl fmt::Display for StorageError {
                 Ok(())
             }
             Self::Io(error) => write!(f, "project file error: {error}"),
+            Self::AutomationDraftBusy(error) => {
+                write!(f, "automation draft is busy; try again: {error}")
+            }
             Self::Json(error) => write!(f, "invalid project json: {error}"),
             Self::Invalid(reason) => f.write_str(reason),
             Self::Conflict { path } => {
@@ -151,7 +156,7 @@ impl std::error::Error for StorageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::JournalLockRelease { source, .. } => Some(source),
-            Self::Io(e) => Some(e),
+            Self::Io(e) | Self::AutomationDraftBusy(e) => Some(e),
             Self::Json(e) => Some(e),
             Self::Invalid(_) | Self::Conflict { .. } => None,
             Self::PublishedButNotDurable { source, .. }

@@ -437,6 +437,17 @@ impl MidiReleaseVoice {
         }))
     }
 
+    /// End this voice no later than performance `frame`, a loop wrap.
+    /// Unedited looped playback stops an occurrence at the wrap, so a voice
+    /// released before it must not sound over the next pass.
+    pub(crate) fn ending_by(self, frame: u64) -> Self {
+        Self {
+            gate_end_frame: self.gate_end_frame.min(frame),
+            end_frame: self.end_frame.min(frame),
+            ..self
+        }
+    }
+
     pub(crate) fn from_finite_span(
         start_frame: u64,
         gate_end_frame: u64,
