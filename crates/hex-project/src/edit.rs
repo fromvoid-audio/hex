@@ -2630,11 +2630,7 @@ impl Project {
                 frames,
             } => {
                 let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
-                let conversion = if sample_rate == self.sample_rate {
-                    IDENTITY_CONVERSION
-                } else {
-                    crate::SINC_CONVERSION_V1
-                };
+                let conversion = crate::import_conversion_version(sample_rate, self.sample_rate);
                 self.add_prepared_asset(path, sample_rate, frames, playback, conversion)
                     .map(Created::Asset)
             }
@@ -2655,11 +2651,7 @@ impl Project {
                     ));
                 }
                 let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
-                let conversion = if sample_rate == self.sample_rate {
-                    IDENTITY_CONVERSION
-                } else {
-                    crate::SINC_CONVERSION_V1
-                };
+                let conversion = crate::import_conversion_version(sample_rate, self.sample_rate);
                 let asset =
                     self.add_prepared_asset(path, sample_rate, frames, playback, conversion)?;
                 let state = state
@@ -2706,11 +2698,7 @@ impl Project {
                     ));
                 }
                 let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
-                let conversion = if sample_rate == self.sample_rate {
-                    IDENTITY_CONVERSION
-                } else {
-                    crate::SINC_CONVERSION_V1
-                };
+                let conversion = crate::import_conversion_version(sample_rate, self.sample_rate);
                 let asset =
                     self.add_prepared_asset(path, sample_rate, frames, playback, conversion)?;
                 let key = hex_lattice_contract::DeviceAssetKey::new(asset.value())

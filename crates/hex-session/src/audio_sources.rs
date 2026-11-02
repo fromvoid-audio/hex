@@ -96,9 +96,37 @@ struct VerifiedAudioFileFacts {
     manifest_bytes: usize,
 }
 impl VerifiedAudioFile {
+    /// Verify a file for a new import, recording the current import law.
     pub fn inspect(
         path: PathBuf,
         project_rate: u32,
+        limits: VerifiedWavReaderLimits,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, SessionError> {
+        Self::inspect_inner(path, project_rate, None, limits, cancelled)
+    }
+
+    /// Verify a file for an existing asset, binding its saved conversion law.
+    pub fn inspect_for_conversion(
+        path: PathBuf,
+        project_rate: u32,
+        conversion_version: u32,
+        limits: VerifiedWavReaderLimits,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, SessionError> {
+        Self::inspect_inner(
+            path,
+            project_rate,
+            Some(conversion_version),
+            limits,
+            cancelled,
+        )
+    }
+
+    fn inspect_inner(
+        path: PathBuf,
+        project_rate: u32,
+        conversion: Option<u32>,
         limits: VerifiedWavReaderLimits,
         cancelled: impl FnMut() -> bool,
     ) -> Result<Self, SessionError> {
@@ -112,6 +140,15 @@ impl VerifiedAudioFile {
         let source_frames = reader.source_frames();
         let playback_frames =
             hex_project::converted_frame_count(source_frames, source_rate, project_rate)?;
+        let conversion = conversion
+            .unwrap_or_else(|| hex_project::import_conversion_version(source_rate, project_rate));
+        hex_project::validate_conversion_metadata(
+            source_frames,
+            source_rate,
+            playback_frames,
+            project_rate,
+            conversion,
+        )?;
         Ok(Self {
             facts: Arc::new(VerifiedAudioFileFacts {
                 path,
@@ -120,11 +157,7 @@ impl VerifiedAudioFile {
                 project_rate,
                 source_frames,
                 playback_frames,
-                conversion: if source_rate == project_rate {
-                    hex_project::IDENTITY_CONVERSION
-                } else {
-                    hex_project::SINC_CONVERSION_V1
-                },
+                conversion,
                 limits,
                 manifest_bytes: reader.page_manifest_bytes(),
             }),

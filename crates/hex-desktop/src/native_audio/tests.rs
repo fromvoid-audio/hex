@@ -1181,12 +1181,15 @@ fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_dom
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let output = h.render();
+        h.render();
         let status = h.audio.as_ref().unwrap().status().unwrap();
         if status.stream_applied_command_prefix.load(Acquire) == play {
-            // The real upsampler has a source-start boundary response. The
-            // end of this block and the next complete block are constant PCM.
-            assert!(output[63].iter().all(|s| (*s - 0.25).abs() < 0.0001));
+            // The real upsampler has a source-start boundary response: sinc v2
+            // (new imports) reaches 64 source frames, 128 project frames at
+            // 24k→48k. The block after that response is constant PCM.
+            h.render();
+            let settled = h.render();
+            assert!(settled.iter().flatten().all(|s| (*s - 0.25).abs() < 0.0001));
             break;
         }
         assert!(
