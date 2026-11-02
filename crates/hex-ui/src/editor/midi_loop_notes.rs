@@ -2,7 +2,9 @@
 //! canonical playback occurrence plan (`MidiSourcePlayback::note_occurrences`),
 //! the same plan MIDI playback compiles. Display-only: nothing here edits or
 //! schedules notes, and no sampling is applied, so every visible loop repeat
-//! draws its notes where playback sounds them.
+//! draws its notes where playback sounds them. The resting clip, its
+//! time-move fragments, drag/drop ghosts and the edge-trim preview all draw
+//! through [`visible_occurrences`]; a trim supplies its previewed playback.
 //!
 //! Work is bounded by the visible window: each note locates its first visible
 //! occurrence by binary search over the constant-time plan, then walks only
@@ -25,11 +27,14 @@
 //! Other clips (tempo change inside, reversed, content-windowed, sub-2px or
 //! very wide periods) draw every visible occurrence instead.
 use super::midi_thumbnail::{PitchFit, note_rows};
-use hex_project::{BeatTime, ClipId, Invalid, MidiClip, Project, TempoMap};
+use hex_project::{BeatTime, ClipId, Invalid, MidiClip, MidiNoteOccurrencePlan, Project, TempoMap};
 use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
 
 /// Per-clip visible-occurrence walk bound (the admission limit).
 pub(super) const MAX_VISIBLE_OCCURRENCES: usize = 65_536;
+/// Cached windows per clip: the resting body plus the few gesture fragments
+/// (time-move residuals, a moved copy, a drop ghost) one frame draws.
+const WINDOWS_PER_CLIP: usize = 4;
 /// Widest tiled period, in device pixels; wider periods draw per occurrence.
 const MAX_TILE_PIXELS: f64 = 2048.0;
 /// Narrowest tiled period, in device pixels: below it same-pitch merging
@@ -63,6 +68,31 @@ pub(super) struct LoopTiles {
     /// Start frame of each tile intersecting the visible clip window. A tile
     /// may start before the clip (offset) or end past it (last repeat).
     pub(super) blocks: Vec<f64>,
+}
+
+/// Frames covered by one device pixel of a `pixel_width`-wide body showing
+/// `span` frames: the gap below which same-pitch notes merge into one quad.
+pub(super) fn merge_frames(span: u64, pixel_width: f32, scale_factor: f32) -> u64 {
+    let physical = f64::from(pixel_width * scale_factor.max(1.0));
+    if physical >= 1.0 {
+        (span as f64 / physical) as u64
+    } else {
+        span
+    }
+}
+
+/// Row fit over the pitches that sound under the clip's canonical playback,
+/// shared by the resting body and its gesture previews.
+pub(super) fn sounding_fit(clip: &MidiClip) -> PitchFit {
+    let Ok(source) = clip.source_playback() else {
+        return PitchFit::from_pitches([]);
+    };
+    PitchFit::from_pitches(clip.notes().iter().filter_map(|note| {
+        source
+            .note_occurrences(note.start(), note.duration())
+            .is_ok_and(|plan| plan.count() > 0)
+            .then_some(note.pitch())
+    }))
 }
 
 /// Exact note intervals intersecting `[visible_start, visible_end)` frames.
@@ -119,9 +149,50 @@ fn walk(
     merge_frames: u64,
     tiles: Option<LoopTiles>,
 ) -> Result<VisibleNotes, Invalid> {
-    let tempo = project.tempo_map();
     let source = clip.source_playback()?;
-    let clip_start = clip.start().raw();
+    let mut plans = Vec::with_capacity(clip.notes().len());
+    for note in clip.notes() {
+        plans.push((
+            source.note_occurrences(note.start(), note.duration())?,
+            note.pitch(),
+        ));
+    }
+    let fit = PitchFit::from_pitches(
+        plans
+            .iter()
+            .filter(|(plan, _)| plan.count() > 0)
+            .map(|&(_, pitch)| pitch),
+    );
+    Ok(VisibleNotes {
+        intervals: visible_occurrences(
+            project.tempo_map(),
+            clip.start(),
+            plans,
+            visible_start,
+            visible_end,
+            merge_frames,
+            // Tiled repeats are drawn by the tile; only the first pass remains.
+            tiles.is_some(),
+        )?,
+        fit,
+        tiles,
+    })
+}
+
+/// Visible `(frame_start, frame_gate_end, pitch)` intervals of `plans`, whose
+/// occurrences are relative to `timeline_start`, sorted by pitch then onset.
+/// Refuses rather than truncates past `MAX_VISIBLE_OCCURRENCES`. With
+/// `first_pass_only`, only each plan's first-pass (iteration 0) occurrence.
+pub(super) fn visible_occurrences(
+    tempo: &TempoMap,
+    timeline_start: BeatTime,
+    plans: impl IntoIterator<Item = (MidiNoteOccurrencePlan, u8)>,
+    visible_start: u64,
+    visible_end: u64,
+    merge_frames: u64,
+    first_pass_only: bool,
+) -> Result<Vec<(u64, u64, u8)>, Invalid> {
+    let clip_start = timeline_start.raw();
     // Clip-local beat window, widened by one raw beat for frame rounding; the
     // exact frame cull below decides membership.
     let local = |frame: u64| -> Result<u64, Invalid> {
@@ -136,22 +207,18 @@ fn walk(
         tempo.beat_to_frame(BeatTime::from_raw(beat))
     };
     let mut intervals = Vec::new();
-    let mut pitches = Vec::new();
-    for note in clip.notes() {
-        let plan = source.note_occurrences(note.start(), note.duration())?;
-        let count = plan.count();
+    for (plan, pitch) in plans {
+        let count = if first_pass_only {
+            u64::from(plan.iter().next().is_some_and(|hit| hit.iteration() == 0))
+        } else {
+            plan.count()
+        };
         if count == 0 {
             continue;
         }
-        pitches.push(note.pitch());
-        // Tiled repeats are drawn by the tile; only the first pass remains.
-        let count = if tiles.is_some() {
-            u64::from(plan.iter().next().is_some_and(|hit| hit.iteration() == 0))
-        } else {
-            count
-        };
-        // Occurrences of one note never overlap and ascend in timeline order,
-        // so the first one ending after the window start is a partition point.
+        // Occurrences of one note never overlap and ascend in timeline order
+        // (also when reversed), so the first one ending after the window
+        // start is a partition point. `nth` is constant-time on the plan.
         let end_of = |ordinal: u64| -> Option<u64> {
             let hit = plan.iter().nth(usize::try_from(ordinal).ok()?)?;
             hit.timeline_start()
@@ -184,7 +251,7 @@ fn walk(
                 .ok_or(Invalid("midi note gate overflow"))?;
             let (start, end) = (frame(start)?, frame(end)?);
             if start < visible_end && end > visible_start && end > start {
-                intervals.push((start, end, note.pitch()));
+                intervals.push((start, end, pitch));
             }
         }
     }
@@ -201,11 +268,7 @@ fn walk(
         }
         intervals = merged;
     }
-    Ok(VisibleNotes {
-        intervals,
-        fit: PitchFit::from_pitches(pitches),
-        tiles,
-    })
+    Ok(intervals)
 }
 
 /// Repeats of `clip` as one tiled period, or `None` when repeats may differ
@@ -317,20 +380,43 @@ struct Window {
     tiled: bool,
 }
 
-/// Last visible notes per clip for one immutable project snapshot.
+/// Recent visible notes per clip for one immutable project snapshot.
 ///
 /// Holding the snapshot `Arc` keeps cached clips immutable and rules out a
-/// reused address matching a different project. Entries are bounded by the
-/// snapshot's clip count (one per clip, replaced when its window changes) and
-/// are all dropped when a different snapshot is drawn. A refused walk is
-/// cached as `None` so an over-limit clip is not re-walked every frame.
+/// reused address matching a different project. Each clip keeps at most
+/// `WINDOWS_PER_CLIP` windows, most recent first, so a gesture preview does
+/// not evict the resting body; entries are bounded by the snapshot's clip
+/// count and are all dropped when a different snapshot is drawn. A refused
+/// walk is cached as `None` so an over-limit clip is not re-walked every frame.
 #[derive(Default)]
 pub(super) struct VisibleNotesCache {
     project: Option<Arc<Project>>,
-    entries: HashMap<ClipId, (Window, Option<Rc<VisibleNotes>>)>,
+    entries: HashMap<ClipId, Vec<CachedWindow>>,
 }
 
+/// One cached window and its walk; `None` when the walk was refused.
+type CachedWindow = (Window, Option<Rc<VisibleNotes>>);
+
 impl VisibleNotesCache {
+    /// `visible_notes` for `clip`, reused when the snapshot and window match.
+    pub(super) fn get(
+        &mut self,
+        project: &Arc<Project>,
+        clip: &MidiClip,
+        visible_start: u64,
+        visible_end: u64,
+        merge_frames: u64,
+    ) -> Option<Rc<VisibleNotes>> {
+        self.lookup(
+            project,
+            clip,
+            visible_start,
+            visible_end,
+            merge_frames,
+            false,
+        )
+    }
+
     /// `visible_notes_tiled` for the resting body, reused when the snapshot
     /// and window match.
     pub(super) fn get_tiled(
@@ -374,10 +460,12 @@ impl VisibleNotesCache {
             merge_frames,
             tiled,
         };
-        if let Some((cached, notes)) = self.entries.get(&clip.id())
-            && *cached == window
-        {
-            return notes.clone();
+        let windows = self.entries.entry(clip.id()).or_default();
+        if let Some(index) = windows.iter().position(|(cached, _)| *cached == window) {
+            let hit = windows.remove(index);
+            let notes = hit.1.clone();
+            windows.insert(0, hit);
+            return notes;
         }
         let walk = if tiled {
             visible_notes_tiled
@@ -387,8 +475,41 @@ impl VisibleNotesCache {
         let notes = walk(project, clip, visible_start, visible_end, merge_frames)
             .ok()
             .map(Rc::new);
-        self.entries.insert(clip.id(), (window, notes.clone()));
+        windows.truncate(WINDOWS_PER_CLIP - 1);
+        windows.insert(0, (window, notes.clone()));
         notes
+    }
+}
+
+impl super::EditorView {
+    /// Shapes (fractions of `[start, end)`) and row fit of the canonical
+    /// `clip`'s notes in those frames, through the per-clip cache. A
+    /// re-entrant build computes without the cache; a refused walk draws none.
+    pub(super) fn loop_note_shapes(
+        &self,
+        project: &Arc<Project>,
+        clip: &MidiClip,
+        start: u64,
+        end: u64,
+        merge_frames: u64,
+    ) -> (Vec<(f32, f32, u8)>, PitchFit) {
+        let visible = match self.midi_visible_notes.try_borrow_mut() {
+            Ok(mut cache) => cache.get(project, clip, start, end, merge_frames),
+            Err(_) => visible_notes(project, clip, start, end, merge_frames)
+                .ok()
+                .map(Rc::new),
+        };
+        let Some(visible) = visible else {
+            return (Vec::new(), sounding_fit(clip));
+        };
+        let shapes = visible
+            .intervals
+            .iter()
+            .filter_map(|&(note_start, note_end, pitch)| {
+                super::midi_thumbnail::note_shape(note_start, note_end, pitch, start, end)
+            })
+            .collect();
+        (shapes, visible.fit)
     }
 }
 
@@ -1144,6 +1265,7 @@ mod tests {
             cache
                 .entries
                 .get(&id)
+                .and_then(|windows| windows.first())
                 .and_then(|(_, notes)| notes.clone())
                 .and_then(|notes| {
                     notes
@@ -1172,5 +1294,93 @@ mod tests {
                 ))
                 .is_some()
         );
+    }
+
+    /// #4137: dragging a long loop's right edge previews the shortened clip
+    /// with every visible repeat's notes where playback sounds them, not the
+    /// 32 engine samples.
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn rendered_long_loop_trim_preview_paints_every_visible_repeat(cx: &mut gpui::TestAppContext) {
+        use gpui::{Modifiers, MouseButton, point, px};
+        let (editor, id) = looped_clip();
+        let project = editor.project().clone();
+        let clip = project.midi_clip(id).unwrap().clone();
+        let tempo = project.tempo_map().clone();
+        let start = tempo.beat_to_frame(clip.start()).unwrap();
+        let end = tempo
+            .beat_to_frame(BeatTime::from_raw(clip.start().raw() + beats(82).raw()))
+            .unwrap();
+        let (_, preview) =
+            hex_engine::compile::project_with_midi_preview(&project, &Default::default()).unwrap();
+        let (handle, view) =
+            crate::editor::clip_drag_ui_test::editor_window(cx, project.clone(), Arc::new(preview));
+        let mut visual = gpui::VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(gpui::size(gpui::px(2400.0), gpui::px(800.0)));
+        // Leave room right of the clip for its edge handle.
+        publish(&mut visual, &view, None, start, (end - start) / 10 * 11);
+        let edge = visual
+            .debug_bounds(Box::leak(
+                format!("midi-clip-trim-right-{}", id.value()).into_boxed_str(),
+            ))
+            .expect("right MIDI trim edge");
+        let down = crate::editor::clip_drag_ui_test::trim_grab_point(edge);
+        visual.simulate_mouse_move(down, None, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(down.x - px(12.0), down.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        visual.simulate_mouse_move(
+            point(down.x - px(400.0), down.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        let trim_end = view.read_with(&visual, |view, _| {
+            let drag = view
+                .active_midi_trim_drag
+                .as_ref()
+                .expect("right MIDI trim");
+            let preview = drag.preview.borrow().expect("trim preview");
+            assert_eq!(
+                preview.start(),
+                clip.start(),
+                "a right trim keeps the start"
+            );
+            BeatTime::from_raw(preview.start().raw() + preview.length().raw())
+        });
+        let trim_end = tempo.beat_to_frame(trim_end).unwrap();
+        assert!(start < trim_end && trim_end < end, "{trim_end}");
+        let expected: Vec<_> = playback(&project, &clip)
+            .into_iter()
+            .filter(|&(onset, _, _)| onset < trim_end)
+            .collect();
+        assert!(expected.len() > 32, "{}", expected.len());
+        let body = visual
+            .debug_bounds("midi-trim-preview-notes")
+            .expect("trim preview note layer");
+        let notes = crate::editor::midi_thumbnail::rendered_note_layer(
+            &mut visual,
+            "midi-trim-preview-notes",
+        );
+        assert_eq!(
+            notes.len(),
+            expected.len(),
+            "every visible repeat is drawn, not a 32-note sample"
+        );
+        let (left, width) = (f32::from(body.left()), f32::from(body.size.width));
+        for (onset, _, _) in &expected {
+            let x = left + (onset - start) as f32 / (trim_end - start) as f32 * width;
+            assert!(
+                notes
+                    .iter()
+                    .any(|(bounds, _)| (f32::from(bounds.left()) - x).abs() <= 1.5),
+                "a trim preview note at playback frame {onset} (x {x})"
+            );
+        }
     }
 }

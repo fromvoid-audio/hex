@@ -186,7 +186,10 @@ fn assert_no_bodies(f: &mut Fixture) {
             super::midi_thumbnail::rendered_notes(&mut f.visual, f.clips[1], dragging).is_empty()
         );
     }
-    assert!(f.visual.debug_bounds("midi-trim-preview-note-60").is_none());
+    assert!(
+        super::midi_thumbnail::rendered_note_layer(&mut f.visual, "midi-trim-preview-notes")
+            .is_empty()
+    );
     for prefix in [
         "fade-in-top",
         "fade-in-bottom",
