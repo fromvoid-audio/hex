@@ -13155,6 +13155,8 @@ mod transition_busy_tests;
 
 #[path = "eq8_mode_tests.rs"]
 mod eq8_mode_tests;
+#[path = "flexible_eq_mode_tests.rs"]
+mod flexible_eq_mode_tests;
 
 #[path = "compressor_tests.rs"]
 mod compressor_tests;
