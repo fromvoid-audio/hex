@@ -323,3 +323,44 @@ fn each_lfo_wave_has_an_effective_morph_control() {
         );
     }
 }
+#[test]
+fn block_bypass_matches_single_frame_history_across_tempo_change() {
+    let s = state(&[
+        (FEEDBACK, ParameterValue::Float(0.6)),
+        (SMOOTHING, ParameterValue::Choice(0)),
+    ]);
+    for size in [1, 64, 256] {
+        let mut block = owned(8000, &s);
+        let mut reference = owned(8000, &s);
+        let input: Vec<_> = (0..size)
+            .map(|i| [(i + 1) as f32 / 256.0, -((i + 1) as f32) / 512.0])
+            .collect();
+        let clock = |start| Clock {
+            start,
+            breakpoint: size / 2,
+            first: 90_000_000,
+            second: 150_000_000,
+        };
+        let mut dry = input.clone();
+        block.begin_block();
+        reference.begin_block();
+        block.process_bypassed_block_with_clock(&mut dry, Some(&clock(0)), &EMPTY_DEVICE_RESOURCES);
+        for (offset, frame) in input.iter().enumerate() {
+            let mut discarded = [*frame];
+            reference.process_block_with_clock(
+                &mut discarded,
+                Some(&clock(offset)),
+                &EMPTY_DEVICE_RESOURCES,
+            );
+        }
+        block.commit_block();
+        reference.commit_block();
+        assert_eq!(dry, input);
+        let tail = [[0.0; 2]; 4000];
+        let [a, b] = [block, reference].map(|mut runtime| {
+            musical(runtime.as_mut(), &tail, &[64], 0, 150_000_000, 150_000_000)
+        });
+        assert_eq!(a, b);
+        assert!(a.iter().any(|frame| *frame != [0.0; 2]));
+    }
+}

@@ -46,6 +46,7 @@ mod leftover_recovery;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod navigation_metrics;
 mod plugin_effect;
+mod truncated_import;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use plugin_effect::fixture_catalog as plugin_effect_fixture_catalog;
 #[cfg(feature = "ui-test-support")]
@@ -520,6 +521,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-z", Undo, Some("hex_editor")),
         KeyBinding::new("cmd-z", Undo, Some("hex_gain_numeric_editor")),
         KeyBinding::new("cmd-shift-z", Redo, Some("hex_editor")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("hex_gain_numeric_editor")),
         KeyBinding::new("left", MoveLeft, Some("hex_editor")),
         KeyBinding::new("right", MoveRight, Some("hex_editor")),
         KeyBinding::new("shift-left", TrimLeft, Some("hex_editor")),
@@ -757,6 +759,7 @@ pub(super) struct EditorView {
     stopped_playback_restore: Option<audio_admission::StoppedPlaybackRestore>,
     latency_rebuild: Option<audio_admission::LatencyRebuild>,
     leftover_recovery: leftover_recovery::State,
+    truncated_import: truncated_import::State,
     // Streamed documents replace their sampler output stopped; this frame
     // resumes playback once that edit settles (Pulse #3784).
     sampler_edit_resume: Option<u64>,
@@ -1505,6 +1508,7 @@ impl EditorView {
             stopped_playback_restore: None,
             latency_rebuild: None,
             leftover_recovery: Default::default(),
+            truncated_import: Default::default(),
             sampler_edit_resume: None,
             deferred_play: None,
             offline_cursor: 0,
