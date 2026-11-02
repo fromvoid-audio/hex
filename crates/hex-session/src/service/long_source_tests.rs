@@ -275,3 +275,42 @@ fn timeline_edits_on_a_streamed_clip_past_the_edit_domain_survive_history_and_re
     );
     assert_eq!(streamed_frames(&reopened), u64::from(frames));
 }
+
+/// Pulse #4145: transform edits render the whole root through the bounded
+/// resident workspace, so past the edit domain they refuse with the limit at
+/// the project's rate and the remedy, leaving the project untouched.
+#[test]
+fn transform_edits_past_the_edit_domain_name_the_limit_and_the_remedy() {
+    let files = Files::new();
+    let path = files.long_wav("twenty-million.wav", 20_000_000);
+    let service = service_in(DocumentAudioMode::VerifiedStreaming);
+    service.submit(Request::Import(path)).unwrap();
+    let imported = next(&service);
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    for command in [
+        hex_project::Command::ReverseClips(vec![clip]),
+        hex_project::Command::SetAudioClipPitch { clip, cents: 100 },
+        hex_project::Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        },
+        hex_project::Command::StretchAudioClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Right,
+            frame: 19_000_000,
+        },
+    ] {
+        service.submit(Request::Edit(command.clone())).unwrap();
+        let refused = next(&service);
+        let error = refused.error.as_deref().expect("transform refusal");
+        assert!(
+            error.contains(
+                "reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; \
+                 trim or split the clip first"
+            ),
+            "{command:?}: {error}"
+        );
+        assert_eq!(refused.state.project, imported.state.project);
+    }
+}
