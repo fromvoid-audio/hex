@@ -54,3 +54,9 @@ opt-level = 1
 # overflow checks remain enabled; release builds are unchanged (Pulse #4171).
 [profile.dev.package.hex-media]
 opt-level = 2
+
+# Preserve the full long-source import, refusal and reopen fixtures while keeping
+# their test setup and execution within the per-test budget. Debug assertions and
+# overflow checks remain enabled; release builds are unchanged (Pulse #4172).
+[profile.dev.package.hex-session]
+opt-level = 1
