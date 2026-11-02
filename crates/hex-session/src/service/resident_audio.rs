@@ -1174,15 +1174,22 @@ pub(super) fn decode_relinks(
         }
         let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
         let decoded = super::decode_resident_import(path)?;
+        // Relinked media is reconverted with the asset's saved conversion law.
+        let conversion = session
+            .project()
+            .asset(asset)
+            .ok_or(SessionError::Invalid("relinked media no longer exists"))?
+            .conversion_version();
         prepared.push((
             asset,
-            PreparedImport::at_rate(
+            PreparedImport::at_rate_with_conversion(
                 decoded,
                 session.project().sample_rate(),
                 ResampleLimits {
                     max_source_frames: IMPORT_FRAME_LIMIT,
                     max_output_frames: output_limit,
                 },
+                conversion,
             )?,
         ));
     }

@@ -84,7 +84,7 @@ mod tests {
         assert_eq!(editor.project().track(track).unwrap().name(), "track 1");
         let saved = crate::encode(&project).unwrap();
         let value: Value = serde_json::from_slice(&saved).unwrap();
-        assert_eq!(value["version"], 63);
+        assert_eq!(value["version"], crate::CURRENT_SCHEMA_VERSION);
         assert_eq!(value["automatic_track_names"], serde_json::json!([]));
         assert_eq!(
             crate::decode(&saved).unwrap().snapshot(),

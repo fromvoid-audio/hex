@@ -1,5 +1,5 @@
 use crate::*;
-use hex_media::{Limits, decode_wav_file};
+use hex_media::{Limits, decode_wav_file, resample};
 use std::{
     fs,
     io::Write,
@@ -235,4 +235,58 @@ fn batch_union_refuses_atomically_and_session_cells_retain_original_rate() {
     assert_eq!(session.source_audio(id).unwrap().frames().len(), 12);
     assert!(session.redo());
     assert_eq!(session.resident_frames(), 18);
+}
+
+#[test]
+fn sinc_v2_asset_saves_as_schema64_and_reopens_with_its_own_conversion_law() {
+    let limits = ResampleLimits {
+        max_source_frames: 1024,
+        max_output_frames: 1024,
+    };
+    let decoded = decoded(32_000, 250);
+    let v1 = resample(decoded.audio(), 16_000, limits).unwrap();
+    let v2 = hex_media::resample_with_version(
+        decoded.audio(),
+        16_000,
+        limits,
+        hex_media::ResampleVersion::V2,
+    )
+    .unwrap();
+    assert_ne!(v1.frames(), v2.frames(), "the laws differ for this source");
+    let mut session = Session::new(16_000, 16, 1024).unwrap();
+    let prepared = PreparedImport::at_rate_with_conversion(
+        decoded.clone(),
+        16_000,
+        limits,
+        hex_project::SINC_CONVERSION_V2,
+    )
+    .unwrap();
+    let id = asset(session.import_prepared_revision(prepared, None).unwrap().0);
+    assert_eq!(session.audio(id).unwrap().frames(), v2.frames());
+
+    let bytes = hex_storage::encode(session.project()).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["version"], hex_storage::SINC_V2_SCHEMA_VERSION);
+    let loaded = hex_storage::decode(&bytes).unwrap();
+    assert_eq!(
+        loaded.asset(id).unwrap().conversion_version(),
+        hex_project::SINC_CONVERSION_V2
+    );
+    let reopened = Session::from_loaded(loaded, 16, 1024, vec![(id, decoded)]).unwrap();
+    assert_eq!(reopened.audio(id).unwrap().frames(), v2.frames());
+}
+
+#[test]
+fn unknown_conversion_version_refuses_reconstruction() {
+    let limits = ResampleLimits {
+        max_source_frames: 1024,
+        max_output_frames: 1024,
+    };
+    for version in [3, u32::MAX] {
+        let result =
+            PreparedImport::at_rate_with_conversion(decoded(32_000, 12), 16_000, limits, version);
+        assert!(
+            matches!(result, Err(SessionError::Invalid(message)) if message.contains("newer hex"))
+        );
+    }
 }
