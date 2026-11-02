@@ -16,11 +16,20 @@
 //! The identity is not a content fingerprint; an edit that preserves both
 //! length and modified time is not detected (see `hex_media::file_identity`).
 //!
+//! Before decoding, the service import paths ask
+//! [`Session::unchanged_resident_import`] whether the file at a path still has
+//! the identity of a resident asset. On a match they skip reading, decoding and
+//! resampling and commit a member that borrows that asset's resident PCM and
+//! waveform, so the transaction above places it with `ImportExistingAudio`. The
+//! pre-decode check observes current file metadata only; it applies only to
+//! resident documents, and a changed or unobservable file decodes as before.
+//!
 //! Dependencies: canonical `Project` metadata, the session's resident media map
 //! and the existing prepared-edit transaction. It does not own residency,
 //! reclamation or PCM accounting; a reused member simply adds none.
-use crate::{PreparedImport, Session, SessionError, import_batch::Preparation};
+use crate::{DocumentAudioMode, PreparedImport, Session, SessionError, import_batch::Preparation};
 use hex_project::{AssetId, Command, Created, ExistingAudioPlacement};
+use std::path::Path;
 
 impl Session {
     /// The resident asset this prepared member may reuse, if any. The lowest
@@ -47,6 +56,56 @@ impl Session {
             })
             .map(|(id, _)| *id)
             .min()
+    }
+
+    /// A prepared member for the file at `path` built from a matching resident
+    /// asset without reading the file's contents, or `None` when the file must
+    /// be decoded. A match needs the asset's saved path spelling to equal
+    /// `path`, the file's current length and modified time to equal the
+    /// identity captured by the asset's decode, and the asset to use the
+    /// conversion a fresh import at the project rate would choose. The member
+    /// shares the resident PCM and waveform, so committing it adds no media.
+    pub(crate) fn unchanged_resident_import(&self, path: &Path) -> Option<PreparedImport> {
+        if self.audio_mode() != DocumentAudioMode::Resident {
+            return None;
+        }
+        // A missing or unobservable file falls through to the decode, which
+        // reports its own error.
+        let identity = hex_media::SourceFileIdentity::observe(path).ok()??;
+        let project = self.project();
+        let project_rate = project.sample_rate();
+        let (asset, resident) = self
+            .media
+            .iter()
+            .filter(|(id, resident)| {
+                resident.file_identity == Some(identity)
+                    && resident.audio.sample_rate() == project_rate
+                    && u64::try_from(resident.audio.frames().len()).ok() == Some(resident.frames)
+                    && project.asset(**id).is_some_and(|asset| {
+                        asset.path() == path
+                            && asset.playback_frames() == resident.frames
+                            && asset.conversion_version()
+                                == hex_project::import_conversion_version(
+                                    asset.source_sample_rate(),
+                                    project_rate,
+                                )
+                    })
+                    && project
+                        .existing_import_frames(**id)
+                        .is_ok_and(|frames| frames == resident.frames)
+            })
+            .min_by_key(|(id, _)| **id)?;
+        let asset = project.asset(*asset)?;
+        Some(PreparedImport {
+            path: asset.path().to_path_buf(),
+            source_sample_rate: asset.source_sample_rate(),
+            source_frames: asset.source_frames(),
+            conversion_version: asset.conversion_version(),
+            source_audio: resident.source_audio.clone(),
+            audio: resident.audio.clone(),
+            waveform: resident.waveform.as_ref().clone(),
+            file_identity: Some(identity),
+        })
     }
 
     /// Place a clip on an existing resident asset as one history edit. No
