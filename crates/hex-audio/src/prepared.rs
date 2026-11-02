@@ -62,6 +62,7 @@ impl Callback {
     }
 }
 mod action_outcomes;
+mod audible_clock;
 pub use action_outcomes::{
     ACTION_OUTCOME_CAPACITY, Failure as ActionOutcomeFailure, Outcome as ActionOutcome,
     Reader as ActionOutcomeReader, Receipt as ActionOutcomeReceipt,
@@ -595,7 +596,13 @@ pub struct Status {
     rejected_revision: AtomicU64,
     rejected_revision_reason: AtomicU32,
     rejected_revision_sequence: AtomicU64,
+    /// Scheduled Arrangement cursor: the next content frame the graph renders.
+    /// Recording, scheduling and edits use this position.
     pub position: AtomicU64,
+    /// Arrangement frame now leaving Main output: `position` delayed by the
+    /// graph's Main output latency, mapped back across loop wraps. Use it only
+    /// to display the playhead; see `prepared::audible_clock`.
+    pub audible_position: AtomicU64,
     // Last callback-published cursor, frozen before fault Stop rewinds the graph.
     recovery_position: AtomicU64,
     pub performance_frame: AtomicU64,
@@ -793,6 +800,7 @@ impl Status {
             rejected_revision_reason: AtomicU32::new(0),
             rejected_revision_sequence: AtomicU64::new(0),
             position: AtomicU64::new(0),
+            audible_position: AtomicU64::new(0),
             recovery_position: AtomicU64::new(0),
             performance_frame: AtomicU64::new(0),
             transport_epoch: AtomicU64::new(1),
@@ -1316,6 +1324,7 @@ pub struct Callback {
     candidate_root: crate::candidate_custody::CandidateRoot,
     commands: Consumer<QueuedCommand>,
     status: Arc<Status>,
+    audible_clock: audible_clock::AudibleClock,
     recovery_position_frozen: bool,
     recovery_seek_pending: Option<u64>,
     device_fault_stopped: bool,
@@ -1462,6 +1471,7 @@ pub fn channel_with_spectrum(
             retired: returning,
             commands: events,
             status,
+            audible_clock: audible_clock::AudibleClock::new(),
             recovery_position_frozen: false,
             recovery_seek_pending: None,
             device_fault_stopped: false,
@@ -4082,9 +4092,47 @@ impl Callback {
         }
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        let block = self.scheduled_transport();
         let result = self.render_inner(output);
+        if let Some((position, performance, true)) = block
+            && result.is_ok()
+            && !output.is_empty()
+        {
+            self.audible_clock.push(position, performance, output.len());
+        }
+        self.publish_audible_position();
         self.flush_stream_outcomes();
         result
+    }
+
+    /// Scheduled position, performance frame and playing state of the current graph.
+    fn scheduled_transport(&self) -> Option<(u64, u64, bool)> {
+        self.active
+            .as_ref()
+            .and_then(ActivePublication::current)
+            .map(|active| {
+                (
+                    active.playback.position(),
+                    active.playback.performance_frame(),
+                    active.playback.playing(),
+                )
+            })
+    }
+
+    fn publish_audible_position(&self) {
+        if let Some(active) = self.active.as_ref().and_then(ActivePublication::current) {
+            let playback = &active.playback;
+            let (latency, region) = playback.audible_timing();
+            self.status.audible_position.store(
+                self.audible_clock.audible(
+                    playback.position(),
+                    playback.performance_frame(),
+                    latency,
+                    region,
+                ),
+                Relaxed,
+            );
+        }
     }
     fn render_inner(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if self.status.device_fault.load(Acquire) {
@@ -4878,6 +4926,7 @@ impl Callback {
         if let Some(active) = self.active.as_ref().and_then(ActivePublication::current) {
             let position = active.playback.position();
             self.status.position.store(position, Relaxed);
+            self.publish_audible_position();
             if !self.recovery_position_frozen {
                 self.status.recovery_position.store(position, Relaxed);
             }
@@ -6114,8 +6163,34 @@ mod tests {
         callback
             .render(&mut original_output)
             .expect("initial callback render");
+        // Each oversampled Saturator answers a step with exact DC once its
+        // declared latency and finite tail have elapsed. Main waits for the
+        // return path, two Saturators deep; pre-epoch output is silent.
+        let saturator = hex_devices::saturator::SaturatorDefinition::prepare_owned(
+            &hex_lattice_contract::NativeDeviceMetadata::default_state(
+                &hex_devices::saturator::SATURATOR_DEFINITION,
+            )
+            .expect("default saturator"),
+            48_000,
+            &[],
+        )
+        .expect("standalone saturator");
+        let latency = hex_lattice::PreparedNativeProcessor::algorithmic_latency_frames(&saturator)
+            .expect("declared latency") as usize;
+        let hex_lattice::OutputTail::Finite { max_tail_frames } =
+            hex_lattice::PreparedNativeProcessor::output_tail(&saturator)
+        else {
+            panic!("finite saturator tail");
+        };
+        let settled = 2 * (latency + max_tail_frames as usize);
+        assert_eq!((latency, settled), (11, 72));
         assert!(
-            original_output.iter().all(|frame| {
+            original_output[..2 * latency]
+                .iter()
+                .all(|frame| *frame == [0.0; 2])
+        );
+        assert!(
+            original_output[settled..].iter().all(|frame| {
                 (frame[0] - 1.75).abs() < 1.0e-6 && (frame[1] + 1.75).abs() < 1.0e-6
             })
         );
@@ -6127,6 +6202,10 @@ mod tests {
         let allocations = allocation_counter::measure(|| {
             callback.begin_block();
             callback.render(&mut output).expect("callback render");
+            callback.begin_block();
+            callback
+                .render(&mut output)
+                .expect("callback render during ramp");
             callback.begin_block();
             callback
                 .render(&mut output)
@@ -6142,10 +6221,16 @@ mod tests {
             (0, 0, 0, 0),
         );
         assert_ne!(output, original_output);
-        // At 48 kHz the 5 ms ramp ends at frame 240; the last 16
-        // frames of the second 128-frame block use the exact target.
-        assert!(output[112..].iter().all(|frame| {
+        // At 48 kHz the 5 ms ramp from the edit at frame 128 ends at input
+        // frame 368; Main settles on the exact target `settled` frames later,
+        // inside the third 128-frame block (frames 384..512).
+        let target = 128 + 240 + settled - 384;
+        assert_eq!(target, 56);
+        assert!(output[target..].iter().all(|frame| {
             (frame[0] - 0.34375).abs() < 1.0e-6 && (frame[1] + 0.55).abs() < 1.0e-6
+        }));
+        assert!(output[..target].iter().any(|frame| {
+            (frame[0] - 0.34375).abs() >= 1.0e-6 || (frame[1] + 0.55).abs() >= 1.0e-6
         }));
         control.request_shutdown();
         callback.begin_block();
