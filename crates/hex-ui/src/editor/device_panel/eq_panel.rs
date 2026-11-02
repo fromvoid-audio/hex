@@ -23,6 +23,7 @@ mod gestures;
 mod scroll_queue;
 pub(in crate::editor) use scroll_queue::after_worker_event as after_scroll_worker_event;
 mod response;
+mod sampling;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
 pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
