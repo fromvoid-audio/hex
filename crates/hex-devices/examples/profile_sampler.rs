@@ -20,9 +20,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     };
     settings.detune_cents = 7.0;
-    // Notes 48.. around root 60: transpose 0 mixes pitched-down/up voices;
-    // +24 pitches every voice up (rate about 2-12), the band-limited path.
-    for transpose in [0.0, 24.0] {
+    // Notes 48.. around root 60, all detuned +7 cents. Transpose -24 keeps
+    // every voice below unity (the linear path, a same-run reference); 0
+    // mixes linear voices (notes < 60) with slightly pitched-up ones (notes
+    // >= 60 run at rate > 1 because of the detune); +24 pitches every voice
+    // up (rate about 2-12), the band-limited path.
+    for transpose in [-24.0, 0.0, 24.0] {
         settings.transpose_semitones = transpose;
         profile(sample, settings, transpose)?;
     }
@@ -70,7 +73,8 @@ fn profile(
         }
         durations.sort_unstable();
         println!(
-            "transpose={transpose} voices={voice_count} rate={RATE} block={BLOCK} warmup={WARMUP} trials={TRIALS} p50_ns={} p95_ns={} p99_ns={} max_ns={} checksum={checksum:.9}",
+            "transpose={transpose} voices={voice_count} rate={RATE} block={BLOCK} warmup={WARMUP} trials={TRIALS} min_ns={} p50_ns={} p95_ns={} p99_ns={} max_ns={} checksum={checksum:.9}",
+            durations[0],
             durations[TRIALS / 2],
             durations[TRIALS * 95 / 100],
             durations[TRIALS * 99 / 100],
