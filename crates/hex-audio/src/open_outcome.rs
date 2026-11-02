@@ -1,14 +1,31 @@
 //! Typed failure outcomes of a default-device output open.
 //!
 //! A worker or recovery open that validates the document rate refuses a
-//! device whose negotiated rate differs as `OutputOpenError::RateMismatch`,
-//! carrying both rates in hertz. This is a recoverable state: nothing was
-//! exposed to a callback and the project is unchanged, so the caller may
-//! retry after the device or project rate changes. Every other refusal stays
-//! a lowercase diagnostic in `Failed`.
+//! device whose rate differs, unless the backend converts it (below), as
+//! `OutputOpenError::RateMismatch`, carrying both rates in hertz. This is a
+//! recoverable state: nothing was exposed to a callback and the project is
+//! unchanged, so the caller may retry after the device or project rate
+//! changes. Every other refusal stays a lowercase diagnostic in `Failed`.
 //!
 //! The type does not own a stream, lease or worker; it is plain data that may
 //! cross to the UI.
+//!
+//! # Output rate conversion (#4130)
+//!
+//! CoreAudio's output unit (AUHAL) converts its client stream format to the
+//! device's nominal rate, so an output stream may run at the project rate on a
+//! device at another rate. CPAL 0.17.3 builds output streams with exactly that
+//! client format and does not change the device's nominal rate (it does so only
+//! for input streams, where AUHAL cannot convert). Hex therefore requests the
+//! project rate from an ordinary CoreAudio output and the operating system
+//! resamples after the callback: the user's device rate is never changed, so
+//! nothing needs restoring, and the callback contract and allocation behaviour
+//! are unchanged. The conversion latency belongs to CoreAudio and is not
+//! declared to hex, like the rest of the physical output latency.
+//!
+//! A plugin-bridge output keeps its refusal: it fixes the device buffer in
+//! device frames, and converted callbacks could exceed that fixed quantum.
+//! Other backends also keep the typed refusal.
 
 use std::fmt;
 
@@ -84,6 +101,30 @@ impl From<OutputOpenError> for String {
     }
 }
 
+/// Whether this build's output backend resamples a client stream to the
+/// device rate (CoreAudio AUHAL on macOS).
+pub(crate) const BACKEND_CONVERTS_OUTPUT_RATE: bool = cfg!(target_os = "macos");
+
+/// Rate to request for an output stream: the device's own rate, or the
+/// required project rate when `backend_converts` and it is a supported rate.
+/// Otherwise a differing project rate is the typed recoverable mismatch.
+pub(crate) fn negotiate_stream_rate(
+    project_hz: Option<u32>,
+    device_hz: u32,
+    backend_converts: bool,
+) -> Result<u32, RateMismatch> {
+    match project_hz {
+        Some(project_hz)
+            if project_hz != device_hz
+                && backend_converts
+                && (8_000..=192_000).contains(&project_hz) =>
+        {
+            Ok(project_hz)
+        }
+        _ => validate_expected_rate(project_hz, device_hz).map(|()| device_hz),
+    }
+}
+
 /// `Ok` when no rate was required or the device matches it.
 pub(crate) fn validate_expected_rate(
     project_hz: Option<u32>,
@@ -121,5 +162,38 @@ mod tests {
         let failed = OutputOpenError::from("no default audio output device");
         assert_eq!(failed.rate_mismatch(), None);
         assert_eq!(String::from(failed), "no default audio output device");
+    }
+
+    #[test]
+    fn a_converting_backend_runs_the_stream_at_the_project_rate() {
+        // A 44.1 kHz project on a 48 kHz device streams at 44.1 kHz.
+        assert_eq!(
+            negotiate_stream_rate(Some(44_100), 48_000, true),
+            Ok(44_100)
+        );
+        assert_eq!(
+            negotiate_stream_rate(Some(48_000), 48_000, true),
+            Ok(48_000)
+        );
+        // Without a required rate the device default is kept.
+        assert_eq!(negotiate_stream_rate(None, 48_000, true), Ok(48_000));
+        // A backend without conversion (or a fixed-quantum output) refuses.
+        assert_eq!(
+            negotiate_stream_rate(Some(44_100), 48_000, false),
+            Err(RateMismatch {
+                device_hz: 48_000,
+                project_hz: 44_100,
+            })
+        );
+        // An unsupported project rate is never requested from the backend.
+        for project_hz in [7_999, 192_001] {
+            assert_eq!(
+                negotiate_stream_rate(Some(project_hz), 48_000, true),
+                Err(RateMismatch {
+                    device_hz: 48_000,
+                    project_hz,
+                })
+            );
+        }
     }
 }
