@@ -17,7 +17,8 @@ pub(super) fn tempo_map(
     if preview.is_noop() || old.points().len() == 1 {
         return Ok(old.clone());
     }
-    let mut beats: BTreeSet<_> = old.points().iter().map(|p| p.beat()).collect();
+    let authored: BTreeSet<_> = old.points().iter().map(|p| p.beat()).collect();
+    let mut beats = authored.clone();
     beats.extend(preview.cuts());
     let mut points = Vec::new();
     points
@@ -28,13 +29,21 @@ pub(super) fn tempo_map(
             .points()
             .partition_point(|p| p.beat() <= beat)
             .saturating_sub(1);
-        points.push(TempoPoint::new(
-            preview.map_beat(beat)?,
-            old.points()[index].tempo(),
+        points.push((
+            TempoPoint::new(preview.map_beat(beat)?, old.points()[index].tempo()),
+            !authored.contains(&beat),
         ));
     }
-    points.sort_by_key(|p| p.beat());
-    TempoMap::new(old.sample_rate(), points)
+    points.sort_by_key(|(p, _)| p.beat());
+    // Authored points stay; a cut seam repeating the tempo before it changes
+    // no clock and would accumulate with every reorder.
+    let mut kept: Vec<TempoPoint> = Vec::with_capacity(points.len());
+    for (point, seam) in points {
+        if !seam || kept.last().is_none_or(|last| last.tempo() != point.tempo()) {
+            kept.push(point);
+        }
+    }
+    TempoMap::new(old.sample_rate(), kept)
 }
 fn meter_map(old: &MeterMap, preview: &SectionReorderPreview) -> Result<MeterMap, Invalid> {
     let mut result = meter::MeterEdit::default();
@@ -277,10 +286,7 @@ fn audio_fragments(
             crate::ClipId(take_id(next_id)?)
         };
         let mut fragment = crate::edit::retained_audio_fragment(&root, pair[0], pair[1], id, old)?;
-        let destination = frames.map(pair[0])?;
-        let destination_end = destination
-            .checked_add(pair[1] - pair[0])
-            .ok_or(Invalid("audio section destination overflow"))?;
+        let mut destination = frames.map(pair[0])?;
         if let Some(edit) = fragment.audio_edit_mut()
             && let Some(start) = edit.live_musical_start()
         {
@@ -297,7 +303,7 @@ fn audio_fragments(
                 start
             };
             edit.timing = crate::AudioClipTiming::Musical(preview.map_beat(start)?);
-            edit.retain_frame_bounds(destination, destination_end, new)?;
+            destination = edit.retain_moved_frame_span(destination, pair[1] - pair[0], new)?;
         }
         fragment.start = destination;
         crate::audio_edit::project_clip(&mut fragment, new)?;

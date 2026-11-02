@@ -1,7 +1,7 @@
 //! Real files in an isolated temp folder; the user's media is never touched.
 use super::*;
 use crate::service::{Event, Request, Service};
-use std::{fs, sync::atomic::AtomicU64, time::Duration};
+use std::{fs, sync::atomic::AtomicU64};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -170,6 +170,55 @@ fn folder_search_reports_unique_ambiguous_and_mismatched_candidates() {
 }
 
 #[test]
+fn proposed_candidate_lists_resolve_exact_ambiguous_mismatched_and_none() {
+    let files = Files::new();
+    let missing = vec![
+        item(1, PathBuf::from("/gone/Kick.wav"), 10),
+        item(2, PathBuf::from("/gone/snare.wav"), 20),
+        item(3, PathBuf::from("/gone/pad.wav"), 30),
+        item(4, PathBuf::from("/gone/absent.wav"), 40),
+    ];
+    let kick = files.wav("a/KICK.WAV", 48_000, 10);
+    let snares = [
+        files.wav("a/snare.wav", 48_000, 20),
+        files.wav("b/snare.wav", 48_000, 20),
+    ];
+    let pad = files.wav("b/pad.wav", 44_100, 30);
+    let renamed = files.wav("b/other.wav", 48_000, 10);
+    let lists = BTreeMap::from([
+        // A differently named catalog proposal is not this matcher's business.
+        (missing[0].asset, vec![renamed, kick.clone()]),
+        (missing[1].asset, snares.to_vec()),
+        (missing[2].asset, vec![pad]),
+        (missing[3].asset, vec![files.0.join("gone/absent.wav")]),
+    ]);
+    let cancel = AtomicBool::new(false);
+    let outcome = check_candidate_lists(&missing, &lists, 8, &cancel);
+    assert_eq!(outcome.stopped, None);
+    assert_eq!(outcome.scanned, 5);
+    assert_eq!(outcome.unique_match(missing[0].asset), Some(kick.as_path()));
+    assert_eq!(outcome.candidates[&missing[0].asset].len(), 1);
+    assert_eq!(outcome.unique_match(missing[1].asset), None);
+    assert_eq!(outcome.candidates[&missing[1].asset].len(), 2);
+    assert!(matches!(
+        outcome.candidates[&missing[2].asset][0].1,
+        CandidateFit::Mismatch(_)
+    ));
+    assert!(matches!(
+        outcome.candidates[&missing[3].asset][0].1,
+        CandidateFit::Unusable(_)
+    ));
+    assert_eq!(outcome.unreadable, 1);
+
+    let capped = check_candidate_lists(&missing[1..2], &lists, 1, &cancel);
+    assert_eq!(capped.candidates[&missing[1].asset].len(), 1);
+    cancel.store(true, Ordering::Relaxed);
+    let stopped = check_candidate_lists(&missing, &lists, 8, &cancel);
+    assert_eq!(stopped.stopped, Some(SearchStop::Cancelled));
+    assert!(stopped.candidates.is_empty());
+}
+
+#[test]
 fn folder_search_is_bounded_and_cancellable() {
     let files = Files::new();
     let missing = vec![item(1, PathBuf::from("/gone/kick.wav"), 10)];
@@ -237,7 +286,10 @@ fn folder_search_survives_symlink_cycles() {
 }
 
 fn next(service: &Service) -> Event {
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap()
 }
 
 fn run(service: &Service, request: Request) -> Event {
@@ -277,9 +329,11 @@ fn moved_media_is_reported_found_and_relinked_on_open_then_saved() {
         MediaUsage::ArrangementClip { .. }
     ));
 
-    service.submit(Request::Open(saved.clone())).unwrap();
-    let refused = next(&service);
-    assert!(refused.error.is_some() && !refused.project_replaced);
+    // Opening without a relink keeps the asset offline instead of failing.
+    let offline = run(&service, Request::Open(saved.clone()));
+    assert!(offline.project_replaced && offline.error.is_none());
+    assert!(offline.state.project.asset_offline(asset));
+    assert_eq!(offline.state.project.asset(asset).unwrap().path(), original);
 
     let outcome = search(&report, &[files.0.join("new")], SearchLimits::default());
     let found = outcome.unique_match(asset).unwrap().to_path_buf();
@@ -305,4 +359,115 @@ fn moved_media_is_reported_found_and_relinked_on_open_then_saved() {
     let reopened = run(&service, Request::Open(saved));
     assert_eq!(reopened.state.project.asset(asset).unwrap().path(), moved);
     assert_eq!(fs::read(&moved).unwrap(), media_bytes);
+}
+
+#[test]
+fn missing_media_opens_offline_keeps_clips_and_saves_original_paths() {
+    let files = Files::new();
+    let kick = files.wav("old/kick.wav", 48_000, 256);
+    let snare = files.wav("old/snare.wav", 48_000, 128);
+    let service = Service::new(48_000, 16, 1 << 20).unwrap();
+    let _ = next(&service);
+    run(&service, Request::Import(kick.clone()));
+    let imported = run(&service, Request::Import(snare.clone()));
+    let id_of = |project: &Project, path: &Path| {
+        project
+            .assets()
+            .find(|asset| asset.path() == path)
+            .unwrap()
+            .id()
+    };
+    let kick_id = id_of(&imported.state.project, &kick);
+    let snare_id = id_of(&imported.state.project, &snare);
+    let clips = |project: &Project| {
+        project
+            .tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .count()
+    };
+    let clip_count = clips(&imported.state.project);
+    assert_eq!(clip_count, 2);
+    let saved = files.0.join("song.hex");
+    run(&service, Request::SaveNew(saved.clone()));
+    fs::remove_file(&kick).unwrap();
+
+    let opened = run(&service, Request::Open(saved.clone()));
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert!(opened.project_replaced);
+    let project = &opened.state.project;
+    assert_eq!(project.offline_assets().collect::<Vec<_>>(), [kick_id]);
+    assert!(!project.asset_offline(snare_id));
+    assert_eq!(clips(project), clip_count, "offline clips are kept");
+    assert_eq!(project.asset(kick_id).unwrap().path(), kick);
+
+    // Saving keeps the original path; reopening still finds it missing.
+    run(&service, Request::SaveCurrent);
+    let report = missing_media_report(&ProjectSource::Saved(saved.clone())).unwrap();
+    assert_eq!(report.len(), 1);
+    assert_eq!(report[0].expected_path, kick);
+    let reopened = run(&service, Request::Open(saved));
+    assert!(reopened.state.project.asset_offline(kick_id));
+    assert_eq!(clips(&reopened.state.project), clip_count);
+    assert!(!kick.exists(), "opening never recreates missing media");
+}
+
+#[test]
+fn offline_media_relinks_in_place_as_one_undo_step_and_saves_new_paths() {
+    let files = Files::new();
+    let kick = files.wav("old/kick.wav", 48_000, 256);
+    let service = Service::new(48_000, 16, 1 << 20).unwrap();
+    let _ = next(&service);
+    let imported = run(&service, Request::Import(kick.clone()));
+    let asset = imported.state.project.assets().next().unwrap().id();
+    let saved = files.0.join("song.hex");
+    run(&service, Request::SaveNew(saved.clone()));
+    let moved = files.0.join("new/kick.wav");
+    fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    fs::rename(&kick, &moved).unwrap();
+    let wrong = files.wav("new/short.wav", 48_000, 100);
+
+    let opened = run(&service, Request::Open(saved.clone()));
+    assert!(opened.state.project.asset_offline(asset));
+    let offline_project = opened.state.project.clone();
+
+    // A file whose length differs is refused and changes nothing.
+    service
+        .submit(Request::RelinkMedia(BTreeMap::from([(asset, wrong)])))
+        .unwrap();
+    let refused = next(&service);
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("rate or frame count")),
+        "{:?}",
+        refused.error
+    );
+    assert_eq!(refused.state.project, offline_project);
+
+    let relinked = run(
+        &service,
+        Request::RelinkMedia(BTreeMap::from([(asset, moved.clone())])),
+    );
+    assert!(relinked.state.unsaved);
+    assert!(!relinked.state.project.asset_offline(asset));
+    assert_eq!(relinked.state.project.asset(asset).unwrap().path(), moved);
+
+    let undone = run(&service, Request::Undo);
+    assert!(undone.state.project.asset_offline(asset));
+    assert_eq!(undone.state.project.asset(asset).unwrap().path(), kick);
+    let redone = run(&service, Request::Redo);
+    assert!(!redone.state.project.asset_offline(asset));
+    assert_eq!(redone.state.project.asset(asset).unwrap().path(), moved);
+
+    run(&service, Request::SaveCurrent);
+    assert!(
+        missing_media_report(&ProjectSource::Saved(saved.clone()))
+            .unwrap()
+            .is_empty()
+    );
+    let reopened = run(&service, Request::Open(saved));
+    assert!(!reopened.state.project.asset_offline(asset));
+    assert_eq!(reopened.state.project.asset(asset).unwrap().path(), moved);
 }
