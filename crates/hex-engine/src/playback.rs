@@ -320,6 +320,7 @@ impl PlaybackHandoffError {
             Self::Session(
                 crate::SessionPlaybackError::ReleaseBankFull
                     | crate::SessionPlaybackError::GroupTailRoutingBusy
+                    | crate::SessionPlaybackError::DeviceTransitionBusy
             )
         )
     }
@@ -1990,6 +1991,16 @@ impl Playback {
                 self.playing = old.playing();
             }
             (None, None) => {
+                if let (Some(candidate), Some(old)) = (
+                    self.linear_runtime.as_ref(),
+                    previous.linear_runtime.as_ref(),
+                ) && candidate.transition_busy_from(&self.project, old, &previous.project)
+                {
+                    // Pulse #4178: defer; never refuse into a fresh history.
+                    return Err(PlaybackHandoffError::Session(
+                        crate::SessionPlaybackError::DeviceTransitionBusy,
+                    ));
+                }
                 if let (Some(candidate), Some(old)) = (
                     self.linear_runtime.as_ref(),
                     previous.linear_runtime.as_ref(),
