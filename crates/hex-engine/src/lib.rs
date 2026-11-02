@@ -270,6 +270,17 @@ pub(crate) fn render_streamed_page_span_captured(
         );
     }
     let incomplete = !valid || available < count;
+    // Bounded lookahead (#4075): once the playhead is in the second half of a
+    // present page, ask for the next page so ordinary decode latency is
+    // hidden. The provider drops it whenever any request is pending.
+    let read_to = page_offset + available;
+    let next_page = page_index.checked_add(1);
+    let prefetch = valid
+        && read_to >= STREAM_PAGE_FRAMES / 2
+        && next_page.is_some_and(|next| {
+            next.checked_mul(STREAM_PAGE_FRAMES as u64)
+                .is_some_and(|start| start < source.playback_frames())
+        });
     if let Some(mut voice) = voice {
         if valid && available < count {
             // A valid short page is the end of the source: true silence.
@@ -293,6 +304,8 @@ pub(crate) fn render_streamed_page_span_captured(
     }
     if incomplete {
         pages.request_page(source.key(), page_index);
+    } else if prefetch && let Some(next) = next_page {
+        pages.prefetch_page(source.key(), next);
     }
     count
 }
