@@ -2542,31 +2542,7 @@ impl Project {
                 Ok(Created::None)
             }
             Command::SetTempoPoint { beat, tempo } => {
-                let mut candidate = self.clone();
-                candidate.tempo_map = candidate
-                    .tempo_map
-                    .replace_point(TempoPoint::new(beat, tempo))?;
-                // A structural reorder retains complete processing roots from
-                // their original tempo context. Rebase is not yet supported;
-                // silently projecting a new length would trim/pad their PCM.
-                if candidate.tempo_map != self.tempo_map
-                    && self.tracks.iter().flat_map(|t| t.clips()).any(|clip| {
-                        clip.audio_edit()
-                            .is_some_and(|edit| edit.processing_projection.is_some())
-                    })
-                {
-                    return Err(Invalid(
-                        "tempo changes after audio section reorder require an unsupported processing rebase; undo the reorder first",
-                    ));
-                }
-                let map = candidate.tempo_map.clone();
-                for track in &mut candidate.tracks {
-                    for clip in &mut track.content.audio_clips {
-                        crate::audio_edit::project_clip(clip, &map)?;
-                    }
-                }
-                crate::Project::from_snapshot(candidate.snapshot())?;
-                *self = candidate;
+                self.set_tempo_point(TempoPoint::new(beat, tempo))?;
                 Ok(Created::None)
             }
             Command::SetMeterPoint { beat, meter } => {
@@ -2654,11 +2630,7 @@ impl Project {
                 frames,
             } => {
                 let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
-                let conversion = if sample_rate == self.sample_rate {
-                    IDENTITY_CONVERSION
-                } else {
-                    crate::SINC_CONVERSION_V1
-                };
+                let conversion = crate::import_conversion_version(sample_rate, self.sample_rate);
                 self.add_prepared_asset(path, sample_rate, frames, playback, conversion)
                     .map(Created::Asset)
             }
@@ -2679,11 +2651,7 @@ impl Project {
                     ));
                 }
                 let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
-                let conversion = if sample_rate == self.sample_rate {
-                    IDENTITY_CONVERSION
-                } else {
-                    crate::SINC_CONVERSION_V1
-                };
+                let conversion = crate::import_conversion_version(sample_rate, self.sample_rate);
                 let asset =
                     self.add_prepared_asset(path, sample_rate, frames, playback, conversion)?;
                 let state = state
@@ -2730,11 +2698,7 @@ impl Project {
                     ));
                 }
                 let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
-                let conversion = if sample_rate == self.sample_rate {
-                    IDENTITY_CONVERSION
-                } else {
-                    crate::SINC_CONVERSION_V1
-                };
+                let conversion = crate::import_conversion_version(sample_rate, self.sample_rate);
                 let asset =
                     self.add_prepared_asset(path, sample_rate, frames, playback, conversion)?;
                 let key = hex_lattice_contract::DeviceAssetKey::new(asset.value())

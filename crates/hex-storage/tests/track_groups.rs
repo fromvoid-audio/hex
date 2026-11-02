@@ -115,7 +115,7 @@ fn hierarchy_inventory_is_required_exact_ordered_bounded_and_strict() {
     ]);
     cases.push(v);
     let mut v = original.clone();
-    v["version"] = (hex_storage::CURRENT_SCHEMA_VERSION + 1).into();
+    v["version"] = (hex_storage::NEWEST_SCHEMA_VERSION + 1).into();
     cases.push(v);
     for (index, v) in cases.into_iter().enumerate() {
         assert!(
