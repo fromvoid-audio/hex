@@ -1075,6 +1075,7 @@ pub(super) fn import_file(
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
     current: &mut Option<Snapshot>,
+    decode: &mut super::truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, SessionError> {
     if !overwrite
         && let AudioBatchDestination::Console(crate::import_batch::ConsoleDestination::Cell {
@@ -1086,7 +1087,7 @@ pub(super) fn import_file(
         return Err(SessionError::Invalid("session target cell is occupied"));
     }
     let allowance = import_frame_allowance(session, sink, admission, current.as_ref())?;
-    if let Some(source) = session.plan_file_import_with_allowance(&path, allowance)? {
+    if let Some(source) = decode.plan(session, &path, Some(allowance))? {
         let expected = session.project().clone();
         let mut accepted = None;
         let (_, prepared) = session.import_verified_batch_revision(
@@ -1113,7 +1114,7 @@ pub(super) fn import_file(
         return Err(SessionError::Invalid("resident audio frame limit reached"));
     }
     let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
-    let decoded = super::decode_resident_import(path)?;
+    let decoded = decode.decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
