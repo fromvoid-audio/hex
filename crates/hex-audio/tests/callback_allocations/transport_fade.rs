@@ -61,6 +61,7 @@ fn queued_callback_pause_and_stop_fades_are_allocation_free() -> Result<(), Box<
     callback.begin_block();
     callback.render(&mut output)?;
     for command in [
+        PlaybackCommand::Seek(1000),
         PlaybackCommand::Pause,
         PlaybackCommand::Play,
         PlaybackCommand::Stop,
@@ -72,7 +73,7 @@ fn queued_callback_pause_and_stop_fades_are_allocation_free() -> Result<(), Box<
         measured_block(&mut callback, &mut output);
         assert_eq!(
             control.status.playing.load(Ordering::Acquire),
-            command == PlaybackCommand::Play,
+            matches!(command, PlaybackCommand::Play | PlaybackCommand::Seek(_)),
             "{command:?}"
         );
     }

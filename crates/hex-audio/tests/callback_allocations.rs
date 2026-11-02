@@ -3171,7 +3171,12 @@ fn legacy_fallback_owns_persistent_stateful_renderer_off_callback() -> Result<()
     assert_eq!(output, expected_handoff);
 
     oracle = inherited;
-    oracle.apply(PlaybackCommand::Seek(0));
+    // The callback declicks a queued Seek while playing (#4140).
+    oracle
+        .try_apply_declicked_action(hex_engine::playback::PlaybackAction::Transport(
+            PlaybackCommand::Seek(0),
+        ))
+        .map_err(|_| "oracle Seek refused")?;
     let mut expected_seek = [[0.0; 2]; 128];
     oracle.render(&mut expected_seek)?;
     control

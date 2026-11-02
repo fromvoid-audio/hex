@@ -437,18 +437,17 @@ fn discontinuity_discards_previous_epoch(action: hex_engine::PlaybackCommand) {
     render(&mut callback, 8, 2, false);
     let mut pending = worker.receive().unwrap();
     control.command(action).unwrap();
-    if action == hex_engine::PlaybackCommand::Pause {
-        // A queued Pause renders its fade through the live transport; the
-        // discontinuity is its audible end (#4151).
-        for _ in 0..32 {
-            if !control.status.playing.load(Acquire) {
-                break;
-            }
-            assert!(!transport.is_revoked(), "the fade keeps its transport");
-            worker.complete(pending.take().unwrap()).unwrap();
-            render(&mut callback, 8, 2, false);
-            pending = worker.receive().ok().flatten();
+    // A queued Pause or Seek while playing renders its fade through the live
+    // transport; the discontinuity is its audible end (#4151, #4140).
+    for _ in 0..32 {
+        if transport.is_revoked() {
+            break;
         }
+        worker.complete(pending.take().unwrap()).unwrap();
+        render(&mut callback, 8, 2, false);
+        pending = worker.receive().ok().flatten();
+    }
+    if action == hex_engine::PlaybackCommand::Pause {
         assert!(!control.status.playing.load(Acquire));
     }
     assert!(

@@ -467,7 +467,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     dialogs::install_project_actions(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
-            cx.quit();
+            close::quit_confirmed(cx);
         }
     })
     .detach();
@@ -664,6 +664,7 @@ fn install_close_guard(window: &mut Window, cx: &mut App, view: gpui::WeakEntity
 
 pub(super) fn open_backend(cx: &mut App, backend: crate::EditorBackend) -> Result<(), String> {
     configure_editor_app(cx)?;
+    close::install_quit_gate(cx);
     cx.open_window(editor_window_options(cx), move |window, cx| {
         let view = cx.new(|cx| EditorView::new_with_backend(window, cx, backend));
         install_close_guard(window, cx, view.downgrade());
