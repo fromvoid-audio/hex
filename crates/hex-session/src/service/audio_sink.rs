@@ -296,6 +296,12 @@ pub trait WorkerAudioSink: Send {
     fn streamed_exporter(&self) -> Option<super::StreamedExporter> {
         None
     }
+    /// Optional stateless offline bounce renderer for file-backed sources, with
+    /// the same independence rules as [`Self::streamed_exporter`]. It runs on the
+    /// Session worker during a bounce job and never touches the playing transport.
+    fn streamed_bouncer(&self) -> Option<crate::StreamedBouncer> {
+        None
+    }
 
     /// Prepare ordinary file-backed history on the existing seek worker, using
     /// independent bounded offline pages and the exact captured compiler scope.
@@ -657,6 +663,11 @@ impl WorkerEvents {
             .as_ref()
             .and_then(|audio| audio.streamed_exporter())
     }
+    pub(super) fn streamed_bouncer(&self) -> Option<crate::StreamedBouncer> {
+        self.audio
+            .as_ref()
+            .and_then(|audio| audio.streamed_bouncer())
+    }
     pub(super) fn resident_publication_enabled(&self) -> bool {
         self.audio
             .as_ref()
@@ -945,10 +956,10 @@ mod tests {
         }
     }
     fn wait(mut ready: impl FnMut() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         while !ready() {
             assert!(Instant::now() < deadline);
-            thread::yield_now();
+            crate::test_wait::pause();
         }
     }
     #[test]
@@ -976,7 +987,10 @@ mod tests {
         let polls = observed.polls.load(Ordering::SeqCst);
         wait(|| observed.polls.load(Ordering::SeqCst) > polls + 2);
         for revision in 0..=2 {
-            let event = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+            let event = service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap();
             assert_eq!(event.state.project.sample_rate(), 44100);
             assert_eq!(event.state.revision, revision);
         }
@@ -1010,13 +1024,19 @@ mod tests {
             }),
         )
         .unwrap();
-        let initial = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        let initial = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
         service
             .submit(Request::Edit(Command::AddTrack {
                 name: "track".into(),
             }))
             .unwrap();
-        let edited = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        let edited = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
         assert!(edited.error.is_none());
         assert!(edited.state.can_undo);
         for (generation, id, valid) in [(1, 1, false), (0, 0, false), (0, 2, true)] {
@@ -1026,7 +1046,10 @@ mod tests {
                     request_id: id,
                 })
                 .unwrap();
-            let event = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+            let event = service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap();
             assert_eq!(event.state.revision, edited.state.revision);
             assert_eq!(event.state.project, edited.state.project);
             assert_eq!(event.state.can_undo, edited.state.can_undo);
@@ -1056,11 +1079,17 @@ mod tests {
         assert_ne!(rows[0].2, thread::current().id());
         drop(rows);
         service.submit(Request::Undo).unwrap();
-        let undone = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        let undone = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
         assert!(undone.error.is_none());
         assert!(undone.state.project.tracks().is_empty());
         service.submit(Request::Redo).unwrap();
-        let redone = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        let redone = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
         assert!(redone.error.is_none());
         assert_eq!(redone.state.project, edited.state.project);
     }
@@ -1077,7 +1106,10 @@ mod tests {
             }),
         )
         .unwrap();
-        let event = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        let event = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
         assert_eq!(event.state.project.sample_rate(), 48000);
         assert_eq!(
             event.error.as_deref(),
@@ -1088,7 +1120,10 @@ mod tests {
                 name: "offline".into(),
             }))
             .unwrap();
-        let edited = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
+        let edited = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
         assert!(edited.error.is_none());
         assert_eq!(edited.state.project.tracks().len(), 1);
         assert!(edited.state.unsaved);
