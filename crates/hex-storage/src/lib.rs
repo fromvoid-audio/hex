@@ -3,7 +3,8 @@
 //! source-bound automation recording drafts. Drafts are not canonical lane references.
 //!
 //! # Dependencies
-//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2.
+//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2, plus
+//! libc errno/flags and rustix's safe exclusive rename for create-new publication.
 //!
 //! # Does not own
 //! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
@@ -13,6 +14,7 @@ mod files;
 mod journal;
 pub mod preset;
 pub mod project_name;
+mod publication;
 pub mod text;
 pub mod tuning_library;
 pub use journal::{

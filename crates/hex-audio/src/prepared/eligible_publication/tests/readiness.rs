@@ -851,7 +851,8 @@ fn ready_candidate_group_retry_releases_speculation_for_old_page_and_remains_can
         pause
     );
     assert_eq!(control.status.consumed_command.load(Acquire), pause);
-    assert_eq!(control.status.position.load(Acquire), position);
+    // The Pause applies at the end of its 128-frame fade (#4151).
+    assert_eq!(control.status.position.load(Acquire), position + 128);
     assert!(!control.status.playing.load(Acquire));
     assert_eq!(control.status.applied_revision.load(Acquire), 1);
     assert!(control.status.publication_pending.load(Acquire));

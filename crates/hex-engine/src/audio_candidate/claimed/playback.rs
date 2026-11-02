@@ -31,7 +31,7 @@ impl ClaimedAudioCandidateRuntime {
             .then_some(())
             .and_then(|()| self.inner.runtime.as_mut().map(|r| &mut r.playback))
     }
-    fn current_runtime_mut(&mut self) -> Option<&mut RuntimeOwner> {
+    pub(super) fn current_runtime_mut(&mut self) -> Option<&mut RuntimeOwner> {
         if self.inner.phase != ClaimedPhase::Current {
             return None;
         }
