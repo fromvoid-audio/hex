@@ -150,6 +150,34 @@ fn bypass_is_exact_dry_but_warm_reset_clears_and_dry_endpoint_is_exact() {
     let mut dry_only = factory(8000, [10.0, 0.85, 0.0]).create_runtime().unwrap();
     assert_eq!(render(dry_only.as_mut(), &original, &[17]), original);
 }
+
+#[test]
+fn block_bypass_matches_single_frame_history() {
+    for size in [1, 64, 256, 513] {
+        let factory = factory(8000, [10.0, 0.6, 0.7]);
+        let mut block = factory.create_runtime().unwrap();
+        let mut reference = factory.create_runtime().unwrap();
+        let input: Vec<_> = (0..size)
+            .map(|i| [i as f32 / 512.0, -(i as f32) / 1024.0])
+            .collect();
+        let mut dry = input.clone();
+        block.begin_block();
+        reference.begin_block();
+        block.process_bypassed_block_with_clock(&mut dry, None, &EMPTY_DEVICE_RESOURCES);
+        for frame in &input {
+            let mut discarded = [*frame];
+            reference.process_block(&mut discarded, &EMPTY_DEVICE_RESOURCES);
+        }
+        block.commit_block();
+        reference.commit_block();
+        assert_eq!(dry, input);
+        let tail = [[0.0; 2]; 512];
+        assert_eq!(
+            render(block.as_mut(), &tail, &[64]),
+            render(reference.as_mut(), &tail, &[64])
+        );
+    }
+}
 #[test]
 fn codec_versions_link_laws_validation_and_fully_charged_storage() {
     use hex_lattice_contract::ParameterKind;

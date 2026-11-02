@@ -269,4 +269,8 @@ pub fn descriptor(
 }
 
 #[cfg(test)]
+mod mode_fade_tests;
+#[cfg(test)]
+mod steady_state_digest_tests;
+#[cfg(test)]
 mod tests;

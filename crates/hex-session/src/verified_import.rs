@@ -164,6 +164,11 @@ impl Session {
             else {
                 return Ok(None);
             };
+            // A source beyond the per-file resident decode caps can never become
+            // resident PCM, however much working set remains: stream it instead.
+            if exceeds_resident_decode(path, reader.source_frames())? {
+                return self.verify_import(path.to_path_buf()).map(Some);
+            }
             let output = hex_project::converted_frame_count(
                 reader.source_frames(),
                 reader.sample_rate(),
@@ -188,17 +193,39 @@ impl Session {
     pub(crate) fn verify_import(&self, path: PathBuf) -> Result<VerifiedAudioFile, SessionError> {
         self.verify_import_with_pending(path, &[], || false)
     }
+    /// Verify a saved asset's file, binding its saved conversion law so the
+    /// verified facts match the asset and streamed output reproduces it.
+    pub(crate) fn verify_asset(
+        &self,
+        path: PathBuf,
+        asset: &hex_project::Asset,
+    ) -> Result<VerifiedAudioFile, SessionError> {
+        self.verify_with(path, &[], Some(asset.conversion_version()), || false)
+    }
     pub(crate) fn verify_import_with_pending(
         &self,
         path: PathBuf,
         pending: &[VerifiedAudioFile],
+        canceled: impl FnMut() -> bool,
+    ) -> Result<VerifiedAudioFile, SessionError> {
+        self.verify_with(path, pending, None, canceled)
+    }
+    fn verify_with(
+        &self,
+        path: PathBuf,
+        pending: &[VerifiedAudioFile],
+        conversion: Option<u32>,
         mut canceled: impl FnMut() -> bool,
     ) -> Result<VerifiedAudioFile, SessionError> {
         let limits = self.remaining_source_reservation(path.capacity(), pending)?;
-        let mut source =
-            VerifiedAudioFile::inspect(path, self.project().sample_rate(), limits, || {
-                self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
-            })?;
+        let rate = self.project().sample_rate();
+        let cancel = || self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled();
+        let mut source = match conversion {
+            None => VerifiedAudioFile::inspect(path, rate, limits, cancel)?,
+            Some(version) => {
+                VerifiedAudioFile::inspect_for_conversion(path, rate, version, limits, cancel)?
+            }
+        };
         if self.audio_mode() == DocumentAudioMode::Resident {
             source.prepare_waveform_on_control(|| {
                 self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
@@ -417,6 +444,17 @@ impl Session {
     }
 }
 
+/// True when the resident decoder's per-file byte/frame caps would refuse this source.
+pub(crate) fn exceeds_resident_decode(
+    path: &std::path::Path,
+    source_frames: u64,
+) -> Result<bool, SessionError> {
+    let bytes = std::fs::metadata(path)
+        .map_err(|_| SessionError::Invalid("could not read audio file metadata"))?
+        .len();
+    Ok(bytes > crate::resident_import::IMPORT_FILE_LIMIT as u64
+        || source_frames > crate::resident_import::IMPORT_FRAME_LIMIT as u64)
+}
 // File-backed sources use the same typed prepared-import commands and destination
 // laws as decoded sources. IDs/default track behavior remain owned by the project.
 fn verified_import_command(

@@ -37,6 +37,13 @@ impl NativeEffectEntry {
     pub(crate) fn quantum_frames(&self) -> usize {
         usize::from(self.callback.configuration.prepared.quantum_frames())
     }
+    /// Render one visited segment. A fault of this endpoint's own transport
+    /// (missed reply, invalid reply, worker/control revocation) is contained
+    /// here (#3977): only this epoch is revoked, and it renders as an aligned
+    /// pass-through placeholder for the rest of its life while every other
+    /// endpoint keeps processing. A graph/configuration mismatch still fails
+    /// the whole callback. Control observes the degraded entry through its
+    /// worker's transport liveness; nothing is reported from the callback.
     pub(crate) fn process(
         &mut self,
         extent: usize,
@@ -47,18 +54,34 @@ impl NativeEffectEntry {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         if !self.staged {
-            self.callback
-                .begin_host_callback(extent)
-                .map_err(|_| DeviceContractError::ForeignProcessingFailed)?;
+            if self.callback.begin_host_callback(extent).is_err() {
+                self.callback.pass_through_revoked(frames);
+                return Ok(());
+            }
             self.staged = true;
         }
-        self.callback
+        match self
+            .callback
             .process_segment_with_parameters(node, offset, frames, parameters, clock)
+        {
+            // Staging refusal already revoked this epoch and left aligned dry.
+            Err(DeviceContractError::ForeignProcessingFailed) => {
+                self.staged = false;
+                Ok(())
+            }
+            result => result,
+        }
     }
+    /// Publish this endpoint's staged request after final host acceptance. A
+    /// revocation or full request ring is this endpoint's own fault and is
+    /// contained like a staging fault; a protocol breach fails the callback.
     pub(crate) fn finish(&mut self) -> Result<(), Fault> {
         if self.staged {
-            self.callback.finish_host_callback(true)?;
             self.staged = false;
+            match self.callback.finish_host_callback(true) {
+                Ok(()) | Err(Fault::Revoked | Fault::Saturated) => {}
+                Err(error) => return Err(error),
+            }
         }
         Ok(())
     }
@@ -176,8 +199,9 @@ impl NativeEffectCallbacks {
         result
     }
     /// Final host-format acceptance, once for the complete callback. Each used
-    /// endpoint must have staged the full extent. Any partial dispatch failure
-    /// revokes every source; native work is irreversible and is never replayed.
+    /// endpoint must have staged the full extent. A host refusal or protocol
+    /// breach revokes every source; one endpoint's own transport fault revokes
+    /// only that endpoint. Native work is irreversible and is never replayed.
     pub fn finish_host_callback(&mut self, accepted: bool) -> Result<(), Fault> {
         if let Err(error) = self.cycle.finish(accepted) {
             self.reject_callback();
@@ -250,3 +274,6 @@ impl ForeignProcessors for NativeEffectCallbacks {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
