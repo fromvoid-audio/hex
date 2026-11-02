@@ -48,3 +48,9 @@ opt-level = 1
 # overflow checks remain enabled (Pulse #4153).
 [profile.dev.package.hex-devices]
 opt-level = 1
+
+# Long verified-source import/reopen regressions preserve their real multi-million
+# frame fixtures while staying within the per-test budget. Debug assertions and
+# overflow checks remain enabled; release builds are unchanged (Pulse #4171).
+[profile.dev.package.hex-media]
+opt-level = 2
