@@ -71,9 +71,11 @@ impl AudioPolicy {
         let stream = hex_stream::StreamConfig::initial();
         SourcePlanReservation {
             reader: hex_media::VerifiedWavReaderLimits::new(
+                // Streamed originals are not resident PCM: their bound is the
+                // session's streaming contract, not the 64 MiB / 8M resident cap.
                 hex_media::WavReaderLimits::new(
-                    64 * 1024 * 1024,
-                    MAX_SOURCE_FRAMES,
+                    hex_session::MAX_STREAMED_FILE_BYTES,
+                    hex_session::MAX_STREAMED_SOURCE_FRAMES,
                     32,
                     // Output pages are not source windows: downsampling also
                     // needs the resampler halo. The worker already reserves
@@ -327,5 +329,26 @@ impl AudioPolicy {
         control.configure_audio_candidate_publication(self.publication)?;
         control.configure_audio_candidate_streaming(self.readiness.extents_per_role)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verified_source_reservation_accepts_long_wav_without_raising_resident_budget() {
+        let reservation = AudioPolicy::source_reservation().validate().unwrap();
+        assert!(reservation.reader.reader.max_source_frames > 8_000_000);
+        assert!(reservation.reader.reader.max_file_bytes > 64 * 1024 * 1024);
+        assert_eq!(
+            reservation.reader.reader.max_source_frames,
+            hex_session::MAX_STREAMED_SOURCE_FRAMES
+        );
+        assert_eq!(
+            reservation.reader.reader.max_file_bytes,
+            hex_session::MAX_STREAMED_FILE_BYTES
+        );
+        assert_eq!(MAX_SOURCE_FRAMES, 8_000_000);
     }
 }

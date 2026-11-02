@@ -787,7 +787,7 @@ impl EditorView {
                             .border_color(rgb(if self.clip_is_selected(clip.id()) {
                                 theme::color(theme::PaletteRole::Primary)
                             } else {
-                                0x000000
+                                theme::color(theme::PaletteRole::ClipOutline)
                             }))
                             .bg(rgb(theme::clip_activity_fill(
                                 track.color(),
@@ -860,7 +860,7 @@ impl EditorView {
                     let color = if self.clip_is_selected(clip.id()) {
                         theme::color(theme::PaletteRole::Primary)
                     } else {
-                        0x000000
+                        theme::color(theme::PaletteRole::ClipOutline)
                     };
                     clip_area = clip_area.child(clip_boundary_shell(
                         overlay,
@@ -910,7 +910,7 @@ impl EditorView {
                             .border_color(rgb(if self.clip_is_selected(original_clip.id()) {
                                 theme::color(theme::PaletteRole::Primary)
                             } else {
-                                0x000000
+                                theme::color(theme::PaletteRole::ClipOutline)
                             }))
                             .bg(rgb(theme::clip_activity_fill(
                                 track.color(),
@@ -970,7 +970,7 @@ impl EditorView {
                     let color = if self.clip_is_selected(original_clip.id()) {
                         theme::color(theme::PaletteRole::Primary)
                     } else {
-                        0x000000
+                        theme::color(theme::PaletteRole::ClipOutline)
                     };
                     clip_area = clip_area.child(clip_boundary_shell(
                         preview,
@@ -1181,7 +1181,7 @@ impl EditorView {
                         .border_color(rgb(if clip_preview.is_some() {
                             theme::color(theme::PaletteRole::Primary)
                         } else {
-                            0x000000
+                            theme::color(theme::PaletteRole::ClipOutline)
                         }))
                         .bg(rgb(theme::clip_activity_fill(
                             track.color(),
@@ -1256,7 +1256,7 @@ impl EditorView {
                 let color = if clip_preview.is_some() {
                     theme::color(theme::PaletteRole::Primary)
                 } else {
-                    0x000000
+                    theme::color(theme::PaletteRole::ClipOutline)
                 };
                 clip_area = clip_area.child(
                     clip_boundary_shell(
@@ -2259,7 +2259,7 @@ impl EditorView {
                 .border_color(rgb(if selected_clip {
                     theme::color(theme::PaletteRole::Primary)
                 } else {
-                    0x000000
+                    theme::color(theme::PaletteRole::ClipOutline)
                 }))
                 .on_mouse_down(
                     MouseButton::Right,
@@ -2357,7 +2357,7 @@ impl EditorView {
             let color = if selected_clip {
                 theme::color(theme::PaletteRole::Primary)
             } else {
-                0x000000
+                theme::color(theme::PaletteRole::ClipOutline)
             };
             clip_area = clip_area.child(clip_boundary_shell(
                 midi,
@@ -2684,7 +2684,7 @@ impl EditorView {
         content = content.border_color(rgb(if selected {
             theme::color(theme::PaletteRole::Primary)
         } else {
-            0x000000
+            theme::color(theme::PaletteRole::ClipOutline)
         }));
         let looping = loop_handles::audio_repeats(clip);
         content = loop_handles::surface(content, looping);
@@ -2877,7 +2877,7 @@ impl EditorView {
         let color = if selected {
             theme::color(theme::PaletteRole::Primary)
         } else {
-            0x000000
+            theme::color(theme::PaletteRole::ClipOutline)
         };
         let hover = theme::color(if selected {
             theme::PaletteRole::Primary
