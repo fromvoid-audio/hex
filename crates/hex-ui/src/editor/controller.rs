@@ -1150,10 +1150,12 @@ impl EditorView {
                 let gain_take_request = self.pending_gain_take_matches(&request);
                 let device_automation_request = self.pending_device_automation_matches(&request);
                 let time_copy_request = self.pending_time_copy_matches(&request);
+                let import_intent = super::truncated_import::ImportIntent::capture(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
                         self.worker_requests_pending =
                             self.worker_requests_pending.saturating_add(1);
+                        self.truncated_import_submitted(import_intent);
                         if time_copy_request {
                             self.time_copy_submitted();
                         }
@@ -2283,6 +2285,8 @@ impl EditorView {
         self.audio_events_request_complete(&event);
         self.clip_loop_request_complete(&event);
         self.clip_move_request_complete(&event);
+        self.truncated_import
+            .observe(self.project_generation, &event);
         self.section_request_complete(&event);
         self.track_reorder_complete(&event);
         self.midi_drag_request_complete(&event);
@@ -3460,6 +3464,7 @@ impl EditorView {
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
                 | Request::ImportToSession { .. }
+                | Request::RecoverTruncatedImport(_)
                 | Request::RelinkMedia(_)
                 | Request::Open(_)
                 | Request::OpenWith { .. }
@@ -3566,9 +3571,11 @@ impl EditorView {
         let gain_request = self.pending_gain_matches(&request);
         let gain_take_request = self.pending_gain_take_matches(&request);
         let device_automation_request = self.pending_device_automation_matches(&request);
+        let import_intent = super::truncated_import::ImportIntent::capture(&request);
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.truncated_import_submitted(import_intent);
                 if resize_request {
                     self.trim_request_submitted();
                 }

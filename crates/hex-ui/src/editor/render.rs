@@ -473,6 +473,7 @@ impl Render for EditorView {
         self.reconcile_project_open(window, cx);
         self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_leftover_recovery(window, cx);
+        self.reconcile_truncated_import_offer(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
         super::browser_input::restyle(&self.browser.search, cx);
