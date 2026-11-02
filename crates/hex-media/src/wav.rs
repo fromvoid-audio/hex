@@ -421,7 +421,7 @@ pub(super) fn decode_recoverable(
         .ok_or(ImportError::Invalid("data chunk exceeds input"))?;
     crate::cancelled(cancel)?;
     let decoded = if layout.format.samples_per_block != 0 {
-        crate::adpcm::decode(data, layout.format, frame_count)?
+        crate::adpcm::decode(data, layout.format, frame_count, cancel)?
     } else {
         decode_samples(data, layout.format, frame_count, cancel)?
     };

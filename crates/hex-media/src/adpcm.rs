@@ -1,6 +1,7 @@
 //! Bounded resident Microsoft and IMA/DVI WAV block decoding.
 use crate::{ImportError, wav::Format};
 use hex_engine::Audio;
+use std::sync::atomic::AtomicBool;
 
 // ITU/DVI IMA step-size and index adaptation tables.
 const STEPS: [i32; 89] = [
@@ -15,10 +16,30 @@ const ADAPT: [i64; 16] = [
     230, 230, 230, 230, 307, 409, 512, 614, 768, 614, 512, 409, 307, 230, 230, 230,
 ];
 
+/// Decodes resident ADPCM blocks, polling `cancel` before every window of
+/// [`blocks_per_cancel_check`] blocks so a superseded decode stops after at
+/// most one window (about [`crate::CANCEL_CHECK_FRAMES`] frames).
 pub(super) fn decode(
     data: &[u8],
     format: Format,
     frame_count: usize,
+    cancel: &AtomicBool,
+) -> Result<(Audio, u32, usize), ImportError> {
+    decode_polled(data, format, frame_count, || crate::cancelled(cancel))
+}
+
+/// Whole blocks decoded between cancellation polls: the largest count whose
+/// frames fit one [`crate::CANCEL_CHECK_FRAMES`] window, and at least one.
+fn blocks_per_cancel_check(samples_per_block: usize) -> usize {
+    (crate::CANCEL_CHECK_FRAMES / samples_per_block.max(1)).max(1)
+}
+
+/// [`decode`] with an injectable poll, called before each block window.
+fn decode_polled(
+    data: &[u8],
+    format: Format,
+    frame_count: usize,
+    mut poll: impl FnMut() -> Result<(), ImportError>,
 ) -> Result<(Audio, u32, usize), ImportError> {
     let mut frames = Vec::new();
     frames
@@ -29,14 +50,20 @@ pub(super) fn decode(
         .try_reserve_exact(format.samples_per_block)
         .map_err(|_| ImportError::AllocationFailed)?;
     block_frames.resize(format.samples_per_block, [0.0; 2]);
-    for block in data.chunks_exact(format.block_align) {
-        if format.encoding == 17 {
-            decode_ima(block, format, &mut block_frames)?;
-        } else {
-            decode_ms(block, format, &mut block_frames)?;
+    let window_bytes = format
+        .block_align
+        .saturating_mul(blocks_per_cancel_check(format.samples_per_block));
+    for window in data.chunks(window_bytes.max(1)) {
+        poll()?;
+        for block in window.chunks_exact(format.block_align) {
+            if format.encoding == 17 {
+                decode_ima(block, format, &mut block_frames)?;
+            } else {
+                decode_ms(block, format, &mut block_frames)?;
+            }
+            let count = (frame_count - frames.len()).min(block_frames.len());
+            frames.extend_from_slice(&block_frames[..count]);
         }
-        let count = (frame_count - frames.len()).min(block_frames.len());
-        frames.extend_from_slice(&block_frames[..count]);
     }
     if frames.len() != frame_count {
         return Err(ImportError::Invalid("inconsistent decoded adpcm length"));
@@ -156,4 +183,72 @@ fn decode_ms(block: &[u8], format: Format, output: &mut [[f32; 2]]) -> Result<()
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mono IMA: 4-byte header plus 4 nibble bytes gives 9 frames per block.
+    fn ima_mono() -> Format {
+        Format {
+            encoding: 17,
+            channels: 1,
+            sample_rate: 24_000,
+            block_align: 8,
+            bits_per_sample: 4,
+            samples_per_block: 9,
+            coefficients: [(0, 0); 32],
+            coefficient_count: 0,
+        }
+    }
+
+    /// Two full cancellation windows plus a partial third.
+    fn three_windows() -> (Vec<u8>, usize, usize) {
+        let window = blocks_per_cancel_check(9);
+        let blocks = 2 * window + 5;
+        let data = [0, 0, 0, 0, 0x11, 0x11, 0x11, 0x11].repeat(blocks);
+        (data, blocks * 9, window)
+    }
+
+    #[test]
+    fn cancel_windows_fit_one_frame_window_and_never_stall() {
+        assert!(blocks_per_cancel_check(9) * 9 <= crate::CANCEL_CHECK_FRAMES);
+        assert!((blocks_per_cancel_check(9) + 1) * 9 > crate::CANCEL_CHECK_FRAMES);
+        assert_eq!(blocks_per_cancel_check(crate::CANCEL_CHECK_FRAMES * 2), 1);
+        assert_eq!(blocks_per_cancel_check(0), crate::CANCEL_CHECK_FRAMES);
+    }
+
+    #[test]
+    fn decode_polls_once_per_block_window_and_stops_within_one_window() {
+        let (data, frames, _) = three_windows();
+        let mut polls = 0;
+        let (audio, _, count) = decode_polled(&data, ima_mono(), frames, || {
+            polls += 1;
+            Ok(())
+        })
+        .expect("uncancelled decode");
+        assert_eq!((polls, count, audio.frames().len()), (3, frames, frames));
+        let plain =
+            decode(&data, ima_mono(), frames, &AtomicBool::new(false)).expect("plain decode");
+        assert_eq!(plain.0.frames(), audio.frames());
+
+        // Cancelled at the second poll: only the first window was decoded and
+        // no further block window starts.
+        let mut polls = 0;
+        let result = decode_polled(&data, ima_mono(), frames, || {
+            polls += 1;
+            if polls == 2 {
+                Err(ImportError::Cancelled)
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(result, Err(ImportError::Cancelled)));
+        assert_eq!(polls, 2);
+        assert!(matches!(
+            decode(&data, ima_mono(), frames, &AtomicBool::new(true)),
+            Err(ImportError::Cancelled)
+        ));
+    }
 }
