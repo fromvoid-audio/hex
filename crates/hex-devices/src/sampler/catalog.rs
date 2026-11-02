@@ -26,7 +26,10 @@ impl NativeDeviceMetadata for SamplerDefinition {
     }
     fn migrate_state(&self, state: &NativeDeviceState) -> Result<NativeDeviceState, Error> {
         if super::state::is_empty_state(state) {
-            return Ok(state.clone());
+            if state.state_version() == super::state::STATE_VERSION {
+                return Ok(state.clone());
+            }
+            return super::state::empty_state()?.with_host_metadata_from(state);
         }
         let authored = super::state::SamplerState::from_native(state)?;
         if state.state_version() == super::state::STATE_VERSION {

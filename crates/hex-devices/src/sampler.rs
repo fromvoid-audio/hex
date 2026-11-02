@@ -5,7 +5,7 @@
 //! uses a registered mutable factory over the host's exact original-rate inventory. Ordinary
 //! playback retains that configuration in each runtime lease, including outgoing voices; the
 //! obsolete private constructor keeps its separately closed source path. Source regions are nonempty half-open
-//! frame intervals. Pitch/rate conversion, reverse, Classic loops, One-Shot/Slice gate laws and
+//! frame intervals. Pitch/rate conversion, reverse, Classic loops (with an optional seam crossfade), One-Shot/Slice gate laws and
 //! envelope ages share the same bounded scalar preparation. Voices borrow immutable PCM without
 //! per-note scan, copy or owning handle; sample queries remain deterministic across block sizes.
 //! These original laws do not establish Live parity or native deadline acceptance.
@@ -125,7 +125,18 @@ pub struct Settings<'a> {
     /// 0 ignores velocity; 1 scales gain by velocity/127.
     pub velocity_amount: f64,
     pub envelope: Envelope,
+    /// Classic loop crossfade in milliseconds of original source time, within
+    /// 0..=[`MAX_LOOP_CROSSFADE_MS`]. Zero (the default) is off and keeps the
+    /// hard loop seam bit-identical. Otherwise the last crossfade frames before
+    /// the loop end blend linearly into the same-length pre-roll ending at the
+    /// loop start, so the wrap is continuous. The effective length is limited
+    /// to the loop length and the pre-roll available in the playback direction;
+    /// no pre-roll (loop start at the region edge) means no crossfade.
+    pub loop_crossfade_ms: f64,
 }
+
+/// Authored loop-crossfade upper bound, in milliseconds of source time.
+pub const MAX_LOOP_CROSSFADE_MS: f64 = 10_000.0;
 
 impl Settings<'_> {
     pub fn new(region: Region) -> Self {
@@ -140,6 +151,7 @@ impl Settings<'_> {
             pan: 0.0,
             velocity_amount: 1.0,
             envelope: Envelope::default(),
+            loop_crossfade_ms: 0.0,
         }
     }
 }

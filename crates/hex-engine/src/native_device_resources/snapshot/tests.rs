@@ -9,6 +9,17 @@ use std::{collections::BTreeMap, sync::Arc};
 
 #[test]
 fn control_sampler_normal_preparation_and_render_borrow_exact_captured_source() {
+    normal_preparation_and_render(false);
+}
+
+/// A project saved with a v2 sampler state (before the v3 loop crossfade,
+/// Pulse #4088) still prepares and renders identically without re-saving.
+#[test]
+fn control_sampler_prepares_and_renders_an_unmigrated_v2_saved_state() {
+    normal_preparation_and_render(true);
+}
+
+fn normal_preparation_and_render(saved_v2: bool) {
     let mut editor = Editor::new(Project::new(16000).unwrap(), 8).unwrap();
     let Created::Asset(asset) = editor
         .execute(Command::ImportDeviceAsset {
@@ -66,6 +77,16 @@ fn control_sampler_normal_preparation_and_render_borrow_exact_captured_source() 
             asset: DeviceAssetKey::new(asset.value()).unwrap(),
         }])
         .unwrap();
+    let native = if saved_v2 {
+        // The v2 layout is the v3 one without the trailing crossfade f64.
+        let payload = &native.payload()[..native.payload().len() - 8];
+        NativeDeviceState::new(native.type_id(), 2, payload.to_vec())
+            .unwrap()
+            .with_host_metadata_from(&native)
+            .unwrap()
+    } else {
+        native
+    };
     editor
         .execute(Command::InsertInstrument {
             track,

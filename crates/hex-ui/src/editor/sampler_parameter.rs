@@ -680,6 +680,7 @@ impl EditorView {
                     SamplerParameter::LoopEnabled => "sampler-loop-control",
                     SamplerParameter::LoopStartFrame => "sampler-loop-start-control",
                     SamplerParameter::LoopEndFrame => "sampler-loop-end-control",
+                    SamplerParameter::LoopCrossfadeMs => "sampler-loop-crossfade-control",
                 },
                 device.id().value(),
             ))

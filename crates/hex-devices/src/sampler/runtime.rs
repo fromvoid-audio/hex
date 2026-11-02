@@ -146,6 +146,7 @@ fn retarget_coordinates_match(target: &VoiceCoefficients, source: &VoiceCoeffici
         channels,
         region,
         loop_offsets,
+        loop_crossfade,
         reverse,
         step,
         channel_gain: _,
@@ -156,6 +157,7 @@ fn retarget_coordinates_match(target: &VoiceCoefficients, source: &VoiceCoeffici
         && *channels == source.channels
         && *region == source.region
         && *loop_offsets == source.loop_offsets
+        && *loop_crossfade == source.loop_crossfade
         && *reverse == source.reverse
         && (*step == source.step || *gate == GateMode::Gate)
         && *gate == source.gate

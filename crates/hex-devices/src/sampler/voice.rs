@@ -12,6 +12,9 @@ pub struct VoiceCoefficients {
     pub(super) channels: SampleChannels,
     pub(super) region: Region,
     pub(super) loop_offsets: Option<(usize, usize)>,
+    /// Effective seam crossfade in source frames (offset order). Zero is a
+    /// hard seam; otherwise it never exceeds the loop length or its pre-roll.
+    pub(super) loop_crossfade: usize,
     pub(super) reverse: bool,
     pub(super) step: u64,
     pub(super) channel_gain: [f64; 2],
@@ -131,6 +134,49 @@ impl VoiceCoefficients {
         } else if position >= (self.region.end - self.region.start) as u128 * ONE {
             return [0.0; 2];
         }
+        let Some(direct) = self.interpolate::<CHECK_FINITE>(pcm, position) else {
+            return [0.0; 2];
+        };
+        // Crossfade the loop tail into the same-length pre-roll ending at the
+        // loop start: the blend reaches the post-wrap source exactly at the
+        // seam. Preparation bounds the length by the pre-roll, so the earlier
+        // position never precedes the region. Off keeps the original arithmetic.
+        let mixed = match self.loop_offsets {
+            Some((start, end)) if self.loop_crossfade > 0 => {
+                let fade_start = (end - self.loop_crossfade) as u128 * ONE;
+                if position >= fade_start {
+                    let earlier = position - (end - start) as u128 * ONE;
+                    let Some(pre_roll) = self.interpolate::<CHECK_FINITE>(pcm, earlier) else {
+                        return [0.0; 2];
+                    };
+                    let weight =
+                        (position - fade_start) as f64 / (self.loop_crossfade as u128 * ONE) as f64;
+                    std::array::from_fn(|channel| {
+                        direct[channel] * (1.0 - weight) + pre_roll[channel] * weight
+                    })
+                } else {
+                    direct
+                }
+            }
+            _ => direct,
+        };
+        // Gain in f64 so finite f32 endpoints do not overflow. Saturation at
+        // the representation boundary avoids NaN/Inf from otherwise valid
+        // finite PCM and the bounded gain domain.
+        std::array::from_fn(|channel| {
+            let value = mixed[channel] * self.channel_gain[channel] * envelope;
+            value.clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
+        })
+    }
+
+    /// Linear interpolation at an in-region Q32.32 offset position. The loop
+    /// end's successor is the loop start. None means unreadable or nonfinite PCM.
+    #[inline]
+    fn interpolate<const CHECK_FINITE: bool>(
+        &self,
+        pcm: DeviceResourcePcm<'_>,
+        position: u128,
+    ) -> Option<[f64; 2]> {
         let index = (position >> FRACTION_BITS) as usize;
         let mut next = index + 1;
         if let Some((start, end)) = self.loop_offsets {
@@ -146,26 +192,18 @@ impl VoiceCoefficients {
                 self.region.start + index
             }
         };
-        let (Some(a), Some(b)) = (
-            pcm.frame(source_index(index)),
-            pcm.frame(source_index(next)),
-        ) else {
-            return [0.0; 2];
-        };
+        let (a, b) = (
+            pcm.frame(source_index(index))?,
+            pcm.frame(source_index(next))?,
+        );
         if CHECK_FINITE && a.iter().chain(&b).any(|value| !value.is_finite()) {
-            return [0.0; 2];
+            return None;
         }
         let fraction = (position % ONE) as f64 / ONE as f64;
-        // Interpolate/gain in f64 so finite f32 endpoints do not overflow the
-        // subtraction. Saturation at the representation boundary avoids NaN/Inf
-        // from otherwise valid finite PCM and the bounded gain domain.
-        std::array::from_fn(|channel| {
-            let value = (f64::from(a[channel]) * (1.0 - fraction)
-                + f64::from(b[channel]) * fraction)
-                * self.channel_gain[channel]
-                * envelope;
-            value.clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
-        })
+        // Interpolate in f64 so finite f32 endpoints do not overflow the subtraction.
+        Some(std::array::from_fn(|channel| {
+            f64::from(a[channel]) * (1.0 - fraction) + f64::from(b[channel]) * fraction
+        }))
     }
 
     /// Fill caller-owned output. Overflowed ages are defined silence; they do
@@ -241,3 +279,6 @@ impl Voice<'_> {
         )
     }
 }
+
+#[cfg(test)]
+mod tests;
