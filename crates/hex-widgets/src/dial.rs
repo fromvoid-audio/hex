@@ -113,10 +113,8 @@ pub(crate) fn paint_dial(
             style.muted
         },
     );
-    if enabled {
-        if let Some((start, end)) = value.fill_angles() {
-            stroke_arc(start, end, 1.8, window, style.accent);
-        }
+    if enabled && let Some((start, end)) = value.fill_angles() {
+        stroke_arc(start, end, 1.8, window, style.accent);
     }
     if pan {
         let mut marker = PathBuilder::fill();
