@@ -82,6 +82,17 @@ impl StreamPlayback<'_> {
             Runtime::Ordinary(r, _) => r.try_apply_action(action),
         }
     }
+    /// `apply_action` with the transport declick, so a ready streamed Play
+    /// from a paused position ramps in like the resident path.
+    pub fn apply_declicked_action(
+        &mut self,
+        action: PlaybackAction,
+    ) -> Result<(), PlaybackActionError> {
+        match &mut self.runtime {
+            Runtime::Constructor(r) => r.apply_declicked_action(action),
+            Runtime::Ordinary(r, _) => r.try_apply_declicked_action(action),
+        }
+    }
     pub fn prepare_stream_action(
         &mut self,
         action: PlaybackAction,

@@ -1550,6 +1550,10 @@ fn pending_launch_refuses_metadata_and_stop_cancellation_keeps_the_actual_loop()
         .control
         .command(PlaybackCommand::Stop)
         .unwrap();
+    // The queued Stop settles after its declick fade.
+    for _ in 0..super::FADE_BLOCKS {
+        h.render();
+    }
     assert!(h.render().iter().flatten().all(|s| *s == 0.0));
     let status = h.audio.as_ref().unwrap().status().unwrap();
     assert!(!status.playing.load(Acquire));
