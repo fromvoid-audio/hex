@@ -160,6 +160,7 @@ fn capacity_is_charged_and_failed_mixed_import_preserves_redo_and_resident_sourc
         source_audio: audio.clone(),
         waveform: waveform::summarize(&audio, 1024).unwrap(),
         audio,
+        file_identity: None,
     };
     let mut small = Session::new(16_000, 16, 127).unwrap();
     let before = small.project().clone();

@@ -180,6 +180,7 @@ fn sampler_service_real_mono_stereo_assign_and_controlled_file_pcm() {
                 frames: Some(12),
                 signal: hex_export::ExportSignal::Main,
                 control,
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             })
             .unwrap();
@@ -242,6 +243,7 @@ fn queue_export(service: &Service, files: &Files, control: hex_export::ExportCon
             frames: Some(12),
             signal: hex_export::ExportSignal::Main,
             control,
+            format: hex_export::ExportFormat::Pcm16,
             overwrite: false,
         })
         .unwrap();
@@ -599,6 +601,7 @@ fn sampler_unsupported_history_and_ranges_refuse_without_public_source_escape() 
                 frames: Some(12),
                 signal,
                 control: hex_export::ExportControl::default(),
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             })
             .unwrap();
