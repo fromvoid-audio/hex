@@ -983,12 +983,14 @@ pub(super) fn prepare_bounce_import(
 ) -> Result<Snapshot, SessionError> {
     let position = fence
         .map(|source| {
+            // Adoption fences after its render, so it keeps the bounded poll.
             crate::service::stopped_arrangement::acquire_position(
                 sink,
                 source,
                 input.shutdown,
                 None,
                 true,
+                None,
             )
         })
         .transpose()?;
@@ -2335,6 +2337,7 @@ impl Session {
 pub(super) mod tests {
     mod bounce_tests;
     mod export_tests;
+    mod fence_tests;
     mod plugin_effect_tests;
     mod source_binding_tests;
     use super::*;

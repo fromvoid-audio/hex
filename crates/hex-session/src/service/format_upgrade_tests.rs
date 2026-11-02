@@ -526,3 +526,61 @@ fn pitching_a_clip_in_a_schema64_file_requires_overwrite_consent() {
     let again = request(&service, Request::SaveCurrent);
     assert!(again.error.is_none() && !again.save_confirmation_required);
 }
+
+#[test]
+fn reversing_a_musical_clip_in_a_schema64_file_requires_overwrite_consent() {
+    let files = Files::new();
+    let path = sinc_v2_project(&files);
+    let original = fs::read(&path).unwrap();
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    next(&service);
+    let opened = request(&service, Request::Open(path.clone()));
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    let clip = opened.state.project.tracks()[0].clips()[0].id();
+    let musical = request(
+        &service,
+        Request::Edit(Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        }),
+    );
+    assert!(musical.error.is_none(), "{:?}", musical.error);
+    let reversed = request(&service, Request::Edit(Command::ReverseClips(vec![clip])));
+    assert!(reversed.error.is_none(), "{:?}", reversed.error);
+    assert_eq!(
+        hex_storage::schema_version_for(&reversed.state.project),
+        hex_storage::CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION
+    );
+
+    // A new musical directed view reads with v2, which needs schema66.
+    let refused = request(&service, Request::SaveCurrent);
+    assert!(refused.save_complete && refused.error.is_some());
+    assert!(refused.save_confirmation_required);
+    assert_eq!(fs::read(&path).unwrap(), original);
+
+    let saved = request(
+        &service,
+        Request::SaveCurrentWithFormatUpgrade {
+            project_generation: 1,
+            path: path.clone(),
+        },
+    );
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        written["version"],
+        hex_storage::CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION
+    );
+    let loaded = hex_storage::load(&path).unwrap();
+    assert_eq!(loaded, *saved.state.project);
+    let view = loaded
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .content_view
+        .unwrap();
+    assert_eq!(view.read_resampler, hex_project::WarpResampler::V2);
+    let again = request(&service, Request::SaveCurrent);
+    assert!(again.error.is_none() && !again.save_confirmation_required);
+}

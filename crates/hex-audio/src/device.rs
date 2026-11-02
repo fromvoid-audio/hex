@@ -6,7 +6,7 @@
 //! preserves finite range, integer output uses the native conversion law, and extra channels
 //! receive silence. Stream setup, reopen and final teardown stay on the lifecycle/control lane,
 //! not the callback.
-use crate::open_outcome::{OutputOpenError, validate_expected_rate};
+use crate::open_outcome::{BACKEND_CONVERTS_OUTPUT_RATE, OutputOpenError, negotiate_stream_rate};
 use crate::spectrum_worker::{
     SpectrumReader, SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker,
 };
@@ -63,6 +63,16 @@ pub(crate) enum PreparedOutputKind {
     WorkerReliable(WorkerOutputProfile),
 }
 impl PreparedOutputKind {
+    /// Whether the backend may convert this output's rate. A plugin bridge
+    /// fixes its physical quantum in device frames, which conversion breaks.
+    fn converts_rate(self) -> bool {
+        BACKEND_CONVERTS_OUTPUT_RATE
+            && !matches!(
+                self,
+                Self::Worker(WorkerOutputProfile::PluginBridge)
+                    | Self::WorkerReliable(WorkerOutputProfile::PluginBridge)
+            )
+    }
     fn physical_callback_request(
         self,
         supported: cpal::SupportedBufferSize,
@@ -175,7 +185,11 @@ pub(crate) fn open_prepared(
         .ok_or("no default audio output device")?;
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
     let mut config = supported.config();
-    validate_expected_rate(expected_sample_rate, config.sample_rate)?;
+    let device_rate = config.sample_rate;
+    // A converting backend runs the stream at the project rate; the device's
+    // nominal rate is left as the user set it (see `open_outcome`).
+    config.sample_rate =
+        negotiate_stream_rate(expected_sample_rate, device_rate, kind.converts_rate())?;
     if config.channels == 0 {
         return Err("output device has no channels".into());
     }
@@ -308,10 +322,17 @@ pub(crate) fn open_prepared(
     .map_err(|error| error.to_string())?;
     stream_owner.set_stream(stream);
     stream_owner.play()?;
-    let label = format!(
-        "coreaudio · {} hz · {} channels",
-        config.sample_rate, config.channels
-    );
+    let label = if config.sample_rate == device_rate {
+        format!(
+            "coreaudio · {} hz · {} channels",
+            config.sample_rate, config.channels
+        )
+    } else {
+        format!(
+            "coreaudio · {} hz converted to device {} hz · {} channels",
+            config.sample_rate, device_rate, config.channels
+        )
+    };
     Ok(Opened {
         stream: stream_owner,
         legacy: legacy_control,

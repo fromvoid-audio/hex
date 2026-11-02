@@ -225,6 +225,8 @@ fn schema47_accepts_but_historical_schemas_reject_musical_directed_empty_base_in
         }),
         base_start_delta: 0,
         window: hex_project::ContentWindow::new(0, cycle, false).unwrap(),
+        // Historical musical views carry the implied frozen v1 read law.
+        read_resampler: hex_project::WarpResampler::V1,
     });
     let displacement = i128::from(audio.start)
         - hex_project::audio_projection_frame(&tempo, i128::from(start.raw())).unwrap();
@@ -369,6 +371,8 @@ fn schema46_accepts_frozen_directed_repeat_trimmed_to_its_base_seam() {
         }),
         base_start_delta: 0,
         window: hex_project::ContentWindow::new(seam, seam + window_length, false).unwrap(),
+        // Historical musical views carry the implied frozen v1 read law.
+        read_resampler: hex_project::WarpResampler::V1,
     });
     let displacement =
         i128::from(audio.start) - hex_project::audio_projection_frame(&tempo, start).unwrap();

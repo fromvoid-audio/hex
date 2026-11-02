@@ -268,10 +268,14 @@ pub(in crate::service) fn bounce_history(
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
     current: &mut Option<Snapshot>,
+    prefence: Option<crate::service::stopped_arrangement::Prefence>,
 ) -> Result<Option<Arc<PreparedRevision>>, SessionError> {
     if current.as_ref().is_some_and(|s| {
         s.inputs.keyboard.is_some() || s.inputs.audition.is_some() || s.inputs.expression.is_some()
     }) {
+        if prefence.is_some() {
+            sink.cancel_section_edit(); // Release a lease resolved before dispatch.
+        }
         return Err(SessionError::Invalid(
             "disable live midi input and audition before bounce history",
         ));
@@ -285,6 +289,7 @@ pub(in crate::service) fn bounce_history(
         &session.shutdown,
         None,
         true,
+        prefence,
     )?;
     match session.bounce_history_snapshot(
         redo,
