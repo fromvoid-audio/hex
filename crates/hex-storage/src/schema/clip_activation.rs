@@ -146,8 +146,10 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     Ok(value)
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid clip activation envelope"))?;
@@ -158,7 +160,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         StorageError::Invalid("clip activation inventory is missing"),
     )?)?;
     object.insert("version".into(), 39.into());
-    let project = super::midi_one_shot::decode(&serde_json::to_vec(&value)?)?;
+    let project = super::midi_one_shot::decode_value(value)?;
     let mut rows = BTreeMap::new();
     for row in inventory.0 {
         if rows.insert(row.clip, row).is_some() {

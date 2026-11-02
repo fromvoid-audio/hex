@@ -268,6 +268,21 @@ impl SpectrumReader {
         now: Instant,
         targets: &SpectrumTargets,
     ) -> Vec<PublishedSpectra> {
+        let mut pairs = Vec::new();
+        self.try_latest_pairs_into(now, targets, &mut pairs);
+        pairs
+    }
+
+    /// Like [`Self::try_latest_pairs_at`], but replaces the contents of a
+    /// caller-retained buffer. Once `out` has capacity for every target
+    /// ([`MAX_SPECTRUM_TARGETS`]), a call allocates nothing.
+    pub fn try_latest_pairs_into(
+        &mut self,
+        now: Instant,
+        targets: &SpectrumTargets,
+        out: &mut Vec<PublishedSpectra>,
+    ) {
+        out.clear();
         for _ in 0..RESULT_QUEUE_CAPACITY {
             let result = match self.results.try_recv() {
                 Ok(result) => result,
@@ -293,7 +308,7 @@ impl SpectrumReader {
                 *result = None;
             }
         }
-        self.latest_targets.iter().flatten().cloned().collect()
+        out.extend(self.latest_targets.iter().flatten().cloned());
     }
 
     /// Return the newest result, clearing cached display data after 100 ms.
@@ -824,6 +839,32 @@ mod tests {
                     < 0.05
             );
         }
+        // A caller-retained buffer reproduces the same pairs without allocating
+        // once it holds every target; the Vec-returning call allocates each time.
+        let mut retained_buffer = Vec::with_capacity(MAX_SPECTRUM_TARGETS);
+        #[cfg(feature = "allocation-probe")]
+        {
+            let fresh = allocation_counter::measure(|| {
+                assert_eq!(reader.try_latest_pairs_at(now, &targets).len(), 2);
+            });
+            // Each Vec-returning call grows a fresh buffer (two allocations for
+            // these two large pairs with the current std growth policy).
+            assert!(fresh.count_total >= 1 && fresh.count_current == 0);
+            let reused = allocation_counter::measure(|| {
+                reader.try_latest_pairs_into(now, &targets, &mut retained_buffer);
+            });
+            assert_eq!(
+                (
+                    reused.count_total,
+                    reused.bytes_total,
+                    reused.count_current,
+                    reused.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        reader.try_latest_pairs_into(now, &targets, &mut retained_buffer);
+        assert_eq!(retained_buffer, pairs);
         control.set_targets(&requests[1..]).unwrap();
         let retained = reader.try_latest_pairs_at(now, control.desired_targets());
         assert_eq!(retained.len(), 1);

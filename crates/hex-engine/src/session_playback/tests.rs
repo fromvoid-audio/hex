@@ -2,6 +2,7 @@ use super::*;
 use crate::routed_midi_fixture;
 mod authored_history;
 mod cue;
+mod instrument_matrix_ramp;
 mod interactive_start;
 mod release_timeline;
 mod tempo_continuity;
@@ -13146,10 +13147,19 @@ fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
 #[path = "effect_tail_budget_tests.rs"]
 mod effect_tail_budget_tests;
 
+#[path = "idle_transition_tests.rs"]
+mod idle_transition_tests;
 #[path = "return_effect_tail_tests.rs"]
 mod return_effect_tail_tests;
 #[path = "saturator_tests.rs"]
 mod saturator_tests;
+#[path = "transition_busy_tests.rs"]
+mod transition_busy_tests;
+
+#[path = "eq8_mode_tests.rs"]
+mod eq8_mode_tests;
+#[path = "flexible_eq_mode_tests.rs"]
+mod flexible_eq_mode_tests;
 
 #[path = "compressor_tests.rs"]
 mod compressor_tests;
@@ -13170,6 +13180,9 @@ mod checkpoint_sources;
 
 #[path = "transport_loop_tests.rs"]
 mod transport_loop_tests;
+
+#[path = "pause_release_tests.rs"]
+mod pause_release_tests;
 
 #[path = "capture_tests.rs"]
 mod capture_tests;

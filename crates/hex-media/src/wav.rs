@@ -25,7 +25,10 @@
 //! explicit recovery decode keeps those frames, for fixed-frame encodings only.
 use crate::{ImportError, WavTruncation};
 use hex_engine::Audio;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::{
+    io::{Cursor, Read, Seek, SeekFrom},
+    sync::atomic::AtomicBool,
+};
 
 /// Decoded audio with its source sample rate and frame count.
 pub(super) type Decoded = (Audio, u32, usize);
@@ -380,8 +383,12 @@ fn scan_recoverable<R: Read + Seek>(
 }
 
 /// Decodes a complete resident WAV. Truncated or partial-frame data is refused.
-pub(super) fn decode(bytes: &[u8], max_frames: usize) -> Result<(Audio, u32, usize), ImportError> {
-    match decode_recoverable(bytes, max_frames)? {
+pub(super) fn decode(
+    bytes: &[u8],
+    max_frames: usize,
+    cancel: &AtomicBool,
+) -> Result<(Audio, u32, usize), ImportError> {
+    match decode_recoverable(bytes, max_frames, cancel)? {
         (decoded, None) => Ok(decoded),
         (_, Some(truncation)) => Err(ImportError::Truncated(truncation)),
     }
@@ -392,6 +399,7 @@ pub(super) fn decode(bytes: &[u8], max_frames: usize) -> Result<(Audio, u32, usi
 pub(super) fn decode_recoverable(
     bytes: &[u8],
     max_frames: usize,
+    cancel: &AtomicBool,
 ) -> Result<(Decoded, Option<WavTruncation>), ImportError> {
     let mut cursor = Cursor::new(bytes);
     let (layout, truncation) = scan_recoverable(&mut cursor, bytes.len() as u64, usize::MAX)?;
@@ -411,10 +419,11 @@ pub(super) fn decode_recoverable(
     let data = bytes
         .get(start..end)
         .ok_or(ImportError::Invalid("data chunk exceeds input"))?;
+    crate::cancelled(cancel)?;
     let decoded = if layout.format.samples_per_block != 0 {
-        crate::adpcm::decode(data, layout.format, frame_count)?
+        crate::adpcm::decode(data, layout.format, frame_count, cancel)?
     } else {
-        decode_samples(data, layout.format, frame_count)?
+        decode_samples(data, layout.format, frame_count, cancel)?
     };
     Ok((decoded, truncation))
 }
@@ -423,13 +432,20 @@ pub(super) fn decode_samples(
     data: &[u8],
     format: Format,
     frame_count: usize,
+    cancel: &AtomicBool,
 ) -> Result<(Audio, u32, usize), ImportError> {
     let mut frames = Vec::new();
     frames
         .try_reserve_exact(frame_count)
         .map_err(|_| ImportError::AllocationFailed)?;
-    for frame in data.chunks_exact(format.block_align) {
-        frames.push(decode_frame(frame, format)?);
+    let chunk_bytes = format
+        .block_align
+        .saturating_mul(crate::CANCEL_CHECK_FRAMES);
+    for chunk in data.chunks(chunk_bytes.max(1)) {
+        crate::cancelled(cancel)?;
+        for frame in chunk.chunks_exact(format.block_align) {
+            frames.push(decode_frame(frame, format)?);
+        }
     }
     let audio = Audio::new(format.sample_rate, frames)
         .map_err(|_| ImportError::Invalid("decoded samples are not valid finite audio"))?;

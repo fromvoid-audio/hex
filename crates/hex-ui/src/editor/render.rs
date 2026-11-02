@@ -16,6 +16,9 @@ use hex_project::Command;
 use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
 
+/// Status-bar disk-overload slot; fits the four-character `disk` label.
+pub(super) const DISK_OVERLOAD_WIDTH: f32 = 32.0;
+
 impl EditorView {
     pub(super) fn history_action(&mut self, request: SessionRequest, cx: &mut Context<Self>) {
         if !self.cancel_sampler_drafts(cx)
@@ -385,6 +388,7 @@ impl EditorView {
                 .into()
             }),
         );
+        bar = bar.child(disk_overload_slot(&self.disk_overload));
         if let Some(status) = self.audio_status() {
             let applied_audio = status.applied_revision.load(Relaxed);
             let misses = status.deadline_misses.load(Relaxed);
@@ -443,6 +447,36 @@ impl EditorView {
     }
 }
 
+/// Fixed-width disk-overload slot, so lighting it never shifts the bar. Its
+/// label and tooltip are lowercase app text through `theme::text`.
+fn disk_overload_slot(state: &super::disk_overload::DiskOverload) -> gpui::Stateful<gpui::Div> {
+    let slot = div()
+        .id("editor-disk-overload")
+        .debug_selector(|| "editor-disk-overload".into())
+        .w(px(DISK_OVERLOAD_WIDTH))
+        .h_full()
+        .flex_none()
+        .truncate()
+        .text_center();
+    if !state.shown() {
+        return slot;
+    }
+    let description = super::disk_overload::description(state.count());
+    slot.tooltip(move |_, cx| {
+        cx.new(|_| super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Identification,
+            description: description.clone().into(),
+        })
+        .into()
+    })
+    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+    .child(
+        div()
+            .debug_selector(|| "editor-disk-overload-lit".into())
+            .child(theme::text("disk")),
+    )
+}
+
 fn status_slot(
     id: &'static str,
     width: f32,
@@ -475,6 +509,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.wake_poll_if_busy();
         self.reconcile_update_ready(window, cx);
         #[cfg(all(test, feature = "ui-test-support"))]
         let _navigation_timer =
@@ -485,6 +520,7 @@ impl Render for EditorView {
         self.reconcile_project_open(window, cx);
         self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_leftover_recovery(window, cx);
+        self.reconcile_truncated_import_offer(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
         super::browser_input::restyle(&self.browser.search, cx);
@@ -567,6 +603,8 @@ impl Render for EditorView {
         let trim_pointer_entity = cx.entity();
         let midi_trim_pointer_entity = cx.entity();
         div()
+            // Pointer presses leave the idle poll cadence before any handler runs.
+            .capture_any_mouse_down(cx.listener(|view, _, _, _| view.wake_poll()))
             .when(crate::diagnostics::actions_enabled(cx), |root| {
                 root.capture_any_mouse_down(|event, _, cx| {
                     crate::diagnostics::record_pointer(

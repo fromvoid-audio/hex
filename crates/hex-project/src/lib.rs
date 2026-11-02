@@ -75,8 +75,9 @@ pub use audio_edit::{
     AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
     AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
     MAX_SOURCE_GAIN, ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode,
-    WarpSettings, audio_projection_beat, audio_projection_frame, audio_projection_frame_q32,
-    default_audio_warp, preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
+    WarpResampler, WarpSettings, audio_projection_beat, audio_projection_frame,
+    audio_projection_frame_q32, default_audio_warp, preview_audio_clip_stretch,
+    preview_audio_view_resize, preview_view_resize,
 };
 pub use clip_selection_edit::{ClipCommandScope, ClipEdit, WarpAdjustment};
 pub use content_window::{ContentWindow, RepeatBoundaryPlan};
@@ -128,7 +129,8 @@ pub use device::{
 mod edit;
 pub use clip_fragment::{preview_clip_fragment, preview_clip_fragment_with_tempo};
 pub use conversion::{
-    IDENTITY_CONVERSION, SINC_CONVERSION_V1, converted_frame_count, validate_conversion_metadata,
+    IDENTITY_CONVERSION, SINC_CONVERSION_V1, SINC_CONVERSION_V2, converted_frame_count,
+    import_conversion_version, validate_conversion_metadata,
 };
 mod history;
 mod instrument_history;
@@ -181,6 +183,8 @@ pub use session::{
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
 pub use history::Editor;
+mod import_existing;
+pub use import_existing::ExistingAudioPlacement;
 pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
 pub use midi::{
     MidiClip, MidiClipTrim, MidiContent, MidiNote, MidiOneShotBoundary, MidiSource,

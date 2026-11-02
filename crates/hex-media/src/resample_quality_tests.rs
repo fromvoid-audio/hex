@@ -183,3 +183,20 @@ fn resample_quality_report() {
         );
     }
 }
+
+#[test]
+fn saved_conversion_versions_select_their_law_and_unknown_versions_refuse() {
+    assert_eq!(
+        ResampleVersion::for_conversion(0).unwrap(),
+        ResampleVersion::V1
+    );
+    assert_eq!(
+        ResampleVersion::for_conversion(1).unwrap(),
+        ResampleVersion::V1
+    );
+    assert_eq!(
+        ResampleVersion::for_conversion(2).unwrap(),
+        ResampleVersion::V2
+    );
+    assert!(ResampleVersion::for_conversion(3).is_err());
+}

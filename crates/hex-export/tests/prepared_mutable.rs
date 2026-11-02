@@ -577,8 +577,13 @@ fn pcm16(bytes: &[u8]) -> Vec<i16> {
         .collect()
 }
 
-fn quantize(sample: f32) -> i16 {
-    (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16
+/// PCM16 export applies ±1 LSB TPDF dither: within one LSB of rounding.
+fn assert_near(actual: i16, sample: f32) {
+    let rounded = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i32;
+    assert!(
+        (i32::from(actual) - rounded).abs() <= 1,
+        "{actual} not within one lsb of {rounded}"
+    );
 }
 
 #[test]
@@ -606,13 +611,8 @@ fn prepared_mutable_hybrid_export_matches_independent_ordered_pcm_oracle() {
             257 => LEVEL * 0.25,
             _ => 0.0,
         };
-        assert_eq!(
-            frame,
-            [
-                quantize(index as f32 / 2048.0 + mutable * 0.5),
-                quantize(-(index as f32) / 4096.0 + mutable * 0.5),
-            ]
-        );
+        assert_near(frame[0], index as f32 / 2048.0 + mutable * 0.5);
+        assert_near(frame[1], -(index as f32) / 4096.0 + mutable * 0.5);
     }
     let repeated = dir.0.join("hybrid-repeat.wav");
     hex_export::render_prepared_new(&repeated, Arc::clone(&revision), 0, 300)
@@ -635,7 +635,7 @@ fn linear_export_ignores_transport_and_unused_session_loops_but_refuses_arrangem
     hex_export::render_prepared_new(&path, Arc::clone(&revision), 0, 300)
         .expect("transport and Session loops do not wrap an Arrangement export");
     let samples = pcm16(&fs::read(path).expect("read linear wav")[44..]);
-    assert_eq!(samples[150 * 2], quantize(150.0 / 2048.0 + LEVEL * 0.5));
+    assert_near(samples[150 * 2], 150.0 / 2048.0 + LEVEL * 0.5);
 
     let refused_path = dir.0.join("authored-loop.wav");
     let (revision, _) = prepared_hybrid(false, false, true);
@@ -793,7 +793,10 @@ fn arrangement_bounce_caps_actual_nonquiescent_tail_and_preserves_destinations()
     assert_eq!(report.frames, 320 + u64::from(RATE) * 30);
     assert_eq!(report.data_bytes, report.frames as u32 * 8);
     let bytes = fs::read(&path).unwrap();
-    assert_eq!(bytes.len(), 44 + report.frames as usize * 8);
+    assert_eq!(
+        bytes.len(),
+        hex_export::FLOAT32_WAV_HEADER_BYTES as usize + report.frames as usize * 8
+    );
     assert_eq!(
         u16::from_le_bytes(bytes[20..22].try_into().unwrap()),
         3,
@@ -855,7 +858,7 @@ fn arrangement_bounce_keeps_a_naturally_ending_tail_beyond_ten_seconds() {
     assert!(report.frames > u64::from(RATE) * 12);
     assert!(report.frames < u64::from(RATE) * 13);
     let bytes = fs::read(&path).unwrap();
-    let late = 44 + RATE as usize * 11 * 8;
+    let late = hex_export::FLOAT32_WAV_HEADER_BYTES as usize + RATE as usize * 11 * 8;
     assert!(
         bytes[late..late + 8]
             .chunks_exact(4)
@@ -906,8 +909,8 @@ fn arrangement_bounce_ignores_quiet_noise_without_trimming_selected_content() {
     assert_eq!(exact.frames, 1024);
     let bytes = fs::read(&path).unwrap();
     assert_eq!(
-        &bytes[44..],
-        &fs::read(exact_path).unwrap()[44..],
+        &bytes[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..],
+        &fs::read(exact_path).unwrap()[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..],
         "retained PCM is unchanged"
     );
     assert!(
@@ -945,7 +948,7 @@ fn arrangement_bounce_keeps_a_late_one_channel_echo_across_quiet_noise() {
         "retain fifty milliseconds after the late echo"
     );
     let bytes = fs::read(path).unwrap();
-    let sample_offset = 44 + echo_frame as usize * 8;
+    let sample_offset = hex_export::FLOAT32_WAV_HEADER_BYTES as usize + echo_frame as usize * 8;
     let left = f32::from_le_bytes(bytes[sample_offset..sample_offset + 4].try_into().unwrap());
     let right = f32::from_le_bytes(
         bytes[sample_offset + 4..sample_offset + 8]

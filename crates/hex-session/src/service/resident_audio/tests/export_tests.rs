@@ -121,6 +121,7 @@ fn ordinary_export_source_remains_charged_through_new_cancel_and_physical_comple
                 frames: Some(12),
                 signal: hex_export::ExportSignal::Main,
                 control: control.clone(),
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             },
         );
@@ -181,12 +182,14 @@ fn ordinary_export_source_remains_charged_through_new_cancel_and_physical_comple
                 .chunks_exact(4)
                 .map(|frame| i16::from_le_bytes([frame[0], frame[1]]))
                 .collect::<Vec<_>>();
-            assert_eq!(
-                left,
-                [
-                    4096, 6144, 8192, 10240, 12288, 14336, 16384, 12970, 9557, 6144, 2731, -683
-                ]
-            );
+            let expected = [
+                4096, 6144, 8192, 10240, 12288, 14336, 16384, 12970, 9557, 6144, 2731, -683,
+            ];
+            // PCM16 export applies ±1 LSB TPDF dither.
+            assert_eq!(left.len(), expected.len());
+            for (actual, expected) in left.iter().zip(expected) {
+                assert!((i32::from(*actual) - expected).abs() <= 1, "{left:?}");
+            }
         }
     }
 }

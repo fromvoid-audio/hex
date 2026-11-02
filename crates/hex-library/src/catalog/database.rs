@@ -109,7 +109,11 @@ impl SampleCatalog {
 
     /// This is a disposable index, never a project or user preferences file.
     /// A failed write leaves the previous complete cache intact.
-    pub fn save(&self, path: &Path) -> io::Result<()> {
+    ///
+    /// Returns `Ok(false)` without writing, syncing or touching the file's
+    /// modification time when `path` already holds exactly these encoded bytes,
+    /// so periodic rescans of an unchanged library cost no durable writes.
+    pub fn save(&self, path: &Path) -> io::Result<bool> {
         if self.entries.len() > MAX_SAMPLES {
             return Err(invalid());
         }
@@ -129,6 +133,9 @@ impl SampleCatalog {
             if bytes.len() > MAX_CATALOG_BYTES {
                 return Err(invalid());
             }
+        }
+        if holds_exactly(path, &bytes) {
+            return Ok(false);
         }
         let parent = path.parent().ok_or_else(invalid)?;
         fs::create_dir_all(parent)?;
@@ -157,8 +164,27 @@ impl SampleCatalog {
         if result.is_err() {
             let _ = fs::remove_file(temporary);
         }
-        result
+        result.map(|()| true)
     }
+}
+
+/// Whether `path` is a regular file whose contents equal `bytes`. Reads at most
+/// `bytes.len() + 1` bytes (itself bounded by `MAX_CATALOG_BYTES`); any error
+/// or difference answers `false`, so the caller writes a fresh cache.
+fn holds_exactly(path: &Path, bytes: &[u8]) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    if !file
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() == bytes.len() as u64)
+    {
+        return false;
+    }
+    let mut existing = Vec::with_capacity(bytes.len());
+    file.take(bytes.len() as u64 + 1)
+        .read_to_end(&mut existing)
+        .is_ok_and(|_| existing == bytes)
 }
 
 impl SampleCatalog {
