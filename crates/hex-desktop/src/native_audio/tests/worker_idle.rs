@@ -20,18 +20,32 @@ fn only_a_delivered_stopped_quiescent_output_reports_worker_idle() {
     let mut sink = NativeAudioSink::new(events);
     let backend = Arc::new(Mutex::new(None));
     let factory_backend = Arc::clone(&backend);
+    // Same retry contract as `Harness`: another fixture may still hold the
+    // process-wide output lease, so opening can take several polls.
     sink.output_factory = Some(Box::new(move |rate| {
-        let (output, callback) =
-            hex_audio::worker_fixture::open_with_reliable_action_outcomes(rate.unwrap_or(48000))?;
-        *factory_backend.lock().unwrap() = Some(callback);
-        Ok(Some(output))
+        match hex_audio::worker_fixture::open_with_reliable_action_outcomes(rate.unwrap_or(48000)) {
+            Ok((output, callback)) => {
+                *factory_backend.lock().unwrap() = Some(callback);
+                Ok(Some(output))
+            }
+            Err(error) if error == "audio output is open or still shutting down" => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }));
     assert!(sink.worker_idle(), "nothing to drive without an output");
     sink.canonical_changed(source);
     sink.request_open(Some(48000), None);
-    assert!(!sink.worker_idle(), "a pending open keeps the busy cadence");
-    sink.poll();
-    assert!(sink.output.is_some() && sink.output_generation.is_some());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    // Busy for every poll of the open, until the output is delivered.
+    while sink.output_generation.is_none() {
+        assert!(!sink.worker_idle(), "a pending open keeps the busy cadence");
+        assert!(Instant::now() < deadline, "fixture output did not open");
+        sink.poll();
+        if sink.output_generation.is_none() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    assert!(sink.output.is_some(), "{:?}", sink.open_error);
     let opened = receiver.try_recv().unwrap();
     assert!(matches!(opened, EditorAudioEvent::Opened { .. }));
     assert!(sink.worker_idle(), "delivered and stopped");
