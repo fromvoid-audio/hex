@@ -2856,6 +2856,7 @@ dependencies = [
  "hex-session",
  "hex-tuning",
  "hex-widgets",
+ "image",
  "resvg",
  "serde_json",
  "usvg",

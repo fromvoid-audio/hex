@@ -402,6 +402,7 @@ pub(super) fn midi_trim_note_shapes(
         visible_start,
         visible_end,
         merge_frames,
+        false,
     )
     .unwrap_or_default()
     .into_iter()
@@ -2240,18 +2241,78 @@ impl EditorView {
                 );
                 // Every visible repeat's notes come from the playback plan,
                 // unsampled; same-pitch notes within one device pixel merge.
-                let (note_shapes, fit) = self.loop_note_shapes(
-                    &state.project,
-                    clip,
-                    visible_start,
-                    visible_end,
-                    super::midi_loop_notes::merge_frames(
-                        visible_end.saturating_sub(visible_start),
-                        pixel_width,
-                        scale_factor,
-                    ),
+                let merge_frames = super::midi_loop_notes::merge_frames(
+                    visible_end.saturating_sub(visible_start),
+                    pixel_width,
+                    scale_factor,
                 );
-                let (notes, _) = midi_note_body(midi_clip_id, note_shapes, fit, false);
+                let visible = match self.midi_visible_notes.try_borrow_mut() {
+                    Ok(mut cache) => cache.get_tiled(
+                        &state.project,
+                        clip,
+                        visible_start,
+                        visible_end,
+                        merge_frames,
+                    ),
+                    // Re-entrant build: compute without the cache.
+                    Err(_) => super::midi_loop_notes::visible_notes_tiled(
+                        &state.project,
+                        clip,
+                        visible_start,
+                        visible_end,
+                        merge_frames,
+                    )
+                    .ok()
+                    .map(std::rc::Rc::new),
+                };
+                let fit = visible.as_ref().map_or_else(
+                    || super::midi_thumbnail::PitchFit::from_pitches([]),
+                    |visible| visible.fit,
+                );
+                let note_shapes = visible
+                    .iter()
+                    .flat_map(|visible| visible.intervals.iter())
+                    .filter_map(|&(start, end, pitch)| {
+                        super::midi_thumbnail::note_shape(
+                            start,
+                            end,
+                            pitch,
+                            visible_start,
+                            visible_end,
+                        )
+                    });
+                let (mut notes, _) = midi_note_body(midi_clip_id, note_shapes, fit, false);
+                // Tileable repeats paint one rasterized period per repeat.
+                if let Some(visible) = visible.filter(|visible| visible.tiles.is_some()) {
+                    let images = std::rc::Rc::clone(&self.midi_tile_images);
+                    let project = std::sync::Arc::clone(&state.project);
+                    notes = notes.child(
+                        div()
+                            .debug_selector(move || {
+                                format!("clip-note-tiles-{}", midi_clip_id.value())
+                            })
+                            .absolute()
+                            .inset_0()
+                            .child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, window, _| {
+                                        super::midi_loop_notes::paint_tiles(
+                                            window,
+                                            &images,
+                                            &project,
+                                            midi_clip_id,
+                                            &visible,
+                                            bounds,
+                                            (visible_start, visible_end),
+                                        );
+                                    },
+                                )
+                                .absolute()
+                                .inset_0(),
+                            ),
+                    );
+                }
                 midi = midi.child(loop_handles::body(
                     clip_waveform_body(notes),
                     clip.looping(),
