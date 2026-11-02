@@ -29,22 +29,23 @@ use hex_session::service::{
     diagnostics::{DiagnosticObserver, DiagnosticStage},
 };
 
-const PHASES: [&str; 6] = [
+const PHASES: [&str; 7] = [
     "worker_us",
     "section_fence_us",
     "section_edit_us",
     "section_prepare_us",
     "section_publish_us",
     "section_finish_us",
+    "section_view_us",
 ];
 
 /// One completed request: client-observed total and worker phase fields.
 struct Sample {
     total: Duration,
-    phases: [Option<u64>; 6],
+    phases: [Option<u64>; 7],
 }
 
-fn parse_phases(details: &str) -> [Option<u64>; 6] {
+fn parse_phases(details: &str) -> [Option<u64>; 7] {
     PHASES.map(|name| {
         details.split_whitespace().find_map(|field| {
             field
@@ -53,6 +54,14 @@ fn parse_phases(details: &str) -> [Option<u64>; 6] {
                 .and_then(|value| value.parse().ok())
         })
     })
+}
+
+#[test]
+fn section_benchmark_parses_view_phase() {
+    let phases = parse_phases("worker_us=20 section_view_us=7");
+    assert_eq!(phases[0], Some(20));
+    assert_eq!(phases[6], Some(7));
+    assert_eq!(phases[1], None);
 }
 
 fn open_copy(h: &mut ResidentHarness, path: PathBuf) -> Event {
