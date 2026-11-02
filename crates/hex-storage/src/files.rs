@@ -18,7 +18,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Project, StorageError> {
 /// Opaque exact-byte content snapshot, shared cheaply between owners.
 /// This is a content check, not a filesystem lock, identity or overwrite permit.
 #[derive(Clone)]
-pub struct FileToken(pub(super) Arc<[u8]>, bool);
+pub struct FileToken(pub(super) Arc<[u8]>, Option<u32>);
 
 impl std::fmt::Debug for FileToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -29,11 +29,24 @@ impl std::fmt::Debug for FileToken {
 }
 
 impl FileToken {
-    /// True when saving would replace an older schema with the current format.
+    /// True when the file is older than [`crate::CURRENT_SCHEMA_VERSION`], so
+    /// saving any project over it writes a format older readers cannot open.
     /// Tokens are constructed only after validated decoding or current encoding;
     /// an unexpected header conservatively requires confirmation too.
     pub fn requires_format_upgrade(&self) -> bool {
-        self.1
+        self.1.is_none_or(|version| {
+            version != crate::CURRENT_SCHEMA_VERSION && version != crate::SINC_V2_SCHEMA_VERSION
+        })
+    }
+
+    /// True when saving `project` writes a newer schema than this file's, for
+    /// example adding sinc v2 media to a schema63 file. Compares the actual
+    /// saved formats, not application versions.
+    fn requires_schema_upgrade_for(&self, project: &Project) -> bool {
+        self.requires_format_upgrade()
+            || self
+                .1
+                .is_none_or(|version| version < crate::schema_version_for(project))
     }
 
     /// Control-side preflight for replacing a file an older reader could open.
@@ -52,7 +65,7 @@ impl FileToken {
         project: &Project,
         limit: usize,
     ) -> Result<bool, StorageError> {
-        Ok(self.requires_format_upgrade()
+        Ok(self.requires_schema_upgrade_for(project)
             || (self.0.len() <= limit && encode(project)?.len() > limit))
     }
 
@@ -61,10 +74,10 @@ impl FileToken {
         struct Header {
             version: u32,
         }
-        let upgrade = serde_json::from_slice::<Header>(&bytes).map_or(true, |header| {
-            header.version != crate::CURRENT_SCHEMA_VERSION
-        });
-        Self(bytes, upgrade)
+        let version = serde_json::from_slice::<Header>(&bytes)
+            .ok()
+            .map(|header| header.version);
+        Self(bytes, version)
     }
 
     /// Compare the current document with the captured bytes without modifying it.
