@@ -2879,6 +2879,42 @@ impl RendererRuntime {
                 .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
     }
 
+    /// Whether a same-identity chain must defer this handoff until the
+    /// predecessor's committed live transitions drain (Pulse #4178). Pairs
+    /// chains exactly as `can_inherit_from`; read-only and allocation-free.
+    pub(crate) fn transition_busy_from(
+        &self,
+        project: &Project,
+        previous: &Self,
+        previous_project: &Project,
+    ) -> bool {
+        let tracks = project.tracks().iter().enumerate().any(|(index, track)| {
+            track.canonical_track_id().is_some_and(|track_id| {
+                previous_project
+                    .tracks()
+                    .iter()
+                    .position(|old| old.canonical_track_id() == Some(track_id))
+                    .and_then(|old| previous.device_chains.get(old))
+                    .zip(self.device_chains.get(index))
+                    .is_some_and(|(old, candidate)| candidate.transition_busy_from(old))
+            })
+        });
+        let returns = project
+            .return_buses()
+            .iter()
+            .enumerate()
+            .any(|(index, bus)| {
+                previous_project
+                    .return_buses()
+                    .iter()
+                    .position(|old| old.id == bus.id)
+                    .and_then(|old| previous.return_chains.get(old))
+                    .zip(self.return_chains.get(index))
+                    .is_some_and(|(old, candidate)| candidate.transition_busy_from(old))
+            });
+        tracks || returns || self.main_chain.transition_busy_from(&previous.main_chain)
+    }
+
     pub(crate) fn can_inherit_from(
         &self,
         project: &Project,
