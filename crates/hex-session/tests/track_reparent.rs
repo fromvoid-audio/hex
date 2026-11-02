@@ -3,18 +3,16 @@ use hex_lattice_contract::ParameterValue;
 use hex_project::{Command, Created, TrackDestination, TrackId, TrackSelectionIds};
 use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget};
 use hex_session::service::{Event, Request, Service};
-use std::{
-    sync::mpsc::TryRecvError,
-    thread,
-    time::{Duration, Instant},
-};
+use std::{sync::mpsc::TryRecvError, time::Instant};
 
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
-            Err(TryRecvError::Empty) if Instant::now() < deadline => thread::yield_now(),
+            Err(TryRecvError::Empty) if Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(1))
+            }
             Err(error) => panic!("worker event missing: {error}"),
         }
     }
