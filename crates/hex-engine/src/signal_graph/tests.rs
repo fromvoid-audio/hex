@@ -1395,7 +1395,7 @@ fn zero_latency_audio_feed_and_device_insertion_adopt_fresh_empty_delay_layouts_
 }
 
 #[test]
-fn zero_latency_routed_tempo_edit_preserves_pcm_while_positive_history_refuses_atomically() {
+fn zero_latency_routed_tempo_edit_keeps_beat_while_positive_history_refuses_atomically() {
     for latency in [0, 7] {
         let mut f = fixture(&[&[latency], &[]], 17);
         f.editor
@@ -1412,15 +1412,24 @@ fn zero_latency_routed_tempo_edit_preserves_pcm_while_positive_history_refuses_a
             runtime.apply(SessionPlaybackCommand::Play).unwrap();
             runtime.render(&mut [[0.0; 2]; 4]).unwrap();
         }
+        let beat = f.editor.project().tempo_map().frame_to_beat(4).unwrap();
         f.editor
             .execute(Command::SetTempoPoint {
                 beat: hex_project::BeatTime::ZERO,
                 tempo: hex_project::Tempo::new(90_000_000).unwrap(),
             })
             .unwrap();
-        let mut candidate = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+        let new_revision = prepare(&f).unwrap();
+        let mut candidate = SessionPlayback::new(Arc::clone(&new_revision)).unwrap();
         if latency == 0 {
             candidate.try_inherit_state_from(&mut old).unwrap();
+            let mapped = f.editor.project().tempo_map().beat_to_frame(beat).unwrap();
+            assert_eq!(candidate.arrangement_frame(), mapped);
+            reference = SessionPlayback::new(new_revision).unwrap();
+            reference.apply(SessionPlaybackCommand::Play).unwrap();
+            reference
+                .render(&mut vec![[0.0; 2]; mapped as usize])
+                .unwrap();
         } else {
             assert!(candidate.try_inherit_state_from(&mut old).is_err());
             assert_eq!(old.performance_frame(), 4);

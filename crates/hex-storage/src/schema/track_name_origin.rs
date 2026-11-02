@@ -29,8 +29,10 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: Value) -> Result<Project, StorageError> {
     if value.get("version").and_then(Value::as_u64) != Some(63) {
         return Err(StorageError::Invalid("invalid track name origin schema"));
     }
@@ -41,7 +43,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "automatic track name inventory missing",
         ))?;
     value["version"] = 62.into();
-    let project = super::midi_clip_gain::decode(&serde_json::to_vec(&value)?)?;
+    let project = super::midi_clip_gain::decode_value(value)?;
     let rows = raw.as_array().ok_or(StorageError::Invalid(
         "invalid automatic track name inventory",
     ))?;

@@ -244,3 +244,5 @@ mod eq_allocation;
 mod owned_effect_allocation;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod resource_borrow_allocation;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod transition_admission_allocation;
