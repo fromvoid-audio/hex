@@ -7135,14 +7135,16 @@ fn run_worker(
             }
             revision = revision.saturating_add(1);
             midi_preview = Arc::clone(prepared.midi_preview());
-            state = view_state(
-                &session,
-                Arc::clone(&midi_preview),
-                revision,
-                project_generation,
-                unsaved,
-                document.as_ref().map(|handle| handle.path.as_path()),
-            );
+            state = events.measure_section_view(|| {
+                view_state(
+                    &session,
+                    Arc::clone(&midi_preview),
+                    revision,
+                    project_generation,
+                    unsaved,
+                    document.as_ref().map(|handle| handle.path.as_path()),
+                )
+            });
             compiled = Some((revision, Arc::clone(&prepared)));
             Some(prepared)
         } else {

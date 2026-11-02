@@ -311,12 +311,17 @@ fn parked_wait_is_reported_apart_from_the_dispatched_section_phases() {
     };
     let parked = field("section_parked_us");
     let worker = field("worker_us");
+    assert!(
+        field("section_view_us") > 0,
+        "view construction is measured: {details}"
+    );
     let dispatched: u64 = [
         "section_fence_us",
         "section_edit_us",
         "section_prepare_us",
         "section_publish_us",
         "section_finish_us",
+        "section_view_us",
     ]
     .iter()
     .map(|name| field(name))
@@ -325,5 +330,33 @@ fn parked_wait_is_reported_apart_from_the_dispatched_section_phases() {
     assert!(
         dispatched <= worker,
         "phases {dispatched} within worker {worker}: {details}"
+    );
+    outcomes.lock().unwrap().clear();
+    fixture
+        .service
+        .submit(Request::EditArrangementSection {
+            project_generation: 0,
+            revision: edit.state.revision,
+            command: Command::AddArrangementSection {
+                name: "invalid".into(),
+                color: hex_project::ElementColor::Rose,
+                start: hex_project::BeatTime::ZERO,
+                end: hex_project::BeatTime::ZERO,
+            },
+        })
+        .unwrap();
+    let refused = fixture.receive();
+    assert!(refused.error.is_some());
+    let details = outcomes
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .expect("refused outcome");
+    assert!(
+        details
+            .split_whitespace()
+            .any(|field| field == "section_view_us=0"),
+        "{details}"
     );
 }

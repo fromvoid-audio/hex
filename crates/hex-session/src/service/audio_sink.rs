@@ -591,6 +591,19 @@ impl WorkerEvents {
             self.section_phases = Some(phases);
         }
     }
+    /// Time a section request's post-transition view construction only when
+    /// its diagnostic phase record exists. The work remains on the worker.
+    pub(super) fn measure_section_view<T>(&mut self, build: impl FnOnce() -> T) -> T {
+        let started = self
+            .section_phases
+            .as_ref()
+            .map(|_| std::time::Instant::now());
+        let result = build();
+        if let (Some(phases), Some(started)) = (&mut self.section_phases, started) {
+            phases.view += started.elapsed();
+        }
+        result
+    }
     pub(super) fn begin_request(
         &mut self,
         document_intent: &Arc<std::sync::atomic::AtomicU64>,
