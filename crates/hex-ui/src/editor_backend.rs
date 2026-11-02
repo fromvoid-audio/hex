@@ -57,6 +57,10 @@ pub enum EditorAudioEvent {
         output_identity: u64,
         state: EditorPublicationState,
     },
+    /// The default output device or its nominal rate changed after this
+    /// output opened. The UI moves to the new route through the same
+    /// recovery as restart audio. Sent at most once per output.
+    OutputRouteChanged { output_identity: u64 },
 }
 
 /// UI-safe summary of a worker-owned publication attempt.
