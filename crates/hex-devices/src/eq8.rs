@@ -494,7 +494,18 @@ pub struct Eq8Runtime {
     mode_fade: ModeFade,
 }
 
-const COEFFICIENT_SMOOTH_FRAMES: u16 = 256;
+/// Coefficient and output-gain smoothing lasts 256 frames at the 48 kHz
+/// reference rate (16/3 ms). Other rates scale the frame count so the
+/// smoothing time is the same everywhere (43 frames at 8 kHz, 1024 at 192 kHz).
+const COEFFICIENT_SMOOTH_REFERENCE_FRAMES: u32 = 256;
+const COEFFICIENT_SMOOTH_REFERENCE_RATE: u32 = 48_000;
+
+/// Frames for one coefficient handoff at `sample_rate`; at least one frame.
+fn coefficient_smooth_frames(sample_rate: u32) -> u16 {
+    let frames = u64::from(sample_rate) * u64::from(COEFFICIENT_SMOOTH_REFERENCE_FRAMES);
+    let frames = frames.div_ceil(u64::from(COEFFICIENT_SMOOTH_REFERENCE_RATE));
+    u16::try_from(frames).unwrap_or(u16::MAX).max(1)
+}
 
 /// Frames for a channel-mode crossfade: 256 at 48 kHz, scaled by rate.
 fn mode_fade_frames(sample_rate: u32) -> u32 {
@@ -719,7 +730,7 @@ impl Eq8Runtime {
             self.smooth_remaining = if same_target {
                 previous.smooth_remaining
             } else {
-                COEFFICIENT_SMOOTH_FRAMES
+                coefficient_smooth_frames(self.sample_rate)
             };
             self.coefficients = previous.coefficients;
             self.history = previous.history;

@@ -1091,3 +1091,71 @@ fn channel_mode_switch_crossfades_without_a_discontinuity() {
         }
     }
 }
+
+/// Pulse #3961: handoff smoothing lasts the same time at every rate, so the
+/// per-sample output-gain step shrinks as the rate grows.
+#[test]
+fn handoff_smoothing_time_is_rate_independent_with_bounded_gain_steps() {
+    let old_state = EQ8_DEFINITION.default_state().unwrap();
+    let new_state = EQ8_DEFINITION
+        .patch_parameter(
+            &old_state,
+            parameter::OUTPUT_GAIN,
+            ParameterValue::Float(1.5),
+        )
+        .unwrap();
+    let reference_seconds = 256.0 / 48_000.0;
+    for rate in [8_000, 44_100, 48_000, 96_000, 192_000] {
+        let old = PreparedEq8::new(decode(&old_state).unwrap(), rate)
+            .unwrap()
+            .runtime();
+        let prepared = PreparedEq8::new(decode(&new_state).unwrap(), rate).unwrap();
+        let step = (prepared.output_gain - old.current_gain).abs();
+        let mut runtime = prepared.runtime();
+        assert!(runtime.inherit_history_from(&old));
+        let frames = usize::from(runtime.smooth_remaining);
+        assert!(
+            (frames as f64 / f64::from(rate) - reference_seconds).abs() <= 1.0 / f64::from(rate),
+            "rate={rate}: {frames} frames"
+        );
+        let mut chunked = prepared.runtime();
+        assert!(chunked.inherit_history_from(&old));
+        let mut whole_audio = vec![[0.25_f32, -0.125]; frames + 8];
+        let mut chunked_audio = whole_audio.clone();
+        let mut previous = runtime.current_gain;
+        let mut largest = 0.0_f64;
+        for frame in whole_audio.iter_mut() {
+            runtime.process(std::slice::from_mut(frame));
+            largest = largest.max((runtime.current_gain - previous).abs());
+            previous = runtime.current_gain;
+        }
+        let mut offset = 0;
+        for size in [1_usize, 7, 64, 128].into_iter().cycle() {
+            if offset == chunked_audio.len() {
+                break;
+            }
+            let end = (offset + size).min(chunked_audio.len());
+            chunked.process(&mut chunked_audio[offset..end]);
+            offset = end;
+        }
+        assert_eq!(whole_audio, chunked_audio, "rate={rate}");
+        let mut last_output = 0.25_f64 * old.current_gain;
+        for frame in &whole_audio {
+            let output = f64::from(frame[0]);
+            assert!(
+                (output - last_output).abs() <= 0.25 * step / frames as f64 + 1.0e-7,
+                "rate={rate}: audible gain step exceeded the ramp"
+            );
+            last_output = output;
+        }
+        assert!((last_output - 0.25 * runtime.target_gain).abs() < 1.0e-7);
+        assert_eq!(runtime.smooth_remaining, 0);
+        assert_eq!(runtime.current_gain, runtime.target_gain);
+        assert!(
+            largest <= step / frames as f64 * (1.0 + 1.0e-9),
+            "rate={rate}: step {largest} over {frames} frames"
+        );
+    }
+    assert_eq!(coefficient_smooth_frames(48_000), 256);
+    assert_eq!(coefficient_smooth_frames(192_000), 1_024);
+}
