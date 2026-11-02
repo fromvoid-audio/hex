@@ -1499,6 +1499,50 @@ impl WorkerAudioSink for NativeAudioSink {
         }
         self.flush_events();
     }
+    /// Idle only with every poll-driven duty quiescent (#4574): no open,
+    /// queued event, sampler, section/sampler edit, plugin or resident work,
+    /// no VerifiedStreaming page driving, and an opened output that is
+    /// delivered, stopped and has applied its latest resident submission.
+    /// Any doubt keeps the busy cadence; transport commands reach the
+    /// callback through the UI client, so stopped playback cannot be starved.
+    fn worker_idle(&mut self) -> bool {
+        let quiescent = !self.open_pending
+            && self.opening.is_none()
+            && self.open_error.is_none()
+            && self.pending_open_event.is_none()
+            && self.pending_observation.is_none()
+            && self.pending_status_observation.is_none()
+            && self.pending_route_event.is_none()
+            && self.pending_degraded_event.is_none()
+            && self.sampler.is_none()
+            && self.sampler_parameter.is_none()
+            && self.sampler_budget_wait.is_none()
+            && self.section_edit.is_none()
+            && self.preparation.is_none()
+            && self.resident.pending.is_none()
+            && self.resident.retired.is_none()
+            && self.plugins.idle()
+            && self
+                .desired
+                .as_ref()
+                .is_none_or(|source| source.audio_mode() != DocumentAudioMode::VerifiedStreaming);
+        let Some(output) = self.output.as_mut() else {
+            return quiescent;
+        };
+        let Some(status) = output.publication.control().map(|control| &control.status) else {
+            return false;
+        };
+        let applied = status.applied_revision.load(Acquire);
+        quiescent
+            && self.output_generation.is_some()
+            && !status.playing.load(Acquire)
+            && self.resident.current_submission.is_none_or(|submitted| {
+                submitted.audio_revision == applied
+                    || status
+                        .rejected_revision()
+                        .is_some_and(|(revision, _)| revision == submitted.audio_revision)
+            })
+    }
     fn close(&mut self) {
         self.shutdown_sampler();
         self.relinquish_output();
@@ -1515,14 +1559,16 @@ pub(super) fn backend(
         .map_err(StartupFailure::at(Stage::AudioPolicy))?
         .resident_native;
     let (events, audio_events) = mpsc::sync_channel(4);
-    let recovery = hex_session::service::untitled_recovery_path()
+    // This instance's own untitled slot, held for the service's lifetime so a
+    // concurrently running hex never checkpoints into it (Pulse #3948).
+    let recovery = hex_session::service::claim_untitled_recovery_slot()
         .map_err(StartupFailure::at(Stage::RecoveryLocation))?;
     let mut sink = NativeAudioSink::new(events);
     sink.audio_diagnostics = flags;
-    let service = Service::with_audio_sink_and_native_reservation(
+    let service = Service::with_audio_sink_and_claimed_recovery(
         32,
         MAX_RESIDENT_FRAMES,
-        Some(recovery),
+        recovery,
         Box::new(sink),
         resident_native,
     )

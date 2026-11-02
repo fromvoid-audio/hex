@@ -66,6 +66,10 @@ pub(crate) struct Lane {
     rejected: Option<ResidentArrangementSeekResult>,
 }
 impl Lane {
+    /// An admitted job or an undelivered rejection still needs worker polls.
+    pub(super) fn pending(&self) -> bool {
+        self.rejected.is_some() || self.active.iter().any(Option::is_some)
+    }
     pub(super) fn views(&self) -> impl Iterator<Item = DeviceResourceAdmission<'_>> {
         self.active.iter().flatten().map(|job| {
             DeviceResourceAdmission::prepared_on_control(
