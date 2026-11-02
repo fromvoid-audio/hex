@@ -65,6 +65,8 @@ impl StreamPlayback<'_> {
                 sampler_console: false,
                 route_state_generation: r.session_route_state_generation(),
                 route_count: r.session_route_count(),
+                main_output_latency_frames: r.main_output_latency_frames(),
+                content_loop: r.automation_capture_loop(),
             }),
         }
     }
@@ -78,6 +80,17 @@ impl StreamPlayback<'_> {
         match &mut self.runtime {
             Runtime::Constructor(r) => r.apply_action(action),
             Runtime::Ordinary(r, _) => r.try_apply_action(action),
+        }
+    }
+    /// `apply_action` with the transport declick, so a ready streamed Play
+    /// from a paused position ramps in like the resident path.
+    pub fn apply_declicked_action(
+        &mut self,
+        action: PlaybackAction,
+    ) -> Result<(), PlaybackActionError> {
+        match &mut self.runtime {
+            Runtime::Constructor(r) => r.apply_declicked_action(action),
+            Runtime::Ordinary(r, _) => r.try_apply_declicked_action(action),
         }
     }
     pub fn prepare_stream_action(
