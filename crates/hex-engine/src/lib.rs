@@ -2879,6 +2879,44 @@ impl RendererRuntime {
                 .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
     }
 
+    /// Settle this paused (previous) linear graph's committed transitions
+    /// that `candidate` is busy from (Pulse #4558), pairing chains exactly as
+    /// `transition_busy_from`; bounded and allocation-free.
+    pub(crate) fn settle_idle_transitions_for(
+        &mut self,
+        project: &Project,
+        candidate: &Self,
+        candidate_project: &Project,
+    ) {
+        for (index, track) in candidate_project.tracks().iter().enumerate() {
+            let Some(track_id) = track.canonical_track_id() else {
+                continue;
+            };
+            if let Some((old, chain)) = project
+                .tracks()
+                .iter()
+                .position(|old| old.canonical_track_id() == Some(track_id))
+                .and_then(|old| self.device_chains.get_mut(old))
+                .zip(candidate.device_chains.get(index))
+            {
+                old.settle_idle_transitions_for(chain);
+            }
+        }
+        for (index, bus) in candidate_project.return_buses().iter().enumerate() {
+            if let Some((old, chain)) = project
+                .return_buses()
+                .iter()
+                .position(|old| old.id == bus.id)
+                .and_then(|old| self.return_chains.get_mut(old))
+                .zip(candidate.return_chains.get(index))
+            {
+                old.settle_idle_transitions_for(chain);
+            }
+        }
+        self.main_chain
+            .settle_idle_transitions_for(&candidate.main_chain);
+    }
+
     /// Whether a same-identity chain must defer this handoff until the
     /// predecessor's committed live transitions drain (Pulse #4178). Pairs
     /// chains exactly as `can_inherit_from`; read-only and allocation-free.

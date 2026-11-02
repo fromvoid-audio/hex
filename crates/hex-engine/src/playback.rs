@@ -6,6 +6,8 @@ use crate::{
 use std::sync::Arc;
 
 mod candidate_storage;
+#[cfg(test)]
+mod idle_transition_tests;
 mod metronome;
 mod transport_fade;
 pub use transport_fade::TransportFadeCompletion;
@@ -1993,13 +1995,27 @@ impl Playback {
             (None, None) => {
                 if let (Some(candidate), Some(old)) = (
                     self.linear_runtime.as_ref(),
-                    previous.linear_runtime.as_ref(),
+                    previous.linear_runtime.as_mut(),
                 ) && candidate.transition_busy_from(&self.project, old, &previous.project)
                 {
-                    // Pulse #4178: defer; never refuse into a fresh history.
-                    return Err(PlaybackHandoffError::Session(
-                        crate::SessionPlaybackError::DeviceTransitionBusy,
-                    ));
+                    // Pulse #4558: a paused linear graph renders nothing, so
+                    // settle its inaudible transitions instead of deferring
+                    // forever; resume ramps in from silence.
+                    if !previous.playing {
+                        old.settle_idle_transitions_for(
+                            &previous.project,
+                            candidate,
+                            &self.project,
+                        );
+                    }
+                    if previous.playing
+                        || candidate.transition_busy_from(&self.project, old, &previous.project)
+                    {
+                        // Pulse #4178: defer; never refuse into a fresh history.
+                        return Err(PlaybackHandoffError::Session(
+                            crate::SessionPlaybackError::DeviceTransitionBusy,
+                        ));
+                    }
                 }
                 if let (Some(candidate), Some(old)) = (
                     self.linear_runtime.as_ref(),

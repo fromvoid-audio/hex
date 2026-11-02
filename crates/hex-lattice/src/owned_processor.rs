@@ -150,6 +150,12 @@ pub trait OwnedProcessorRuntime: Any + Send {
     fn transition_busy_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {
         false
     }
+    /// Owned counterpart of `NativeProcessorRuntime::settle_idle_transitions`
+    /// (Pulse #4558): settle the COMMITTED history (and any speculative copy).
+    /// The default resets, like the native default.
+    fn settle_idle_transitions(&mut self) {
+        self.reset();
+    }
     /// Optional selector capability must update both histories atomically.
     fn transient_audition(&mut self) -> Option<&mut dyn NativeProcessorAudition> {
         None

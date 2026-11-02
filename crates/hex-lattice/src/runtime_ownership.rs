@@ -197,6 +197,19 @@ impl RuntimeOwnership {
             _ => false,
         }
     }
+    /// Settle pending live transitions while the graph renders nothing
+    /// (Pulse #4558). Legacy settles both twins; the next `begin` copies the
+    /// committed one anyway.
+    pub(super) fn settle_idle_transitions(&mut self) {
+        match self {
+            Self::Legacy { primary, scratch } => {
+                primary.settle_idle_transitions();
+                scratch.settle_idle_transitions();
+            }
+            Self::Owned(v) => v.settle_idle_transitions(),
+            Self::Foreign(_) | Self::Memoryless => {}
+        }
+    }
     pub(super) fn inherit_from(&mut self, old: &Self) {
         match (self, old) {
             (Self::Foreign(new), Self::Foreign(old)) if new.prepared == old.prepared => {

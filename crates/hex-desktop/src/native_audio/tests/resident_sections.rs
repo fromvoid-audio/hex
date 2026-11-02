@@ -775,8 +775,29 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             .tempo_map()
             .beat_to_frame(BeatTime::from_quarters(2).unwrap())
             .unwrap();
+        // Every pass after the first also carries the previous pass's voice,
+        // gated at the seam, through the prepared ~2 ms declick floor (96
+        // frames at 48 kHz). The loop is a whole number of source periods,
+        // so that tail keeps the same phase. These checks all run after the
+        // first seam whenever the position is inside that tail.
+        let release_floor = 96;
         let expected_from_start = |start: u64| -> [hex_engine::Frame; 64] {
-            std::array::from_fn(|i| source_period[((start + i as u64) % loop_frames % 64) as usize])
+            std::array::from_fn(|i| {
+                let position = (start + i as u64) % loop_frames;
+                let frame = source_period[(position % 64) as usize];
+                let tail = 1.0 - position.min(release_floor) as f32 / release_floor as f32;
+                [frame[0] * (1.0 + tail), frame[1] * (1.0 + tail)]
+            })
+        };
+        // Two summed voices round differently from the single-voice product.
+        let assert_near = |actual: [hex_engine::Frame; 64], start: u64, context: &str| {
+            let expected = expected_from_start(start);
+            for (index, (a, e)) in actual.iter().zip(&expected).enumerate() {
+                assert!(
+                    (a[0] - e[0]).abs() < 1e-6 && (a[1] - e[1]).abs() < 1e-6,
+                    "{context} frame {index} from {start}: {a:?} != {e:?}"
+                );
+            }
         };
         let expected_at = |end: u64| {
             let start = (end + loop_frames - 64) % loop_frames;
@@ -930,7 +951,7 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                 before_status.performance_frame.load(Acquire),
             );
             if unchanged_prefix {
-                assert_eq!(before_pcm, expected_from_start(before_frame));
+                assert_near(before_pcm, before_frame, "before");
                 assert_eq!(before_pcm, expected_at(before_clock.0));
             }
             let request = if matches!(&command, Command::RenameTrack { .. }) {
@@ -961,7 +982,7 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
             let heard = h.render();
             assert!(heard.iter().flatten().any(|s| *s != 0.0));
             if unchanged_prefix {
-                assert_eq!(heard, expected_from_start(heard_frame));
+                assert_near(heard, heard_frame, "heard");
                 let status = h.audio.as_ref().unwrap().status().unwrap();
                 let after_clock = (
                     status.position.load(Acquire),
@@ -972,10 +993,12 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                     after_clock.0,
                     (before_clock.0 + after_clock.1 - before_clock.1) % loop_frames
                 );
-                assert_eq!(
+                assert_near(
                     heard,
-                    expected_at(after_clock.0),
-                    "metadata or duplicating later music must retain exact source phase and amplitude at the continuous loop clock: before={before_clock:?}, after={after_clock:?}, loop={loop_frames}"
+                    (after_clock.0 + loop_frames - 64) % loop_frames,
+                    &format!(
+                        "metadata or duplicating later music must retain exact source phase and amplitude at the continuous loop clock: before={before_clock:?}, after={after_clock:?}, loop={loop_frames}"
+                    ),
                 );
             }
             // A new loop pass dispatches the shortened prefix signature. Undo
@@ -1000,10 +1023,10 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                     .unwrap()
                     .position
                     .load(Acquire);
-                assert_eq!(
+                assert_near(
                     h.render(),
-                    expected_from_start(start),
-                    "Undo must preserve the original sampler phase without a second NoteOn"
+                    start,
+                    "Undo must preserve the original sampler phase without a second NoteOn",
                 );
             }
         }

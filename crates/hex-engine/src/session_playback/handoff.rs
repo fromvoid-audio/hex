@@ -414,6 +414,44 @@ impl SessionPlayback {
             });
         tracks || returns || self.main_chain.transition_busy_from(&previous.main_chain)
     }
+
+    /// Settle the idle `previous` graph's committed transitions that this
+    /// candidate is busy from (Pulse #4558), pairing chains exactly as
+    /// `device_transition_busy`. Only called while `previous` renders no
+    /// device chains; bounded by the existing chains and allocation-free.
+    fn settle_idle_device_transitions(&self, previous: &mut Self) {
+        for (route, chain) in self.routes.iter().zip(&self.device_chains) {
+            if let Some(old) = previous
+                .routes
+                .iter()
+                .position(|old| old.id == route.id)
+                .and_then(|index| previous.device_chains.get_mut(index))
+            {
+                old.settle_idle_transitions_for(chain);
+            }
+        }
+        for (bus, chain) in self
+            .revision
+            .arrangement()
+            .return_buses()
+            .iter()
+            .zip(&self.return_chains)
+        {
+            if let Some(old) = previous
+                .revision
+                .arrangement()
+                .return_buses()
+                .iter()
+                .position(|old| old.id == bus.id)
+                .and_then(|index| previous.return_chains.get_mut(index))
+            {
+                old.settle_idle_transitions_for(chain);
+            }
+        }
+        previous
+            .main_chain
+            .settle_idle_transitions_for(&self.main_chain);
+    }
     fn inherit_state_planned_once(
         &mut self,
         previous: &mut Self,
@@ -435,7 +473,17 @@ impl SessionPlayback {
         // Before every inheritance, tail or reset classification (Pulse
         // #4178): even the reset handoff transfers Main history.
         if self.device_transition_busy(previous) {
-            return Err(SessionPlaybackError::DeviceTransitionBusy);
+            // Pulse #4558: an idle predecessor never renders its chains, so a
+            // deferral could not drain. Its output is silent and a resume
+            // ramps in from silence, so its inaudible outgoing branches are
+            // settled instead. A rendering predecessor still defers.
+            if !previous.renders_no_device_chains() {
+                return Err(SessionPlaybackError::DeviceTransitionBusy);
+            }
+            self.settle_idle_device_transitions(previous);
+            if self.device_transition_busy(previous) {
+                return Err(SessionPlaybackError::DeviceTransitionBusy);
+            }
         }
         if self
             .compensation
