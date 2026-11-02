@@ -4,7 +4,8 @@
 //!
 //! # Dependencies
 //! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2, plus
-//! libc errno/flags and rustix's safe exclusive rename for create-new publication.
+//! libc errno/flags, rustix's safe exclusive rename for create-new publication and its safe
+//! xattr calls to keep a replaced project's extended attributes.
 //!
 //! # Does not own
 //! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
@@ -18,13 +19,15 @@ mod publication;
 pub mod text;
 pub mod tuning_library;
 pub use journal::{
-    Journal, JournalRestartOutcome, JournalRestartToken, journal_path, load_journal,
-    restart_journal,
+    Journal, JournalRestartOutcome, JournalRestartToken, MAX_UNTITLED_SLOTS, UntitledSlotClaim,
+    journal_path, load_journal, restart_journal, untitled_slot_path,
 };
 mod audio_edit;
+mod extended_attributes;
 mod replacement;
 mod schema;
 mod temporaries;
+pub use extended_attributes::MetadataWarning;
 pub use files::{
     FileToken, SaveNewOutcome, load, load_with_token, save_new, save_new_with_outcome,
     save_new_with_token,

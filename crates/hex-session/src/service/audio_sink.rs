@@ -474,6 +474,16 @@ pub trait WorkerAudioSink: Send {
     }
     /// Advance bounded preparation/return work; no UI polling is required.
     fn poll(&mut self);
+    /// Whether `poll` currently has no time-sensitive work: no playback,
+    /// open, edit, preparation, queued event or return awaiting progress.
+    /// Only then may the worker lengthen its wait to [`IDLE_POLL_INTERVAL`];
+    /// a queued request still wakes it at once. The default `false` keeps
+    /// the [`BUSY_POLL_INTERVAL`] cadence for every sink that does not opt in.
+    /// Must be a cheap read of worker-owned state; it must not do work
+    /// (`&mut` only reaches borrowed native status views).
+    fn worker_idle(&mut self) -> bool {
+        false
+    }
     /// Start a correlated reopen on the existing lifecycle lane. Implementations
     /// must relinquish the old output before returning; readiness is reported
     /// separately without waiting for a Client or UI event delivery.
@@ -512,6 +522,24 @@ impl DiagnosticEventSender {
         }
     }
 }
+/// Request-wait cadence while the sink or worker has pending native work.
+/// The callback never wakes this thread, so this bounds native progress latency.
+pub const BUSY_POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// Request-wait cadence once the sink and worker are idle (#4574). Requests
+/// still end the wait immediately through the channel's blocking receive.
+pub const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Consecutive idle iterations (about 50 ms at the busy cadence) before the
+/// idle interval applies, so returns that follow the last busy poll (graph
+/// retirement, observation release) are still collected at the busy cadence.
+const IDLE_GRACE_POLLS: u32 = 10;
+/// The wait after `idle_polls` consecutive idle iterations.
+fn poll_interval(idle_polls: u32) -> Duration {
+    if idle_polls > IDLE_GRACE_POLLS {
+        IDLE_POLL_INTERVAL
+    } else {
+        BUSY_POLL_INTERVAL
+    }
+}
 pub(super) struct WorkerEvents {
     sender: DiagnosticEventSender,
     diagnostics: Arc<super::diagnostics::Hooks>,
@@ -528,6 +556,8 @@ pub(super) struct WorkerEvents {
     startup_error: Option<String>,
     // At most one request parked on the stopped Arrangement lease (#4544).
     stopped_fence: super::stopped_arrangement::Fence,
+    // Consecutive request-wait iterations with no pending work (#4574).
+    idle_polls: u32,
 }
 impl WorkerEvents {
     pub(super) fn legacy_reader_limit(&self) -> usize {
@@ -624,6 +654,7 @@ impl WorkerEvents {
             last_verified_gain: None,
             startup_error: None,
             stopped_fence: Default::default(),
+            idle_polls: 0,
         }
     }
     pub(super) fn initialize(&mut self) -> Result<u32, String> {
@@ -709,10 +740,12 @@ impl WorkerEvents {
             audio.poll();
         }
     }
-    pub(super) fn send_with_control_poll(
+    /// The control poll's result (pending lanes) is not needed here: event
+    /// backpressure already retries at the busy cadence.
+    pub(super) fn send_with_control_poll<R>(
         &mut self,
         mut event: Event,
-        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
     ) -> bool {
         if let Some(source) = &event.state.canonical_audio_source {
             self.canonical_source_changed(source);
@@ -869,7 +902,7 @@ impl WorkerEvents {
         plugin_effect: Option<&PluginEffectInsertion>,
         stopped_restore: Option<hex_engine::AudioSourceContext>,
         context: hex_engine::AudioSourceContext,
-        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> bool,
     ) -> Option<QueuedRequest> {
         if self.stopped_fence.active()
             && let Some(request) = self.next_request_while_fenced(requests, document_intent)
@@ -894,8 +927,9 @@ impl WorkerEvents {
             if self.shutdown.load(Ordering::Acquire) {
                 return None;
             }
+            self.diagnostics.record_worker_wake();
             self.poll();
-            control_poll(
+            let control_pending = control_poll(
                 self.audio
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
@@ -952,8 +986,21 @@ impl WorkerEvents {
                     document_intent,
                 ));
             }
-            match requests.recv_timeout(Duration::from_millis(5)) {
+            // Idle only when no worker continuation, control lane or sink work
+            // is pending; any of them restores the busy cadence at once.
+            let idle = !control_pending
+                && plugin_effect.is_none()
+                && stopped_restore.is_none()
+                && !self.stopped_fence.active()
+                && self.audio.as_mut().is_some_and(|audio| audio.worker_idle());
+            self.idle_polls = if idle {
+                self.idle_polls.saturating_add(1)
+            } else {
+                0
+            };
+            match requests.recv_timeout(poll_interval(self.idle_polls)) {
                 Ok(request) => {
+                    self.idle_polls = 0;
                     control_poll(
                         self.audio
                             .as_mut()
@@ -995,6 +1042,7 @@ mod tests {
     struct Sink {
         observed: Arc<Observation>,
         fail: bool,
+        idle: bool,
     }
     impl WorkerAudioSink for Sink {
         fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
@@ -1023,6 +1071,9 @@ mod tests {
         fn poll(&mut self) {
             self.observed.polls.fetch_add(1, Ordering::SeqCst);
         }
+        fn worker_idle(&mut self) -> bool {
+            self.idle
+        }
         fn close(&mut self) {
             *self.observed.closed.lock().unwrap() = Some(thread::current().id());
         }
@@ -1044,6 +1095,7 @@ mod tests {
             Box::new(Sink {
                 observed: observed.clone(),
                 fail: false,
+                idle: false,
             }),
         )
         .unwrap();
@@ -1093,6 +1145,7 @@ mod tests {
             Box::new(Sink {
                 observed: observed.clone(),
                 fail: false,
+                idle: false,
             }),
         )
         .unwrap();
@@ -1175,6 +1228,7 @@ mod tests {
             Box::new(Sink {
                 observed: observed.clone(),
                 fail: true,
+                idle: false,
             }),
         )
         .unwrap();
@@ -1201,5 +1255,63 @@ mod tests {
         assert!(edited.state.unsaved);
         drop(service);
         wait(|| observed.closed.lock().unwrap().is_some());
+    }
+    #[test]
+    fn idle_interval_applies_only_after_the_grace_polls() {
+        assert_eq!(poll_interval(0), BUSY_POLL_INTERVAL);
+        assert_eq!(poll_interval(IDLE_GRACE_POLLS), BUSY_POLL_INTERVAL);
+        assert_eq!(poll_interval(IDLE_GRACE_POLLS + 1), IDLE_POLL_INTERVAL);
+        assert_eq!(poll_interval(u32::MAX), IDLE_POLL_INTERVAL);
+    }
+    #[test]
+    fn idle_sink_backs_off_while_requests_and_busy_sinks_keep_the_prompt_cadence() {
+        let start = |idle| {
+            let service = Service::with_audio_sink(
+                16,
+                0,
+                None,
+                Box::new(Sink {
+                    observed: Arc::new(Observation::default()),
+                    fail: false,
+                    idle,
+                }),
+            )
+            .unwrap();
+            let initial = service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap();
+            assert!(initial.error.is_none());
+            service
+        };
+        let idle = start(true);
+        let busy = start(false);
+        // Pass the idle worker's grace polls (about 50 ms at the busy cadence).
+        thread::sleep(Duration::from_millis(120));
+        let (idle_start, busy_start) = (idle.worker_wakes(), busy.worker_wakes());
+        thread::sleep(Duration::from_millis(250));
+        let idle_wakes = idle.worker_wakes() - idle_start;
+        let busy_wakes = busy.worker_wakes() - busy_start;
+        // 250 ms is about 3 waits at 100 ms and about 50 at 5 ms.
+        assert!(idle_wakes <= 5, "idle worker woke {idle_wakes} times");
+        assert!(busy_wakes >= 15, "busy worker woke only {busy_wakes} times");
+        // A request ends the idle wait at once instead of at its 100 ms timeout.
+        for name in ["one", "two", "three"] {
+            // After the previous request's grace, inside the next idle wait.
+            thread::sleep(Duration::from_millis(80));
+            let submitted = Instant::now();
+            idle.submit(Request::Edit(Command::AddTrack { name: name.into() }))
+                .unwrap();
+            let event = idle
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap();
+            let latency = submitted.elapsed();
+            assert!(event.error.is_none());
+            assert!(
+                latency < Duration::from_millis(40),
+                "idle request waited {latency:?}"
+            );
+        }
     }
 }
