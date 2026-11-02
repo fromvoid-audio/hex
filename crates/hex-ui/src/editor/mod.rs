@@ -46,6 +46,7 @@ mod leftover_recovery;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod navigation_metrics;
 mod plugin_effect;
+mod truncated_import;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use plugin_effect::fixture_catalog as plugin_effect_fixture_catalog;
 #[cfg(feature = "ui-test-support")]
@@ -146,6 +147,9 @@ mod missing_media;
 mod user_errors;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
+mod midi_loop_notes;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod midi_loop_profile;
 mod midi_ruler;
 mod midi_scene;
 mod midi_selection;
@@ -156,6 +160,7 @@ mod midi_thumbnail;
 mod midi_velocity;
 mod midi_velocity_randomize;
 mod midi_velocity_ui;
+mod midi_wheel;
 mod mixer;
 mod musical_audio_controls;
 mod musical_time;
@@ -463,7 +468,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     dialogs::install_project_actions(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
-            cx.quit();
+            close::quit_confirmed(cx);
         }
     })
     .detach();
@@ -520,6 +525,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-z", Undo, Some("hex_editor")),
         KeyBinding::new("cmd-z", Undo, Some("hex_gain_numeric_editor")),
         KeyBinding::new("cmd-shift-z", Redo, Some("hex_editor")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("hex_gain_numeric_editor")),
         KeyBinding::new("left", MoveLeft, Some("hex_editor")),
         KeyBinding::new("right", MoveRight, Some("hex_editor")),
         KeyBinding::new("shift-left", TrimLeft, Some("hex_editor")),
@@ -659,6 +665,7 @@ fn install_close_guard(window: &mut Window, cx: &mut App, view: gpui::WeakEntity
 
 pub(super) fn open_backend(cx: &mut App, backend: crate::EditorBackend) -> Result<(), String> {
     configure_editor_app(cx)?;
+    close::install_quit_gate(cx);
     cx.open_window(editor_window_options(cx), move |window, cx| {
         let view = cx.new(|cx| EditorView::new_with_backend(window, cx, backend));
         install_close_guard(window, cx, view.downgrade());
@@ -757,6 +764,7 @@ pub(super) struct EditorView {
     stopped_playback_restore: Option<audio_admission::StoppedPlaybackRestore>,
     latency_rebuild: Option<audio_admission::LatencyRebuild>,
     leftover_recovery: leftover_recovery::State,
+    truncated_import: truncated_import::State,
     // Streamed documents replace their sampler output stopped; this frame
     // resumes playback once that edit settles (Pulse #3784).
     sampler_edit_resume: Option<u64>,
@@ -819,6 +827,7 @@ pub(super) struct EditorView {
     piano_zoom_wheel_accum: f32,
     piano_pitch_wheel_accum: f32,
     poll_cadence: poll_cadence::PollCadence,
+    piano_pitch_scroll_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
     pub(in crate::editor) piano_pitch_low: u8,
@@ -945,6 +954,8 @@ pub(super) struct EditorView {
     overview_waveform_cache: Rc<std::cell::RefCell<overview_waveform::Cache>>,
     pub(in crate::editor) waveform_geometry_cache:
         Rc<std::cell::RefCell<waveform_geometry::WaveformGeometryCache>>,
+    midi_visible_notes: std::cell::RefCell<midi_loop_notes::VisibleNotesCache>,
+    midi_tile_images: Rc<std::cell::RefCell<midi_loop_notes::TileImages>>,
     active_clip_drag: Option<drag::ClipDrag>,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
@@ -1292,7 +1303,7 @@ impl EditorView {
             }
             crate::diagnostics::record_key(cx, event);
             if let Some(entity) = keyboard_entity.upgrade() {
-                entity.update(cx, |view, cx| view.wake_poll(window, cx));
+                entity.update(cx, |view, _| view.wake_poll());
             }
             // A key during the potentially slow helper handshake cancels the
             // pending quit before the key can alter a project or local draft.
@@ -1491,6 +1502,7 @@ impl EditorView {
             stopped_playback_restore: None,
             latency_rebuild: None,
             leftover_recovery: Default::default(),
+            truncated_import: Default::default(),
             sampler_edit_resume: None,
             deferred_play: None,
             offline_cursor: 0,
@@ -1545,6 +1557,7 @@ impl EditorView {
             piano_zoom_wheel_accum: 0.0,
             piano_pitch_wheel_accum: 0.0,
             poll_cadence,
+            piano_pitch_scroll_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
                 .unwrap_or(hex_project::BeatTime::ONE),
@@ -1671,6 +1684,8 @@ impl EditorView {
             waveform_geometry_cache: Rc::new(std::cell::RefCell::new(
                 waveform_geometry::WaveformGeometryCache::default(),
             )),
+            midi_visible_notes: Default::default(),
+            midi_tile_images: Default::default(),
             active_clip_drag: None,
             active_browser_audio_drag: None,
             active_native_device_drag: None,
