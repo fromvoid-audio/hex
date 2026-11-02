@@ -1016,6 +1016,9 @@ impl WorkerAudioSink for NativeAudioSink {
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         Some(crate::streamed_export::render)
     }
+    fn streamed_bouncer(&self) -> Option<hex_session::StreamedBouncer> {
+        Some(crate::streamed_export::bounce)
+    }
     fn resident_file_seek_preparer(
         &self,
     ) -> Option<hex_session::service::ResidentFileSeekPreparer> {
