@@ -368,7 +368,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         use std::sync::Arc;
-        let (editor, id) = looped_clip();
+        let (mut editor, id) = looped_clip();
         let project = editor.project().clone();
         let clip = project.midi_clip(id).unwrap().clone();
         let expected = playback(&project, &clip);
@@ -383,33 +383,47 @@ mod tests {
             crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::new(preview));
         let mut visual = gpui::VisualTestContext::from_window(handle, cx);
         visual.simulate_resize(gpui::size(gpui::px(2400.0), gpui::px(800.0)));
-        view.update(&mut visual, |view, cx| {
-            // The fixture timeline is shorter than this clip; extend it so the
-            // whole loop is visible.
-            let old = view.state.take().unwrap();
-            view.state = Some(Arc::new(hex_session::service::ViewState {
-                canonical_audio_source: None,
-                comparison_audio: None,
-                project: Arc::clone(&old.project),
-                waveforms: Default::default(),
-                source_overviews: Default::default(),
-                audio_clip_waveforms: std::collections::BTreeMap::new(),
-                midi_preview: Arc::clone(&old.midi_preview),
-                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
-                timeline_frames: end,
-                can_undo: false,
-                can_redo: false,
-                revision: 1,
-                unsaved: false,
-                document_path: None,
-            }));
-            view.viewport = Some(crate::editor::viewport::Viewport {
-                start,
-                length: end - start,
+        // The fixture timeline is shorter than this clip; publish a snapshot
+        // whose timeline shows the whole loop.
+        let install = |visual: &mut gpui::VisualTestContext, project: Option<Project>| {
+            view.update(visual, |view, cx| {
+                let old = view.state.take().unwrap();
+                let (project, midi_preview) = match project {
+                    Some(project) => {
+                        let (_, preview) = hex_engine::compile::project_with_midi_preview(
+                            &project,
+                            &Default::default(),
+                        )
+                        .unwrap();
+                        (Arc::new(project), Arc::new(preview))
+                    }
+                    None => (Arc::clone(&old.project), Arc::clone(&old.midi_preview)),
+                };
+                view.state = Some(Arc::new(hex_session::service::ViewState {
+                    canonical_audio_source: None,
+                    comparison_audio: None,
+                    project,
+                    waveforms: Default::default(),
+                    source_overviews: Default::default(),
+                    audio_clip_waveforms: std::collections::BTreeMap::new(),
+                    midi_preview,
+                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+                    timeline_frames: end,
+                    can_undo: false,
+                    can_redo: false,
+                    revision: old.revision + 1,
+                    unsaved: false,
+                    document_path: None,
+                }));
+                view.viewport = Some(crate::editor::viewport::Viewport {
+                    start,
+                    length: end - start,
+                });
+                cx.notify();
             });
-            cx.notify();
-        });
-        visual.run_until_parked();
+            visual.run_until_parked();
+        };
+        install(&mut visual, None);
         let body = visual
             .debug_bounds(Box::leak(
                 format!("clip-notes-{}", id.value()).into_boxed_str(),
@@ -438,6 +452,33 @@ mod tests {
                 ))
                 .is_none(),
             "no sample-count badge"
+        );
+        // A resting repaint reuses the cached walk; an edit that leaves the
+        // visible window unchanged publishes a new snapshot and must repaint
+        // from it, not from the cached notes.
+        install(&mut visual, None);
+        assert_eq!(
+            crate::editor::midi_thumbnail::rendered_notes(&mut visual, id, false).len(),
+            expected.len()
+        );
+        editor
+            .execute(Command::AddMidiNote {
+                clip: id,
+                start: BeatTime::from_raw(BeatTime::ONE.raw() * 3 / 2),
+                duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
+                pitch: 72,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        let edited = editor.project().clone();
+        let added = playback(&edited, edited.midi_clip(id).unwrap());
+        assert!(added.len() > expected.len() + 32, "{}", added.len());
+        install(&mut visual, Some(edited));
+        assert_eq!(
+            crate::editor::midi_thumbnail::rendered_notes(&mut visual, id, false).len(),
+            added.len(),
+            "the edit's notes paint at every repeat"
         );
     }
 }
