@@ -214,7 +214,7 @@ impl EditorView {
         };
         match self.service.submit_correlated_save(request, correlation) {
             Ok(()) => {
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.worker_submitted();
                 self.update_flow.phase = Phase::Saving {
                     id,
                     correlation: Some(correlation),
