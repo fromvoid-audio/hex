@@ -212,8 +212,9 @@ pub fn decode_wav_file(
 /// [`decode_wav_file`] with cooperative cancellation for superseded control
 /// work. `cancel` is polled before each 16 KiB read and every 65,536 decoded
 /// PCM frames; once observed, the decode stops and reports
-/// [`ImportError::Cancelled`]. Block-compressed (ADPCM) payloads, which keep
-/// the smaller resident caps, are checked only before their decode.
+/// [`ImportError::Cancelled`]. Block-compressed (ADPCM) payloads are polled
+/// before each window of whole blocks spanning at most 65,536 frames (one
+/// block when a block is larger).
 pub fn decode_wav_file_cancellable(
     path: impl AsRef<Path>,
     limits: Limits,

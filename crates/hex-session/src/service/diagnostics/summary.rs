@@ -1618,10 +1618,11 @@ pub(super) fn request(value: &Request) -> Description {
             path,
             start,
             frames,
+            format,
             overwrite,
             ..
         } => {
-            describe!("export_range"; ["path_redacted_bytes" => path.as_os_str().len(), "start" => start, "frames" => frames, "overwrite" => overwrite]; omitted="signal,control")
+            describe!("export_range"; ["path_redacted_bytes" => path.as_os_str().len(), "start" => start, "frames" => frames, "format" => format, "overwrite" => overwrite]; omitted="signal,control")
         }
     }
 }

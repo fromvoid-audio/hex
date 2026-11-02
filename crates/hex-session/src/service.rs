@@ -14,7 +14,7 @@ use crate::verified_import::VerifiedImportDestination;
 use crate::{DocumentAudioMode, PreparedImport, Session, SessionError, SourcePlanReservation};
 use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
-pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
+pub use hex_export::{ExportControl, ExportFormat, ExportProgress, ExportSignal, Stem};
 use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
 /// Save As filename admission for the recovery files storage keeps beside a project.
@@ -72,6 +72,7 @@ mod plugin_state_save;
 pub use plugin_state_save::{PluginStateCapture, PluginStateSaveInput};
 pub mod diagnostics;
 mod request_cancellation;
+mod save_status;
 pub use plugin_effect::{
     NativeDeviceState, PluginEffectCompletion, PluginEffectControl, PluginEffectDestination,
     PluginEffectInsertion, PluginEffectPreparation, PluginEffectPreparationState,
@@ -795,50 +796,83 @@ pub enum Request {
     /// Worker-local continuation of the existing stopped restoration request.
     ContinueStoppedPlaybackRestore,
     /// Whole-project Main export: exactly `ExportRange { start: 0, frames: None }`
-    /// on Main, create-new, so its causal length includes declared finite tails.
+    /// on Main, default (dithered PCM16) format, create-new, so its causal
+    /// length includes declared finite tails.
     Export(PathBuf),
     /// Explicit half-open Arrangement range; worker captures the current revision.
+    /// `format` applies to the single file or to every stem file of a batch.
+    /// It is a per-request choice and is never saved in the project.
     ExportRange {
         path: PathBuf,
         start: u64,
         frames: Option<u64>,
         signal: hex_export::ExportSignal,
         control: hex_export::ExportControl,
+        format: hex_export::ExportFormat,
         overwrite: bool,
     },
 }
 
-/// Fields of the one canonical export request shape.
-type ExportRangeParts = (
-    PathBuf,
-    u64,
-    Option<u64>,
-    hex_export::ExportSignal,
-    hex_export::ExportControl,
-    bool,
-);
+/// Fields of the one canonical export request shape: destination, optional
+/// explicit frame count and the controlled render parts.
+type ExportRangeParts = (PathBuf, Option<u64>, ControlledExport);
+
+/// Controlled render parts an admitted export job carries to the worker.
+struct ControlledExport {
+    start: u64,
+    signal: hex_export::ExportSignal,
+    control: hex_export::ExportControl,
+    format: hex_export::ExportFormat,
+    overwrite: bool,
+}
+
+impl ControlledExport {
+    /// The automatic whole-project Main export in the default format.
+    fn whole_main() -> Self {
+        Self {
+            start: 0,
+            signal: hex_export::ExportSignal::Main,
+            control: hex_export::ExportControl::default(),
+            format: hex_export::ExportFormat::default(),
+            overwrite: false,
+        }
+    }
+
+    /// Publication policy: confirmed replacement only with overwrite consent.
+    fn publication(&self, path: &Path) -> Result<hex_export::Publication, hex_export::ExportError> {
+        if self.overwrite {
+            hex_export::Publication::confirmed_save(path)
+        } else {
+            Ok(hex_export::Publication::CreateNew)
+        }
+    }
+}
 
 impl Request {
     /// The canonical `ExportRange` parts of an export request; `Export` is its
     /// automatic whole-project Main spelling. Other requests return `None`.
     fn into_export_range(self) -> Option<ExportRangeParts> {
         match self {
-            Request::Export(path) => Some((
-                path,
-                0,
-                None,
-                hex_export::ExportSignal::Main,
-                hex_export::ExportControl::default(),
-                false,
-            )),
+            Request::Export(path) => Some((path, None, ControlledExport::whole_main())),
             Request::ExportRange {
                 path,
                 start,
                 frames,
                 signal,
                 control,
+                format,
                 overwrite,
-            } => Some((path, start, frames, signal, control, overwrite)),
+            } => Some((
+                path,
+                frames,
+                ControlledExport {
+                    start,
+                    signal,
+                    control,
+                    format,
+                    overwrite,
+                },
+            )),
             _ => None,
         }
     }
@@ -992,7 +1026,7 @@ impl Drop for Service {
 }
 
 /// Ordinary controlled range renderer: path, revision, start, frames, signal,
-/// control and publication. Tests substitute it to observe worker custody.
+/// format, control and publication. Tests substitute it to observe worker custody.
 type Exporter = Arc<
     dyn Fn(
             &Path,
@@ -1000,6 +1034,7 @@ type Exporter = Arc<
             u64,
             u64,
             hex_export::ExportSignal,
+            hex_export::ExportFormat,
             &hex_export::ExportControl,
             &hex_export::Publication,
         ) -> Result<ExportReport, String>
@@ -1009,13 +1044,14 @@ type Exporter = Arc<
 
 fn canonical_exporter() -> Exporter {
     Arc::new(
-        |path, prepared, start, frames, signal, control, publication| {
+        |path, prepared, start, frames, signal, format, control, publication| {
             hex_export::render_prepared_with_policy(
                 path,
                 Arc::clone(prepared),
                 start,
                 frames,
                 signal,
+                format,
                 control,
                 publication,
             )
@@ -1033,12 +1069,7 @@ struct ExportJob {
     path: PathBuf,
     prepared: Arc<PreparedRevision>,
     frames: u64,
-    controlled: Option<(
-        u64,
-        hex_export::ExportSignal,
-        hex_export::ExportControl,
-        bool,
-    )>,
+    controlled: Option<ControlledExport>,
 }
 
 enum ExportWork {
@@ -1749,7 +1780,7 @@ struct DocumentHandle {
 
 struct SaveCurrentCommit {
     dirty: bool,
-    status: &'static str,
+    status: String,
     error: Option<String>,
 }
 
@@ -1789,7 +1820,7 @@ fn save_document_as(
             let commit = match outcome.warning {
                 Some(warning) => SaveCurrentCommit {
                     dirty: true,
-                    status: "project was published, but durability could not be confirmed",
+                    status: "project was published, but durability could not be confirmed".into(),
                     error: Some(format!(
                         "complete project was published at {}, but could not {}: {}",
                         hex_storage::text::verbatim(outcome.path.display()),
@@ -1799,7 +1830,7 @@ fn save_document_as(
                 },
                 None => SaveCurrentCommit {
                     dirty: false,
-                    status: "project saved",
+                    status: save_status::SAVED.into(),
                     error: None,
                 },
             };
@@ -1817,6 +1848,9 @@ fn save_document_as(
     }
 }
 
+/// Binds the replaced document and reports the save. A durability warning
+/// keeps the document dirty with an error; lost file attributes only extend the
+/// success status, because the project itself was saved.
 fn apply_current_save_outcome(
     document: &mut DocumentHandle,
     outcome: hex_storage::ReplaceOutcome,
@@ -1826,7 +1860,7 @@ fn apply_current_save_outcome(
     match outcome.warning {
         Some(warning) => SaveCurrentCommit {
             dirty: true,
-            status: "project was published, but durability could not be confirmed",
+            status: "project was published, but durability could not be confirmed".into(),
             error: Some(format!(
                 "complete project was published at {}, but could not {}: {}; recovery copy is at {}",
                 hex_storage::text::verbatim(outcome.path.display()),
@@ -1835,9 +1869,10 @@ fn apply_current_save_outcome(
                 hex_storage::text::verbatim(outcome.recovery_path.display())
             )),
         },
+        // Lost file attributes are non-fatal: the project is saved and clean.
         None => SaveCurrentCommit {
             dirty: false,
-            status: "project saved",
+            status: save_status::saved_status(&outcome.metadata_warnings),
             error: None,
         },
     }
@@ -6230,7 +6265,7 @@ fn run_worker(
                                             (Arc::clone(source), state.comparison_audio.clone())
                                         }),
                                     );
-                                    status = Some(commit.status.into());
+                                    status = Some(commit.status);
                                 }
                                 Err(reason) => error = Some(reason),
                             },
@@ -6314,7 +6349,7 @@ fn run_worker(
                                     Ok(outcome) => {
                                         let commit = apply_current_save_outcome(handle, outcome);
                                         unsaved = commit.dirty;
-                                        status = Some(commit.status.into());
+                                        status = Some(commit.status);
                                         error = commit.error;
                                         state = view_state_bound(
                                             &session,
@@ -6340,18 +6375,16 @@ fn run_worker(
                 }
                 request @ (Request::Export(_) | Request::ExportRange { .. }) => {
                     // Both spellings are export requests, so their parts always exist.
-                    if let Some((path, start, frames, signal, control, overwrite)) =
-                        request.into_export_range()
-                    {
+                    if let Some((path, frames, controlled)) = request.into_export_range() {
                         let job = match compiled.as_ref() {
                             Some((compiled_revision, prepared))
                                 if *compiled_revision == revision =>
                             {
                                 hex_export::controlled_frame_count(
                                     prepared.arrangement(),
-                                    start,
+                                    controlled.start,
                                     frames,
-                                    &signal,
+                                    &controlled.signal,
                                 )
                                 .map_err(|error| error.to_string())
                                 .map(|frames| ExportJob {
@@ -6363,7 +6396,7 @@ fn run_worker(
                                     path: path.clone(),
                                     prepared: Arc::clone(prepared),
                                     frames,
-                                    controlled: Some((start, signal, control, overwrite)),
+                                    controlled: Some(controlled),
                                 })
                             }
                             _ => Err("latest project revision has not compiled".to_owned()),
@@ -7627,30 +7660,21 @@ fn run_export_worker(
                 if job.sources.is_some() {
                     Err("export cannot combine streamed pages with private constructor source scopes".into())
                 } else {
-                    let (start, signal, control, overwrite) =
-                        job.controlled.take().unwrap_or_else(|| {
-                            (
-                                0,
-                                hex_export::ExportSignal::Main,
-                                hex_export::ExportControl::default(),
-                                false,
-                            )
-                        });
-                    let policy = if overwrite {
-                        hex_export::Publication::confirmed_save(&job.path)
-                    } else {
-                        Ok(hex_export::Publication::CreateNew)
-                    };
-                    match policy {
+                    let controlled = job
+                        .controlled
+                        .take()
+                        .unwrap_or_else(ControlledExport::whole_main);
+                    match controlled.publication(&job.path) {
                         Ok(publication) => (streamed.render)(&StreamedExportRequest {
                             source: &streamed.source,
                             prepared: &job.prepared,
                             resources: job.resources.as_ref(),
                             path: &job.path,
-                            start,
+                            start: controlled.start,
                             frames: job.frames,
-                            signal: &signal,
-                            control: &control,
+                            signal: &controlled.signal,
+                            format: controlled.format,
+                            control: &controlled.control,
                             publication: &publication,
                         }),
                         Err(error) => Err(error.to_string()),
@@ -7659,22 +7683,19 @@ fn run_export_worker(
             } else if job.sources.is_some() && job.resources.is_some() {
                 Err("export cannot combine private and ordinary source scopes".into())
             } else if let Some(resources) = job.resources.take() {
-                if let Some((start, signal, control, overwrite)) = job.controlled.take() {
-                    let policy = if overwrite {
-                        hex_export::Publication::confirmed_save(&job.path)
-                    } else {
-                        Ok(hex_export::Publication::CreateNew)
-                    };
-                    policy
+                if let Some(controlled) = job.controlled.take() {
+                    controlled
+                        .publication(&job.path)
                         .and_then(|policy| {
                             hex_export::render_prepared_with_device_resources_and_policy(
                                 &job.path,
                                 job.prepared,
                                 &resources,
-                                start,
+                                controlled.start,
                                 job.frames,
-                                signal,
-                                &control,
+                                controlled.signal,
+                                controlled.format,
+                                &controlled.control,
                                 &policy,
                             )
                         })
@@ -7690,30 +7711,22 @@ fn run_export_worker(
                     .map_err(|error| error.to_string())
                 }
             } else if let Some(sources) = job.sources.take() {
-                let (start, signal, control, overwrite) =
-                    job.controlled.take().unwrap_or_else(|| {
-                        (
-                            0,
-                            hex_export::ExportSignal::Main,
-                            hex_export::ExportControl::default(),
-                            false,
-                        )
-                    });
-                let policy = if overwrite {
-                    hex_export::Publication::confirmed_save(&job.path)
-                } else {
-                    Ok(hex_export::Publication::CreateNew)
-                };
-                policy
+                let controlled = job
+                    .controlled
+                    .take()
+                    .unwrap_or_else(ControlledExport::whole_main);
+                controlled
+                    .publication(&job.path)
                     .and_then(|policy| {
                         hex_export::render_control_sampler_with_policy(
                             &job.path,
                             job.prepared,
                             sources,
-                            start,
+                            controlled.start,
                             job.frames,
-                            signal,
-                            &control,
+                            controlled.signal,
+                            controlled.format,
+                            &controlled.control,
                             &policy,
                         )
                     })
@@ -7721,30 +7734,22 @@ fn run_export_worker(
             } else {
                 // Every service request carries controlled parts; a bare job
                 // renders as the automatic whole-project Main export.
-                let (start, signal, control, overwrite) = job.controlled.unwrap_or_else(|| {
-                    (
-                        0,
-                        hex_export::ExportSignal::Main,
-                        hex_export::ExportControl::default(),
-                        false,
-                    )
-                });
-                let policy = if overwrite {
-                    hex_export::Publication::confirmed_save(&job.path)
-                } else {
-                    Ok(hex_export::Publication::CreateNew)
-                };
-                policy.map_err(|e| e.to_string()).and_then(|policy| {
-                    exporter(
-                        &job.path,
-                        &job.prepared,
-                        start,
-                        job.frames,
-                        signal,
-                        &control,
-                        &policy,
-                    )
-                })
+                let controlled = job.controlled.unwrap_or_else(ControlledExport::whole_main);
+                controlled
+                    .publication(&job.path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|policy| {
+                        exporter(
+                            &job.path,
+                            &job.prepared,
+                            controlled.start,
+                            job.frames,
+                            controlled.signal,
+                            controlled.format,
+                            &controlled.control,
+                            &policy,
+                        )
+                    })
             };
             (
                 job.job_id,
@@ -11265,6 +11270,50 @@ mod service_tests {
     }
 
     #[test]
+    fn lost_file_attributes_keep_a_clean_save_and_name_the_loss_in_its_status() {
+        let directory = TestDir::new();
+        let path = directory.0.join("Tagged.hex");
+        let project = Project::new(48_000).expect("project");
+        let token = hex_storage::save_new_with_token(&path, &project).expect("create project");
+        let metadata_warning = |attribute: &str| hex_storage::MetadataWarning {
+            attribute: Some(attribute.to_owned()),
+            operation: "write a file attribute",
+            source: io::Error::other("injected attribute failure"),
+        };
+
+        let mut outcome =
+            hex_storage::replace_existing(&path, &token, &project).expect("replace project");
+        outcome.metadata_warnings = vec![metadata_warning("com.apple.metadata:_kMDItemUserTags")];
+        let mut document = DocumentHandle {
+            path: path.clone(),
+            token,
+        };
+        let commit = apply_current_save_outcome(&mut document, outcome);
+        assert!(!commit.dirty);
+        assert!(commit.error.is_none(), "{:?}", commit.error);
+        assert_eq!(
+            text::plain(&commit.status),
+            "project saved · finder tags could not be kept · could not write a file attribute \
+             com.apple.metadata:_kMDItemUserTags: injected attribute failure"
+        );
+
+        let mut outcome = hex_storage::replace_existing(&path, &document.token, &project)
+            .expect("replace project again");
+        outcome.metadata_warnings = vec![metadata_warning("user.other")];
+        outcome.warning = Some(hex_storage::ReplaceWarning {
+            operation: "synchronize the project directory",
+            source: io::Error::other("injected durability failure"),
+        });
+        let commit = apply_current_save_outcome(&mut document, outcome);
+        assert!(commit.dirty, "durability warnings keep their precedence");
+        assert_eq!(
+            commit.status,
+            "project was published, but durability could not be confirmed"
+        );
+        assert!(commit.error.is_some());
+    }
+
+    #[test]
     fn save_as_onto_an_existing_project_replaces_it_and_binds_the_document() {
         let directory = TestDir::new();
         let existing = directory.0.join("existing.hex");
@@ -11319,7 +11368,7 @@ mod service_tests {
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
             Arc::new(
-                move |path, project, start, frames, signal, control, publication| {
+                move |path, project, start, frames, signal, format, control, publication| {
                     entered.wait();
                     release.wait();
                     hex_export::render_prepared_with_policy(
@@ -11328,6 +11377,7 @@ mod service_tests {
                         start,
                         frames,
                         signal,
+                        format,
                         control,
                         publication,
                     )
@@ -11399,6 +11449,7 @@ mod service_tests {
                 frames: Some(1),
                 signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
                 control: cancelled,
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             })
             .unwrap();
@@ -11415,6 +11466,7 @@ mod service_tests {
                 signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
                 control: control.clone(),
                 // Native save confirmation also permits a new destination.
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: true,
             })
             .unwrap();
@@ -11433,6 +11485,56 @@ mod service_tests {
                 total_frames: 1
             }
         );
+    }
+
+    #[test]
+    fn export_range_writes_the_requested_format_from_one_render() {
+        let directory = TestDir::new();
+        let source = directory.0.join("formats.wav");
+        fs::write(&source, wav_mono(&[16_384, -8_192])).unwrap();
+        let service = Service::new(48_000, 16, 8).unwrap();
+        next_event(&service);
+        service.submit(Request::Import(source)).unwrap();
+        next_event(&service);
+        let export = |format: hex_export::ExportFormat| {
+            let path = directory.0.join(format!("{format:?}.wav"));
+            service
+                .submit(Request::ExportRange {
+                    path: path.clone(),
+                    start: 0,
+                    frames: Some(2),
+                    signal: ExportSignal::Main,
+                    control: ExportControl::default(),
+                    format,
+                    overwrite: false,
+                })
+                .unwrap();
+            next_event(&service);
+            let report = next_export_event(&service).result.unwrap();
+            assert_eq!(report.clipped_samples, 0);
+            fs::read(path).unwrap()
+        };
+        let float = export(hex_export::ExportFormat::Float32);
+        let pcm24 = export(hex_export::ExportFormat::Pcm24);
+        let pcm16 = export(hex_export::ExportFormat::Pcm16);
+        // Header format tag and bits per sample follow the request.
+        let word = |bytes: &[u8], at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        assert_eq!((word(&float, 20), word(&float, 34)), (3, 32));
+        assert_eq!((word(&pcm24, 20), word(&pcm24, 34)), (1, 24));
+        assert_eq!((word(&pcm16, 20), word(&pcm16, 34)), (1, 16));
+        let samples: Vec<f32> = float[58..]
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        assert_eq!(samples.len(), 4);
+        assert!((samples[0] - 0.5).abs() < 1e-4 && (samples[2] + 0.25).abs() < 1e-4);
+        for (index, sample) in samples.iter().enumerate() {
+            let at = 44 + index * 3;
+            let packed = i32::from_le_bytes([0, pcm24[at], pcm24[at + 1], pcm24[at + 2]]) >> 8;
+            let expected = (f64::from(*sample) * 8_388_607.0).round() as i32;
+            assert_eq!(packed, expected, "pcm24 sample {index}");
+            assert_pcm16_near(&pcm16, 44 + index * 2, (sample * 32_767.0).round() as i16);
+        }
     }
 
     /// PCM16 export applies ±1 LSB TPDF dither: within one LSB of `expected`.
@@ -11499,6 +11601,7 @@ mod service_tests {
                 frames: None,
                 signal: ExportSignal::Main,
                 control: ExportControl::default(),
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             })
             .unwrap();
@@ -12254,7 +12357,7 @@ mod service_tests {
         let exporter: Exporter = {
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
-            Arc::new(move |path, project, _, frames, _, _, _| {
+            Arc::new(move |path, project, _, frames, _, _, _, _| {
                 entered.wait();
                 release.wait();
                 let _ = finished_sender.send(());

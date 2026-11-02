@@ -624,3 +624,81 @@ fn export_project_overwrite_publishes_to_an_absent_destination() {
         52
     );
 }
+
+#[test]
+fn export_project_format_option_writes_pcm24_and_float32_that_decode_to_the_render() {
+    let directory = TempDir::new();
+    fs::write(
+        directory.path().join("source.wav"),
+        wav(&[16_384, 8_192, -8_192]),
+    )
+    .unwrap();
+    assert!(
+        run(
+            &directory.0,
+            &["import-project", "source.wav", "project.hex"]
+        )
+        .status
+        .success()
+    );
+    let id = hex_storage::load(directory.path().join("project.hex"))
+        .unwrap()
+        .tracks()[0]
+        .id()
+        .value();
+    let stems = format!("--stems={id}");
+    let export = |destination: &str, extra: &[&str]| {
+        let mut args = vec!["export-project", "project.hex", destination, "0", "3"];
+        args.extend_from_slice(extra);
+        let result = run(&directory.0, &args);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    };
+    export("float.wav", &["--format=float32"]);
+    export("pcm24.wav", &["--overwrite", "--format=pcm24"]);
+    export("stems", &["--format=float32", &stems]);
+    let decode = |path: PathBuf| {
+        decode_wav_file(path, Limits::new(4096, 3))
+            .expect("decode export")
+            .audio()
+            .frames()
+            .to_vec()
+    };
+    let float = decode(directory.path().join("float.wav"));
+    // Float output is bit-exact: the 16-bit source values pass through at unity.
+    assert_eq!(float, [[0.5, 0.5], [0.25, 0.25], [-0.25, -0.25]]);
+    let pcm24 = decode(directory.path().join("pcm24.wav"));
+    for (packed, exact) in pcm24.iter().flatten().zip(float.iter().flatten()) {
+        assert!(
+            (packed - exact).abs() <= 1.0 / 8_388_608.0,
+            "{packed} not within one 24-bit lsb of {exact}"
+        );
+    }
+    assert_eq!(
+        fs::read(directory.path().join("pcm24.wav")).unwrap().len(),
+        44 + 3 * 6
+    );
+    let stem = fs::read_dir(directory.path().join("stems"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .next()
+        .unwrap();
+    assert_eq!(decode(stem), float, "stems honour the selected format");
+    let refused = run(
+        &directory.0,
+        &[
+            "export-project",
+            "project.hex",
+            "bad.wav",
+            "0",
+            "3",
+            "--format=pcm8",
+        ],
+    );
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("unknown export format"));
+    assert!(!directory.path().join("bad.wav").exists());
+}
