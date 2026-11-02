@@ -2,7 +2,9 @@
 //! Registered control-side response only; never fabricates a live analyzer.
 use super::*;
 use hex_devices::eq::{self, EqState, Node, NodeId, NodeKind};
-use hex_widgets::{ResponseGraphEvent, ResponseGraphPhase};
+use hex_widgets::{
+    ResponseGraphEvent, ResponseGraphMarqueeEvent, ResponseGraphMarqueePhase, ResponseGraphPhase,
+};
 #[path = "../../src/editor/device_panel/eq_panel/axes.rs"]
 mod axes;
 #[path = "../../src/editor/device_panel/eq_panel/group_move.rs"]
@@ -11,6 +13,8 @@ mod group_move;
 mod node_geometry;
 #[path = "../../src/editor/device_panel/eq_panel/sampling.rs"]
 mod sampling;
+#[path = "../../src/editor/device_panel/eq_panel/selection.rs"]
+mod selection;
 use hex_widgets::{NumericControlEvent, SelectorChanged, ToggleChanged};
 
 /// Ephemeral catalog state; it never owns a project or audio resource.
@@ -18,8 +22,22 @@ pub(super) struct Local {
     state: EqState,
     selected: Option<NodeId>,
     bank: u8,
-    before: Option<(EqState, Option<NodeId>)>,
+    group: Vec<NodeId>,
+    collapse: Option<NodeId>,
+    before: Option<Snapshot>,
+    group_drag: Option<GroupDrag>,
     created: Option<NodeId>,
+}
+
+struct Snapshot {
+    state: EqState,
+    selected: Option<NodeId>,
+    group: Vec<NodeId>,
+}
+
+struct GroupDrag {
+    origin: [f32; 2],
+    nodes: Vec<(Node, [f32; 2])>,
 }
 
 impl Local {
@@ -33,7 +51,10 @@ impl Local {
             state,
             selected: Some(id),
             bank: 0,
+            group: Vec::new(),
+            collapse: None,
             before: None,
+            group_drag: None,
             created: None,
         })
     }
@@ -133,6 +154,17 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
                         if event.checked {
                             if let Err(error) = select_bank(fixture, (index - 1) as u8, cx) {
                                 view.error = Some(error);
+                                let bank = fixture
+                                    .eq_local
+                                    .as_ref()
+                                    .map_or(0, |local| usize::from(local.bank));
+                                for other in 1..=5 {
+                                    fixture.toggles[other].update(cx, |toggle, cx| {
+                                        toggle.set_checked(other == bank + 1, cx)
+                                    });
+                                }
+                                cx.notify();
+                                return;
                             }
                             for other in 1..=5 {
                                 if other != index {
@@ -192,6 +224,7 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
         graph.set_editable(true, cx);
         graph.set_creation_enabled(true);
         graph.set_creation_drag_enabled(true);
+        graph.set_marquee_enabled(true, cx);
         graph
     });
     subscriptions.push(
@@ -213,6 +246,28 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
             }
             if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
                 if let Err(error) = event_graph(fixture, *event, cx) {
+                    fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
+                    view.error = Some(error);
+                }
+            }
+            cx.notify();
+        }),
+    );
+    subscriptions.push(
+        cx.subscribe(&graph, |view, _, event: &ResponseGraphMarqueeEvent, cx| {
+            let cancel = event.phase == ResponseGraphMarqueePhase::Cancel;
+            if !cancel && (view.disabled || view.entry != Entry::Eq) {
+                return;
+            }
+            if !cancel && !view.finish_drafts(cx) {
+                if let Some(fixture) = view.fixtures.get(&Entry::Eq) {
+                    fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
+                }
+                cx.notify();
+                return;
+            }
+            if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
+                if let Err(error) = marquee(fixture, event, cx) {
                     view.error = Some(error);
                 }
             }
@@ -259,16 +314,56 @@ fn current(fixture: &Fixture, cx: &gpui::App) -> Option<EqState> {
 }
 
 fn select_bank(fixture: &mut Fixture, bank: u8, cx: &mut Context<Gallery>) -> Result<(), String> {
+    if fixture
+        .eq_local
+        .as_ref()
+        .is_some_and(|local| local.before.is_some())
+    {
+        return Err("finish the eq graph edit before changing banks".into());
+    }
     let state = current(fixture, cx).ok_or("eq fixture unavailable")?;
     let local = fixture.eq_local.as_mut().ok_or("eq fixture unavailable")?;
     local.state = state;
     local.bank = bank;
+    local.group.clear();
+    local.collapse = None;
+    local.group_drag = None;
     local.selected = local
         .state
         .nodes
         .iter()
         .find(|node| node.bank == bank)
         .map(|node| node.id);
+    let selected = local
+        .selected
+        .and_then(|id| local.state.node(id).ok().copied());
+    if let Some(node) = selected {
+        set_controls(fixture, node, cx)?;
+    }
+    Ok(())
+}
+
+fn marquee(
+    fixture: &mut Fixture,
+    event: &ResponseGraphMarqueeEvent,
+    cx: &mut Context<Gallery>,
+) -> Result<(), String> {
+    let state = current(fixture, cx).ok_or("eq fixture unavailable")?;
+    let local = fixture.eq_local.as_mut().ok_or("eq fixture unavailable")?;
+    local.state = state;
+    let members: Vec<_> = event
+        .selected
+        .iter()
+        .copied()
+        .filter(|raw| {
+            NodeId::new(u64::from(*raw))
+                .ok()
+                .and_then(|id| local.state.node(id).ok())
+                .is_some_and(|node| node.bank == local.bank)
+        })
+        .collect();
+    selection::apply_marquee(&mut local.selected, &mut local.group, &members);
+    local.collapse = None;
     let selected = local
         .selected
         .and_then(|id| local.state.node(id).ok().copied());
@@ -334,6 +429,17 @@ fn event_graph(
     } else {
         NodeId::new(u64::from(event.node_id)).ok()
     };
+    if event.node_id != 0
+        && matches!(
+            event.phase,
+            ResponseGraphPhase::Begin | ResponseGraphPhase::Change | ResponseGraphPhase::Commit
+        )
+        && id
+            .and_then(|id| state.node(id).ok())
+            .is_none_or(|node| node.bank != local.bank)
+    {
+        return Err("eq node unavailable in this bank".into());
+    }
     match event.phase {
         ResponseGraphPhase::Create => {
             let id = NodeId::new(u64::from(state.next_node_id)).map_err(|e| e.to_string())?;
@@ -341,43 +447,128 @@ fn event_graph(
             node.kind = node_geometry::creation_kind(event.position);
             node.bank = local.bank;
             set_position(&mut node, event.position);
-            let before = (state.clone(), local.selected);
+            let before = Snapshot {
+                state: state.clone(),
+                selected: local.selected,
+                group: local.group.clone(),
+            };
             state.add(node).map_err(|e| e.to_string())?;
             local.before = Some(before);
             local.selected = Some(id);
+            local.group.clear();
+            local.collapse = None;
             local.created = Some(id);
         }
         ResponseGraphPhase::Select => {
             let Some(id) = id else { return Ok(()) };
-            if state.node(id).is_err() {
+            if !state.node(id).is_ok_and(|node| node.bank == local.bank) {
                 return Ok(());
+            }
+            local.collapse = None;
+            if event.modifiers.shift {
+                if local.group.is_empty() {
+                    local.group.extend(local.selected);
+                }
+                if !local.group.contains(&id) {
+                    local.group.push(id);
+                }
+                if local.group.len() < 2 {
+                    local.group.clear();
+                }
+            } else if local.group.contains(&id) {
+                local.collapse = Some(id);
+            } else {
+                local.group.clear();
             }
             local.selected = Some(id);
         }
         ResponseGraphPhase::Begin => {
             if event.node_id != 0 {
-                local.before = Some((state.clone(), local.selected));
+                if id.is_some_and(|id| {
+                    local.group.len() > group_move::MAX_GROUP_NODES && local.group.contains(&id)
+                }) {
+                    return Err("eq group move is limited to 32 nodes".into());
+                }
+                local.before = Some(Snapshot {
+                    state: state.clone(),
+                    selected: local.selected,
+                    group: local.group.clone(),
+                });
+                local.collapse = None;
+                if id.is_some_and(|id| local.group.len() > 1 && local.group.contains(&id)) {
+                    let nodes = local
+                        .group
+                        .iter()
+                        .map(|id| {
+                            state
+                                .node(*id)
+                                .copied()
+                                .map(|node| (node, node_geometry::node_position(&node, 48_000)))
+                                .map_err(|_| "eq group node unavailable")
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    local.group_drag = Some(GroupDrag {
+                        origin: event.position,
+                        nodes,
+                    });
+                }
             }
         }
         ResponseGraphPhase::Change | ResponseGraphPhase::Commit => {
-            let Some(id) = id else { return Ok(()) };
-            let Some(node) = state.nodes.iter_mut().find(|node| node.id == id) else {
-                return Ok(());
-            };
-            set_position(node, event.position);
+            if let Some(drag) = &local.group_drag {
+                let delta = [
+                    event.position[0] - drag.origin[0],
+                    event.position[1] - drag.origin[1],
+                ];
+                for (original, origin) in &drag.nodes {
+                    let node = state
+                        .nodes
+                        .iter_mut()
+                        .find(|node| node.id == original.id)
+                        .ok_or("eq group node unavailable")?;
+                    if node.kind != original.kind || node.bank != original.bank {
+                        return Err("eq group node changed during drag".into());
+                    }
+                    let (frequency, vertical) =
+                        group_move::values(original.kind, *origin, delta, 48_000);
+                    node.frequency_hz = frequency;
+                    match vertical {
+                        group_move::Vertical::Gain(value) => node.gain_db = value,
+                        group_move::Vertical::Q(value) => node.q = value,
+                    }
+                }
+            } else {
+                let Some(id) = id else { return Ok(()) };
+                let Some(node) = state.nodes.iter_mut().find(|node| node.id == id) else {
+                    return Ok(());
+                };
+                set_position(node, event.position);
+            }
             if event.phase == ResponseGraphPhase::Commit {
                 local.before = None;
+                local.group_drag = None;
             }
         }
         ResponseGraphPhase::Cancel => {
-            if let Some((before, selected)) = local.before.take() {
-                state = before;
-                local.selected = selected;
+            if let Some(before) = local.before.take() {
+                state = before.state;
+                local.selected = before.selected;
+                local.group = before.group;
             }
             local.created = None;
+            local.group_drag = None;
+            local.collapse = None;
         }
         ResponseGraphPhase::Release | ResponseGraphPhase::ReleaseOutside => {
+            if event.phase == ResponseGraphPhase::Release
+                && id.is_some()
+                && local.collapse.take() == id
+            {
+                local.group.clear();
+            }
+            local.collapse = None;
             local.before = None;
+            local.group_drag = None;
             local.created = None;
         }
         _ => {}
@@ -419,10 +610,9 @@ pub(super) fn model(fixture: &Fixture, cx: &gpui::App) -> Option<ResponseGraphMo
                 id: node.id.value(),
                 position: node_geometry::node_position(node, 48_000),
                 enabled: node.enabled,
-                selected: fixture
-                    .eq_local
-                    .as_ref()
-                    .is_some_and(|local| local.selected == Some(node.id)),
+                selected: fixture.eq_local.as_ref().is_some_and(|local| {
+                    local.selected == Some(node.id) || local.group.contains(&node.id)
+                }),
             })
             .collect(),
     };
@@ -439,6 +629,7 @@ pub(super) fn sync(fixture: &Fixture, disabled: bool, cx: &mut Context<Gallery>)
         }
         graph.set_editable(!disabled, cx);
         graph.set_creation_enabled(!disabled);
+        graph.set_marquee_enabled(!disabled, cx);
         let _ = graph.set_axes(Some(axes::frequency_axes(48000)), cx);
         let _ = graph.set_model(
             model,
@@ -921,6 +1112,386 @@ mod tests {
                 model(&view.fixtures[&Entry::Eq], cx).unwrap().nodes.len(),
                 1
             )
+        });
+    }
+
+    #[gpui::test]
+    fn marquee_group_drag_and_escape_preserve_complete_node_state(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, MouseButton, VisualTestContext, point, px, size};
+        cx.update(hex_widgets::bind_response_graph_keys);
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let graph = view.read_with(cx, |view, _| view.fixtures[&Entry::Eq].graph.clone());
+        let plot = graph.read_with(&visual, |graph, _| graph.plot_bounds().unwrap());
+        let at = |p: [f32; 2]| {
+            point(
+                plot.left() + plot.size.width * p[0],
+                plot.top() + plot.size.height * (1.0 - p[1]),
+            )
+        };
+        visual.simulate_click(at([0.25, 0.7]), Modifiers::default());
+        visual.simulate_click(at([0.75, 0.7]), Modifiers::default());
+        visual.run_until_parked();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(at([0.15, 0.9]), MouseButton::Left, shift);
+        visual.simulate_mouse_move(at([0.85, 0.4]), Some(MouseButton::Left), shift);
+        visual.simulate_mouse_up(at([0.85, 0.4]), MouseButton::Left, shift);
+        visual.run_until_parked();
+        let before = view.read_with(cx, |view, cx| {
+            model(&view.fixtures[&Entry::Eq], cx).unwrap()
+        });
+        assert_eq!(before.nodes.iter().filter(|node| node.selected).count(), 3);
+        let toggle = Modifiers {
+            shift: true,
+            platform: true,
+            ..Modifiers::default()
+        };
+        for expected in [2, 3] {
+            visual.simulate_mouse_down(at([0.47, 0.82]), MouseButton::Left, toggle);
+            visual.simulate_mouse_move(at([0.66, 0.44]), Some(MouseButton::Left), toggle);
+            visual.simulate_mouse_up(at([0.66, 0.44]), MouseButton::Left, toggle);
+            visual.run_until_parked();
+            view.read_with(cx, |view, cx| {
+                assert_eq!(
+                    model(&view.fixtures[&Entry::Eq], cx)
+                        .unwrap()
+                        .nodes
+                        .iter()
+                        .filter(|node| node.selected)
+                        .count(),
+                    expected
+                )
+            });
+        }
+        let origin = before.nodes[0].position;
+        let target = [origin[0] + 0.05, origin[1] + 0.1];
+        visual.simulate_mouse_down(at(origin), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(target), Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(at(target), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let after = view.read_with(cx, |view, cx| {
+            model(&view.fixtures[&Entry::Eq], cx).unwrap()
+        });
+        for (old, new) in before.nodes.iter().zip(&after.nodes) {
+            assert!((new.position[0] - old.position[0] - 0.05).abs() < 0.002);
+            assert!((new.position[1] - old.position[1] - 0.1).abs() < 0.002);
+        }
+        assert_ne!(after.primary, before.primary);
+        let start = after.nodes[0].position;
+        let cancel_to = [start[0] + 0.05, start[1] - 0.1];
+        visual.simulate_mouse_down(at(start), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(cancel_to), Some(MouseButton::Left), Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        let restored = view.read_with(cx, |view, cx| {
+            model(&view.fixtures[&Entry::Eq], cx).unwrap()
+        });
+        assert_eq!(restored.nodes, after.nodes);
+        visual.simulate_click(at(restored.nodes[0].position), Modifiers::default());
+        visual.run_until_parked();
+        let collapsed = view.read_with(cx, |view, cx| {
+            model(&view.fixtures[&Entry::Eq], cx).unwrap()
+        });
+        assert_eq!(
+            collapsed.nodes.iter().filter(|node| node.selected).count(),
+            1
+        );
+    }
+
+    #[gpui::test]
+    fn escape_after_marquee_repaint_restores_prior_selection(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, MouseButton, VisualTestContext, point, px, size};
+        cx.update(hex_widgets::bind_response_graph_keys);
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let graph = view.read_with(cx, |view, _| view.fixtures[&Entry::Eq].graph.clone());
+        let plot = graph.read_with(&visual, |graph, _| graph.plot_bounds().unwrap());
+        let at = |p: [f32; 2]| {
+            point(
+                plot.left() + plot.size.width * p[0],
+                plot.top() + plot.size.height * (1.0 - p[1]),
+            )
+        };
+        visual.simulate_click(at([0.25, 0.7]), Modifiers::default());
+        visual.simulate_click(at([0.75, 0.7]), Modifiers::default());
+        visual.run_until_parked();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(at([0.15, 0.9]), MouseButton::Left, shift);
+        visual.simulate_mouse_move(at([0.85, 0.4]), Some(MouseButton::Left), shift);
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                model(&view.fixtures[&Entry::Eq], cx)
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .filter(|node| node.selected)
+                    .count(),
+                3
+            )
+        });
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let nodes = model(&view.fixtures[&Entry::Eq], cx).unwrap().nodes;
+            assert_eq!(
+                nodes
+                    .iter()
+                    .filter(|node| node.selected)
+                    .map(|node| node.id)
+                    .collect::<Vec<_>>(),
+                [3]
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn stale_selection_events_cannot_select_nodes_from_another_bank(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            select_bank(fixture, 1, cx).unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Create, 0, [0.3, 0.7]),
+                cx,
+            )
+            .unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Release, 0, [0.3, 0.7]),
+                cx,
+            )
+            .unwrap();
+            select_bank(fixture, 0, cx).unwrap();
+            let stale = ResponseGraphMarqueeEvent {
+                phase: ResponseGraphMarqueePhase::Commit,
+                selected: vec![1, 2],
+                modifiers: gpui::Modifiers::default(),
+            };
+            marquee(fixture, &stale, cx).unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Select, 2, [0.3, 0.7]),
+                cx,
+            )
+            .unwrap();
+            let before = current(fixture, cx).unwrap();
+            assert!(
+                event_graph(fixture, event(ResponseGraphPhase::Begin, 2, [0.3, 0.7]), cx).is_err()
+            );
+            assert!(
+                event_graph(
+                    fixture,
+                    event(ResponseGraphPhase::Change, 2, [0.4, 0.8]),
+                    cx
+                )
+                .is_err()
+            );
+            assert_eq!(current(fixture, cx).unwrap(), before);
+            let local = fixture.eq_local.as_ref().unwrap();
+            assert_eq!(local.selected.unwrap().value(), 1);
+            assert!(local.group.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn group_drag_refuses_a_changed_node_kind_and_cancel_restores_state(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Create, 0, [0.3, 0.7]),
+                cx,
+            )
+            .unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Release, 0, [0.3, 0.7]),
+                cx,
+            )
+            .unwrap();
+            let selection = ResponseGraphMarqueeEvent {
+                phase: ResponseGraphMarqueePhase::Commit,
+                selected: vec![1, 2],
+                modifiers: gpui::Modifiers::default(),
+            };
+            marquee(fixture, &selection, cx).unwrap();
+            let before = current(fixture, cx).unwrap();
+            let start = node_geometry::node_position(&before.nodes[1], 48_000);
+            event_graph(fixture, event(ResponseGraphPhase::Begin, 2, start), cx).unwrap();
+            fixture.selectors[1].update(cx, |selector, cx| selector.set_selected(3, cx).unwrap());
+            let error = event_graph(
+                fixture,
+                event(
+                    ResponseGraphPhase::Change,
+                    2,
+                    [start[0] + 0.05, start[1] + 0.1],
+                ),
+                cx,
+            )
+            .unwrap_err();
+            assert_eq!(error, "eq group node changed during drag");
+            event_graph(fixture, event(ResponseGraphPhase::Cancel, 2, start), cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), before);
+        });
+    }
+
+    #[gpui::test]
+    fn oversized_group_drag_is_refused_without_changing_nodes(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            let local = fixture.eq_local.as_mut().unwrap();
+            for raw in 2..=33 {
+                let id = NodeId::new(raw).unwrap();
+                local
+                    .state
+                    .add(Node::new(id, 1_000.0, 0.0, 0).unwrap())
+                    .unwrap();
+            }
+            local.group = local.state.nodes.iter().map(|node| node.id).collect();
+            let before = current(fixture, cx).unwrap();
+            let error = event_graph(
+                fixture,
+                event(ResponseGraphPhase::Begin, 1, [0.5, 0.625]),
+                cx,
+            )
+            .unwrap_err();
+            assert_eq!(error, "eq group move is limited to 32 nodes");
+            assert_eq!(current(fixture, cx).unwrap(), before);
+            assert!(fixture.eq_local.as_ref().unwrap().before.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn active_drag_refuses_bank_change_and_cancel_restores_state(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            let before = current(fixture, cx).unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Begin, 1, [0.5, 0.625]),
+                cx,
+            )
+            .unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Change, 1, [0.7, 0.8]),
+                cx,
+            )
+            .unwrap();
+            assert!(select_bank(fixture, 1, cx).is_err());
+            assert_eq!(fixture.eq_local.as_ref().unwrap().bank, 0);
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Cancel, 1, [0.7, 0.8]),
+                cx,
+            )
+            .unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), before);
+        });
+    }
+
+    #[gpui::test]
+    fn mixed_group_drag_uses_gain_and_q_and_cancel_restores_both(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Create, 0, [0.3, 0.7]),
+                cx,
+            )
+            .unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Release, 0, [0.3, 0.7]),
+                cx,
+            )
+            .unwrap();
+            fixture.selectors[1].update(cx, |selector, cx| selector.set_selected(3, cx).unwrap());
+            let selection = ResponseGraphMarqueeEvent {
+                phase: ResponseGraphMarqueePhase::Commit,
+                selected: vec![1, 2],
+                modifiers: gpui::Modifiers::default(),
+            };
+            marquee(fixture, &selection, cx).unwrap();
+            let before = current(fixture, cx).unwrap();
+            let start = node_geometry::node_position(&before.nodes[1], 48_000);
+            event_graph(fixture, event(ResponseGraphPhase::Begin, 2, start), cx).unwrap();
+            event_graph(
+                fixture,
+                event(
+                    ResponseGraphPhase::Change,
+                    2,
+                    [start[0] + 0.05, start[1] + 0.1],
+                ),
+                cx,
+            )
+            .unwrap();
+            let moved = current(fixture, cx).unwrap();
+            assert!(moved.nodes[0].gain_db > before.nodes[0].gain_db);
+            assert_eq!(moved.nodes[1].gain_db, before.nodes[1].gain_db);
+            assert!(moved.nodes[1].q > before.nodes[1].q);
+            event_graph(fixture, event(ResponseGraphPhase::Cancel, 2, start), cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), before);
+            assert_eq!(fixture.eq_local.as_ref().unwrap().group.len(), 2);
         });
     }
 
