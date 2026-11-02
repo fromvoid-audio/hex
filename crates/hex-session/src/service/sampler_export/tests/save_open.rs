@@ -35,7 +35,7 @@ fn loop_envelope_state(
 ) -> hex_lattice_contract::NativeDeviceState {
     // Version follows the actual loaded template. Payload/PCM remain independent
     // literals: Classic loop, region1..4, loop1..3, gain0.5 and two-frame
-    // attack/release at16k, crossfade off. This is not a second codec or UI.
+    // attack/release at16k. This is not a second codec or UI.
     let mut bytes = vec![1, 0, 0, 60, 16, 0, 0, 0];
     for n in [1_u32, 4, 1, 3] {
         bytes.extend_from_slice(&n.to_le_bytes());
@@ -50,11 +50,10 @@ fn loop_envelope_state(
         0.0,
         1.0,
         2.0 / 16000.0,
-        0.0,
     ] {
         bytes.extend_from_slice(&n.to_le_bytes());
     }
-    assert_eq!(bytes.len(), 104);
+    assert_eq!(bytes.len(), 96);
     hex_lattice_contract::NativeDeviceState::new(
         original.type_id(),
         original.state_version(),

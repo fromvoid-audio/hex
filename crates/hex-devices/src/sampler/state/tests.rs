@@ -68,9 +68,10 @@ fn current_modes_roundtrip_and_patch_preserves_actual_host_metadata() {
 
 #[test]
 fn malformed_truncated_reserved_nonfinite_and_unsupported_formats_refuse() {
+    // The v3 layout; v1/v2 layouts are covered by the historical encoder.
     let valid = SamplerState::for_source_frames(16)
         .unwrap()
-        .to_native()
+        .to_current_native()
         .unwrap();
     for end in 0..valid.payload().len() {
         assert!(
@@ -462,8 +463,9 @@ fn disabled_classic_loop_remembers_range_across_codec_and_trim_without_implicit_
         loop_region: Region { start: 2, end: 6 },
     };
     let original = state.to_native().unwrap();
-    assert_eq!(original.state_version(), 3);
-    assert_eq!(original.payload().len(), 104);
+    // Crossfade off saves the older-reader v2 layout.
+    assert_eq!(original.state_version(), 2);
+    assert_eq!(original.payload().len(), 96);
     let mut enabled = SamplerState::from_native(&original).unwrap();
     if let AuthoredMode::Classic { loop_enabled, .. } = &mut enabled.mode {
         *loop_enabled = true;
@@ -626,10 +628,11 @@ fn historical_payload(state: &SamplerState) -> Vec<u8> {
 }
 
 /// v2 (21 Oct 2026) states keep opening with the crossfade off (Pulse #4088):
-/// every mode, host gains and the source binding survive, the migrated state
-/// saves and reopens at v3, and the v2 empty marker stays empty.
+/// every mode, host gains and the source binding survive the registry's v3
+/// migration; the saved form stays byte-identical v2 until a crossfade is
+/// authored, which saves and reopens as v3; the v2 empty marker stays empty.
 #[test]
-fn sampler_v2_states_migrate_with_crossfade_off_and_save_reopen_at_v3() {
+fn sampler_v2_states_migrate_and_save_as_v2_until_a_crossfade_needs_v3() {
     use hex_lattice_contract::NativeDeviceMetadata;
     let definition = &super::super::catalog::DEFINITION;
     let source = vec![DeviceAssetReference {
@@ -678,20 +681,18 @@ fn sampler_v2_states_migrate_with_crossfade_off_and_save_reopen_at_v3() {
         assert_eq!(migrated.output_gain_millidb(), 1250);
         assert_eq!(SamplerState::from_native(&migrated).unwrap(), expected);
         assert_eq!(definition.migrate_state(&migrated).unwrap(), migrated);
-        // Save/reopen: the persisted v3 bytes reconstruct the same state, and
-        // an authored crossfade survives the same round trip.
-        let reopened = NativeDeviceState::new(
-            migrated.type_id(),
-            migrated.state_version(),
-            migrated.payload().to_vec(),
-        )
-        .unwrap()
-        .with_host_metadata_from(&migrated)
-        .unwrap();
-        assert_eq!(reopened, migrated);
-        let mut edited = SamplerState::from_native(&reopened).unwrap();
+        // The saved form of either is the original v2 state, byte for byte,
+        // and so is a crossfade-off edit that changes nothing.
+        assert_eq!(saved_form(&v2).unwrap(), v2);
+        assert_eq!(saved_form(&migrated).unwrap(), v2);
+        assert_eq!(expected.replace_in(&v2).unwrap(), v2);
+        // An authored crossfade saves as v3 and reopens with the same state.
+        let mut edited = expected.clone();
         edited.loop_crossfade_ms = 250.0;
-        let saved = edited.replace_in(&reopened).unwrap();
+        let saved = edited.replace_in(&v2).unwrap();
+        assert_eq!(saved.state_version(), STATE_VERSION);
+        assert_eq!(saved.payload().len(), v2.payload().len() + 8);
+        assert_eq!(saved_form(&saved).unwrap(), saved);
         let reopened = NativeDeviceState::new(TYPE_ID, STATE_VERSION, saved.payload().to_vec())
             .unwrap()
             .with_host_metadata_from(&saved)
@@ -708,4 +709,9 @@ fn sampler_v2_states_migrate_with_crossfade_off_and_save_reopen_at_v3() {
     assert!(is_empty_state(&migrated));
     assert_eq!(migrated.output_gain_millidb(), -3000);
     assert_eq!(definition.migrate_state(&migrated).unwrap(), migrated);
+    assert_eq!(saved_form(&migrated).unwrap(), empty);
+    assert_eq!(
+        empty_state().unwrap().state_version(),
+        COMPATIBLE_STATE_VERSION
+    );
 }

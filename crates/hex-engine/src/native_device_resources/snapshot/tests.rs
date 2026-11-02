@@ -12,14 +12,15 @@ fn control_sampler_normal_preparation_and_render_borrow_exact_captured_source() 
     normal_preparation_and_render(false);
 }
 
-/// A project saved with a v2 sampler state (before the v3 loop crossfade,
-/// Pulse #4088) still prepares and renders identically without re-saving.
+/// Saved sampler states keep their saved version in the project (v2, or v3
+/// with a crossfade, Pulse #4088); both prepare and render without migration.
+/// A dormant one-shot crossfade forces v3 with identical output.
 #[test]
-fn control_sampler_prepares_and_renders_an_unmigrated_v2_saved_state() {
+fn control_sampler_prepares_and_renders_a_saved_v3_state() {
     normal_preparation_and_render(true);
 }
 
-fn normal_preparation_and_render(saved_v2: bool) {
+fn normal_preparation_and_render(saved_v3: bool) {
     let mut editor = Editor::new(Project::new(16000).unwrap(), 8).unwrap();
     let Created::Asset(asset) = editor
         .execute(Command::ImportDeviceAsset {
@@ -69,6 +70,9 @@ fn normal_preparation_and_render(saved_v2: bool) {
         sustain: 1.0,
         release_seconds: 0.0,
     };
+    if saved_v3 {
+        state.loop_crossfade_ms = 5.0;
+    }
     let native = state
         .to_native()
         .unwrap()
@@ -77,16 +81,7 @@ fn normal_preparation_and_render(saved_v2: bool) {
             asset: DeviceAssetKey::new(asset.value()).unwrap(),
         }])
         .unwrap();
-    let native = if saved_v2 {
-        // The v2 layout is the v3 one without the trailing crossfade f64.
-        let payload = &native.payload()[..native.payload().len() - 8];
-        NativeDeviceState::new(native.type_id(), 2, payload.to_vec())
-            .unwrap()
-            .with_host_metadata_from(&native)
-            .unwrap()
-    } else {
-        native
-    };
+    assert_eq!(native.state_version(), if saved_v3 { 3 } else { 2 });
     editor
         .execute(Command::InsertInstrument {
             track,

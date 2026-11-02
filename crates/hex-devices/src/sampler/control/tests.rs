@@ -298,7 +298,7 @@ fn strict_current_state_refuses_before_patching_and_preserves_its_source() {
             DeviceContractError::MalformedState,
         ),
         (
-            NativeDeviceState::new(TYPE_ID, STATE_VERSION, nonfinite).unwrap(),
+            NativeDeviceState::new(TYPE_ID, original.state_version(), nonfinite).unwrap(),
             DeviceContractError::InvalidParameterValue,
         ),
     ] {
