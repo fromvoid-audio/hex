@@ -46,7 +46,8 @@ pub fn validate(bytes: &[u8], expected: &str, role: ImageRole) -> Result<(), Str
             return Err("Mach-O command header".into());
         }
         let length = word(at + 4)? as usize;
-        if length < 8 || length % 8 != 0 || at.checked_add(length).is_none_or(|n| n > end) {
+        // Mach-O command sizes are aligned to eight bytes.
+        if length < 8 || length & 7 != 0 || at.checked_add(length).is_none_or(|n| n > end) {
             return Err("Mach-O command size/alignment".into());
         }
         if word(at)? == 0x1b {
@@ -99,6 +100,12 @@ mod tests {
         for n in 0..b.len() {
             assert!(validate(&b[..n], &hash(&b[..n]), ImageRole::Helper).is_err());
         }
+        let mut unaligned = b.clone();
+        unaligned[36..40].copy_from_slice(&23_u32.to_le_bytes());
+        assert_eq!(
+            validate(&unaligned, &hash(&unaligned), ImageRole::Helper),
+            Err("Mach-O command size/alignment".into())
+        );
         for (at, n) in [
             (0, 0xcafebabe_u32),
             (4, 0x01000007),
