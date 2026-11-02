@@ -233,7 +233,7 @@ impl Render for TestRoot {
     }
 }
 
-fn open_numeric_control(
+pub(crate) fn open_numeric_control(
     cx: &mut TestAppContext,
     kind: NumericControlKind,
 ) -> (gpui::AnyWindowHandle, Entity<NumericControl>) {

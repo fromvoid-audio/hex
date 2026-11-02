@@ -317,7 +317,7 @@ impl Element for NumericTextElement {
                 rgb(selection_tint(input.style)),
             )
         });
-        let cursor = (input.editing && input.selected.is_empty()).then(|| {
+        let cursor = (input.editing.is_editing() && input.selected.is_empty()).then(|| {
             fill(
                 Bounds::new(
                     point(origin_x + cursor_x, bounds.top()),
@@ -350,7 +350,7 @@ impl Element for NumericTextElement {
             return;
         };
         let focus = self.input.read(cx).focus.clone();
-        if self.input.read(cx).editing {
+        if self.input.read(cx).editing.is_editing() {
             let input = self.input.clone();
             window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                 if phase.capture() && !bounds.contains(&event.position) {
