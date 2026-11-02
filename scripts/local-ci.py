@@ -182,8 +182,10 @@ def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
 
 
 # Merge test-execution budget (user policy, 1 November 2026): owner-boundary
-# merge checks keep test setup and execution, excluding Cargo's build phase,
-# under one minute. Carried steps cost nothing in this run and are excluded.
+# merge checks aim to keep test setup and execution, excluding Cargo's build
+# phase, under one minute. Exceeding it is a warning, not a merge failure (user
+# decision, 1 November 2026; overruns are investigated in Pulse #4100). Carried
+# steps cost nothing in this run and are excluded.
 MERGE_TEST_BUDGET_SECONDS = 60.0
 
 
@@ -257,13 +259,19 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     if sorted(affected) != sorted(plan["affected_packages"]):
         raise ValueError("boundary consumers do not match resolved Cargo closure")
     packages = tuple(arg for p in affected for arg in ("-p", p))
-    steps = [*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests")]
+    # Main is formatted; only the changed owners' sources can need it.
+    owners = boundary.get("test_packages") or affected
+    steps = [*(Step("format", ("cargo", "fmt", *(a for p in owners for a in ("-p", p)), "--check"))
+               if s.step_id == "format" else s for s in QUICK_STEPS),
+             next(s for s in FULL_STEPS if s.step_id == "runner-tests")]
     if any(path.endswith(("Cargo.toml", "/build.rs")) for path in plan.get("paths", [])):
         steps.append(next(s for s in FULL_STEPS if s.step_id == "dependency-future-lints"))
     tests = boundary["tests"]
     # Owners test; every affected consumer still compiles and lints below.
     tested = boundary.get("test_packages", [])
     module_filters = boundary.get("module_filters", {})
+    by_name = {p["name"]: p for p in inventory}
+    doc_examples = set(boundary.get("doc_example_owners", []))
 
     def scoped(argv: tuple[str, ...]) -> tuple[str, ...]:
         """Restrict a test command to the changed modules when every owner it tests is module-scoped."""
@@ -271,6 +279,12 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         if not owners or any(owner not in module_filters for owner in owners):
             return argv
         names = sorted({name for owner in owners for name in module_filters[owner]})
+        # Module paths name only unit tests in the library or binary; integration
+        # tests, examples and benches would build and link only to match nothing.
+        if "--doc" not in argv and not {"--test", "--example", "--bench", "--lib", "--bins"} & set(argv):
+            kinds = {kind for owner in owners for target in by_name[owner]["targets"] for kind in target["kind"]}
+            selector = ("--lib",) if "lib" in kinds else ("--bins",)
+            argv = (*(a for a in argv if a != "--all-targets"), *selector)
         if argv[:2] == ("python3", "scripts/test_shards.py"):
             split = argv.index("--")
             return (*argv[:split], *(a for name in names for a in ("--filter", name)), *argv[split:])
@@ -289,6 +303,9 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
                 steps.append(Step(f"module-tests-{package}", scoped(("cargo", "test", "-p", package, "--locked"))))
         if single:
             for package in (p for p in tested if p in single):
+                # Module-scoped doctests run only when the changed files carry doc examples.
+                if package in module_filters and package not in doc_examples:
+                    continue
                 steps.append(Step("single-run-doctests" if package not in module_filters else f"module-doctests-{package}",
                                   scoped(("cargo", "test", "--doc", "-p", package, "--locked"))))
     elif boundary["kind"] == "compressor":
@@ -314,6 +331,11 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     covered_features = {"hex-plugin-host": {"allocation-probe"}, "hex-ui": {"ui-test-support"}, "hex-export": {"instrument-test-support"},
                         "hex-audio": {"allocation-probe"}, "hex-stream": {"allocation-probe"},
                         "hex-desktop": {"allocation-probe"}}
+    # Every consumer's reviewed feature configurations lint in ONE invocation:
+    # separate invocations recompiled the shared dependency chain per feature
+    # (55-112 s against 38-42 s measured, 1 November 2026). The default-feature
+    # affected-clippy above keeps cfg(not(feature)) branches compiling.
+    lint_features: set[str] = set()
     for step in FULL_STEPS:
         if "--features" not in step.argv:
             continue
@@ -327,11 +349,16 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         # their tests. A module-scoped owner's own module tests cover the change.
         if "--example" in step.argv and runs_rust_tests(step.argv) and all(p in module_filters for p in selected):
             continue
+        if not runs_rust_tests(step.argv):
+            # Feature lints are folded into one invocation below.
+            feature = step.argv[step.argv.index("--features") + 1]
+            lint_features.update(f"{p}/{feature}" for p in selected)
+            continue
         argv = list(step.argv)
         for owner in set(owners) - set(selected):
             index = argv.index(owner)
             del argv[index - 1:index + 1]
-        steps.append(Step(step.step_id, scoped(tuple(argv)) if runs_rust_tests(step.argv) else tuple(argv)))
+        steps.append(Step(step.step_id, scoped(tuple(argv))))
     for package in inventory:
         if package["name"] not in affected:
             continue
@@ -341,13 +368,18 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         # need reviewed configuration rules rather than a guessed power set.
         # Compressor plans run reviewed contract tests, but still lint every
         # extra configuration so an unexercised cfg branch cannot stop compiling.
-        commands = ("clippy",) if boundary["kind"] == "compressor" or package["name"] not in tested else ("test", "clippy")
+        lint_features.update(f"{package['name']}/{feature}" for feature in extra)
+        if boundary["kind"] == "compressor" or package["name"] not in tested:
+            continue
         for index, feature in enumerate(sorted(extra)):
-            for command in commands:
-                argv = ("cargo", command, "-p", package["name"], "--features", feature, "--all-targets", "--locked",
-                        *(("--", "-D", "warnings") if command == "clippy" else ()))
-                steps.append(Step(f"feature-{command}-{package['name']}-{index}",
-                                  scoped(argv) if command == "test" else argv))
+            steps.append(Step(f"feature-test-{package['name']}-{index}",
+                              scoped(("cargo", "test", "-p", package["name"], "--features", feature,
+                                      "--all-targets", "--locked"))))
+    if lint_features:
+        lint_packages = sorted({feature.split("/")[0] for feature in lint_features})
+        steps.append(Step("affected-feature-clippy",
+                          ("cargo", "clippy", *(a for p in lint_packages for a in ("-p", p)), "--all-targets",
+                           "--locked", "--features", ",".join(sorted(lint_features)), "--", "-D", "warnings")))
     if "hex-desktop" in (tested if boundary["kind"] == "packages" else affected):
         steps.append(next(s for s in FULL_STEPS if s.step_id == "desktop-build"))
     return tuple(steps)
@@ -2181,10 +2213,8 @@ class LocalCiRunner:
                             "changed modules ran no tests: add boundary tests to the changed module")
                         failed = True
                 if self.mode == "merge" and not failed:
-                    budget = merge_test_budget(self.summary["steps"], self.over_budget_reason)
-                    self.summary["test_budget"] = budget
-                    if budget["exceeded"] and not self.over_budget_reason:
-                        failed = True
+                    self.summary["test_budget"] = merge_test_budget(
+                        self.summary["steps"], self.over_budget_reason)
                 partial = self.mode == "quick" or self.plan and not self.plan["qualifies_merge"]
                 self.summary["verification_status"] = "failed" if failed else ("partial" if partial else "passed")
                 self.summary["status"] = self.summary["verification_status"]
@@ -2315,7 +2345,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reuse-report", type=Path,
                         help="explicit prior runtime certificate for a prose-only continuation")
     parser.add_argument("--over-budget-reason",
-                        help="record why a merge run may exceed the one-minute test budget (cite the Pulse issue)")
+                        help="record why a merge run exceeds the one-minute test budget (cite the Pulse issue)")
     parser.add_argument("--carry-report", type=Path,
                         help="after merging a newer base, reuse unaffected steps of this passed merge summary")
     parser.add_argument("--resume-report", type=Path,
@@ -2408,10 +2438,9 @@ def main(argv: list[str] | None = None) -> int:
     budget = runner.summary.get("test_budget")
     if isinstance(budget, dict) and budget.get("exceeded"):
         slowest = ", ".join(f"{s['step_id']} {s['seconds']:.0f}s" for s in budget["slowest"])
-        verdict = (f"accepted: {budget['over_budget_reason']}" if budget.get("over_budget_reason") else
-                   "fails merge; narrow the owner boundary or speed up the slowest suites, "
-                   "or rerun with --over-budget-reason and file the slow suite in Pulse")
-        print(f"merge test time {budget['test_seconds']:.0f}s exceeds the "
+        verdict = (f"reason: {budget['over_budget_reason']}" if budget.get("over_budget_reason") else
+                   "not a merge failure; record a recurring slow suite in Pulse")
+        print(f"warning: merge test time {budget['test_seconds']:.0f}s exceeds the "
               f"{budget['limit_seconds']:.0f}s budget ({slowest}); {verdict}", file=sys.stderr)
     print(f"local ci {runner.summary['status']}: {runner.summary_path}")
     if mode == "health" and runner.summary["status"] == "failed":

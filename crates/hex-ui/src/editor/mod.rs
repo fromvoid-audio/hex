@@ -143,6 +143,7 @@ mod midi_pan;
 mod midi_pitch_zoom;
 mod midi_recording;
 mod missing_media;
+mod user_errors;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
 mod midi_ruler;
@@ -518,6 +519,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-z", Undo, Some("hex_editor")),
         KeyBinding::new("cmd-z", Undo, Some("hex_gain_numeric_editor")),
         KeyBinding::new("cmd-shift-z", Redo, Some("hex_editor")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("hex_gain_numeric_editor")),
         KeyBinding::new("left", MoveLeft, Some("hex_editor")),
         KeyBinding::new("right", MoveRight, Some("hex_editor")),
         KeyBinding::new("shift-left", TrimLeft, Some("hex_editor")),

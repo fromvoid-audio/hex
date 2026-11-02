@@ -45,7 +45,8 @@ pub use native_assets::ResidentNativeReservation;
 mod verified_import;
 use audio_sources::MediaBank;
 pub use audio_sources::{
-    AudioSourceBinding, DocumentAudioMode, SourcePlanReservation, VerifiedAudioFile,
+    AudioSourceBinding, DocumentAudioMode, MAX_STREAMED_FILE_BYTES, MAX_STREAMED_SOURCE_FRAMES,
+    SourcePlanReservation, VerifiedAudioFile,
 };
 mod comparison_transition;
 mod device_comparison;
@@ -53,6 +54,7 @@ pub mod device_gesture;
 mod device_snapshot;
 pub mod import_batch;
 pub mod import_batch_decode;
+mod resident_import;
 pub mod service;
 pub mod tuning_gesture;
 pub use hex_media::waveform::{Peak as CachedPeak, Waveform as CachedWaveform};
@@ -2083,6 +2085,8 @@ fn prepare_with_waveforms_using(
 
 #[cfg(test)]
 mod audio_edit_tests;
+#[cfg(test)]
+pub(crate) mod test_wait;
 
 fn tuning_prepared_transition(
     prepared: hex_engine::PreparedRevision,

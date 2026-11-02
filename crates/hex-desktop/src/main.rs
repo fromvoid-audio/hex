@@ -115,18 +115,17 @@ fn main() {
         let demo = std::env::args_os()
             .skip(1)
             .any(|argument| argument == "--demo");
-        let result = if demo {
-            hex_ui::open(cx, hex_audio::AudioOutput::open())
-        } else {
-            native_audio::backend(audio_diagnostics)
-                .and_then(|backend| hex_ui::open_editor_backend(cx, backend))
-        };
-        if let Err(error) = result {
-            eprintln!("{}", error.to_lowercase());
-            cx.quit();
-            return;
+        let opened = hex_ui::open_or_report(cx, |cx| {
+            if demo {
+                hex_ui::open(cx, hex_audio::AudioOutput::open())
+            } else {
+                native_audio::backend(audio_diagnostics)
+                    .and_then(|backend| hex_ui::open_editor_backend(cx, backend))
+            }
+        });
+        if opened {
+            cx.activate(true);
         }
-        cx.activate(true);
     });
     if let Ok(worker) = &mut mts_worker {
         worker.shutdown();

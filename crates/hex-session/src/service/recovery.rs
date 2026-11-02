@@ -236,9 +236,21 @@ pub(super) fn open_source_with_limits(
     // factual file inputs with its admitted offline graph; the fresh output
     // verifies its real catalog and delivers the endpoint before queue submission.
     // File facts alone never promise page readiness or callback application.
+    // A plain asset past the per-file resident decode caps was imported as a
+    // streamed file; reopening must keep it file-backed even when the total
+    // working set would otherwise fit (Pulse #3949).
+    let oversized_plain_asset = online_assets(&project).any(|asset| {
+        asset.original_source().is_none()
+            && !asset_requires_resident_processing(&project, asset.id())
+            && crate::verified_import::exceeds_resident_decode(
+                &asset_media_path(&project_dir, asset),
+                asset.source_frames(),
+            )
+            .unwrap_or(false)
+    });
     let ordinary_file_backed = mode == DocumentAudioMode::Resident
         && reservation.is_some()
-        && required_pcm > frame_allowance;
+        && (required_pcm > frame_allowance || oversized_plain_asset);
     if mode == DocumentAudioMode::VerifiedStreaming {
         let reservation = reservation
             .ok_or("verified source reservation is required")?
@@ -260,11 +272,7 @@ pub(super) fn open_source_with_limits(
         .with_shutdown(Arc::clone(&current.shutdown));
         // Verify every retained asset, including unused records, without decoding PCM.
         for asset in online_assets(&project) {
-            let path = if asset.path().is_absolute() {
-                asset.path().to_path_buf()
-            } else {
-                project_dir.join(asset.path())
-            };
+            let path = asset_media_path(&project_dir, asset);
             let source = candidate.verify_import(path).map_err(|e| e.to_string())?;
             if !source.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
@@ -301,11 +309,7 @@ pub(super) fn open_source_with_limits(
     // Load unreferenced assets too: the editor can place them later. Missing
     // media is either offline (recorded on the project) or rejects the candidate.
     for asset in online_assets(&project) {
-        let media_path = if asset.path().is_absolute() {
-            asset.path().to_path_buf()
-        } else {
-            project_dir.join(asset.path())
-        };
+        let media_path = asset_media_path(&project_dir, asset);
         if current.shutdown.load(Ordering::Acquire) {
             return Err("project open cancelled".into());
         }
@@ -352,13 +356,13 @@ pub(super) fn open_source_with_limits(
             IMPORT_FRAME_LIMIT
         };
         let decoded = decode_wav_file(media_path, Limits::new(IMPORT_FILE_LIMIT, source_limit))
-            .map_err(|error| error.to_string().to_lowercase())?;
+            .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
         if decoded.sample_rate() != asset.source_sample_rate()
             || u64::try_from(decoded.frames()).ok() != Some(asset.source_frames())
         {
             return Err(format!(
                 "media {} rate or frame count differs from project metadata",
-                asset.path().display()
+                hex_storage::text::verbatim(asset.path().display())
             ));
         }
         if let Some(expected) = asset.original_source() {
@@ -411,7 +415,12 @@ pub(super) fn open_source_with_limits(
                         )
                     },
                 )
-                .map_err(|e| format!("could not reopen {}: {e}", asset.path().display()))?;
+                .map_err(|e| {
+                    format!(
+                        "could not reopen {}: {e}",
+                        hex_storage::text::verbatim(asset.path().display())
+                    )
+                })?;
             remaining_frames = remaining_frames
                 .checked_sub(frames)
                 .ok_or("resident original frame allowance overflow")?;
@@ -455,7 +464,7 @@ pub(super) fn open_source_with_limits(
                     .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?,
             },
         )
-        .map_err(|error| error.to_string().to_lowercase())?;
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
         remaining_frames = remaining_frames
             .checked_sub(
                 prepared
@@ -518,7 +527,7 @@ pub(super) fn open_source_with_limits(
             current.overview_budget.clone(),
         )
     }
-    .map_err(|error| error.to_string().to_lowercase())?;
+    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     session.source_reservation = reservation
         .map(SourcePlanReservation::validate)
         .transpose()
@@ -533,6 +542,14 @@ pub(super) fn open_source_with_limits(
         document,
         dirty,
     ))
+}
+
+fn asset_media_path(project_dir: &Path, asset: &hex_project::Asset) -> PathBuf {
+    if asset.path().is_absolute() {
+        asset.path().to_path_buf()
+    } else {
+        project_dir.join(asset.path())
+    }
 }
 
 fn online_assets(project: &Project) -> impl Iterator<Item = &hex_project::Asset> {
@@ -641,7 +658,7 @@ pub(super) fn absolute_document_path(path: &Path) -> Result<PathBuf, String> {
     } else {
         std::env::current_dir()
             .map(|directory| directory.join(path))
-            .map_err(|error| error.to_string().to_lowercase())
+            .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
     }
 }
 
@@ -655,7 +672,7 @@ fn absolute_document_base(path: &Path) -> Result<PathBuf, String> {
     } else {
         std::env::current_dir()
             .map(|directory| directory.join(parent))
-            .map_err(|error| error.to_string().to_lowercase())
+            .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
     }
 }
 
@@ -701,7 +718,8 @@ pub(super) fn project_for_save(
             asset.path = base.join(&asset.path);
         }
     }
-    hex_project::Project::from_snapshot(snapshot).map_err(|error| error.to_string().to_lowercase())
+    hex_project::Project::from_snapshot(snapshot)
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
 }
 
 fn checkpoint_path(document: Option<&DocumentHandle>, untitled: &Path) -> Result<PathBuf, String> {

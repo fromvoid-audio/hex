@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 6
+POLICY_VERSION = 8
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -278,6 +278,21 @@ def module_paths(source_root: Path) -> dict[Path, str] | None:
     return paths
 
 
+def doc_example_owners(root: Path, paths: list[str], inventory: list[dict]) -> list[str]:
+    """Owners whose changed Rust files carry doc examples (fenced code in doc comments)."""
+    owners = set()
+    for path in paths:
+        file = root / path
+        if not path.endswith(".rs") or not file.is_file():
+            continue
+        if any(line.lstrip().startswith(("///", "//!")) and "```" in line
+               for line in file.read_text(errors="replace").splitlines()):
+            owner = owner_package(path, inventory)
+            if owner:
+                owners.add(owner)
+    return sorted(owners)
+
+
 def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
                         tested: list[str]) -> dict[str, list[str]]:
     """Per-owner libtest filters for module-scoped merges (user policy, 1 November 2026).
@@ -414,10 +429,12 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
             {"package": "hex-ui", "lib": True, "filter": "compressor", "features": "ui-test-support"},
         ]
     tested = owner_test_packages(paths, inventory, affected)
-    module_filters = {} if narrow else module_test_filters(
-        root, paths, inventory, [p for p in tested if p not in RUNTIME_CONSUMER_NAMES])
+    # Only owners of changed files get module filters; a runtime consumer tested
+    # on another owner's behalf has no changed file and keeps its whole suite.
+    module_filters = {} if narrow else module_test_filters(root, paths, inventory, tested)
     return {"kind": "compressor" if narrow else "packages", "tests": tests,
             "module_filters": module_filters,
+            "doc_example_owners": doc_example_owners(root, paths, inventory),
             "test_packages": [] if narrow else tested,
             "single_run": {} if narrow else single_run_packages(root, tested, inventory),
             "lint_packages": affected,
