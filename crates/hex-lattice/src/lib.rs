@@ -1227,7 +1227,9 @@ impl NativeRuntimeChain {
     /// authored parameter change. Entry identity and processing topology must
     /// remain exact; a changed configuration is accepted only when both
     /// candidate twins explicitly support retargeting from the old committed
-    /// runtime. Empty ranges and malformed ranges are refused.
+    /// runtime, or when an unbypassed, unautomated memoryless entry changes
+    /// only its static host matrix (the handoff then ramps it; see
+    /// `matrix_ramp`). Empty ranges and malformed ranges are refused.
     pub fn can_retarget_parameters_from_range(
         &self,
         previous: &Self,
@@ -1243,6 +1245,13 @@ impl NativeRuntimeChain {
             .iter()
             .zip(&previous.entries[range])
             .all(|(candidate, old)| {
+                // A memoryless static matrix carries no processor history; its
+                // changed coefficients ramp in the host across the handoff.
+                let static_matrix_retarget = !candidate.runtime.is_stateful()
+                    && !old.runtime.is_stateful()
+                    && !candidate.bypassed
+                    && candidate.automation.is_empty()
+                    && old.automation.is_empty();
                 let stable_processing_identity = candidate.owner == old.owner
                     && candidate.device_id == old.device_id
                     && candidate.device_type == old.device_type
@@ -1253,6 +1262,7 @@ impl NativeRuntimeChain {
                         .foreign_configuration_matches(&old.runtime)
                     && candidate.bypassed == old.bypassed
                     && (candidate.matrix == old.matrix
+                        || static_matrix_retarget
                         || ((!candidate.automation.is_empty() || !old.automation.is_empty())
                             && candidate.runtime.can_retarget_from(&old.runtime)));
                 if !stable_processing_identity {
@@ -1264,7 +1274,7 @@ impl NativeRuntimeChain {
                     }
                     _ => false,
                 };
-                if configuration_matches {
+                if configuration_matches || static_matrix_retarget {
                     return true;
                 }
                 candidate.runtime.can_retarget_from(&old.runtime)

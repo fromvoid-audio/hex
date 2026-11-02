@@ -151,3 +151,24 @@ fn reset_bypass_excluded_and_rollback_apply_exact_laws() {
         render(&mut edited(rate), 64, 64)
     );
 }
+
+/// Planners inherit a chain whose memoryless static matrix changed, so the
+/// handoff ramp can run; identity, bypass and malformed ranges still refuse.
+#[test]
+fn parameter_retarget_gate_accepts_only_a_changed_unbypassed_static_matrix() {
+    let old = chain(48_000, 1.0, false);
+    assert!(chain(48_000, 0.25, false).can_retarget_parameters_from_range(&old, 0..1));
+    assert!(chain(48_000, 1.0, false).can_retarget_parameters_from_range(&old, 0..1));
+    assert!(!chain(48_000, 0.25, false).can_retarget_parameters_from_range(&old, 0..0));
+    assert!(!chain(48_000, 0.25, false).can_retarget_parameters_from_range(&old, 0..2));
+    assert!(!chain(44_100, 0.25, false).can_retarget_parameters_from_range(&old, 0..1));
+    let bypassed = chain(48_000, 1.0, true);
+    assert!(!chain(48_000, 0.25, true).can_retarget_parameters_from_range(&bypassed, 0..1));
+    assert!(!chain(48_000, 0.25, false).can_retarget_parameters_from_range(&bypassed, 0..1));
+    let mut other_device = chain(48_000, 0.25, false);
+    other_device.entries[0].device_id = 8;
+    assert!(!other_device.can_retarget_parameters_from_range(&old, 0..1));
+    let mut other_type = chain(48_000, 0.25, false);
+    other_type.entries[0].device_type = DeviceTypeId::from_static("test.other");
+    assert!(!other_type.can_retarget_parameters_from_range(&old, 0..1));
+}
