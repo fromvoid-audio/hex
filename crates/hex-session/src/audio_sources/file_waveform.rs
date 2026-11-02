@@ -3,7 +3,7 @@
 //! native endpoint or fabricated fine-resolution samples enter the display cache.
 use super::*;
 use hex_media::{
-    ResamplePlan,
+    ResampleKernel, ResamplePlan, ResampleVersion,
     waveform::{Peak, Waveform},
 };
 const MAX_BINS: usize = 1024;
@@ -36,9 +36,13 @@ impl VerifiedAudioFile {
         if count == 0 {
             return Err(SessionError::Invalid("empty file waveform"));
         }
-        let plan = ResamplePlan::new(
+        let kernel = ResampleKernel::with_version(
             self.source_rate(),
             self.project_rate(),
+            ResampleVersion::for_conversion(self.conversion_version())?,
+        )?;
+        let plan = ResamplePlan::with_kernel(
+            kernel,
             self.source_frames(),
             self.source_frames(),
             self.playback_frames(),

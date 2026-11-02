@@ -86,6 +86,7 @@ impl PreparedMidiInstrumentTemplate {
             intro_root: _,
             repeat_root: _,
             max_active_voices: _,
+            admitted_voices: _,
             max_query_onsets: _,
             max_span_hits: _,
             max_query_visits: _,

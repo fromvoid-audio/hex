@@ -280,7 +280,7 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
             }
             "future-project" => {
                 let mut document: serde_json::Value = serde_json::from_slice(&saved_bytes).unwrap();
-                document["version"] = (hex_storage::CURRENT_SCHEMA_VERSION + 1).into();
+                document["version"] = (hex_storage::NEWEST_SCHEMA_VERSION + 1).into();
                 open_path = saved.with_file_name("future.hex");
                 fs::write(&open_path, serde_json::to_vec(&document).unwrap()).unwrap();
             }
@@ -466,7 +466,7 @@ fn held_export_and_new_original_reconstruction_share_one_finite_union() {
         release.send(()).unwrap();
         assert!(export_event(&service).result.is_ok());
         if frames == 7 {
-            let end = Instant::now() + Duration::from_secs(2);
+            let end = Instant::now() + crate::test_wait::HANG_BOUND;
             loop {
                 service.submit(Request::Open(saved.clone())).unwrap();
                 let retried = event(&service);
@@ -512,6 +512,7 @@ fn original_open_caps_ordinary_decode_at_saved_frames_before_alias_construction(
             current: Some(snapshot.selection()),
             ..Admission::default()
         },
+        &mut Default::default(),
     )
     .unwrap();
     let saved = native.source.with_file_name("mixed.hex");
@@ -587,6 +588,7 @@ fn replacement_snapshot_counts_old_original_and_legacy_pcm_before_compiler_entry
                 old_files.source.clone(),
                 None,
                 Admission::default(),
+                &mut Default::default(),
             )
             .unwrap();
             ServiceExportSnapshot {

@@ -139,6 +139,15 @@ pub enum SessionPlaybackError {
     /// The retained group path is still processing an outgoing tail. The
     /// publication owner can retry once the predecessor drains or stops.
     GroupTailRoutingBusy,
+    /// A device runtime's fixed live-transition capacity (outgoing routing or
+    /// audition branches) is full (Pulse #4178). The pure preflight refused
+    /// before any ownership change; the publication owner retries after
+    /// rendering advances the committed transitions. Never answered by a
+    /// reset, detached tail or fresh runtime, which would drop or duplicate
+    /// an audible branch. An idle predecessor that renders no device chains
+    /// (paused, no monitoring) is never left busy: the planner settles its
+    /// silent transitions instead (Pulse #4558).
+    DeviceTransitionBusy,
     MutableInstrumentRuntime,
     MutableInstrumentDiagnostic(&'static str),
     MutableInstrumentEvents,
@@ -184,6 +193,9 @@ impl SessionPlaybackError {
             }
             Self::GroupTailRoutingBusy => {
                 "group routing change is waiting for an outgoing tail · stop or wait for it to finish"
+            }
+            Self::DeviceTransitionBusy => {
+                "device change is waiting for an audible transition to finish"
             }
             Self::MutableInstrumentRuntime => {
                 "session playback mutable instrument runtime is unavailable"
@@ -299,6 +311,8 @@ struct TrackRoute {
     pending: Option<PendingRoute>,
     current_incarnation: u64,
     current_first_frame: bool,
+    /// Outgoing Session audio clip still fading; see `audio_release`.
+    audio_release: Option<audio_release::AudioRouteRelease>,
 }
 
 #[derive(Clone, Copy)]
@@ -335,9 +349,18 @@ impl ReleaseSourceOrigin {
     }
 }
 
+/// The timeline which created a retained MIDI voice. This remains fixed even
+/// when its track is later routed to the other view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReleaseTimeline {
+    Arrangement,
+    Session,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ReleaseEntry {
     source_origin: Option<ReleaseSourceOrigin>,
+    timeline: ReleaseTimeline,
     // Only paused monitoring advances this offset. Keeping it on Play avoids
     // rebasing an old onset into an unrepresentable negative musical frame.
     monitor_offset: u64,
@@ -1592,6 +1615,7 @@ impl SessionPlayback {
                                 factory.max_release_tail_frames(),
                                 factory.max_events_per_block(),
                                 factory.max_active_occurrences(),
+                                false,
                             )?
                         } else {
                             0
@@ -1624,6 +1648,7 @@ impl SessionPlayback {
                         factory.max_release_tail_frames(),
                         factory.max_events_per_block(),
                         factory.max_active_occurrences(),
+                        factory.steals_releasing_voices(),
                     )?;
                     source_voice_envelopes[receiver_index] = u16::try_from(
                         usize::from(source_voice_envelopes[receiver_index]).max(loop_voices),
@@ -1647,6 +1672,7 @@ impl SessionPlayback {
                 pending: None,
                 current_incarnation: 0,
                 current_first_frame: false,
+                audio_release: None,
             });
         }
         let mut mutable_count = 0_usize;
@@ -2421,6 +2447,7 @@ pub(super) fn base_timing_for(
     })
 }
 
+mod audio_release;
 mod capture;
 mod meter_capture;
 mod release_location;

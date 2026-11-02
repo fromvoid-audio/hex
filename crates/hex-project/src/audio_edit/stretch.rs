@@ -85,8 +85,11 @@ pub(super) fn retime(
     edit.sync_content_length()?;
     let origin = edit.projection_origin()?;
     let (_, frames, _, _) = edit.projected_domain(tempo)?;
-    if frames == 0 || frames > MAX_AUDIO_DOMAIN_FRAMES {
-        return Err(Invalid("stretched root exceeds bounded audio domain"));
+    if frames > MAX_AUDIO_DOMAIN_FRAMES {
+        return Err(transform_domain_limit(tempo.sample_rate()));
+    }
+    if frames == 0 {
+        return Err(Invalid("stretch must retain a positive interval"));
     }
     let domain = Arc::make_mut(&mut edit.domain);
     let fade_scale = |value| scale(value, frames, old_frames);

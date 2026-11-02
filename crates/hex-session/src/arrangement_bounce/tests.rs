@@ -877,6 +877,8 @@ fn directed_audio_and_midi_bounces_preserve_accepted_content_pcm() {
 
 #[path = "tests/grouping.rs"]
 mod grouping;
+#[path = "tests/streamed.rs"]
+mod streamed;
 
 #[test]
 fn clipped_thirty_second_delay_tail_adopts_media_and_undo_redo_as_one_edit() {
