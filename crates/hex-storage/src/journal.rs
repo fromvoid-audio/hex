@@ -126,16 +126,18 @@ impl Journal {
                 change = JournalChange::CheckpointPublished;
                 temp.disarm();
             } else {
-                fs::hard_link(&temp.path, &self.path)?;
+                let published = crate::publication::publish_new(&temp.path, &self.path)?;
                 self.bytes = Some(bytes.clone());
                 change = JournalChange::CheckpointPublished;
-                fs::remove_file(&temp.path).map_err(|source| {
-                    StorageError::PublishedButNotDurable {
-                        path: self.path.clone(),
-                        operation: "remove the journal staging file",
-                        source,
-                    }
-                })?;
+                if published.staging_remains() {
+                    fs::remove_file(&temp.path).map_err(|source| {
+                        StorageError::PublishedButNotDurable {
+                            path: self.path.clone(),
+                            operation: "remove the journal staging file",
+                            source,
+                        }
+                    })?;
+                }
                 temp.disarm();
             }
             self.bytes = Some(bytes);
@@ -333,6 +335,32 @@ mod tests {
     impl Drop for Temp {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Regression for #3915: the first checkpoint on a volume without hard
+    /// links or exclusive rename publishes a complete copy, not an error.
+    #[cfg(unix)]
+    #[test]
+    fn first_checkpoint_publishes_on_volumes_without_hard_links() {
+        use crate::publication::simulate::{Volume, volume};
+        for capability in [Volume::NoHardLinks(libc::EPERM), Volume::NoAtomicCreate] {
+            let dir = Temp::new();
+            let _volume = volume(capability);
+            let path = dir.0.join("usb.hex-journal");
+            let project = Project::new(48_000).expect("project");
+            let mut journal = Journal::open(path.clone()).expect("open");
+            journal.checkpoint(&project).expect("first checkpoint");
+            assert_eq!(load_journal(&path).expect("complete checkpoint"), project);
+            let newer = Project::new(44_100).expect("newer");
+            journal.checkpoint(&newer).expect("replacing checkpoint");
+            assert_eq!(load_journal(&path).expect("replaced checkpoint"), newer);
+            let leftovers = fs::read_dir(&dir.0)
+                .expect("directory")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(".hex-"))
+                .count();
+            assert_eq!(leftovers, 0);
         }
     }
 
