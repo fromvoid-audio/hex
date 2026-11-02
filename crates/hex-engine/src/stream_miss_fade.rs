@@ -87,11 +87,6 @@ impl StreamMissFades {
         }
     }
 
-    /// Forget every voice, e.g. when the transport stops.
-    pub fn clear(&mut self) {
-        self.voices = [IDLE; STREAM_MISS_FADE_VOICES];
-    }
-
     /// The voice continuing `key` at `source_frame`, or a fresh one.
     pub(crate) fn voice(&mut self, key: StreamSourceKey, source_frame: u64) -> MissVoice<'_> {
         self.clock = self.clock.wrapping_add(1);
