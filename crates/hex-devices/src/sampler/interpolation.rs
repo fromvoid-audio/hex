@@ -27,7 +27,8 @@
 //!
 //! Taps follow playback history. Inside a Classic loop, taps past the loop
 //! end continue at the loop start, and once playback has wrapped, taps before
-//! the loop start come from the loop end. Other frames outside the voice region
+//! the loop start come from the loop end (or, with a loop seam crossfade, from
+//! the pre-roll the seam fades into, #4088). Other frames outside the voice region
 //! read as silence. The kernel is symmetric and reads source frames by random
 //! access, so it adds no output latency or per-voice state.
 //!

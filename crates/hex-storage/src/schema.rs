@@ -39,6 +39,7 @@ pub(crate) mod playable_routing;
 pub(crate) mod provenance;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
+pub(crate) mod sampler_crossfade;
 pub(crate) mod session_audio_loops;
 pub(crate) mod track_groups;
 pub(crate) mod track_name_origin;
