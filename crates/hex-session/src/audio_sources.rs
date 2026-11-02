@@ -69,7 +69,10 @@ impl SourcePlanReservation {
     }
 }
 /// Complete immutable binding captured by verification on the Session worker.
-/// Native workers independently reopen and verify this expected fingerprint.
+/// It retains the verified page manifest, already charged as
+/// [`Self::manifest_bytes`] against the document's source reservation. Native
+/// workers reopen under it ([`Self::verified_manifest`]) and re-verify each page
+/// they read. A changed length or mtime falls back to a full re-hash.
 #[derive(Clone, Debug)]
 pub struct VerifiedAudioFile {
     facts: Arc<VerifiedAudioFileFacts>,
@@ -86,14 +89,13 @@ impl Eq for VerifiedAudioFile {}
 #[derive(Debug, PartialEq, Eq)]
 struct VerifiedAudioFileFacts {
     path: PathBuf,
-    fingerprint: [u8; 32],
+    manifest: hex_media::VerifiedWavManifest,
     source_rate: u32,
     project_rate: u32,
     source_frames: u64,
     playback_frames: u64,
     conversion: u32,
     limits: VerifiedWavReaderLimits,
-    manifest_bytes: usize,
 }
 impl VerifiedAudioFile {
     /// Verify a file for a new import, recording the current import law.
@@ -152,14 +154,13 @@ impl VerifiedAudioFile {
         Ok(Self {
             facts: Arc::new(VerifiedAudioFileFacts {
                 path,
-                fingerprint: *reader.fingerprint(),
+                manifest: reader.manifest().clone(),
                 source_rate,
                 project_rate,
                 source_frames,
                 playback_frames,
                 conversion,
                 limits,
-                manifest_bytes: reader.page_manifest_bytes(),
             }),
             waveform: None,
         })
@@ -171,7 +172,11 @@ impl VerifiedAudioFile {
         self.facts.path.capacity()
     }
     pub fn fingerprint(&self) -> &[u8; 32] {
-        &self.facts.fingerprint
+        self.facts.manifest.fingerprint()
+    }
+    /// The page manifest captured at verification, shared rather than copied.
+    pub fn verified_manifest(&self) -> &hex_media::VerifiedWavManifest {
+        &self.facts.manifest
     }
     pub fn source_rate(&self) -> u32 {
         self.facts.source_rate
@@ -192,7 +197,7 @@ impl VerifiedAudioFile {
         self.facts.limits
     }
     pub fn manifest_bytes(&self) -> usize {
-        self.facts.manifest_bytes
+        self.facts.manifest.manifest_bytes()
     }
     pub(crate) fn matches_asset_format(&self, rate: u32) -> bool {
         self.facts.project_rate == rate
@@ -216,7 +221,7 @@ impl VerifiedAudioFile {
             self.facts.source_frames,
             self.facts.playback_frames,
             self.facts.conversion,
-            self.facts.fingerprint,
+            *self.facts.manifest.fingerprint(),
         )
     }
 }
