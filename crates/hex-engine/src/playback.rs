@@ -11,6 +11,7 @@ mod idle_transition_tests;
 mod metronome;
 pub(crate) mod transport_fade;
 pub use transport_fade::TransportFadeCompletion;
+pub(crate) use transport_fade::fade_frames;
 mod tuning_audition;
 use metronome::Metronome;
 
