@@ -163,3 +163,81 @@ fn one_voice_retrigger_steals_the_release_but_held_overflow_still_refuses() {
         );
     }
 }
+
+/// Constant half gain for every occurrence through the volume path.
+fn half(
+    _: MutableOccurrenceSignature,
+    at: u64,
+    _: usize,
+) -> Result<Option<volume::VolumeSlice>, MutableInstrumentRuntimeError> {
+    Ok(Some(volume::VolumeSlice {
+        at,
+        ramp: crate::midi_clip_volume::VolumeRamp {
+            start_frame: 0,
+            end_frame: u64::MAX,
+            start_gain: 0.5,
+            end_gain: 0.5,
+            next_boundary: None,
+        },
+        terminal: None,
+    }))
+}
+
+#[test]
+fn stolen_occurrence_receives_no_host_gain_after_the_steal() {
+    let pcm = [1.0; 16];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let mut results = Vec::new();
+    for partitions in [&[16][..], &[4, 12][..], &[1, 3, 1, 11][..], &[1; 16][..]] {
+        let (track, mut onsets) = onsets(&[(0, 4), (4, 12)]);
+        let mut runtime = one_voice(views[0]);
+        let mut events = Vec::with_capacity(MAX_MUTABLE_EVENTS_PER_QUERY);
+        let mut output = [[0.0; 2]; 16];
+        let mut offset = 0;
+        for &count in partitions {
+            runtime.begin_block();
+            // A stale gain for the stolen A would be refused by the sampler.
+            runtime
+                .process_segment_with_volume(
+                    track,
+                    offset as u64,
+                    offset as u64,
+                    &mut output[offset..offset + count],
+                    &mut onsets,
+                    &[],
+                    &mut events,
+                    None,
+                    &resources,
+                    &mut half,
+                )
+                .unwrap_or_else(|error| panic!("{partitions:?} at {offset}: {error:?}"));
+            runtime.commit_block();
+            offset += count;
+        }
+        // A at half until 4; then B at half plus A's release, its gain frozen
+        // at half, under the provider's declick; B releases from 12.
+        let fade = (f64::from(RATE) / 1000.0).round();
+        for (index, frame) in output.iter().enumerate() {
+            let i = index as f64;
+            let expected = match index {
+                0..4 => 0.5,
+                4..12 => {
+                    let stolen = if i - 4.0 < fade {
+                        0.5 * (1.0 - (i - 4.0) / RELEASE as f64) * (1.0 - (i - 4.0) / fade)
+                    } else {
+                        0.0
+                    };
+                    0.5 + stolen
+                }
+                _ => 0.5 * (1.0 - (i - 12.0) / RELEASE as f64),
+            };
+            assert!(
+                (f64::from(frame[0]) - expected).abs() < 1e-6,
+                "{partitions:?} frame {index}: {frame:?} != {expected}"
+            );
+        }
+        results.push(output);
+    }
+    assert!(results.windows(2).all(|pair| pair[0] == pair[1]));
+}

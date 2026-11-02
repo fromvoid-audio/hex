@@ -335,9 +335,18 @@ impl ReleaseSourceOrigin {
     }
 }
 
+/// The timeline which created a retained MIDI voice. This remains fixed even
+/// when its track is later routed to the other view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReleaseTimeline {
+    Arrangement,
+    Session,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ReleaseEntry {
     source_origin: Option<ReleaseSourceOrigin>,
+    timeline: ReleaseTimeline,
     // Only paused monitoring advances this offset. Keeping it on Play avoids
     // rebasing an old onset into an unrepresentable negative musical frame.
     monitor_offset: u64,

@@ -296,6 +296,12 @@ pub trait WorkerAudioSink: Send {
     fn streamed_exporter(&self) -> Option<super::StreamedExporter> {
         None
     }
+    /// Optional stateless offline bounce renderer for file-backed sources, with
+    /// the same independence rules as [`Self::streamed_exporter`]. It runs on the
+    /// Session worker during a bounce job and never touches the playing transport.
+    fn streamed_bouncer(&self) -> Option<crate::StreamedBouncer> {
+        None
+    }
 
     /// Prepare ordinary file-backed history on the existing seek worker, using
     /// independent bounded offline pages and the exact captured compiler scope.
@@ -656,6 +662,11 @@ impl WorkerEvents {
         self.audio
             .as_ref()
             .and_then(|audio| audio.streamed_exporter())
+    }
+    pub(super) fn streamed_bouncer(&self) -> Option<crate::StreamedBouncer> {
+        self.audio
+            .as_ref()
+            .and_then(|audio| audio.streamed_bouncer())
     }
     pub(super) fn resident_publication_enabled(&self) -> bool {
         self.audio

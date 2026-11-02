@@ -152,3 +152,66 @@ fn stolen_voice_leaves_the_active_set_and_refusal_remains_when_every_voice_is_he
     process(&mut runtime, &[off(0, 2)], &mut [[0.0; 2]; 64], &resources);
     assert!(runtime.committed_is_quiescent());
 }
+
+/// `count` steals in one frame on a one-voice runtime: every note-on after
+/// the first steals its predecessor, which is released on the same frame.
+fn steal_burst(start_id: u64, count: u64) -> Vec<NativeInstrumentEvent> {
+    let mut events = vec![on(0, start_id, 60)];
+    for id in start_id..start_id + count {
+        events.push(off(0, id));
+        events.push(on(0, id + 1, 60));
+    }
+    events
+}
+
+#[test]
+fn steal_burst_beyond_the_fade_pool_drops_the_onset_instead_of_cutting_a_fading_voice() {
+    let views = [view(&DC)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = one_voice(views[0]);
+    let fade = prepared.steal_fade_frames();
+    let release = prepared.max_release_tail_frames() as f64;
+    let pool = MAX_SAMPLER_RUNTIME_VOICES as u64;
+    // Fill the pool, release the voice holding the slot, then one more onset:
+    // no fade slot is free, so that onset is dropped and nothing is cut.
+    let mut events = steal_burst(1, pool);
+    events.extend([off(0, pool + 1), on(0, pool + 2, 60), off(3, pool + 2)]);
+    let frames = 2 * fade as usize;
+    let reference = render(&prepared, &events, frames, frames, &resources);
+    for block in [1, 7, 64, 128] {
+        assert_eq!(
+            render(&prepared, &events, frames, block, &resources),
+            reference,
+            "block {block}"
+        );
+    }
+    for (index, frame) in reference.iter().enumerate() {
+        let age = index as f64;
+        let releasing = 1.0 - age / release;
+        let stolen = if index < fade as usize {
+            pool as f64 * releasing * (1.0 - age / fade as f64)
+        } else {
+            0.0
+        };
+        assert!(
+            (f64::from(frame[0]) - (releasing + stolen)).abs() < 1e-4,
+            "frame {index}: {frame:?}"
+        );
+    }
+    let mut runtime = pair(&prepared);
+    process(
+        &mut runtime,
+        &events,
+        &mut vec![[0.0; 2]; frames],
+        &resources,
+    );
+    let mut ids = [0; MAX_SAMPLER_RUNTIME_VOICES];
+    assert_eq!(runtime.active_occurrence_ids(&mut ids), Ok(1));
+    assert_eq!(ids[0], pool + 1, "the dropped onset never became active");
+    // Once the declicks finish, the next onset steals normally again.
+    let mut next = [[0.0; 2]; 4];
+    process(&mut runtime, &[on(0, pool + 3, 60)], &mut next, &resources);
+    assert_eq!(runtime.active_occurrence_ids(&mut ids), Ok(1));
+    assert_eq!(ids[0], pool + 3);
+    assert!((next[0][0] - 1.0 - (1.0 - frames as f32 / release as f32)).abs() < 1e-4);
+}

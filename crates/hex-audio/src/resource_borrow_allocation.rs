@@ -480,11 +480,11 @@ fn resident_sampler_voice_steal_declick_allocates_and_frees_nothing_in_the_actua
     .unwrap()
     .bind_source_on_control(views[0])
     .unwrap()
-    .prepare_runtime_on_control(1, 16, &TuningTable::default())
+    .prepare_runtime_on_control(1, 128, &TuningTable::default())
     .unwrap();
     let limits = NativeInstrumentRuntimeLimits {
         max_pair_bytes: 2 * 1024 * 1024,
-        max_events_per_block: 16,
+        max_events_per_block: 128,
         max_active_occurrences: 1,
         max_tail_frames: 8_000 * 600,
     };
@@ -506,13 +506,31 @@ fn resident_sampler_voice_steal_declick_allocates_and_frees_nothing_in_the_actua
         note(8, 2),
     ];
     let held = [note(0, 1), note(2, 2)];
+    // `steals` same-frame steals; one more than the fade pool drops its onset.
+    let burst = |steals: u64| {
+        let mut events = vec![note(0, 1)];
+        for id in 1..=steals {
+            events.push(NativeInstrumentEvent::NoteOff {
+                frame_offset: 0,
+                occurrence_id: id,
+            });
+            events.push(note(0, id + 1));
+        }
+        events
+    };
+    let pool = hex_devices::sampler::MAX_SAMPLER_RUNTIME_VOICES as u64;
+    let full_burst = burst(pool);
+    let over_burst = burst(pool + 1);
+    let mut burst_output = [[0.0; 2]; 24];
+    let mut over_output = burst_output;
     let mut speculative = [[0.0; 2]; 24];
     let mut committed = speculative;
     let mut refused = [[9.0; 2]; 4];
     let mut ids = [0; 1];
     let mut failure = None;
     // Construction, resource binding, buffers and oracles stay outside. Measure
-    // preflight, the steal, the declick, rollback and the held-capacity refusal.
+    // preflight, the steal, the declick, rollback, the held-capacity refusal and
+    // the fade-pool burst and its dropped onset.
     let measurement = allocation_counter::measure(|| {
         for _ in 0..32 {
             let result = (|| {
@@ -524,6 +542,15 @@ fn resident_sampler_voice_steal_declick_allocates_and_frees_nothing_in_the_actua
                     return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
                 }
                 runtime.rollback_block();
+                runtime.begin_block();
+                over_output.fill([0.0; 2]);
+                runtime.process_block(&over_burst, &mut over_output, &resources)?;
+                runtime.rollback_block();
+                runtime.begin_block();
+                burst_output.fill([0.0; 2]);
+                runtime.process_block(&full_burst, &mut burst_output, &resources)?;
+                runtime.commit_block();
+                runtime.reset();
                 runtime.begin_block();
                 speculative.fill([0.0; 2]);
                 runtime.process_block(
@@ -558,6 +585,14 @@ fn resident_sampler_voice_steal_declick_allocates_and_frees_nothing_in_the_actua
         (0, 0, 0, 0)
     );
     assert_eq!(refused, [[9.0; 2]; 4]);
+    assert!((burst_output[0][0] - (1.0 + pool as f32)).abs() < 1e-4);
+    assert!(
+        (burst_output[23][0] - 1.0).abs() < 1e-6,
+        "burst declick complete"
+    );
+    // The dropped onset leaves the releasing slot voice and every fade intact.
+    assert!((over_output[0][0] - (1.0 + pool as f32)).abs() < 1e-4);
+    assert!((over_output[23][0] - (1.0 - 23.0 / 64.0)).abs() < 1e-6);
     assert_eq!(speculative, committed);
     // Frame8 carries both the new onset and the stolen voice at its release level.
     assert!((committed[8][0] - (1.0 + (1.0 - 4.0 / 64.0))).abs() < 1e-6);

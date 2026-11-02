@@ -134,13 +134,15 @@ fn presentation_distinguishes_local_drafts_canonical_pending_and_exact_applied_r
     );
 }
 #[cfg(feature = "ui-test-support")]
-mod native {
+pub(in crate::editor) mod native {
     use super::*;
     use gpui::{
         Modifiers, MouseButton, TestAppContext, VisualTestContext, point as gpui_point, px, size,
     };
     use std::sync::Arc;
-    fn window(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<EditorView>, TrackId) {
+    pub(in crate::editor) fn window(
+        cx: &mut TestAppContext,
+    ) -> (gpui::AnyWindowHandle, Entity<EditorView>, TrackId) {
         cx.update(super::super::super::bind_editor_keys);
         let (project, track, _) = project();
         let preview = Arc::new(hex_engine::GainAutomationPreview::prepare(&project).unwrap());
@@ -397,6 +399,76 @@ mod native {
         visual.simulate_mouse_up(p, MouseButton::Left, Modifiers::default());
         entity.update(&mut visual, |view, _| {
             assert_eq!(view.worker_requests_pending, 1);
+        });
+    }
+
+    #[gpui::test]
+    fn unrelated_edit_refuses_during_gain_gesture_but_release_commits(cx: &mut TestAppContext) {
+        let (handle, entity, track) = window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let position = visual.debug_bounds("gain-lane-plot").unwrap().center();
+        visual.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
+        entity.update(&mut visual, |view, _| {
+            assert!(view.gain_lane.draft.is_some());
+            assert!(!view.enqueue(hex_session::service::Request::Edit(
+                hex_project::Command::Mute { track, muted: true }
+            )));
+            assert!(view.gain_lane.draft.is_some());
+            assert_eq!(view.worker_requests_pending, 0);
+            assert!(
+                view.error
+                    .as_deref()
+                    .unwrap()
+                    .contains("gain point gesture")
+            );
+        });
+        visual.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
+        entity.update(&mut visual, |view, _| {
+            assert!(view.gain_lane.draft.is_none());
+            assert_eq!(view.worker_requests_pending, 1);
+            assert!(view.gain_lane.pending.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn unrelated_edit_preserves_numeric_gain_text_and_valid_commit(cx: &mut TestAppContext) {
+        let (handle, entity, track) = window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let position = visual
+            .debug_bounds("gain-point-value-value")
+            .unwrap()
+            .center();
+        visual.simulate_click(position, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        entity.update(&mut visual, |view, cx| {
+            assert!(view.gain_numeric_editing(cx));
+            assert!(!view.enqueue(hex_session::service::Request::Edit(
+                hex_project::Command::Mute { track, muted: true }
+            )));
+            assert!(view.gain_numeric_editing(cx));
+            assert_eq!(
+                view.gain_lane
+                    .gain
+                    .as_ref()
+                    .unwrap()
+                    .entity
+                    .read(cx)
+                    .display_text(),
+                "invalid"
+            );
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("75");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        entity.update(&mut visual, |view, cx| {
+            assert!(!view.gain_numeric_editing(cx));
+            assert_eq!(view.worker_requests_pending, 1);
+            assert!(view.gain_lane.pending.is_some());
         });
     }
     #[gpui::test]

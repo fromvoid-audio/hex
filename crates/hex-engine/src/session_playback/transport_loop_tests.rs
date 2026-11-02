@@ -106,13 +106,13 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock() {
             super::handoff::COMPENSATED_TIMING_CHANGED
         ))
     );
-    // Live: paused, the tempo edit applies at the kept frame; playing, audio
-    // restarts as Play-from at the same beat under the new map.
-    let paused_frame = paused.arrangement_frame();
+    // Live: paused or playing, the cursor keeps its beat under the new map
+    // (Pulse #4118); playing, audio restarts as Play-from at that beat.
+    assert_eq!(paused.arrangement_frame(), 600);
     let mut tempo_live = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
     tempo_live.try_inherit_state_live_from(&mut paused).unwrap();
     assert!(!tempo_live.playing());
-    assert_eq!(tempo_live.arrangement_frame(), paused_frame);
+    assert_eq!(tempo_live.arrangement_frame(), 800);
     let mut running = SessionPlayback::new(prepare(&linear)).unwrap();
     running.apply(SessionPlaybackCommand::Play).unwrap();
     running.render(&mut [[0.0; 2]; 600]).unwrap();
