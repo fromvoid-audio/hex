@@ -31,6 +31,7 @@ use std::{
 };
 
 mod arrangement_bounce;
+pub use arrangement_bounce::{StreamedBounceRequest, StreamedBouncer};
 pub mod arrangement_seek;
 mod audio_sources;
 mod clip_conversion;
