@@ -32,6 +32,10 @@ mod comparison_audio;
 #[cfg(test)]
 mod console_track_tests;
 mod export_lane;
+mod shutdown;
+#[cfg(test)]
+mod startup_failure_tests;
+pub use shutdown::{DROP_SHUTDOWN_BOUND, ShutdownError};
 mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
 mod resident_audio;
@@ -1034,11 +1038,13 @@ impl std::error::Error for ServiceError {
 #[cfg(test)]
 type ExportTestHook = Arc<std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 
-/// UI-owned endpoints. Dropping both channels detaches the worker without joining it.
+/// UI-owned endpoints. `shutdown` stops and joins the session worker, which
+/// joins the export worker it owns; dropping calls it with a short bound.
 pub struct Service {
     #[cfg(test)]
     export_test_hook: ExportTestHook,
-    requests: request_cancellation::Sender,
+    /// `None` after shutdown, which disconnects an idle blocking worker.
+    requests: Option<request_cancellation::Sender>,
     events: diagnostics::EventReceiver,
     diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
@@ -1048,12 +1054,16 @@ pub struct Service {
     resident_seek_results: Option<Receiver<ResidentArrangementSeekResult>>,
     resident_seek_count: AtomicUsize,
     recovery_slot: Option<PathBuf>,
-    _worker: JoinHandle<()>,
+    startup_failure: Arc<std::sync::OnceLock<String>>,
+    /// `None` once joined; kept after a timed-out shutdown for a later retry.
+    worker: Option<JoinHandle<()>>,
 }
 
 impl Drop for Service {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
+        // Bounded: an uncancellable job past the bound stays detached rather
+        // than blocking the dropping thread. Quit paths call `shutdown` first.
+        let _ = self.shutdown(DROP_SHUTDOWN_BOUND);
     }
 }
 
@@ -1344,11 +1354,16 @@ impl Service {
             })
             .map_err(ServiceError::Worker)?;
         let worker_shutdown = Arc::clone(&shutdown);
+        let startup_failure = Arc::new(std::sync::OnceLock::new());
+        let worker_startup_failure = Arc::clone(&startup_failure);
         let worker = thread::Builder::new()
             .name("hex-session".into())
             // Structural stopped publications reuse the bounded preroll constructor.
             .stack_size(crate::arrangement_seek::SEEK_WORKER_STACK_BYTES)
             .spawn(move || {
+                // Establish export-worker custody before fallible session startup,
+                // so an early return still closes and joins that worker.
+                let export_lane = ExportLane::new(export_work_tx, finished_rx, export_worker);
                 let mut events = WorkerEvents::new_with_diagnostics(
                     event_tx,
                     Arc::clone(&worker_shutdown),
@@ -1362,15 +1377,20 @@ impl Service {
                             Ok(rate) => (rate, None),
                             Err(error) => (48_000, Some(error)),
                         };
-                        let Ok(session) = Session::new_with_audio_mode_in_overview_domain(
+                        let session = match Session::new_with_audio_mode_in_overview_domain(
                             rate,
                             history_capacity,
                             max_resident_frames,
                             DocumentAudioMode::Resident,
                             events.ordinary_source_reservation(),
                             overview_budget.clone(),
-                        ) else {
-                            return;
+                        ) {
+                            Ok(session) => session,
+                            Err(error) => {
+                                let _ = worker_startup_failure
+                                    .set(format!("project session could not start: {error}"));
+                                return;
+                            }
                         };
                         if let Some(error) = error {
                             events.startup_failed(error);
@@ -1382,19 +1402,22 @@ impl Service {
                                     events.startup_failed(format!(
                                         "native resident reservation unavailable: {reason}"
                                     ));
-                                    let Ok(session) =
-                                        Session::new_with_audio_mode_in_overview_domain(
-                                            rate,
-                                            history_capacity,
-                                            max_resident_frames,
-                                            DocumentAudioMode::Resident,
-                                            events.ordinary_source_reservation(),
-                                            overview_budget.clone(),
-                                        )
-                                    else {
-                                        return;
-                                    };
-                                    session
+                                    match Session::new_with_audio_mode_in_overview_domain(
+                                        rate,
+                                        history_capacity,
+                                        max_resident_frames,
+                                        DocumentAudioMode::Resident,
+                                        events.ordinary_source_reservation(),
+                                        overview_budget.clone(),
+                                    ) {
+                                        Ok(session) => session,
+                                        Err(error) => {
+                                            let _ = worker_startup_failure.set(format!(
+                                                "project session could not start: {error}"
+                                            ));
+                                            return;
+                                        }
+                                    }
                                 }
                             },
                             None => session,
@@ -1408,7 +1431,7 @@ impl Service {
                     request_rx,
                     worker_document_intent,
                     events,
-                    ExportLane::new(export_work_tx, finished_rx, export_worker),
+                    export_lane,
                     actor_export_events,
                     recovery,
                     resident_seek,
@@ -1418,7 +1441,10 @@ impl Service {
         Ok(Self {
             #[cfg(test)]
             export_test_hook,
-            requests: request_cancellation::Sender::new(request_tx, document_intent),
+            requests: Some(request_cancellation::Sender::new(
+                request_tx,
+                document_intent,
+            )),
             diagnostics: Arc::clone(&diagnostics),
             events: diagnostics::EventReceiver::new(event_rx, diagnostics),
             export_events: export_event_rx,
@@ -1428,8 +1454,14 @@ impl Service {
             resident_seek_results: Some(seek_results_rx),
             resident_seek_count: AtomicUsize::new(0),
             recovery_slot,
-            _worker: worker,
+            startup_failure,
+            worker: Some(worker),
         })
+    }
+
+    /// Construction failure recorded before the initial-state sender disconnects.
+    pub fn startup_failure(&self) -> Option<&str> {
+        self.startup_failure.get().map(String::as_str)
     }
 
     /// Submit without waiting for worker capacity.
@@ -1461,9 +1493,10 @@ impl Service {
             return Err(SubmitError::Busy(request));
         }
         let diagnostic = self.diagnostics.begin(&request);
-        let result = self
-            .requests
-            .submit_traced_save(request, diagnostic, Some(correlation));
+        let result = match self.requests.as_ref() {
+            Some(requests) => requests.submit_traced_save(request, diagnostic, Some(correlation)),
+            None => Err(SubmitError::Closed(request)),
+        };
         self.diagnostics.returned(diagnostic, &result);
         result
     }
@@ -1508,7 +1541,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            return match try_submit_traced(&self.requests, request, diagnostic) {
+            return match try_submit_traced(self.requests.as_ref(), request, diagnostic) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.resident_seek_count.fetch_sub(1, Ordering::AcqRel);
@@ -1524,7 +1557,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            match try_submit_traced(&self.requests, request, diagnostic) {
+            match try_submit_traced(self.requests.as_ref(), request, diagnostic) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.export_busy.store(false, Ordering::Release);
@@ -1532,7 +1565,7 @@ impl Service {
                 }
             }
         } else {
-            try_submit_traced(&self.requests, request, diagnostic)
+            try_submit_traced(self.requests.as_ref(), request, diagnostic)
         }
     }
 
@@ -1637,11 +1670,14 @@ fn try_submit(sender: &request_cancellation::Sender, request: Request) -> Result
 }
 #[allow(clippy::result_large_err)]
 fn try_submit_traced(
-    sender: &request_cancellation::Sender,
+    sender: Option<&request_cancellation::Sender>,
     request: Request,
     diagnostic: Option<diagnostics::DiagnosticRequest>,
 ) -> Result<(), SubmitError> {
-    sender.submit_traced(request, diagnostic)
+    match sender {
+        Some(sender) => sender.submit_traced(request, diagnostic),
+        None => Err(SubmitError::Closed(request)),
+    }
 }
 
 fn view_state(
@@ -5007,10 +5043,14 @@ fn run_worker(
                                 resident_preview.as_ref(),
                             ),
                         ) {
-                            Ok((_, prepared)) => {
+                            Ok((result, prepared)) => {
                                 if session.project() != state.project.as_ref() {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
+                                }
+                                // Clip pastes report the clips they created.
+                                if matches!(clipboard, ArrangementClipboard::Clips(_)) {
+                                    created = Some(result);
                                 }
                                 status = Some(
                                     match clipboard {
@@ -5063,10 +5103,13 @@ fn run_worker(
                                 resident_preview.as_ref(),
                             ),
                         ) {
-                            Ok((_, prepared)) => {
+                            Ok((result, prepared)) => {
                                 if session.project() != state.project.as_ref() {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
+                                }
+                                if matches!(clipboard, ArrangementClipboard::Clips(_)) {
+                                    created = Some(result);
                                 }
                                 status = Some("time selection inserted".into());
                             }
@@ -7993,6 +8036,8 @@ mod browser_instrument_tests;
 
 #[cfg(test)]
 mod clip_move_tests;
+#[cfg(test)]
+mod clip_paste_tests;
 #[cfg(test)]
 #[path = "service/track_reorder_tests.rs"]
 mod track_reorder_tests;
@@ -11549,10 +11594,10 @@ mod service_tests {
         let service = Service {
             diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
-            requests: request_cancellation::Sender::new(
+            requests: Some(request_cancellation::Sender::new(
                 requests,
                 Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            ),
+            )),
             events: diagnostics::EventReceiver::new(
                 events,
                 Arc::new(diagnostics::Hooks::default()),
@@ -11564,7 +11609,8 @@ mod service_tests {
             resident_seek_results: None,
             resident_seek_count: AtomicUsize::new(0),
             recovery_slot: None,
-            _worker: thread::spawn(|| {}),
+            startup_failure: Default::default(),
+            worker: Some(thread::spawn(|| {})),
         };
         assert!(matches!(
             service.submit(Request::Export(PathBuf::from("busy.wav"))),

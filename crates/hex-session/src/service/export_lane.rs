@@ -23,6 +23,10 @@ pub(super) struct ExportLane {
     pub(super) active: Option<ActiveExport>,
     next_id: u64,
     pub(super) native_hold: NativeSamplerReservationHold,
+    /// Control of the most recently dispatched cancellable job. Teardown
+    /// cancels it before joining, so an in-flight render stops at its next
+    /// block and removes its temporary file instead of running to completion.
+    dispatched_control: Option<hex_export::ExportControl>,
 }
 impl ExportLane {
     pub(super) fn new(
@@ -37,6 +41,7 @@ impl ExportLane {
             active: None,
             next_id: 1,
             native_hold: NativeSamplerReservationHold::default(),
+            dispatched_control: None,
         }
     }
     pub(super) fn poll(&mut self) {
@@ -410,12 +415,17 @@ impl ExportLane {
     }
     pub(super) fn submit(&mut self, job: ExportJob) -> Result<(), ExportEvent> {
         let job_id = job.job_id;
+        let control = job
+            .controlled
+            .as_ref()
+            .map(|(_, _, control, _)| control.clone());
         let result = match self.work.as_ref() {
             Some(work) => work.try_send(ExportWork::Render(job)),
             None => Err(TrySendError::Disconnected(ExportWork::Render(job))),
         };
         match result {
             Ok(()) => {
+                self.dispatched_control = control;
                 if let Some(active) = self.active.as_mut().filter(|a| a.job_id == job_id) {
                     let previous =
                         std::mem::replace(&mut active.dispatch, DispatchState::Pending(None));
@@ -449,6 +459,11 @@ impl Drop for ExportLane {
     fn drop(&mut self) {
         // Runs only on the Session control worker. Closing input must precede
         // joining; the anchor survives every missing/disconnected completion.
+        // Cancellation after publication began is refused by the control and
+        // that job completes normally.
+        if let Some(control) = self.dispatched_control.take() {
+            control.cancel();
+        }
         self.work.take();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();

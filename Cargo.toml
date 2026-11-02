@@ -42,3 +42,15 @@ opt-level = 2
 # #4010). Debug assertions and overflow checks stay enabled.
 [profile.dev.package.hex-storage]
 opt-level = 1
+
+# Keep the full-rate Delay impulse and long-tail oracle under the per-test
+# budget without reducing its rates or history coverage. Debug assertions and
+# overflow checks remain enabled (Pulse #4153).
+[profile.dev.package.hex-devices]
+opt-level = 1
+
+# Long verified-source import/reopen regressions preserve their real multi-million
+# frame fixtures while staying within the per-test budget. Debug assertions and
+# overflow checks remain enabled; release builds are unchanged (Pulse #4171).
+[profile.dev.package.hex-media]
+opt-level = 2

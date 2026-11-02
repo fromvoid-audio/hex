@@ -141,8 +141,9 @@ fn resident_document_streams_long_source_reopens_it_and_refuses_resident_bounces
     .unwrap()
         + 48_000;
     let path = files.long_wav("long.wav", frames);
+    let original = fs::read(&path).unwrap();
     let service = service_in(DocumentAudioMode::Resident);
-    service.submit(Request::Import(path)).unwrap();
+    service.submit(Request::Import(path.clone())).unwrap();
     let imported = next(&service);
     assert!(
         imported.error.is_none(),
@@ -200,6 +201,7 @@ fn resident_document_streams_long_source_reopens_it_and_refuses_resident_bounces
         imported.state.project.snapshot()
     );
     assert_eq!(streamed_frames(&reopened), u64::from(frames));
+    assert_eq!(fs::read(path).unwrap(), original);
 }
 
 #[test]
