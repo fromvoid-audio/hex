@@ -895,13 +895,25 @@ fn streamed_session_audio_remains_frame_anchored_across_arrangement_loop_wrap() 
     playback
         .render_with_pages(&mut across_wrap, &mut pages)
         .unwrap();
-    for (offset, frame) in across_wrap.iter().enumerate() {
-        let mut expected = sample(4_094 + offset as u64);
+    let mut expected = [[0.0; 2]; 10];
+    for (offset, frame) in expected.iter_mut().enumerate() {
+        *frame = sample(4_094 + offset as u64);
         if offset >= 2 {
             let bed = sample((offset - 2) as u64 + 2);
-            expected[0] += bed[0];
-            expected[1] += bed[1];
+            frame[0] += bed[0];
+            frame[1] += bed[1];
         }
+    }
+    // The Session clip stays frame-anchored; the Playback mix carries the
+    // transport loop-wrap ramp.
+    hex_engine::playback::LoopWrapRamp::default().ramp(
+        &mut expected,
+        95_998,
+        loop_project.loop_region(),
+        playback.main_output_latency_frames(),
+        48_000,
+    );
+    for (offset, (frame, expected)) in across_wrap.iter().zip(expected).enumerate() {
         assert_eq!(*frame, expected, "loop-crossing frame {offset}");
     }
     assert_eq!(playback.position(), 8);

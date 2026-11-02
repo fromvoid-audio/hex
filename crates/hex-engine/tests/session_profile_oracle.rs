@@ -61,6 +61,14 @@ fn check_fixture(loop_tempo: bool) {
         .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
         .unwrap();
     wrapper.render(&mut actual).unwrap();
+    // Only the Playback wrapper declicks the transport loop wraps.
+    hex_engine::playback::LoopWrapRamp::default().ramp(
+        &mut expected,
+        0,
+        project.loop_region(),
+        wrapper.main_output_latency_frames(),
+        project.sample_rate(),
+    );
     assert_pcm_matches(&actual, &expected, "prepared playback wrapper");
     assert_eq!(direct.performance_frame(), wrapper.performance_frame());
     assert_eq!(direct.arrangement_frame(), wrapper.position());

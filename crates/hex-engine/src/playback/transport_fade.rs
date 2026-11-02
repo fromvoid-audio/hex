@@ -133,6 +133,9 @@ pub(crate) struct TransportFade {
     failure: Option<PlaybackActionRejection>,
     /// The latest completed deferred action, until taken.
     completion: Option<TransportFadeCompletion>,
+    /// The Arrangement loop-wrap declick, which shares this boxed state's
+    /// handoff and priority-Stop clearing.
+    pub(crate) loop_wrap: super::loop_wrap::LoopWrapRamp,
 }
 
 impl TransportFade {

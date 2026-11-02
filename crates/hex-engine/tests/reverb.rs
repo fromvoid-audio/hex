@@ -210,6 +210,14 @@ fn reverb_host_loop_continues_tank_while_seek_and_stop_reset_it() {
                 expected[i][1] -= 0.5;
             }
         }
+        // The host declicks each loop wrap; the tank itself runs on.
+        hex_engine::playback::LoopWrapRamp::default().ramp(
+            &mut expected,
+            0,
+            editor.project().loop_region(),
+            host.main_output_latency_frames(),
+            48_000,
+        );
         assert_eq!(actual, expected);
         host.apply(PlaybackCommand::Seek(0));
         assert_eq!(render(&mut host, 4000), actual[..4000]);

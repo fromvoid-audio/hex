@@ -23,6 +23,21 @@ pub(super) fn run_callback(h: &mut ResidentHarness, request: Request) -> Event {
         std::thread::sleep(Duration::from_millis(1));
     }
 }
+/// Playback's loop-wrap declick gain at `position` in a `[0, loop_frames)`
+/// loop after its first seam, with no main latency: `F` = 128 frames at 48 kHz
+/// out before the seam and back in after it (see hex-engine `LoopWrapRamp`).
+fn wrap_gain(position: u64, loop_frames: u64) -> f32 {
+    const F: u64 = 128;
+    let mut gain = 1.0_f32;
+    if loop_frames - position <= F {
+        gain = gain.min((loop_frames - position - 1) as f32 / F as f32);
+    }
+    if position < F {
+        gain = gain.min((position + 1) as f32 / F as f32);
+    }
+    gain
+}
+
 fn add(
     h: &mut ResidentHarness,
     revision: u64,
@@ -786,7 +801,11 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
                 let position = (start + i as u64) % loop_frames;
                 let frame = source_period[(position % 64) as usize];
                 let tail = 1.0 - position.min(release_floor) as f32 / release_floor as f32;
-                [frame[0] * (1.0 + tail), frame[1] * (1.0 + tail)]
+                let gain = wrap_gain(position, loop_frames);
+                [
+                    frame[0] * (1.0 + tail) * gain,
+                    frame[1] * (1.0 + tail) * gain,
+                ]
             })
         };
         // Two summed voices round differently from the single-voice product.
@@ -802,7 +821,9 @@ fn live_section_edits_retain_a_sounding_sampler_and_its_launched_loop() {
         let expected_at = |end: u64| {
             let start = (end + loop_frames - 64) % loop_frames;
             std::array::from_fn::<_, 64, _>(|index| {
-                source_period[((start + index as u64) % loop_frames % 64) as usize]
+                let position = (start + index as u64) % loop_frames;
+                let gain = wrap_gain(position, loop_frames);
+                source_period[(position % 64) as usize].map(|sample| sample * gain)
             })
         };
         let mut intent = h.seek_intent(2, event.state.revision, None, None);
