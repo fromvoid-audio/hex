@@ -29,6 +29,7 @@ pub(in crate::editor) use scroll_queue::after_worker_event as after_scroll_worke
 mod response;
 mod sampling;
 mod selection;
+mod slope;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
 pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
