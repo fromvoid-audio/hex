@@ -500,3 +500,110 @@ fn path_bearing_errors_keep_the_exact_mixed_case_path() {
     );
     assert!(!output.exists());
 }
+
+/// Save the imported one-track project with a default reverb on its track, so
+/// the automatic export range must include the reverb's declared finite tail.
+fn reverb_tail_project(directory: &Path) -> (Project, PathBuf) {
+    fs::write(directory.join("source.wav"), wav(&[16_384, -8_192, 4_096])).unwrap();
+    assert!(
+        run(directory, &["import-project", "source.wav", "dry.hex"])
+            .status
+            .success()
+    );
+    let mut editor = Editor::new(hex_storage::load(directory.join("dry.hex")).unwrap(), 4).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+        "hex.reverb",
+    ))
+    .unwrap();
+    let Created::Device(_) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("reverb")
+    };
+    hex_storage::save_new(directory.join("tail.hex"), editor.project()).unwrap();
+    (editor.project().clone(), directory.join("source.wav"))
+}
+
+#[test]
+fn render_project_includes_effect_tail_and_matches_canonical_export_bytes() {
+    let directory = TempDir::new();
+    let (project, source) = reverb_tail_project(directory.path());
+    let rendered = run(&directory.0, &["render-project", "tail.hex", "cli.wav"]);
+    assert!(
+        rendered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+
+    // The UI's ExportRange { frames: None } path for an ordinary in-memory project.
+    let media = decode_wav_file(&source, Limits::new(4096, 3)).unwrap();
+    let asset = project.assets().next().unwrap().id();
+    let bank = std::collections::BTreeMap::from([(asset, media.audio().clone())]);
+    let prepared = std::sync::Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &project,
+            &bank,
+            std::sync::Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let signal = hex_export::ExportSignal::Main;
+    let frames =
+        hex_export::controlled_frame_count(prepared.arrangement(), 0, None, &signal).unwrap();
+    assert!(frames > 3, "reverb tail must extend past the 3-frame clip");
+    let canonical = directory.path().join("canonical.wav");
+    hex_export::render_prepared_controlled(
+        &canonical,
+        prepared,
+        0,
+        frames,
+        signal,
+        &hex_export::ExportControl::default(),
+    )
+    .unwrap();
+
+    let cli = fs::read(directory.path().join("cli.wav")).unwrap();
+    assert_eq!(u64::try_from(cli.len() - 44).unwrap(), frames * 4);
+    assert_eq!(cli, fs::read(canonical).unwrap());
+}
+
+#[test]
+fn export_project_overwrite_publishes_to_an_absent_destination() {
+    let directory = TempDir::new();
+    fs::write(directory.path().join("source.wav"), wav(&[8_192, -8_192])).unwrap();
+    assert!(
+        run(
+            &directory.0,
+            &["import-project", "source.wav", "project.hex"]
+        )
+        .status
+        .success()
+    );
+    let result = run(
+        &directory.0,
+        &[
+            "export-project",
+            "project.hex",
+            "new.wav",
+            "0",
+            "2",
+            "--overwrite",
+        ],
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        fs::read(directory.path().join("new.wav")).unwrap().len(),
+        52
+    );
+}
