@@ -1,10 +1,14 @@
 //! Bounded, deterministic sample-rate conversion for control-side work.
 use crate::{
-    ImportError, ResampleKernel,
-    resample_kernel::{PHASE_COUNT, validate_rates},
+    ImportError, ResampleKernel, ResampleVersion,
+    resample_kernel::{PHASE_COUNT, V2_PHASE_COUNT, validate_rates},
 };
 use hex_engine::Audio;
 use hex_project::converted_frame_count;
+use std::sync::atomic::AtomicBool;
+
+/// Converted frames rendered between cooperative cancellation checks.
+const CANCEL_CHECK_OUTPUT_FRAMES: usize = 64 * 1024;
 
 /// Caller-owned bounds for one resampling operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,15 +24,41 @@ pub fn resample(
     target_rate: u32,
     limits: ResampleLimits,
 ) -> Result<Audio, ImportError> {
+    resample_with_version(source, target_rate, limits, ResampleVersion::V1)
+}
+
+/// Convert validated stereo PCM into the target rate with an explicit
+/// conversion law. Identity-rate conversions share the input unchanged.
+pub fn resample_with_version(
+    source: &Audio,
+    target_rate: u32,
+    limits: ResampleLimits,
+    version: ResampleVersion,
+) -> Result<Audio, ImportError> {
+    resample_cancellable(source, target_rate, limits, version, &crate::NOT_CANCELLED)
+}
+
+/// [`resample_with_version`] with cooperative cancellation for superseded
+/// control work. `cancel` is polled before allocation and before each window
+/// of 65,536 converted frames; once observed, conversion stops and reports
+/// [`ImportError::Cancelled`]. Windows share one global phase, so the output
+/// is identical to an uninterrupted conversion.
+pub fn resample_cancellable(
+    source: &Audio,
+    target_rate: u32,
+    limits: ResampleLimits,
+    version: ResampleVersion,
+    cancel: &AtomicBool,
+) -> Result<Audio, ImportError> {
+    crate::cancelled(cancel)?;
     let source_frames = u64::try_from(source.frames().len())
         .map_err(|_| ImportError::Invalid("source frame count exceeds project range"))?;
     let max_source_frames = u64::try_from(limits.max_source_frames)
         .map_err(|_| ImportError::Invalid("source frame limit exceeds project range"))?;
     let max_output_frames = u64::try_from(limits.max_output_frames)
         .map_err(|_| ImportError::Invalid("output frame limit exceeds project range"))?;
-    let plan = ResamplePlan::new(
-        source.sample_rate(),
-        target_rate,
+    let plan = ResamplePlan::with_kernel(
+        ResampleKernel::with_version(source.sample_rate(), target_rate, version)?,
         source_frames,
         max_source_frames,
         max_output_frames,
@@ -44,7 +74,16 @@ pub fn resample(
         .try_reserve_exact(output_capacity)
         .map_err(|_| ImportError::AllocationFailed)?;
     output.resize(output_capacity, [0.0; 2]);
-    plan.render_window(0, source.frames(), 0, &mut output)?;
+    let mut window_start = 0_u64;
+    for window in output.chunks_mut(CANCEL_CHECK_OUTPUT_FRAMES) {
+        crate::cancelled(cancel)?;
+        plan.render_window(0, source.frames(), window_start, window)?;
+        let count = u64::try_from(window.len())
+            .map_err(|_| ImportError::Invalid("output window frame count overflow"))?;
+        window_start = window_start
+            .checked_add(count)
+            .ok_or(ImportError::Invalid("output window range overflow"))?;
+    }
     Audio::new(target_rate, output)
         .map_err(|_| ImportError::Invalid("resampler produced invalid audio"))
 }
@@ -75,6 +114,11 @@ impl ResamplePlan {
             max_output_window_frames: _,
         } = self;
         kernel.shares_allocation_with(other)
+    }
+
+    /// Source halo on each side of an output center for this plan's kernel.
+    pub fn kernel_support_radius(&self) -> usize {
+        self.kernel.support_radius()
     }
 
     pub fn new(
@@ -160,10 +204,8 @@ impl ResamplePlan {
                     .map_err(|_| ImportError::Invalid("output window frame count overflow"))?,
             )
             .ok_or(ImportError::Invalid("output window range overflow"))?;
-        let (first_center, _) =
-            source_position(global_output_start, self.source_rate(), self.target_rate())?;
-        let (last_center, _) =
-            source_position(last_output, self.source_rate(), self.target_rate())?;
+        let (first_center, _, _) = self.position(global_output_start)?;
+        let (last_center, _, _) = self.position(last_output)?;
         let radius = u64::try_from(self.kernel.inner.radius)
             .map_err(|_| ImportError::Invalid("resampling support exceeds project range"))?;
         let start = first_center.saturating_sub(radius);
@@ -359,8 +401,7 @@ impl ResamplePlan {
                     ImportError::Invalid("output frame offset exceeds project range")
                 })?)
                 .ok_or(ImportError::Invalid("output frame index overflow"))?;
-            let (center, phase_index) =
-                source_position(global_index, self.source_rate(), self.target_rate())?;
+            let (center, phase_index, fraction) = self.position(global_index)?;
             let row_start = phase_index
                 .checked_mul(self.kernel.inner.taps)
                 .ok_or(ImportError::Invalid("resampling table index overflow"))?;
@@ -413,16 +454,67 @@ impl ResamplePlan {
                 ))?;
             let mut left = 0.0_f64;
             let mut right = 0.0_f64;
-            for (&weight, frame) in weights.iter().zip(frames) {
-                if weight == 0.0 {
-                    continue;
+            match self.kernel.version() {
+                ResampleVersion::V1 => {
+                    for (&weight, frame) in weights.iter().zip(frames) {
+                        if weight == 0.0 {
+                            continue;
+                        }
+                        left += f64::from(frame[0]) * weight;
+                        right += f64::from(frame[1]) * weight;
+                    }
                 }
-                left += f64::from(frame[0]) * weight;
-                right += f64::from(frame[1]) * weight;
+                ResampleVersion::V2 => {
+                    // The closing row follows every interpolated row.
+                    let next = self
+                        .kernel
+                        .inner
+                        .weights
+                        .get(row_end + first_weight..row_end + end_weight)
+                        .ok_or(ImportError::Invalid(
+                            "resampling kernel table is incomplete",
+                        ))?;
+                    for ((&low, &high), frame) in weights.iter().zip(next).zip(frames) {
+                        let weight = low + (high - low) * fraction;
+                        left += f64::from(frame[0]) * weight;
+                        right += f64::from(frame[1]) * weight;
+                    }
+                }
             }
             *destination = [checked_sample(left)?, checked_sample(right)?];
         }
         Ok(())
+    }
+}
+
+impl ResamplePlan {
+    /// Source center, phase row and the fraction toward the next row for one
+    /// output frame. v1 rounds to the nearest of its rows (fraction 0); v2
+    /// floors to its row and interpolates by the exact rational remainder.
+    fn position(&self, output_index: u64) -> Result<(u64, usize, f64), ImportError> {
+        match self.kernel.version() {
+            ResampleVersion::V1 => {
+                let (center, phase) =
+                    source_position(output_index, self.source_rate(), self.target_rate())?;
+                Ok((center, phase, 0.0))
+            }
+            ResampleVersion::V2 => {
+                let target = u128::from(self.target_rate());
+                let position = u128::from(output_index)
+                    .checked_mul(u128::from(self.source_rate()))
+                    .ok_or(ImportError::Invalid("resampling position overflow"))?;
+                let center = u64::try_from(position / target).map_err(|_| {
+                    ImportError::Invalid("resampling position exceeds project range")
+                })?;
+                let scaled = (position % target)
+                    .checked_mul(V2_PHASE_COUNT as u128)
+                    .ok_or(ImportError::Invalid("resampling phase overflow"))?;
+                // remainder < target, so the row is below V2_PHASE_COUNT.
+                let row = (scaled / target) as usize;
+                let fraction = (scaled % target) as f64 / target as f64;
+                Ok((center, row, fraction))
+            }
+        }
     }
 }
 
@@ -528,6 +620,38 @@ mod tests {
             cosine += f64::from(frame[channel]) * phase.cos();
         }
         2.0 * sine.hypot(cosine) / count
+    }
+
+    #[test]
+    fn windowed_cancellable_conversion_matches_one_window_and_honours_cancel() {
+        use std::sync::atomic::AtomicBool;
+        // Several cancellation windows; the global phase must be continuous.
+        let source = sine(44_100, 3 * CANCEL_CHECK_OUTPUT_FRAMES / 2, 997.0, false);
+        let limits = ResampleLimits {
+            max_source_frames: 1 << 20,
+            max_output_frames: 1 << 20,
+        };
+        let running = AtomicBool::new(false);
+        let windowed =
+            resample_cancellable(&source, 48_000, limits, ResampleVersion::V1, &running).unwrap();
+        let plan = ResamplePlan::with_kernel(
+            ResampleKernel::with_version(44_100, 48_000, ResampleVersion::V1).unwrap(),
+            source.frames().len() as u64,
+            u64::MAX,
+            u64::MAX,
+            usize::MAX,
+        )
+        .unwrap();
+        let mut whole = vec![[0.0; 2]; plan.output_frames() as usize];
+        plan.render_window(0, source.frames(), 0, &mut whole)
+            .unwrap();
+        assert!(whole.len() > CANCEL_CHECK_OUTPUT_FRAMES);
+        assert_eq!(windowed.frames(), whole.as_slice());
+        let cancel = AtomicBool::new(true);
+        assert!(matches!(
+            resample_cancellable(&source, 48_000, limits, ResampleVersion::V1, &cancel),
+            Err(ImportError::Cancelled)
+        ));
     }
 
     #[test]

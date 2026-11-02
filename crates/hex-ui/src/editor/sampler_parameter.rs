@@ -12,6 +12,11 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// Inline value width of each sampler control. Twelve classic-mode controls
+/// (including the loop crossfade) plus 2 px gaps must fit one row of the
+/// 1024 px device body: 12 * 80 + 11 * 2 = 982 px.
+const SAMPLER_INLINE_VALUE_WIDTH: f32 = 80.0;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Target {
     generation: u64,
@@ -26,6 +31,7 @@ struct Control {
     gesture: Option<Target>,
     focus: gpui::FocusHandle,
     entity: Entity<NumericControl>,
+    edit_state: hex_widgets::NumericEditState,
     _subscription: gpui::Subscription,
 }
 struct Pending {
@@ -74,6 +80,13 @@ pub(super) struct State {
     pending: Option<Pending>,
     // Retired controls from this panel cycle only; drained at every render.
     retired_focus: Vec<gpui::FocusHandle>,
+}
+impl State {
+    pub(super) fn numeric_draft_active(&self) -> bool {
+        self.controls
+            .values()
+            .any(|control| control.edit_state.is_editing() || control.gesture.is_some())
+    }
 }
 impl Drop for State {
     fn drop(&mut self) {
@@ -594,6 +607,7 @@ impl EditorView {
                 }
             };
             let entity = cx.new(|cx| NumericControl::from_config(cx, config));
+            let edit_state = entity.read(cx).edit_state();
             let focus = entity.read(cx).focus_handle(cx);
             let subscription = cx.subscribe(
                 &entity,
@@ -634,6 +648,7 @@ impl EditorView {
                     gesture: None,
                     focus,
                     entity,
+                    edit_state,
                     _subscription: subscription,
                 },
             );
@@ -643,14 +658,17 @@ impl EditorView {
         }
         let active = hex_engine::sampler_parameter_active_on_control(parameter, device.state())
             .unwrap_or(false);
-        let availability = hex_widgets::ControlAvailability::for_edit(active, self.edit_pending());
+        let busy = self.edit_pending()
+            || self.gain_lane.draft.is_some()
+            || self.gain_lane.numeric_draft_active();
+        let availability = hex_widgets::ControlAvailability::for_edit(active, busy);
         let Some(control) = self.sampler_parameter.controls.get(&parameter) else {
             return div().into_any_element();
         };
         let entity = control.entity.clone();
         entity.update(cx, |widget, cx| {
             let _ = widget.set_external_value(value, cx);
-            let _ = widget.set_inline_value_width(88.0, cx);
+            let _ = widget.set_inline_value_width(SAMPLER_INLINE_VALUE_WIDTH, cx);
             widget.set_availability(availability, cx);
         });
         div()
@@ -667,6 +685,7 @@ impl EditorView {
                     SamplerParameter::LoopEnabled => "sampler-loop-control",
                     SamplerParameter::LoopStartFrame => "sampler-loop-start-control",
                     SamplerParameter::LoopEndFrame => "sampler-loop-end-control",
+                    SamplerParameter::LoopCrossfadeMs => "sampler-loop-crossfade-control",
                 },
                 device.id().value(),
             ))

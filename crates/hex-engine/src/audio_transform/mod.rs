@@ -28,6 +28,7 @@ use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
 pub(crate) use budget::Reservation;
 use hex_project::{
     Asset, AudioClipDomain, AudioClipEdit, BeatsTail, Project as CanonicalProject, WarpMode,
+    WarpResampler,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -74,6 +75,19 @@ fn render_mode(domain: &AudioClipDomain) -> Result<hex_warp::Mode, Invalid> {
     } else {
         hex_warp::Mode::Resample
     })
+}
+
+/// Saved reconstruction law of the root pitch/warp render. The cache key holds
+/// the whole domain, so a law change never reuses another law's output.
+fn render_resampler(domain: &AudioClipDomain) -> hex_warp::Resampler {
+    warp_law(domain.warp_resampler)
+}
+
+fn warp_law(law: WarpResampler) -> hex_warp::Resampler {
+    match law {
+        WarpResampler::V1 => hex_warp::Resampler::V1,
+        WarpResampler::V2 => hex_warp::Resampler::V2,
+    }
 }
 
 /// Check the existing renderer's projected stretch capability without PCM or
@@ -611,7 +625,10 @@ impl AudioTransformPreparation {
             mode,
         };
         let mut rendered =
-            hex_warp::render(&request, &mut || self.cancelled()).map_err(warp_error)?;
+            hex_warp::render_with_resampler(&request, render_resampler(domain), &mut || {
+                self.cancelled()
+            })
+            .map_err(warp_error)?;
         if edit.domain.events.is_some() {
             rendered.frames = events::compose(&rendered.frames, edit, tempo_map, &self.shutdown)?;
         }

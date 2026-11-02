@@ -192,6 +192,7 @@ fn render_stems_with_resources_and_hook(
     }
     let mut buffers = vec![[[0.0; 2]; FRAMES_PER_BLOCK]; ordered.len()];
     let mut main = [[0.0; 2]; FRAMES_PER_BLOCK];
+    let mut clipped_samples = 0_u64;
     let mut remaining = frames;
     while remaining > 0 {
         control.check()?;
@@ -226,9 +227,9 @@ fn render_stems_with_resources_and_hook(
                     if !sample.is_finite() {
                         return Err(ExportError::Invalid("render produced a non-finite sample"));
                     }
-                    bytes[channel * 2..channel * 2 + 2].copy_from_slice(
-                        &((sample.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes(),
-                    );
+                    let (pcm, over) = pcm16(*sample);
+                    clipped_samples += u64::from(over);
+                    bytes[channel * 2..channel * 2 + 2].copy_from_slice(&pcm.to_le_bytes());
                 }
             }
             write_all(writer, &pcm[..count * 4], "write staged stem samples")?;
@@ -275,7 +276,11 @@ fn render_stems_with_resources_and_hook(
         sample_rate: rate,
         frames,
         data_bytes: bytes,
+        // Summed across every stem file in the batch.
+        clipped_samples,
         recovery_path: None,
+        // Stem batches stage in their own directory, outside this sweep.
+        stale_temporaries: StaleTemporaries::default(),
     })
 }
 

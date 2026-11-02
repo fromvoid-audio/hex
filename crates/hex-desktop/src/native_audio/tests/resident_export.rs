@@ -176,7 +176,10 @@ fn loaded_resident_export_case(frame_limit: u64) {
     let done = completed(&mut h);
     assert!(done.result.is_ok(), "{:?}", done.result);
     assert_eq!(done.revision, state.state.revision);
-    let expected: Vec<_> = (0..24_000)
+    // The default range ends at the one-beat clip end plus the sampler's
+    // declared release tail, which now includes the prepared ~2 ms declick
+    // floor (96 frames at 48 kHz) even though the one-shot ends earlier.
+    let expected: Vec<_> = (0..24_000 + 96)
         .map(|frame| {
             let sample = if frame < 8192 { 0.25 } else { 0.0 };
             let audio = if frame < 512 { 0.125 } else { 0.0 };

@@ -4,25 +4,60 @@ use super::*;
 use hex_lattice_contract::{DeviceContractError as Error, DeviceTypeId, NativeDeviceState};
 
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sampler");
-/// Current state version. Supported saved versions (Pulse #3956):
+/// Current (registry) state version. Supported saved versions (Pulse #3956):
 /// - v1 (20 Oct 2026): a classic loop region existed only while looping; off
 ///   stored (0, 0). It migrates with the loop off and a dormant loop region
 ///   equal to the playback region, so it plays exactly as before.
 /// - v2 (21 Oct 2026): the classic loop region is kept while the loop is off.
-pub const STATE_VERSION: u32 = 2;
+///   Its 96-byte prefix has no crossfade; it migrates with the crossfade off.
+///   Its `empty` catalog marker migrates to the current empty marker.
+/// - v3 (2 Nov 2026, Pulse #4088): the prefix grows to 104 bytes, appending
+///   the authored loop crossfade (f64 source milliseconds) at offset 96.
+///
+/// Saved form: [`SamplerState::to_native`] and [`empty_state`] write the
+/// oldest version that represents the state, [`COMPATIBLE_STATE_VERSION`],
+/// unless the crossfade is on, so unchanged projects stay readable by older
+/// hex builds; only a nonzero crossfade writes v3. The project storage codec
+/// gates a fresh project schema on saved v3 sampler states. The registry still
+/// migrates every saved version to [`STATE_VERSION`] in memory.
+pub const STATE_VERSION: u32 = 3;
+/// Saved version for every state without a loop crossfade.
+pub const COMPATIBLE_STATE_VERSION: u32 = 2;
 pub const SOURCE_SLOT: u32 = 1;
-const PREFIX: usize = 96;
+const PREFIX: usize = 104;
+const PREFIX_V2: usize = 96;
+const EMPTY: &[u8] = b"empty";
 
-/// An explicit source-free catalog state, distinct from an unbound authored source.
+/// An explicit source-free catalog state, distinct from an unbound authored
+/// source, in its saved (v2) form.
 pub fn empty_state() -> Result<NativeDeviceState, Error> {
-    NativeDeviceState::new(TYPE_ID, STATE_VERSION, b"empty".to_vec())
+    NativeDeviceState::new(TYPE_ID, COMPATIBLE_STATE_VERSION, EMPTY.to_vec())
+}
+/// The registry-current (v3) empty marker; never needed in saved projects.
+pub(super) fn current_empty_state() -> Result<NativeDeviceState, Error> {
+    NativeDeviceState::new(TYPE_ID, STATE_VERSION, EMPTY.to_vec())
+}
+/// The saved form of any supported sampler state: v2 unless its crossfade is
+/// on, keeping host gains and the source binding. Use it where a registry
+/// (always v3) state enters a project, such as a new default instrument.
+pub fn saved_form(state: &NativeDeviceState) -> Result<NativeDeviceState, Error> {
+    if is_empty_state(state) {
+        return empty_state()?.with_host_metadata_from(state);
+    }
+    SamplerState::from_native(state)?
+        .to_native()?
+        .with_host_metadata_from(state)
 }
 /// Host gains are ordinary metadata; no reference, altered marker or other
-/// payload can masquerade as an empty sampler.
+/// payload can masquerade as an empty sampler. The saved v2 marker and the
+/// registry's v3 marker are both empty.
 pub fn is_empty_state(state: &NativeDeviceState) -> bool {
     state.type_id() == TYPE_ID
-        && state.state_version() == STATE_VERSION
-        && state.payload() == b"empty"
+        && matches!(
+            state.state_version(),
+            COMPATIBLE_STATE_VERSION | STATE_VERSION
+        )
+        && state.payload() == EMPTY
         && state.asset_references().is_empty()
 }
 /// Conservative private-source classification: malformed sampler states still
@@ -101,6 +136,9 @@ pub struct SamplerState {
     pub velocity_amount: f64,
     pub envelope: Envelope,
     pub voices: u8,
+    /// Classic loop seam crossfade, see [`Settings::loop_crossfade_ms`]. It is
+    /// kept (dormant) in other modes, like the classic loop region.
+    pub loop_crossfade_ms: f64,
 }
 impl SamplerState {
     /// Source replacement starts with the whole original source and no loop.
@@ -127,6 +165,7 @@ impl SamplerState {
             velocity_amount: 1.0,
             envelope: Envelope::default(),
             voices: 16,
+            loop_crossfade_ms: 0.0,
         };
         state.validate()?;
         Ok(state)
@@ -160,6 +199,7 @@ impl SamplerState {
             pan: self.pan,
             velocity_amount: self.velocity_amount,
             envelope: self.envelope,
+            loop_crossfade_ms: self.loop_crossfade_ms,
         }
     }
     fn validate(&self) -> Result<(), Error> {
@@ -186,8 +226,26 @@ impl SamplerState {
         }
         Ok(())
     }
+    /// Saved form: v2 while the crossfade is off (byte-identical to the v2
+    /// codec), v3 otherwise.
     pub fn to_native(&self) -> Result<NativeDeviceState, Error> {
+        if self.loop_crossfade_ms == 0.0 {
+            self.encode(COMPATIBLE_STATE_VERSION)
+        } else {
+            self.encode(STATE_VERSION)
+        }
+    }
+    /// Registry form: always the current version.
+    pub(super) fn to_current_native(&self) -> Result<NativeDeviceState, Error> {
+        self.encode(STATE_VERSION)
+    }
+    fn encode(&self, version: u32) -> Result<NativeDeviceState, Error> {
         self.validate()?;
+        let prefix = if version == STATE_VERSION {
+            PREFIX
+        } else {
+            PREFIX_V2
+        };
         let (mode, gate, loop_region, starts, base) = match &self.mode {
             AuthoredMode::Classic {
                 loop_enabled,
@@ -208,7 +266,7 @@ impl SamplerState {
         };
         let mut bytes = Vec::new();
         bytes
-            .try_reserve_exact(PREFIX + starts.len() * 4)
+            .try_reserve_exact(prefix + starts.len() * 4)
             .map_err(|_| Error::StateTooLarge)?;
         bytes.extend_from_slice(&[
             mode,
@@ -241,10 +299,13 @@ impl SamplerState {
         ] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
+        if version == STATE_VERSION {
+            bytes.extend_from_slice(&self.loop_crossfade_ms.to_le_bytes());
+        }
         for &start in starts {
             bytes.extend_from_slice(&(start as u32).to_le_bytes());
         }
-        NativeDeviceState::new(TYPE_ID, STATE_VERSION, bytes)
+        NativeDeviceState::new(TYPE_ID, version, bytes)
     }
     /// Preserve current host gains and the actual authored asset binding when
     /// patching settings. Loading/replacing assets is a separate explicit edit.
@@ -256,9 +317,11 @@ impl SamplerState {
         if state.type_id() != TYPE_ID {
             return Err(Error::WrongDeviceType);
         }
-        let legacy = match state.state_version() {
-            1 => true,
-            STATE_VERSION => false,
+        let version = state.state_version();
+        let (legacy, prefix) = match version {
+            1 => (true, PREFIX_V2),
+            COMPATIBLE_STATE_VERSION => (false, PREFIX_V2),
+            STATE_VERSION => (false, PREFIX),
             _ => return Err(Error::InvalidStateVersion),
         };
         if state.asset_references().len() > 1
@@ -270,11 +333,11 @@ impl SamplerState {
             return Err(Error::MalformedState);
         }
         let bytes = state.payload();
-        if bytes.len() < PREFIX || bytes.len() > PREFIX + MAX_SLICES * 4 {
+        if bytes.len() < prefix || bytes.len() > prefix + MAX_SLICES * 4 {
             return Err(Error::MalformedState);
         }
         let count = u16::from_le_bytes([bytes[6], bytes[7]]) as usize;
-        if bytes.len() != PREFIX + count * 4 || bytes[0] > 3 || bytes[1] > 1 || bytes[2] > 1 {
+        if bytes.len() != prefix + count * 4 || bytes[0] > 3 || bytes[1] > 1 || bytes[2] > 1 {
             return Err(Error::MalformedState);
         }
         let read_u32 = |offset| {
@@ -324,7 +387,7 @@ impl SamplerState {
                     .try_reserve_exact(count)
                     .map_err(|_| Error::StateTooLarge)?;
                 for index in 0..count {
-                    starts.push(read_u32(PREFIX + index * 4));
+                    starts.push(read_u32(prefix + index * 4));
                 }
                 AuthoredMode::Slice {
                     starts,
@@ -333,8 +396,10 @@ impl SamplerState {
                 }
             }
         };
-        let mut values = [0.0; 9];
-        for (index, value) in values.iter_mut().enumerate() {
+        // v1/v2 have no crossfade: the tenth value stays zero (off).
+        let mut values = [0.0; 10];
+        let stored = (prefix - 24) / 8;
+        for (index, value) in values.iter_mut().take(stored).enumerate() {
             let offset = 24 + index * 8;
             let array: [u8; 8] = bytes[offset..offset + 8]
                 .try_into()
@@ -358,6 +423,7 @@ impl SamplerState {
                 sustain: values[7],
                 release_seconds: values[8],
             },
+            loop_crossfade_ms: values[9],
         };
         result.validate()?;
         Ok(result)

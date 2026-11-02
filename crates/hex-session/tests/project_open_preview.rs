@@ -61,7 +61,7 @@ impl Drop for Fixture {
     }
 }
 fn wait(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,

@@ -160,8 +160,9 @@ fn malformed_state_parameter_cross_control_and_rate_values_are_rejected() {
 #[test]
 fn linked_peak_threshold_hysteresis_and_exact_ramp_boundaries() {
     // Threshold=0 dBFS, return=-6 dBFS, floor=-20 dB. At 8 kHz,
-    // attack=.25 ms is two frames and release=1 ms is eight frames.
-    let state = state_with(0.0, -6.0, -20.0, 0.25, 0.25, 1.0);
+    // attack=.25 ms is two frames, hold=5.25 ms (above the 5 ms minimum)
+    // is 42 frames and release=1 ms is eight frames.
+    let state = state_with(0.0, -6.0, -20.0, 0.25, 5.25, 1.0);
     let mut gate = runtime(&state, 8_000);
     let mut high = [[1.0, -0.25], [0.75, -0.1875]];
     gate.process_block(&mut high, &hex_lattice::EMPTY_DEVICE_RESOURCES);
@@ -174,12 +175,11 @@ fn linked_peak_threshold_hysteresis_and_exact_ramp_boundaries() {
     let mut middle = [[0.6, -0.1]]; // Above return, below threshold: remain open.
     gate.process_block(&mut middle, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(middle, [[0.6, -0.1]]);
-    let mut below = [[0.4, -0.1]; 3];
-    gate.process_block(&mut below, &hex_lattice::EMPTY_DEVICE_RESOURCES); // Hold two full qualifying frames, then close.
-    assert_eq!(below[0], [0.4, -0.1]);
-    assert_eq!(below[1], [0.4, -0.1]);
+    let mut below = [[0.4, -0.1]; 43];
+    gate.process_block(&mut below, &hex_lattice::EMPTY_DEVICE_RESOURCES); // Hold 42 full qualifying frames, then close.
+    assert!(below[..42].iter().all(|frame| *frame == [0.4, -0.1]));
     let releasing = 1.0 - (1.0 - start) / 8.0;
-    assert!((f64::from(below[2][0]) - 0.4 * releasing).abs() < 1.0e-7);
+    assert!((f64::from(below[42][0]) - 0.4 * releasing).abs() < 1.0e-7);
     let mut release = [[0.4, -0.1]; 7];
     gate.process_block(&mut release, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     for (index, frame) in release.iter().enumerate() {
@@ -197,23 +197,27 @@ fn linked_peak_threshold_hysteresis_and_exact_ramp_boundaries() {
 }
 
 #[test]
-fn threshold_equality_opens_hold_zero_closes_and_reopen_attacks_from_release_gain() {
+fn threshold_equality_opens_hold_zero_closes_after_minimum_hold_and_reopen_attacks_from_release_gain()
+ {
     let mut zero_hold = runtime(&state_with(0.0, 0.0, -20.0, 0.25, 0.0, 1.0), 8_000);
     let mut equality = [[1.0, -0.5], [1.0, -0.5]];
     zero_hold.process_block(&mut equality, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert!(f64::from(equality[0][0]) > 0.1); // threshold precedence opens at equality
     assert_eq!(equality[1], [1.0, -0.5]); // threshold precedence keeps equality open
-    let mut low = [[0.0, 0.0], [0.4, -0.2]];
+    // Hold 0 acts as the 5 ms minimum hold (40 frames at 8 kHz, Pulse #4107).
+    let mut low = [[0.4, -0.2]; 41];
+    low[0] = [0.0, 0.0];
     zero_hold.process_block(&mut low, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(low[0], [0.0, 0.0]);
-    assert!(f64::from(low[1][0]) < 0.4); // below-return immediately begins release
+    assert!(low[1..40].iter().all(|frame| *frame == [0.4, -0.2]));
+    assert!(f64::from(low[40][0]) < 0.4); // below-return after the hold begins release
 
     let mut reopening = runtime(&state_with(0.0, -6.0, -20.0, 0.5, 0.0, 1.0), 8_000);
     let mut open = [[1.0, 0.0]; 4];
     reopening.process_block(&mut open, &hex_lattice::EMPTY_DEVICE_RESOURCES);
-    let mut closing = [[0.4, 0.0]];
+    let mut closing = [[0.4, 0.0]; 41];
     reopening.process_block(&mut closing, &hex_lattice::EMPTY_DEVICE_RESOURCES);
-    let before_reopen = f64::from(closing[0][0]) / 0.4;
+    let before_reopen = f64::from(closing[40][0]) / 0.4;
     assert!(before_reopen < 1.0 && before_reopen > db_gain(-20.0));
     let mut reopen = [[1.0, 0.0]];
     reopening.process_block(&mut reopen, &hex_lattice::EMPTY_DEVICE_RESOURCES);
@@ -260,7 +264,8 @@ fn same_settings_history_copy_is_partition_exact_and_changed_controls_retarget_o
     let mut closing_source = runtime(&state_with(0.0, -6.0, -20.0, 0.5, 0.0, 1.0), 8_000);
     let mut opened = [[1.0, 0.0]; 4];
     closing_source.process_block(&mut opened, &hex_lattice::EMPTY_DEVICE_RESOURCES);
-    let mut low = [[0.4, 0.0]];
+    // Hold 0 acts as the 5 ms minimum hold: 40 held frames, then release.
+    let mut low = [[0.4, 0.0]; 41];
     closing_source.process_block(&mut low, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let closed_history = closing_source
         .as_any()
@@ -316,7 +321,7 @@ fn same_settings_history_copy_is_partition_exact_and_changed_controls_retarget_o
     assert_eq!(after_attack_edit.ramp_target, 1.0);
     assert_eq!(after_attack_edit.ramp_remaining, 16);
 
-    let hold_state = state_with(0.0, -6.0, -20.0, 0.5, 0.25, 1.0);
+    let hold_state = state_with(0.0, -6.0, -20.0, 0.5, 6.0, 1.0);
     let mut holding = runtime(&hold_state, 8_000);
     let mut first_low = [[1.0, 0.0], [0.4, 0.0]];
     holding.process_block(&mut first_low, &hex_lattice::EMPTY_DEVICE_RESOURCES);
@@ -326,7 +331,8 @@ fn same_settings_history_copy_is_partition_exact_and_changed_controls_retarget_o
         .unwrap()
         .history();
     assert_eq!(before_hold_edit.hold_elapsed, 1);
-    let hold_changed = patch(&hold_state, parameter::HOLD, 0.5);
+    // Both holds are distinct above the 5 ms minimum.
+    let hold_changed = patch(&hold_state, parameter::HOLD, 10.0);
     let mut hold_candidate = runtime(&hold_changed, 8_000);
     hold_candidate.copy_history_from(holding.as_ref());
     assert_eq!(
@@ -441,4 +447,36 @@ fn floor_edit_when_settled_closed_ramps_and_runtime_has_no_output_tail() {
     reset.process_block(&mut after_reset, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     fresh.process_block(&mut after_fresh, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(after_reset, after_fresh);
+}
+
+/// Pulse #4107: with hold 0 the instantaneous detector dipped below return at
+/// every zero crossing of a low tone and the gate closed there (chatter). The
+/// minimum internal hold keeps a 40 Hz sine at -6 dBFS fully open.
+#[test]
+fn hold_zero_rides_through_low_frequency_zero_crossings() {
+    for (threshold, return_level) in [(-40.0, -45.0), (-6.2, -11.2)] {
+        let state = state_with(threshold, return_level, -60.0, 1.0, 0.0, 1.0);
+        for sample_rate in [8_000_u32, 44_100, 48_000, 192_000] {
+            let amplitude = db_gain(-6.0);
+            let mut frames: Vec<StereoFrame> = (0..sample_rate as usize)
+                .map(|frame| {
+                    let phase =
+                        std::f64::consts::TAU * 40.0 * frame as f64 / f64::from(sample_rate);
+                    let value = (amplitude * phase.sin()) as f32;
+                    [value, -value]
+                })
+                .collect();
+            let input = frames.clone();
+            runtime(&state, sample_rate)
+                .process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            // Allow the first cycle to cross threshold and complete the attack.
+            let settled = sample_rate as usize / 40;
+            for (index, (out, original)) in frames.iter().zip(&input).enumerate().skip(settled) {
+                assert_eq!(
+                    out, original,
+                    "threshold={threshold} rate={sample_rate} frame={index}: gate moved"
+                );
+            }
+        }
+    }
 }

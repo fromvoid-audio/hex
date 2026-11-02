@@ -200,8 +200,11 @@ fn native_tuning_current_generators_export_non_octave_pitch_and_exact_rendered_p
         hex_export::render_bounce_new(&bounce_path, revision, 2048, FRAMES as u64, 1.0).unwrap();
         let bounce = fs::read(bounce_path).unwrap();
         assert_eq!(u16::from_le_bytes([bounce[20], bounce[21]]), 3);
-        assert_eq!(bounce.len(), 44 + FRAMES * 8);
-        for (frame, (bytes, expected)) in bounce[44..]
+        assert_eq!(
+            bounce.len(),
+            hex_export::FLOAT32_WAV_HEADER_BYTES as usize + FRAMES * 8
+        );
+        for (frame, (bytes, expected)) in bounce[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..]
             .chunks_exact(8)
             .zip(&direct[2048..])
             .enumerate()

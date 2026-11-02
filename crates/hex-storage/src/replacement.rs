@@ -332,9 +332,11 @@ fn set_aside_recovery(
             ));
         }
         let destination = parent.join(name);
-        match fs::hard_link(recovery, &destination) {
-            Ok(()) => {
-                fs::remove_file(recovery)?;
+        match crate::publication::publish_new(recovery, &destination) {
+            Ok(published) => {
+                if published.staging_remains() {
+                    fs::remove_file(recovery)?;
+                }
                 sync_parent(parent)?;
                 return Ok(());
             }
@@ -521,8 +523,10 @@ fn publish_recovery(
             }
             Err(error) => return Err(error.into()),
         }
-        fs::hard_link(&temporary.path, recovery)?;
-        if let Err(source) = fs::remove_file(&temporary.path) {
+        let published = crate::publication::publish_new(&temporary.path, recovery)?;
+        if published.staging_remains()
+            && let Err(source) = fs::remove_file(&temporary.path)
+        {
             return Err(StorageError::RecoveryBackupPublished {
                 path: target.to_path_buf(),
                 recovery_path: recovery.to_path_buf(),
