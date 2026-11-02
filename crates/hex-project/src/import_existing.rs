@@ -63,8 +63,10 @@ impl ExistingAudioPlacement {
 
 impl Project {
     /// Validate that `asset` may be placed by an import member and return its
-    /// project-rate playback frame count.
-    pub(crate) fn existing_import_frames(&self, asset: AssetId) -> Result<u64, Invalid> {
+    /// project-rate playback frame count. Session owners use this read-only
+    /// check to decide whether a member may reuse the asset before building a
+    /// `Command::ImportExistingAudio`; the command repeats it when applied.
+    pub fn existing_import_frames(&self, asset: AssetId) -> Result<u64, Invalid> {
         let media = self
             .asset(asset)
             .ok_or(Invalid("imported media no longer exists"))?;

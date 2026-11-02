@@ -469,7 +469,10 @@ fn native_asset_import_preserves_positive_ordinary_track_and_clip_imports() {
     s.import_prepared_audio_clip_revision(prepare(), track, 16, None)
         .unwrap();
     assert_eq!(s.project().tracks()[0].clips().len(), 2);
-    assert_eq!(s.project().assets().count(), 3);
+    // The unchanged file re-imports onto its ordinary resident asset, never
+    // onto the device asset decoded from the same file.
+    assert_eq!(s.project().tracks()[0].clips()[1].asset(), first);
+    assert_eq!(s.project().assets().count(), 2);
     assert!(s.audio(native).is_none());
     assert_eq!(
         s.native_source(native)

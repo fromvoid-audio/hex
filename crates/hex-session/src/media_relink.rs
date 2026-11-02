@@ -166,6 +166,7 @@ impl Session {
                     audio: member.audio,
                     waveform: Arc::new(member.waveform),
                     frames,
+                    file_identity: member.file_identity,
                 },
             ));
         }
