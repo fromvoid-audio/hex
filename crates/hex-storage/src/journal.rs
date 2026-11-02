@@ -13,12 +13,15 @@ use std::{
 
 const MAGIC: &[u8; 8] = b"HEXJRNL\0";
 const LOCK_MAGIC: &[u8; 8] = b"HEXJLOC\0";
+pub(crate) const JOURNAL_SUFFIX: &str = ".hex-journal";
+/// Leaves room for the slot lock's `.lock` suffix within a 255-byte component.
+pub(crate) const MAX_JOURNAL_NAME_BYTES: usize = 255 - ".lock".len();
 
 /// Journal beside a saved project. Untitled uses a caller-supplied application slot.
 pub fn journal_path(target: &Path) -> Result<PathBuf, StorageError> {
     let name = basename(target)?;
-    let name = format!(".{name}.hex-journal");
-    if name.len() > 250 {
+    let name = format!(".{name}{JOURNAL_SUFFIX}");
+    if name.len() > MAX_JOURNAL_NAME_BYTES {
         return Err(StorageError::Invalid(
             "journal filename exceeds component limit",
         ));
@@ -42,6 +45,14 @@ pub struct Journal {
 }
 
 impl Journal {
+    /// Claim an empty slot without adopting a checkpoint published by another writer.
+    pub fn open_empty(path: PathBuf) -> Result<Self, StorageError> {
+        if read(&path)?.is_some() {
+            return Err(StorageError::Conflict { path });
+        }
+        Ok(Self { path, bytes: None })
+    }
+
     /// Adopt only a recognized, valid journal. Unknown files are preserved.
     pub fn open(path: PathBuf) -> Result<Self, StorageError> {
         let bytes = read(&path)?;
@@ -115,16 +126,18 @@ impl Journal {
                 change = JournalChange::CheckpointPublished;
                 temp.disarm();
             } else {
-                fs::hard_link(&temp.path, &self.path)?;
+                let published = crate::publication::publish_new(&temp.path, &self.path)?;
                 self.bytes = Some(bytes.clone());
                 change = JournalChange::CheckpointPublished;
-                fs::remove_file(&temp.path).map_err(|source| {
-                    StorageError::PublishedButNotDurable {
-                        path: self.path.clone(),
-                        operation: "remove the journal staging file",
-                        source,
-                    }
-                })?;
+                if published.staging_remains() {
+                    fs::remove_file(&temp.path).map_err(|source| {
+                        StorageError::PublishedButNotDurable {
+                            path: self.path.clone(),
+                            operation: "remove the journal staging file",
+                            source,
+                        }
+                    })?;
+                }
                 temp.disarm();
             }
             self.bytes = Some(bytes);
@@ -162,6 +175,31 @@ impl Journal {
             Ok(())
         })();
         lock.finish_with(&self.path, change, result, release)
+    }
+
+    /// Explicit user discard of an observed leftover checkpoint (Pulse #3990).
+    /// Under the slot lock the exact bytes are copied into a new private
+    /// preserved-recovery sibling directory before the slot is removed, so a
+    /// discard never deletes recoverable work. Returns the kept copy's path.
+    pub fn set_aside(&mut self) -> Result<PathBuf, StorageError> {
+        let lock = lock_slot(&self.path)?;
+        let mut change = JournalChange::Unchanged;
+        let mut kept = None;
+        let result = (|| {
+            self.check()?;
+            let bytes = self
+                .bytes
+                .as_deref()
+                .ok_or(StorageError::Invalid("no recovery journal to set aside"))?;
+            kept = Some(restart::preserve(&self.path, bytes)?);
+            fs::remove_file(&self.path)?;
+            self.bytes = None;
+            change = JournalChange::CheckpointCleared;
+            replacement::sync_parent(parent(&self.path))?;
+            Ok(())
+        })();
+        lock.finish_with(&self.path, change, result, SlotLock::unlock)?;
+        kept.ok_or(StorageError::Invalid("no recovery journal to set aside"))
     }
 
     fn check(&self) -> Result<(), StorageError> {
@@ -229,8 +267,37 @@ fn decode(path: &Path, bytes: &[u8]) -> Result<Project, StorageError> {
     let mut envelope = bytes[..bytes.len() - 8].to_vec();
     envelope[..8].copy_from_slice(b"HEXRCVY\0");
     let (project, _token): (Project, FileToken) =
-        replacement::decode_envelope(&envelope, &basename(path)?)?;
+        replacement::decode_envelope(&envelope, &bound_name(path, &envelope)?)?;
     Ok(project)
+}
+
+/// The target name a journal at `path` may carry. A case-only or Unicode-
+/// normalization rename leaves the old name inside the checkpoint; adopt it only
+/// when that stored name still reaches this same file on this filesystem.
+fn bound_name(path: &Path, envelope: &[u8]) -> Result<String, StorageError> {
+    let name = basename(path)?;
+    let (stored, _) = replacement::parse_envelope(envelope)?;
+    let plain_component = Path::new(stored).file_name() == Some(stored.as_ref());
+    if stored != name && plain_component && same_file(path, &parent(path).join(stored)) {
+        return Ok(stored.to_owned());
+    }
+    Ok(name)
+}
+
+fn same_file(left: &Path, right: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (fs::symlink_metadata(left), fs::symlink_metadata(right)) {
+            (Ok(left), Ok(right)) => left.dev() == right.dev() && left.ino() == right.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (left, right);
+        false
+    }
 }
 
 fn basename(path: &Path) -> Result<String, StorageError> {
@@ -268,6 +335,32 @@ mod tests {
     impl Drop for Temp {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Regression for #3915: the first checkpoint on a volume without hard
+    /// links or exclusive rename publishes a complete copy, not an error.
+    #[cfg(unix)]
+    #[test]
+    fn first_checkpoint_publishes_on_volumes_without_hard_links() {
+        use crate::publication::simulate::{Volume, volume};
+        for capability in [Volume::NoHardLinks(libc::EPERM), Volume::NoAtomicCreate] {
+            let dir = Temp::new();
+            let _volume = volume(capability);
+            let path = dir.0.join("usb.hex-journal");
+            let project = Project::new(48_000).expect("project");
+            let mut journal = Journal::open(path.clone()).expect("open");
+            journal.checkpoint(&project).expect("first checkpoint");
+            assert_eq!(load_journal(&path).expect("complete checkpoint"), project);
+            let newer = Project::new(44_100).expect("newer");
+            journal.checkpoint(&newer).expect("replacing checkpoint");
+            assert_eq!(load_journal(&path).expect("replaced checkpoint"), newer);
+            let leftovers = fs::read_dir(&dir.0)
+                .expect("directory")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(".hex-"))
+                .count();
+            assert_eq!(leftovers, 0);
         }
     }
 
@@ -492,6 +585,26 @@ mod tests {
     }
 
     #[test]
+    fn set_aside_keeps_exact_bytes_and_refuses_a_changed_slot() {
+        let dir = Temp::new();
+        let path = dir.0.join("untitled.hex-journal");
+        let crashed = Project::new(48_000).expect("crashed");
+        Journal::open(path.clone())
+            .expect("open")
+            .checkpoint_latest(&crashed)
+            .expect("checkpoint");
+        let bytes = fs::read(&path).expect("leftover");
+        let mut stale = Journal::open(path.clone()).expect("observe");
+        let mut leftover = Journal::open(path.clone()).expect("observe");
+        let kept = leftover.set_aside().expect("set aside");
+        assert!(!path.exists(), "slot cleared");
+        assert_eq!(fs::read(&kept).expect("kept"), bytes);
+        assert_eq!(load_journal(&kept).expect("kept loads"), crashed);
+        assert!(stale.set_aside().is_err(), "a changed slot refuses");
+        assert_eq!(fs::read(&kept).expect("kept unchanged"), bytes);
+    }
+
+    #[test]
     fn latest_slot_has_no_history_and_old_owner_cannot_delete_newer_project() {
         let dir = Temp::new();
         let path = dir.0.join("untitled.hex-journal");
@@ -690,5 +803,34 @@ mod tests {
             },
         );
         panic!("child must terminate at injected boundary");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_reached_through_an_equivalent_name_is_adopted() {
+        let dir = Temp::new();
+        let old = dir.0.join(".song.hex.hex-journal");
+        let renamed = dir.0.join(".Song.hex.hex-journal");
+        let first = Project::new(48_000).expect("project");
+        Journal::open(old.clone())
+            .expect("open")
+            .checkpoint(&first)
+            .expect("checkpoint");
+
+        let copy = dir.0.join(".other.hex.hex-journal");
+        fs::copy(&old, &copy).expect("copied journal");
+        let error = load_journal(&copy).expect_err("foreign journal refused");
+        assert!(error.to_string().contains("use save as"));
+        if fs::symlink_metadata(&renamed).is_err() {
+            eprintln!("skipped: temp volume is case-sensitive");
+            return;
+        }
+        assert_eq!(load_journal(&renamed).expect("adopted journal"), first);
+        let second = Project::new(44_100).expect("project");
+        Journal::open(renamed.clone())
+            .expect("adopt")
+            .checkpoint(&second)
+            .expect("checkpoint under new name");
+        assert_eq!(load_journal(&renamed).expect("new checkpoint"), second);
     }
 }

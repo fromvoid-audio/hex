@@ -800,7 +800,7 @@ impl SourceSpan {
 
 pub(crate) use spans::{
     CurrentSamplerEventCustody, MidiReleaseVoice, TransportDensitySpan,
-    admit_transport_loop_density,
+    admit_held_transport_loop_density, admit_transport_loop_density,
 };
 pub use spans::{
     MIDI_SPAN_BUFFER_CAPACITY, MidiInstrumentRenderContext, MidiRenderSpan, MidiSpanBuffer,

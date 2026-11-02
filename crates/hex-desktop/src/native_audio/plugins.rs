@@ -11,6 +11,7 @@ use hex_session::service::{NativeDeviceState, ResidentEffectPreparation};
 use hex_session::service::{
     PluginEffectControl, PluginEffectPreparation, PluginEffectPreparationState,
 };
+mod degraded;
 mod restore;
 use restore::Restore;
 mod edits;
@@ -129,6 +130,8 @@ pub(super) struct Plugins {
     reopen: Option<Reopen>,
     edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
+    degraded: degraded::DegradedReport<Binding>,
+    degraded_changed: Option<(u64, Vec<u64>)>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -194,6 +197,10 @@ impl Plugins {
         }
         self.sources.clear();
         self.pool_held = false;
+    }
+    /// The newest changed degraded vst3 device set and its output, once.
+    pub fn take_degraded_change(&mut self) -> Option<(u64, Vec<u64>)> {
+        self.degraded_changed.take()
     }
     pub fn output_closed(&mut self) {
         self.configured = false;
@@ -388,6 +395,18 @@ impl Plugins {
             return;
         };
         self.poll_restore(control, context);
+        if let Some(output) = control.output_identity() {
+            let endpoints = self.sources.iter().map(|source| {
+                (
+                    source.binding,
+                    source.device,
+                    control.native_source_endpoint_status(source.binding),
+                )
+            });
+            if let Some(devices) = self.degraded.observe(output, endpoints) {
+                self.degraded_changed = Some((output, devices));
+            }
+        }
         #[cfg(all(test, feature = "allocation-probe"))]
         if let Some(observed) = self.completed.as_ref() {
             let count = self

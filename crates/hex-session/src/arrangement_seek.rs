@@ -626,7 +626,7 @@ mod tests {
     }
 
     fn wait_for_ready(worker: &ArrangementSeekWorker) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         loop {
             if lock(&worker.shared.mailbox).ready.is_some() {
                 return;
@@ -688,7 +688,7 @@ mod tests {
     }
 
     fn wait_for_idle(worker: &ArrangementSeekWorker) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         loop {
             let mailbox = lock(&worker.shared.mailbox);
             if mailbox.running.is_none()
@@ -765,7 +765,7 @@ mod tests {
             mailbox.test_pause_drain = false;
         }
         worker.shared.wake.notify_one();
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         loop {
             if let Some(id) = worker.try_resident_completion() {
                 assert_eq!(id, 71);
@@ -936,13 +936,13 @@ mod tests {
         drop(overflow);
         drop(overflow_graph);
         drop(worker);
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         while retired_weak.upgrade().is_some() || held_weak.upgrade().is_some() {
             assert!(
                 Instant::now() < deadline,
                 "worker did not drain teardown results"
             );
-            thread::yield_now();
+            crate::test_wait::pause();
         }
         let observed_drop_thread = lock(&shared.mailbox)
             .last_result_drop_thread
@@ -1020,7 +1020,7 @@ mod tests {
         drop(mailbox);
         worker.shared.wake.notify_one();
         wait_for_idle(&worker);
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         while retired_weak.upgrade().is_some() || ready_weak.upgrade().is_some() {
             assert!(
                 Instant::now() < deadline,
@@ -1100,7 +1100,7 @@ mod tests {
         let worker = ArrangementSeekWorker::with_preparer(move |_spec, cancelled| {
             let _keep_signal = &signal;
             while !cancelled.load(Ordering::Acquire) {
-                thread::yield_now();
+                crate::test_wait::pause();
             }
             Err(ArrangementPrerollError::Cancelled)
         })

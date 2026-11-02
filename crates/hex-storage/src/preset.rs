@@ -16,6 +16,14 @@ pub const EXTENSION: &str = "hex-device-preset.json";
 // plus the bounded type id and a fixed envelope allowance. No state cap changes.
 pub const MAX_PRESET_BYTES: usize =
     8 * MAX_NATIVE_DEVICE_STATE_BYTES + 2 * MAX_DEVICE_TYPE_ID_BYTES + 512;
+/// Saved device preset schema. Supported on open:
+/// - 1 (2b4acb829 until 5165e3053, 18 Oct 2026): the same envelope without
+///   `comparison`; it opens with no A/B comparison.
+/// - 2 (current): `comparison` is required, `null` when there is none.
+///
+/// Saving always writes the current schema. Newer, unknown and malformed
+/// envelopes are refused, including a schema-1 envelope carrying `comparison`.
+pub const PRESET_SCHEMA: u32 = 2;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +51,38 @@ struct Envelope {
     payload: Vec<u8>,
     #[serde(deserialize_with = "crate::schema::device_assets::required_comparison")]
     comparison: Option<crate::schema::device_assets::ComparisonDto>,
+}
+
+/// Format and schema only, read first to choose the envelope layout.
+#[derive(Deserialize)]
+struct Header {
+    format: String,
+    schema: u32,
+}
+
+/// Schema 1, the envelope before A/B comparisons were preserved.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnvelopeV1 {
+    format: String,
+    schema: u32,
+    class: DeviceClass,
+    type_id: String,
+    state_version: u32,
+    payload: Vec<u8>,
+}
+impl From<EnvelopeV1> for Envelope {
+    fn from(value: EnvelopeV1) -> Self {
+        Self {
+            format: value.format,
+            schema: value.schema,
+            class: value.class,
+            type_id: value.type_id,
+            state_version: value.state_version,
+            payload: value.payload,
+            comparison: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -78,7 +118,7 @@ impl std::fmt::Display for Error {
             Self::PublishedButNotDurable { path, .. } => write!(
                 f,
                 "complete device preset exists at {}; directory cleanup or durability failed",
-                path.display()
+                crate::text::verbatim(path.display())
             ),
         }
     }
@@ -133,7 +173,7 @@ pub fn encode(preset: &Preset) -> Result<Vec<u8>, Error> {
     }
     let bytes = serde_json::to_vec(&Envelope {
         format: "hex-device-preset".into(),
-        schema: 2,
+        schema: PRESET_SCHEMA,
         class: preset.class,
         type_id: preset
             .state
@@ -160,12 +200,19 @@ pub fn decode(bytes: &[u8]) -> Result<Preset, Error> {
     if bytes.len() > MAX_PRESET_BYTES {
         return Err(Error::Invalid("device preset exceeds byte limit"));
     }
-    let envelope: Envelope = serde_json::from_slice(bytes)?;
-    if envelope.format != "hex-device-preset" || envelope.schema != 2 {
-        return Err(Error::Invalid(
-            "unsupported device preset format or schema · use schema 2",
-        ));
+    let header: Header = serde_json::from_slice(bytes)?;
+    if header.format != "hex-device-preset" {
+        return Err(Error::Invalid("not a hex device preset file"));
     }
+    let envelope: Envelope = match header.schema {
+        1 => serde_json::from_slice::<EnvelopeV1>(bytes)?.into(),
+        PRESET_SCHEMA => serde_json::from_slice(bytes)?,
+        _ => {
+            return Err(Error::Invalid(
+                "device preset uses an unsupported schema · open it with a newer hex",
+            ));
+        }
+    };
     let type_id = DeviceTypeId::new(&envelope.type_id)
         .map_err(|_| Error::Invalid("invalid device preset type id"))?;
     let state = NativeDeviceState::new(type_id, envelope.state_version, envelope.payload)
@@ -250,8 +297,11 @@ pub fn save_new(path: &Path, preset: &Preset) -> Result<(), Error> {
     file.write_all(&bytes)?;
     file.sync_all()?;
     drop(file);
-    fs::hard_link(&temporary.0, path)?;
-    let cleanup_error = fs::remove_file(&temporary.0).err();
+    let published = crate::publication::publish_new(&temporary.0, path)?;
+    let cleanup_error = published
+        .staging_remains()
+        .then(|| fs::remove_file(&temporary.0).err())
+        .flatten();
     #[cfg(unix)]
     let sync_error = File::open(parent).and_then(|file| file.sync_all()).err();
     #[cfg(not(unix))]
@@ -355,11 +405,38 @@ mod tests {
     }
 
     #[test]
+    fn schema_1_preset_opens_without_comparison_and_saves_as_schema_2() {
+        // A preset as saved by 2b4acb829 through 5165e3053.
+        let v1 = br#"{"format":"hex-device-preset","schema":1,"class":"effect","type_id":"hex.effect.compressor","state_version":3,"payload":[1,2,3,4]}"#;
+        let preset = decode(v1).unwrap();
+        assert_eq!(preset.class, DeviceClass::Effect);
+        assert_eq!(
+            preset.state.type_id().as_str().unwrap(),
+            "hex.effect.compressor"
+        );
+        assert_eq!(preset.state.state_version(), 3);
+        assert_eq!(preset.state.payload(), [1, 2, 3, 4]);
+        assert_eq!(preset.comparison, None);
+        let saved = encode(&preset).unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(envelope["schema"], PRESET_SCHEMA);
+        assert_eq!(envelope["comparison"], serde_json::Value::Null);
+        assert_eq!(decode(&saved).unwrap(), preset);
+        // Schema 1 never carried a comparison, and its fields stay required.
+        let mut changed: serde_json::Value = serde_json::from_slice(v1).unwrap();
+        changed["comparison"] = serde_json::Value::Null;
+        assert!(decode(&serde_json::to_vec(&changed).unwrap()).is_err());
+        let mut missing: serde_json::Value = serde_json::from_slice(v1).unwrap();
+        missing.as_object_mut().unwrap().remove("class");
+        assert!(decode(&serde_json::to_vec(&missing).unwrap()).is_err());
+    }
+    #[test]
     fn malformed_unknown_newer_and_unbounded_envelopes_refuse() {
         let bytes = encode(&fixture()).unwrap();
         let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         for (key, value) in [
             ("schema", serde_json::json!(3)),
+            ("schema", serde_json::json!(0)),
             ("format", serde_json::json!("project")),
             ("class", serde_json::json!("plugin")),
             ("type_id", serde_json::json!("INVALID")),

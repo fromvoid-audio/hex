@@ -118,9 +118,19 @@ fn malformed_truncated_reserved_nonfinite_and_unsupported_formats_refuse() {
             .is_err()
         );
     }
+    // v1 decodes (crate::state_migration_tests) but never stored loop
+    // coordinates while a classic loop was off; newer versions refuse.
+    if valid.payload()[0] == 0 && valid.payload()[16..24] != [0; 8] {
+        assert_eq!(
+            SamplerState::from_native(
+                &NativeDeviceState::new(TYPE_ID, 1, valid.payload().to_vec()).unwrap()
+            ),
+            Err(Error::MalformedState)
+        );
+    }
     assert_eq!(
         SamplerState::from_native(
-            &NativeDeviceState::new(TYPE_ID, 1, valid.payload().to_vec()).unwrap()
+            &NativeDeviceState::new(TYPE_ID, 3, valid.payload().to_vec()).unwrap()
         ),
         Err(Error::InvalidStateVersion)
     );
@@ -378,14 +388,26 @@ fn authored_pitch_gain_region_and_absolute_tuning_reach_actual_pair() {
         2,
     )
     .unwrap();
+    // +12 under neutral tuning is pitched up: the stateless plan query is the
+    // band-limited oracle at source positions 0 and 2 of the 4-frame region.
+    let octave = crate::sampler::PreparedSamplerPlan::new(
+        crate::sampler::SampleShape::new(6, 8_000, crate::sampler::SampleChannels::Mono).unwrap(),
+        8_000,
+        authored.settings(),
+    )
+    .unwrap()
+    .prepare_tuned_voice_coefficients(60, 127, &TuningTable::default())
+    .unwrap()
+    .unwrap();
+    let neutral_expected: [StereoFrame; 6] =
+        std::array::from_fn(|age| octave.sample(DeviceResourcePcm::Mono(&pcm), age as u64, 0));
+    assert_eq!(neutral_expected[2..], [[0.0; 2]; 4]);
+    assert!(neutral_expected[..2].iter().all(|frame| frame[0] > 0.0));
     drop(state);
     drop(authored);
     // Independent literal oracles separate transpose from project tuning.
     for (prepared, expected) in [
-        (
-            neutral,
-            [[1.5; 2], [3.5; 2], [0.0; 2], [0.0; 2], [0.0; 2], [0.0; 2]],
-        ),
+        (neutral, neutral_expected),
         (
             prepared,
             [[1.5; 2], [2.5; 2], [3.5; 2], [4.5; 2], [0.0; 2], [0.0; 2]],
@@ -475,4 +497,62 @@ fn disabled_classic_loop_remembers_range_across_codec_and_trim_without_implicit_
         disabled.to_native().is_err(),
         "off is not permission for empty loop ranges"
     );
+}
+
+/// Historical states keep opening (Pulse #3956). In v1 (commit 57f122b59) a
+/// classic loop region existed only while looping; off stored (0, 0).
+#[test]
+fn sampler_v1_states_migrate_keeping_loop_behaviour_gains_and_source() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let source = vec![DeviceAssetReference {
+        slot: DeviceAssetSlot::new(SOURCE_SLOT).unwrap(),
+        asset: DeviceAssetKey::new(9).unwrap(),
+    }];
+    let authored = |loop_enabled| {
+        let mut state = SamplerState::for_source_frames(16).unwrap();
+        state.region = Region { start: 2, end: 14 };
+        state.mode = AuthoredMode::Classic {
+            loop_enabled,
+            loop_region: Region { start: 3, end: 11 },
+        };
+        state
+    };
+    let v1 = |loop_enabled: bool| {
+        let mut payload = authored(loop_enabled)
+            .to_native()
+            .unwrap()
+            .payload()
+            .to_vec();
+        if !loop_enabled {
+            payload[16..24].fill(0);
+        }
+        NativeDeviceState::new(TYPE_ID, 1, payload)
+            .unwrap()
+            .with_asset_references(source.clone())
+            .unwrap()
+            .with_output_gain_millidb(-1500)
+            .unwrap()
+    };
+    let definition = &super::super::catalog::DEFINITION;
+    for loop_enabled in [true, false] {
+        let old = v1(loop_enabled);
+        let migrated = definition.migrate_state(&old).unwrap();
+        assert_eq!(migrated.state_version(), STATE_VERSION);
+        assert_eq!(migrated.asset_references(), old.asset_references());
+        assert_eq!(migrated.output_gain_millidb(), -1500);
+        let mut expected = authored(loop_enabled);
+        if !loop_enabled {
+            // Off stays off; the dormant loop covers the playback region.
+            expected.mode = AuthoredMode::Classic {
+                loop_enabled: false,
+                loop_region: Region { start: 2, end: 14 },
+            };
+        }
+        assert_eq!(SamplerState::from_native(&migrated).unwrap(), expected);
+        assert_eq!(
+            definition.migrate_state(&migrated).unwrap(),
+            migrated,
+            "idempotent"
+        );
+    }
 }
