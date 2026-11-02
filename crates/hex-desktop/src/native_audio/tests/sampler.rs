@@ -351,7 +351,14 @@ fn service_sampler_original_wav_reaches_real_fresh_native_current_with_tuning_st
             .iter()
             .map(|f| [(f[0] * 32768.0) as i16, (f[1] * 32768.0) as i16])
             .collect::<Vec<_>>();
-        assert_eq!(pcm, literal);
+        // PCM16 export applies ±1 LSB TPDF dither.
+        assert_eq!(pcm.len(), literal.len());
+        for (actual, expected) in pcm.iter().flatten().zip(literal.iter().flatten()) {
+            assert!(
+                (i32::from(*actual) - i32::from(*expected)).abs() <= 1,
+                "{pcm:?} vs {literal:?}"
+            );
+        }
         assert_eq!(
             h.render(),
             [[0.0; 2]; 64],

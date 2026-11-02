@@ -19,8 +19,8 @@ mod publication;
 pub mod text;
 pub mod tuning_library;
 pub use journal::{
-    Journal, JournalRestartOutcome, JournalRestartToken, journal_path, load_journal,
-    restart_journal,
+    Journal, JournalRestartOutcome, JournalRestartToken, MAX_UNTITLED_SLOTS, UntitledSlotClaim,
+    journal_path, load_journal, restart_journal, untitled_slot_path,
 };
 mod audio_edit;
 mod extended_attributes;

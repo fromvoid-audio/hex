@@ -7,6 +7,8 @@
 //! chunk (`cbSize` = 0) and the `fact` chunk the RIFF specification requires for
 //! non-PCM data, giving a 58-byte header. Integer exports count samples beyond
 //! full scale that quantisation clamps; see [`ExportReport::clipped_samples`].
+//! PCM16 quantisation applies deterministic TPDF dither and keeps exact digital
+//! silence at zero; see the private `dither` module.
 //!
 //! # Dependencies
 //! Uses hex-engine and the standard library; callers supply the exact prepared revision and
@@ -42,6 +44,7 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 mod bounce;
 mod controlled;
+mod dither;
 pub use bounce::{
     MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS, render_arrangement_bounce_new,
     render_arrangement_bounce_with_pages, render_bounce_new,
@@ -438,6 +441,7 @@ fn publish_encoded<R: BlockRenderer>(
         let clipped = write_wav(
             file,
             sample_rate,
+            start,
             frames,
             data_bytes,
             byte_rate,
@@ -555,9 +559,13 @@ fn create_temporary(destination: &Path) -> Result<(File, PathBuf), ExportError> 
 }
 
 /// Write the header and every rendered frame; returns the clipped-sample count.
+/// `start` is the timeline frame of the first written frame; PCM16 dither is
+/// anchored to it so a range export matches the same slice of a longer one.
+#[allow(clippy::too_many_arguments)] // Private writer: header fields plus range and encoding.
 fn write_wav(
     file: File,
     sample_rate: u32,
+    start: u64,
     frames: u64,
     data_bytes: u32,
     byte_rate: u32,
@@ -567,20 +575,22 @@ fn write_wav(
     let mut writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
     write_header_encoded(&mut writer, sample_rate, data_bytes, byte_rate, encoding)?;
     let mut clipped = 0_u64;
+    let quantiser = dither::Pcm16Quantiser::main();
+    let mut position = start;
 
     let mut block = [[0.0; 2]; FRAMES_PER_BLOCK];
     let mut remaining = frames;
     while remaining > 0 {
         let count = remaining.min(FRAMES_PER_BLOCK as u64) as usize;
         renderer.render_block(&mut block[..count])?;
-        for frame in &block[..count] {
-            for sample in frame {
+        for (frame, at) in block[..count].iter().zip(position..) {
+            for (channel, sample) in frame.iter().enumerate() {
                 if !sample.is_finite() {
                     return Err(ExportError::Invalid("render produced a non-finite sample"));
                 }
                 match encoding {
                     WavEncoding::Pcm16 => {
-                        let (pcm, over) = pcm16(*sample);
+                        let (pcm, over) = quantiser.quantise(*sample, at, channel);
                         clipped += u64::from(over);
                         write_all(&mut writer, &pcm.to_le_bytes(), "write PCM samples")?;
                     }
@@ -591,6 +601,7 @@ fn write_wav(
             }
         }
         remaining -= count as u64;
+        position = position.wrapping_add(count as u64);
     }
     writer.flush().map_err(|source| ExportError::Io {
         operation: "flush the temporary wav",
@@ -604,12 +615,6 @@ fn write_wav(
             source,
         })?;
     Ok(clipped)
-}
-
-/// Quantise one finite sample to PCM16, reporting whether full scale clamped it.
-fn pcm16(sample: f32) -> (i16, bool) {
-    let over = sample.abs() > 1.0;
-    ((sample.clamp(-1.0, 1.0) * 32767.0).round() as i16, over)
 }
 
 fn write_all(
@@ -712,14 +717,33 @@ mod tests {
     }
 
     fn project(frames: Vec<Frame>, gain: f32) -> Project {
+        let duration = frames.len() as u64;
         let audio = Audio::new(48_000, frames).expect("audio");
-        let clip = Clip::new(audio, 0, 2, false).expect("clip");
+        let clip = Clip::new(audio, 0, duration, false).expect("clip");
         let track = Track::new(vec![clip], gain, false).expect("track");
         Project::new(48_000, vec![track]).expect("project")
     }
 
     fn read_u32(bytes: &[u8], offset: usize) -> u32 {
         u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("four bytes"))
+    }
+
+    fn pcm_samples(data: &[u8]) -> Vec<i16> {
+        data.chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect()
+    }
+
+    /// Dithered PCM16 lands within one LSB of plain rounding.
+    fn assert_within_one_lsb(data: &[u8], expected: &[i16]) {
+        let actual = pcm_samples(data);
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!(
+                (i32::from(*actual) - i32::from(*expected)).abs() <= 1,
+                "{actual} not within one lsb of {expected}"
+            );
+        }
     }
 
     #[test]
@@ -744,7 +768,7 @@ mod tests {
         assert_eq!(read_u32(&bytes, 28), 192_000);
         assert_eq!(&bytes[36..40], b"data");
         assert_eq!(read_u32(&bytes, 40), 4);
-        assert_eq!(&bytes[44..], &[0xff, 0x7f, 0x01, 0x80]);
+        assert_within_one_lsb(&bytes[44..], &[32_767, -32_767]);
     }
 
     #[cfg(unix)]
@@ -781,26 +805,42 @@ mod tests {
     }
 
     #[test]
-    fn preserves_existing_pcm_rounding_and_clipping() {
+    fn dithers_pcm_within_one_lsb_and_still_counts_clipping() {
         let dir = TestDir::new();
         let path = dir.0.join("conversion.wav");
         let project = project(vec![[0.5, -0.5], [2.0, -2.0]], 1.0);
         let report = render_new(&path, &project, 0, 2).expect("export");
         let bytes = fs::read(path).expect("read export");
-        assert_eq!(
-            &bytes[44..],
-            &[0x00, 0x40, 0x00, 0xc0, 0xff, 0x7f, 0x01, 0x80]
-        );
+        assert_within_one_lsb(&bytes[44..], &[16_384, -16_384, 32_767, -32_767]);
         assert_eq!(report.clipped_samples, 2, "both channels of the over clip");
     }
 
     #[test]
-    fn pcm16_counts_only_samples_beyond_full_scale_as_clipped() {
-        assert_eq!(pcm16(1.0), (32767, false));
-        assert_eq!(pcm16(-1.0), (-32767, false));
-        assert_eq!(pcm16(0.0), (0, false));
-        assert_eq!(pcm16(1.000_001), (32767, true));
-        assert_eq!(pcm16(-1.5), (-32767, true));
+    fn repeated_pcm16_exports_of_one_render_are_byte_identical() {
+        let dir = TestDir::new();
+        let frames: Vec<Frame> = (0..2_000)
+            .map(|n| {
+                let s = 1.0e-4 * (n as f32 * 0.05).sin();
+                [s, -s]
+            })
+            .collect();
+        let project = project(frames, 1.0);
+        let first = dir.0.join("first.wav");
+        let second = dir.0.join("second.wav");
+        render_new(&first, &project, 0, 2_000).expect("first export");
+        render_new(&second, &project, 0, 2_000).expect("second export");
+        let first = fs::read(first).expect("read first");
+        assert_eq!(first, fs::read(second).expect("read second"));
+        assert!(pcm_samples(&first[44..]).iter().any(|s| *s != 0));
+    }
+
+    #[test]
+    fn pcm16_digital_silence_stays_exact_zero() {
+        let dir = TestDir::new();
+        let path = dir.0.join("silence.wav");
+        render_new(&path, &project(vec![[0.0, 0.0]; 2], 1.0), 0, 2).expect("export");
+        let bytes = fs::read(path).expect("read export");
+        assert!(bytes[44..].iter().all(|byte| *byte == 0));
     }
 
     struct Constant(Frame);

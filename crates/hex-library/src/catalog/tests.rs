@@ -112,6 +112,53 @@ fn database_round_trips_and_refuses_malformed_oversized_and_future_data() {
     assert_eq!(SampleCatalog::load(&path).unwrap(), catalog);
 }
 
+#[test]
+fn unchanged_rescan_skips_the_database_write_and_keeps_its_mtime() {
+    let fixture = Fixture::new();
+    let kick = fixture.0.join("lib/kick.wav");
+    fs::create_dir_all(kick.parent().unwrap()).unwrap();
+    write(&kick, b"kick");
+    let roots = [fixture.0.join("lib")];
+    let path = fixture.0.join("samples.db");
+    let first = scan_samples(&roots);
+    assert!(first.catalog.save(&path).unwrap(), "first save writes");
+    // Backdate the cache so an unwanted rewrite is visible even on coarse clocks.
+    let past = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(past)
+        .unwrap();
+    let second = scan_samples_with(
+        &roots,
+        ScanControl {
+            previous: Some(&first.catalog),
+            ..ScanControl::default()
+        },
+    );
+    assert_eq!(second.catalog, first.catalog);
+    assert!(
+        !second.catalog.save(&path).unwrap(),
+        "unchanged save skipped"
+    );
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), past);
+
+    // Same length, different bytes: the cache is rewritten, not trusted.
+    let mut tampered = fs::read(&path).unwrap();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 0xff;
+    fs::write(&path, &tampered).unwrap();
+    assert!(second.catalog.save(&path).unwrap());
+    assert_eq!(SampleCatalog::load(&path).unwrap(), second.catalog);
+
+    // A library change writes again.
+    write(&fixture.0.join("lib/snare.wav"), b"snare");
+    let third = scan_samples(&roots);
+    assert!(third.catalog.save(&path).unwrap());
+    assert_eq!(SampleCatalog::load(&path).unwrap(), third.catalog);
+}
+
 // Linux filesystems support this arbitrary-byte filename; macOS filesystems
 // may reject it before the scanner is called. The byte codec is tested below
 // on every Unix target independently of filesystem filename restrictions.
