@@ -50,7 +50,7 @@ impl Journal {
     /// Claim an empty slot without adopting a checkpoint published by another writer.
     pub fn open_empty(path: PathBuf) -> Result<Self, StorageError> {
         if read(&path)?.is_some() {
-            return Err(StorageError::Conflict { path });
+            return Err(StorageError::JournalConflict { path });
         }
         Ok(Self { path, bytes: None })
     }
@@ -206,7 +206,7 @@ impl Journal {
 
     fn check(&self) -> Result<(), StorageError> {
         if read(&self.path)? != self.bytes {
-            return Err(StorageError::Conflict {
+            return Err(StorageError::JournalConflict {
                 path: self.path.clone(),
             });
         }
@@ -552,7 +552,7 @@ mod tests {
         let recreated = fs::read(&path).expect("new generation");
         assert!(matches!(
             journal.clear(),
-            Err(StorageError::Conflict { .. })
+            Err(StorageError::JournalConflict { .. })
         ));
         assert_eq!(
             fs::read(&path).expect("retry preserved new owner"),
@@ -617,10 +617,18 @@ mod tests {
         let mut newer = Journal::open(path.clone()).expect("new process");
         newer.checkpoint_latest(&second).expect("latest checkpoint");
         assert_eq!(load_journal(&path).expect("latest"), second);
-        assert!(matches!(older.clear(), Err(StorageError::Conflict { .. })));
+        let stale = older.clear();
+        assert!(matches!(&stale, Err(StorageError::JournalConflict { path: p }) if *p == path));
+        // Journal conflicts keep their recovery wording; project save-as guidance
+        // belongs only to document conflicts.
+        let message = stale
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.contains("changed outside hex") && !message.contains("save as"));
         assert!(matches!(
             older.checkpoint(&first),
-            Err(StorageError::Conflict { .. })
+            Err(StorageError::JournalConflict { .. })
         ));
         older
             .checkpoint_latest(&first)
@@ -634,13 +642,19 @@ mod tests {
         let mut same = Journal::open(path.clone()).expect("newer identical project");
         same.checkpoint_latest(&first)
             .expect("identical project gets distinct ownership");
-        assert!(matches!(older.clear(), Err(StorageError::Conflict { .. })));
+        assert!(matches!(
+            older.clear(),
+            Err(StorageError::JournalConflict { .. })
+        ));
         same.clear().expect("durable saved checkpoint clears slot");
         let mut after_clear = Journal::open(path.clone()).expect("new project after clear");
         after_clear
             .checkpoint_latest(&first)
             .expect("same content after clear");
-        assert!(matches!(older.clear(), Err(StorageError::Conflict { .. })));
+        assert!(matches!(
+            older.clear(),
+            Err(StorageError::JournalConflict { .. })
+        ));
         after_clear.clear().expect("new owner can clear");
         assert!(!path.exists());
     }
