@@ -187,7 +187,7 @@ impl Ring {
     }
 }
 fn clean(value: f32) -> f32 {
-    if value.abs() < 1e-20 {
+    if value.is_nan() || value.abs() < 1e-20 {
         0.0
     } else {
         value.clamp(-32.0, 32.0)
@@ -636,6 +636,14 @@ impl NativeProcessorRuntime for ReverbRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn clean_contains_nan_and_preserves_existing_limits() {
+        assert_eq!(clean(f32::NAN), 0.0);
+        assert_eq!(clean(f32::INFINITY), 32.0);
+        assert_eq!(clean(-f32::INFINITY), -32.0);
+        assert_eq!(clean(1e-25), 0.0);
+        assert_eq!(clean(0.5), 0.5);
+    }
     #[test]
     fn resonant_input_sections_match_independent_cutoff_gain_oracle() {
         // A second-order low/high-pass has magnitude Q at its cutoff. Exercise

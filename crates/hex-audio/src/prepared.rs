@@ -6176,6 +6176,10 @@ mod tests {
         let allocations = allocation_counter::measure(|| {
             callback.begin_block();
             callback.render(&mut output).expect("callback render");
+            callback.begin_block();
+            callback
+                .render(&mut output)
+                .expect("callback render after ramp");
         });
         assert_eq!(
             (
@@ -6187,7 +6191,9 @@ mod tests {
             (0, 0, 0, 0),
         );
         assert_ne!(output, original_output);
-        assert!(output.iter().all(|frame| {
+        // At 48 kHz the 5 ms ramp ends at frame 240; the last 16
+        // frames of the second 128-frame block use the exact target.
+        assert!(output[112..].iter().all(|frame| {
             (frame[0] - 0.34375).abs() < 1.0e-6 && (frame[1] + 0.55).abs() < 1.0e-6
         }));
         control.request_shutdown();

@@ -999,7 +999,11 @@ impl Playback {
         let prepared_revision = Arc::clone(runtime.prepared_revision());
         let project = Arc::clone(prepared_revision.arrangement());
         let metronome = (!runtime.is_linear_arrangement_export())
-            .then(|| Metronome::prepare(project.sample_rate()).ok().map(Box::new))
+            .then(|| {
+                Metronome::prepare(project.sample_rate(), project.main_latency_frames())
+                    .ok()
+                    .map(Box::new)
+            })
             .flatten();
         let position = runtime.arrangement_frame();
         let performance_frame = runtime.performance_frame();
@@ -1035,7 +1039,9 @@ impl Playback {
         session_unavailable: Option<crate::SessionPlaybackError>,
     ) -> Self {
         let project = Arc::clone(prepared_revision.arrangement());
-        let metronome = Metronome::prepare(project.sample_rate()).ok().map(Box::new);
+        let metronome = Metronome::prepare(project.sample_rate(), project.main_latency_frames())
+            .ok()
+            .map(Box::new);
         let refuses_unowned_prepared_fallback = session_runtime.is_none()
             && session_unavailable.is_some()
             && (prepared_revision.session().has_mutable_instruments()
@@ -1628,12 +1634,17 @@ impl Playback {
 
     /// Preserve legacy finite transport behavior. Native publication uses the
     /// fallible companion to carry Session routes and reject unsafe demotions.
-    pub fn inherit_transport(&mut self, previous: &Self) {
-        self.position = previous.position();
+    /// A changed tempo map keeps the cursor's Arrangement beat. Refusal
+    /// leaves this transport unchanged when the conversion cannot be proven.
+    pub fn inherit_transport(&mut self, previous: &Self) -> Result<(), PlaybackHandoffError> {
+        let position =
+            remapped_linear_position(&self.project, &previous.project, previous.position())?;
+        self.position = position;
         self.performance_frame = previous.performance_frame();
         self.performance_clock_exhausted = previous.performance_clock_exhausted();
         self.playing = previous.playing();
         self.inherit_metronome(previous);
+        Ok(())
     }
 
     fn inherit_metronome(&mut self, previous: &Self) {
@@ -1804,17 +1815,15 @@ impl Playback {
                 if previous.performance_clock_exhausted {
                     return Err(PlaybackHandoffError::PerformanceClockExhausted);
                 }
-                next.validate_legacy_transport(previous.position(), previous.performance_frame)
+                let position =
+                    remapped_linear_position(&self.project, &previous.project, previous.position)?;
+                next.validate_legacy_transport(position, previous.performance_frame)
                     .map_err(PlaybackHandoffError::Session)?;
                 if legacy_arrangement_state_cannot_be_seeded(previous) {
                     return Err(PlaybackHandoffError::ArrangementStateCannotBeCaptured);
                 }
-                next.seed_legacy_transport(
-                    previous.position,
-                    previous.performance_frame,
-                    previous.playing,
-                )
-                .map_err(PlaybackHandoffError::Session)?;
+                next.seed_legacy_transport(position, previous.performance_frame, previous.playing)
+                    .map_err(PlaybackHandoffError::Session)?;
             }
             (None, Some(old)) => {
                 if self.linear_runtime.is_none()
@@ -1828,7 +1837,11 @@ impl Playback {
                 if !old.can_demote_to_arrangement() {
                     return Err(PlaybackHandoffError::ActiveSessionStateCannotBeDropped);
                 }
-                self.position = old.arrangement_frame();
+                self.position = remapped_linear_position(
+                    &self.project,
+                    &previous.project,
+                    old.arrangement_frame(),
+                )?;
                 self.performance_frame = old.performance_frame();
                 self.performance_clock_exhausted = false;
                 self.playing = old.playing();
@@ -1843,13 +1856,15 @@ impl Playback {
                         crate::SessionPlaybackError::DeviceRuntime,
                     ));
                 }
+                let position =
+                    remapped_linear_position(&self.project, &previous.project, previous.position)?;
                 if let (Some(candidate), Some(old)) = (
                     self.linear_runtime.as_mut(),
                     previous.linear_runtime.as_ref(),
                 ) {
                     candidate.inherit_from(&self.project, old, &previous.project);
                 }
-                self.position = previous.position;
+                self.position = position;
                 self.performance_frame = previous.performance_frame;
                 self.performance_clock_exhausted = previous.performance_clock_exhausted;
                 self.playing = previous.playing;
@@ -2403,6 +2418,51 @@ impl Playback {
             runtime.render_without_pages(&self.project, &mut self.position, self.playing, output)
         }
     }
+}
+
+/// The legacy finite cursor at the donor cursor's Arrangement beat when the
+/// tempo map changed (Pulse #4118, #4135); an unchanged map keeps the frame.
+/// Every legacy cursor handoff (linear, promotion, demotion and transport
+/// copy) uses it. Frame zero remains beat zero even without timing metadata. A cursor
+/// inside the donor's active loop that remaps at or after the candidate loop
+/// end wraps by whole loop lengths, as the finite loop renderer does. Linear
+/// MIDI renders statelessly from the cursor, so a held note continues as the
+/// candidate's occurrence at that beat and ends at its remapped gate.
+fn remapped_linear_position(
+    next: &Project,
+    previous: &Project,
+    position: u64,
+) -> Result<u64, PlaybackHandoffError> {
+    use crate::MidiTiming as _;
+    let conversion = || PlaybackHandoffError::Session(crate::SessionPlaybackError::TempoConversion);
+    if position == 0 || next.tempo_map == previous.tempo_map {
+        return Ok(position);
+    }
+    let (Some(new_timing), Some(old_timing)) =
+        (next.midi_volume_timing(), previous.midi_volume_timing())
+    else {
+        return Err(conversion());
+    };
+    let beat = old_timing
+        .frame_to_beat(position)
+        .map_err(|_| conversion())?;
+    let frame = new_timing.beat_to_frame(beat).map_err(|_| conversion())?;
+    let looped = previous
+        .loop_region()
+        .is_some_and(|region| region.enabled() && position < region.end());
+    let Some(region) = next
+        .loop_region()
+        .filter(|region| looped && region.enabled() && frame >= region.end())
+    else {
+        return Ok(frame);
+    };
+    let length = region
+        .end()
+        .checked_sub(region.start())
+        .filter(|length| *length > 0)
+        .ok_or_else(conversion)?;
+    let offset = frame.checked_sub(region.start()).ok_or_else(conversion)?;
+    Ok(region.start() + offset % length)
 }
 
 fn legacy_arrangement_state_cannot_be_seeded(previous: &Playback) -> bool {

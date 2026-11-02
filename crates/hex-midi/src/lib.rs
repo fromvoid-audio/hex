@@ -73,6 +73,16 @@ impl Decoder {
     pub fn held_note_fault(&self) -> Option<HeldNoteFault> {
         self.held_fault
     }
+    /// Releases every held key and drops partial/running status, as MIDI reset
+    /// does. Note tokens stay monotonic for the activation's control-side floor.
+    fn reset(&mut self, note: &dyn Fn(NoteEvent)) {
+        self.held.clear();
+        self.held_changed = true;
+        self.status = 0;
+        self.used = 0;
+        self.sysex = false;
+        note(NoteEvent::AllNotesOff);
+    }
     pub fn byte(&mut self, byte: u8, channel: u8, current: Controllers) -> Option<Controllers> {
         self.byte_with_notes(byte, channel, current, &|_| {})
     }
@@ -87,12 +97,7 @@ impl Decoder {
         note: &dyn Fn(NoteEvent),
     ) -> Option<Controllers> {
         if byte == 0xff {
-            self.held.clear();
-            self.held_changed = true;
-            self.status = 0;
-            self.used = 0;
-            self.sysex = false;
-            note(NoteEvent::AllNotesOff);
+            self.reset(note);
         }
         if byte >= 0xf8 {
             return None;
@@ -147,7 +152,11 @@ const CALLBACK_PACKETS: usize = 1024;
 
 /// Same bounded packet loop for the native port and deterministic byte fixtures.
 /// Controllers retain their existing per-message delivery; physical notes coalesce
-/// once per invocation. Limit loss terminally invalidates the note activation.
+/// once per invocation. At most `CALLBACK_PACKETS` packets and `CALLBACK_BYTES`
+/// bytes are decoded per invocation; reaching a limit exactly is not a loss.
+/// Input beyond either limit is dropped and handled as a MIDI reset: held notes
+/// are released (`NoteEvent::AllNotesOff` plus an empty snapshot) and the decoder
+/// resynchronizes, so a dense burst cannot stick notes or end the connection.
 /// The connection owner must provide one serialized writer and one decoder per
 /// endpoint; never share a decoder/endpoint across concurrent input ports.
 pub fn deliver_packets<'a>(
@@ -162,9 +171,10 @@ pub fn deliver_packets<'a>(
 }
 
 /// Ordered-note counterpart of `deliver_packets`, sharing its byte/packet and
-/// held-snapshot limits. Input loss is terminal: publish one explicit loss event
-/// and stop delivery. The sink must cancel its host activation on loss; it must
-/// never silently drop a note-off when its own handoff is full.
+/// held-snapshot limits. Burst overflow publishes `AllNotesOff` and continues on
+/// the next invocation. Held-note faults are terminal: publish one explicit loss
+/// event and stop delivery. The sink must cancel its host activation on loss; it
+/// must never silently drop a note-off when its own handoff is full.
 pub fn deliver_packets_with_notes<'a>(
     decoder: &mut Decoder,
     channel: u8,
@@ -178,8 +188,15 @@ pub fn deliver_packets_with_notes<'a>(
         return current;
     }
     let mut remaining = CALLBACK_BYTES;
-    for (index, bytes) in packets.into_iter().take(CALLBACK_PACKETS).enumerate() {
-        for byte in bytes.iter().take(remaining) {
+    // One packet past the limit is inspected only to detect overflow.
+    for (index, bytes) in packets.into_iter().take(CALLBACK_PACKETS + 1).enumerate() {
+        let overflow = index == CALLBACK_PACKETS || bytes.len() > remaining;
+        let accepted = if index == CALLBACK_PACKETS {
+            &[][..]
+        } else {
+            bytes.get(..remaining).unwrap_or(bytes)
+        };
+        for byte in accepted {
             if let Some(next) = decoder.byte_with_notes(*byte, channel, current, note) {
                 current = next;
                 publish(current);
@@ -189,13 +206,11 @@ pub fn deliver_packets_with_notes<'a>(
                 return current;
             }
         }
-        if bytes.len() >= remaining || index == CALLBACK_PACKETS - 1 {
-            notes.fail(HeldNoteFault::PacketLimit);
-            note(NoteEvent::InputLost(HeldNoteFault::PacketLimit));
-            *decoder = Decoder::default();
-            return current;
+        if overflow {
+            decoder.reset(note);
+            break;
         }
-        remaining -= bytes.len();
+        remaining -= accepted.len();
     }
     if let Some(fault) = decoder.held_note_fault() {
         notes.fail(fault);
