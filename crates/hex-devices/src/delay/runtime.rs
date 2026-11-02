@@ -222,6 +222,7 @@ impl Runtime {
         &mut self,
         frames: &mut [StereoFrame],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        bypassed: bool,
     ) {
         if !self.open {
             self.begin_block();
@@ -357,7 +358,9 @@ impl Runtime {
                 } else {
                     (1.0 - s.mix, s.mix)
                 };
-                frame[lane] = finite(dry[lane] * dry_gain + wet[lane] * wet_gain);
+                if !bypassed {
+                    frame[lane] = finite(dry[lane] * dry_gain + wet[lane] * wet_gain);
+                }
             }
             if s.valid == self.scratch.len() {
                 s.nonzero -= usize::from(self.scratch[s.next] != [0.0; 2]);
@@ -392,7 +395,7 @@ impl OwnedProcessorRuntime for Runtime {
         self.open = true;
     }
     fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
-        self.process(frames, None);
+        self.process(frames, None, false);
     }
     fn process_block_with_clock(
         &mut self,
@@ -400,7 +403,15 @@ impl OwnedProcessorRuntime for Runtime {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         _: &dyn hex_lattice::DeviceResources,
     ) {
-        self.process(frames, clock);
+        self.process(frames, clock, false);
+    }
+    fn process_bypassed_block_with_clock(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        _: &dyn hex_lattice::DeviceResources,
+    ) {
+        self.process(frames, clock, true);
     }
     fn commit_block(&mut self) {
         if !self.open {

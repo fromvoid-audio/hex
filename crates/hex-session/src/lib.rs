@@ -46,7 +46,8 @@ pub use native_assets::ResidentNativeReservation;
 mod verified_import;
 use audio_sources::MediaBank;
 pub use audio_sources::{
-    AudioSourceBinding, DocumentAudioMode, SourcePlanReservation, VerifiedAudioFile,
+    AudioSourceBinding, DocumentAudioMode, MAX_STREAMED_FILE_BYTES, MAX_STREAMED_SOURCE_FRAMES,
+    SourcePlanReservation, VerifiedAudioFile,
 };
 mod comparison_transition;
 mod device_comparison;
@@ -54,6 +55,9 @@ pub mod device_gesture;
 mod device_snapshot;
 pub mod import_batch;
 pub mod import_batch_decode;
+mod recovered_source;
+mod resident_import;
+pub use recovered_source::{RecoveredSource, RecoverySourceError, recover_wav_to_new_source};
 pub mod service;
 pub mod tuning_gesture;
 pub use hex_media::waveform::{Peak as CachedPeak, Waveform as CachedWaveform};
