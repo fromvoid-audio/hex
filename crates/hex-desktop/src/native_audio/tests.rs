@@ -14,6 +14,7 @@ mod resident_preview;
 mod resident_reverb;
 mod resident_routes;
 mod resident_sections;
+mod resident_streamed_bounce;
 mod sampler;
 mod section_benchmark;
 mod stream_export;
@@ -234,6 +235,9 @@ impl ObservedSink {
 impl WorkerAudioSink for ObservedSink {
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         self.inner.streamed_exporter()
+    }
+    fn streamed_bouncer(&self) -> Option<hex_session::StreamedBouncer> {
+        self.inner.streamed_bouncer()
     }
 
     fn resident_runtime_loop(

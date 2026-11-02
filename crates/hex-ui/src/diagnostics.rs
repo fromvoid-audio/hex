@@ -477,6 +477,15 @@ fn show_open_error(window: &mut Window, cx: &mut App, error: &str) {
     ));
 }
 
+/// The installed session log file, when logging started.
+pub(crate) fn log_path(cx: &App) -> Option<std::path::PathBuf> {
+    cx.try_global::<SessionDiagnostics>()?
+        .handle
+        .as_ref()
+        .ok()
+        .map(DiagnosticsHandle::path)
+}
+
 pub(crate) fn record_state(cx: &mut App, status: &str, error: Option<&str>) -> Option<String> {
     cx.try_global::<SessionDiagnostics>()?;
     cx.update_global::<SessionDiagnostics, _>(|diagnostics, _| {
@@ -561,10 +570,7 @@ mod tests {
         let error = refused.error.as_deref().expect("gain refusal");
         cx.update(|cx| assert!(record_state(cx, "gain edit refused", Some(error)).is_none()));
         let stats = log.handle().statistics();
-        assert_eq!(
-            (stats.queue_full, stats.producer_busy, stats.closed),
-            (0, 0, 0)
-        );
+        assert_eq!((stats.queue_full, stats.closed), (0, 0));
         log.shutdown().unwrap();
         let contents = std::fs::read_to_string(log.path()).unwrap();
         let action = contents

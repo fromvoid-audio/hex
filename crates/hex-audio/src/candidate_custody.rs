@@ -1197,6 +1197,12 @@ impl CandidateRoot {
     pub(crate) fn cleanup_scheduled(&self) -> bool {
         lock(&self.0.bank).scheduled
     }
+    /// Run `f` while holding the eligible domain bank, as a lifecycle cleanup
+    /// pass does, so tests can reproduce contended nonblocking observations.
+    #[cfg(test)]
+    pub(crate) fn with_domain_bank_held<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.0.eligible.with_bank_held(f)
+    }
     #[cfg(test)]
     pub(crate) fn test_status(&self) -> String {
         let work = self.0.execution.try_lock().ok();

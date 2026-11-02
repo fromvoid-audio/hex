@@ -150,37 +150,41 @@ fn append_clip(
     clip: &MidiClip,
     events: &mut Vec<(usize, CompiledMidiEvent)>,
 ) -> Result<(), Invalid> {
-    for_each_clip_occurrence(project, clip, |note, iteration, onset, off, _, _| {
-        if !note.active() {
-            return Ok(());
-        }
-        for (frame, kind) in [
-            (onset, MidiEventKind::NoteOn),
-            (off, MidiEventKind::NoteOff),
-        ] {
-            events.push((
-                track_index,
-                CompiledMidiEvent {
-                    frame,
-                    kind,
-                    track,
-                    clip: clip.id(),
-                    note: note.id(),
-                    iteration,
-                    pitch: note.pitch(),
-                    channel: note.channel(),
-                    velocity: note.velocity(),
-                },
-            ));
-        }
-        Ok(())
-    })
+    for_each_clip_occurrence(
+        project,
+        clip,
+        |note, iteration, onset, off, _, _, playable| {
+            if !note.active() || !playable {
+                return Ok(());
+            }
+            for (frame, kind) in [
+                (onset, MidiEventKind::NoteOn),
+                (off, MidiEventKind::NoteOff),
+            ] {
+                events.push((
+                    track_index,
+                    CompiledMidiEvent {
+                        frame,
+                        kind,
+                        track,
+                        clip: clip.id(),
+                        note: note.id(),
+                        iteration,
+                        pitch: note.pitch(),
+                        channel: note.channel(),
+                        velocity: note.velocity(),
+                    },
+                ));
+            }
+            Ok(())
+        },
+    )
 }
 
 fn for_each_clip_occurrence(
     project: &Project,
     clip: &MidiClip,
-    mut visit: impl FnMut(&MidiNote, u64, u64, u64, BeatTime, BeatTime) -> Result<(), Invalid>,
+    mut visit: impl FnMut(&MidiNote, u64, u64, u64, BeatTime, BeatTime, bool) -> Result<(), Invalid>,
 ) -> Result<(), Invalid> {
     let source = clip.source_playback().map_err(|error| Invalid(error.0))?;
     for note in clip.notes() {
@@ -207,9 +211,13 @@ fn for_each_clip_occurrence(
             // An inactive authored note remains available to the editor but
             // produces no gate. Its valid beat duration may quantize to zero
             // frames without making the playable project unpreparable.
-            if off < onset || (off == onset && note.active()) {
+            let clamped = occurrence.gate_duration() < note.duration();
+            if off < onset || (off == onset && note.active() && !clamped) {
                 return Err(Invalid("midi note duration quantizes to zero frames"));
             }
+            // A clamp can leave a positive beat gate with no representable
+            // frame. Keep it in preview accounting, but schedule no note edges.
+            let playable = off > onset;
             visit(
                 note,
                 occurrence.iteration(),
@@ -217,6 +225,7 @@ fn for_each_clip_occurrence(
                 off,
                 BeatTime::from_raw(onset_raw),
                 BeatTime::from_raw(off_raw),
+                playable,
             )?;
         }
     }
@@ -499,7 +508,7 @@ fn compile_instrument_track_with_empty_bank(
         for_each_clip_occurrence(
             project,
             clip,
-            |note, iteration, start, gate_end, onset_beat, off_beat| {
+            |note, iteration, start, gate_end, onset_beat, off_beat, playable| {
                 if let Some((ordinals, samples)) = preview.as_mut() {
                     if ordinals.get(samples.len()).copied() == Some(emitted) {
                         samples.push(crate::MidiPreviewSample {
@@ -512,7 +521,7 @@ fn compile_instrument_track_with_empty_bank(
                 emitted = emitted
                     .checked_add(1)
                     .ok_or(Invalid("compiled midi occurrence count overflow"))?;
-                if clip.active() && note.active() && instrument.is_some() {
+                if clip.active() && note.active() && playable && instrument.is_some() {
                     let (sampler_index, end) = if mutable {
                         let tail = mutable_limits
                             .ok_or(Invalid("mutable instrument limits are missing"))?

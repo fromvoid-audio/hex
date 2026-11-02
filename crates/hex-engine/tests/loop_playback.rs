@@ -258,7 +258,7 @@ fn replacement_inherits_transport_before_new_region_normalization() {
     let mut old = play(compiled(Some((1, 4, true))));
     old.apply(PlaybackCommand::Seek(6));
     let mut replacement = Playback::new(compiled(Some((5, 7, true))));
-    replacement.inherit_transport(&old);
+    replacement.inherit_transport(&old).unwrap();
     assert!(replacement.playing());
     assert_eq!(replacement.position(), 6);
     let mut output = [[0.0; 2]; 2];

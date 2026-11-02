@@ -448,7 +448,9 @@ impl TuningGestureMachine {
         match result {
             Ok(()) => outcome.ack.accepted = true,
             Err(error) => {
-                outcome.ack.reason = Some(error.to_string().to_lowercase());
+                outcome.ack.reason = Some(hex_storage::text::lowercase_outside_verbatim(
+                    &error.to_string(),
+                ));
                 if retain_terminal
                     && matches!(
                         request.phase(),
@@ -614,7 +616,9 @@ impl TuningGestureMachine {
                         phase: TuningGesturePhase::Cancel,
                         sequence: active.sequence,
                         accepted: false,
-                        reason: Some(error.to_string().to_lowercase()),
+                        reason: Some(hex_storage::text::lowercase_outside_verbatim(
+                            &error.to_string(),
+                        )),
                     },
                     playback: previous.cloned(),
                     preview_project: None,
