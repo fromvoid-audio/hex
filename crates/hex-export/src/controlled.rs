@@ -603,14 +603,15 @@ fn prepare_runtime_observed(
     )
 }
 
-pub(super) fn prepare_bounce_runtime(
+pub(super) fn prepare_bounce_runtime<'provider>(
     revision: Arc<PreparedRevision>,
     resources: Option<&PreparedDeviceResources>,
     start: u64,
     frames: u64,
     control: &ExportControl,
+    pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
 ) -> Result<SessionPlayback, ExportError> {
-    prepare_runtime_using(
+    prepare_runtime_using_pages(
         revision,
         resources,
         start,
@@ -618,6 +619,7 @@ pub(super) fn prepare_bounce_runtime(
         control,
         SessionPlayback::new_finite_arrangement_bounce,
         || {},
+        pages,
     )
 }
 

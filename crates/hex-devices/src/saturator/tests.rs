@@ -41,6 +41,23 @@ fn render(state: &NativeDeviceState, frames: &mut [StereoFrame]) {
     runtime(state).process_block(frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
 }
 
+/// Frames for a held input to fill the oversampler and dry delay.
+const SETTLE_FRAMES: usize = 32;
+
+/// The output once `frame` has been held long enough to reach the static
+/// transfer.
+fn settle(state: &NativeDeviceState, frame: StereoFrame) -> StereoFrame {
+    let mut frames = [frame; SETTLE_FRAMES];
+    render(state, &mut frames);
+    frames[SETTLE_FRAMES - 1]
+}
+
+fn assert_near(actual: StereoFrame, expected: StereoFrame) {
+    for (a, e) in actual.into_iter().zip(expected) {
+        assert!((a - e).abs() <= 1.0e-6, "{actual:?} vs {expected:?}");
+    }
+}
+
 #[test]
 fn default_codec_and_descriptors_round_trip_through_the_generic_registry() {
     let registry = registry();
@@ -160,28 +177,28 @@ fn soft_clip_matches_known_anchors_and_is_symmetric_at_the_join() {
     let state = registry()
         .default_state(SATURATOR_TYPE_ID)
         .expect("default state");
-    let mut frames = [
+    let frames = [
         [-f32::MAX, -1.0],
         [-0.500_01, -0.5],
         [-0.25, 0.0],
         [0.5, 0.500_01],
         [1.0, f32::MAX],
         [2.0, -2.0],
-    ];
-    render(&state, &mut frames);
+    ]
+    .map(|frame| settle(&state, frame));
 
     for frame in frames {
         assert!(frame[0].is_finite() && frame[1].is_finite());
         assert!(frame[0].abs() <= 1.0 && frame[1].abs() <= 1.0);
     }
+    // The oversampled ADAA stage is exactly odd.
     assert_eq!(frames[1][1], -frames[3][0]);
     assert_eq!(frames[1][0], -frames[3][1]);
-    assert_eq!(frames[2][0], -0.25);
     assert_eq!(frames[2][1], 0.0);
-    assert_eq!(frames[3][0], 0.5);
-    assert_eq!(frames[4][0], 0.75);
-    assert_eq!(frames[4][1], 1.0);
-    assert_eq!(frames[5], [0.875, -0.875]);
+    assert_near(frames[2], [-0.25, 0.0]);
+    assert_near([frames[3][0], frames[4][0]], [0.5, 0.75]);
+    assert_near([frames[4][1], frames[0][0]], [1.0, -1.0]);
+    assert_near(frames[5], [0.875, -0.875]);
 }
 
 #[test]
@@ -191,32 +208,37 @@ fn digital_clip_drive_output_and_wet_have_their_declared_audible_effects() {
         .default_state(SATURATOR_TYPE_ID)
         .expect("default state");
     let digital = patch(&defaults, parameter::CURVE, ParameterValue::Choice(1));
-    let mut frames = [[-2.0, 0.25], [2.0, -0.25]];
-    render(&digital, &mut frames);
-    assert_eq!(frames[0], [-1.0, 0.25]);
-    assert_eq!(frames[1], [1.0, -0.25]);
+    assert_near(settle(&digital, [-2.0, 0.25]), [-1.0, 0.25]);
+    assert_near(settle(&digital, [2.0, -0.25]), [1.0, -0.25]);
 
     let driven = patch(&defaults, parameter::DRIVE, ParameterValue::Float(12.0));
-    let mut driven_frame = [[0.25, -0.25]];
-    render(&driven, &mut driven_frame);
-    assert!(driven_frame[0][0] > 0.25);
-    assert!(driven_frame[0][1] < -0.25);
+    let driven_frame = settle(&driven, [0.25, -0.25]);
+    assert!(driven_frame[0] > 0.25);
+    assert!(driven_frame[1] < -0.25);
 
     let output = patch(&defaults, parameter::OUTPUT, ParameterValue::Float(-6.0));
-    let mut output_frame = [[0.5, -0.5]];
-    render(&output, &mut output_frame);
-    assert!(output_frame[0][0] < 0.5);
-    assert!(output_frame[0][1] > -0.5);
+    let output_frame = settle(&output, [0.5, -0.5]);
+    assert!(output_frame[0] < 0.5);
+    assert!(output_frame[1] > -0.5);
 
     let dry = patch(&defaults, parameter::DRY_WET, ParameterValue::Float(0.0));
     let dry = patch(&dry, parameter::CURVE, ParameterValue::Choice(1));
     let dry = patch(&dry, parameter::DRIVE, ParameterValue::Float(36.0));
     let dry = patch(&dry, parameter::OUTPUT, ParameterValue::Float(6.0));
-    let mut dry_frame = [[0.25, f32::from_bits(0x7f80_0000)]];
-    let untouched = dry_frame;
-    render(&dry, &mut dry_frame);
-    assert_eq!(dry_frame[0][0].to_bits(), untouched[0][0].to_bits());
-    assert_eq!(dry_frame[0][1].to_bits(), untouched[0][1].to_bits());
+    // Zero wet is the exact dry signal, delayed by the declared latency;
+    // the non-finite channel stays visible immediately.
+    let input = [0.25, f32::from_bits(0x7f80_0000)];
+    let mut dry_frames = [input; LATENCY_FRAMES + 1];
+    render(&dry, &mut dry_frames);
+    for (index, frame) in dry_frames.iter().enumerate() {
+        let expected = if index < LATENCY_FRAMES {
+            0.0
+        } else {
+            input[0]
+        };
+        assert_eq!(frame[0].to_bits(), expected.to_bits());
+        assert_eq!(frame[1].to_bits(), input[1].to_bits());
+    }
 }
 
 #[test]
@@ -296,18 +318,18 @@ fn linear_utility_and_saturator_observe_the_declared_device_order() {
 
     let render = |instances| {
         let mut chain = NativeRuntimeChain::new(instances).expect("runtime chain");
-        let mut signal = [[1.0, -1.0]];
+        let mut signal = [[1.0, -1.0]; SETTLE_FRAMES];
         chain.begin_block();
         chain.process_block(&mut signal).unwrap();
         chain.commit_block();
-        signal[0]
+        signal[SETTLE_FRAMES - 1]
     };
-    assert_eq!(render(utility_first), [1.0, -1.0]);
-    assert_eq!(render(saturator_first), [4.0, -4.0]);
+    assert_near(render(utility_first), [1.0, -1.0]);
+    assert_near(render(saturator_first), [4.0, -4.0]);
 }
 
 #[test]
-fn nonlinear_processor_refuses_matrix_compilation_and_reports_no_delay_or_tail() {
+fn nonlinear_processor_refuses_matrix_compilation_and_reports_oversampling_delay_and_tail() {
     let state = registry()
         .default_state(SATURATOR_TYPE_ID)
         .expect("default state");
@@ -332,13 +354,28 @@ fn nonlinear_processor_refuses_matrix_compilation_and_reports_no_delay_or_tail()
         )
         .expect("processor prepared")
         .expect("stateful contract processor");
-    assert_eq!(prepared.algorithmic_latency_frames(), Some(0));
-    assert_eq!(
-        prepared.output_tail(),
-        OutputTail::Finite { max_tail_frames: 0 }
-    );
+    assert_eq!(prepared.algorithmic_latency_frames(), Some(11));
+    let OutputTail::Finite { max_tail_frames } = prepared.output_tail() else {
+        panic!("saturator tail must be finite");
+    };
     let mut runtime = prepared.create_runtime();
     assert!(runtime.is_quiescent());
+    // A held signal leaves history; the declared tail drains it exactly.
+    let mut signal = [[0.5, -0.25]; 64];
+    runtime.process_block(&mut signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert!(!runtime.is_quiescent());
+    let mut tail = vec![[0.0; 2]; max_tail_frames as usize];
+    runtime.process_block(&mut tail, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert!(
+        tail[..LATENCY_FRAMES + 1]
+            .iter()
+            .any(|frame| *frame != [0.0; 2])
+    );
+    assert!(runtime.is_quiescent());
+    let mut after = [[0.0; 2]; 64];
+    runtime.process_block(&mut after, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert_eq!(after, [[0.0; 2]; 64]);
+    runtime.process_block(&mut signal, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     runtime.reset();
     assert!(runtime.is_quiescent());
     assert!(
@@ -360,12 +397,24 @@ fn non_finite_inputs_remain_visible_to_the_audio_fault_boundary() {
     let state = registry()
         .default_state(SATURATOR_TYPE_ID)
         .expect("default state");
-    let mut frames = [[f32::NAN, f32::INFINITY], [f32::NEG_INFINITY, 0.5]];
-    render(&state, &mut frames);
-    assert!(frames[0][0].is_nan());
-    assert_eq!(frames[0][1], f32::INFINITY);
-    assert_eq!(frames[1][0], f32::NEG_INFINITY);
-    assert_eq!(frames[1][1], 0.5);
+    let mut faulted = [[0.25, -0.5]; 2 * SETTLE_FRAMES];
+    faulted[3] = [f32::NAN, f32::INFINITY];
+    faulted[4] = [f32::NEG_INFINITY, -0.5];
+    render(&state, &mut faulted);
+    assert!(faulted[3][0].is_nan());
+    assert_eq!(faulted[3][1], f32::INFINITY);
+    assert_eq!(faulted[4][0], f32::NEG_INFINITY);
+    assert!(faulted[4][1].is_finite());
+    // Faults never enter the histories: once the faulted frames leave the
+    // oversampler, output matches an unfaulted run of the same signal.
+    let mut clean = [[0.25, -0.5]; 2 * SETTLE_FRAMES];
+    render(&state, &mut clean);
+    assert_eq!(
+        faulted[SETTLE_FRAMES + 5..],
+        clean[SETTLE_FRAMES + 5..],
+        "faulted samples leaked into history"
+    );
+    assert!(faulted.iter().flatten().filter(|v| !v.is_finite()).count() == 3);
 }
 
 #[test]
@@ -378,15 +427,16 @@ fn transfer_preview_matches_runtime_and_exposes_output_axis_without_clipping() {
             let state = patch(&state, parameter::OUTPUT, ParameterValue::Float(output));
             let state = patch(&state, parameter::DRY_WET, ParameterValue::Float(wet));
             let preview = transfer_curve(&state).expect("valid preview");
-            let mut signal = std::array::from_fn::<_, 129, _>(|index| {
+            for (index, [x, y]) in preview.points.iter().enumerate() {
                 let input = index as f32 / 64.0 - 1.0;
-                [input, input]
-            });
-            render(&state, &mut signal);
-            for ([x, y], frame) in preview.points.iter().zip(signal) {
+                let frame = settle(&state, [input, input]);
                 assert!((0.0..=1.0).contains(x) && (0.0..=1.0).contains(y));
                 let represented = (y * 2.0 - 1.0) * preview.output_peak;
-                assert!((represented - frame[0]).abs() < 3.0e-7);
+                assert!(
+                    (represented - frame[0]).abs() < 1.0e-6,
+                    "{index}: {represented} vs {}",
+                    frame[0]
+                );
             }
             assert_eq!(preview.points[64], [0.5, 0.5]);
             assert!(preview.output_peak >= 1.0);
@@ -453,8 +503,13 @@ fn shared_binding_retarget_and_subset_restore_base_with_unchanged_drive() {
                 &hex_lattice::EMPTY_DEVICE_RESOURCES,
             )
             .unwrap();
+        // The candidate inherits the oversampler history the previous runtime
+        // built with drive 12, so the reference renders that history first.
+        let mut reference = runtime(&expected_state);
+        let mut reference_history = [[0.25, -0.5]; 4];
+        reference.process_block(&mut reference_history, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         let mut expected = [[0.25, -0.5]; 4];
-        runtime(&expected_state).process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        reference.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
         assert_eq!(actual, expected);
         let invalid = Values::new(vec![(parameter::DRIVE, ParameterValue::Float(f32::NAN))]);
         let mut untouched = [[0.25, -0.5]; 4];
@@ -478,7 +533,9 @@ fn shared_binding_retarget_and_subset_restore_base_with_unchanged_drive() {
                 &hex_lattice::EMPTY_DEVICE_RESOURCES,
             )
             .unwrap();
-        assert_eq!(retry, expected);
+        let mut expected_retry = [[0.25, -0.5]; 4];
+        reference.process_block(&mut expected_retry, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(retry, expected_retry);
     }
 }
 
@@ -684,4 +741,100 @@ fn automated_drive_stays_exact_while_direct_output_ramps_across_partitions() {
         .unwrap();
     assert_eq!(state.drive_gain, amplitude_from_db(6.0).unwrap());
     assert_eq!(state.output_gain, amplitude_from_db(-6.0).unwrap());
+}
+
+/// Pulse #4146: both curves at +36 db drive keep summed non-harmonic
+/// (aliased) energy of a 7 kHz sine at 48 kHz below -60 db relative to the
+/// fundamental. Measured: soft clip -64.3 db, digital clip -62.2 db. The
+/// former memoryless base-rate law measured about -14 db for its largest
+/// single aliased component (prototype, peak metric).
+#[test]
+fn full_drive_7khz_sine_aliasing_stays_below_minus_60_db_for_both_curves() {
+    use crate::oversampling::spectrum::inharmonic_energy_db;
+    let rate = 48_000_u32;
+    let count = (1 << 16) + 2048;
+    for curve in [0, 1] {
+        let state = patch(
+            &patch(
+                &SATURATOR_DEFINITION.default_state().unwrap(),
+                parameter::DRIVE,
+                ParameterValue::Float(36.0),
+            ),
+            parameter::CURVE,
+            ParameterValue::Choice(curve),
+        );
+        let mut frames: Vec<StereoFrame> = (0..count)
+            .map(|frame| {
+                let value =
+                    (std::f64::consts::TAU * 7_000.0 * frame as f64 / f64::from(rate)).sin() as f32;
+                [value, value]
+            })
+            .collect();
+        render(&state, &mut frames);
+        let energy = inharmonic_energy_db(&frames, 7_000.0, rate);
+        assert!(
+            energy < -60.0,
+            "curve {curve}: inharmonic energy {energy:.1} db"
+        );
+    }
+}
+
+/// A bypassed block advances every history exactly once, whether or not it
+/// carries automation, and exactly as an audible block would.
+#[test]
+fn bypassed_blocks_advance_histories_once_with_or_without_automation() {
+    struct Wet;
+    impl hex_lattice::NativeParameterAutomation for Wet {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            std::slice::from_ref(&parameter::DRY_WET)
+        }
+        fn value_at(&self, _: ParameterId, _: usize) -> Option<ParameterValue> {
+            Some(ParameterValue::Float(1.0))
+        }
+    }
+    let state = patch(
+        &SATURATOR_DEFINITION.default_state().unwrap(),
+        parameter::DRIVE,
+        ParameterValue::Float(18.0),
+    );
+    let prepare = || {
+        SaturatorDefinition::prepare_owned(&state, 48_000, &[parameter::DRY_WET])
+            .unwrap()
+            .create_runtime()
+    };
+    let resources = &hex_lattice::EMPTY_DEVICE_RESOURCES;
+    let first: Vec<StereoFrame> = (0..37)
+        .map(|frame| {
+            [
+                (frame as f32 * 0.37).sin() * 0.8,
+                (frame as f32 * 0.23).cos() * 0.6,
+            ]
+        })
+        .collect();
+    // A bypassed block shorter than the histories exposes a repeated advance.
+    let bypassed_input = [[0.7_f32, -0.3], [-0.6, 0.9], [0.2, -0.8]];
+    let resumed = |prime: &dyn Fn(&mut dyn NativeProcessorRuntime, &mut [StereoFrame])| {
+        let mut runtime = prepare();
+        let mut warm = first.clone();
+        runtime.process_block(&mut warm, resources);
+        let mut bypassed = bypassed_input;
+        prime(runtime.as_mut(), &mut bypassed);
+        let mut next = [[0.25_f32, -0.5]; 48];
+        runtime
+            .process_block_with_automation(&mut next, None, &Wet, resources)
+            .unwrap();
+        (bypassed, next)
+    };
+    let (automated_dry, automated) = resumed(&|runtime, frames| {
+        runtime
+            .process_bypassed_block_with_automation(frames, None, &Wet, resources)
+            .unwrap()
+    });
+    let (plain_dry, plain) =
+        resumed(&|runtime, frames| runtime.process_bypassed_block(frames, resources));
+    let (_, audible) = resumed(&|runtime, frames| runtime.process_block(frames, resources));
+    assert_eq!(automated_dry, bypassed_input, "bypass keeps its input");
+    assert_eq!(plain_dry, bypassed_input, "bypass keeps its input");
+    assert_eq!(automated, plain);
+    assert_eq!(automated, audible);
 }

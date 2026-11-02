@@ -3,7 +3,8 @@
 //! source-bound automation recording drafts. Drafts are not canonical lane references.
 //!
 //! # Dependencies
-//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2.
+//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2, plus
+//! libc errno/flags and rustix's safe exclusive rename for create-new publication.
 //!
 //! # Does not own
 //! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
@@ -13,6 +14,7 @@ mod files;
 mod journal;
 pub mod preset;
 pub mod project_name;
+mod publication;
 pub mod text;
 pub mod tuning_library;
 pub use journal::{
@@ -348,6 +350,9 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// violating current model invariants refuse rather than lose musical data.
 /// Newer/unknown fields, duplicate keys and malformed inventories refuse.
 /// Saving uses the current schema through existing atomic publication/recovery.
+/// From schema30 upward the migration chain parses the bytes once (after one
+/// duplicate-field check) and each frozen layer adapts that single value in
+/// place; layers never re-serialize the document for the next one.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     #[derive(serde::Deserialize)]
     struct CurrentHeader<'a> {
