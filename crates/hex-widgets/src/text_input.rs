@@ -11,7 +11,7 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, LayoutId, MouseButton,
     MouseDownEvent, PaintQuad, Pixels, Point, ShapedLine, Style, TextRun, UTF16Selection,
-    UnderlineStyle, Window, div, fill, point, prelude::*, px, relative, rgba, size,
+    UnderlineStyle, Window, div, fill, point, prelude::*, px, relative, size,
 };
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -1140,7 +1140,7 @@ impl Element for TextInputElement {
                         bounds.bottom(),
                     ),
                 ),
-                rgba(0x3350a0ff),
+                gpui::rgb(input.config.style.selection),
             ))
         };
         PrepaintState {
