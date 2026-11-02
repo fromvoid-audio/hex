@@ -440,7 +440,7 @@ impl ResidentHarness {
                     Err(error) if error == "audio output is open or still shutting down" => {
                         return Ok(None);
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(error.into()),
                 };
             *target.lock().unwrap() = Some(backend);
             Ok(Some(output))
@@ -552,7 +552,7 @@ impl ResidentHarness {
                 }
                 EditorAudioEvent::Unavailable { error, .. } => {
                     assert!(self.allow_unavailable, "{error}");
-                    self.unavailable.push(error);
+                    self.unavailable.push(error.to_string());
                 }
                 EditorAudioEvent::Publication {
                     context,

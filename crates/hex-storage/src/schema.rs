@@ -42,6 +42,7 @@ pub(crate) mod session_audio_loops;
 pub(crate) mod track_groups;
 pub(crate) mod track_name_origin;
 pub(crate) mod tuning;
+pub(crate) mod warp_resampler;
 use crate::StorageError;
 use hex_project::{
     AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, IDENTITY_CONVERSION, Meter,

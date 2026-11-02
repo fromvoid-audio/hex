@@ -1,6 +1,6 @@
 //! Headless native project import and render commands.
 use hex_engine::Audio;
-use hex_media::{Limits, ResampleLimits, decode_wav_file, resample};
+use hex_media::{Limits, ResampleLimits, ResampleVersion, decode_wav_file, resample_with_version};
 use hex_project::{Command, Created, Editor, Project};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -95,13 +95,15 @@ fn load_arrangement(
             )
             .into());
         }
-        let prepared = resample(
+        // Reproduce the asset's saved conversion law; v1 media stays v1.
+        let prepared = resample_with_version(
             media.audio(),
             project.sample_rate(),
             ResampleLimits {
                 max_source_frames: MAX_DECODED_FRAMES as usize,
                 max_output_frames: usize::try_from(remaining_frames)?,
             },
+            ResampleVersion::for_conversion(asset.conversion_version())?,
         )?;
         let playback_frames = u64::try_from(prepared.frames().len())?;
         if playback_frames != asset.playback_frames() {

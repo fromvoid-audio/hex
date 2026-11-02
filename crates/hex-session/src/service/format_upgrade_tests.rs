@@ -359,7 +359,7 @@ fn sinc_v2_project(files: &Files) -> PathBuf {
     ramp_wav(&media, 3_200);
     let decoded =
         hex_media::decode_wav_file(&media, hex_media::Limits::new(1 << 20, 8_000)).unwrap();
-    let prepared = crate::PreparedImport::at_rate_with_conversion(
+    let prepared = crate::PreparedImport::for_conversion(
         decoded,
         48_000,
         ResampleLimits {
@@ -380,7 +380,7 @@ fn sinc_v2_project(files: &Files) -> PathBuf {
 }
 
 #[test]
-fn sinc_v2_project_opens_resident_and_saves_without_consent() {
+fn sinc_v2_project_opens_resident_and_streamed_and_saves_without_consent() {
     let files = Files::new();
     let path = sinc_v2_project(&files);
     let original = fs::read(&path).unwrap();
@@ -420,8 +420,109 @@ fn sinc_v2_project_opens_resident_and_saves_without_consent() {
             }),
         },
     );
-    let error = streamed.error.as_deref().unwrap_or_default().to_string();
-    assert!(error.contains("sinc v2"), "{error}");
-    assert!(!streamed.project_replaced);
+    // Verified pages select the kernel by the saved version, so v2 streams.
+    assert!(streamed.error.is_none(), "{:?}", streamed.error);
+    let crate::AudioSourceBinding::VerifiedFile(source) = streamed
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .sources()
+        .values()
+        .next()
+        .unwrap()
+    else {
+        panic!("verified binding expected")
+    };
+    assert_eq!(source.conversion_version(), hex_project::SINC_CONVERSION_V2);
     assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
+fn importing_v2_media_into_a_schema63_file_requires_overwrite_consent() {
+    let files = Files::new();
+    let path = files.0.join("old.hex");
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    let initial = next(&service);
+    let original = hex_storage::encode(&initial.state.project).unwrap();
+    let header: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    assert_eq!(header["version"], 63);
+    fs::write(&path, &original).unwrap();
+    let opened = request(&service, Request::Open(path.clone()));
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert!(!opened.document_format_upgrade_required);
+
+    let media = files.0.join("ramp.wav");
+    ramp_wav(&media, 3_200);
+    let imported = request(&service, Request::Import(media));
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let asset = imported.state.project.assets().next().unwrap();
+    assert_eq!(asset.conversion_version(), hex_project::SINC_CONVERSION_V2);
+
+    // Overwriting the schema63 file would lock out older readers.
+    let refused = request(&service, Request::SaveCurrent);
+    assert!(refused.save_complete && refused.error.is_some());
+    assert!(refused.save_confirmation_required);
+    assert_eq!(fs::read(&path).unwrap(), original);
+
+    let saved = request(
+        &service,
+        Request::SaveCurrentWithFormatUpgrade {
+            project_generation: 1,
+            path: path.clone(),
+        },
+    );
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(written["version"], hex_storage::SINC_V2_SCHEMA_VERSION);
+    assert_eq!(hex_storage::load(&path).unwrap(), *saved.state.project);
+    let again = request(&service, Request::SaveCurrent);
+    assert!(again.error.is_none() && !again.save_confirmation_required);
+}
+
+#[test]
+fn pitching_a_clip_in_a_schema64_file_requires_overwrite_consent() {
+    let files = Files::new();
+    let path = sinc_v2_project(&files);
+    let original = fs::read(&path).unwrap();
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    next(&service);
+    let opened = request(&service, Request::Open(path.clone()));
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    let clip = opened.state.project.tracks()[0].clips()[0].id();
+    let pitched = request(
+        &service,
+        Request::Edit(Command::SetAudioClipPitch { clip, cents: 700 }),
+    );
+    assert!(pitched.error.is_none(), "{:?}", pitched.error);
+    assert_eq!(
+        hex_storage::schema_version_for(&pitched.state.project),
+        hex_storage::WARP_RESAMPLER_SCHEMA_VERSION
+    );
+
+    // New pitch renders with the v2 warp resampler, which needs schema65.
+    let refused = request(&service, Request::SaveCurrent);
+    assert!(refused.save_complete && refused.error.is_some());
+    assert!(refused.save_confirmation_required);
+    assert_eq!(fs::read(&path).unwrap(), original);
+
+    let saved = request(
+        &service,
+        Request::SaveCurrentWithFormatUpgrade {
+            project_generation: 1,
+            path: path.clone(),
+        },
+    );
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        written["version"],
+        hex_storage::WARP_RESAMPLER_SCHEMA_VERSION
+    );
+    let loaded = hex_storage::load(&path).unwrap();
+    assert_eq!(loaded, *saved.state.project);
+    let edit = loaded.clip(clip).unwrap().audio_edit().unwrap();
+    assert_eq!(edit.domain.warp_resampler, hex_project::WarpResampler::V2);
+    let again = request(&service, Request::SaveCurrent);
+    assert!(again.error.is_none() && !again.save_confirmation_required);
 }

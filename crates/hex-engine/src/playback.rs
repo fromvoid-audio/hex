@@ -9,7 +9,7 @@ mod candidate_storage;
 #[cfg(test)]
 mod idle_transition_tests;
 mod metronome;
-mod transport_fade;
+pub(crate) mod transport_fade;
 pub use transport_fade::TransportFadeCompletion;
 pub(crate) use transport_fade::fade_frames;
 mod tuning_audition;

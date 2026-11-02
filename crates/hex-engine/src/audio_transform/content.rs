@@ -474,6 +474,8 @@ impl AudioTransformPreparation {
             pitch_cents: 0,
             mode: hex_warp::Mode::RePitch,
         };
+        // Directed content views are not versioned by the content's warp
+        // resampler law and keep the frozen v1 reconstruction.
         let rendered = hex_warp::render(&request, &mut || self.cancelled()).map_err(warp_error)?;
         if rendered.frames.len() != destination.len() {
             return Err(Invalid(

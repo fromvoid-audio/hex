@@ -1147,8 +1147,8 @@ pub(super) fn import_file(
     Ok(prepared)
 }
 
-/// Decode found files for an in-place relink. Each is resampled like an import;
-/// the session transaction then checks them against the saved asset metadata.
+/// Decode found files for an in-place relink. Each is resampled with its asset's
+/// saved conversion law; the session transaction then checks the saved metadata.
 pub(super) fn decode_relinks(
     session: &Session,
     relinks: BTreeMap<hex_project::AssetId, PathBuf>,
@@ -1182,7 +1182,7 @@ pub(super) fn decode_relinks(
             .conversion_version();
         prepared.push((
             asset,
-            PreparedImport::at_rate_with_conversion(
+            PreparedImport::for_conversion(
                 decoded,
                 session.project().sample_rate(),
                 ResampleLimits {

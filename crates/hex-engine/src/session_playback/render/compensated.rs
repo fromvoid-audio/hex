@@ -225,7 +225,10 @@ impl SessionPlayback {
                         .get_mut(index)
                         .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
                 }
-                RouteOwner::SessionAudio { clip, launch_frame } if batch_session => {
+                // A fading outgoing clip renders on the per-frame route path.
+                RouteOwner::SessionAudio { clip, launch_frame }
+                    if batch_session && route.audio_release.is_none() =>
+                {
                     let track = self
                         .revision
                         .arrangement()
