@@ -561,3 +561,127 @@ fn direct_gain_edit_ramps_across_handoff_at_every_rate() {
         );
     }
 }
+
+#[test]
+fn direct_gain_edits_ramp_even_when_wet_is_automated() {
+    struct Wet;
+    impl hex_lattice::NativeParameterAutomation for Wet {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            std::slice::from_ref(&parameter::DRY_WET)
+        }
+        fn value_at(&self, _: ParameterId, _: usize) -> Option<ParameterValue> {
+            Some(ParameterValue::Float(1.0))
+        }
+    }
+    let old = SATURATOR_DEFINITION.default_state().unwrap();
+    let new = patch(&old, parameter::DRIVE, ParameterValue::Float(12.0));
+    let prepare = |state| {
+        SaturatorDefinition::prepare_owned(state, 48_000, &[parameter::DRY_WET])
+            .unwrap()
+            .create_runtime()
+    };
+    let mut previous = prepare(&old);
+    previous
+        .process_block_with_automation(
+            &mut [[0.1, 0.1]],
+            None,
+            &Wet,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    let old_gain = previous
+        .as_any()
+        .downcast_ref::<SaturatorRuntime>()
+        .unwrap()
+        .drive_gain;
+    let mut candidate = prepare(&new);
+    candidate.copy_history_from(previous.as_ref());
+    candidate
+        .process_block_with_automation(
+            &mut [[0.1, 0.1]],
+            None,
+            &Wet,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    let first = candidate
+        .as_any()
+        .downcast_ref::<SaturatorRuntime>()
+        .unwrap()
+        .drive_gain;
+    let target = amplitude_from_db(12.0).unwrap();
+    assert!(
+        first > old_gain && first < target,
+        "old={old_gain} first={first} target={target}"
+    );
+}
+
+#[test]
+fn automated_drive_stays_exact_while_direct_output_ramps_across_partitions() {
+    struct Drive;
+    impl hex_lattice::NativeParameterAutomation for Drive {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            std::slice::from_ref(&parameter::DRIVE)
+        }
+        fn value_at(&self, _: ParameterId, _: usize) -> Option<ParameterValue> {
+            Some(ParameterValue::Float(6.0))
+        }
+    }
+    let old = SATURATOR_DEFINITION.default_state().unwrap();
+    let new = patch(&old, parameter::OUTPUT, ParameterValue::Float(-6.0));
+    let prepare = |state| {
+        SaturatorDefinition::prepare_owned(state, 48_000, &[parameter::DRIVE])
+            .unwrap()
+            .create_runtime()
+    };
+    let mut previous = prepare(&old);
+    previous
+        .process_block_with_automation(
+            &mut [[0.1, 0.1]],
+            None,
+            &Drive,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    let mut whole = prepare(&new);
+    whole.copy_history_from(previous.as_ref());
+    let mut one = [[0.1, -0.1]; 248];
+    whole
+        .process_block_with_automation(&mut one, None, &Drive, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    let state = whole.as_any().downcast_ref::<SaturatorRuntime>().unwrap();
+    assert_eq!(state.drive_gain, amplitude_from_db(6.0).unwrap());
+    assert_eq!(state.output_gain, amplitude_from_db(-6.0).unwrap());
+    let mut chunked = prepare(&new);
+    chunked.copy_history_from(previous.as_ref());
+    let mut split = [[0.1, -0.1]; 248];
+    for chunk in split.chunks_mut(7) {
+        let mut twin = prepare(&new);
+        twin.copy_history_from(chunked.as_ref());
+        twin.process_block_with_automation(
+            chunk,
+            None,
+            &Drive,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+        chunked = twin;
+    }
+    assert_eq!(one, split);
+    let mut bypassed = prepare(&new);
+    bypassed.copy_history_from(previous.as_ref());
+    bypassed
+        .process_bypassed_block_with_automation(
+            &mut [[0.1, 0.1]],
+            None,
+            &Drive,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    let state = bypassed
+        .as_any()
+        .downcast_ref::<SaturatorRuntime>()
+        .unwrap();
+    assert_eq!(state.drive_gain, amplitude_from_db(6.0).unwrap());
+    assert_eq!(state.output_gain, amplitude_from_db(-6.0).unwrap());
+}

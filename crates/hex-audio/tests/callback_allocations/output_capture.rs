@@ -267,14 +267,18 @@ fn automated_saturator_callback_publication_and_late_failure_retry_are_allocatio
 fn direct_saturator_gain_edit_handoff_ramp_is_allocation_free() -> Result<(), Box<dyn Error>> {
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
-        .spawn(|| run_direct_saturator_edit_probe().map_err(|e| e.to_string()))?
+        .spawn(|| {
+            run_direct_saturator_edit_probe(false).map_err(|e| e.to_string())?;
+            run_direct_saturator_edit_probe(true).map_err(|e| e.to_string())
+        })?
         .join()
         .map_err(|_| "direct saturator allocation probe panicked")?
         .map_err(Into::into)
 }
-fn run_direct_saturator_edit_probe() -> Result<(), Box<dyn Error>> {
+fn run_direct_saturator_edit_probe(wet_automated: bool) -> Result<(), Box<dyn Error>> {
     use hex_devices::saturator::{SATURATOR_DEFINITION, parameter};
     use hex_lattice_contract::NativeDeviceMetadata;
+    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
     let (project, track, _) = source()?;
     let mut editor = Editor::new(project, 16)?;
     let device = editor.project().track(track).ok_or("track")?.devices()[0].id();
@@ -283,6 +287,17 @@ fn run_direct_saturator_edit_probe() -> Result<(), Box<dyn Error>> {
         device,
         state: state.clone(),
     })?;
+    if wet_automated {
+        editor.execute(Command::ReplaceDeviceAutomation {
+            device,
+            parameter: ParameterId::new(3)?,
+            points: vec![AutomationPoint {
+                beat: BeatTime::ZERO,
+                value: AutomationValue::new(0.75)?,
+                outgoing: AutomationInterpolation::Step,
+            }],
+        })?;
+    }
     let revision = prepare(editor.project())?;
     let (mut control, mut callback) = prepared::channel(RATE)?;
     control

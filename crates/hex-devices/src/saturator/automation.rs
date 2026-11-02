@@ -94,12 +94,16 @@ impl SaturatorRuntime {
         let settings = next.effective();
         // Constant/held controls reuse scalar coefficients; only a changing dB
         // value evaluates the original bounded gain conversion.
-        let drive = if settings.drive_db == self.settings.drive_db {
+        let drive = if (!self.base.supports(parameter::DRIVE) && self.gain_ramp_remaining != 0)
+            || settings.drive_db == self.settings.drive_db
+        {
             self.drive_gain
         } else {
             amplitude_from_db(settings.drive_db)?
         };
-        let output = if settings.output_db == self.settings.output_db {
+        let output = if (!self.base.supports(parameter::OUTPUT) && self.gain_ramp_remaining != 0)
+            || settings.output_db == self.settings.output_db
+        {
             self.output_gain
         } else {
             amplitude_from_db(settings.output_db)?
