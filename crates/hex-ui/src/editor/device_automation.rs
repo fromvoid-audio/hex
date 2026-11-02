@@ -486,6 +486,9 @@ impl Lanes {
     pub(super) fn pointer_active(&self) -> bool {
         self.draft.is_some() || self.marquee.is_some()
     }
+    pub(super) fn point_draft_active(&self) -> bool {
+        self.draft.is_some()
+    }
     pub(super) fn extra_height(&self, owner: Owner) -> f32 {
         self.extra
             .iter()
