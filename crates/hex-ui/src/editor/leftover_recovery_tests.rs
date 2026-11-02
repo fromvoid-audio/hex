@@ -110,7 +110,7 @@ fn startup_offers_the_leftover_keep_leaves_it_and_recover_opens_it(cx: &mut gpui
     editor.update(cx, |view, _| {
         view.check_leftover_recovery(None);
         view.project_generation += 1;
-        assert!(!view.leftover_offer_current(0));
+        assert!(!view.leftover_offer_current(Some(0)));
         view.project_generation -= 1;
     });
     offer(cx);
@@ -202,4 +202,90 @@ fn discard_needs_confirmation_and_sets_the_work_aside_where_it_can_be_reopened(
         hex_session::service::kept_journal(&root.0).is_err(),
         "folder without a journal refuses"
     );
+}
+
+/// Regression for #4575: one launch offers every ended instance's untitled
+/// leftover in turn; recovering another instance's slot sets it aside so it is
+/// not offered again, and this window's own slot is left untouched.
+#[gpui::test]
+fn launch_offers_each_untitled_leftover_and_sets_a_recovered_foreign_slot_aside(
+    cx: &mut gpui::TestAppContext,
+) {
+    let root = dir();
+    let own = root.0.join("recovery/untitled.hex-journal");
+    let foreign = root.0.join("recovery/untitled-2.hex-journal");
+    let own_bytes = leave_untitled_journal(&own);
+    let foreign_bytes = leave_untitled_journal(&foreign);
+    let (handle, editor) = editor_window(cx, Project::new(48_000).unwrap(), Arc::default());
+    editor.update(cx, |view, _| {
+        view.service = Service::with_recovery(48_000, 8, 128, own.clone()).unwrap();
+        view.check_leftover_recovery(None);
+    });
+    let prompt = |cx: &mut gpui::TestAppContext| {
+        let deadline = crate::test_wait::hang_deadline();
+        while !cx.has_pending_prompt() {
+            cx.update_window(handle, |_, window, cx| {
+                editor.update(cx, |view, cx| {
+                    view.tick(cx);
+                    view.reconcile_leftover_recovery(window, cx)
+                })
+            })
+            .unwrap();
+            cx.run_until_parked();
+            assert!(std::time::Instant::now() < deadline, "leftover offer");
+            std::thread::yield_now();
+        }
+    };
+    prompt(cx);
+    cx.simulate_prompt_answer("keep for later");
+    cx.run_until_parked();
+    assert_eq!(std::fs::read(&own).unwrap(), own_bytes);
+    prompt(cx);
+    cx.simulate_prompt_answer("recover");
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        cx.run_until_parked();
+        let recovered = editor.update(cx, |view, cx| {
+            view.tick(cx);
+            view.state.as_ref().is_some_and(|state| {
+                state
+                    .project
+                    .tracks()
+                    .iter()
+                    .any(|track| track.name() == "unsaved")
+            })
+        });
+        if recovered {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "recovered project");
+        std::thread::yield_now();
+    }
+    assert!(
+        !foreign.exists(),
+        "recovered foreign slot is not offered again"
+    );
+    let kept: Vec<Vec<u8>> = std::fs::read_dir(root.0.join("recovery"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .flat_map(|entry| std::fs::read_dir(entry.path()).unwrap())
+        .filter_map(|entry| std::fs::read(entry.ok()?.path()).ok())
+        .collect();
+    assert!(
+        kept.contains(&foreign_bytes),
+        "foreign work kept byte-exact"
+    );
+    // The recovered project now checkpoints into this window's own slot; the
+    // kept-for-later work it held is preserved byte-exact, never overwritten.
+    assert!(
+        std::fs::read(&own).unwrap() == own_bytes || kept.contains(&own_bytes),
+        "own leftover preserved"
+    );
+    let leftovers: Vec<_> = hex_session::service::untitled_leftovers(&own)
+        .into_iter()
+        .map(|found| found.journal)
+        .collect();
+    assert_eq!(leftovers, [own], "only this window's own slot remains");
+    assert!(!cx.has_pending_prompt(), "nothing else to offer");
 }

@@ -66,12 +66,27 @@ pub struct LeftoverRecovery {
     pub source: ProjectSource,
     pub journal: PathBuf,
     fingerprint: (u64, Option<std::time::SystemTime>),
+    /// Held while another ended instance's slot is offered (Pulse #4575), so
+    /// no other launching instance adopts or offers it meanwhile.
+    foreign: Option<std::sync::Arc<hex_storage::UntitledSlotClaim>>,
 }
 impl LeftoverRecovery {
     /// False once anything rewrote the slot after detection, for example this
     /// session's own first checkpoint; recovering then would open the wrong work.
     pub fn unchanged(&self) -> bool {
         fingerprint(&self.journal).is_some_and(|current| current == self.fingerprint)
+    }
+
+    /// The source to open when the user chooses recover. This instance's own
+    /// slot opens in place. A slot left by another ended instance is first set
+    /// aside into kept copies (never deleted) and the kept copy is opened, so
+    /// its work is not offered again; it stays reachable through
+    /// `kept_journal` if opening fails.
+    pub fn recover_source(&self) -> Result<ProjectSource, String> {
+        if self.foreign.is_none() {
+            return Ok(self.source.clone());
+        }
+        self.discard().map(ProjectSource::Journal)
     }
 
     /// Explicit, confirmed discard: the journal moves into a kept-copies folder
@@ -134,7 +149,29 @@ pub fn leftover_recovery(untitled: &Path, document: Option<&Path>) -> Option<Lef
         source,
         journal,
         fingerprint: before,
+        foreign: None,
     })
+}
+
+/// Every readable untitled leftover a launch should offer (Pulse #4575): this
+/// instance's own slot first, then each slot other ended instances left in the
+/// same directory. Live-owned slots are never included; foreign leftovers stay
+/// claimed by the returned offers until they are dropped. Unreadable foreign
+/// journals are released untouched.
+pub fn untitled_leftovers(own: &Path) -> Vec<LeftoverRecovery> {
+    let mut found: Vec<_> = leftover_recovery(own, None).into_iter().collect();
+    if let Some(directory) = own.parent() {
+        found.extend(
+            hex_storage::UntitledSlotClaim::claim_leftovers(directory, own)
+                .into_iter()
+                .filter_map(|claim| {
+                    let mut leftover = leftover_recovery(claim.path(), None)?;
+                    leftover.foreign = Some(std::sync::Arc::new(claim));
+                    Some(leftover)
+                }),
+        );
+    }
+    found
 }
 
 pub(super) type OpenCandidate = (Session, PathBuf, Option<DocumentHandle>, bool);
@@ -787,6 +824,60 @@ mod tests {
         assert_eq!(first.path(), directory.join("untitled.hex-journal"));
         assert_eq!(second.path(), directory.join("untitled-2.hex-journal"));
         drop((first, second));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn leave(path: &Path, rate: u32) {
+        hex_storage::Journal::open_empty(path.to_path_buf())
+            .unwrap()
+            .checkpoint(&Project::new(rate).unwrap())
+            .unwrap();
+    }
+
+    /// Regression for #4575: one launch offers every unowned untitled
+    /// leftover, never a live instance's slot, and recovering a foreign slot
+    /// sets it aside so it is not offered again.
+    #[test]
+    fn launch_offers_every_unowned_leftover_and_sets_recovered_foreign_slots_aside() {
+        let root = scratch();
+        let directory = root.join("recovery");
+        let live = claim_untitled_slot_in(&directory).unwrap();
+        leave(live.path(), 48_000);
+        let slot = |index| hex_storage::untitled_slot_path(&directory, index);
+        leave(&slot(1), 44_100);
+        leave(&slot(2), 96_000);
+        std::fs::write(slot(3), b"not a journal").unwrap();
+        let own = claim_untitled_slot_in(&directory).unwrap();
+        assert_eq!(own.path(), slot(1), "own slot adopts the first leftover");
+
+        let found = untitled_leftovers(own.path());
+        let journals: Vec<_> = found.iter().map(|found| found.journal.clone()).collect();
+        assert_eq!(journals, [slot(1), slot(2)]);
+        assert!(found[0].foreign.is_none());
+        assert!(
+            matches!(found[0].recover_source(), Ok(ProjectSource::Journal(path)) if path == slot(1))
+        );
+        let Ok(ProjectSource::Journal(kept)) = found[1].recover_source() else {
+            panic!("foreign leftover opens its kept copy");
+        };
+        assert!(!slot(2).exists(), "no longer offered");
+        assert_eq!(
+            hex_storage::load_journal(&kept).unwrap(),
+            Project::new(96_000).unwrap()
+        );
+        assert_eq!(std::fs::read(slot(3)).unwrap(), b"not a journal");
+        assert_eq!(
+            hex_storage::load_journal(live.path()).unwrap(),
+            Project::new(48_000).unwrap(),
+            "live slot untouched"
+        );
+        drop(found);
+        let again: Vec<_> = untitled_leftovers(own.path())
+            .into_iter()
+            .map(|found| found.journal)
+            .collect();
+        assert_eq!(again, [slot(1)]);
+        drop((live, own));
         let _ = std::fs::remove_dir_all(root);
     }
 

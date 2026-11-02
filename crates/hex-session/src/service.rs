@@ -104,7 +104,8 @@ use hex_storage::FileToken;
 use recovery::absolute_document_path;
 pub use recovery::{
     LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart,
-    claim_untitled_recovery_slot, kept_journal, leftover_recovery, untitled_recovery_path,
+    claim_untitled_recovery_slot, kept_journal, leftover_recovery, untitled_leftovers,
+    untitled_recovery_path,
 };
 use std::{
     collections::BTreeMap,
