@@ -904,6 +904,72 @@ mod tests {
     use hex_lattice_contract::DeviceAutomationTarget;
 
     #[gpui::test]
+    fn held_gain_point_prevents_new_sampler_text_draft(cx: &mut TestAppContext) {
+        let source = TestWave::new();
+        let (mut visual, editor, _, track, _) =
+            window_with_gain(cx, "hex.utility", Slot::Track, false, Some(&source.0));
+        let sampler = editor.read_with(&visual, |view, _| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id()
+        });
+        visual.simulate_resize(size(px(1600.0), px(800.0)));
+        visual.run_until_parked();
+        let toggle = visual
+            .debug_bounds("automation-view-toggle")
+            .unwrap()
+            .center();
+        visual.simulate_click(toggle, gpui::Modifiers::default());
+        editor.update(&mut visual, |view, cx| {
+            view.gain_lane.track = Some(track);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let sampler_selector =
+            Box::leak(format!("sampler-attack-{}-value", sampler.value()).into_boxed_str());
+        let sampler_at = visual.debug_bounds(sampler_selector).unwrap().center();
+        let plot_selector =
+            Box::leak(format!("arrangement-automation-plot-{}", track.value()).into_boxed_str());
+        let plot = visual.debug_bounds(plot_selector).unwrap();
+        let at = gpui::point(plot.center().x, plot.top() + plot.size.height * 0.25);
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| assert!(view.gain_lane.draft.is_some()));
+        visual.simulate_click(sampler_at, Modifiers::default());
+        editor.read_with(&visual, |view, _| assert!(view.gain_lane.pending.is_some()));
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                !view.sampler_parameter.numeric_draft_active(),
+                "sampler draft began while gain point was held"
+            );
+        });
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        pump(&mut visual, &editor);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.gain_lane.pending.is_none());
+            assert!(view.error.as_ref().is_some_and(|error| {
+                error
+                    .to_string()
+                    .contains("sampler supports private offline export")
+            }));
+        });
+        visual.run_until_parked();
+        visual.simulate_click(sampler_at, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        editor.read_with(&visual, |view, _| {
+            assert!(view.sampler_parameter.numeric_draft_active())
+        });
+    }
+
+    #[gpui::test]
     fn invalid_sampler_text_blocks_starting_an_automation_gesture(cx: &mut TestAppContext) {
         let source = TestWave::new();
         let (mut visual, editor, owner, track, device) =
