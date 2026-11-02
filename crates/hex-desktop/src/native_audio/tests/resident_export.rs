@@ -207,6 +207,7 @@ fn loaded_resident_export_case(frame_limit: u64) {
         frames: Some(320),
         signal: ExportSignal::Main,
         control: control.clone(),
+        format: hex_export::ExportFormat::Pcm16,
         overwrite: false,
     });
     assert!(completed(&mut h).result.is_ok());
@@ -223,6 +224,7 @@ fn loaded_resident_export_case(frame_limit: u64) {
             hex_engine::OutputCaptureId::Return(bus),
         ]),
         control: ExportControl::default(),
+        format: hex_export::ExportFormat::Pcm16,
         overwrite: false,
     });
     assert!(completed(&mut h).result.is_ok());
@@ -243,6 +245,7 @@ fn loaded_resident_export_case(frame_limit: u64) {
             },
         ]),
         control: ExportControl::default(),
+        format: hex_export::ExportFormat::Pcm16,
         overwrite: false,
     });
     assert!(completed(&mut h).result.is_ok());

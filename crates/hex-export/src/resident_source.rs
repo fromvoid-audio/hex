@@ -1,5 +1,5 @@
 //! Create-new publication of an already admitted immutable resident source.
-use super::{BlockRenderer, ExportError, ExportReport, Publication, WavEncoding, publish_encoded};
+use super::{BlockRenderer, ExportError, ExportFormat, ExportReport, Publication, publish_encoded};
 use hex_engine::{Audio, Frame};
 use std::path::Path;
 
@@ -18,7 +18,7 @@ pub fn publish_resident_source_new(
         0,
         frames,
         &Publication::CreateNew,
-        WavEncoding::Float32,
+        ExportFormat::Float32,
         || Ok(ResidentSource { audio, position: 0 }),
     )
 }

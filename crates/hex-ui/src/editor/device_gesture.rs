@@ -572,6 +572,7 @@ mod tests {
                 frames: Some(256),
                 signal: hex_session::service::ExportSignal::Main,
                 control: control.clone(),
+                format: hex_session::service::ExportFormat::Pcm16,
                 overwrite: false,
             },
             Request::Undo,

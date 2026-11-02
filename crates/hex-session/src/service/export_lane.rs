@@ -213,7 +213,7 @@ impl ExportLane {
             None => (None, None),
         };
         let scratch = hex_export::control_storage_allowance(
-            job.controlled.as_ref().map(|(_, signal, _, _)| signal),
+            job.controlled.as_ref().map(|controlled| &controlled.signal),
         )
         .map_err(|error| error.to_string())?;
         let runtime_bytes = runtime_bytes
@@ -305,7 +305,7 @@ impl ExportLane {
             format!("export resource preparation refused: {error:?}").to_lowercase()
         })?;
         let scratch = hex_export::control_storage_allowance(
-            job.controlled.as_ref().map(|(_, signal, _, _)| signal),
+            job.controlled.as_ref().map(|controlled| &controlled.signal),
         )
         .map_err(|error| {
             format!("export resource preparation refused: {error:?}").to_lowercase()
@@ -422,7 +422,7 @@ impl ExportLane {
         let control = job
             .controlled
             .as_ref()
-            .map(|(_, _, control, _)| control.clone());
+            .map(|controlled| controlled.control.clone());
         let result = match self.work.as_ref() {
             Some(work) => work.try_send(ExportWork::Render(job)),
             None => Err(TrySendError::Disconnected(ExportWork::Render(job))),
@@ -496,7 +496,7 @@ mod tests {
             run_export_worker(
                 work_rx,
                 events_tx,
-                Arc::new(|_, _, _, _, _, _, _| Err("unexpected asset-free exporter".into())),
+                Arc::new(|_, _, _, _, _, _, _, _| Err("unexpected asset-free exporter".into())),
                 finished_tx,
                 Arc::new(AtomicBool::new(false)),
                 worker_hook,

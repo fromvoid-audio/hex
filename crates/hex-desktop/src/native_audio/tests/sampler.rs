@@ -319,6 +319,7 @@ fn service_sampler_original_wav_reaches_real_fresh_native_current_with_tuning_st
             start: 0,
             frames: Some(12),
             signal: hex_session::service::ExportSignal::Main,
+            format: hex_export::ExportFormat::Pcm16,
             overwrite: false,
             control: hex_export_control(),
         });
