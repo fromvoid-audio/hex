@@ -729,7 +729,7 @@ fn held_endpoint_follows_rebound_and_release_across_generations(cx: &mut TestApp
                 },
                 crate::EditorAudioEvent::OutputReleased {
                     project_generation: generation,
-                    old_output_identity: identity,
+                    old_output_identity: identity.wrapping_add(1),
                 },
             ] {
                 events.send(stale).unwrap();
@@ -765,6 +765,37 @@ fn held_endpoint_follows_rebound_and_release_across_generations(cx: &mut TestApp
             );
         })
         .expect("held endpoint protocol");
+}
+
+#[gpui::test]
+fn delayed_release_closes_matching_endpoint_after_later_replacement(cx: &mut TestAppContext) {
+    let window = cx.add_window(|window, cx| {
+        let service = Service::new(48_000, 8, 8_000_000).unwrap();
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    let project = Arc::new(Project::new(48_000).unwrap());
+    let (audio, _output, _backend) = held_fixture_audio();
+    let identity = audio.control.output_identity().unwrap();
+    let (events, receiver) = std::sync::mpsc::sync_channel(4);
+    window
+        .update(cx, |view, _, cx| {
+            view.audio_events = receiver;
+            view.receive(event(Arc::clone(&project), 1, true));
+            let generation = view.project_generation;
+            view.audio = Some(audio);
+            view.receive(event(Arc::clone(&project), 2, true));
+            view.receive(event(Arc::clone(&project), 3, true));
+            assert_eq!(held_identity(view), Some(identity));
+            events
+                .send(crate::EditorAudioEvent::OutputReleased {
+                    project_generation: generation + 1,
+                    old_output_identity: identity,
+                })
+                .unwrap();
+            view.poll_editor_audio_events(cx);
+            assert!(view.audio.is_none());
+        })
+        .unwrap();
 }
 
 #[gpui::test]

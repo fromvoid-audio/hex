@@ -877,15 +877,14 @@ impl EditorView {
                     changed = true;
                 }
                 crate::EditorAudioEvent::OutputReleased {
-                    project_generation,
+                    project_generation: _,
                     old_output_identity,
                 } => {
-                    if project_generation >= self.project_generation
-                        && self
-                            .audio
-                            .as_ref()
-                            .and_then(|a| a.control.output_identity())
-                            == Some(old_output_identity)
+                    if self
+                        .audio
+                        .as_ref()
+                        .and_then(|a| a.control.output_identity())
+                        == Some(old_output_identity)
                     {
                         self.retire_audio_preserving_gain_take();
                         self.status = "preparing audio output".into();

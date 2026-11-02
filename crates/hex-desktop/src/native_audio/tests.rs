@@ -4,6 +4,7 @@ use super::*;
 mod limiter;
 mod plugins;
 mod recovery;
+mod release_custody;
 mod resident_authoring;
 mod resident_bounce;
 mod resident_eq_creation;

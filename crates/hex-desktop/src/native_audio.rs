@@ -82,6 +82,9 @@ pub(super) struct NativeAudioSink {
     // continues to use its separate verified constructor/driver.
     worker_owned_resident_graphs: bool,
     events: SyncSender<EditorAudioEvent>,
+    // A release is terminal custody for the old endpoint. While it is pending,
+    // no new output can open, so one bounded slot suffices across replacements.
+    pending_release_event: Option<EditorAudioEvent>,
     pending_open_event: Option<EditorAudioEvent>,
     pending_observation: Option<EditorAudioEvent>,
     // One coalesced status may wait behind an accepted ordinary submission. Status changes
@@ -135,6 +138,7 @@ impl NativeAudioSink {
             resident: resident::Resident::default(),
             worker_owned_resident_graphs: true,
             events,
+            pending_release_event: None,
             pending_open_event: None,
             pending_observation: None,
             pending_status_observation: None,
@@ -207,7 +211,7 @@ impl NativeAudioSink {
         self.open_error = None;
     }
     fn poll_open(&mut self) {
-        if !self.open_pending {
+        if !self.open_pending || self.pending_release_event.is_some() {
             return;
         }
         let failure = hex_audio::audio_lifecycle_failure();
@@ -421,6 +425,7 @@ impl NativeAudioSink {
     fn flush_events(&mut self) {
         let mut disconnected = false;
         for pending in [
+            &mut self.pending_release_event,
             &mut self.pending_open_event,
             &mut self.pending_observation,
             &mut self.pending_status_observation,
@@ -441,6 +446,7 @@ impl NativeAudioSink {
             }
         }
         if disconnected {
+            self.pending_release_event = None;
             self.relinquish_output();
         }
     }
@@ -1251,7 +1257,7 @@ impl WorkerAudioSink for NativeAudioSink {
             if let Some(old_output_identity) = old_output_identity {
                 // The UI may hold this endpoint across the replacement; it must
                 // close it before a fresh output can take the lease.
-                self.pending_open_event = Some(EditorAudioEvent::OutputReleased {
+                self.pending_release_event = Some(EditorAudioEvent::OutputReleased {
                     project_generation: generation,
                     old_output_identity,
                 });
@@ -1424,6 +1430,7 @@ impl WorkerAudioSink for NativeAudioSink {
     fn close(&mut self) {
         self.shutdown_sampler();
         self.relinquish_output();
+        self.pending_release_event = None;
         self.desired = None;
     }
 }
