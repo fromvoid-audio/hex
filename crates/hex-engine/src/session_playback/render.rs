@@ -56,23 +56,6 @@ impl SessionPlayback {
         )
     }
 
-    pub(crate) fn render_current_sampler<P: MediaPages + ?Sized>(
-        &mut self,
-        output: &mut [Frame],
-        pages: Option<&mut P>,
-        observer: Option<&mut crate::NodeSignalObserver<'_>>,
-        project: Option<&mut ProjectOutputTap<'_, '_>>,
-        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
-    ) -> Result<(), SessionPlaybackError> {
-        self.render_current_sampler_with_foreign(
-            output,
-            pages,
-            observer,
-            project,
-            sources,
-            &mut hex_lattice::RefuseForeign,
-        )
-    }
     pub(crate) fn render_current_sampler_with_foreign<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],

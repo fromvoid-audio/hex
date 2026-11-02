@@ -3798,6 +3798,7 @@ pub use midi_template::{
 pub use playback::{
     PlaybackAction, PlaybackActionError, PlaybackActionRejection, PlaybackCommand,
     PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability, SessionCapabilityStatus,
+    TransportFadeCompletion,
 };
 pub use prepared_revision::PreparedRevision;
 pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};
