@@ -152,3 +152,50 @@ fn pcm_without_streaming_reservation_gets_an_accurate_resident_limit() {
     assert!(!error.contains("adpcm wav cannot stream"), "{error}");
     assert!(refused.state.project.tracks().is_empty());
 }
+
+#[test]
+fn resident_audio_import_refuses_long_adpcm_with_the_same_explanation() {
+    let files = Files::new();
+    let long = files.adpcm_wav("resident-long-adpcm.wav", 15_842);
+    let audition = prepare_sample_preview(&long, 48_000).unwrap_err();
+    let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+        .checked_mul(2)
+        .unwrap();
+    let service = Service::with_audio_sink_and_native_reservation(
+        16,
+        64_000_000,
+        None,
+        super::resident_audio::tests::fixture_sink(),
+        crate::ResidentNativeReservation {
+            storage: hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 64,
+                root_rows: 64,
+                max_retained_bytes: retained,
+                max_construction_peak_bytes: retained
+                    + hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            },
+            max_scan_frames: 1024,
+        },
+    )
+    .unwrap();
+    let initial = next(&service);
+    assert!(
+        initial
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("fixture offline"))
+    );
+    service.submit(Request::Import(long)).unwrap();
+    let refused = next(&service);
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|error| error.ends_with(&audition)),
+        "{:?}",
+        refused.error
+    );
+    assert_eq!(refused.state.revision, initial.state.revision);
+    assert!(refused.state.project.tracks().is_empty());
+}

@@ -2324,7 +2324,7 @@ impl Session {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     mod bounce_tests;
     mod export_tests;
     mod plugin_effect_tests;
@@ -2525,6 +2525,13 @@ mod tests {
             self.pending = None;
             self.observed.closed.fetch_add(1, Ordering::Release);
         }
+    }
+
+    pub(in crate::service) fn fixture_sink() -> Box<dyn WorkerAudioSink> {
+        Box::new(OfflineSink {
+            observed: Arc::new(Observed::default()),
+            pending: None,
+        })
     }
 
     #[test]
