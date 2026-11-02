@@ -450,7 +450,10 @@ fn verified_export_keeps_captured_revision_through_later_edit_and_new_document()
     assert!(
         matches!(
             service.submit(Request::Export(files.0.join("busy.wav"))),
-            Err(hex_session::service::SubmitError::Busy(Request::Export(_)))
+            Err(hex_session::service::SubmitError::Busy(
+                Request::Export(_),
+                hex_session::service::BusyReason::ExportPending
+            ))
         ),
         "a blocked offline job still owns the single export lane"
     );

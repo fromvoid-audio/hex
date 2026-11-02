@@ -30,6 +30,8 @@ mod audio_batch_tests;
 mod audio_sink;
 pub mod automation_draft;
 pub mod automation_take;
+#[cfg(test)]
+mod busy_reason_tests;
 mod canonical_audio_source;
 mod comparison_audio;
 #[cfg(test)]
@@ -960,9 +962,33 @@ pub enum NativeDeviceDropSource {
 /// A rejected request is returned intact so the caller can retry or report it.
 #[derive(Debug)]
 pub enum SubmitError {
+    /// The bounded request queue is full; the same request may be retried.
     Full(Request),
+    /// The session worker has stopped; no request will be processed.
     Closed(Request),
-    Busy(Request),
+    /// The service refused this request before queueing it, for the stated
+    /// reason. No terminal event will arrive for it.
+    Busy(Request, BusyReason),
+}
+
+/// Why [`Service`] refused a request with [`SubmitError::Busy`]. Each reason
+/// names one admission rule, so callers can report the actual refusal instead
+/// of assuming the most common one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BusyReason {
+    /// The single export job reservation is already held.
+    ExportPending,
+    /// A bounce clip target was empty or exceeded the project clip limit.
+    InvalidBounceTarget,
+    /// A dedicated Arrangement seek worker owns seeking for this service, so
+    /// resident scalar seek intents are not accepted.
+    SeekWorkerActive,
+    /// The bounded number of in-flight resident seek intents is reached.
+    SeekQueueFull,
+    /// The document-replacement intent counter cannot advance further.
+    DocumentIntentExhausted,
+    /// A correlated save carried a non-save request or a zero request id.
+    InvalidSaveCorrelation,
 }
 
 #[derive(Debug)]
@@ -1467,7 +1493,10 @@ impl Service {
                 | Request::SaveCurrentWithFormatUpgrade { .. }
         ) || correlation.request_id == 0
         {
-            return Err(SubmitError::Busy(request));
+            return Err(SubmitError::Busy(
+                request,
+                BusyReason::InvalidSaveCorrelation,
+            ));
         }
         let diagnostic = self.diagnostics.begin(&request);
         let result = match self.requests.as_ref() {
@@ -1511,19 +1540,21 @@ impl Service {
                 || ids.len() > hex_project::MAX_CLIPS
                 || ids.capacity() > hex_project::MAX_CLIPS
             {
-                return Err(SubmitError::Busy(request));
+                return Err(SubmitError::Busy(request, BusyReason::InvalidBounceTarget));
             }
         }
         if matches!(&request, Request::ResidentArrangementSeek(_)) {
-            if self.arrangement_seek.is_some()
-                || self
-                    .resident_seek_count
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                        (n < REQUEST_CAPACITY).then(|| n + 1)
-                    })
-                    .is_err()
+            if self.arrangement_seek.is_some() {
+                return Err(SubmitError::Busy(request, BusyReason::SeekWorkerActive));
+            }
+            if self
+                .resident_seek_count
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                    (n < REQUEST_CAPACITY).then(|| n + 1)
+                })
+                .is_err()
             {
-                return Err(SubmitError::Busy(request));
+                return Err(SubmitError::Busy(request, BusyReason::SeekQueueFull));
             }
             return match try_submit_traced(self.requests.as_ref(), request, diagnostic) {
                 Ok(()) => Ok(()),
@@ -1539,7 +1570,7 @@ impl Service {
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
             {
-                return Err(SubmitError::Busy(request));
+                return Err(SubmitError::Busy(request, BusyReason::ExportPending));
             }
             match try_submit_traced(self.requests.as_ref(), request, diagnostic) {
                 Ok(()) => Ok(()),
@@ -1597,7 +1628,10 @@ impl Service {
         intent: ResidentArrangementSeekIntent,
     ) -> Result<(), SubmitError> {
         if self.arrangement_seek.is_some() {
-            return Err(SubmitError::Busy(Request::ResidentArrangementSeek(intent)));
+            return Err(SubmitError::Busy(
+                Request::ResidentArrangementSeek(intent),
+                BusyReason::SeekWorkerActive,
+            ));
         }
         self.submit(Request::ResidentArrangementSeek(intent))
     }
@@ -11401,7 +11435,10 @@ mod service_tests {
 
         assert!(matches!(
             service.submit(Request::Export(directory.0.join("busy.wav"))),
-            Err(SubmitError::Busy(Request::Export(_)))
+            Err(SubmitError::Busy(
+                Request::Export(_),
+                BusyReason::ExportPending
+            ))
         ));
         service
             .submit(Request::Edit(Command::ToggleMute(track)))

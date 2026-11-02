@@ -25,6 +25,7 @@ use std::{
 mod export_refusal_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_replacement_tests;
+mod submission;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod verified_gain_tests;
 
@@ -1183,229 +1184,27 @@ impl EditorView {
         visible_change |= self.pump_tuning_gesture();
         if !self.tuning.client.has_pending_requests() && !self.tuning.client.is_recovery_pending() {
             while let Some(request) = self.pending_requests.pop_front() {
-                let resize_request = self.pending_trim_matches(&request);
-                let loop_request = self.pending_loop_matches(&request);
-                let group_copy_request = self.pending_group_copy_matches(&request);
-                let group_selection_request = self.pending_group_selection_matches(&request);
-                let clip_detail_request = self.audio_clip_controls.matches(&request);
-                let audio_events_request = self.pending_audio_events_matches(&request);
-                let clip_loop_request = self.pending_clip_loop_matches(&request);
-                let clip_move_request = self.pending_clip_move_matches(&request);
-                let section_request = self.pending_section_matches(&request);
-                let track_reorder_request = self.pending_track_reorder_matches(&request);
-                let duplicate_request = self.pending_duplicate_matches(&request);
-                let track_clipboard_request = self.pending_track_clipboard_matches(&request);
-                let midi_drag_request = self.pending_midi_drag_matches(&request);
-                let fade_request = self.pending_fade_matches(&request);
-                let clip_gain_request = self.clip_gain_matches(&request);
-                let gain_request = self.pending_gain_matches(&request);
-                let gain_take_request = self.pending_gain_take_matches(&request);
-                let device_automation_request = self.pending_device_automation_matches(&request);
-                let time_copy_request = self.pending_time_copy_matches(&request);
-                let import_intent = super::truncated_import::ImportIntent::capture(&request);
-                match self.service.submit(request) {
-                    Ok(()) => {
-                        self.worker_requests_pending =
-                            self.worker_requests_pending.saturating_add(1);
-                        self.truncated_import_submitted(import_intent);
-                        if time_copy_request {
-                            self.time_copy_submitted();
-                        }
-                        if resize_request {
-                            self.trim_request_submitted();
-                        }
-                        if loop_request {
-                            self.loop_request_submitted();
-                        }
-                        if group_copy_request {
-                            self.group_copy_submitted();
-                        }
-                        if group_selection_request {
-                            self.group_selection_submitted();
-                        }
-                        if clip_detail_request {
-                            self.audio_clip_controls
-                                .submitted(self.worker_requests_pending);
-                        }
-                        if audio_events_request {
-                            self.audio_events_submitted();
-                        }
-                        if clip_loop_request {
-                            self.clip_loop_submitted();
-                        }
-                        if clip_move_request {
-                            self.clip_move_submitted();
-                        }
-                        if section_request {
-                            self.section_submitted();
-                        }
-                        if track_reorder_request {
-                            self.track_reorder_submitted();
-                        }
-                        if track_clipboard_request {
-                            self.track_clipboard_submitted();
-                        }
-                        if duplicate_request {
-                            self.duplicate_submitted();
-                        }
-                        if midi_drag_request {
-                            self.midi_drag_submitted();
-                        }
-                        if fade_request {
-                            self.fade_submitted();
-                        }
-                        if clip_gain_request {
-                            self.clip_gain_submitted();
-                        }
-                        if gain_request {
-                            self.gain_submitted();
-                        }
-                        if gain_take_request {
-                            self.gain_take_submitted();
-                        }
-                        if device_automation_request {
-                            self.device_automation_submitted();
-                        }
-                    }
-                    Err(SubmitError::Full(request)) => {
+                let Err(refused) = self.submit_to_service(request) else {
+                    continue;
+                };
+                match refused.error {
+                    SubmitError::Full(request) => {
                         self.pending_requests.push_front(request);
                         break;
                     }
-                    Err(SubmitError::Busy(request)) => {
-                        self.midi_take_not_submitted(&request);
-                        self.gain_take_not_submitted(&request);
-                        if resize_request {
-                            self.retire_pending_trim();
-                        }
-                        if loop_request {
-                            self.pending_loop = None;
-                        }
-                        self.retire_unsubmitted_export(&request);
-                        clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
-                        if group_copy_request {
-                            self.pending_group_copy = None;
-                        }
-                        if group_selection_request {
-                            self.retire_group_selection();
-                        }
-                        if audio_events_request {
-                            visible_change |= self.retire_pending_audio_events();
-                        }
-                        if clip_loop_request {
-                            visible_change |= self.retire_pending_clip_loop();
-                        }
-                        if clip_move_request {
-                            self.retire_pending_clip_move();
-                        }
-                        if section_request {
-                            self.retire_pending_section();
-                        }
-                        if track_reorder_request {
-                            self.retire_pending_track_reorder();
-                        }
-                        if track_clipboard_request {
-                            self.pending_track_clipboard = None;
-                        }
-                        if duplicate_request {
-                            self.duplicate_intent.reject();
-                        }
-                        if midi_drag_request {
-                            self.retire_pending_midi_drag();
-                        }
-                        if fade_request {
-                            self.retire_pending_fade();
-                        }
-                        if clip_gain_request {
-                            self.retire_clip_gain();
-                        }
-                        if gain_request {
-                            self.retire_pending_gain();
-                        }
-                        if device_automation_request {
-                            self.retire_pending_device_automation();
-                        }
-                        if time_copy_request {
-                            self.pending_created_note_selection = None;
-                        }
-                        visible_change |=
-                            replace_error(&mut self.error, "an export is already pending");
+                    SubmitError::Busy(request, reason) => {
+                        visible_change |= self.on_request_refused(
+                            refused.kinds,
+                            &request,
+                            submission::Refusal::Busy(reason),
+                        );
                     }
-                    Err(SubmitError::Closed(request)) => {
-                        self.midi_take_not_submitted(&request);
-                        self.gain_take_not_submitted(&request);
-                        self.cancel_new_preparation();
-                        if time_copy_request {
-                            self.pending_created_note_selection = None;
-                        }
-                        if resize_request {
-                            self.retire_pending_trim();
-                        }
-                        if loop_request {
-                            self.pending_loop = None;
-                        }
-                        if matches!(&request, Request::ImportAudioBatch { .. }) {
-                            if let Some(control) = self.audio_batch.take() {
-                                control.request_cancel();
-                            }
-                            self.audio_batch_progress = None;
-                        }
-                        self.retire_unsubmitted_export(&request);
-                        if matches!(
-                            request,
-                            Request::SaveNew(_)
-                                | Request::SaveCurrent
-                                | Request::SaveCurrentWithFormatUpgrade { .. }
-                        ) {
-                            self.saving_project = false;
-                            self.cancel_open_after_save();
-                        }
-                        visible_change |= replace_error(&mut self.error, "project worker stopped");
-                        if request.is_project_open() {
-                            self.opening_project = false;
-                        }
-                        clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
-                        if group_copy_request {
-                            self.pending_group_copy = None;
-                        }
-                        if group_selection_request {
-                            self.retire_group_selection();
-                        }
-                        if audio_events_request {
-                            visible_change |= self.retire_pending_audio_events();
-                        }
-                        if clip_loop_request {
-                            visible_change |= self.retire_pending_clip_loop();
-                        }
-                        if clip_move_request {
-                            self.retire_pending_clip_move();
-                        }
-                        if section_request {
-                            self.retire_pending_section();
-                        }
-                        if track_reorder_request {
-                            self.retire_pending_track_reorder();
-                        }
-                        if track_clipboard_request {
-                            self.pending_track_clipboard = None;
-                        }
-                        if duplicate_request {
-                            self.duplicate_intent.reject();
-                        }
-                        if midi_drag_request {
-                            self.retire_pending_midi_drag();
-                        }
-                        if fade_request {
-                            self.retire_pending_fade();
-                        }
-                        if clip_gain_request {
-                            self.retire_clip_gain();
-                        }
-                        if gain_request {
-                            self.retire_pending_gain();
-                        }
-                        if device_automation_request {
-                            self.retire_pending_device_automation();
-                        }
+                    SubmitError::Closed(request) => {
+                        visible_change |= self.on_request_refused(
+                            refused.kinds,
+                            &request,
+                            submission::Refusal::Closed,
+                        );
                         break;
                     }
                 }
@@ -3623,106 +3422,23 @@ impl EditorView {
                 return false;
             }
         }
-        let resize_request = self.pending_trim_matches(&request);
-        let loop_request = self.pending_loop_matches(&request);
-        let group_copy_request = self.pending_group_copy_matches(&request);
-        let group_selection_request = self.pending_group_selection_matches(&request);
-        let clip_detail_request = self.audio_clip_controls.matches(&request);
-        let audio_events_request = self.pending_audio_events_matches(&request);
-        let clip_loop_request = self.pending_clip_loop_matches(&request);
-        let clip_move_request = self.pending_clip_move_matches(&request);
-        let section_request = self.pending_section_matches(&request);
-        let track_reorder_request = self.pending_track_reorder_matches(&request);
-        let duplicate_request = self.pending_duplicate_matches(&request);
-        let track_clipboard_request = self.pending_track_clipboard_matches(&request);
-        let midi_drag_request = self.pending_midi_drag_matches(&request);
-        let fade_request = self.pending_fade_matches(&request);
-        let clip_gain_request = self.clip_gain_matches(&request);
-        let gain_request = self.pending_gain_matches(&request);
-        let gain_take_request = self.pending_gain_take_matches(&request);
-        let device_automation_request = self.pending_device_automation_matches(&request);
-        let import_intent = super::truncated_import::ImportIntent::capture(&request);
-        match self.service.submit(request) {
-            Ok(()) => {
-                self.worker_submitted();
-                self.truncated_import_submitted(import_intent);
-                if resize_request {
-                    self.trim_request_submitted();
-                }
-                if loop_request {
-                    self.loop_request_submitted();
-                }
-                if group_copy_request {
-                    self.group_copy_submitted();
-                }
-                if group_selection_request {
-                    self.group_selection_submitted();
-                }
-                if clip_detail_request {
-                    self.audio_clip_controls
-                        .submitted(self.worker_requests_pending);
-                }
-                if audio_events_request {
-                    self.audio_events_submitted();
-                }
-                if clip_loop_request {
-                    self.clip_loop_submitted();
-                }
-                if clip_move_request {
-                    self.clip_move_submitted();
-                }
-                if section_request {
-                    self.section_submitted();
-                }
-                if track_reorder_request {
-                    self.track_reorder_submitted();
-                }
-                if track_clipboard_request {
-                    self.track_clipboard_submitted();
-                }
-                if duplicate_request {
-                    self.duplicate_submitted();
-                }
-                if midi_drag_request {
-                    self.midi_drag_submitted();
-                }
-                if fade_request {
-                    self.fade_submitted();
-                }
-                if clip_gain_request {
-                    self.clip_gain_submitted();
-                }
-                if gain_request {
-                    self.gain_submitted();
-                }
-                if gain_take_request {
-                    self.gain_take_submitted();
-                }
-                if device_automation_request {
-                    self.device_automation_submitted();
-                }
-                true
-            }
-            Err(SubmitError::Full(request))
+        let Err(refused) = self.submit_to_service(request) else {
+            return true;
+        };
+        let (request, refusal) = match refused.error {
+            SubmitError::Full(request)
                 if self.pending_requests.len() + self.device_gesture_barriers.len()
                     < UI_REQUEST_CAPACITY =>
             {
                 self.pending_requests.push_back(request);
-                true
+                return true;
             }
-            Err(SubmitError::Full(_)) => {
-                self.error = Some("request queue full · edit was not applied".into());
-                false
-            }
-            Err(SubmitError::Busy(_)) => {
-                self.error = Some("an export is already pending".into());
-                false
-            }
-            Err(SubmitError::Closed(_)) => {
-                self.error = Some("project worker stopped".into());
-                false
-            }
-        }
+            SubmitError::Full(request) => (request, submission::Refusal::QueueFull),
+            SubmitError::Busy(request, reason) => (request, submission::Refusal::Busy(reason)),
+            SubmitError::Closed(request) => (request, submission::Refusal::Closed),
+        };
+        self.on_request_refused(refused.kinds, &request, refusal);
+        false
     }
 
     pub(super) fn request_seek(&mut self, frame: u64) {
