@@ -947,6 +947,12 @@ mod tests {
             })
         });
         visual.run_until_parked();
+        let disabled_blank = point(
+            plot.left() + plot.size.width * 0.35,
+            plot.top() + plot.size.height * 0.2,
+        );
+        visual.simulate_mouse_move(disabled_blank, None, Modifiers::default());
+        visual.run_until_parked();
         assert!(
             visual
                 .debug_bounds("fixture-eq-graph-creation-hint-bell")
