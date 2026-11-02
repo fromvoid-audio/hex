@@ -16,6 +16,9 @@ use hex_project::Command;
 use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
 
+/// Status-bar disk-overload slot; fits the four-character `disk` label.
+pub(super) const DISK_OVERLOAD_WIDTH: f32 = 32.0;
+
 impl EditorView {
     pub(super) fn history_action(&mut self, request: SessionRequest, cx: &mut Context<Self>) {
         if !self.cancel_sampler_drafts(cx)
@@ -385,6 +388,33 @@ impl EditorView {
                 .into()
             }),
         );
+        // Fixed-width slot so lighting the indicator never shifts the bar.
+        let mut disk = div()
+            .id("editor-disk-overload")
+            .debug_selector(|| "editor-disk-overload".into())
+            .w(px(DISK_OVERLOAD_WIDTH))
+            .h_full()
+            .flex_none()
+            .truncate()
+            .text_center();
+        if self.disk_overload.shown() {
+            let description = super::disk_overload::description(self.disk_overload.count());
+            disk = disk
+                .tooltip(move |_, cx| {
+                    cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::Identification,
+                        description: description.clone().into(),
+                    })
+                    .into()
+                })
+                .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                .child(
+                    div()
+                        .debug_selector(|| "editor-disk-overload-lit".into())
+                        .child(theme::text("disk")),
+                );
+        }
+        bar = bar.child(disk);
         if let Some(status) = self.audio_status() {
             let applied_audio = status.applied_revision.load(Relaxed);
             let misses = status.deadline_misses.load(Relaxed);

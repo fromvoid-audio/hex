@@ -105,6 +105,7 @@ mod device_gesture;
 mod device_panel;
 mod device_preset;
 mod dialogs;
+mod disk_overload;
 mod display_error;
 mod drag;
 mod drag_autoscroll;
@@ -930,6 +931,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
     redraw_gate: RedrawGate,
     output_meter_frame: Option<refresh::AudioFrame>,
+    disk_overload: disk_overload::DiskOverload,
     pub(in crate::editor) project_generation: u64,
     clip_view_open: bool,
     device_panel_active: bool,
@@ -1657,6 +1659,7 @@ impl EditorView {
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
             redraw_gate: RedrawGate::default(),
             output_meter_frame: None,
+            disk_overload: disk_overload::DiskOverload::default(),
             project_generation: 0,
             clip_view_open: true,
             device_panel_active: false,
