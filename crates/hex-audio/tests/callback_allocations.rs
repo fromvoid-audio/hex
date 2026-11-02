@@ -3171,7 +3171,12 @@ fn legacy_fallback_owns_persistent_stateful_renderer_off_callback() -> Result<()
     assert_eq!(output, expected_handoff);
 
     oracle = inherited;
-    oracle.apply(PlaybackCommand::Seek(0));
+    // The callback declicks a queued Seek while playing (#4140).
+    oracle
+        .try_apply_declicked_action(hex_engine::playback::PlaybackAction::Transport(
+            PlaybackCommand::Seek(0),
+        ))
+        .map_err(|_| "oracle Seek refused")?;
     let mut expected_seek = [[0.0; 2]; 128];
     oracle.render(&mut expected_seek)?;
     control
@@ -3180,7 +3185,12 @@ fn legacy_fallback_owns_persistent_stateful_renderer_off_callback() -> Result<()
     measured_block(&mut callback, &mut output);
     assert_eq!(output, expected_seek);
 
-    oracle.apply(PlaybackCommand::Stop);
+    // The callback declicks a queued Stop over this 128-frame block (#4151).
+    oracle
+        .try_apply_declicked_action(hex_engine::playback::PlaybackAction::Transport(
+            PlaybackCommand::Stop,
+        ))
+        .map_err(|_| "oracle Stop refused")?;
     let mut expected_stop = [[1.0; 2]; 128];
     oracle.render(&mut expected_stop)?;
     control

@@ -1503,8 +1503,9 @@ impl Playback {
     }
 
     /// Apply with the transport declick described in `transport_fade`: a
-    /// Pause/Stop while playing is admitted now and applied after its fade;
-    /// Play from a paused, nonzero position ramps in. Static refusals are
+    /// Pause/Stop or transport Seek while playing is admitted now and applied
+    /// after its fade, a Seek then ramping in at its target; Play from a
+    /// paused, nonzero position ramps in. Static refusals are
     /// reported here. A deferred action that fails at its fade end falls back
     /// to Stop and is reported once by `take_transport_fade_failure`.
     pub fn try_apply_declicked_action(
@@ -1512,7 +1513,7 @@ impl Playback {
         action: PlaybackAction,
     ) -> Result<(), PlaybackActionError> {
         self.complete_transport_fade();
-        if transport_fade::fades_out(action) && self.playing() {
+        if (transport_fade::fades_out(action) || transport_fade::seeks(action)) && self.playing() {
             self.admit_declicked_stop(action)?;
             self.transport_fade.begin_out(action);
             return Ok(());
@@ -1530,6 +1531,12 @@ impl Playback {
             self.transport_fade.begin_in(frames);
         }
         Ok(())
+    }
+
+    /// Apply a pending declicked Pause/Stop now, at the current frame, so
+    /// a host can settle its own transport effects before a later action.
+    pub fn finish_transport_fade(&mut self) {
+        self.complete_transport_fade();
     }
 
     /// The Pause/Stop whose fade is in progress, if any.
@@ -1555,6 +1562,9 @@ impl Playback {
                 crate::SessionPlaybackCommand::Pause
             }
             PlaybackAction::Transport(PlaybackCommand::Stop) => crate::SessionPlaybackCommand::Stop,
+            PlaybackAction::Transport(PlaybackCommand::Seek(frame)) => {
+                crate::SessionPlaybackCommand::Seek(frame)
+            }
             PlaybackAction::Session(command) => command,
             _ => {
                 return Err(PlaybackActionError::Session(
@@ -1590,8 +1600,9 @@ impl Playback {
                 applied: result.is_ok(),
             });
         match result {
-            // Paused tails and monitoring return without a step.
-            Ok(()) if transport_fade::pauses(action) => self
+            // Paused tails and monitoring, and the seek target, return
+            // without a step.
+            Ok(()) if transport_fade::pauses(action) || transport_fade::seeks(action) => self
                 .transport_fade
                 .begin_in(transport_fade::fade_frames(self.sample_rate())),
             Ok(()) => {}

@@ -285,6 +285,36 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.apply_action(action),
         }
     }
+    /// Pause/Stop while playing fade out before applying (Pulse #4138).
+    pub(super) fn try_apply_declicked_action(
+        &mut self,
+        action: PlaybackAction,
+    ) -> Result<(), hex_engine::PlaybackActionError> {
+        match self {
+            Self::Legacy(p) => p.try_apply_declicked_action(action),
+            Self::Eligible(p) => p.apply_declicked_action(action),
+        }
+    }
+    pub(super) fn finish_transport_fade(&mut self) {
+        match self {
+            Self::Legacy(p) => p.finish_transport_fade(),
+            Self::Eligible(p) => p.finish_transport_fade(),
+        }
+    }
+    pub(super) fn pending_transport_fade(&self) -> Option<PlaybackAction> {
+        match self {
+            Self::Legacy(p) => p.pending_transport_fade(),
+            Self::Eligible(p) => p.pending_transport_fade(),
+        }
+    }
+    pub(super) fn take_transport_fade_failure(
+        &mut self,
+    ) -> Option<hex_engine::PlaybackActionRejection> {
+        match self {
+            Self::Legacy(p) => p.take_transport_fade_failure(),
+            Self::Eligible(p) => p.take_transport_fade_failure(),
+        }
+    }
     pub(super) fn apply_priority_stop(
         &mut self,
         clock: &hex_engine::computer_keyboard::KeyboardActivationClock,

@@ -43,3 +43,41 @@ fn declicked_pause_resume_and_stop_are_callback_allocation_free() -> Result<(), 
     assert!(!playback.playing());
     Ok(())
 }
+
+/// The prepared callback consumes a queued Pause/Stop and settles its
+/// deferred host effects at the fade end inside measured blocks (#4151).
+#[test]
+fn queued_callback_pause_and_stop_fades_are_allocation_free() -> Result<(), Box<dyn Error>> {
+    let workload = fixture::fixture(false)?;
+    let playback = Playback::try_from_prepared_with_session(prepare_fixture(&workload)?)?;
+    let (mut control, mut callback) = prepared::channel(playback.sample_rate())?;
+    control
+        .publish(playback)
+        .map_err(|_| "active publication failed")?;
+    let mut output = [[0.0; 2]; 300];
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "play admission failed")?;
+    callback.begin_block();
+    callback.render(&mut output)?;
+    for command in [
+        PlaybackCommand::Seek(1000),
+        PlaybackCommand::Pause,
+        PlaybackCommand::Play,
+        PlaybackCommand::Stop,
+    ] {
+        control
+            .command(command)
+            .map_err(|_| "command admission failed")?;
+        // Each 300-frame block crosses the 128-frame fade end.
+        measured_block(&mut callback, &mut output);
+        assert_eq!(
+            control.status.playing.load(Ordering::Acquire),
+            matches!(command, PlaybackCommand::Play | PlaybackCommand::Seek(_)),
+            "{command:?}"
+        );
+    }
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    Ok(())
+}
