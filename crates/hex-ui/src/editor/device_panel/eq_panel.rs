@@ -23,7 +23,7 @@ mod gestures;
 mod group_move;
 use group_move::{frequency_from_x, q_from_y};
 mod node_geometry;
-use node_geometry::node_position;
+use node_geometry::{creation_kind, node_position};
 mod scroll_queue;
 pub(in crate::editor) use scroll_queue::after_worker_event as after_scroll_worker_event;
 mod response;
@@ -36,10 +36,6 @@ pub(super) use spectrum::{
     is_eq as is_spectrum_eq, result as spectrum_result, sync_visible as sync_visible_spectra,
     toggle as spectrum_toggle,
 };
-
-// Outer five percent of the inset plot: side cuts precede bottom notches.
-// Existing node hits retain priority through the response graph owner.
-const CUT_CREATION_EDGE: f32 = 0.05;
 
 // Commands and latched settings share text geometry, retaining distinct paint.
 fn text_action_button(
@@ -887,18 +883,6 @@ fn marquee_event(
     panel.collapse = None;
     cx.notify();
 }
-fn creation_kind([x, y]: [f32; 2]) -> eq::NodeKind {
-    if x <= CUT_CREATION_EDGE {
-        eq::NodeKind::LowCut
-    } else if x >= 1.0 - CUT_CREATION_EDGE {
-        eq::NodeKind::HighCut
-    } else if y <= CUT_CREATION_EDGE {
-        eq::NodeKind::Notch
-    } else {
-        eq::NodeKind::Bell
-    }
-}
-
 /// Caller-owned shapes let the generic widget indicate the exact same action
 /// as the canonical EQ creation resolver without depending on device/DSP types.
 fn creation_hint(position: [f32; 2]) -> ResponseGraphCreationHint {
@@ -1503,35 +1487,35 @@ mod tests {
     fn creation_zones_and_vertical_domains_have_explicit_boundaries() {
         assert_eq!(creation_kind([0.0, 0.5]), eq::NodeKind::LowCut);
         assert_eq!(
-            creation_kind([CUT_CREATION_EDGE, 0.5]),
+            creation_kind([node_geometry::CUT_CREATION_EDGE, 0.5]),
             eq::NodeKind::LowCut
         );
         assert_eq!(
-            creation_kind([CUT_CREATION_EDGE + 0.001, 0.5]),
+            creation_kind([node_geometry::CUT_CREATION_EDGE + 0.001, 0.5]),
             eq::NodeKind::Bell
         );
         assert_eq!(creation_kind([0.5, 0.5]), eq::NodeKind::Bell);
         assert_eq!(
-            creation_kind([1.0 - CUT_CREATION_EDGE - 0.001, 0.5]),
+            creation_kind([1.0 - node_geometry::CUT_CREATION_EDGE - 0.001, 0.5]),
             eq::NodeKind::Bell
         );
         assert_eq!(
-            creation_kind([1.0 - CUT_CREATION_EDGE, 0.5]),
+            creation_kind([1.0 - node_geometry::CUT_CREATION_EDGE, 0.5]),
             eq::NodeKind::HighCut
         );
         assert_eq!(creation_kind([1.0, 0.5]), eq::NodeKind::HighCut);
-        for x in [0.0, CUT_CREATION_EDGE] {
+        for x in [0.0, node_geometry::CUT_CREATION_EDGE] {
             assert_eq!(creation_kind([x, 0.0]), eq::NodeKind::LowCut);
         }
-        for x in [1.0 - CUT_CREATION_EDGE, 1.0] {
+        for x in [1.0 - node_geometry::CUT_CREATION_EDGE, 1.0] {
             assert_eq!(creation_kind([x, 0.0]), eq::NodeKind::HighCut);
         }
-        for y in [0.0, CUT_CREATION_EDGE] {
+        for y in [0.0, node_geometry::CUT_CREATION_EDGE] {
             assert_eq!(creation_kind([0.5, y]), eq::NodeKind::Notch);
             assert_eq!(creation_hint([0.5, y]).id, "notch");
         }
         assert_eq!(
-            creation_kind([0.5, CUT_CREATION_EDGE + 0.001]),
+            creation_kind([0.5, node_geometry::CUT_CREATION_EDGE + 0.001]),
             eq::NodeKind::Bell
         );
         assert_eq!(creation_hint([0.0, 0.0]).id, "low-cut");
