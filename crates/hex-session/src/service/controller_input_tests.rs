@@ -1,18 +1,14 @@
 //! Worker-side lease admission and same-instrument revision retention.
 use super::*;
+use crate::test_wait::HANG_BOUND;
 use hex_engine::live_expression::{LiveExpressionInput, Snapshot};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
-use std::time::Duration;
-/// Generous hang bound, not a latency budget. Operator preparation costs about
-/// 2 s of unoptimized CPU per test, plus a shared one-time first-use cost, so
-/// under a loaded machine a single event can take several seconds.
-const EVENT_BOUND: Duration = Duration::from_secs(60);
 #[track_caller]
 fn next(service: &Service) -> Event {
     // Blocks on the event channel itself instead of polling against a short deadline.
-    match service.events.recv_timeout(EVENT_BOUND) {
+    match service.events.recv_timeout(HANG_BOUND) {
         Ok(event) => event,
-        Err(error) => panic!("worker event absent after {EVENT_BOUND:?}: {error}"),
+        Err(error) => panic!("worker event absent after {HANG_BOUND:?}: {error}"),
     }
 }
 #[test]
