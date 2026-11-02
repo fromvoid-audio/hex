@@ -418,4 +418,102 @@ mod tests {
             assert!(height <= first);
         }
     }
+
+    /// Inspection check (hex-ui hosts no allocation counter): steady-state
+    /// observed ticks stage readings in the same retained buffers.
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn steady_state_meter_ticks_reuse_the_staging_buffers(cx: &mut gpui::TestAppContext) {
+        use crate::editor::clip_drag_ui_test::editor_window;
+        use gpui::{VisualTestContext, px, size};
+        use std::{collections::BTreeMap, sync::Arc, sync::atomic::Ordering::Acquire};
+
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        for name in ["a", "b"] {
+            model
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap();
+        }
+        let project = model.project().clone();
+        let prepared = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &project,
+                &BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let observation = Arc::new(
+            hex_engine::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap(),
+        );
+        let deadline = crate::test_wait::hang_deadline();
+        let (mut output, _backend) = loop {
+            match hex_audio::worker_fixture::open(48_000) {
+                Ok(output) => break output,
+                Err(error)
+                    if error == "audio output is open or still shutting down"
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::yield_now()
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        let client = output.take_client().unwrap();
+        let applied = client.status().unwrap().applied_revision.load(Acquire);
+        let (window, editor) = editor_window(cx, project, Arc::default());
+        let visual = VisualTestContext::from_window(window, cx);
+        visual.simulate_resize(size(px(1_280.0), px(800.0)));
+        visual.run_until_parked();
+        let now = Instant::now();
+        let pointers = editor.update(cx, |view, _| {
+            view.audio = Some(crate::EditorAudio {
+                control: client,
+                sample_rate: 48_000,
+                label: "meter scratch fixture".into(),
+                spectrum_error: None,
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+            view.audible_playback = Some(super::super::PlaybackCandidate {
+                worker_requires_preroll: None,
+                observation: Some(observation),
+                audio_revision: applied,
+                project_generation: view.project_generation,
+                state: Arc::clone(view.state.as_ref().unwrap()),
+                prepared_revision: Some(prepared),
+                seek_request_id: None,
+                device_preview_identity: None,
+                tuning_preview_identity: None,
+            });
+            // Warm-up: the first observed ticks size the staging buffers.
+            for tick in 0..2 {
+                view.tick_track_meters(now + Duration::from_millis(16 * tick));
+            }
+            let scratch = &view.track_meters.scratch;
+            assert_eq!(scratch.visible.len(), 2, "both rows are observed");
+            assert_eq!(scratch.readings.len(), 2, "both rows are read");
+            (
+                scratch.visible.as_ptr(),
+                scratch.readings.as_ptr(),
+                scratch.returns.as_ptr(),
+            )
+        });
+        editor.update(cx, |view, _| {
+            for tick in 2..10 {
+                view.tick_track_meters(now + Duration::from_millis(16 * tick));
+                let scratch = &view.track_meters.scratch;
+                assert_eq!(scratch.readings.len(), 2);
+                assert_eq!(
+                    (
+                        scratch.visible.as_ptr(),
+                        scratch.readings.as_ptr(),
+                        scratch.returns.as_ptr(),
+                    ),
+                    pointers,
+                    "tick {tick} reallocated a staging buffer"
+                );
+            }
+        });
+    }
 }
