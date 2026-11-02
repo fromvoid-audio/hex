@@ -110,6 +110,11 @@ pub(super) struct NativeAudioSink {
     sampler: Option<sampler::Sampler>,
     sampler_parameter: Option<sampler::EditPending>,
     section_edit: Option<section_edit::Pending>,
+    /// Stopped edit taken with no output: no callback renders or moves the
+    /// cursor, so control state is the position witness (#3917).
+    offline_section_edit: Option<hex_session::service::ArrangementEditPosition>,
+    /// Last scheduled cursor read from a relinquished output.
+    last_stopped_frame: u64,
     ordinary_pcm_frames: u64,
     verified_pcm_frames: u64,
     suspended_output: Option<u64>,
@@ -161,6 +166,8 @@ impl NativeAudioSink {
             sampler: None,
             sampler_parameter: None,
             section_edit: None,
+            offline_section_edit: None,
+            last_stopped_frame: 0,
             ordinary_pcm_frames: 0,
             verified_pcm_frames: 0,
             suspended_output: None,
@@ -178,8 +185,16 @@ impl NativeAudioSink {
         // Publication/StreamOwner relinquish before any event can backpressure.
         // All accepted construction stays inside Root's terminal/lifecycle book.
         self.retain_relinquished_output();
+        if let Some(control) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+        {
+            self.last_stopped_frame = control.status.position.load(Acquire);
+        }
         drop(self.output.take());
         self.section_edit = None;
+        self.offline_section_edit = None;
         self.resident.current_submission = None;
         self.resident.applied_loop = None;
         self.opening = None;
