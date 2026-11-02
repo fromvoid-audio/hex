@@ -786,8 +786,7 @@ impl EditorView {
                                         recovery_status = Some("restoring audio graph");
                                     } else {
                                         self.fail_audio_recovery(
-                                            "audio opened but graph restore was not admitted"
-                                                .into(),
+                                            "audio opened but graph restore was not admitted",
                                         );
                                     }
                                 }
@@ -863,7 +862,7 @@ impl EditorView {
                     }
                     self.pending_restart_request = None;
                     self.pending_recovery_generation = None;
-                    let message = format!("audio unavailable · {}", error.to_lowercase());
+                    let message = super::audio_unavailable::unavailable_message(&error);
                     self.status = message.clone();
                     self.error = Some(message.into());
                     changed = true;
@@ -2701,7 +2700,7 @@ impl EditorView {
                             restart_request,
                         ) == AudioEventDisposition::Current =>
                         {
-                            let message = format!("audio unavailable · {}", error.to_lowercase());
+                            let message = super::audio_unavailable::unavailable_message(&error);
                             self.status = message.clone();
                             self.error = Some(message.into());
                             self.pending_restart_request = None;

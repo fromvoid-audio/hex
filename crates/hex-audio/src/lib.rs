@@ -19,6 +19,7 @@
 //! control.
 pub mod audio_diagnostics;
 mod device;
+mod open_outcome;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod plugin_effects;
 pub mod plugin_worker;
@@ -30,6 +31,7 @@ pub use lifecycle::{
     audio_lifecycle_failure, request_initial_open, request_recovery_open, request_worker_open,
     request_worker_open_with_profile, request_worker_open_with_reliable_action_outcomes,
 };
+pub use open_outcome::{OutputOpenError, RateMismatch};
 pub use render_fault::RenderFaultSnapshot;
 mod candidate_catalog;
 mod candidate_custody;

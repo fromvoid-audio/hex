@@ -49,7 +49,7 @@ impl EditorView {
             self.status = "restarting audio output".into();
             self.error = None;
         } else {
-            self.fail_audio_recovery("audio restart request was not admitted".into());
+            self.fail_audio_recovery("audio restart request was not admitted");
         }
     }
 
@@ -66,9 +66,7 @@ impl EditorView {
             .as_ref()
             .is_some_and(|audio| audio.control.has_action_outcomes());
         if reliable && self.recovery.seek_failed() {
-            self.fail_audio_recovery(
-                "recovered cursor request was not applied · retry available".into(),
-            );
+            self.fail_audio_recovery("recovered cursor request was not applied · retry available");
             return true;
         }
         let graph_is_current = self
@@ -83,9 +81,7 @@ impl EditorView {
                 status.device_fault.load(Relaxed) || status.render_fault.load(Relaxed)
             });
         if failed {
-            self.fail_audio_recovery(
-                "audio output failed during recovery · retry available".into(),
-            );
+            self.fail_audio_recovery("audio output failed during recovery · retry available");
             return true;
         }
         if let Some(position) = self.recovery.seek_needed(graph_is_current) {
@@ -127,9 +123,7 @@ impl EditorView {
                 .is_some_and(|(rejected, _)| rejected == revision)
                 && status.applied_revision.load(Acquire) < revision
         }) {
-            self.fail_audio_recovery(
-                "recovered cursor publication was rejected · retry available".into(),
-            );
+            self.fail_audio_recovery("recovered cursor publication was rejected · retry available");
             return true;
         }
         let position = status.position.load(Relaxed);
@@ -182,15 +176,22 @@ impl EditorView {
         false
     }
 
-    pub(super) fn fail_audio_recovery(&mut self, error: String) {
+    pub(super) fn fail_audio_recovery(&mut self, error: impl Into<hex_audio::OutputOpenError>) {
+        let error = error.into();
         self.offline_cursor = self.cursor_position();
         self.recovery.fail();
         self.retire_audio_preserving_gain_take();
         self.pending_recovery_generation = None;
         self.pending_restart_request = None;
         self.clear_audio_accounting();
+        if error.rate_mismatch().is_some() {
+            let message = super::audio_unavailable::unavailable_message(&error);
+            self.status = message.clone();
+            self.error = Some(message.into());
+            return;
+        }
         self.status = "audio unavailable · editing and saving remain available".into();
-        self.error = Some(error.into());
+        self.error = Some(error.to_string().into());
     }
 
     fn clear_audio_accounting(&mut self) {
