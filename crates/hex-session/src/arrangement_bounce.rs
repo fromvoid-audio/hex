@@ -427,6 +427,7 @@ impl Session {
                 audio: member.audio,
                 waveform: Arc::new(member.waveform),
                 frames: file.frames,
+                file_identity: member.file_identity,
             });
         }
         let mut media = self.media_bank();

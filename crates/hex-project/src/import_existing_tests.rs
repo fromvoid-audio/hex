@@ -249,6 +249,7 @@ fn missing_offline_and_device_assets_are_refused_atomically() {
         ]
     };
     let refuse = |project: Project, asset: AssetId| {
+        assert!(project.existing_import_frames(asset).is_err());
         let mut editor = Editor::new(project, 8).expect("editor");
         let before = editor.project().clone();
         assert!(imports(&mut editor, batch(asset), AudioImportWarp::Off).is_err());
@@ -257,6 +258,10 @@ fn missing_offline_and_device_assets_are_refused_atomically() {
         assert!(!editor.can_undo());
     };
 
+    assert_eq!(
+        editor.project().existing_import_frames(asset).ok(),
+        Some(100)
+    );
     refuse(editor.project().clone(), AssetId(u64::MAX));
 
     let offline = editor
