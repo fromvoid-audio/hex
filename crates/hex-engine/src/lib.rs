@@ -123,6 +123,8 @@ pub use gain_envelope::{
 mod clip_index;
 mod loop_seam;
 pub(crate) use loop_seam::LoopSeam;
+mod stream_miss_fade;
+pub use stream_miss_fade::{STREAM_MISS_FADE_VOICES, StreamMissFades};
 mod return_feed_plan;
 mod signal_graph;
 mod stream_demand;
@@ -236,36 +238,58 @@ pub(crate) fn render_streamed_page_span_captured(
     let Some(destination) = output.get_mut(output_offset..output_end) else {
         return 0;
     };
-    let mut incomplete = true;
-    if let Some(page) = pages.page(source.key(), page_index) {
-        let valid = page.page_index == page_index;
-        let available = if valid {
-            page.frames.len().saturating_sub(page_offset).min(count)
-        } else {
-            0
-        };
-        for (offset, destination) in destination.iter_mut().take(available).enumerate() {
-            let mut sample = page.frames[page_offset + offset];
-            if let Some((fade, fade_start)) = fade {
-                if let Some(frame) = timeline_frame.checked_add(offset as u64) {
-                    let gain = fade.gain_at(frame.saturating_sub(fade_start));
-                    sample[0] *= gain;
-                    sample[1] *= gain;
-                }
+    let (page, fades) = pages.page_and_miss_fades(source.key(), page_index);
+    let (frames, valid) = match page {
+        Some(page) if page.page_index == page_index => (page.frames, true),
+        _ => (&[][..], false),
+    };
+    let available = frames.len().saturating_sub(page_offset).min(count);
+    let mut voice = fades.map(|fades| fades.voice(source.key(), source_frame));
+    for (offset, destination) in destination.iter_mut().take(available).enumerate() {
+        let mut sample = frames[page_offset + offset];
+        if let Some((fade, fade_start)) = fade {
+            if let Some(frame) = timeline_frame.checked_add(offset as u64) {
+                let gain = fade.gain_at(frame.saturating_sub(fade_start));
+                sample[0] *= gain;
+                sample[1] *= gain;
             }
-            if clip_gain != 1.0 {
-                sample[0] *= clip_gain;
-                sample[1] *= clip_gain;
-            }
-            mix.add_captured(
-                destination,
-                sample,
-                capture
-                    .as_deref_mut()
-                    .and_then(|frames| frames.get_mut(output_offset + offset)),
-            );
         }
-        incomplete = !valid || available < count;
+        if clip_gain != 1.0 {
+            sample[0] *= clip_gain;
+            sample[1] *= clip_gain;
+        }
+        if let Some(voice) = voice.as_mut() {
+            sample = voice.present(sample);
+        }
+        mix.add_captured(
+            destination,
+            sample,
+            capture
+                .as_deref_mut()
+                .and_then(|frames| frames.get_mut(output_offset + offset)),
+        );
+    }
+    let incomplete = !valid || available < count;
+    if let Some(mut voice) = voice {
+        if valid && available < count {
+            // A valid short page is the end of the source: true silence.
+            voice.end();
+        } else if !valid {
+            // Conceal the miss with the held sample under the falling gain.
+            for (offset, destination) in destination.iter_mut().enumerate().skip(available) {
+                let sample = voice.missing();
+                if sample == [0.0; 2] {
+                    continue;
+                }
+                mix.add_captured(
+                    destination,
+                    sample,
+                    capture
+                        .as_deref_mut()
+                        .and_then(|frames| frames.get_mut(output_offset + offset)),
+                );
+            }
+        }
     }
     if incomplete {
         pages.request_page(source.key(), page_index);
