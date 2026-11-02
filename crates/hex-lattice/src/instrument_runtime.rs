@@ -898,8 +898,7 @@ pub(super) fn validate_event_batch(
             velocity,
             ..
         } = event
-        {
-            if pitch > 127
+            && (pitch > 127
                 || velocity == 0
                 || velocity > 127
                 || events[..index].iter().any(|prior| {
@@ -908,10 +907,9 @@ pub(super) fn validate_event_batch(
                         NativeInstrumentEvent::NoteOn { occurrence_id: prior_id, .. }
                             if *prior_id == occurrence_id
                     )
-                })
-            {
-                return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
-            }
+                }))
+        {
+            return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
         }
         previous_offset = offset;
     }
