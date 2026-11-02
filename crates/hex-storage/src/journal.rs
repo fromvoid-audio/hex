@@ -2,6 +2,7 @@
 use crate::{FileToken, JournalChange, StorageError, encode, replacement};
 mod restart;
 mod slot_lock;
+mod untitled_slot;
 use hex_project::Project;
 pub use restart::{JournalRestartOutcome, JournalRestartToken, restart_journal};
 use slot_lock::{SlotLock, lock_slot};
@@ -10,6 +11,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
+pub use untitled_slot::{MAX_UNTITLED_SLOTS, UntitledSlotClaim, untitled_slot_path};
 
 const MAGIC: &[u8; 8] = b"HEXJRNL\0";
 const LOCK_MAGIC: &[u8; 8] = b"HEXJLOC\0";
