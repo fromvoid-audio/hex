@@ -30,6 +30,16 @@ pub(super) struct Resident {
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
 }
 impl Resident {
+    /// Stopped cursor and section loop of the retained offline publication.
+    pub(super) fn pending_cursor(&self) -> Option<hex_session::service::ArrangementEditPosition> {
+        self.pending
+            .as_ref()
+            .map(|pending| hex_session::service::ArrangementEditPosition {
+                frame: pending.playback.position(),
+                playing: false,
+                section_loop: pending.playback.section_loop(),
+            })
+    }
     pub(super) fn discard_obsolete_pending_after_restore(&mut self, context: AudioSourceContext) {
         if self
             .pending
@@ -287,7 +297,18 @@ impl NativeAudioSink {
                 self.desired.as_ref().map(|source| source.context()),
             );
         }
-        let section_policy = if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
+        let offline_edit = matches!(policy, ResidentPublicationPolicy::ArrangementEdit)
+            && self.offline_section_edit.is_some();
+        if offline_edit && self.output.is_some() {
+            self.cancel_section_edit();
+            return Err(ResidentPublicationRefusal {
+                playback,
+                error: "audio output opened during the arrangement edit; try again".into(),
+            });
+        }
+        let section_policy = if offline_edit {
+            None
+        } else if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
             match self.section_publication_policy() {
                 Ok(policy) => Some(policy),
                 Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
@@ -615,7 +636,7 @@ impl NativeAudioSink {
             resources: captured,
             observation,
             metadata,
-            policy: if replacing_document {
+            policy: if replacing_document || (offline_edit && self.take_offline_section_edit()) {
                 ResidentPublicationPolicy::InstallFreshRuntime
             } else {
                 policy

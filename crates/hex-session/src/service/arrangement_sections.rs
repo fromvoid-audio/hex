@@ -3,7 +3,7 @@
 //! waits for UI delivery, and priority Stop remains on the native command path.
 use super::diagnostics::SectionPhases;
 use super::*;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub(super) fn is_command(command: &Command) -> bool {
     matches!(
@@ -181,18 +181,30 @@ fn fenced_transition(
     admission: sampler_export::Admission<'_>,
 ) -> Result<Option<(Created, Arc<PreparedRevision>)>, SessionError> {
     let shutdown = Arc::clone(&session.shutdown);
-    let sink = events
-        .resident_audio()
-        .ok_or(SessionError::Invalid("native worker unavailable"))?;
     let source_context = hex_engine::AudioSourceContext {
         editor_revision: context.editor_revision.saturating_sub(1),
         ..context
     };
+    // A lease the worker resolved before dispatch, including its parked time.
+    let prefence = events.take_stopped_fence(source_context);
+    let parked = prefence
+        .as_ref()
+        .map_or(Duration::ZERO, super::stopped_arrangement::Prefence::waited);
+    let sink = events
+        .resident_audio()
+        .ok_or(SessionError::Invalid("native worker unavailable"))?;
     let mut phases = SectionPhases::default();
     let fence = Instant::now();
-    let position =
-        super::stopped_arrangement::acquire_position(sink, source_context, &shutdown, None, true);
+    let position = super::stopped_arrangement::acquire_position(
+        sink,
+        source_context,
+        &shutdown,
+        None,
+        true,
+        prefence,
+    );
     phases.fence = fence.elapsed();
+    phases.parked = parked;
     // A refused or timed-out lease is already cancelled by `acquire_position`.
     let committed = position.and_then(|position| {
         match session.section_snapshot(

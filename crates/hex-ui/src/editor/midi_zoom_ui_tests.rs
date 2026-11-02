@@ -4,6 +4,14 @@ use gpui::{ScrollDelta, ScrollWheelEvent, TestAppContext, point, px};
 use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
 
+/// Cmd zooms time; a plain wheel scrolls (see `midi_wheel`).
+fn cmd() -> gpui::Modifiers {
+    gpui::Modifiers {
+        platform: true,
+        ..Default::default()
+    }
+}
+
 #[gpui::test]
 fn wheel_zoom_anchors_pointer_and_does_not_mutate_project(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, _clip) = fixture(cx);
@@ -13,6 +21,7 @@ fn wheel_zoom_anchors_pointer_and_does_not_mutate_project(cx: &mut TestAppContex
     visual.simulate_event(ScrollWheelEvent {
         position: at,
         delta: ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        modifiers: cmd(),
         ..Default::default()
     });
     visual.run_until_parked();
@@ -52,6 +61,7 @@ fn newly_selected_clip_fits_once_and_worker_ack_keeps_manual_zoom(cx: &mut TestA
     visual.simulate_event(ScrollWheelEvent {
         position: roll.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        modifiers: cmd(),
         ..Default::default()
     });
     visual.run_until_parked();
@@ -112,6 +122,7 @@ fn wheel_accumulates_precise_motion_and_creation_hits_after_zoom(cx: &mut TestAp
         visual.simulate_event(ScrollWheelEvent {
             position: at(0.75),
             delta: ScrollDelta::Pixels(point(px(0.0), px(20.0))),
+            modifiers: cmd(),
             ..Default::default()
         });
         visual.run_until_parked();
@@ -122,6 +133,7 @@ fn wheel_accumulates_precise_motion_and_creation_hits_after_zoom(cx: &mut TestAp
     visual.simulate_event(ScrollWheelEvent {
         position: at(0.75),
         delta: ScrollDelta::Pixels(point(px(0.0), px(20.0))),
+        modifiers: cmd(),
         ..Default::default()
     });
     visual.run_until_parked();
@@ -192,6 +204,7 @@ fn wheel_can_zoom_out_past_source_and_ack_keeps_view(cx: &mut TestAppContext) {
     visual.simulate_event(ScrollWheelEvent {
         position: roll.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(-80.0))),
+        modifiers: cmd(),
         ..Default::default()
     });
     visual.run_until_parked();
@@ -244,6 +257,7 @@ fn piano_key_drag_zooms_pitch_and_preserves_note_editing(cx: &mut TestAppContext
     visual.simulate_event(ScrollWheelEvent {
         position: roll.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        modifiers: cmd(),
         ..Default::default()
     });
     visual.run_until_parked();
@@ -390,6 +404,7 @@ fn short_source_long_arrangement_notes_visibly_shrink_when_zooming_out(cx: &mut 
     visual.simulate_event(ScrollWheelEvent {
         position: roll.center(),
         delta: ScrollDelta::Pixels(point(px(0.0), px(-80.0))),
+        modifiers: cmd(),
         ..Default::default()
     });
     visual.run_until_parked();
@@ -474,12 +489,13 @@ fn option_wheel_zooms_pitch_under_pointer_and_preserves_time_and_history(cx: &mu
         visual.simulate_event(ScrollWheelEvent {
             position: roll.center(),
             delta: ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+            modifiers: cmd(),
             ..Default::default()
         });
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             assert_eq!((v.piano_pitch_low, v.piano_pitch_rows), pitch_view);
-            assert!(v.piano_beat_span < before.3, "plain wheel still zooms time");
+            assert!(v.piano_beat_span < before.3, "cmd-wheel zooms time");
         });
     }
 }
@@ -504,6 +520,7 @@ fn option_wheel_accumulates_independently_clamps_and_respects_held_marquee(
             delta: ScrollDelta::Pixels(point(px(0.0), px(delta))),
             modifiers: Modifiers {
                 alt,
+                platform: !alt,
                 ..Default::default()
             },
             ..Default::default()

@@ -2,7 +2,10 @@
 //! Owner types keep their diagnostic `Debug`; the editor never shows it.
 use hex_audio::{gain_recording, midi_recording};
 use hex_engine::ArrangementPrerollError;
-use hex_session::{arrangement_seek::ArrangementSeekSubmitError, service::SubmitError};
+use hex_session::{
+    arrangement_seek::ArrangementSeekSubmitError,
+    service::{BusyReason, SubmitError},
+};
 
 pub(super) fn seek_submit(error: &ArrangementSeekSubmitError) -> &'static str {
     match error {
@@ -44,7 +47,21 @@ pub(super) fn submit(error: &SubmitError) -> &'static str {
     match error {
         SubmitError::Full(_) => "the audio worker queue is full · try again",
         SubmitError::Closed(_) => "the audio worker stopped · reopen the project",
-        SubmitError::Busy(_) => "the audio worker is busy · try again",
+        SubmitError::Busy(_, reason) => busy(*reason),
+    }
+}
+
+/// The actual admission rule behind a `Busy` refusal; never a guessed cause.
+pub(super) fn busy(reason: BusyReason) -> &'static str {
+    match reason {
+        BusyReason::ExportPending => "an export is already pending",
+        BusyReason::InvalidBounceTarget => {
+            "nothing to bounce · select between one clip and the clip limit"
+        }
+        BusyReason::SeekWorkerActive => "seeking is owned by the prepared seek worker",
+        BusyReason::SeekQueueFull => "too many seeks are pending · try again",
+        BusyReason::DocumentIntentExhausted => "too many project opens this session · restart hex",
+        BusyReason::InvalidSaveCorrelation => "the save request was malformed · save again",
     }
 }
 
@@ -148,9 +165,31 @@ mod tests {
         for error in [
             SubmitError::Full(request()),
             SubmitError::Closed(request()),
-            SubmitError::Busy(request()),
+            SubmitError::Busy(request(), BusyReason::ExportPending),
         ] {
             assert_readable(submit(&error));
+        }
+    }
+
+    #[test]
+    fn each_busy_reason_has_its_own_readable_message() {
+        use BusyReason::*;
+        let reasons = [
+            ExportPending,
+            InvalidBounceTarget,
+            SeekWorkerActive,
+            SeekQueueFull,
+            DocumentIntentExhausted,
+            InvalidSaveCorrelation,
+        ];
+        let messages: std::collections::BTreeSet<_> = reasons.map(busy).into_iter().collect();
+        assert_eq!(
+            messages.len(),
+            reasons.len(),
+            "busy reasons must stay distinct"
+        );
+        for message in messages {
+            assert_readable(message);
         }
     }
 }

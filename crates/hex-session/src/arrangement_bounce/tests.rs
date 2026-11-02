@@ -712,6 +712,7 @@ fn nonreceiver_audio_bounce_case(shared: bool) {
         waveform: waveform::summarize(&source_audio, 1024).unwrap(),
         source_audio: source_audio.clone(),
         audio: source_audio.clone(),
+        file_identity: None,
     };
     let Created::Imported {
         track: contributor,
@@ -825,6 +826,7 @@ fn directed_audio_and_midi_bounces_preserve_accepted_content_pcm() {
                     waveform: waveform::summarize(&audio, 1_024).unwrap(),
                     source_audio: audio.clone(),
                     audio,
+                    file_identity: None,
                 };
                 let Created::Imported { track, clip, .. } = session.import(prepared).unwrap()
                 else {

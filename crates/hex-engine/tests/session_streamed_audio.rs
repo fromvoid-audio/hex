@@ -898,11 +898,18 @@ fn streamed_session_audio_remains_frame_anchored_across_arrangement_loop_wrap() 
     for (offset, frame) in across_wrap.iter().enumerate() {
         let mut expected = sample(4_094 + offset as u64);
         if offset >= 2 {
+            // The wrapped Arrangement bed ramps in from the silence past the
+            // loop end (`loop_seam`, F = 128); the Session clip is untouched.
+            let k = (offset - 2) as f32;
+            let gain = (k + 1.0) / 128.0;
             let bed = sample((offset - 2) as u64 + 2);
-            expected[0] += bed[0];
-            expected[1] += bed[1];
+            expected[0] += bed[0] * gain;
+            expected[1] += bed[1] * gain;
         }
-        assert_eq!(*frame, expected, "loop-crossing frame {offset}");
+        assert!(
+            (frame[0] - expected[0]).abs() < 1e-6 && (frame[1] - expected[1]).abs() < 1e-6,
+            "loop-crossing frame {offset}: {frame:?} != {expected:?}"
+        );
     }
     assert_eq!(playback.position(), 8);
     assert_eq!(playback.performance_frame(), 96_008);

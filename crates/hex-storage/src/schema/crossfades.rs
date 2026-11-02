@@ -11,8 +11,10 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     Ok(value)
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid crossfade project envelope"))?;
@@ -20,7 +22,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("invalid crossfade project schema"));
     }
     object.insert("version".into(), 50.into());
-    super::device_automation::decode(&serde_json::to_vec(&value)?)
+    super::device_automation::decode_value(value)
 }
 
 /// The frozen pre51 contract, independent of the new model's faded-overlap

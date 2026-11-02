@@ -13,6 +13,8 @@ mod split_recombination;
 
 #[path = "tests/aliases.rs"]
 mod aliases;
+#[path = "tests/content_resampler.rs"]
+mod content_resampler;
 #[path = "tests/content_reverse.rs"]
 mod content_reverse;
 #[path = "tests/musical_sharing.rs"]
@@ -258,6 +260,72 @@ fn accepted_audio_sidecar_survives_tiny_cache_and_preserves_split_crop_identity(
     assert_eq!(views[1].length, 4_863);
 }
 
+/// The content's saved warp resampler selects the root render law, and one
+/// shared cache never serves PCM rendered under the other law.
+#[test]
+fn content_warp_resampler_selects_the_render_law_and_its_cache_entry() {
+    fn with_law(editor: &Editor, law: hex_project::WarpResampler) -> Editor {
+        let mut snapshot = editor.project().snapshot();
+        let hex_project::TrackContentSnapshot::Hybrid { audio_clips, .. } =
+            &mut snapshot.tracks[0].content
+        else {
+            panic!("hybrid track")
+        };
+        Arc::make_mut(&mut audio_clips[0].edit.as_mut().unwrap().domain).warp_resampler = law;
+        Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap()
+    }
+    let (mut editor, clip, media) = fixture(false);
+    // Unpitched content reads integer positions: both laws are exact.
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetAudioClipSourceGain {
+            clip,
+            points: vec![SourceGainPoint {
+                frame: 0,
+                gain_q16: 40_000,
+            }],
+        })
+        .unwrap();
+    let context = isolated(1_024_000, 512_000, 8);
+    let unpitched = |law| {
+        render(
+            &prepare(&with_law(&editor, law), &media, &context),
+            0,
+            4_000,
+            64,
+        )
+    };
+    assert_eq!(
+        unpitched(hex_project::WarpResampler::V1),
+        unpitched(hex_project::WarpResampler::V2)
+    );
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 700 })
+        .unwrap();
+    let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    assert_eq!(edit.domain.warp_resampler, hex_project::WarpResampler::V2);
+    let pitched = |law, context: &AudioTransformPreparation| {
+        render(
+            &prepare(&with_law(&editor, law), &media, context),
+            0,
+            4_000,
+            64,
+        )
+    };
+    let v2 = pitched(hex_project::WarpResampler::V2, &context);
+    let v1 = pitched(hex_project::WarpResampler::V1, &context);
+    assert_ne!(v1, v2);
+    let fresh = isolated(1_024_000, 512_000, 8);
+    assert_eq!(pitched(hex_project::WarpResampler::V1, &fresh), v1);
+    assert_eq!(pitched(hex_project::WarpResampler::V2, &fresh), v2);
+}
+
 #[test]
 fn injected_mid_render_cancellation_releases_candidate_reservation() {
     let (mut editor, clip, media) = fixture(false);
@@ -324,7 +392,14 @@ fn cropped_tail_moved_to_beat_zero_keeps_source_phase_and_bounded_virtual_prefix
         })
         .unwrap();
     let moved = prepare(&editor, &media, &context);
-    assert_eq!(render(&moved, 0, 400, 127), reference);
+    // The re-anchored map may round source positions differently in Q32 units.
+    // v1 snapped them to the same phase row; the v2 warp resampler interpolates
+    // phases continuously, so such sub-picosample shifts stay below -140 dB.
+    let moved = render(&moved, 0, 400, 127);
+    assert_eq!(moved.len(), reference.len());
+    for (a, b) in moved.iter().zip(&reference) {
+        assert!((a[0] - b[0]).abs() <= 1e-7 && (a[1] - b[1]).abs() <= 1e-7);
+    }
     assert!(
         editor
             .project()

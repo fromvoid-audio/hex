@@ -1,5 +1,93 @@
 use super::EditorView;
-use gpui::{AppContext, Context, PromptButton, PromptLevel, Window};
+use gpui::{App, AppContext, Context, Global, PromptButton, PromptLevel, Window};
+use std::cell::Cell;
+use std::time::Duration;
+
+/// Bound for joining the project workers when hex quits. macOS termination
+/// exits without dropping the editor, so a cancelled export's cleanup would
+/// otherwise be cut off; the UI never waits longer than this.
+const QUIT_SHUTDOWN_BOUND: Duration = Duration::from_secs(1);
+
+/// App-wide quit custody shared by Hex's own Quit paths and OS termination
+/// requests (Dock Quit, logout, restart, shutdown), which macOS delivers through
+/// the patched GPUI `App::on_should_quit` hook.
+///
+/// An OS request routes through [`EditorView::request_quit`], so it gets the
+/// same refusals and unsaved-work prompt as menu Quit; it stays deferred until
+/// that flow either quits ([`quit_confirmed`]: reply terminate) or does not
+/// ([`quit_refused`]: reply cancel). Once quitting is confirmed, Hex's own
+/// `cx.quit()` re-enters the hook and is answered at once, so the user is never
+/// prompted twice. Without this global (tests, profiling tools) both helpers
+/// fall back to plain `cx.quit()` / nothing.
+#[derive(Default)]
+struct QuitGate {
+    confirmed: Cell<bool>,
+    quit_issued: Cell<bool>,
+    os_request_pending: Cell<bool>,
+}
+
+impl Global for QuitGate {}
+
+/// Route OS termination requests through the editor's quit policy.
+pub(super) fn install_quit_gate(cx: &mut App) {
+    cx.set_global(QuitGate::default());
+    cx.on_should_quit(|cx| {
+        let gate = cx.global::<QuitGate>();
+        if gate.confirmed.get() {
+            cx.reply_to_quit(true);
+            return;
+        }
+        gate.os_request_pending.set(true);
+        let editor = cx.windows().into_iter().find_map(|handle| {
+            handle
+                .update(cx, |_, window, _| window.root::<EditorView>().flatten())
+                .ok()
+                .flatten()
+                .map(|editor| (handle, editor))
+        });
+        let Some((handle, editor)) = editor else {
+            // No editor holds work that a prompt could protect.
+            quit_confirmed(cx);
+            return;
+        };
+        if handle
+            .update(cx, |_, window, cx| {
+                editor.update(cx, |view, cx| view.request_quit(window, cx))
+            })
+            .is_err()
+        {
+            quit_refused(cx);
+        }
+    });
+}
+
+/// The user's quit is settled: answer a pending OS request with terminate, or
+/// start Hex's own quit once.
+pub(super) fn quit_confirmed(cx: &App) {
+    let Some(gate) = cx.try_global::<QuitGate>() else {
+        cx.quit();
+        return;
+    };
+    gate.confirmed.set(true);
+    // Either answer starts termination; later confirmations are no-ops.
+    let issued = gate.quit_issued.replace(true);
+    if gate.os_request_pending.replace(false) {
+        cx.reply_to_quit(true);
+    } else if !issued {
+        cx.quit();
+    }
+}
+
+/// Quitting was refused or cancelled: keep hex open and answer a pending OS
+/// request with cancel.
+pub(super) fn quit_refused(cx: &App) {
+    if cx
+        .try_global::<QuitGate>()
+        .is_some_and(|gate| gate.os_request_pending.replace(false))
+    {
+        cx.reply_to_quit(false);
+    }
+}
 
 pub(super) fn requires_close_confirmation(
     unsaved: bool,
@@ -70,6 +158,7 @@ impl EditorView {
         if self.update_blocks_close() {
             self.error = Some("update preparation is still in progress".into());
             cx.notify();
+            quit_refused(cx);
             return;
         }
         if self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits() {
@@ -79,6 +168,7 @@ impl EditorView {
                 "finish or cancel gain recording before quitting".into()
             });
             cx.notify();
+            quit_refused(cx);
             return;
         }
         if self.close_prompt_open
@@ -86,9 +176,11 @@ impl EditorView {
             || self.project_open.busy()
             || self.pending_open_path.is_some()
         {
+            quit_refused(cx);
             return;
         }
         if !self.prepare_theme_window_close(window, cx) {
+            quit_refused(cx);
             return;
         }
         let _ = super::device_panel::finalize_controls(self, cx);
@@ -103,7 +195,23 @@ impl EditorView {
         } else {
             self.cancel_browser_sample_playback();
             self.stop();
-            cx.quit();
+            self.shutdown_service_for_quit(cx);
+            quit_confirmed(cx);
+        }
+    }
+
+    /// Join the session and export workers within [`QUIT_SHUTDOWN_BOUND`]
+    /// before a confirmed quit. A timeout is logged and quitting continues;
+    /// the workers stay signalled.
+    fn shutdown_service_for_quit(&mut self, cx: &mut Context<Self>) {
+        if let Err(error) = self.service.shutdown(QUIT_SHUTDOWN_BOUND) {
+            let error = error.to_string();
+            eprintln!("hex: {error}");
+            if let Some(unavailable) =
+                crate::diagnostics::record_state(cx, "quit shutdown incomplete", Some(&error))
+            {
+                eprintln!("{unavailable}");
+            }
         }
     }
 
@@ -169,7 +277,13 @@ impl EditorView {
                             control.cancel();
                         }
                         view.stop();
+                        if quit {
+                            view.shutdown_service_for_quit(cx);
+                        }
                     } else {
+                        if quit {
+                            quit_refused(cx);
+                        }
                         cx.notify();
                     }
                     false
@@ -180,13 +294,17 @@ impl EditorView {
                 if discard && !preparing_update {
                     window.remove_window();
                     if quit {
-                        cx.quit();
+                        quit_confirmed(cx);
                     }
                 }
             }) {
                 // A window that was already removed needs no second close.
                 // Other lifecycle failures must be observable during diagnosis.
                 eprintln!("hex: could not handle close prompt: {error}");
+                if quit {
+                    // Keep hex running rather than leave an OS request unanswered.
+                    let _ = cx.update(|cx| quit_refused(cx));
+                }
             }
         })
         .detach();
@@ -682,6 +800,7 @@ mod window_tests {
                 frames: Some(256),
                 signal: hex_session::service::ExportSignal::Main,
                 control: export_control.clone(),
+                format: hex_session::service::ExportFormat::Pcm16,
                 overwrite: false,
             }));
             view.export_control = Some(export_control.clone());
@@ -719,5 +838,90 @@ mod window_tests {
         ));
         cx.update_window(handle, |_, window, _| window.remove_window())
             .expect("remove test window");
+    }
+
+    fn mark_clean(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
+        editor.update(cx, |view, cx| {
+            let state = view.state.as_ref().expect("fixture state");
+            view.state = Some(Arc::new(ViewState {
+                canonical_audio_source: None,
+                comparison_audio: None,
+                project: Arc::clone(&state.project),
+                waveforms: state.waveforms.clone(),
+                source_overviews: state.source_overviews.clone(),
+                audio_clip_waveforms: state.audio_clip_waveforms.clone(),
+                midi_preview: Arc::clone(&state.midi_preview),
+                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+                timeline_frames: state.timeline_frames,
+                can_undo: state.can_undo,
+                can_redo: state.can_redo,
+                revision: state.revision,
+                unsaved: false,
+                document_path: state.document_path.clone(),
+            }));
+            cx.notify();
+        });
+    }
+
+    #[gpui::test]
+    fn os_quit_with_unsaved_work_waits_on_the_prompt(cx: &mut TestAppContext) {
+        cx.update(install_quit_gate);
+        let (_, editor) = dirty_replaced_window(cx);
+        assert!(cx.simulate_should_quit());
+        cx.run_until_parked();
+        assert!(cx.has_pending_prompt());
+        assert!(cx.quit_request_pending());
+        assert!(cx.quit_replies().is_empty(), "no answer before the prompt");
+        cx.simulate_prompt_answer("cancel");
+        cx.run_until_parked();
+        assert_eq!(cx.quit_replies(), [false]);
+        assert_eq!(cx.windows().len(), 1);
+        assert!(!editor.read_with(cx, |view, _| view.close_prompt_open));
+
+        assert!(cx.simulate_should_quit());
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("discard");
+        cx.run_until_parked();
+        assert_eq!(cx.quit_replies(), [false, true]);
+        assert!(cx.windows().is_empty());
+    }
+
+    #[gpui::test]
+    fn os_quit_of_a_clean_project_terminates_at_once(cx: &mut TestAppContext) {
+        cx.update(install_quit_gate);
+        let (handle, editor) = dirty_replaced_window(cx);
+        mark_clean(&editor, cx);
+        assert!(cx.simulate_should_quit());
+        cx.run_until_parked();
+        assert!(!cx.has_pending_prompt());
+        assert_eq!(cx.quit_replies(), [true]);
+        // The project workers were joined before terminate was answered.
+        assert!(editor.read_with(cx, |view, _| matches!(
+            view.service.submit(Request::Undo),
+            Err(hex_session::service::SubmitError::Closed(_))
+        )));
+        cx.update_window(handle, |_, window, _| window.remove_window())
+            .expect("remove test window");
+    }
+
+    #[gpui::test]
+    fn menu_quit_prompts_once_and_answers_its_own_terminate_request(cx: &mut TestAppContext) {
+        cx.update(install_quit_gate);
+        let (handle, editor) = dirty_replaced_window(cx);
+        cx.update_window(handle, |_, window, cx| {
+            editor.update(cx, |view, cx| view.request_quit(window, cx));
+        })
+        .expect("dirty window");
+        cx.simulate_prompt_answer("discard");
+        cx.run_until_parked();
+        assert!(cx.windows().is_empty());
+        // On macOS that confirmed cx.quit() re-enters as a termination request.
+        assert!(cx.simulate_should_quit());
+        cx.run_until_parked();
+        assert!(
+            !cx.has_pending_prompt(),
+            "confirmed quit must not prompt again"
+        );
+        assert_eq!(cx.quit_replies(), [true]);
     }
 }
