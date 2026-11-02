@@ -8,7 +8,7 @@ publish.workspace = true
 [dependencies]
 hex-tuning = { path = "../hex-tuning" }
 fs2 = "=0.4.3"
-sha2 = "=0.10.9"
+sha2 = "=0.11.0"
 hex-project = { path = "../hex-project" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
 serde = { version = "=1.0.229", features = ["derive"] }

@@ -6,6 +6,26 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod completed_tests;
 
 static NEXT_TEST: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn journal_record_hash_matches_legacy_digest() {
+    // SHA-256 of a zero chain followed by bytes 0 through 63, generated with
+    // the previous 0.10 backend. Existing journal chains must remain readable.
+    let mut record = [0; RECORD_BYTES];
+    for (index, byte) in record[..PAYLOAD_BYTES].iter_mut().enumerate() {
+        *byte = index as u8;
+    }
+    let sealed = seal(record, [0; 32]);
+    assert_eq!(
+        &sealed[PAYLOAD_BYTES..],
+        &[
+            0xdc, 0x7a, 0x48, 0x01, 0x4f, 0xc1, 0xfa, 0xc8, 0xb5, 0x2a, 0xf3, 0x9b, 0xc7, 0xea,
+            0x5c, 0xaf, 0xaf, 0xab, 0xf8, 0xbb, 0x81, 0xfb, 0x8f, 0x88, 0x0f, 0xdf, 0x3b, 0x4a,
+            0x45, 0x66, 0x79, 0x5c,
+        ]
+    );
+    assert!(valid_hash(&sealed, [0; 32]));
+}
 struct TestDir(PathBuf);
 impl TestDir {
     fn new() -> Self {

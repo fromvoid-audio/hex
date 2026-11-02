@@ -705,6 +705,17 @@ mod tests {
     }
 
     #[test]
+    fn receipt_identity_matches_legacy_digest() {
+        let fixture = Fixture::new();
+        let receipt = fixture.0.join("test-build.json");
+        fs::write(&receipt, b"abc").unwrap();
+        assert_eq!(
+            receipt_digest(&receipt).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
     fn private_custody_rejects_link_and_wrong_permissions() {
         let fixture = Fixture::new();
         let uid = fs::metadata(&fixture.0).unwrap().uid();
