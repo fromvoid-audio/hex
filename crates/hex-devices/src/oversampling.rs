@@ -62,9 +62,15 @@ impl Kernel {
             let r = t / middle;
             sinc * bessel_i0(BETA * (1.0 - r * r).max(0.0).sqrt()) / bessel_i0(BETA)
         });
-        let sum: f64 = taps.iter().sum();
-        for tap in &mut taps {
-            *tap /= sum;
+        // Normalize each polyphase branch to exactly 1 / FACTOR of the DC
+        // gain (and so the whole kernel to unity). Unequal branch gains would
+        // modulate a held input at the base rate, so the shaped steady state
+        // would miss the static transfer that devices preview.
+        for phase in 0..FACTOR {
+            let gain: f64 = taps.iter().skip(phase).step_by(FACTOR).sum();
+            for tap in taps.iter_mut().skip(phase).step_by(FACTOR) {
+                *tap /= gain * FACTOR as f64;
+            }
         }
         let phases = std::array::from_fn(|p| std::array::from_fn(|j| taps[p + FACTOR * j]));
         Self { taps, phases }
@@ -122,7 +128,7 @@ pub(crate) struct Oversampler {
 /// Zero inputs after which every history above is exactly zero: the input
 /// history clears after `PHASE_TAPS`, the ADAA argument one phase later, and
 /// the shaped history after a further `TAPS / FACTOR` frames.
-const DRAIN_FRAMES: usize = PHASE_TAPS + TAPS / FACTOR + 1;
+pub(crate) const DRAIN_FRAMES: usize = PHASE_TAPS + TAPS / FACTOR + 1;
 
 impl Default for Oversampler {
     fn default() -> Self {
@@ -231,7 +237,7 @@ mod tests {
                 .map(|j| kernel.taps[phase + FACTOR * j])
                 .sum();
             assert!(
-                (gain * FACTOR as f64 - 1.0).abs() < 1e-3,
+                (gain * FACTOR as f64 - 1.0).abs() < 1e-12,
                 "phase {phase}: {gain}"
             );
         }
