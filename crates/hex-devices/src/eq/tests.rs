@@ -407,7 +407,11 @@ fn ordinary_eq_density_scales_storage_to_authored_node_count() {
     let one = runtime::PreparedEq::new(settings, 48000).unwrap();
     assert!(empty.declared_runtime_bytes() < one.declared_runtime_bytes());
     assert!(one.declared_runtime_bytes() * 100 < hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES);
-    assert!(one.declared_runtime_bytes() < 2048);
+    // Authored nodes still cost under 2 KiB each. Pulse #4122 adds one fixed
+    // outgoing-routing reserve of `MAX_NODES` bands (about 19 KiB) so a mode
+    // switch that also removes nodes still crossfades; it is not per node.
+    assert!(one.declared_runtime_bytes() - empty.declared_runtime_bytes() < 2048);
+    assert!(empty.declared_runtime_bytes() < 24 * 1024);
 }
 
 struct TestClock {
