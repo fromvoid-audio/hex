@@ -435,14 +435,35 @@ fn discontinuity_discards_previous_epoch(action: hex_engine::PlaybackCommand) {
     let first = worker.receive().unwrap().unwrap();
     worker.complete(first).unwrap();
     render(&mut callback, 8, 2, false);
-    let pending = worker.receive().unwrap().unwrap();
+    let mut pending = worker.receive().unwrap();
     control.command(action).unwrap();
+    // A queued Pause or Seek while playing renders its fade through the live
+    // transport; the discontinuity is its audible end (#4151, #4140).
+    for _ in 0..32 {
+        if transport.is_revoked() {
+            break;
+        }
+        worker.complete(pending.take().unwrap()).unwrap();
+        render(&mut callback, 8, 2, false);
+        pending = worker.receive().ok().flatten();
+    }
+    if action == hex_engine::PlaybackCommand::Pause {
+        assert!(!control.status.playing.load(Acquire));
+    }
     assert!(
         render(&mut callback, 8, 2, false).iter().all(|x| *x == 0.0),
         "old PCM cannot cross an actual seek/pause discontinuity"
     );
     assert!(transport.is_revoked());
-    assert_eq!(worker.complete(pending), Err(Fault::Revoked));
+    if let Some(pending) = pending {
+        assert_eq!(worker.complete(pending), Err(Fault::Revoked));
+    }
+    if action == hex_engine::PlaybackCommand::Pause {
+        assert!(
+            !control.status.render_fault.load(Acquire),
+            "the fade end is a terminal cancellation, not a render fault"
+        );
+    }
 }
 
 #[test]

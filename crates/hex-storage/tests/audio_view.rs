@@ -182,7 +182,11 @@ fn current32_placement_keeps_required_tuning_manifest_and_refuses_old31() {
     .unwrap();
     let bytes = hex_storage::encode(e.project()).unwrap();
     let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(original["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+    // Its musical content renders with the v2 warp resampler.
+    assert_eq!(
+        original["version"],
+        hex_storage::WARP_RESAMPLER_SCHEMA_VERSION
+    );
     assert!(original.get("device_assets").is_some());
     assert_eq!(original["tuning"]["enabled"], true);
     assert_eq!(

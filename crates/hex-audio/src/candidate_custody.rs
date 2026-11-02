@@ -1197,6 +1197,12 @@ impl CandidateRoot {
     pub(crate) fn cleanup_scheduled(&self) -> bool {
         lock(&self.0.bank).scheduled
     }
+    /// Run `f` while holding the eligible domain bank, as a lifecycle cleanup
+    /// pass does, so tests can reproduce contended nonblocking observations.
+    #[cfg(test)]
+    pub(crate) fn with_domain_bank_held<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.0.eligible.with_bank_held(f)
+    }
     #[cfg(test)]
     pub(crate) fn test_status(&self) -> String {
         let work = self.0.execution.try_lock().ok();
@@ -1393,6 +1399,15 @@ mod tests {
             .unwrap()
             .as_ref() as *const dyn Any as *const ();
         root.advance_on_control();
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        // #4132: a later pass cannot complete a failed owner; the failure and
+        // its retained root stay latched, so retirement never releases them.
+        assert!(!crate::lifecycle::finish_cleanup_observed(&root, &status));
+        assert!(root.cleanup_failed());
+        assert_eq!(
+            status.failure(),
+            Some(crate::AudioLifecycleFailure::Cleanup)
+        );
         assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert_eq!(
             lock(&root.0.execution)

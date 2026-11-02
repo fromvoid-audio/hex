@@ -123,7 +123,7 @@ pub(super) fn render(
         MAX_POINTS * std::mem::size_of::<u64>()
             + (MAX_MAP_SEGMENTS + 2) * std::mem::size_of::<Anchor>()
             + plan::scratch(request)
-            + BANK_BYTES
+            + bank_bytes(work.resampler)
             + synthesis::SEARCH_BYTES,
     )?;
     let mut bounds = SourceBounds::new(physical);
