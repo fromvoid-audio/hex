@@ -130,9 +130,13 @@ impl Drop for DiagnosticActionScope {
 /// `fence` is the callback-observed `stopped_arrangement` lease, `edit` the
 /// canonical apply/commit around preparation, `prepare` the resident
 /// `prepare_transition`, `publish` the handoff to the native sink and `finish`
-/// the sink's edit terminal. Reported on `OutcomeReady` as `section_*_us`.
+/// the sink's edit terminal. These lie within the request's dispatched worker
+/// time (`worker_us`). `parked` is the time the request waited parked for its
+/// stopped-arrangement fence before dispatch (#4544), so it lies outside
+/// `worker_us`. Reported on `OutcomeReady` as `section_*_us`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SectionPhases {
+    pub parked: Duration,
     pub fence: Duration,
     pub edit: Duration,
     pub prepare: Duration,
@@ -306,6 +310,7 @@ impl Hooks {
         }
         if let Some(phases) = section {
             for (name, value) in [
+                ("section_parked_us", phases.parked),
                 ("section_fence_us", phases.fence),
                 ("section_edit_us", phases.edit),
                 ("section_prepare_us", phases.prepare),

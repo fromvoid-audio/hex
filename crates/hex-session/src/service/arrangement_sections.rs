@@ -203,7 +203,8 @@ fn fenced_transition(
         true,
         prefence,
     );
-    phases.fence = fence.elapsed() + parked;
+    phases.fence = fence.elapsed();
+    phases.parked = parked;
     // A refused or timed-out lease is already cancelled by `acquire_position`.
     let committed = position.and_then(|position| {
         match session.section_snapshot(

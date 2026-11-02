@@ -5,7 +5,7 @@
 //! is applied and then undone, at an early and a late cursor, stopped and
 //! playing. Totals are submit to client receipt on the test thread; phases are
 //! the worker's `action_diag` `OutcomeReady` fields (`worker_us`,
-//! `section_*_us`). The callback is rendered in 64-frame blocks with 1 ms
+//! `section_*_us`; `section_parked_us` precedes and is outside `worker_us`). The callback is rendered in 64-frame blocks with 1 ms
 //! sleeps, so fence waits approximate, but are not, a physical device cadence.
 //! UI install, paint and present are not measured here.
 //!
@@ -29,8 +29,9 @@ use hex_session::service::{
     diagnostics::{DiagnosticObserver, DiagnosticStage},
 };
 
-const PHASES: [&str; 6] = [
+const PHASES: [&str; 7] = [
     "worker_us",
+    "section_parked_us",
     "section_fence_us",
     "section_edit_us",
     "section_prepare_us",
@@ -41,10 +42,10 @@ const PHASES: [&str; 6] = [
 /// One completed request: client-observed total and worker phase fields.
 struct Sample {
     total: Duration,
-    phases: [Option<u64>; 6],
+    phases: [Option<u64>; 7],
 }
 
-fn parse_phases(details: &str) -> [Option<u64>; 6] {
+fn parse_phases(details: &str) -> [Option<u64>; 7] {
     PHASES.map(|name| {
         details.split_whitespace().find_map(|field| {
             field
