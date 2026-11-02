@@ -345,6 +345,23 @@ pub trait NativeProcessorRuntime: StdAny + Send {
     fn transition_busy_from(&self, _previous: &dyn NativeProcessorRuntime) -> bool {
         false
     }
+    /// Idle-predecessor settlement (Pulse #4558). The host calls this on a
+    /// committed runtime only while its graph renders no device chains (a
+    /// paused transport without monitoring, keyboard or tail input), when a
+    /// handoff would otherwise be `transition_busy_from` this runtime forever
+    /// because nothing renders it. Its output is silent then and a resume
+    /// ramps in from silence, so complete every pending live transition at
+    /// once: discard only the outgoing, inaudible branches and keep the
+    /// current routing and its history unchanged, as if the transitions had
+    /// finished. Afterwards no candidate may be `transition_busy_from` this
+    /// runtime. Must be bounded, allocation-free, infallible and lock-free.
+    /// The host calls it only on a runtime that a candidate reports busy
+    /// from, so the default `reset` (coarser: it also clears the current
+    /// routing's frozen history) is correct for any runtime; providers with
+    /// live transitions may override it to keep that history.
+    fn settle_idle_transitions(&mut self) {
+        self.reset();
+    }
     fn as_any(&self) -> &dyn StdAny;
     /// Optional, transient live-audition controls. These are audio-owned and
     /// deliberately excluded from persisted device state.
@@ -1396,6 +1413,27 @@ impl NativeRuntimeChain {
     /// transient instead of choosing another history path. It is conservative
     /// for entries a retained tail would keep. Bounded and allocation-free:
     /// one identity scan per candidate entry, like `can_inherit_from`.
+    /// Settle the committed runtimes that `candidate` is
+    /// `transition_busy_from`, while this (previous) chain's graph renders
+    /// nothing (Pulse #4558). Pairs entries exactly as
+    /// `transition_busy_from`; bounded and allocation-free. See
+    /// `NativeProcessorRuntime::settle_idle_transitions`.
+    pub fn settle_idle_transitions_for(&mut self, candidate: &Self) {
+        for entry in candidate
+            .entries
+            .iter()
+            .filter(|entry| entry.runtime.is_stateful())
+        {
+            if let Some(old) = self
+                .entries
+                .iter_mut()
+                .find(|old| Self::same_runtime_identity(entry, old) && old.runtime.is_stateful())
+                && entry.runtime.transition_busy_from(&old.runtime)
+            {
+                old.runtime.settle_idle_transitions();
+            }
+        }
+    }
     pub fn transition_busy_from(&self, previous: &Self) -> bool {
         self.entries.iter().any(|entry| {
             entry.runtime.is_stateful()
