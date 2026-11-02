@@ -381,6 +381,14 @@ fn prepare(
     project: &Project,
     sources: Vec<(hex_project::AssetId, crate::OwnedAudioSource)>,
 ) -> AudioCandidatePreparation {
+    try_prepare(project, sources).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// `prepare`, returning the CURRENT preparation refusal instead of panicking.
+fn try_prepare(
+    project: &Project,
+    sources: Vec<(hex_project::AssetId, crate::OwnedAudioSource)>,
+) -> Result<AudioCandidatePreparation, String> {
     let quote = AudioCandidateReservationQuote::for_project(project, sources.len()).unwrap();
     let limits = quote.storage_reservation(65536).unwrap();
     let work = sources.iter().map(|(_, s)| s.frames()).sum();
@@ -404,7 +412,7 @@ fn prepare(
         work,
         &AtomicBool::new(false),
     )
-    .unwrap_or_else(|e| panic!("{e:?}"));
+    .map_err(|e| format!("{e:?}"))?;
     cell.owner_on_control()
         .unwrap()
         .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
@@ -415,7 +423,7 @@ fn prepare(
             max_construction_peak_bytes: limits.max_construction_data_bytes,
         })
         .unwrap();
-    cell
+    Ok(cell)
 }
 #[test]
 fn current_sampler_console_mixed_scene_loops_have_literal_pcm_and_partition_invariance() {
@@ -817,6 +825,9 @@ mod cue;
 
 #[path = "console_tests/source_metadata.rs"]
 mod source_metadata;
+
+#[path = "console_tests/steal_density.rs"]
+mod steal_density;
 
 #[path = "console_tests/volume.rs"]
 mod volume;
