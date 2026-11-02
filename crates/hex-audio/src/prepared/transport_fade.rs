@@ -1,7 +1,10 @@
-//! Host effects of a declicked queued or streamed Pause/Stop (Pulse #4151).
+//! Host effects of a declicked queued or streamed Pause/Stop (Pulse #4151)
+//! and a queued resident Seek (Pulse #4140).
 //!
-//! `hex_engine::Playback` owns the fade itself: a Pause/Stop admitted while
-//! playing is reported Applied when consumed and takes effect F frames later.
+//! `hex_engine::Playback` owns the fade itself: a Pause/Stop/Seek admitted
+//! while playing is reported Applied when consumed and takes effect F frames
+//! later; a Seek then ramps in at its target. Streamed seeks still jump
+//! immediately when their target pages are ready.
 //! This module owns only the callback effects that must follow the audible
 //! end rather than the command: the output transport revocation and transport
 //! epoch advance, the sampler keyboard revocation for Stop, and, for streamed
@@ -142,6 +145,36 @@ mod tests {
             assert!(output[fade_end..2000].iter().all(|f| *f == [0.0; 2]));
             assert_eq!(output[2000][0], 1.0 / F as f32, "block {block}: ramp in");
             assert!(output[3000 + F as usize..].iter().all(|f| *f == [0.0; 2]));
+            control.request_shutdown();
+            callback.begin_block();
+        }
+    }
+
+    #[test]
+    fn a_queued_seek_while_playing_fades_out_jumps_and_ramps_in() {
+        let position = |control: &Control| control.status.position.load(Acquire);
+        let mut reference = None;
+        for block in [1, 64, 100, 512] {
+            let (mut control, mut callback) = dc_callback();
+            control.command(PlaybackCommand::Play).unwrap();
+            let mut output = render(&mut callback, 1000, block);
+            control.command(PlaybackCommand::Seek(5000)).unwrap();
+            output.extend(render(&mut callback, 1000, block));
+            assert!(control.status.playing.load(Acquire), "block {block}");
+            assert_eq!(
+                position(&control),
+                5000 + 1000 - F,
+                "block {block}: the seek target follows the fade"
+            );
+            let step = largest_step(&output[1..]);
+            assert!(step <= 1.0 / F as f32 + 1e-6, "block {block}: step {step}");
+            let fade_end = 1000 + F as usize;
+            assert_eq!(output[fade_end - 1], [0.0; 2], "block {block}");
+            assert_eq!(output[fade_end][0], 1.0 / F as f32, "block {block}");
+            match &reference {
+                None => reference = Some(output),
+                Some(reference) => assert_eq!(&output, reference, "block {block}"),
+            }
             control.request_shutdown();
             callback.begin_block();
         }
