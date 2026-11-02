@@ -1394,11 +1394,9 @@ pub(crate) fn preview_edge_trim(
             let media_remaining = asset_playback_frames - source_end;
             let timeline_remaining = u64::MAX - end;
             let extension = media_remaining.min(timeline_remaining);
-            let minimum_reduction = clip
-                .duration
-                .saturating_sub(1)
-                .min(clip.source_length.saturating_sub(1));
-            let minimum_end = end - minimum_reduction;
+            // A one-shot may outlive its source with a silent tail. Shortening
+            // consumes that silence first and only then the audible source.
+            let minimum_end = end - clip.duration.saturating_sub(1);
             let maximum_end = end + extension;
             let new_end = frame.clamp(minimum_end, maximum_end);
             if new_end >= end {
@@ -1411,12 +1409,12 @@ pub(crate) fn preview_edge_trim(
                     0,
                 )
             } else {
-                let reduction = end - new_end;
+                let duration = clip.duration - (end - new_end);
                 (
                     clip.start,
-                    clip.duration - reduction,
+                    duration,
                     clip.source_offset,
-                    clip.source_length - reduction,
+                    clip.source_length.min(duration),
                     0,
                 )
             }
@@ -1433,21 +1431,16 @@ pub(crate) fn preview_edge_trim(
     } else {
         clip.fade
     };
+    // Trim changes geometry only: activation, name, flavor, gain and edit
+    // settings come from the original so trimming never reactivates a clip.
     Ok(Clip {
-        active: true,
-        name: clip.name.clone(),
-        flavor: clip.flavor,
-        gain: clip.gain,
-        edit: clip.edit.clone(),
-        id: clip.id,
-        asset: clip.asset,
         start,
         duration,
         source_offset,
         source_length,
-        looping: clip.looping,
         source_phase,
         fade,
+        ..clip.clone()
     })
 }
 
@@ -1508,20 +1501,15 @@ pub(crate) fn split_clip_at(
         left.source_phase = 0;
     }
     let right = Clip {
-        active: original.active,
-        name: original.name.clone(),
-        flavor: original.flavor,
         id: right_id,
-        asset: original.asset,
         start: frame,
         duration: right_duration,
         source_offset: right_source_offset,
         source_length: right_source_length,
-        looping: original.looping,
         source_phase: right_phase,
-        gain: original.gain,
         edit: None,
         fade: right_fade,
+        ..original.clone()
     };
     Ok((left, right))
 }
@@ -1533,6 +1521,13 @@ pub(crate) fn split_clip_at_tempo(
     tempo: &crate::TempoMap,
 ) -> Result<(Clip, Clip), Invalid> {
     let Some(edit) = &original.edit else {
+        if cuts_silent_tail(original, frame) {
+            // A raw source offset cannot advance past the audible interval, so
+            // crop a captured retained domain, as `retained_audio_fragment` does.
+            let mut captured = original.clone();
+            captured.edit = Some(crate::AudioClipEdit::capture(original).into());
+            return split_clip_at_tempo(&captured, frame, right_id, tempo);
+        }
         return split_clip_at(original, frame, right_id);
     };
     let end = original
@@ -1581,6 +1576,15 @@ pub(crate) fn split_clip_at_tempo(
     crate::audio_edit::project_clip(&mut left, tempo)?;
     crate::audio_edit::project_clip(&mut right, tempo)?;
     Ok((left, right))
+}
+
+/// Whether `frame` falls inside a raw one-shot's silent tail, past its source.
+pub(crate) fn cuts_silent_tail(clip: &Clip, frame: u64) -> bool {
+    clip.edit.is_none()
+        && !clip.looping
+        && frame
+            .checked_sub(clip.start)
+            .is_some_and(|offset| offset >= clip.source_length && offset < clip.duration)
 }
 
 /// Crop one retained interval through the existing typed split law.
@@ -2538,31 +2542,7 @@ impl Project {
                 Ok(Created::None)
             }
             Command::SetTempoPoint { beat, tempo } => {
-                let mut candidate = self.clone();
-                candidate.tempo_map = candidate
-                    .tempo_map
-                    .replace_point(TempoPoint::new(beat, tempo))?;
-                // A structural reorder retains complete processing roots from
-                // their original tempo context. Rebase is not yet supported;
-                // silently projecting a new length would trim/pad their PCM.
-                if candidate.tempo_map != self.tempo_map
-                    && self.tracks.iter().flat_map(|t| t.clips()).any(|clip| {
-                        clip.audio_edit()
-                            .is_some_and(|edit| edit.processing_projection.is_some())
-                    })
-                {
-                    return Err(Invalid(
-                        "tempo changes after audio section reorder require an unsupported processing rebase; undo the reorder first",
-                    ));
-                }
-                let map = candidate.tempo_map.clone();
-                for track in &mut candidate.tracks {
-                    for clip in &mut track.content.audio_clips {
-                        crate::audio_edit::project_clip(clip, &map)?;
-                    }
-                }
-                crate::Project::from_snapshot(candidate.snapshot())?;
-                *self = candidate;
+                self.set_tempo_point(TempoPoint::new(beat, tempo))?;
                 Ok(Created::None)
             }
             Command::SetMeterPoint { beat, meter } => {
