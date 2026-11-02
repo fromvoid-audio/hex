@@ -60,3 +60,8 @@ opt-level = 2
 # overflow checks remain enabled; release builds are unchanged (Pulse #4172).
 [profile.dev.package.hex-session]
 opt-level = 1
+
+# Keep native section-loop audio oracles at their original loop lengths while
+# meeting the per-test budget. Debug assertions and overflow checks remain enabled.
+[profile.dev.package.hex-engine]
+opt-level = 1
