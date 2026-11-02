@@ -5784,13 +5784,14 @@ fn run_worker(
                                         &mut resident_snapshot,
                                     )
                                 } else {
-                                    session.bounce_arrangement_adopting(
+                                    session.bounce_arrangement_adopting_with(
                                         target,
                                         in_place,
                                         adoption,
                                         &root,
                                         &control,
                                         compiled.as_ref().map(|(_, p)| p.as_ref()),
+                                        events.streamed_bouncer(),
                                     )
                                 }
                             })
