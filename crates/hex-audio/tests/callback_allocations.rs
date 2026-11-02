@@ -1749,7 +1749,34 @@ fn shared_and_distinct_session_audio_callback_blocks_are_allocation_free()
         }
         assert!(control.command(PlaybackCommand::Pause).is_err());
         measured_block(&mut callback, &mut output[..257]);
-        assert_scene_audio_oracle(&output[..257], &workload, workload.scene_b, 0)?;
+        // The scene A instance that had played 257 frames fades out over the
+        // shared 128-frame declick; the burst's later same-frame launches
+        // never sounded and leave no release.
+        let incoming = fixture::finite_session_oracle(
+            &workload.project,
+            &workload.media,
+            workload.scene_b,
+            0,
+            257,
+        )?;
+        let outgoing = fixture::finite_session_oracle(
+            &workload.project,
+            &workload.media,
+            workload.scene_a,
+            257,
+            128,
+        )?;
+        for (offset, (actual, incoming)) in output[..257].iter().zip(&incoming).enumerate() {
+            let gain = 128_usize.saturating_sub(offset) as f32 / 128.0;
+            let released = outgoing.get(offset).copied().unwrap_or([0.0; 2]);
+            for channel in 0..2 {
+                let expected = incoming[channel] + released[channel] * gain;
+                assert!(
+                    (actual[channel] - expected).abs() <= 1e-5 * expected.abs().max(1.0),
+                    "burst frame {offset}: {actual:?} != {expected}"
+                );
+            }
+        }
 
         control.request_shutdown();
         measured_shutdown(&mut callback, &mut output[..128]);

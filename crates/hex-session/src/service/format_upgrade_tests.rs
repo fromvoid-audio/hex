@@ -479,3 +479,50 @@ fn importing_v2_media_into_a_schema63_file_requires_overwrite_consent() {
     let again = request(&service, Request::SaveCurrent);
     assert!(again.error.is_none() && !again.save_confirmation_required);
 }
+
+#[test]
+fn pitching_a_clip_in_a_schema64_file_requires_overwrite_consent() {
+    let files = Files::new();
+    let path = sinc_v2_project(&files);
+    let original = fs::read(&path).unwrap();
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    next(&service);
+    let opened = request(&service, Request::Open(path.clone()));
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    let clip = opened.state.project.tracks()[0].clips()[0].id();
+    let pitched = request(
+        &service,
+        Request::Edit(Command::SetAudioClipPitch { clip, cents: 700 }),
+    );
+    assert!(pitched.error.is_none(), "{:?}", pitched.error);
+    assert_eq!(
+        hex_storage::schema_version_for(&pitched.state.project),
+        hex_storage::WARP_RESAMPLER_SCHEMA_VERSION
+    );
+
+    // New pitch renders with the v2 warp resampler, which needs schema65.
+    let refused = request(&service, Request::SaveCurrent);
+    assert!(refused.save_complete && refused.error.is_some());
+    assert!(refused.save_confirmation_required);
+    assert_eq!(fs::read(&path).unwrap(), original);
+
+    let saved = request(
+        &service,
+        Request::SaveCurrentWithFormatUpgrade {
+            project_generation: 1,
+            path: path.clone(),
+        },
+    );
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        written["version"],
+        hex_storage::WARP_RESAMPLER_SCHEMA_VERSION
+    );
+    let loaded = hex_storage::load(&path).unwrap();
+    assert_eq!(loaded, *saved.state.project);
+    let edit = loaded.clip(clip).unwrap().audio_edit().unwrap();
+    assert_eq!(edit.domain.warp_resampler, hex_project::WarpResampler::V2);
+    let again = request(&service, Request::SaveCurrent);
+    assert!(again.error.is_none() && !again.save_confirmation_required);
+}
