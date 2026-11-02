@@ -12,6 +12,12 @@
 //! Play from a paused, nonzero position. Play from frame zero keeps its first
 //! transient.
 //!
+//! A declicked transport Seek while playing fades out the same way at the old
+//! position, applies the jump at the fade end and ramps in over `F` frames at
+//! the target. The reported position runs on from the command frame through
+//! the fade and is the seek target from the fade end onward; the completion
+//! reports the old position's audible end.
+//!
 //! The owner splits a render block at the fade end so the result does not
 //! depend on block size. Any other action, including a direct immediate one,
 //! completes a pending fade first. `apply_priority_stop` cuts immediately.
@@ -43,6 +49,11 @@ pub(crate) fn fades_out(action: PlaybackAction) -> bool {
     )
 }
 
+/// Transport seeks, which fade out, jump and ramp back in while playing.
+pub(crate) fn seeks(action: PlaybackAction) -> bool {
+    matches!(action, PlaybackAction::Transport(PlaybackCommand::Seek(_)))
+}
+
 /// Pause actions, whose paused output ramps back in after the fade.
 pub(crate) fn pauses(action: PlaybackAction) -> bool {
     matches!(
@@ -68,6 +79,7 @@ enum Pending {
     Stop,
     SessionPause,
     SessionStop,
+    Seek(u64),
 }
 
 impl Pending {
@@ -79,6 +91,7 @@ impl Pending {
                 Some(Self::SessionPause)
             }
             PlaybackAction::Session(crate::SessionPlaybackCommand::Stop) => Some(Self::SessionStop),
+            PlaybackAction::Transport(PlaybackCommand::Seek(frame)) => Some(Self::Seek(frame)),
             _ => None,
         }
     }
@@ -89,6 +102,7 @@ impl Pending {
             Self::Stop => PlaybackAction::Transport(PlaybackCommand::Stop),
             Self::SessionPause => PlaybackAction::Session(crate::SessionPlaybackCommand::Pause),
             Self::SessionStop => PlaybackAction::Session(crate::SessionPlaybackCommand::Stop),
+            Self::Seek(frame) => PlaybackAction::Transport(PlaybackCommand::Seek(frame)),
         }
     }
 }
@@ -126,7 +140,8 @@ impl TransportFade {
         self.pending.map(Pending::action)
     }
 
-    /// Defer a Pause/Stop (`fades_out`); any other action defers nothing.
+    /// Defer a Pause/Stop (`fades_out`) or Seek (`seeks`); any other action
+    /// defers nothing.
     pub(crate) fn begin_out(&mut self, action: PlaybackAction) {
         self.pending = Pending::from_action(action);
         self.out_elapsed = 0;
