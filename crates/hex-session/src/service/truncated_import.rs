@@ -14,7 +14,12 @@
 use super::Request;
 use crate::{DocumentAudioMode, Session, SessionError, audio_sources::VerifiedAudioFile};
 use hex_media::{DecodedAudio, ImportError, Limits, WavTruncation};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+static NEXT_RECOVERED_SOURCE: AtomicU64 = AtomicU64::new(0);
 
 /// A single-file import refused, or recovered, because its WAV data is truncated.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,10 +94,18 @@ pub(super) struct ImportDecode {
     recover: bool,
     refused: Option<ImportTruncation>,
     recovered: Option<ImportTruncation>,
+    recovered_path: Option<PathBuf>,
 }
 
 const RECOVERY_NEEDS_RESIDENT: &str =
     "recovering a truncated recording needs a resident document · open it in resident mode";
+
+pub(super) fn decode_error_text(error: SessionError) -> String {
+    match error {
+        SessionError::Media(error) => error.to_string(),
+        error => error.to_string(),
+    }
+}
 
 impl ImportDecode {
     fn new(recover: bool) -> Self {
@@ -132,17 +145,54 @@ impl ImportDecode {
         &mut self,
         path: PathBuf,
         limits: Limits,
-    ) -> Result<DecodedAudio, ImportError> {
+    ) -> Result<DecodedAudio, SessionError> {
         if self.recover {
-            let (decoded, truncation) = hex_media::recover_wav_file(&path, limits)?;
-            self.recovered = truncation.map(|truncation| ImportTruncation::new(&path, truncation));
-            return Ok(decoded);
-        }
-        hex_media::decode_wav_file(&path, limits).inspect_err(|error| {
-            if let ImportError::Truncated(truncation) = error {
-                self.refused = Some(ImportTruncation::new(&path, *truncation));
+            match crate::resident_import::decode_resident_import(&path) {
+                Ok(decoded) => return Ok(decoded),
+                Err(ImportError::Truncated(_)) => {}
+                Err(error) => return Err(error.into()),
             }
-        })
+            let parent = path
+                .parent()
+                .ok_or(SessionError::Invalid("source has no parent directory"))?;
+            let max_output = limits
+                .max_frames
+                .checked_mul(8)
+                .and_then(|n| n.checked_add(44))
+                .ok_or(SessionError::Invalid("recovery output limit overflows"))?;
+            for _ in 0..16 {
+                let serial = NEXT_RECOVERED_SOURCE.fetch_add(1, Ordering::Relaxed);
+                let destination =
+                    parent.join(format!("hex-recovered-{}-{serial}.wav", std::process::id()));
+                match crate::recover_wav_to_new_source(&path, &destination, limits, max_output) {
+                    Ok(result) => {
+                        self.recovered_path = Some(destination);
+                        let Some(truncation) = result.truncation else {
+                            return Err(SessionError::Invalid(
+                                "source changed before recovery; retry import",
+                            ));
+                        };
+                        self.recovered = Some(ImportTruncation::new(&path, truncation));
+                        return Ok(result.decoded);
+                    }
+                    Err(crate::RecoverySourceError::Publish(hex_export::ExportError::Io {
+                        source,
+                        ..
+                    })) if source.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(SessionError::NativeAudio(error.to_string())),
+                }
+            }
+            return Err(SessionError::Invalid(
+                "could not reserve a new recovered source name",
+            ));
+        }
+        crate::resident_import::decode_resident_import(&path)
+            .inspect_err(|error| {
+                if let ImportError::Truncated(truncation) = error {
+                    self.refused = Some(ImportTruncation::new(&path, *truncation));
+                }
+            })
+            .map_err(Into::into)
     }
 
     /// The refusal to report on the event, if this import was refused as truncated.
@@ -152,14 +202,19 @@ impl ImportDecode {
 
     /// Status suffix recording the fidelity loss of a successful recovery.
     pub(super) fn recovery_note(&self) -> Option<String> {
-        self.recovered.as_ref().map(|truncation| {
+        self.recovered.as_ref().zip(self.recovered_path.as_ref()).map(|(truncation, path)| {
             format!(
-                "recovered {} readable frames · {} missing bytes and {} partial-frame bytes discarded · original file unchanged",
+                "recovered {} readable frames · {} missing bytes and {} partial-frame bytes discarded · original file unchanged · recovered source at {}",
                 truncation.readable_frames,
                 truncation.missing_bytes,
-                truncation.partial_frame_bytes
+                truncation.partial_frame_bytes,
+                hex_storage::text::verbatim(path.display()),
             )
         })
+    }
+
+    pub(super) fn recovered_path(&self) -> Option<&Path> {
+        self.recovered_path.as_deref()
     }
 }
 
