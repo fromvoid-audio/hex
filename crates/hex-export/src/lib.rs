@@ -2,6 +2,12 @@
 //! Render fixed-block PCM16 Arrangement exports and bounded float32 source
 //! bounces and resident source publication, with explicit publication and ordinary prepared runtime custody.
 //!
+//! PCM16 files use the canonical 44-byte header (16-byte `fmt `, format tag 1).
+//! Float32 files use `WAVE_FORMAT_IEEE_FLOAT` (tag 3) with the 18-byte `fmt `
+//! chunk (`cbSize` = 0) and the `fact` chunk the RIFF specification requires for
+//! non-PCM data, giving a 58-byte header. Integer exports count samples beyond
+//! full scale that quantisation clamps; see [`ExportReport::clipped_samples`].
+//!
 //! # Dependencies
 //! Uses hex-engine and the standard library; callers supply the exact prepared revision and
 //! matching ordinary device resources or an explicit private offline source scope.
@@ -25,6 +31,11 @@ use std::{
 };
 
 const FRAMES_PER_BLOCK: usize = 256;
+/// Byte length of the stereo PCM16 WAV header written by Arrangement and stem export.
+pub const PCM16_WAV_HEADER_BYTES: u64 = 44;
+/// Byte length of the stereo float32 WAV header (18-byte `fmt `, `fact`, `data`)
+/// written by bounces and resident source publication.
+pub const FLOAT32_WAV_HEADER_BYTES: u64 = 58;
 const IO_BUFFER_BYTES: usize = 8 * 1024;
 const MAX_TEMP_ATTEMPTS: usize = 16;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -62,6 +73,10 @@ pub struct ExportReport {
     pub sample_rate: u32,
     pub frames: u64,
     pub data_bytes: u32,
+    /// Individual channel samples outside [-1.0, 1.0] that integer (PCM16)
+    /// quantisation clamped to full scale. Float32 output preserves overs
+    /// unclamped and always reports zero.
+    pub clipped_samples: u64,
     /// Reserved for exceptional publication recovery; successful overwrite
     /// removes the displaced file and returns no backup path.
     pub recovery_path: Option<PathBuf>,
@@ -352,6 +367,16 @@ impl WavEncoding {
             Self::Float32 => 8,
         }
     }
+    fn header_bytes(self) -> u32 {
+        match self {
+            Self::Pcm16 => PCM16_WAV_HEADER_BYTES as u32,
+            Self::Float32 => FLOAT32_WAV_HEADER_BYTES as u32,
+        }
+    }
+    /// Bytes counted by the RIFF size field before the sample data.
+    fn riff_overhead(self) -> u32 {
+        self.header_bytes() - 8
+    }
 }
 
 fn publish_encoded<R: BlockRenderer>(
@@ -372,7 +397,7 @@ fn publish_encoded<R: BlockRenderer>(
     let data_bytes = frames
         .checked_mul(u64::from(encoding.frame_bytes()))
         .and_then(|bytes| u32::try_from(bytes).ok())
-        .filter(|bytes| *bytes <= u32::MAX - 36)
+        .filter(|bytes| *bytes <= u32::MAX - encoding.riff_overhead())
         .ok_or(ExportError::Invalid("wav exceeds the RIFF size limit"))?;
     let byte_rate = sample_rate
         .checked_mul(encoding.frame_bytes())
@@ -410,7 +435,7 @@ fn publish_encoded<R: BlockRenderer>(
     // Held until this function returns, so a concurrent sweep keeps the file.
     let _ownership = stale_temporary::hold(&file);
     let write_result = prepare_renderer().and_then(|mut renderer| {
-        write_wav(
+        let clipped = write_wav(
             file,
             sample_rate,
             frames,
@@ -419,12 +444,16 @@ fn publish_encoded<R: BlockRenderer>(
             &mut renderer,
             encoding,
         )?;
-        renderer.before_publication()
+        renderer.before_publication()?;
+        Ok(clipped)
     });
-    if let Err(error) = write_result {
-        let _ = fs::remove_file(&temporary_path);
-        return Err(error);
-    }
+    let clipped_samples = match write_result {
+        Ok(clipped) => clipped,
+        Err(error) => {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(error);
+        }
+    };
 
     let staging_remains = match publication {
         Publication::CreateNew => match publication::publish_new(&temporary_path, path) {
@@ -483,6 +512,7 @@ fn publish_encoded<R: BlockRenderer>(
         sample_rate,
         frames,
         data_bytes,
+        clipped_samples,
         recovery_path: None,
         stale_temporaries,
     })
@@ -524,6 +554,7 @@ fn create_temporary(destination: &Path) -> Result<(File, PathBuf), ExportError> 
     })
 }
 
+/// Write the header and every rendered frame; returns the clipped-sample count.
 fn write_wav(
     file: File,
     sample_rate: u32,
@@ -532,9 +563,10 @@ fn write_wav(
     byte_rate: u32,
     renderer: &mut impl BlockRenderer,
     encoding: WavEncoding,
-) -> Result<(), ExportError> {
+) -> Result<u64, ExportError> {
     let mut writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
     write_header_encoded(&mut writer, sample_rate, data_bytes, byte_rate, encoding)?;
+    let mut clipped = 0_u64;
 
     let mut block = [[0.0; 2]; FRAMES_PER_BLOCK];
     let mut remaining = frames;
@@ -548,7 +580,8 @@ fn write_wav(
                 }
                 match encoding {
                     WavEncoding::Pcm16 => {
-                        let pcm = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+                        let (pcm, over) = pcm16(*sample);
+                        clipped += u64::from(over);
                         write_all(&mut writer, &pcm.to_le_bytes(), "write PCM samples")?;
                     }
                     WavEncoding::Float32 => {
@@ -569,7 +602,14 @@ fn write_wav(
         .map_err(|source| ExportError::Io {
             operation: "synchronize the temporary wav",
             source,
-        })
+        })?;
+    Ok(clipped)
+}
+
+/// Quantise one finite sample to PCM16, reporting whether full scale clamped it.
+fn pcm16(sample: f32) -> (i16, bool) {
+    let over = sample.abs() > 1.0;
+    ((sample.clamp(-1.0, 1.0) * 32767.0).round() as i16, over)
 }
 
 fn write_all(
@@ -607,26 +647,42 @@ fn write_header_encoded(
     byte_rate: u32,
     encoding: WavEncoding,
 ) -> Result<(), ExportError> {
-    let mut header = [0_u8; 44];
+    // Callers bound `data_bytes` by `u32::MAX - riff_overhead`.
+    let riff_bytes = encoding.riff_overhead() + data_bytes;
+    let block_align = encoding.frame_bytes() as u16;
+    let mut header = [0_u8; FLOAT32_WAV_HEADER_BYTES as usize];
     header[..4].copy_from_slice(b"RIFF");
-    header[4..8].copy_from_slice(&(36 + data_bytes).to_le_bytes());
+    header[4..8].copy_from_slice(&riff_bytes.to_le_bytes());
     header[8..16].copy_from_slice(b"WAVEfmt ");
-    header[16..20].copy_from_slice(&16_u32.to_le_bytes());
-    header[20..22].copy_from_slice(
-        &(match encoding {
-            WavEncoding::Pcm16 => 1_u16,
-            WavEncoding::Float32 => 3,
-        })
-        .to_le_bytes(),
-    );
+    let (format_tag, fmt_bytes) = match encoding {
+        WavEncoding::Pcm16 => (1_u16, 16_u32),
+        WavEncoding::Float32 => (3, 18),
+    };
+    header[16..20].copy_from_slice(&fmt_bytes.to_le_bytes());
+    header[20..22].copy_from_slice(&format_tag.to_le_bytes());
     header[22..24].copy_from_slice(&2_u16.to_le_bytes());
     header[24..28].copy_from_slice(&rate.to_le_bytes());
     header[28..32].copy_from_slice(&byte_rate.to_le_bytes());
-    header[32..34].copy_from_slice(&(encoding.frame_bytes() as u16).to_le_bytes());
-    header[34..36].copy_from_slice(&((encoding.frame_bytes() * 4) as u16).to_le_bytes());
-    header[36..40].copy_from_slice(b"data");
-    header[40..44].copy_from_slice(&data_bytes.to_le_bytes());
-    write_all(writer, &header, "write the WAV header")
+    header[32..34].copy_from_slice(&block_align.to_le_bytes());
+    header[34..36].copy_from_slice(&(block_align * 4).to_le_bytes());
+    let data_chunk = match encoding {
+        WavEncoding::Pcm16 => 36,
+        WavEncoding::Float32 => {
+            // cbSize = 0, then the fact chunk's per-channel sample-frame count.
+            header[36..38].copy_from_slice(&0_u16.to_le_bytes());
+            header[38..46].copy_from_slice(b"fact\x04\0\0\0");
+            let frames = data_bytes / encoding.frame_bytes();
+            header[46..50].copy_from_slice(&frames.to_le_bytes());
+            50
+        }
+    };
+    header[data_chunk..data_chunk + 4].copy_from_slice(b"data");
+    header[data_chunk + 4..data_chunk + 8].copy_from_slice(&data_bytes.to_le_bytes());
+    write_all(
+        writer,
+        &header[..encoding.header_bytes() as usize],
+        "write the WAV header",
+    )
 }
 
 #[cfg(test)]
@@ -729,12 +785,114 @@ mod tests {
         let dir = TestDir::new();
         let path = dir.0.join("conversion.wav");
         let project = project(vec![[0.5, -0.5], [2.0, -2.0]], 1.0);
-        render_new(&path, &project, 0, 2).expect("export");
+        let report = render_new(&path, &project, 0, 2).expect("export");
         let bytes = fs::read(path).expect("read export");
         assert_eq!(
             &bytes[44..],
             &[0x00, 0x40, 0x00, 0xc0, 0xff, 0x7f, 0x01, 0x80]
         );
+        assert_eq!(report.clipped_samples, 2, "both channels of the over clip");
+    }
+
+    #[test]
+    fn pcm16_counts_only_samples_beyond_full_scale_as_clipped() {
+        assert_eq!(pcm16(1.0), (32767, false));
+        assert_eq!(pcm16(-1.0), (-32767, false));
+        assert_eq!(pcm16(0.0), (0, false));
+        assert_eq!(pcm16(1.000_001), (32767, true));
+        assert_eq!(pcm16(-1.5), (-32767, true));
+    }
+
+    struct Constant(Frame);
+    impl BlockRenderer for Constant {
+        fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+            frames.fill(self.0);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn float32_header_is_conformant_ieee_float_with_fact_and_keeps_overs() {
+        let dir = TestDir::new();
+        let path = dir.0.join("float.wav");
+        let report = publish_encoded(
+            &path,
+            44_100,
+            0,
+            3,
+            &Publication::CreateNew,
+            WavEncoding::Float32,
+            || Ok(Constant([1.5, -0.25])),
+        )
+        .expect("float export");
+        assert_eq!(report.data_bytes, 24);
+        assert_eq!(report.clipped_samples, 0, "float output does not clip");
+        let bytes = fs::read(&path).expect("read float export");
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"RIFF");
+        expected.extend_from_slice(&(50_u32 + 24).to_le_bytes());
+        expected.extend_from_slice(b"WAVEfmt ");
+        expected.extend_from_slice(&18_u32.to_le_bytes());
+        expected.extend_from_slice(&3_u16.to_le_bytes()); // WAVE_FORMAT_IEEE_FLOAT
+        expected.extend_from_slice(&2_u16.to_le_bytes());
+        expected.extend_from_slice(&44_100_u32.to_le_bytes());
+        expected.extend_from_slice(&(44_100_u32 * 8).to_le_bytes());
+        expected.extend_from_slice(&8_u16.to_le_bytes());
+        expected.extend_from_slice(&32_u16.to_le_bytes());
+        expected.extend_from_slice(&0_u16.to_le_bytes()); // cbSize
+        expected.extend_from_slice(b"fact");
+        expected.extend_from_slice(&4_u32.to_le_bytes());
+        expected.extend_from_slice(&3_u32.to_le_bytes());
+        expected.extend_from_slice(b"data");
+        expected.extend_from_slice(&24_u32.to_le_bytes());
+        assert_eq!(expected.len() as u64, FLOAT32_WAV_HEADER_BYTES);
+        for _ in 0..3 {
+            expected.extend_from_slice(&1.5_f32.to_le_bytes());
+            expected.extend_from_slice(&(-0.25_f32).to_le_bytes());
+        }
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn empty_float32_export_is_a_valid_header_with_zero_fact_frames() {
+        let dir = TestDir::new();
+        let path = dir.0.join("empty-float.wav");
+        publish_encoded(
+            &path,
+            48_000,
+            0,
+            0,
+            &Publication::CreateNew,
+            WavEncoding::Float32,
+            || Ok(Constant([0.0; 2])),
+        )
+        .expect("empty float export");
+        let bytes = fs::read(&path).expect("read empty float export");
+        assert_eq!(bytes.len() as u64, FLOAT32_WAV_HEADER_BYTES);
+        assert_eq!(read_u32(&bytes, 4), 50);
+        assert_eq!(read_u32(&bytes, 46), 0);
+        assert_eq!(read_u32(&bytes, 54), 0);
+    }
+
+    #[test]
+    fn float32_riff_limit_accounts_for_the_larger_header() {
+        let dir = TestDir::new();
+        let path = dir.0.join("huge-float.wav");
+        // One frame past the largest float payload whose RIFF size still fits u32.
+        let frames = u64::from((u32::MAX - 50) / 8) + 1;
+        assert!(matches!(
+            publish_encoded(
+                &path,
+                48_000,
+                0,
+                frames,
+                &Publication::CreateNew,
+                WavEncoding::Float32,
+                || Ok(Constant([0.0; 2])),
+            ),
+            Err(ExportError::Invalid("wav exceeds the RIFF size limit"))
+        ));
+        assert_eq!(fs::read_dir(&dir.0).expect("list directory").count(), 0);
     }
 
     #[test]
