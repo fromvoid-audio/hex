@@ -12,6 +12,7 @@ pub mod automation_draft;
 mod files;
 mod journal;
 pub mod preset;
+pub mod project_name;
 pub mod text;
 pub mod tuning_library;
 pub use journal::{

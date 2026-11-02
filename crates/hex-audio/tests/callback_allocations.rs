@@ -1554,6 +1554,92 @@ fn auto_pan_prepared_callback_and_parameter_handoff_are_allocation_free()
 }
 
 #[test]
+fn bypassed_limiter_and_delay_block_paths_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    let mut editor = Editor::new(Project::new(RATE)?, 8)?;
+    let track = match editor.execute(Command::AddTrack {
+        name: "bypassed limiter delay allocation probe".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected audio track".into()),
+    };
+    let asset = match editor.execute(Command::AddAsset {
+        path: "memory/bypassed-limiter-delay.wav".into(),
+        sample_rate: RATE,
+        frames: (BLOCK * 2) as u64,
+    })? {
+        Created::Asset(asset) => asset,
+        _ => return Err("expected audio asset".into()),
+    };
+    editor.execute(Command::PlaceClip {
+        track,
+        asset,
+        start: 0,
+        duration: (BLOCK * 2) as u64,
+        source_offset: 0,
+        source_length: (BLOCK * 2) as u64,
+        looping: false,
+    })?;
+    // BLOCK exceeds the Limiter's bounded bypass scratch, so the chunked path runs.
+    for type_id in ["hex.limiter", "hex.delay"] {
+        let state = hex_engine::default_native_device_state(DeviceTypeId::new(type_id)?)?;
+        let Created::Device(device) = editor.execute(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })?
+        else {
+            return Err("expected native device".into());
+        };
+        editor.execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })?;
+    }
+    let media = BTreeMap::from([(
+        asset,
+        Audio::new(
+            RATE,
+            (0..BLOCK * 2)
+                .map(|frame| {
+                    let sample = (frame % 53) as f32 / 64.0 - 0.4;
+                    [sample, sample * -0.5]
+                })
+                .collect(),
+        )?,
+    )]);
+    let revision = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::new(SineTable::new()),
+        None,
+    )?);
+    let mut oracle = Renderer::new(revision.arrangement());
+    oracle.play();
+    let mut expected = [[0.0; 2]; BLOCK];
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(
+            &revision,
+        ))?)
+        .map_err(|_| "initial playback publication failed")?;
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "Play command admission failed")?;
+    let mut actual = [[0.0; 2]; BLOCK];
+    for _ in 0..2 {
+        oracle.render(&mut expected)?;
+        measured_block(&mut callback, &mut actual);
+        compare_output(&actual, &expected);
+    }
+    assert!(actual.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut actual);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
 fn play_from_callback_is_allocation_free_and_renders_from_requested_frame()
 -> Result<(), Box<dyn Error>> {
     let workload = fixture::fixture(false)?;
