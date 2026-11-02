@@ -1103,6 +1103,16 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if self.state.is_none() {
+                        let reason = self
+                            .service
+                            .startup_failure()
+                            .unwrap_or("project worker stopped before loading");
+                        visible_change |= replace_error(
+                            &mut self.error,
+                            &format!("{reason} · restart hex to try again"),
+                        );
+                    }
                     self.midi_service_disconnected();
                     self.gain_take_service_disconnected();
                     if self.cancel_new_preparation() {
@@ -1164,10 +1174,12 @@ impl EditorView {
                 let gain_take_request = self.pending_gain_take_matches(&request);
                 let device_automation_request = self.pending_device_automation_matches(&request);
                 let time_copy_request = self.pending_time_copy_matches(&request);
+                let import_intent = super::truncated_import::ImportIntent::capture(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
                         self.worker_requests_pending =
                             self.worker_requests_pending.saturating_add(1);
+                        self.truncated_import_submitted(import_intent);
                         if time_copy_request {
                             self.time_copy_submitted();
                         }
@@ -2293,6 +2305,8 @@ impl EditorView {
         self.audio_events_request_complete(&event);
         self.clip_loop_request_complete(&event);
         self.clip_move_request_complete(&event);
+        self.truncated_import
+            .observe(self.project_generation, &event);
         self.section_request_complete(&event);
         self.track_reorder_complete(&event);
         self.midi_drag_request_complete(&event);
@@ -3306,6 +3320,23 @@ impl EditorView {
             });
             return false;
         }
+        if self.gain_lane.draft.is_some() && matches!(&request, Request::Edit(_)) {
+            self.error = Some("finish or cancel the gain point gesture before editing".into());
+            return false;
+        }
+        if self.automation_view.devices.point_draft_active() && matches!(&request, Request::Edit(_))
+        {
+            self.error =
+                Some("finish or cancel the automation point gesture before editing".into());
+            return false;
+        }
+        if matches!(&request, Request::Edit(_))
+            && (self.gain_lane.numeric_draft_active()
+                || self.sampler_parameter.numeric_draft_active())
+        {
+            self.error = Some("finish or cancel the numeric draft before editing".into());
+            return false;
+        }
         #[cfg(test)]
         match &request {
             Request::CopyTimeRange(_) => self.last_time_request = Some(("copy", None)),
@@ -3473,6 +3504,7 @@ impl EditorView {
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
                 | Request::ImportToSession { .. }
+                | Request::RecoverTruncatedImport(_)
                 | Request::RelinkMedia(_)
                 | Request::Open(_)
                 | Request::OpenWith { .. }
@@ -3579,9 +3611,11 @@ impl EditorView {
         let gain_request = self.pending_gain_matches(&request);
         let gain_take_request = self.pending_gain_take_matches(&request);
         let device_automation_request = self.pending_device_automation_matches(&request);
+        let import_intent = super::truncated_import::ImportIntent::capture(&request);
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.truncated_import_submitted(import_intent);
                 if resize_request {
                     self.trim_request_submitted();
                 }
