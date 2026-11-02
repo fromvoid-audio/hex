@@ -86,7 +86,6 @@ impl HeldNotes {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum HeldNoteFault {
-    PacketLimit = 1,
     TokenLimit = 2,
     PublicationLimit = 3,
 }
@@ -152,7 +151,6 @@ impl HeldNoteInput {
     pub fn read(&self) -> HeldNotesRead {
         for _ in 0..2 {
             match self.fault.load(SeqCst) {
-                1 => return HeldNotesRead::Fault(HeldNoteFault::PacketLimit),
                 2 => return HeldNotesRead::Fault(HeldNoteFault::TokenLimit),
                 3 => return HeldNotesRead::Fault(HeldNoteFault::PublicationLimit),
                 _ => {}
@@ -286,48 +284,7 @@ mod tests {
         }
     }
     #[test]
-    fn packet_and_token_limits_fail_closed_without_late_note_revival() {
-        let input = HeldNoteInput::default();
-        let mut decoder = Decoder::default();
-        feed(&mut decoder, &input, &[0x92, 60, 37]);
-        let bytes = vec![0xf8; crate::CALLBACK_BYTES];
-        deliver_packets(
-            &mut decoder,
-            2,
-            Controllers::default(),
-            [bytes.as_slice()],
-            &input,
-            &|_| {},
-        );
-        assert_eq!(
-            input.read(),
-            HeldNotesRead::Fault(HeldNoteFault::PacketLimit)
-        );
-        deliver_packets(
-            &mut decoder,
-            2,
-            Controllers::default(),
-            [&[0x92, 64, 93][..]],
-            &input,
-            &|_| {},
-        );
-        assert_eq!(
-            input.read(),
-            HeldNotesRead::Fault(HeldNoteFault::PacketLimit)
-        );
-        let packets = HeldNoteInput::default();
-        deliver_packets(
-            &mut Decoder::default(),
-            2,
-            Controllers::default(),
-            std::iter::repeat_n(&[0xf8][..], crate::CALLBACK_PACKETS),
-            &packets,
-            &|_| {},
-        );
-        assert_eq!(
-            packets.read(),
-            HeldNotesRead::Fault(HeldNoteFault::PacketLimit)
-        );
+    fn token_and_publication_limits_fail_closed() {
         let tokens = HeldNoteInput::default();
         let mut decoder = Decoder::default();
         decoder.held.through = MAX_TOKEN;

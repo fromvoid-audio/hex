@@ -512,6 +512,7 @@ fn original_open_caps_ordinary_decode_at_saved_frames_before_alias_construction(
             current: Some(snapshot.selection()),
             ..Admission::default()
         },
+        &mut Default::default(),
     )
     .unwrap();
     let saved = native.source.with_file_name("mixed.hex");
@@ -587,6 +588,7 @@ fn replacement_snapshot_counts_old_original_and_legacy_pcm_before_compiler_entry
                 old_files.source.clone(),
                 None,
                 Admission::default(),
+                &mut Default::default(),
             )
             .unwrap();
             ServiceExportSnapshot {

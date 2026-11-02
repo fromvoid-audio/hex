@@ -1075,6 +1075,7 @@ pub(super) fn import_file(
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
     current: &mut Option<Snapshot>,
+    decode: &mut super::truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, SessionError> {
     if !overwrite
         && let AudioBatchDestination::Console(crate::import_batch::ConsoleDestination::Cell {
@@ -1086,7 +1087,7 @@ pub(super) fn import_file(
         return Err(SessionError::Invalid("session target cell is occupied"));
     }
     let allowance = import_frame_allowance(session, sink, admission, current.as_ref())?;
-    if let Some(source) = session.plan_file_import_with_allowance(&path, allowance)? {
+    if let Some(source) = decode.plan(session, &path, Some(allowance))? {
         let expected = session.project().clone();
         let mut accepted = None;
         let (_, prepared) = session.import_verified_batch_revision(
@@ -1113,7 +1114,7 @@ pub(super) fn import_file(
         return Err(SessionError::Invalid("resident audio frame limit reached"));
     }
     let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
+    let decoded = decode.decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -1172,7 +1173,7 @@ pub(super) fn decode_relinks(
             return Err(SessionError::Invalid("relink cancelled"));
         }
         let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
-        let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
+        let decoded = super::decode_resident_import(path)?;
         prepared.push((
             asset,
             PreparedImport::at_rate(
@@ -2324,7 +2325,7 @@ impl Session {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     mod bounce_tests;
     mod export_tests;
     mod plugin_effect_tests;
@@ -2525,6 +2526,13 @@ mod tests {
             self.pending = None;
             self.observed.closed.fetch_add(1, Ordering::Release);
         }
+    }
+
+    pub(in crate::service) fn fixture_sink() -> Box<dyn WorkerAudioSink> {
+        Box::new(OfflineSink {
+            observed: Arc::new(Observed::default()),
+            pending: None,
+        })
     }
 
     #[test]
