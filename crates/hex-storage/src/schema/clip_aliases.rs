@@ -157,6 +157,8 @@ fn neutral(content: &AudioClipContent) -> Arc<AudioClipContent> {
         warp: None,
         warp_enabled: false,
         source_gain: Vec::new(),
+        // Placeholder only; the representative carries the shared law.
+        warp_resampler: hex_project::WarpResampler::implied(content.pitch_cents, false),
     })
 }
 fn representatives(
