@@ -14,8 +14,8 @@ use hex_session::device_gesture::{
     EqNodeCreationSnapshot, GestureKey, GesturePhase, GestureTarget, ParameterPairValue,
 };
 use hex_widgets::{
-    ResponseGraph, ResponseGraphCreationHint, ResponseGraphEvent, ResponseGraphMarqueeEvent,
-    ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase,
+    ResponseGraph, ResponseGraphEvent, ResponseGraphMarqueeEvent, ResponseGraphModel,
+    ResponseGraphNode, ResponseGraphPhase,
 };
 
 mod axes;
@@ -277,7 +277,10 @@ pub(super) fn render_body(
     if let Some(model) = model {
         entity.update(cx, |graph, cx| {
             graph.set_creation_drag_enabled(true);
-            graph.set_creation_hint_resolver(show_creation_hint.then_some(creation_hint), cx);
+            graph.set_creation_hint_resolver(
+                show_creation_hint.then_some(node_geometry::creation_hint),
+                cx,
+            );
             let _ = graph.set_axes(Some(axes::frequency_axes(sample_rate)), cx);
             let _ = graph.set_analyzer_style(theme::device_analyzer_style(), cx);
             let _ = graph.set_scroll_nodes(scroll_nodes, cx);
@@ -884,53 +887,6 @@ fn marquee_event(
     panel.collapse = None;
     cx.notify();
 }
-/// Caller-owned shapes let the generic widget indicate the exact same action
-/// as the canonical EQ creation resolver without depending on device/DSP types.
-fn creation_hint(position: [f32; 2]) -> ResponseGraphCreationHint {
-    let (id, points): (&'static str, &'static [[f32; 2]]) = match creation_kind(position) {
-        eq::NodeKind::LowCut => (
-            "low-cut",
-            &[
-                [0.0, 0.05],
-                [0.25, 0.1],
-                [0.5, 0.7],
-                [0.75, 0.8],
-                [1.0, 0.8],
-            ],
-        ),
-        eq::NodeKind::HighCut => (
-            "high-cut",
-            &[
-                [0.0, 0.8],
-                [0.25, 0.8],
-                [0.5, 0.7],
-                [0.75, 0.1],
-                [1.0, 0.05],
-            ],
-        ),
-        eq::NodeKind::Notch => (
-            "notch",
-            &[
-                [0.0, 0.8],
-                [0.25, 0.8],
-                [0.5, 0.05],
-                [0.75, 0.8],
-                [1.0, 0.8],
-            ],
-        ),
-        _ => (
-            "bell",
-            &[
-                [0.0, 0.3],
-                [0.25, 0.35],
-                [0.5, 0.95],
-                [0.75, 0.35],
-                [1.0, 0.3],
-            ],
-        ),
-    };
-    ResponseGraphCreationHint { id, points }
-}
 // Input cancellation is separate from admitted preview custody. The last
 // geometry stays with its key until the terminal/canonical installation event.
 fn reconcile_creation(view: &mut EditorView, device: DeviceId, canonical: &NativeDeviceState) {
@@ -1513,15 +1469,15 @@ mod tests {
         }
         for y in [0.0, node_geometry::CUT_CREATION_EDGE] {
             assert_eq!(creation_kind([0.5, y]), eq::NodeKind::Notch);
-            assert_eq!(creation_hint([0.5, y]).id, "notch");
+            assert_eq!(node_geometry::creation_hint([0.5, y]).id, "notch");
         }
         assert_eq!(
             creation_kind([0.5, node_geometry::CUT_CREATION_EDGE + 0.001]),
             eq::NodeKind::Bell
         );
-        assert_eq!(creation_hint([0.0, 0.0]).id, "low-cut");
-        assert_eq!(creation_hint([1.0, 0.0]).id, "high-cut");
-        assert_eq!(creation_hint([0.5, 0.5]).id, "bell");
+        assert_eq!(node_geometry::creation_hint([0.0, 0.0]).id, "low-cut");
+        assert_eq!(node_geometry::creation_hint([1.0, 0.0]).id, "high-cut");
+        assert_eq!(node_geometry::creation_hint([0.5, 0.5]).id, "bell");
         assert_eq!(q_from_y(-1.0), 0.1);
         assert!((q_from_y(2.0) - 18.0).abs() < 0.0001);
     }

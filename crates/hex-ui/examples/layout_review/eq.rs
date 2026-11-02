@@ -777,12 +777,22 @@ pub(super) fn sync(fixture: &Fixture, disabled: bool, cx: &mut Context<Gallery>)
                 .collect()
         })
     };
+    let show_hint = !disabled
+        && fixture.eq_local.as_ref().is_some_and(|local| {
+            local.before.is_none()
+                && local.scroll.is_none()
+                && local.state.nodes.len() < eq::MAX_NODES
+        })
+        && !fixture.numbers.iter().any(|number| {
+            number.entity.read(cx).is_editing() || number.entity.read(cx).is_interacting()
+        });
     fixture.graph.update(cx, |graph, cx| {
         if disabled {
             graph.cancel(cx);
         }
         graph.set_editable(!disabled, cx);
         graph.set_creation_enabled(!disabled);
+        graph.set_creation_hint_resolver(show_hint.then_some(node_geometry::creation_hint), cx);
         graph.set_marquee_enabled(!disabled, cx);
         let _ = graph.set_scroll_nodes(eligible, cx);
         let _ = graph.set_axes(Some(axes::frequency_axes(48000)), cx);
@@ -869,6 +879,117 @@ mod tests {
             position,
             modifiers: gpui::Modifiers::default(),
         }
+    }
+
+    #[gpui::test]
+    fn blank_graph_hover_shows_creation_shape(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, VisualTestContext, point, px, size};
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let graph = view.read_with(cx, |view, _| view.fixtures[&Entry::Eq].graph.clone());
+        let plot = graph.read_with(&visual, |graph, _| graph.plot_bounds().unwrap());
+        for (x, y, name) in [
+            (0.02, 0.8, "fixture-eq-graph-creation-hint-low-cut"),
+            (0.98, 0.8, "fixture-eq-graph-creation-hint-high-cut"),
+            (0.3, 0.02, "fixture-eq-graph-creation-hint-notch"),
+            (0.3, 0.8, "fixture-eq-graph-creation-hint-bell"),
+        ] {
+            let p = point(
+                plot.left() + plot.size.width * x,
+                plot.top() + plot.size.height * (1.0 - y),
+            );
+            visual.simulate_mouse_move(p, None, Modifiers::default());
+            visual.run_until_parked();
+            assert!(visual.debug_bounds(name).is_some(), "missing {name} hint");
+        }
+        visual.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                let local = view
+                    .fixtures
+                    .get_mut(&Entry::Eq)
+                    .unwrap()
+                    .eq_local
+                    .as_mut()
+                    .unwrap();
+                local.before = Some(Snapshot {
+                    state: local.state.clone(),
+                    selected: local.selected,
+                    group: local.group.clone(),
+                });
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("fixture-eq-graph-creation-hint-bell")
+                .is_none()
+        );
+        visual.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.fixtures
+                    .get_mut(&Entry::Eq)
+                    .unwrap()
+                    .eq_local
+                    .as_mut()
+                    .unwrap()
+                    .before = None;
+                view.disabled = true;
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        let disabled_blank = point(
+            plot.left() + plot.size.width * 0.35,
+            plot.top() + plot.size.height * 0.2,
+        );
+        visual.simulate_mouse_move(disabled_blank, None, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("fixture-eq-graph-creation-hint-bell")
+                .is_none()
+        );
+        visual.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.disabled = false;
+                let local = view
+                    .fixtures
+                    .get_mut(&Entry::Eq)
+                    .unwrap()
+                    .eq_local
+                    .as_mut()
+                    .unwrap();
+                for raw_id in 2..=eq::MAX_NODES as u64 {
+                    let id = NodeId::new(raw_id).unwrap();
+                    local
+                        .state
+                        .nodes
+                        .push(Node::new(id, 1_000.0, 0.0, 0).unwrap());
+                }
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        let blank = point(
+            plot.left() + plot.size.width * 0.3,
+            plot.top() + plot.size.height * 0.2,
+        );
+        visual.simulate_mouse_move(blank, None, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds("fixture-eq-graph-creation-hint-bell")
+                .is_none()
+        );
     }
 
     #[gpui::test]

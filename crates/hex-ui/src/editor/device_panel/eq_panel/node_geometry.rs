@@ -35,3 +35,51 @@ pub(super) fn creation_kind([x, y]: [f32; 2]) -> NodeKind {
         NodeKind::Bell
     }
 }
+
+/// Caller-owned shapes let the generic widget indicate the exact same action
+/// as the canonical EQ creation resolver without depending on device/DSP types.
+pub(super) fn creation_hint(position: [f32; 2]) -> hex_widgets::ResponseGraphCreationHint {
+    let (id, points): (&'static str, &'static [[f32; 2]]) = match creation_kind(position) {
+        NodeKind::LowCut => (
+            "low-cut",
+            &[
+                [0.0, 0.05],
+                [0.25, 0.1],
+                [0.5, 0.7],
+                [0.75, 0.8],
+                [1.0, 0.8],
+            ],
+        ),
+        NodeKind::HighCut => (
+            "high-cut",
+            &[
+                [0.0, 0.8],
+                [0.25, 0.8],
+                [0.5, 0.7],
+                [0.75, 0.1],
+                [1.0, 0.05],
+            ],
+        ),
+        NodeKind::Notch => (
+            "notch",
+            &[
+                [0.0, 0.8],
+                [0.25, 0.8],
+                [0.5, 0.05],
+                [0.75, 0.8],
+                [1.0, 0.8],
+            ],
+        ),
+        _ => (
+            "bell",
+            &[
+                [0.0, 0.3],
+                [0.25, 0.35],
+                [0.5, 0.95],
+                [0.75, 0.35],
+                [1.0, 0.3],
+            ],
+        ),
+    };
+    hex_widgets::ResponseGraphCreationHint { id, points }
+}
