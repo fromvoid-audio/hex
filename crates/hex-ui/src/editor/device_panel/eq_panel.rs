@@ -20,6 +20,8 @@ use hex_widgets::{
 
 mod axes;
 mod gestures;
+mod group_move;
+use group_move::{edits_q, frequency_from_x, q_from_y};
 mod scroll_queue;
 pub(in crate::editor) use scroll_queue::after_worker_event as after_scroll_worker_event;
 mod response;
@@ -855,13 +857,6 @@ fn audition(view: &mut EditorView, device: DeviceId, id: NodeId) {
         }
     }
 }
-/// Cut and notch nodes edit Q vertically; the other shapes edit gain.
-fn edits_q(kind: eq::NodeKind) -> bool {
-    matches!(
-        kind,
-        eq::NodeKind::LowCut | eq::NodeKind::HighCut | eq::NodeKind::Notch
-    )
-}
 /// Normalized graph position; the inverse of `frequency_from_x`/`q_from_y`/gain.
 fn node_position(node: &Node, rate: u32) -> [f32; 2] {
     [
@@ -900,13 +895,6 @@ fn marquee_event(
     selection::apply_marquee(&mut panel.selected, &mut panel.group, &event.selected);
     panel.collapse = None;
     cx.notify();
-}
-fn frequency_from_x(x: f32, rate: u32) -> f32 {
-    let upper = (rate as f32 * 0.49).clamp(20.0, 20000.0);
-    (20.0 * ((upper / 20.0).ln() * x.clamp(0.0, 1.0)).exp()).clamp(20.0, upper)
-}
-fn q_from_y(y: f32) -> f32 {
-    (0.1 * ((18.0_f32 / 0.1).ln() * y.clamp(0.0, 1.0)).exp()).clamp(0.1, 18.0)
 }
 fn creation_kind([x, y]: [f32; 2]) -> eq::NodeKind {
     if x <= CUT_CREATION_EDGE {

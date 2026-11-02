@@ -168,12 +168,10 @@ fn group_snapshot(
 ) -> Result<hex_lattice_contract::DeviceParameterSnapshot, &'static str> {
     let mut entries = Vec::with_capacity(nodes.len() * 2);
     for (node, origin) in nodes {
-        let x = (origin[0] + delta[0]).clamp(0.0, 1.0);
-        let y = (origin[1] + delta[1]).clamp(0.0, 1.0);
-        let (field, value) = if edits_q(node.kind) {
-            (NodeParameter::Q, q_from_y(y))
-        } else {
-            (NodeParameter::Gain, y * 48.0 - 24.0)
+        let (frequency_hz, vertical) = group_move::values(node.kind, *origin, delta, rate);
+        let (field, value) = match vertical {
+            group_move::Vertical::Q(value) => (NodeParameter::Q, value),
+            group_move::Vertical::Gain(value) => (NodeParameter::Gain, value),
         };
         let frequency = node
             .id
@@ -183,7 +181,7 @@ fn group_snapshot(
             .id
             .parameter(field)
             .map_err(|_| "eq group node is invalid")?;
-        entries.push((frequency, ParameterValue::Float(frequency_from_x(x, rate))));
+        entries.push((frequency, ParameterValue::Float(frequency_hz)));
         entries.push((second, ParameterValue::Float(value)));
     }
     hex_lattice_contract::DeviceParameterSnapshot::new(&entries)
