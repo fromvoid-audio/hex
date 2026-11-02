@@ -343,6 +343,41 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        // Lend the per-voice miss-fade table to the page view for this render
+        // (`crate::stream_miss_fade`); it is a plain array, so nothing allocates.
+        let mut fades = self.stream_miss_fades;
+        let result = match pages {
+            Some(pages) => {
+                let mut faded = crate::stream_miss_fade::MissFadedPages {
+                    pages,
+                    fades: &mut fades,
+                };
+                self.render_internal_metered(
+                    output,
+                    Some(&mut faded),
+                    observer,
+                    capture,
+                    sources,
+                    foreign,
+                )
+            }
+            None => {
+                self.render_internal_metered::<P>(output, None, observer, capture, sources, foreign)
+            }
+        };
+        self.stream_miss_fades = fades;
+        result
+    }
+
+    fn render_internal_metered<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
         let result = if self.device_metering {
             // Keep bounded scratch outside the mutable playback borrow; the
             // revision remains owned by playback until scratch is restored.
