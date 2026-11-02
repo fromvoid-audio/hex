@@ -1303,7 +1303,7 @@ impl EditorView {
             }
             crate::diagnostics::record_key(cx, event);
             if let Some(entity) = keyboard_entity.upgrade() {
-                entity.update(cx, |view, cx| view.wake_poll(window, cx));
+                entity.update(cx, |view, _| view.wake_poll());
             }
             // A key during the potentially slow helper handshake cancels the
             // pending quit before the key can alter a project or local draft.

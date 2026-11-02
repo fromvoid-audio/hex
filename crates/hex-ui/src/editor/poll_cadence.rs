@@ -1,17 +1,36 @@
 //! Adaptive cadence for the editor's control poll (`EditorView::tick`).
 //!
 //! The poll runs every 16 ms while anything is active: playback (actual or
-//! requested), a pending edit, recording, a held pointer, or a tick that changed
+//! requested), a pending edit or worker request, queued or unacknowledged
+//! transport commands, recording, a held pointer, or a tick that changed
 //! visible state (meters, playhead, worker ACKs, autoscroll). After
 //! [`QUIET_TICKS_BEFORE_IDLE`] consecutive quiet ticks it backs off to
-//! [`IDLE_INTERVAL`]. Keyboard and pointer input restart the 16 ms cadence
-//! immediately, so input-driven edits are submitted without the idle delay.
+//! [`IDLE_INTERVAL`].
 //!
-//! Live notes, monitoring and audio rendering do not depend on this poll; idle
-//! back-off only delays unsolicited background notices (recovery, update checks)
-//! by at most one idle interval.
+//! Every producer of poll work calls [`EditorView::wake_poll`]: keyboard input
+//! (window keystroke interceptor), pointer presses (root capture listener),
+//! request admission (`enqueue_request`), every worker submission
+//! (`worker_submitted`) and every transport entry point (play/stop/seek,
+//! metronome, session launch, prepared seek). A wake interrupts the sleeping
+//! idle timer: the next tick runs at once, without the idle delay, and the 16 ms
+//! cadence resumes. As a last line of defence, rendering wakes the poll when it
+//! finds busy work while idle, so a producer that only notifies is still caught.
+//!
+//! Unsolicited background notices have no wake source: hex-session, the audio
+//! status and MIDI port handles expose only non-blocking `try_*` polls, with no
+//! waker hook. Those notices (audio device loss/recovery, update checks,
+//! controller-port changes, hardware held-note display) therefore wait at most
+//! one [`IDLE_INTERVAL`] (100 ms) while idle. Every worker *response* is
+//! solicited: its request keeps `worker_requests_pending` non-zero, so the poll
+//! stays at 16 ms until the response arrives. Live notes, monitoring and audio
+//! rendering do not depend on this poll.
 use super::EditorView;
 use gpui::{Context, Task, Window};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Poll, Waker};
 use std::time::Duration;
 
 /// Poll interval while anything is active.
@@ -26,8 +45,68 @@ pub(super) struct PollCadence {
     quiet_ticks: u32,
     /// Total poll wakeups, for idle-cost regression tests and diagnostics.
     wakeups: u64,
+    signal: PollSignal,
     /// The running poll loop; dropping it cancels the pending timer.
     _task: Option<Task<()>>,
+}
+
+/// One-bit wake latch shared by the editor and its poll loop.
+///
+/// UI-thread only in practice; the atomic flag and short waker mutex never
+/// touch the audio callback.
+#[derive(Clone, Default)]
+struct PollSignal(Arc<SignalState>);
+
+#[derive(Default)]
+struct SignalState {
+    woken: AtomicBool,
+    waker: Mutex<Option<Waker>>,
+}
+
+impl PollSignal {
+    fn wake(&self) {
+        self.0.woken.store(true, Ordering::Release);
+        let waker = self
+            .0
+            .waker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    fn take(&self) -> bool {
+        self.0.woken.swap(false, Ordering::AcqRel)
+    }
+}
+
+/// Resolves when the timer fires or the signal is woken, whichever is first.
+struct WakeOrTimer<'a> {
+    signal: &'a PollSignal,
+    timer: Task<()>,
+}
+
+impl Future for WakeOrTimer<'_> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<()> {
+        if self.signal.take() {
+            return Poll::Ready(());
+        }
+        *self
+            .signal
+            .0
+            .waker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(cx.waker().clone());
+        // A wake between the first check and registering the waker.
+        if self.signal.take() {
+            return Poll::Ready(());
+        }
+        Pin::new(&mut self.timer).poll(cx)
+    }
 }
 
 impl PollCadence {
@@ -62,12 +141,25 @@ impl PollCadence {
 }
 
 impl EditorView {
-    /// Spawn a poll loop at the active cadence; the owner stores the task.
+    /// Spawn the poll loop at the active cadence; the owner stores the cadence.
     pub(super) fn spawn_poll(window: &Window, cx: &mut Context<Self>) -> PollCadence {
+        let signal = PollSignal::default();
+        let loop_signal = signal.clone();
         let task = cx.spawn_in(window, async move |this, cx| {
             let mut interval = ACTIVE_INTERVAL;
             loop {
-                cx.background_executor().timer(interval).await;
+                let timer = cx.background_executor().timer(interval);
+                if interval == IDLE_INTERVAL {
+                    WakeOrTimer {
+                        signal: &loop_signal,
+                        timer,
+                    }
+                    .await;
+                } else {
+                    timer.await;
+                }
+                // Wakes during an active sleep add no extra tick.
+                loop_signal.take();
                 match this.update_in(cx, |view, window, cx| view.poll_tick(window, cx)) {
                     Ok(next) => interval = next,
                     // The editor or its window is gone.
@@ -76,26 +168,32 @@ impl EditorView {
             }
         });
         PollCadence {
-            quiet_ticks: 0,
-            wakeups: 0,
+            signal,
             _task: Some(task),
+            ..PollCadence::default()
         }
     }
 
-    /// Restart the poll loop at the active cadence, keeping the wakeup count.
-    fn restart_poll(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let wakeups = self.poll_cadence.wakeups;
-        self.poll_cadence = Self::spawn_poll(window, cx);
-        self.poll_cadence.wakeups = wakeups;
+    /// Poll work was produced: leave idle at once, or reset the quiet count.
+    pub(super) fn wake_poll(&mut self) {
+        let idle = self.poll_cadence.idle();
+        self.poll_cadence.quiet_ticks = 0;
+        if idle {
+            self.poll_cadence.signal.wake();
+        }
     }
 
-    /// Input arrived: leave idle immediately, or just reset the quiet count.
-    pub(super) fn wake_poll(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if self.poll_cadence.idle() {
-            self.restart_poll(window, cx);
-        } else {
-            self.poll_cadence.quiet_ticks = 0;
+    /// Rendering found busy work while idle (a producer that only notified).
+    pub(super) fn wake_poll_if_busy(&mut self) {
+        if self.poll_cadence.idle() && self.poll_busy() {
+            self.wake_poll();
         }
+    }
+
+    /// One request was submitted to the project worker.
+    pub(super) fn worker_submitted(&mut self) {
+        self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+        self.wake_poll();
     }
 
     fn poll_tick(&mut self, window: &Window, cx: &mut Context<Self>) -> Duration {
@@ -115,7 +213,20 @@ impl EditorView {
                 .status()
                 .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
         });
-        actual_playing || self.play_intent.desired_playing(actual_playing) || self.edit_pending()
+        actual_playing
+            || self.play_intent.desired_playing(actual_playing)
+            || self.edit_pending()
+            || self.transport_pending()
+    }
+
+    /// Queued or unacknowledged transport commands, so their ACKs keep 16 ms.
+    fn transport_pending(&self) -> bool {
+        !self.pending_audio_commands.is_empty()
+            || self.pending_seek_ticket.is_some()
+            || self.pending_metronome_ticket.is_some()
+            || self.pending_session_ticket.is_some()
+            || self.deferred_play.is_some()
+            || self.seek_pending()
     }
 }
 
