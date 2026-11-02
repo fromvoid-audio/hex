@@ -252,11 +252,6 @@ pub(super) fn open_source_with_limits(
         && reservation.is_some()
         && (required_pcm > frame_allowance || oversized_plain_asset);
     if mode == DocumentAudioMode::VerifiedStreaming {
-        // Verified pages convert with the sinc v1 kernel only; never play a v2
-        // asset through a different conversion law.
-        if online_assets(&project).any(asset_requires_sinc_v2) {
-            return Err("verified streaming cannot play sinc v2 media yet; reopen the project with resident audio; original file unchanged".into());
-        }
         let reservation = reservation
             .ok_or("verified source reservation is required")?
             .validate()
@@ -595,16 +590,7 @@ fn with_missing_media_offline(project: Project, base: &Path) -> Result<Project, 
 /// Keep every materialized processing dependency resident, including retained
 /// grouped roots. File selection must not turn a valid saved edit into an
 /// unsupported streamed transform merely because another plain asset is large.
-/// Verified file pages convert with the sinc v1 kernel only.
-fn asset_requires_sinc_v2(asset: &hex_project::Asset) -> bool {
-    asset.conversion_version() == hex_project::SINC_CONVERSION_V2
-}
-
 fn asset_requires_resident_processing(project: &Project, asset: hex_project::AssetId) -> bool {
-    // A sinc v2 asset reconstructs its exact PCM only through resident decoding.
-    if project.asset(asset).is_some_and(asset_requires_sinc_v2) {
-        return true;
-    }
     let requires = |clip: &hex_project::Clip| {
         (clip.asset() == asset && hex_engine::audio_transform::AudioTransformPreparation::clip_requires_resident_source(clip))
             || clip.audio_edit().and_then(|edit| edit.domain.events.as_ref())
