@@ -41,7 +41,8 @@ fn voice<'a>(pcm: &'a [StereoFrame], settings: Settings<'a>, note: u8) -> Voice<
 fn max_step(voice: &Voice<'_>, frames: usize) -> f32 {
     let mut output = vec![[0.0; 2]; frames];
     voice.render(0, u64::MAX, &mut output);
-    output
+    // Skip the onset: band-limited taps before the region start read silence.
+    output[64..]
         .windows(2)
         .flat_map(|pair| (0..2).map(move |channel| (pair[1][channel] - pair[0][channel]).abs()))
         .fold(0.0, f32::max)
@@ -61,7 +62,8 @@ fn hard_source(age: u64) -> usize {
 fn crossfade_bounds_the_loop_seam_step_in_both_directions_and_pitches() {
     let pcm = ramp(320);
     for reverse in [false, true] {
-        for note in [48, 60, 67] {
+        // 48/60: linear interpolation; 67/72: band-limited (polyphase) path.
+        for note in [48, 60, 67, 72] {
             let hard = voice(&pcm, settings(0.0, reverse), note);
             // 5 ms is 40 source frames at 8 kHz.
             let faded = voice(&pcm, settings(5.0, reverse), note);
@@ -70,11 +72,12 @@ fn crossfade_bounds_the_loop_seam_step_in_both_directions_and_pitches() {
             let hard_step = max_step(&hard, 2_000);
             let faded_step = max_step(&faded, 2_000);
             // The hard seam jumps by the loop's ramp span (100/320), spread
-            // over at most two output frames by interpolation.
-            assert!(hard_step > 0.1, "{reverse} {note}: {hard_step}");
+            // over a few output frames by interpolation or the band limit.
+            assert!(hard_step > 0.09, "{reverse} {note}: {hard_step}");
             // The fade spreads that span over 40 source frames, plus the ramp
-            // slope itself, at up to 1.5x speed: about 0.017 per frame.
-            assert!(faded_step < 0.02, "{reverse} {note}: {faded_step}");
+            // slope itself, at up to 2x speed: about 0.022 per frame.
+            assert!(faded_step < 0.025, "{reverse} {note}: {faded_step}");
+            assert!(faded_step < hard_step / 3.0, "{reverse} {note}");
         }
     }
 }
@@ -82,6 +85,30 @@ fn crossfade_bounds_the_loop_seam_step_in_both_directions_and_pitches() {
 #[test]
 fn crossfade_off_and_outside_the_fade_keeps_the_hard_seam_bit_identical() {
     let pcm = ramp(320);
+    // Both reconstruction paths are untouched outside the fade.
+    for note in [60, 72] {
+        let hard = voice(&pcm, settings(0.0, false), note);
+        let faded = voice(&pcm, settings(5.0, false), note);
+        let (mut hard_out, mut faded_out) = (vec![[0.0; 2]; 1_000], vec![[0.0; 2]; 1_000]);
+        hard.render(0, u64::MAX, &mut hard_out);
+        faded.render(0, u64::MAX, &mut faded_out);
+        let step = hard.coefficients().step as u128;
+        for (age, (h, f)) in hard_out.iter().zip(&faded_out).enumerate() {
+            let offset = (age as u128 * step) >> FRACTION_BITS;
+            let (phase, wrapped) = if offset < 190 {
+                (offset, false)
+            } else {
+                (90 + (offset - 190) % 100, true)
+            };
+            // After a wrap, band-limited taps before the loop start read the
+            // faded-in pre-roll instead of the loop end for one half-span.
+            let history =
+                wrapped && phase < 90 + crate::sampler::interpolation::MAX_HALF_TAPS as u128;
+            if phase < 150 && !(note == 72 && history) {
+                assert_eq!(h.map(f32::to_bits), f.map(f32::to_bits), "{note} {age}");
+            }
+        }
+    }
     let hard = voice(&pcm, settings(0.0, false), 60);
     assert_eq!(hard.coefficients().loop_crossfade, 0);
     let faded = voice(&pcm, settings(5.0, false), 60);

@@ -62,8 +62,20 @@ fn seek_pcm(
     gain: f32,
 ) {
     let (start, pcm) = seek_output(h, event, applied, id);
-    let expected = std::array::from_fn(|i| [((start + i) * step % 4 + 1) as f32 * 0.125 * gain; 2]);
-    assert_eq!(pcm, expected);
+    if step == 1 {
+        let expected = std::array::from_fn(|i| [((start + i) % 4 + 1) as f32 * 0.125 * gain; 2]);
+        assert_eq!(pcm, expected);
+        return;
+    }
+    // Faster voices are band-limited (#4089). Every partial of the looped
+    // 4-frame ramp except DC lies at or above the output Nyquist at step 2, so
+    // the voice plays the ramp's mean, (1 + 2 + 3 + 4) / 4 * 0.125.
+    assert_eq!(step, 2);
+    for frame in pcm {
+        for sample in frame {
+            assert!((sample - 0.3125 * gain).abs() < 1e-3, "{pcm:?}");
+        }
+    }
 }
 
 #[test]

@@ -641,47 +641,51 @@ fn sampler_loop_crossfade_renders_through_repeated_seams_without_allocations_or_
         max_active_occurrences: 1,
         max_tail_frames: 8_000 * 600,
     };
-    let mut runtime = NativeInstrumentRuntimePair::new(&prepared, limits).unwrap();
-    let onset = [NativeInstrumentEvent::NoteOn {
-        frame_offset: 0,
-        occurrence_id: 1,
-        pitch: 60,
-        velocity: 127,
-    }];
-    // 16 blocks of 24 frames cross the 24-frame loop seam 15 times.
-    let mut output = [[[0.0; 2]; 24]; 16];
-    let mut failure = None;
-    // Construction, binding and buffers stay outside; measure the rendering.
-    let measurement = allocation_counter::measure(|| {
-        runtime.reset();
-        for (index, block) in output.iter_mut().enumerate() {
-            runtime.begin_block();
-            let events: &[NativeInstrumentEvent] = if index == 0 { &onset } else { &[] };
-            if let Err(error) =
-                runtime.process_block(std::hint::black_box(events), block, &resources)
-            {
-                failure = Some(error);
-                break;
+    // 60 renders at unity (linear interpolation); 72 at 2x (band-limited).
+    for (pitch, bound) in [(60, 0.2), (72, 0.35)] {
+        let mut runtime = NativeInstrumentRuntimePair::new(&prepared, limits).unwrap();
+        let onset = [NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch,
+            velocity: 127,
+        }];
+        // 16 blocks of 24 frames cross the 24-frame loop seam 15 times.
+        let mut output = [[[0.0; 2]; 24]; 16];
+        let mut failure = None;
+        // Construction, binding and buffers stay outside; measure the rendering.
+        let measurement = allocation_counter::measure(|| {
+            runtime.reset();
+            for (index, block) in output.iter_mut().enumerate() {
+                runtime.begin_block();
+                let events: &[NativeInstrumentEvent] = if index == 0 { &onset } else { &[] };
+                if let Err(error) =
+                    runtime.process_block(std::hint::black_box(events), block, &resources)
+                {
+                    failure = Some(error);
+                    break;
+                }
+                runtime.commit_block();
             }
-            runtime.commit_block();
-        }
-    });
-    assert_eq!(failure, None);
-    assert_eq!(
-        (
-            measurement.count_total,
-            measurement.bytes_total,
-            measurement.count_current,
-            measurement.bytes_current
-        ),
-        (0, 0, 0, 0)
-    );
-    // The ramp's slope is 1/32 per frame; a hard seam would jump by 24/32.
-    let frames: Vec<f32> = output.iter().flatten().map(|frame| frame[0]).collect();
-    let step = frames
-        .windows(2)
-        .map(|pair| (pair[1] - pair[0]).abs())
-        .fold(0.0, f32::max);
-    assert!(step < 0.2, "{step}");
-    assert!(frames[380] > 0.0, "the loop keeps sounding");
+        });
+        assert_eq!(failure, None);
+        assert_eq!(
+            (
+                measurement.count_total,
+                measurement.bytes_total,
+                measurement.count_current,
+                measurement.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        // The ramp's slope is 1/32 per source frame; a hard seam would jump by
+        // 24/32. At 2x the 8-frame fade spans 4 output frames.
+        let frames: Vec<f32> = output.iter().flatten().map(|frame| frame[0]).collect();
+        let step = frames
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(step < bound, "{pitch}: {step}");
+        assert!(frames[380] > 0.0, "the loop keeps sounding");
+    }
 }

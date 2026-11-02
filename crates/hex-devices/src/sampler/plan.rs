@@ -95,6 +95,9 @@ impl<'a> PreparedSamplerPlan<'a> {
             }
             _ => {}
         }
+        // Static reconstruction tables are built here, on control, never on
+        // first render.
+        super::interpolation::warm();
         Ok(Self {
             sample,
             output_rate,
@@ -220,6 +223,7 @@ impl<'a> PreparedSamplerPlan<'a> {
             loop_crossfade,
             reverse: settings.reverse,
             step: step as u64,
+            kernel: super::interpolation::Kernel::for_rate(step / ONE as f64),
             channel_gain,
             gate,
             envelope: self.envelope,

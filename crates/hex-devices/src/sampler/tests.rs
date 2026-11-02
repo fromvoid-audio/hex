@@ -26,7 +26,14 @@ fn trim_reverse_pitch_and_rate_conversion_match_source_coordinates() {
     assert_eq!(root.sample(3, 10), [0.0; 2]);
     let octave = voice(sampler, 72);
     assert_eq!(octave.natural_frames(), Some(2));
-    assert_eq!(octave.sample(1, 10), pcm[3]);
+    // Pitched up reconstructs band-limited around source frame 2 of the trim;
+    // frames outside the trim never leak in (they read as silence).
+    let mut outside_silent = pcm;
+    outside_silent[0] = [0.0; 2];
+    outside_silent[4] = [0.0; 2];
+    let isolated = voice(prepare(&outside_silent, 8_000, settings), 72);
+    assert_eq!(octave.sample(1, 10), isolated.sample(1, 10));
+    assert!(octave.sample(1, 10)[0] > 0.0);
     assert_eq!(octave.sample(2, 10), [0.0; 2]);
     let lower = voice(sampler, 48);
     assert_eq!(lower.sample(1, 10), [2.0, -3.0]);

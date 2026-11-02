@@ -149,6 +149,7 @@ fn retarget_coordinates_match(target: &VoiceCoefficients, source: &VoiceCoeffici
         loop_crossfade,
         reverse,
         step,
+        kernel: _,
         channel_gain: _,
         gate,
         envelope,
