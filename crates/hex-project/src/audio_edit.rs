@@ -140,6 +140,29 @@ impl WarpMode {
         Ok(())
     }
 }
+/// Versioned source reconstruction law for this content's pitch/warp render.
+/// Each law's output is fixed once shipped; new content uses the newest law.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum WarpResampler {
+    /// Frozen 64-tap Blackman law that rendered every warp/pitch before v2.
+    V1,
+    /// Rate-scaled Kaiser law with a stopband at the output Nyquist.
+    #[default]
+    V2,
+}
+impl WarpResampler {
+    /// Law implied when saved content does not name one. Content that reads
+    /// fractional source positions (pitch or warp) was authored under v1 and
+    /// keeps it. Other content reads integer positions at unity rate, which both
+    /// laws reproduce exactly, so it takes the current default.
+    pub fn implied(pitch_cents: i16, warp_enabled: bool) -> Self {
+        if pitch_cents != 0 || warp_enabled {
+            Self::V1
+        } else {
+            Self::V2
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WarpSettings {
     pub mode: WarpMode,
@@ -184,6 +207,15 @@ pub struct AudioClipContent {
     pub warp: Option<WarpSettings>,
     pub warp_enabled: bool,
     pub source_gain: Vec<SourceGainPoint>,
+    /// Law used by the root pitch/warp render. Directed content views keep v1.
+    pub warp_resampler: WarpResampler,
+}
+impl AudioClipContent {
+    /// True when the stored law differs from [`WarpResampler::implied`], so a
+    /// saved document must name it explicitly.
+    pub fn has_explicit_warp_resampler(&self) -> bool {
+        self.warp_resampler != WarpResampler::implied(self.pitch_cents, self.warp_enabled)
+    }
 }
 
 /// Effective processing domain with instance-owned loop and fade settings.
@@ -567,6 +599,7 @@ impl AudioClipEdit {
                     warp: None,
                     warp_enabled: false,
                     source_gain: Vec::new(),
+                    warp_resampler: WarpResampler::default(),
                 }),
                 source_phase: clip.source_phase,
                 looping: clip.looping,
