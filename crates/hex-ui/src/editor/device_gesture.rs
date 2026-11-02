@@ -171,7 +171,7 @@ impl EditorView {
         match self.service.submit(Request::DeviceGesture(gesture)) {
             Ok(()) => {
                 self.device_gesture.mark_submitted();
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.worker_submitted();
                 true
             }
             Err(SubmitError::Full(_)) => false,

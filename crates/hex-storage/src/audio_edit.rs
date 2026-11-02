@@ -4,10 +4,14 @@ use hex_project::{
     AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
     AudioProcessingProjection, AudioViewMode, AudioViewPlacement, BeatTime, BeatsPreserve,
     BeatsTail, ClipFade, SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker, WarpMode,
-    WarpSettings,
+    WarpResampler, WarpSettings,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+/// Saved tags of [`WarpResampler`]; a tag is never reused for another law.
+const WARP_RESAMPLER_V1: u8 = 1;
+const WARP_RESAMPLER_V2: u8 = 2;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +26,10 @@ pub(crate) struct AudioEditDto {
     timing: Timing,
     #[serde(deserialize_with = "required_placement")]
     placement: Option<Placement>,
+}
+/// An omitted law is implied; a present one must be a tag, never null.
+fn present_warp_resampler<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u8>, D::Error> {
+    u8::deserialize(d).map(Some)
 }
 fn required_processing_projection<'de, D: serde::Deserializer<'de>>(
     d: D,
@@ -109,6 +117,14 @@ struct Domain {
     fade: Fade,
     fade_start: u64,
     fade_projection: Option<Projection>,
+    /// Schema65 content law, present only when it differs from
+    /// [`WarpResampler::implied`]; older layouts never contain it.
+    #[serde(
+        default,
+        deserialize_with = "present_warp_resampler",
+        skip_serializing_if = "Option::is_none"
+    )]
+    warp_resampler: Option<u8>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -221,6 +237,12 @@ impl From<AudioClipEdit> for AudioEditDto {
                 },
                 pitch_cents: d.pitch_cents,
                 sample_micro_bpm: d.sample_bpm.map(Tempo::micro_bpm),
+                warp_resampler: d
+                    .has_explicit_warp_resampler()
+                    .then_some(match d.warp_resampler {
+                        WarpResampler::V1 => WARP_RESAMPLER_V1,
+                        WarpResampler::V2 => WARP_RESAMPLER_V2,
+                    }),
                 warp_enabled: d.warp_enabled,
                 warp: d.warp.as_ref().map(|warp| Warp {
                     mode: match warp.mode {
@@ -347,6 +369,22 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
         }
         let fade = ClipFade::new(d.fade.span, d.fade.offset, d.fade.fade_in, d.fade.fade_out)
             .map_err(|e| StorageError::Invalid(e.0))?;
+        let implied = WarpResampler::implied(d.pitch_cents, d.warp_enabled);
+        let warp_resampler = match d.warp_resampler {
+            None => implied,
+            Some(WARP_RESAMPLER_V1) => WarpResampler::V1,
+            Some(WARP_RESAMPLER_V2) => WarpResampler::V2,
+            Some(_) => {
+                return Err(StorageError::Invalid(
+                    "unsupported warp resampler version; open it with a newer hex version",
+                ));
+            }
+        };
+        if d.warp_resampler.is_some() && warp_resampler == implied {
+            return Err(StorageError::Invalid(
+                "redundant warp resampler version in audio domain",
+            ));
+        }
         let fade_projection = d
             .fade_projection
             .map(|p| -> Result<_, StorageError> {
@@ -467,6 +505,7 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
                         .map_err(|e| StorageError::Invalid(e.0))?,
                     warp_enabled: d.warp_enabled,
                     warp,
+                    warp_resampler,
                     source_gain: d
                         .source_gain
                         .into_iter()

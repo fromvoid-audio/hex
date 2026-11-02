@@ -39,13 +39,19 @@ mod verified_stream_tests;
 #[cfg(test)]
 mod resample_plan_tests;
 
+#[cfg(test)]
+mod resample_quality_tests;
+
 const READ_CHUNK_BYTES: usize = 16 * 1024;
 
-pub use resample::{ResampleLimits, ResamplePlan, resample};
-pub use resample_kernel::{ResampleKernel, ResampleKernelDataLayout};
+pub use resample::{ResampleLimits, ResamplePlan, resample, resample_with_version};
+pub use resample_kernel::{
+    ResampleKernel, ResampleKernelDataLayout, ResampleVersion, V2_STOPBAND_DB,
+};
 pub use stream::{WavFrameReader, WavReaderLimits};
 pub use verified_stream::{
-    VERIFIED_WAV_PAGE_BYTES, VerifiedReaderDataLayout, VerifiedWavReader, VerifiedWavReaderLimits,
+    VERIFIED_WAV_PAGE_BYTES, VerifiedReaderDataLayout, VerifiedWavManifest, VerifiedWavReader,
+    VerifiedWavReaderLimits,
 };
 
 /// Caller-owned resource ceilings for a single import operation.

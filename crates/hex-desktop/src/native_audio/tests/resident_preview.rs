@@ -138,6 +138,9 @@ impl WorkerAudioSink for ResidentSink {
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         self.inner.streamed_exporter()
     }
+    fn streamed_bouncer(&self) -> Option<hex_session::StreamedBouncer> {
+        self.inner.streamed_bouncer()
+    }
     fn resident_file_seek_preparer(
         &self,
     ) -> Option<hex_session::service::ResidentFileSeekPreparer> {
@@ -1221,6 +1224,10 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         "seek attaches the same live monitor only after historical preroll"
     );
     input.set_key(0, None).unwrap();
+    // Drain the released monitor voice's declick tail (the prepared ~2 ms
+    // floor, 96 frames at 48 kHz) so the refusals below compare the settled
+    // authored overlay alone.
+    h.render();
     h.render();
 
     let mut stale = identity;

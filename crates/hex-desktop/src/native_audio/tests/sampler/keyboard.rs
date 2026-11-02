@@ -112,13 +112,8 @@ pub(super) fn exercise_blocked_sampler_keyboard(
     let released = render(h, true);
     for i in 0..64 {
         for c in 0..2 {
-            let tail = if i == 0 {
-                root[0][c]
-            } else if i == 1 {
-                root[1][c] * 0.5
-            } else {
-                0.0
-            };
+            // The authored 2-frame release is raised to the prepared floor.
+            let tail = root[i % 8][c] * super::floored_release_level(i, 2);
             assert!(
                 (released[i][c] - octave[i % 4][c] - tail).abs() < 1e-6,
                 "release {i}: {:?}",
@@ -138,16 +133,13 @@ pub(super) fn exercise_blocked_sampler_keyboard(
     visual.run_until_parked();
     // Cancellation releases this input's gates through the existing source.
     // Resetting that shared kernel would also erase other contributors/history.
-    // The fixture's two-frame release must start in this first callback even
-    // while Service is blocked, then become exactly silent.
+    // The fixture's release (its two authored frames raised to the prepared
+    // floor) must start in this first callback even while Service is
+    // blocked, then become exactly silent.
     let cancelled = render(h, true);
     for (i, frame) in cancelled.iter().enumerate() {
         for (c, sample) in frame.iter().enumerate() {
-            let expected = match i {
-                0 => root[0][c] + octave[0][c],
-                1 => (root[1][c] + octave[1][c]) * 0.5,
-                _ => 0.0,
-            };
+            let expected = (root[i % 8][c] + octave[i % 4][c]) * super::floored_release_level(i, 2);
             assert!(
                 (sample - expected).abs() < 1e-6,
                 "focus cancellation {i}: {:?}; {:?}",
@@ -386,9 +378,13 @@ pub(super) fn exercise_blocked_sampler_keyboard(
     ] {
         key(visual, name, false);
     }
-    // All accepted gates release in this callback. The fixture's two-frame
-    // tails may finish, but the still-held rejected semicolon cannot appear.
-    assert!(render(h, true)[2..].iter().all(|f| *f == [0.0; 2]));
+    // All accepted gates release in this callback. Their floored tails may
+    // finish, but the still-held rejected semicolon cannot appear.
+    assert!(
+        render(h, true)[super::RELEASE_FLOOR_FRAMES..]
+            .iter()
+            .all(|f| *f == [0.0; 2])
+    );
     for _ in 0..3 {
         assert!(render(h, true).iter().all(|f| *f == [0.0; 2]));
     }

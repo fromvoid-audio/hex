@@ -350,3 +350,91 @@ fn toolbar_remove_keeps_single_track_semantics_after_header_selection_toggle(
         }
     }
 }
+
+#[gpui::test]
+fn header_forward_delete_removes_track_and_keeps_previously_selected_clip(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let files = crate::editor::external_audio_drop_ui_test::BatchFiles::new();
+    let wav = files.wav("forward.wav", 48_000, 48_000);
+    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    next(&service);
+    service.submit(Request::Import(wav)).unwrap();
+    let imported = next(&service);
+    let audio = imported.state.project.tracks()[0].id();
+    let clip = imported.state.project.track(audio).unwrap().clips()[0].id();
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "target".into(),
+        }))
+        .unwrap();
+    let event = next(&service);
+    let target = event.state.project.tracks()[1].id();
+    let before = event.state.project.snapshot();
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new(
+                    window,
+                    cx,
+                    service,
+                    Err("offline forward delete test".into()),
+                )
+            });
+            editor.update(cx, |view, cx| {
+                view.state = Some(event.state);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let name = visual
+        .debug_bounds(Box::leak(
+            format!("clip-name-{}", clip.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(name.center(), Modifiers::default());
+    header(&mut visual, target, Modifiers::default());
+    // Clip selection can outlive a header focus change (clip navigation and
+    // acknowledgement reconciliation restore it), so hold that hazard state.
+    visual.update(|window, cx| {
+        editor.update(cx, |view, _| {
+            assert!(view.track_header_focused(window));
+            view.selected_clip = Some(clip);
+        })
+    });
+    // A routed DeleteClip from the focused header never removes the clip.
+    visual.update(|window, cx| window.dispatch_action(Box::new(crate::editor::DeleteClip), cx));
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.last_enqueued_edit.is_none(),
+            "header-focused DeleteClip must not remove the selected clip"
+        );
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+    });
+    visual.simulate_keystrokes("delete");
+    pump(&editor, &mut visual);
+    let after = editor.read_with(&visual, |view, _| {
+        let p = &view.state.as_ref().unwrap().project;
+        assert!(p.track(target).is_none(), "header Delete removes the track");
+        assert!(
+            p.track(audio)
+                .is_some_and(|t| t.clips().iter().any(|c| c.id() == clip)),
+            "header Delete must not remove the previously selected clip"
+        );
+        p.snapshot()
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    visual.simulate_keystrokes("cmd-shift-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
+    });
+}
