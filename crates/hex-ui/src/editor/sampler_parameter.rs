@@ -653,7 +653,10 @@ impl EditorView {
         }
         let active = hex_engine::sampler_parameter_active_on_control(parameter, device.state())
             .unwrap_or(false);
-        let availability = hex_widgets::ControlAvailability::for_edit(active, self.edit_pending());
+        let busy = self.edit_pending()
+            || self.gain_lane.draft.is_some()
+            || self.gain_lane.numeric_draft_active();
+        let availability = hex_widgets::ControlAvailability::for_edit(active, busy);
         let Some(control) = self.sampler_parameter.controls.get(&parameter) else {
             return div().into_any_element();
         };
