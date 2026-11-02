@@ -259,6 +259,20 @@ impl Plugins {
         self.pool_held = true;
         Ok(())
     }
+    /// No insertion, restore, reopen, edit, queued source or retirement is
+    /// waiting for a worker poll (#4574). Accepted sources stay warm; their
+    /// degraded-endpoint observation tolerates the idle poll interval.
+    pub fn idle(&self) -> bool {
+        self.pending.is_none()
+            && self.restore.is_none()
+            && self.reopen.is_none()
+            && self.edit.is_none()
+            && self.degraded_changed.is_none()
+            && !self
+                .sources
+                .iter()
+                .any(|source| source.retiring || (source.queued && !source.accepted))
+    }
     pub fn ready(&self) -> bool {
         // Session queries this only for its held insertion. No Root binding yet
         // means a contended admission must retry, not wait for nonexistent facts.

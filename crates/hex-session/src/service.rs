@@ -1447,6 +1447,13 @@ impl Service {
         result
     }
 
+    /// Iterations of the worker's request-wait loop since start (#4574): each
+    /// is one bounded native/control poll. A read-only diagnostic scalar for
+    /// idle wake measurement; it grants no ordering or completion evidence.
+    pub fn worker_wakes(&self) -> u64 {
+        self.diagnostics.worker_wakes()
+    }
+
     /// Install one read-only control observer. Logging has no effect on request
     /// admission, canonical state, cancellation or publication authority.
     pub fn set_diagnostic_observer(
@@ -2049,6 +2056,12 @@ fn run_tuning_library_operation_in_using(
     (result, prepared)
 }
 
+/// Control lanes that still need worker polls (#4574): a resident seek
+/// awaiting its result or completion delivery, or an admitted export.
+fn control_lanes_pending(seek: Option<&resident_seek::Lane>, export: &ExportLane) -> bool {
+    seek.is_some_and(resident_seek::Lane::pending) || export.pending()
+}
+
 #[allow(clippy::too_many_arguments)] // Existing worker composition plus private ownership of the existing seek worker.
 fn run_worker(
     mut session: Session,
@@ -2372,7 +2385,8 @@ fn run_worker(
                         prepared: Some(p),
                     }
                 }),
-            )
+            );
+            control_lanes_pending(resident_seek.as_ref(), &export_lane)
         },
     ) {
         // Requests whose handler takes the stopped Arrangement lease first begin
@@ -11354,10 +11368,10 @@ mod service_tests {
         assert_eq!(completed.path, output);
         assert!(completed.result.is_ok());
         let bytes = fs::read(completed.path).expect("read exported snapshot");
-        assert_eq!(read_u16(&bytes, 44), 0x4000);
-        assert_eq!(read_u16(&bytes, 46), 0x4000);
-        assert_eq!(read_u16(&bytes, 48), 0x2000);
-        assert_eq!(read_u16(&bytes, 50), 0x2000);
+        assert_pcm16_near(&bytes, 44, 0x4000);
+        assert_pcm16_near(&bytes, 46, 0x4000);
+        assert_pcm16_near(&bytes, 48, 0x2000);
+        assert_pcm16_near(&bytes, 50, 0x2000);
     }
 
     #[test]
@@ -11405,8 +11419,8 @@ mod service_tests {
         assert_eq!(completed.result.unwrap().frames, 1);
         let bytes = fs::read(output).unwrap();
         assert_eq!(bytes.len(), 48);
-        assert_eq!(read_u16(&bytes, 44), 0x2000);
-        assert_eq!(read_u16(&bytes, 46), 0x2000);
+        assert_pcm16_near(&bytes, 44, 0x2000);
+        assert_pcm16_near(&bytes, 46, 0x2000);
         assert_eq!(
             control.progress(),
             ExportProgress {
@@ -11416,8 +11430,13 @@ mod service_tests {
         );
     }
 
-    fn read_u16(bytes: &[u8], offset: usize) -> u16 {
-        u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+    /// PCM16 export applies ±1 LSB TPDF dither: within one LSB of `expected`.
+    fn assert_pcm16_near(bytes: &[u8], offset: usize, expected: i16) {
+        let actual = i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        assert!(
+            (i32::from(actual) - i32::from(expected)).abs() <= 1,
+            "sample at {offset}: {actual} not within one lsb of {expected}"
+        );
     }
 
     #[test]

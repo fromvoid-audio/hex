@@ -148,6 +148,9 @@ pub(super) struct Hooks {
     service_id: u64,
     next_request: AtomicU64,
     observer: OnceLock<Arc<DiagnosticObserver>>,
+    // Request-wait loop iterations of this service's worker (#4574). A scalar
+    // count only; it never gates admission, publication or shutdown.
+    worker_wakes: AtomicU64,
     // Per-service test ceiling for the older-reader save preflight (0: the
     // real hex-storage limit). Shared with this service's worker only.
     #[cfg(test)]
@@ -164,12 +167,22 @@ impl Default for Hooks {
             service_id,
             next_request: AtomicU64::new(0),
             observer: OnceLock::new(),
+            worker_wakes: AtomicU64::new(0),
             #[cfg(test)]
             legacy_reader_limit: AtomicU64::new(0),
         }
     }
 }
 impl Hooks {
+    /// Count one worker request-wait iteration; saturates instead of wrapping.
+    pub fn record_worker_wake(&self) {
+        let _ = self
+            .worker_wakes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1));
+    }
+    pub fn worker_wakes(&self) -> u64 {
+        self.worker_wakes.load(Ordering::Relaxed)
+    }
     /// Older-reader byte ceiling for save consent: the real limit in production.
     pub fn legacy_reader_limit(&self) -> usize {
         #[cfg(test)]
@@ -569,6 +582,40 @@ mod tests {
                 .1
                 .contains(&format!("value0_redacted_bytes={}", path.as_os_str().len()))
         );
+    }
+
+    #[test]
+    fn existing_asset_import_projection_names_its_asset_and_redacts_names() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "fixture.wav".into(),
+                sample_rate: 48_000,
+                frames: 16,
+            })
+            .unwrap()
+        else {
+            panic!("asset fixture");
+        };
+        let name = "私的な曲名🎵";
+        let description = summary::request(&Request::Edit(Command::ImportExistingAudio {
+            asset,
+            placement: hex_project::ExistingAudioPlacement::NewTrack {
+                name: name.into(),
+                before_track: None,
+                start: 7,
+            },
+        }));
+        assert_eq!(
+            description.operation,
+            Some("import_existing_audio_track_at")
+        );
+        let text = &description.details.text;
+        assert!(!text.contains(name));
+        assert!(text.contains(&format!("asset={}", asset.value())));
+        assert!(text.contains(&format!("name_redacted_bytes={}", name.len())));
+        assert!(text.contains("start=7"));
     }
 
     #[test]

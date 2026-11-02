@@ -553,6 +553,13 @@ pub enum Command {
         source_start: u64,
         source_end: u64,
     },
+    /// Place an existing ordinary, online project asset as one import member,
+    /// following the same placement law as the new-asset import commands
+    /// without adding an asset. See `crate::import_existing`.
+    ImportExistingAudio {
+        asset: AssetId,
+        placement: crate::ExistingAudioPlacement,
+    },
     /// Move a complete ordinary track before a stable anchor, or to the end
     /// with None. Already adjacent, self, and already-last drops are no-ops.
     /// Returns use distinct ReturnId owners and remain in their own partition;
@@ -1649,15 +1656,7 @@ impl Project {
             .try_reserve_exact(count)
             .map_err(|_| Invalid("could not reserve imported owners"))?;
         for command in commands {
-            let (
-                track,
-                start,
-                path,
-                source_sample_rate,
-                source_frames,
-                playback_frames,
-                conversion_version,
-            ) = match command {
+            let (track, start, asset, playback_frames) = match command {
                 Command::ImportPreparedAudioTrackAt {
                     name,
                     before_track,
@@ -1669,15 +1668,15 @@ impl Project {
                     conversion_version,
                 } => {
                     let track = insert_track_before(self, name, before_track)?;
-                    (
+                    let asset = self.add_import_asset(
                         track,
-                        start,
                         path,
                         source_sample_rate,
                         source_frames,
                         playback_frames,
                         conversion_version,
-                    )
+                    )?;
+                    (track, start, asset, playback_frames)
                 }
                 Command::ImportPreparedAudioClip {
                     track,
@@ -1696,32 +1695,37 @@ impl Project {
                     source_frames,
                     playback_frames,
                     conversion_version,
-                } => (
-                    track,
-                    start,
-                    path,
-                    source_sample_rate,
-                    source_frames,
-                    playback_frames,
-                    conversion_version,
-                ),
+                } => {
+                    let asset = self.add_import_asset(
+                        track,
+                        path,
+                        source_sample_rate,
+                        source_frames,
+                        playback_frames,
+                        conversion_version,
+                    )?;
+                    (track, start, asset, playback_frames)
+                }
+                Command::ImportExistingAudio { asset, placement } => {
+                    let playback_frames = self.existing_import_frames(asset)?;
+                    let (track, start) = match placement {
+                        crate::ExistingAudioPlacement::NewTrack {
+                            name,
+                            before_track,
+                            start,
+                        } => (insert_track_before(self, name, before_track)?, start),
+                        crate::ExistingAudioPlacement::Clip { track, start, .. } => {
+                            self.track(track).ok_or(Invalid("track no longer exists"))?;
+                            (track, start)
+                        }
+                        crate::ExistingAudioPlacement::Session { .. } => {
+                            return Err(Invalid("unsupported arrangement audio import command"));
+                        }
+                    };
+                    (track, start, asset, playback_frames)
+                }
                 _ => return Err(Invalid("unsupported arrangement audio import command")),
             };
-            self.track(track).ok_or(Invalid("track no longer exists"))?;
-            validate_conversion_metadata(
-                source_frames,
-                source_sample_rate,
-                playback_frames,
-                self.sample_rate,
-                conversion_version,
-            )?;
-            let asset = self.add_prepared_asset(
-                path,
-                source_sample_rate,
-                source_frames,
-                playback_frames,
-                conversion_version,
-            )?;
             interval_valid(
                 start,
                 playback_frames,
@@ -2470,6 +2474,9 @@ impl Project {
                     source_end,
                 })
             }
+            Command::ImportExistingAudio { asset, placement } => {
+                self.apply_existing_audio_import(asset, placement)
+            }
             Command::MoveTrackBefore { track, before } => self.move_track_before(track, before),
             Command::MoveTracksBefore { tracks, before } => {
                 self.move_tracks_before(&tracks, before)
@@ -3059,7 +3066,27 @@ impl Project {
 }
 
 impl Project {
-    fn add_prepared_asset(
+    /// Validate a new import member's track and metadata, then add its asset.
+    fn add_import_asset(
+        &mut self,
+        track: TrackId,
+        path: PathBuf,
+        source_sample_rate: u32,
+        source_frames: u64,
+        playback_frames: u64,
+        conversion_version: u32,
+    ) -> Result<AssetId, Invalid> {
+        self.track(track).ok_or(Invalid("track no longer exists"))?;
+        self.add_prepared_asset(
+            path,
+            source_sample_rate,
+            source_frames,
+            playback_frames,
+            conversion_version,
+        )
+    }
+
+    pub(crate) fn add_prepared_asset(
         &mut self,
         path: PathBuf,
         source_sample_rate: u32,
