@@ -526,6 +526,8 @@ pub(super) struct WorkerEvents {
     // It proves ownership when a terminal (including a retired refusal) arrives.
     last_verified_gain: Option<(crate::device_gesture::GestureKey, u64)>,
     startup_error: Option<String>,
+    // At most one request parked on the stopped Arrangement lease (#4544).
+    stopped_fence: super::stopped_arrangement::Fence,
 }
 impl WorkerEvents {
     pub(super) fn legacy_reader_limit(&self) -> usize {
@@ -621,6 +623,7 @@ impl WorkerEvents {
             last_context: None,
             last_verified_gain: None,
             startup_error: None,
+            stopped_fence: Default::default(),
         }
     }
     pub(super) fn initialize(&mut self) -> Result<u32, String> {
@@ -798,6 +801,65 @@ impl WorkerEvents {
             thread::sleep(Duration::from_millis(5));
         }
     }
+    /// Begin the stopped Arrangement lease for a request that fences first;
+    /// `None` parks it until the callback answers (see `stopped_arrangement`).
+    pub(super) fn defer_stopped_fence(
+        &mut self,
+        queued: QueuedRequest,
+        source: hex_engine::AudioSourceContext,
+    ) -> Option<QueuedRequest> {
+        let sink = self
+            .audio
+            .as_mut()
+            .filter(|audio| audio.resident_publication_enabled())
+            .map(|audio| audio.as_mut() as &mut dyn WorkerAudioSink);
+        self.stopped_fence.defer(sink, queued, source)
+    }
+    /// The lease outcome resolved before dispatch for `source`, if any.
+    pub(super) fn take_stopped_fence(
+        &mut self,
+        source: hex_engine::AudioSourceContext,
+    ) -> Option<super::stopped_arrangement::Prefence> {
+        self.stopped_fence.take(source)
+    }
+    /// Release a resolved lease the finished request did not consume.
+    pub(super) fn finish_stopped_fence(&mut self) {
+        let sink = self
+            .audio
+            .as_mut()
+            .map(|audio| audio.as_mut() as &mut dyn WorkerAudioSink);
+        self.stopped_fence.finish_request(sink);
+    }
+    /// While a request is parked on the lease, only the fence is polled: no
+    /// control poll or publication runs, unrelated requests are served and the
+    /// first other request is held. Bounded by the fence deadline; the callback
+    /// never wakes this thread. `None` resumes the ordinary loop.
+    fn next_request_while_fenced(
+        &mut self,
+        requests: &Receiver<QueuedRequest>,
+        document_intent: &Arc<std::sync::atomic::AtomicU64>,
+    ) -> Option<QueuedRequest> {
+        loop {
+            let shutdown = self.shutdown.load(Ordering::Acquire);
+            let intent = document_intent.load(Ordering::Acquire);
+            let sink = self
+                .audio
+                .as_mut()
+                .map(|audio| audio.as_mut() as &mut dyn WorkerAudioSink);
+            if let Some(request) = self.stopped_fence.next(
+                sink,
+                shutdown,
+                |parked| parked.document_intent != intent,
+                || requests.try_recv().ok(),
+            ) {
+                return Some(request);
+            }
+            if !self.stopped_fence.active() {
+                return None; // Resume the ordinary request loop.
+            }
+            thread::sleep(super::stopped_arrangement::FENCE_POLL);
+        }
+    }
     #[allow(clippy::too_many_arguments)] // Existing FIFO/control wakeups plus accepted source-intent cancellation.
     pub(super) fn next_request_with_control_poll(
         &mut self,
@@ -809,6 +871,11 @@ impl WorkerEvents {
         context: hex_engine::AudioSourceContext,
         mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
     ) -> Option<QueuedRequest> {
+        if self.stopped_fence.active()
+            && let Some(request) = self.next_request_while_fenced(requests, document_intent)
+        {
+            return Some(request);
+        }
         control_poll(
             self.audio
                 .as_mut()
@@ -902,6 +969,11 @@ impl WorkerEvents {
 }
 impl Drop for WorkerEvents {
     fn drop(&mut self) {
+        self.stopped_fence.close(
+            self.audio
+                .as_mut()
+                .map(|audio| audio.as_mut() as &mut dyn WorkerAudioSink),
+        );
         if let Some(audio) = self.audio.as_mut() {
             audio.close();
         }

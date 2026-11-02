@@ -487,6 +487,9 @@ pub struct SessionPlayback {
     historical_floor: Option<BeatTime>,
     route_historical_floors: [Option<BeatTime>; MAX_TRACKS],
     source_voice_envelopes: [u16; MAX_TRACKS],
+    /// Per-voice streamed page-miss fades, lent to the page view for each
+    /// render; see `crate::stream_miss_fade` for ownership and resets.
+    stream_miss_fades: crate::StreamMissFades,
     routes: Vec<TrackRoute>,
     route_scratch: Vec<TrackRoute>,
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
@@ -880,6 +883,7 @@ impl SessionPlayback {
             interactive_start_frame: _,
             historical_floor: _,
             route_historical_floors: _,
+            stream_miss_fades: _,
             source_voice_envelopes: _,
             routes: _,
             route_scratch: _,
@@ -1959,6 +1963,7 @@ impl SessionPlayback {
                 ));
             }
         }
+        let stream_miss_fades = crate::StreamMissFades::new(revision.arrangement().sample_rate());
         Ok(Self {
             live_expression: None,
             computer_keyboard: None,
@@ -1980,6 +1985,7 @@ impl SessionPlayback {
             historical_floor: None,
             route_historical_floors: [None; MAX_TRACKS],
             source_voice_envelopes,
+            stream_miss_fades,
             routes,
             route_scratch,
             device_chains,

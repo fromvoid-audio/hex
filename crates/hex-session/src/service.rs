@@ -2434,6 +2434,41 @@ fn run_worker(
             )
         },
     ) {
+        // Requests whose handler takes the stopped Arrangement lease first begin
+        // it here; a live callback that has not answered parks the request and
+        // returns this worker to its loop (see `stopped_arrangement`, #4544).
+        let fences_first = events.resident_publication_enabled()
+            && session.audio_mode() == DocumentAudioMode::Resident
+            && match &queued.request {
+                Request::EditArrangementSection {
+                    project_generation: captured_generation,
+                    revision: captured_revision,
+                    command,
+                } => {
+                    *captured_generation == project_generation
+                        && *captured_revision == revision
+                        && arrangement_sections::is_command(command)
+                        && command.requires_section_publication()
+                }
+                Request::Undo | Request::Redo => {
+                    let redo = matches!(&queued.request, Request::Redo);
+                    session.editor.next_history_requires_stopped_bounce(redo)
+                        || session.section_history_requires_publication(redo)
+                }
+                _ => false,
+            };
+        let queued = if fences_first {
+            let source = hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision: revision,
+            };
+            match events.defer_stopped_fence(queued, source) {
+                Some(queued) => queued,
+                None => continue,
+            }
+        } else {
+            queued
+        };
         events.begin_diagnostics(&queued, project_generation, revision);
         events.begin_request(&document_intent, queued.document_intent);
         let save_correlation = queued.save_correlation;
@@ -5975,6 +6010,10 @@ fn run_worker(
                         resident_seek.as_ref(),
                         resident_preview.as_ref(),
                     );
+                    let prefence = events.take_stopped_fence(hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    });
                     let result = events
                         .resident_audio()
                         .ok_or(SessionError::Invalid("native worker unavailable"))
@@ -5986,6 +6025,7 @@ fn run_worker(
                                 sink,
                                 admission,
                                 &mut resident_snapshot,
+                                prefence,
                             )
                         });
                     match result {
@@ -7419,6 +7459,8 @@ fn run_worker(
                 }
             }
         }
+        // A lease resolved for this request but not consumed is released here.
+        events.finish_stopped_fence();
         if pending_plugin_effect.as_ref().is_some_and(|pending| {
             pending.insertion.context
                 != hex_engine::AudioSourceContext {
