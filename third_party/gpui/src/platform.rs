@@ -238,6 +238,14 @@ pub(crate) trait Platform: 'static {
     fn open_with_system(&self, path: &Path);
 
     fn on_quit(&self, callback: Box<dyn FnMut()>);
+    /// Hex patch: consulted when the OS asks whether the app may terminate.
+    /// The callback returns true when it defers the answer to
+    /// [`Platform::reply_to_quit`]; false terminates immediately. Platforms
+    /// without such a request ignore the callback.
+    fn on_should_quit(&self, _callback: Box<dyn FnMut() -> bool>) {}
+    /// Hex patch: answer a request deferred by the `on_should_quit` callback.
+    /// Ignored when no request is pending.
+    fn reply_to_quit(&self, _terminate: bool) {}
     fn on_reopen(&self, callback: Box<dyn FnMut()>);
 
     fn set_menus(&self, menus: Vec<Menu>, keymap: &Keymap);
