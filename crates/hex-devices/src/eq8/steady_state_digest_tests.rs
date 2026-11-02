@@ -5,13 +5,8 @@
 //! digest depends only on IEEE f32/f64 arithmetic.
 use super::*;
 
-fn patch(
-    mut state: NativeDeviceState,
-    id: ParameterId,
-    value: ParameterValue,
-) -> NativeDeviceState {
-    state = EQ8_DEFINITION.patch_parameter(&state, id, value).unwrap();
-    state
+fn patch(state: NativeDeviceState, id: ParameterId, value: ParameterValue) -> NativeDeviceState {
+    EQ8_DEFINITION.patch_parameter(&state, id, value).unwrap()
 }
 
 fn band(
@@ -89,16 +84,15 @@ fn fnv(frames: &[StereoFrame]) -> u64 {
         })
 }
 
-/// Render with same-mode handoffs every block (coefficient/gain retargets and
-/// a band audition that is requested, changed and released), varying blocks.
+/// Render with same-mode handoffs every block (an output-gain retarget and a
+/// band audition that is requested, changed and released), varying blocks.
 fn render(mode: u32, rate: u32) -> u64 {
     let first = PreparedEq8::new(decode(&preset(mode, 0.0)).unwrap(), rate).unwrap();
     let second = PreparedEq8::new(decode(&preset(mode, 4.5)).unwrap(), rate).unwrap();
     let mut live = first.runtime();
     let mut frames = noise(6_000);
     let mut offset = 0;
-    let mut block_index = 0;
-    for size in [1_usize, 7, 64, 128, 113].into_iter().cycle() {
+    for (block_index, size) in [1_usize, 7, 64, 128, 113].into_iter().cycle().enumerate() {
         if offset >= frames.len() {
             break;
         }
@@ -118,7 +112,6 @@ fn render(mode: u32, rate: u32) -> u64 {
         next.process(&mut frames[offset..end]);
         live = next;
         offset = end;
-        block_index += 1;
     }
     fnv(&frames)
 }
