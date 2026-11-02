@@ -22,6 +22,7 @@ mod track_clipboard;
 mod track_reorder;
 mod transport_loop;
 mod verified_gain;
+mod worker_idle;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;
 use hex_session::service::{Event, Request};
