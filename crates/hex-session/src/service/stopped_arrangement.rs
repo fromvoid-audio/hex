@@ -48,7 +48,8 @@ pub(super) struct Prefence {
     waited: Duration,
 }
 impl Prefence {
-    /// Time the request spent parked; attributed to its fence phase.
+    /// Time the request spent parked before dispatch, reported as its own
+    /// `parked` section phase outside the dispatched worker time.
     pub(super) fn waited(&self) -> Duration {
         self.waited
     }

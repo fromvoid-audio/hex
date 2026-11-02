@@ -32,11 +32,13 @@
 //! pinned with the chunk and the crossfade never renders from a missing page:
 //! when an overrun page is not yet resident, the existing readiness rule holds
 //! the transport for that chunk while it loads, exactly as at a linear page
-//! crossing, and later wraps find it cached. Pinning the overrun for the whole
-//! loop instead would remove that first hold, but permanently costs up to two
-//! pool pages per looped streamed track and starves small pools; stream
-//! read-ahead belongs to the stream demand owner, for page crossings in
-//! general.
+//! crossing, and later wraps find it cached. The overrun always lies in the
+//! page holding `end - 1` or the page after it, so the span renderer's bounded
+//! lookahead (`MediaPages::prefetch_page`, #4075), issued from the second half
+//! of the page the playhead reads before the wrap, normally makes it resident
+//! before the first wrap. Pinning the overrun for the whole loop instead would
+//! permanently cost up to two pool pages per looped streamed track and starve
+//! small pools.
 
 use crate::{Frame, MediaPages, PreparedTrackMix, Track};
 use hex_project::LoopRegion;

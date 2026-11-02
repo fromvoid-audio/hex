@@ -267,3 +267,63 @@ fn late_fence_answer_completes_the_parked_edit_before_later_mutations() {
     assert_eq!(later.state.revision, fixture.revision + 2);
     assert_eq!(later.state.project.arrangement_sections().len(), 2);
 }
+
+/// #4568: parked time is its own phase; the dispatched section phases stay
+/// within `worker_us`, which starts only when the parked edit dispatches.
+#[test]
+fn parked_wait_is_reported_apart_from_the_dispatched_section_phases() {
+    use crate::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
+    let fixture = Fixture::new();
+    let outcomes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = Arc::clone(&outcomes);
+    fixture
+        .service
+        .set_diagnostic_observer(Arc::new(DiagnosticObserver::new(move |event| {
+            if matches!(event.stage, DiagnosticStage::OutcomeReady { .. }) {
+                observed.lock().unwrap().push(event.details.clone());
+            }
+        })))
+        .unwrap();
+    // The callback answers after enough worker polls for a measurable park.
+    fixture.remaining.store(20, Ordering::Release);
+    fixture
+        .service
+        .submit(Request::EditArrangementSection {
+            project_generation: 0,
+            revision: fixture.revision,
+            command: Command::DuplicateArrangementSection(fixture.section),
+        })
+        .unwrap();
+    let edit = fixture.receive();
+    assert!(edit.error.is_none(), "{:?}", edit.error);
+    let details = outcomes
+        .lock()
+        .unwrap()
+        .iter()
+        .rfind(|details| details.contains("section_fence_us="))
+        .cloned()
+        .expect("section outcome");
+    let field = |name: &str| -> u64 {
+        details
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix(name)?.strip_prefix('=')?.parse().ok())
+            .unwrap_or_else(|| panic!("{name} missing from {details:?}"))
+    };
+    let parked = field("section_parked_us");
+    let worker = field("worker_us");
+    let dispatched: u64 = [
+        "section_fence_us",
+        "section_edit_us",
+        "section_prepare_us",
+        "section_publish_us",
+        "section_finish_us",
+    ]
+    .iter()
+    .map(|name| field(name))
+    .sum();
+    assert!(parked > 0, "parked wait is observable: {details}");
+    assert!(
+        dispatched <= worker,
+        "phases {dispatched} within worker {worker}: {details}"
+    );
+}

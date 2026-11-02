@@ -181,6 +181,10 @@ impl<P: MediaPages + ?Sized> MediaPages for MissFadedPages<'_, P> {
         self.pages.request_scalar_page(key, page_index);
     }
 
+    fn prefetch_page(&mut self, key: StreamSourceKey, page_index: u64) {
+        self.pages.prefetch_page(key, page_index);
+    }
+
     fn page_and_miss_fades(
         &mut self,
         key: StreamSourceKey,
