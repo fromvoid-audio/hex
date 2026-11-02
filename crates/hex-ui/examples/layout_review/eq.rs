@@ -239,6 +239,7 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
         graph.set_editable(true, cx);
         graph.set_creation_enabled(true);
         graph.set_creation_drag_enabled(true);
+        graph.set_backspace_removal(true);
         graph.set_marquee_enabled(true, cx);
         graph
     });
@@ -250,7 +251,9 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
             }
             if matches!(
                 event.phase,
-                ResponseGraphPhase::Create | ResponseGraphPhase::Select
+                ResponseGraphPhase::Create
+                    | ResponseGraphPhase::Select
+                    | ResponseGraphPhase::Remove
             ) && !view.finish_drafts(cx)
             {
                 if let Some(fixture) = view.fixtures.get(&Entry::Eq) {
@@ -551,6 +554,31 @@ fn event_graph(
         return Err("eq node unavailable in this bank".into());
     }
     match event.phase {
+        ResponseGraphPhase::Remove => {
+            if local.before.is_some() || local.scroll.is_some() {
+                return Err("finish the current eq edit first".into());
+            }
+            let Some(id) = id else { return Ok(()) };
+            let removed = if local.group.len() > 1 && local.group.contains(&id) {
+                local.group.clone()
+            } else if local.selected == Some(id) {
+                vec![id]
+            } else {
+                return Ok(());
+            };
+            if removed
+                .iter()
+                .any(|id| !state.node(*id).is_ok_and(|node| node.bank == local.bank))
+            {
+                return Err("eq removal node unavailable in this bank".into());
+            }
+            for id in removed {
+                state.remove(id).map_err(|e| e.to_string())?;
+            }
+            local.selected = None;
+            local.group.clear();
+            local.collapse = None;
+        }
         ResponseGraphPhase::Create => {
             let id = NodeId::new(u64::from(state.next_node_id)).map_err(|e| e.to_string())?;
             let mut node = Node::new(id, 1_000.0, 0.0, 0).map_err(|e| e.to_string())?;
@@ -882,6 +910,87 @@ mod tests {
     }
 
     #[gpui::test]
+    fn remove_group_preserves_other_banks_and_refuses_active_or_stale_edits(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            let id2 = NodeId::new(2).unwrap();
+            let id3 = NodeId::new(3).unwrap();
+            let local = fixture.eq_local.as_mut().unwrap();
+            local
+                .state
+                .nodes
+                .push(Node::new(id2, 2_000.0, 0.0, 0).unwrap());
+            let mut foreign = Node::new(id3, 3_000.0, 0.0, 0).unwrap();
+            foreign.bank = 1;
+            local.state.nodes.push(foreign);
+            local.group = vec![local.selected.unwrap(), id3];
+            let before = current(fixture, cx).unwrap();
+            let remove = event(ResponseGraphPhase::Remove, 1, [0.5, 0.625]);
+            assert!(event_graph(fixture, remove, cx).is_err());
+            assert_eq!(current(fixture, cx).unwrap(), before);
+            let local = fixture.eq_local.as_mut().unwrap();
+            local.group = vec![local.selected.unwrap(), id2];
+            local.before = Some(Snapshot {
+                state: before.clone(),
+                selected: local.selected,
+                group: local.group.clone(),
+            });
+            assert!(event_graph(fixture, remove, cx).is_err());
+            assert_eq!(current(fixture, cx).unwrap(), before);
+            fixture.eq_local.as_mut().unwrap().before = None;
+            event_graph(fixture, remove, cx).unwrap();
+            let after = current(fixture, cx).unwrap();
+            assert_eq!(after.nodes, vec![foreign]);
+            let local = fixture.eq_local.as_ref().unwrap();
+            assert!(local.selected.is_none() && local.group.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn backspace_removes_selected_node(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, VisualTestContext, point, px, size};
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let graph = view.read_with(cx, |view, _| view.fixtures[&Entry::Eq].graph.clone());
+        let plot = graph.read_with(&visual, |graph, _| graph.plot_bounds().unwrap());
+        let position = view.read_with(cx, |view, cx| {
+            model(&view.fixtures[&Entry::Eq], cx).unwrap().nodes[0].position
+        });
+        let screen = point(
+            plot.left() + plot.size.width * position[0],
+            plot.top() + plot.size.height * (1.0 - position[1]),
+        );
+        visual.simulate_click(screen, Modifiers::default());
+        visual.simulate_keystrokes("backspace");
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            assert!(
+                current(&view.fixtures[&Entry::Eq], cx)
+                    .unwrap()
+                    .nodes
+                    .is_empty()
+            )
+        });
+    }
+
+    #[gpui::test]
     fn blank_graph_hover_shows_creation_shape(cx: &mut TestAppContext) {
         use gpui::{Modifiers, VisualTestContext, point, px, size};
         let window = cx.add_window(|_, cx| {
@@ -1192,6 +1301,43 @@ mod tests {
             let model = model(fixture, cx).unwrap();
             assert_eq!(model.nodes.len(), 1);
             assert_eq!(model.nodes[0].id, 1);
+        });
+    }
+
+    #[gpui::test]
+    fn invalid_control_draft_refuses_graph_removal(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, VisualTestContext, px, size};
+        cx.update(hex_widgets::bind_numeric_control_keys);
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let field = visual
+            .debug_bounds("fixture-eq-numeric-2-value")
+            .unwrap()
+            .center();
+        visual.simulate_click(field, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid eq draft");
+        let graph = view.read_with(cx, |view, _| view.fixtures[&Entry::Eq].graph.clone());
+        visual.update(|_, cx| {
+            graph.update(cx, |_, cx| {
+                cx.emit(event(ResponseGraphPhase::Remove, 1, [0.5, 0.625]));
+            })
+        });
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            assert!(view.error.is_some());
+            assert_eq!(
+                current(&view.fixtures[&Entry::Eq], cx).unwrap().nodes.len(),
+                1
+            );
         });
     }
 
