@@ -1,0 +1,8 @@
+{
+  "writer_source": "pulse/task-4088 working tree on origin/main 2ed11f24a; every encoder it reaches (hex-storage schema66-and-older layouts, hex-project) has no diff from 2ed11f24a",
+  "writer_schema": 66,
+  "writer": "schema66-writer.rs",
+  "writer_command": "cargo run --locked -p hex-storage --example w4088 -- ../content-view-resampler/schema65.json schema66.json (writer copied to crates/hex-storage/examples/w4088.rs)",
+  "fixture_sha256": "3c6598c6846a6f0a10fac07ee226fa6beba534563c51b3c49cb242eddc41b8f3",
+  "input": "The content-view-resampler schema65 fixture plus a new musical-clock reversed clip (an explicit v2 read law, making the document schema66), a MIDI track with a loaded Sampler v2 state (classic loop 1..4 of a 4-frame device asset, output gain -1.5 dB) and a MIDI track with the empty Sampler v2 marker. Sampler payloads are raw v2 bytes. No media files are referenced or required."
+}
