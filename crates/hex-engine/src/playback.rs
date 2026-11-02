@@ -1564,6 +1564,10 @@ impl Playback {
 
     /// Apply a pending declicked Pause/Stop now, at the current frame.
     fn complete_transport_fade(&mut self) {
+        if self.transport_fade.take_priority_stop() {
+            self.apply_stop_with_keyboard(StopKeyboard::AlreadyStopped);
+            return;
+        }
         let Some(action) = self.transport_fade.take_pending() else {
             return;
         };
@@ -1583,7 +1587,7 @@ impl Playback {
     }
 
     fn apply_now(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
-        let result = self.apply_action_inner(action, None);
+        let result = self.apply_action_inner(action, StopKeyboard::Cancel);
         if result.is_ok()
             && matches!(
                 action,
@@ -1613,21 +1617,55 @@ impl Playback {
         clock: &crate::computer_keyboard::KeyboardActivationClock,
     ) {
         self.transport_fade.clear();
+        self.apply_stop_with_keyboard(StopKeyboard::Priority(clock));
+    }
+
+    /// Priority Stop with the transport declick: the keyboard activation
+    /// prefix is revoked now, exactly as `apply_priority_stop` does, and the
+    /// transport Stop follows after its fade. A pending Pause/Stop becomes
+    /// this Stop without restarting its ramp. Independent of the command
+    /// queue, so a full queue still stops within the fade length.
+    pub fn apply_declicked_priority_stop(
+        &mut self,
+        clock: &crate::computer_keyboard::KeyboardActivationClock,
+    ) {
+        if !self.playing() {
+            self.apply_priority_stop(clock);
+            return;
+        }
+        self.stop_keyboard(StopKeyboard::Priority(clock));
+        self.transport_fade.begin_priority_stop();
+    }
+
+    fn apply_stop_with_keyboard(&mut self, keyboard: StopKeyboard<'_>) {
         if self
-            .apply_action_inner(
-                PlaybackAction::Transport(PlaybackCommand::Stop),
-                Some(clock),
-            )
+            .apply_action_inner(PlaybackAction::Transport(PlaybackCommand::Stop), keyboard)
             .is_ok()
         {
             self.reset_metronome();
         }
     }
 
+    fn stop_keyboard(&mut self, keyboard: StopKeyboard<'_>) {
+        match keyboard {
+            StopKeyboard::Priority(clock) => {
+                if let Some(runtime) = self.session_runtime.as_mut() {
+                    runtime.cancel_current_sampler_keyboard();
+                    if let Some(keyboard) = runtime.computer_keyboard.as_mut() {
+                        keyboard.priority_stop(clock);
+                    }
+                }
+            }
+            StopKeyboard::Cancel => self.cancel_computer_keyboard(),
+            StopKeyboard::AlreadyStopped => {}
+        }
+        self.cancel_tuning_audition();
+    }
+
     fn apply_action_inner(
         &mut self,
         action: PlaybackAction,
-        priority_stop: Option<&crate::computer_keyboard::KeyboardActivationClock>,
+        keyboard: StopKeyboard<'_>,
     ) -> Result<(), PlaybackActionError> {
         if matches!(
             action,
@@ -1637,17 +1675,7 @@ impl Playback {
                 crate::SessionPlaybackCommand::Stop | crate::SessionPlaybackCommand::Seek(_)
             )
         ) {
-            if let Some(clock) = priority_stop {
-                if let Some(runtime) = self.session_runtime.as_mut() {
-                    runtime.cancel_current_sampler_keyboard();
-                    if let Some(keyboard) = runtime.computer_keyboard.as_mut() {
-                        keyboard.priority_stop(clock);
-                    }
-                }
-            } else {
-                self.cancel_computer_keyboard();
-            }
-            self.cancel_tuning_audition();
+            self.stop_keyboard(keyboard);
         }
         match action {
             PlaybackAction::SetMetronome(enabled) => {
@@ -2666,6 +2694,17 @@ impl hex_lattice::ForeignProcessors for ShiftedForeign<'_> {
     fn reject_callback(&mut self) {
         self.inner.reject_callback();
     }
+}
+
+/// Keyboard handling that precedes a transport Stop, Seek or PlayFrom.
+#[derive(Clone, Copy)]
+enum StopKeyboard<'a> {
+    /// Ordinary actions cancel computer-keyboard input.
+    Cancel,
+    /// The output's priority Stop keeps an output-bound keyboard root.
+    Priority(&'a crate::computer_keyboard::KeyboardActivationClock),
+    /// A declicked priority Stop already handled the keyboard at its command.
+    AlreadyStopped,
 }
 
 fn legacy_arrangement_state_cannot_be_seeded(previous: &Playback) -> bool {
