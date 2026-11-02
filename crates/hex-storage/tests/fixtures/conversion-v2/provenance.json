@@ -1,0 +1,7 @@
+{
+  "writer_source": "a4f63df864f16d643c042a9c12d36b26b53ad069",
+  "writer_schema": 63,
+  "writer": "schema63-writer.rs",
+  "fixture_sha256": "7962deca8d31ae92b355c40eb3797c14a8b50d1b146e33553c432efd74a11305",
+  "input": "Original synthetic project at 48000 hz: one 44100 hz asset with sinc v1 conversion metadata and one identity-rate 48000 hz asset, each on an imported track. No media files are referenced or required."
+}
