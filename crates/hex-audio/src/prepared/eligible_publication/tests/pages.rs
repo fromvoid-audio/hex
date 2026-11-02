@@ -208,13 +208,7 @@ fn extracted_page_loan_survives_carrier_destructor_panic_without_join_or_retry()
     assert!(retirement.advance().is_err());
     assert_eq!(calls.load(Relaxed), 1);
     assert!(control.recover_audio_candidate_domain(token).is_none());
-    assert_eq!(
-        control
-            .audio_candidate_domain_usage()
-            .unwrap()
-            .occupied_domains,
-        1
-    );
+    assert_eq!(observed_usage(&control).occupied_domains, 1);
     // Preserve the failed native execution and exact page endpoint, not a fake
     // report or a fixture Drop that finally joins the worker on this thread.
     retirement.root().announce_retirement();

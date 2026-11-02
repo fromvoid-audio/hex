@@ -12,6 +12,8 @@ pub mod automation_draft;
 mod files;
 mod journal;
 pub mod preset;
+pub mod project_name;
+pub mod text;
 pub mod tuning_library;
 pub use journal::{
     Journal, JournalRestartOutcome, JournalRestartToken, journal_path, load_journal,
@@ -20,11 +22,15 @@ pub use journal::{
 mod audio_edit;
 mod replacement;
 mod schema;
-pub use files::{FileToken, load, load_with_token, save_new, save_new_with_token};
+mod temporaries;
+pub use files::{
+    FileToken, SaveNewOutcome, load, load_with_token, save_new, save_new_with_outcome,
+    save_new_with_token,
+};
 use hex_project::Project;
 pub use replacement::{
     RecoveryDocument, ReplaceOutcome, ReplaceWarning, load_recovery, recovery_path,
-    replace_existing,
+    replace_confirmed, replace_existing,
 };
 use std::{fmt, io, path::PathBuf};
 
@@ -37,6 +43,15 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 63;
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
 pub const LEGACY_READER_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+/// Largest project document this build writes or opens. Valid projects stay far
+/// below it: the largest contributors are names (tracks, scenes, clips, devices
+/// at up to 1 KiB each, at most six JSON bytes per escaped byte), asset paths
+/// and 65,536-entry note/point inventories. Asset paths have no separate model
+/// bound, so this is a declared admission limit rather than a computed maximum.
+/// Encoding refuses a larger document, so hex never saves a project it would
+/// then refuse to open; reading refuses a wrong or sparse multi-gigabyte file
+/// before allocating for it.
+pub const MAX_PROJECT_DOCUMENT_BYTES: usize = 512 * 1024 * 1024;
 /// Visible checkpoint state when releasing journal ownership failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JournalChange {
@@ -49,6 +64,8 @@ pub enum JournalChange {
 pub enum StorageError {
     Io(io::Error),
     Json(serde_json::Error),
+    /// Another owner currently holds the automation draft's exclusive lock.
+    AutomationDraftBusy(io::Error),
     /// The operation's visible state is retained; lock cleanup failed.
     JournalLockRelease {
         path: PathBuf,
@@ -92,7 +109,7 @@ impl fmt::Display for StorageError {
                 write!(
                     f,
                     "{state} at {}; journal lock release failed: {source}",
-                    path.display()
+                    crate::text::verbatim(path.display())
                 )?;
                 if let Some(error) = operation_error {
                     write!(f, "; operation reported: {error}")?;
@@ -100,10 +117,17 @@ impl fmt::Display for StorageError {
                 Ok(())
             }
             Self::Io(error) => write!(f, "project file error: {error}"),
+            Self::AutomationDraftBusy(error) => {
+                write!(f, "automation draft is busy; try again: {error}")
+            }
             Self::Json(error) => write!(f, "invalid project json: {error}"),
             Self::Invalid(reason) => f.write_str(reason),
             Self::Conflict { path } => {
-                write!(f, "project changed outside hex at {}", path.display())
+                write!(
+                    f,
+                    "project changed outside hex at {}",
+                    crate::text::verbatim(path.display())
+                )
             }
             Self::PublishedButNotDurable {
                 path,
@@ -112,7 +136,7 @@ impl fmt::Display for StorageError {
             } => write!(
                 f,
                 "project was published at {} but could not {operation}: {source}",
-                path.display()
+                crate::text::verbatim(path.display())
             ),
             Self::RecoveryBackupPublished {
                 path,
@@ -122,8 +146,8 @@ impl fmt::Display for StorageError {
             } => write!(
                 f,
                 "recovery copy for {} was published at {}, but could not {operation}: {source}",
-                path.display(),
-                recovery_path.display()
+                crate::text::verbatim(path.display()),
+                crate::text::verbatim(recovery_path.display())
             ),
         }
     }
@@ -132,7 +156,7 @@ impl std::error::Error for StorageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::JournalLockRelease { source, .. } => Some(source),
-            Self::Io(e) => Some(e),
+            Self::Io(e) | Self::AutomationDraftBusy(e) => Some(e),
             Self::Json(e) => Some(e),
             Self::Invalid(_) | Self::Conflict { .. } => None,
             Self::PublishedButNotDurable { source, .. }
@@ -270,6 +294,11 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
     }
     let mut output = Output(Vec::new());
     serde_json::to_writer(&mut output, document)?;
+    if output.0.len() > MAX_PROJECT_DOCUMENT_BYTES {
+        return Err(StorageError::Invalid(
+            "project exceeds the 512 mib document limit; remove unused clips or assets",
+        ));
+    }
     Ok(output.0)
 }
 /// Open current and evidenced historical schemas without file/media I/O.
