@@ -1,8 +1,9 @@
 //! Sparse EQ editing. Opaque edits use atomic canonical state replacement;
 //! scalar graph drags use the existing paired-parameter gesture protocol.
 //! Selection is view state: `selected` drives the footer controls and a
-//! marquee `group` (shift adds, cmd toggles) holds a multi-selection. A blank
-//! click creates a node; a blank drag draws the marquee. Dragging a grouped
+//! marquee `group` holds a multi-selection. A blank press creates a node;
+//! shift-drag draws a marquee, and shift-cmd toggles its hits. Shift-press on
+//! a node adds it to the group. Dragging a grouped
 //! node moves the group as one parameter-snapshot gesture, and removal deletes
 //! the group in one atomic replacement, so one Undo reverts either.
 use super::*;
@@ -22,6 +23,8 @@ mod gestures;
 mod scroll_queue;
 pub(in crate::editor) use scroll_queue::after_worker_event as after_scroll_worker_event;
 mod response;
+mod sampling;
+mod selection;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
 pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
@@ -432,7 +435,7 @@ pub(super) fn render_body(
         );
     } else {
         bottom = bottom.child(theme::text(
-            "click to add a node · option-drag to place and shape · drag to select",
+            "click to add a node · option-drag to place and shape · shift-drag to select",
         ));
     }
     let body = bottom;
@@ -894,16 +897,7 @@ fn marquee_event(
     let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
         return;
     };
-    let ids: Vec<NodeId> = event
-        .selected
-        .iter()
-        .filter_map(|id| NodeId::new(u64::from(*id)).ok())
-        .collect();
-    panel.selected = panel
-        .selected
-        .filter(|id| ids.contains(id))
-        .or_else(|| ids.last().copied());
-    panel.group = if ids.len() > 1 { ids } else { Vec::new() };
+    selection::apply_marquee(&mut panel.selected, &mut panel.group, &event.selected);
     panel.collapse = None;
     cx.notify();
 }

@@ -2,16 +2,12 @@
 use super::*;
 use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
 use hex_lattice_contract::{DeviceTypeId, ParameterValue};
-use std::time::{Duration, Instant};
 
 fn event(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match service.try_event() {
-            Ok(event) => return event,
-            Err(TryRecvError::Empty) if Instant::now() < deadline => thread::yield_now(),
-            Err(error) => panic!("browser instrument worker: {error}"),
-        }
+    // Blocks on the event channel; bounded only against hangs.
+    match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("event: worker event absent: {error}"),
     }
 }
 
