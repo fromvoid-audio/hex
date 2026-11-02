@@ -430,6 +430,47 @@ pub(in crate::editor) mod native {
             assert!(view.gain_lane.pending.is_some());
         });
     }
+
+    #[gpui::test]
+    fn unrelated_edit_preserves_numeric_gain_text_and_valid_commit(cx: &mut TestAppContext) {
+        let (handle, entity, track) = window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let position = visual
+            .debug_bounds("gain-point-value-value")
+            .unwrap()
+            .center();
+        visual.simulate_click(position, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        entity.update(&mut visual, |view, cx| {
+            assert!(view.gain_numeric_editing(cx));
+            assert!(!view.enqueue(hex_session::service::Request::Edit(
+                hex_project::Command::Mute { track, muted: true }
+            )));
+            assert!(view.gain_numeric_editing(cx));
+            assert_eq!(
+                view.gain_lane
+                    .gain
+                    .as_ref()
+                    .unwrap()
+                    .entity
+                    .read(cx)
+                    .display_text(),
+                "invalid"
+            );
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("75");
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        entity.update(&mut visual, |view, cx| {
+            assert!(!view.gain_numeric_editing(cx));
+            assert_eq!(view.worker_requests_pending, 1);
+            assert!(view.gain_lane.pending.is_some());
+        });
+    }
     #[gpui::test]
     fn header_a_opens_selected_lane_and_retains_operable_rows(cx: &mut TestAppContext) {
         let (handle, entity, track) = window(cx);
