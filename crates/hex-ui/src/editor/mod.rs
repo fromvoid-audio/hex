@@ -948,6 +948,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) waveform_geometry_cache:
         Rc<std::cell::RefCell<waveform_geometry::WaveformGeometryCache>>,
     midi_visible_notes: std::cell::RefCell<midi_loop_notes::VisibleNotesCache>,
+    midi_tile_images: Rc<std::cell::RefCell<midi_loop_notes::TileImages>>,
     active_clip_drag: Option<drag::ClipDrag>,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
@@ -1688,6 +1689,7 @@ impl EditorView {
                 waveform_geometry::WaveformGeometryCache::default(),
             )),
             midi_visible_notes: Default::default(),
+            midi_tile_images: Default::default(),
             active_clip_drag: None,
             active_browser_audio_drag: None,
             active_native_device_drag: None,

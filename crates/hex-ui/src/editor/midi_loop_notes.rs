@@ -12,19 +12,57 @@
 //! painted quads by visible pixels and pitches rather than by repeats.
 //! `VisibleNotesCache` reuses a clip's result while its project snapshot and
 //! visible window are unchanged, so resting repaints skip the walk.
-use super::midi_thumbnail::PitchFit;
-use hex_project::{BeatTime, ClipId, Invalid, MidiClip, Project};
-use std::{collections::HashMap, rc::Rc, sync::Arc};
+//!
+//! Resting looped clips tile instead of walking repeats: when every repeat
+//! has the same on-screen width (a looping, forward, unwindowed clip with no
+//! tempo point strictly inside it, and a period of 2 to `MAX_TILE_PIXELS`
+//! device pixels), [`LoopTiles`] holds one tile of consecutive periods (at
+//! least `MIN_TILE_SPAN_PIXELS` wide) and the start of each visible tile.
+//! [`paint_tiles`] rasterizes that tile once into a sprite and paints it per
+//! visible tile inside the body's content mask, which
+//! reproduces playback's cuts at the clip start (offset) and end (partial
+//! last repeat). The first pass before the loop repeats stays per-occurrence.
+//! Other clips (tempo change inside, reversed, content-windowed, sub-2px or
+//! very wide periods) draw every visible occurrence instead.
+use super::midi_thumbnail::{PitchFit, note_rows};
+use hex_project::{BeatTime, ClipId, Invalid, MidiClip, Project, TempoMap};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
 
 /// Per-clip visible-occurrence walk bound (the admission limit).
 pub(super) const MAX_VISIBLE_OCCURRENCES: usize = 65_536;
+/// Widest tiled period, in device pixels; wider periods draw per occurrence.
+const MAX_TILE_PIXELS: f64 = 2048.0;
+/// Narrowest tiled period, in device pixels: below it same-pitch merging
+/// already bounds the walk and a sprite per repeat would cost more.
+const MIN_TILE_PIXELS: f64 = 2.0;
+/// Tile image bytes held at once; past it repeats paint as quads.
+const TILE_BYTE_BUDGET: usize = 64 << 20;
+/// Narrow periods pack several repeats into one tile at least this wide, in
+/// device pixels, so sprites scale with visible pixels rather than repeats.
+const MIN_TILE_SPAN_PIXELS: f64 = 256.0;
 
 pub(super) struct VisibleNotes {
     /// `(frame_start, frame_gate_end, pitch)`, sorted by pitch then onset.
+    /// With `tiles`, only the occurrences outside the repeated loop.
     pub(super) intervals: Vec<(u64, u64, u8)>,
     /// Row fit over every pitch that sounds anywhere in the clip, so the
     /// vertical zoom does not change while scrolling.
     pub(super) fit: PitchFit,
+    /// Repeats drawn as one tiled period, when every repeat shares a shape.
+    pub(super) tiles: Option<LoopTiles>,
+}
+
+/// One tile of `repeats` consecutive loop periods and the visible tiles.
+pub(super) struct LoopTiles {
+    /// `(start, gate_end, pitch)` in frames from a tile's start.
+    pub(super) notes: Vec<(f64, f64, u8)>,
+    /// One repeat's length in frames.
+    pub(super) period: f64,
+    /// Repeats per tile.
+    pub(super) repeats: u32,
+    /// Start frame of each tile intersecting the visible clip window. A tile
+    /// may start before the clip (offset) or end past it (last repeat).
+    pub(super) blocks: Vec<f64>,
 }
 
 /// Exact note intervals intersecting `[visible_start, visible_end)` frames.
@@ -36,6 +74,50 @@ pub(super) fn visible_notes(
     visible_start: u64,
     visible_end: u64,
     merge_frames: u64,
+) -> Result<VisibleNotes, Invalid> {
+    walk(
+        project,
+        clip,
+        visible_start,
+        visible_end,
+        merge_frames,
+        None,
+    )
+}
+
+/// [`visible_notes`], except that repeats of a tileable loop are returned as
+/// [`LoopTiles`] instead of one interval per occurrence.
+pub(super) fn visible_notes_tiled(
+    project: &Project,
+    clip: &MidiClip,
+    visible_start: u64,
+    visible_end: u64,
+    merge_frames: u64,
+) -> Result<VisibleNotes, Invalid> {
+    let tiles = loop_tiles(
+        project.tempo_map(),
+        clip,
+        visible_start,
+        visible_end,
+        merge_frames,
+    )?;
+    walk(
+        project,
+        clip,
+        visible_start,
+        visible_end,
+        merge_frames,
+        tiles,
+    )
+}
+
+fn walk(
+    project: &Project,
+    clip: &MidiClip,
+    visible_start: u64,
+    visible_end: u64,
+    merge_frames: u64,
+    tiles: Option<LoopTiles>,
 ) -> Result<VisibleNotes, Invalid> {
     let tempo = project.tempo_map();
     let source = clip.source_playback()?;
@@ -62,6 +144,12 @@ pub(super) fn visible_notes(
             continue;
         }
         pitches.push(note.pitch());
+        // Tiled repeats are drawn by the tile; only the first pass remains.
+        let count = if tiles.is_some() {
+            u64::from(plan.iter().next().is_some_and(|hit| hit.iteration() == 0))
+        } else {
+            count
+        };
         // Occurrences of one note never overlap and ascend in timeline order,
         // so the first one ending after the window start is a partition point.
         let end_of = |ordinal: u64| -> Option<u64> {
@@ -80,7 +168,8 @@ pub(super) fn visible_notes(
             }
         }
         let skip = usize::try_from(low).map_err(|_| Invalid("midi occurrence index overflow"))?;
-        for hit in plan.iter().skip(skip) {
+        let take = usize::try_from(count - low).unwrap_or(usize::MAX);
+        for hit in plan.iter().skip(skip).take(take) {
             let start = hit.timeline_start().raw();
             if start >= window_end {
                 break;
@@ -115,7 +204,108 @@ pub(super) fn visible_notes(
     Ok(VisibleNotes {
         intervals,
         fit: PitchFit::from_pitches(pitches),
+        tiles,
     })
+}
+
+/// Repeats of `clip` as one tiled period, or `None` when repeats may differ
+/// on screen or a tile would not pay off (see the module docs).
+fn loop_tiles(
+    tempo: &TempoMap,
+    clip: &MidiClip,
+    visible_start: u64,
+    visible_end: u64,
+    merge_frames: u64,
+) -> Result<Option<LoopTiles>, Invalid> {
+    let source = clip.source_playback()?;
+    if merge_frames == 0
+        || !clip.looping()
+        || clip.content_view().is_some()
+        || source.playback_reversed()
+    {
+        return Ok(None);
+    }
+    let (loop_start, loop_end) = (clip.loop_start().raw(), clip.loop_end().raw());
+    let (start, length) = (clip.start().raw(), clip.length().raw());
+    let (Some(period), Some(first_pass), Some(end)) = (
+        loop_end
+            .checked_sub(loop_start)
+            .filter(|period| *period > 0),
+        loop_end
+            .checked_sub(clip.source_start().raw())
+            .filter(|pass| *pass > 0),
+        start.checked_add(length).filter(|_| length > 0),
+    ) else {
+        return Ok(None);
+    };
+    // One tempo across the clip makes frames linear in beats, so every
+    // repeat has the same width; a step inside it would stretch repeats.
+    if tempo
+        .points()
+        .iter()
+        .any(|point| (start + 1..end).contains(&point.beat().raw()))
+    {
+        return Ok(None);
+    }
+    let start_frame = tempo.beat_to_frame(clip.start())?;
+    let end_frame = tempo.beat_to_frame(BeatTime::from_raw(end))?;
+    let frames_per_beat = end_frame.saturating_sub(start_frame) as f64 / length as f64;
+    let period_frames = period as f64 * frames_per_beat;
+    let period_pixels = period_frames / merge_frames as f64;
+    if !(MIN_TILE_PIXELS..=MAX_TILE_PIXELS).contains(&period_pixels) {
+        return Ok(None);
+    }
+    let repeats = (MIN_TILE_SPAN_PIXELS / period_pixels).ceil().max(1.0);
+    // Repeat `i` starts at clip-local beat `first_pass + i * period - offset`
+    // (`MidiSourcePlayback::note_occurrences`' first repeat and spacing).
+    let origin = first_pass as f64 - clip.playback_offset().raw() as f64;
+    let from = start_frame.max(visible_start);
+    let to = end_frame.min(visible_end);
+    let mut blocks = Vec::new();
+    if from < to {
+        let beat_at = |frame: u64| (frame - start_frame) as f64 / frames_per_beat;
+        let first = ((beat_at(from) - origin) / period as f64).floor().max(0.0);
+        let last = ((beat_at(to) - origin) / period as f64).ceil();
+        // Bounded by the visible width over `MIN_TILE_PIXELS` per repeat.
+        let mut index = first;
+        while index < last {
+            let local = origin + index * period as f64;
+            if local >= length as f64 {
+                break;
+            }
+            blocks.push(start_frame as f64 + local * frames_per_beat);
+            index += repeats;
+        }
+    }
+    let one: Vec<_> = clip
+        .notes()
+        .iter()
+        .filter(|note| (loop_start..loop_end).contains(&note.start().raw()))
+        .map(|note| {
+            let delta = (note.start().raw() - loop_start) as f64;
+            let gate = note.duration().raw().min(loop_end - note.start().raw()) as f64;
+            (
+                delta * frames_per_beat,
+                (delta + gate) * frames_per_beat,
+                note.pitch(),
+            )
+        })
+        .collect();
+    // At most `MIN_TILE_SPAN_PIXELS / MIN_TILE_PIXELS` repeats per tile.
+    let repeats = repeats as u32;
+    let notes = (0..repeats)
+        .flat_map(|repeat| {
+            let shift = f64::from(repeat) * period_frames;
+            one.iter()
+                .map(move |&(start, end, pitch)| (start + shift, end + shift, pitch))
+        })
+        .collect();
+    Ok(Some(LoopTiles {
+        notes,
+        period: period_frames,
+        repeats,
+        blocks,
+    }))
 }
 
 /// Visible frames and merge gap one cached result was computed for.
@@ -124,6 +314,7 @@ struct Window {
     start: u64,
     end: u64,
     merge_frames: u64,
+    tiled: bool,
 }
 
 /// Last visible notes per clip for one immutable project snapshot.
@@ -140,14 +331,34 @@ pub(super) struct VisibleNotesCache {
 }
 
 impl VisibleNotesCache {
-    /// `visible_notes` for `clip`, reused when the snapshot and window match.
-    pub(super) fn get(
+    /// `visible_notes_tiled` for the resting body, reused when the snapshot
+    /// and window match.
+    pub(super) fn get_tiled(
         &mut self,
         project: &Arc<Project>,
         clip: &MidiClip,
         visible_start: u64,
         visible_end: u64,
         merge_frames: u64,
+    ) -> Option<Rc<VisibleNotes>> {
+        self.lookup(
+            project,
+            clip,
+            visible_start,
+            visible_end,
+            merge_frames,
+            true,
+        )
+    }
+
+    fn lookup(
+        &mut self,
+        project: &Arc<Project>,
+        clip: &MidiClip,
+        visible_start: u64,
+        visible_end: u64,
+        merge_frames: u64,
+        tiled: bool,
     ) -> Option<Rc<VisibleNotes>> {
         if !self
             .project
@@ -161,18 +372,211 @@ impl VisibleNotesCache {
             start: visible_start,
             end: visible_end,
             merge_frames,
+            tiled,
         };
         if let Some((cached, notes)) = self.entries.get(&clip.id())
             && *cached == window
         {
             return notes.clone();
         }
-        let notes = visible_notes(project, clip, visible_start, visible_end, merge_frames)
+        let walk = if tiled {
+            visible_notes_tiled
+        } else {
+            visible_notes
+        };
+        let notes = walk(project, clip, visible_start, visible_end, merge_frames)
             .ok()
             .map(Rc::new);
         self.entries.insert(clip.id(), (window, notes.clone()));
         notes
     }
+}
+
+/// One rasterized tile and the result it was drawn from.
+struct TileImage {
+    notes: Rc<VisibleNotes>,
+    size: (u32, u32),
+    scale: u32,
+    image: Arc<gpui::RenderImage>,
+}
+
+/// Rasterized loop tiles per clip for one project snapshot.
+///
+/// Sprite atlas custody: a tile is replaced only when its clip's resting
+/// body is rebuilt (new notes, window, height or scale), and every tile is
+/// retired when a different snapshot paints; both rebuild the cached track
+/// rows that replayed the old sprite. Retired images are released from the
+/// atlas at the next tile paint, after their last frame. At most one tile
+/// per clip and `TILE_BYTE_BUDGET` bytes are held; past the budget repeats
+/// paint as quads.
+#[derive(Default)]
+pub(super) struct TileImages {
+    project: Option<Arc<Project>>,
+    entries: HashMap<ClipId, TileImage>,
+    bytes: usize,
+    retired: Vec<Arc<gpui::RenderImage>>,
+    /// Sprites painted, for rendered tests.
+    #[cfg(test)]
+    pub(super) sprites: usize,
+}
+
+impl TileImages {
+    fn retire(&mut self, tile: TileImage) {
+        self.bytes = self
+            .bytes
+            .saturating_sub(tile.size.0 as usize * tile.size.1 as usize * 4);
+        self.retired.push(tile.image);
+    }
+}
+
+/// Device-pixel note rectangles `(left, top, right, bottom)` of one tile,
+/// relative to the repeat's start, with the resting body's row fit, minimum
+/// width (half a percent of the visible span) and pixel snapping.
+fn tile_rects(
+    tiles: &LoopTiles,
+    fit: PitchFit,
+    span: f64,
+    body: (f64, f32),
+    scale: f32,
+) -> Vec<(i64, i64, i64, i64)> {
+    let (width, height) = body;
+    let per_frame = width / span;
+    tiles
+        .notes
+        .iter()
+        .filter_map(|&(start, end, pitch)| {
+            let (top, rows) = note_rows(fit, pitch, height)?;
+            let left = start * per_frame;
+            let right = left + ((end - start) / span).max(0.005) * width;
+            let (left, right) = (left.round() as i64, right.round() as i64);
+            let y = (f64::from(top) * f64::from(scale)).round() as i64;
+            let bottom = ((f64::from(top + rows) * f64::from(scale)).round() as i64).max(y + 1);
+            (right > left).then_some((left, y, right, bottom))
+        })
+        .collect()
+}
+
+/// Paint `notes.tiles` into `bounds`, the visible clip body showing frames
+/// `[visible_start, visible_end)`: one sprite per visible tile, or the same
+/// rectangles as quads when the tile budget is spent.
+pub(super) fn paint_tiles(
+    window: &mut gpui::Window,
+    images: &RefCell<TileImages>,
+    project: &Arc<Project>,
+    clip: ClipId,
+    notes: &Rc<VisibleNotes>,
+    bounds: gpui::Bounds<gpui::Pixels>,
+    visible: (u64, u64),
+) {
+    let Some(tiles) = notes.tiles.as_ref() else {
+        return;
+    };
+    let Ok(mut images) = images.try_borrow_mut() else {
+        return;
+    };
+    for image in images.retired.drain(..) {
+        // Already out of every scene; a missing atlas entry is harmless.
+        let _ = window.drop_image(image);
+    }
+    if !images
+        .project
+        .as_ref()
+        .is_some_and(|cached| Arc::ptr_eq(cached, project))
+    {
+        for (_, tile) in std::mem::take(&mut images.entries) {
+            images.retire(tile);
+        }
+        images.project = Some(Arc::clone(project));
+    }
+    let scale = window.scale_factor();
+    let span = visible.1.saturating_sub(visible.0) as f64;
+    let body_width = f64::from(f32::from(bounds.size.width) * scale);
+    let body_height = f32::from(bounds.size.height);
+    if span <= 0.0 || body_width <= 0.0 || body_height <= 0.0 || scale <= 0.0 {
+        return;
+    }
+    let per_frame = body_width / span;
+    let width = (tiles.period * f64::from(tiles.repeats) * per_frame).ceil() as u32 + 1;
+    let height = (body_height * scale).ceil() as u32;
+    let rects = tile_rects(tiles, notes.fit, span, (body_width, body_height), scale);
+    let reusable = images.entries.get(&clip).is_some_and(|tile| {
+        Rc::ptr_eq(&tile.notes, notes)
+            && tile.size == (width, height)
+            && tile.scale == scale.to_bits()
+    });
+    if !reusable {
+        if let Some(old) = images.entries.remove(&clip) {
+            images.retire(old);
+        }
+        let bytes = width as usize * height as usize * 4;
+        if width <= 2 * MAX_TILE_PIXELS as u32 && images.bytes + bytes <= TILE_BYTE_BUDGET {
+            let mut buffer = image::RgbaImage::new(width, height);
+            for &(left, top, right, bottom) in &rects {
+                for y in top.max(0)..bottom.min(i64::from(height)) {
+                    for x in left.max(0)..right.min(i64::from(width)) {
+                        buffer.put_pixel(x as u32, y as u32, image::Rgba([0, 0, 0, 255]));
+                    }
+                }
+            }
+            let image = Arc::new(gpui::RenderImage::new([image::Frame::new(buffer)]));
+            images.bytes += bytes;
+            images.entries.insert(
+                clip,
+                TileImage {
+                    notes: Rc::clone(notes),
+                    size: (width, height),
+                    scale: scale.to_bits(),
+                    image,
+                },
+            );
+        }
+    }
+    let image = images
+        .entries
+        .get(&clip)
+        .map(|tile| Arc::clone(&tile.image));
+    let left = f64::from(f32::from(bounds.left()) * scale);
+    let top = f32::from(bounds.top());
+    window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+        for &block in &tiles.blocks {
+            let origin = (left + (block - visible.0 as f64) * per_frame).floor();
+            match &image {
+                Some(image) => {
+                    let tile = gpui::Bounds::new(
+                        gpui::point(gpui::px(origin as f32 / scale), gpui::px(top)),
+                        gpui::size(
+                            gpui::px(width as f32 / scale),
+                            gpui::px(height as f32 / scale),
+                        ),
+                    );
+                    if window
+                        .paint_image(tile, Default::default(), Arc::clone(image), 0, false)
+                        .is_ok()
+                    {
+                        #[cfg(test)]
+                        {
+                            images.sprites += 1;
+                        }
+                    }
+                }
+                None => {
+                    for &(x0, y0, x1, y1) in &rects {
+                        let rect = gpui::Bounds::new(
+                            gpui::point(
+                                gpui::px((origin + x0 as f64) as f32 / scale),
+                                gpui::px(top + y0 as f32 / scale),
+                            ),
+                            gpui::size(
+                                gpui::px((x1 - x0) as f32 / scale),
+                                gpui::px((y1 - y0) as f32 / scale),
+                            ),
+                        );
+                        window.paint_quad(gpui::fill(rect, gpui::rgb(0x000000)));
+                    }
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -327,13 +731,15 @@ mod tests {
         let project = Arc::new(editor.project().clone());
         let clip = project.midi_clip(id).unwrap();
         let mut cache = VisibleNotesCache::default();
-        let first = cache.get(&project, clip, 0, 400_000, 100).unwrap();
-        let again = cache.get(&project, clip, 0, 400_000, 100).unwrap();
+        let first = cache.get_tiled(&project, clip, 0, 400_000, 100).unwrap();
+        let again = cache.get_tiled(&project, clip, 0, 400_000, 100).unwrap();
         assert!(
             Rc::ptr_eq(&first, &again),
             "resting repaint reuses the walk"
         );
-        let scrolled = cache.get(&project, clip, 50_000, 450_000, 100).unwrap();
+        let scrolled = cache
+            .get_tiled(&project, clip, 50_000, 450_000, 100)
+            .unwrap();
         assert!(!Rc::ptr_eq(&first, &scrolled));
         assert_eq!(
             scrolled.intervals,
@@ -350,7 +756,9 @@ mod tests {
             .unwrap();
         let edited = Arc::new(editor.project().clone());
         let clip = edited.midi_clip(id).unwrap();
-        let fresh = cache.get(&edited, clip, 50_000, 450_000, 100).unwrap();
+        let fresh = cache
+            .get_tiled(&edited, clip, 50_000, 450_000, 100)
+            .unwrap();
         assert_eq!(
             fresh.intervals,
             visible_notes(&edited, clip, 50_000, 450_000, 100)
@@ -360,6 +768,52 @@ mod tests {
         assert_ne!(fresh.intervals, scrolled.intervals);
     }
 
+    /// Publish `project` (or keep the current one) with a timeline and
+    /// viewport showing `length` frames from `start`; the fixture timeline is
+    /// shorter than the looped clip.
+    #[cfg(feature = "ui-test-support")]
+    fn publish(
+        visual: &mut gpui::VisualTestContext,
+        view: &gpui::Entity<crate::editor::EditorView>,
+        project: Option<Project>,
+        start: u64,
+        length: u64,
+    ) {
+        view.update(visual, |view, cx| {
+            let old = view.state.take().unwrap();
+            let (project, midi_preview) = match project {
+                Some(project) => {
+                    let (_, preview) = hex_engine::compile::project_with_midi_preview(
+                        &project,
+                        &Default::default(),
+                    )
+                    .unwrap();
+                    (Arc::new(project), Arc::new(preview))
+                }
+                None => (Arc::clone(&old.project), Arc::clone(&old.midi_preview)),
+            };
+            view.state = Some(Arc::new(hex_session::service::ViewState {
+                canonical_audio_source: None,
+                comparison_audio: None,
+                project,
+                waveforms: Default::default(),
+                source_overviews: Default::default(),
+                audio_clip_waveforms: std::collections::BTreeMap::new(),
+                midi_preview,
+                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+                timeline_frames: start + length,
+                can_undo: false,
+                can_redo: false,
+                revision: old.revision + 1,
+                unsaved: false,
+                document_path: None,
+            }));
+            view.viewport = Some(crate::editor::viewport::Viewport { start, length });
+            cx.notify();
+        });
+        visual.run_until_parked();
+    }
+
     /// Rendered regression for the user report: the resting Arrangement clip
     /// paints every repeat's notes at playback positions and no count badge.
     #[cfg(feature = "ui-test-support")]
@@ -367,7 +821,6 @@ mod tests {
     fn rendered_long_loop_paints_every_repeat_without_a_sample_badge(
         cx: &mut gpui::TestAppContext,
     ) {
-        use std::sync::Arc;
         let (mut editor, id) = looped_clip();
         let project = editor.project().clone();
         let clip = project.midi_clip(id).unwrap().clone();
@@ -386,42 +839,7 @@ mod tests {
         // The fixture timeline is shorter than this clip; publish a snapshot
         // whose timeline shows the whole loop.
         let install = |visual: &mut gpui::VisualTestContext, project: Option<Project>| {
-            view.update(visual, |view, cx| {
-                let old = view.state.take().unwrap();
-                let (project, midi_preview) = match project {
-                    Some(project) => {
-                        let (_, preview) = hex_engine::compile::project_with_midi_preview(
-                            &project,
-                            &Default::default(),
-                        )
-                        .unwrap();
-                        (Arc::new(project), Arc::new(preview))
-                    }
-                    None => (Arc::clone(&old.project), Arc::clone(&old.midi_preview)),
-                };
-                view.state = Some(Arc::new(hex_session::service::ViewState {
-                    canonical_audio_source: None,
-                    comparison_audio: None,
-                    project,
-                    waveforms: Default::default(),
-                    source_overviews: Default::default(),
-                    audio_clip_waveforms: std::collections::BTreeMap::new(),
-                    midi_preview,
-                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
-                    timeline_frames: end,
-                    can_undo: false,
-                    can_redo: false,
-                    revision: old.revision + 1,
-                    unsaved: false,
-                    document_path: None,
-                }));
-                view.viewport = Some(crate::editor::viewport::Viewport {
-                    start,
-                    length: end - start,
-                });
-                cx.notify();
-            });
-            visual.run_until_parked();
+            publish(visual, &view, project, start, end - start)
         };
         install(&mut visual, None);
         let body = visual
@@ -479,6 +897,280 @@ mod tests {
             crate::editor::midi_thumbnail::rendered_notes(&mut visual, id, false).len(),
             added.len(),
             "the edit's notes paint at every repeat"
+        );
+    }
+
+    /// Constant tempo; the source starts before the loop (a first pass with
+    /// an intro note), the clip is left-trimmed into its first pass (an
+    /// offset), the loop starts after the clip start and the last repeat is
+    /// partial.
+    fn tiled_clip() -> (Editor, hex_project::ClipId) {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 64).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "tiles".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: beats(2),
+                length: beats(4),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        for (start, pitch) in [(BeatTime::ZERO, 60), (beats(1), 64), (beats(2), 67)] {
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start,
+                    duration: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
+                    pitch,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .unwrap();
+        }
+        editor
+            .execute(Command::SetMidiClipSource {
+                clip,
+                source_length: beats(4),
+                source_start: BeatTime::ZERO,
+                loop_start: beats(1),
+                loop_end: beats(3),
+                looping: true,
+                length: beats(82),
+            })
+            .unwrap();
+        editor
+            .execute(Command::TrimMidiClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Left,
+                beat: BeatTime::from_raw(beats(2).raw() + BeatTime::ONE.raw() / 4),
+            })
+            .unwrap();
+        (editor, clip)
+    }
+
+    /// `(frame_start, frame_gate_end, pitch)`.
+    type Interval = (u64, u64, u8);
+
+    /// Playback occurrences split into the first pass and the repeats.
+    fn playback_passes(project: &Project, clip: &MidiClip) -> (Vec<Interval>, Vec<Interval>) {
+        let source = clip.source_playback().unwrap();
+        let tempo = project.tempo_map();
+        let frame = |beat: u64| {
+            tempo
+                .beat_to_frame(BeatTime::from_raw(clip.start().raw() + beat))
+                .unwrap()
+        };
+        let (mut first, mut repeats) = (Vec::new(), Vec::new());
+        for note in clip.notes() {
+            let plan = source
+                .note_occurrences(note.start(), note.duration())
+                .unwrap();
+            for hit in plan.iter() {
+                let start = hit.timeline_start().raw();
+                let interval = (
+                    frame(start),
+                    frame(start + hit.gate_duration().raw()),
+                    note.pitch(),
+                );
+                if hit.iteration() == 0 {
+                    first.push(interval);
+                } else {
+                    repeats.push(interval);
+                }
+            }
+        }
+        first.sort_unstable_by_key(|&(start, end, pitch)| (pitch, start, end));
+        repeats.sort_unstable_by_key(|&(start, end, pitch)| (pitch, start, end));
+        (first, repeats)
+    }
+
+    /// Each tile note at each block, cut to the clip and window as the body's
+    /// content mask cuts it, sorted like `visible_notes`.
+    fn tiled_occurrences(
+        tiles: &LoopTiles,
+        clip: (u64, u64),
+        window: (u64, u64),
+    ) -> Vec<(f64, f64, u8)> {
+        let (from, to) = (clip.0.max(window.0) as f64, clip.1.min(window.1) as f64);
+        let mut all: Vec<_> = tiles
+            .blocks
+            .iter()
+            .flat_map(|block| {
+                tiles.notes.iter().filter_map(move |&(start, end, pitch)| {
+                    let (start, end) = (block + start, block + end);
+                    // A repeat cut at the clip start keeps its cut start.
+                    (start < to && end > from && start < clip.1 as f64).then_some((
+                        start.max(clip.0 as f64),
+                        end.min(clip.1 as f64),
+                        pitch,
+                    ))
+                })
+            })
+            .collect();
+        all.sort_unstable_by(|a, b| (a.2, a.0).partial_cmp(&(b.2, b.0)).unwrap());
+        all
+    }
+
+    fn assert_tiles_match(
+        tiled: &[(f64, f64, u8)],
+        expected: &[(u64, u64, u8)],
+        window: (u64, u64),
+    ) {
+        let expected: Vec<_> = expected
+            .iter()
+            .filter(|&&(start, end, _)| start < window.1 && end > window.0)
+            .collect();
+        assert_eq!(tiled.len(), expected.len());
+        for (tile, &&(start, end, pitch)) in tiled.iter().zip(&expected) {
+            assert_eq!(tile.2, pitch);
+            assert!((tile.0 - start as f64).abs() <= 1.0, "{tile:?} vs {start}");
+            assert!((tile.1 - end as f64).abs() <= 1.0, "{tile:?} vs {end}");
+        }
+    }
+
+    #[test]
+    fn tiled_repeats_land_exactly_where_playback_sounds_them() {
+        let (editor, id) = tiled_clip();
+        let project = editor.project();
+        let clip = project.midi_clip(id).unwrap();
+        assert!(clip.playback_offset() > BeatTime::ZERO, "fixture is offset");
+        let tempo = project.tempo_map();
+        let start = tempo.beat_to_frame(clip.start()).unwrap();
+        let end = tempo
+            .beat_to_frame(BeatTime::from_raw(clip.start().raw() + clip.length().raw()))
+            .unwrap();
+        let (first, repeats) = playback_passes(project, clip);
+        assert!(repeats.len() > 64 && !first.is_empty());
+        // 10 px per two-beat repeat (26 repeats per 256 px tile), then 4 px (64
+        // per tile); the whole clip, a window cutting repeats at both ends,
+        // and the partial last repeat.
+        for (merge, per_tile) in [(4_800, 26), (12_000, 64)] {
+            for window in [
+                (start, end),
+                (start + 600_000, start + 1_500_123),
+                (end - 30_000, end),
+            ] {
+                let notes = visible_notes_tiled(project, clip, window.0, window.1, merge).unwrap();
+                let tiles = notes.tiles.as_ref().expect("constant tempo tiles");
+                assert_eq!(tiles.repeats, per_tile);
+                assert!((tiles.period - 48_000.0).abs() < 1e-6);
+                assert_tiles_match(
+                    &tiled_occurrences(tiles, (start, end), window),
+                    &repeats,
+                    window,
+                );
+                let intro: Vec<_> = first
+                    .iter()
+                    .copied()
+                    .filter(|&(s, e, _)| s < window.1 && e > window.0)
+                    .collect();
+                assert_eq!(
+                    notes.intervals, intro,
+                    "the first pass stays per occurrence"
+                );
+            }
+        }
+        // Unmerged walks stay exact per occurrence.
+        assert!(
+            visible_notes_tiled(project, clip, start, end, 0)
+                .unwrap()
+                .tiles
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_tempo_change_inside_the_clip_draws_every_occurrence() {
+        let (editor, id) = looped_clip();
+        let project = editor.project();
+        let clip = project.midi_clip(id).unwrap();
+        let tempo = project.tempo_map();
+        let start = tempo.beat_to_frame(clip.start()).unwrap();
+        let end = tempo
+            .beat_to_frame(BeatTime::from_raw(clip.start().raw() + beats(82).raw()))
+            .unwrap();
+        let notes = visible_notes_tiled(project, clip, start, end, 4_800).unwrap();
+        assert!(
+            notes.tiles.is_none(),
+            "repeats differ in width across the tempo step"
+        );
+        assert_eq!(
+            notes.intervals,
+            visible_notes(project, clip, start, end, 4_800)
+                .unwrap()
+                .intervals
+        );
+    }
+
+    /// Rendered: a tileable long loop paints one sprite per visible tile
+    /// and only its first pass as quads.
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn rendered_tiled_loop_paints_one_sprite_per_visible_tile(cx: &mut gpui::TestAppContext) {
+        let (editor, id) = tiled_clip();
+        let project = editor.project().clone();
+        let clip = project.midi_clip(id).unwrap().clone();
+        let tempo = project.tempo_map();
+        let start = tempo.beat_to_frame(clip.start()).unwrap();
+        let end = tempo
+            .beat_to_frame(BeatTime::from_raw(clip.start().raw() + clip.length().raw()))
+            .unwrap();
+        let (first, _) = playback_passes(&project, &clip);
+        let (_, preview) =
+            hex_engine::compile::project_with_midi_preview(&project, &Default::default()).unwrap();
+        let (handle, view) =
+            crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::new(preview));
+        let mut visual = gpui::VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(gpui::size(gpui::px(2400.0), gpui::px(800.0)));
+        publish(&mut visual, &view, None, start, end - start);
+        let painted = |visual: &mut gpui::VisualTestContext| {
+            view.read_with(visual, |view, _| view.midi_tile_images.borrow().sprites)
+        };
+        // One more completed rebuild of the resting row at the same window.
+        let before = painted(&mut visual);
+        publish(&mut visual, &view, None, start, end - start);
+        let sprites = painted(&mut visual) - before;
+        let blocks = view.read_with(&visual, |view, _| {
+            let cache = view.midi_visible_notes.borrow();
+            cache
+                .entries
+                .get(&id)
+                .and_then(|(_, notes)| notes.clone())
+                .and_then(|notes| {
+                    notes
+                        .tiles
+                        .as_ref()
+                        .map(|tiles| (tiles.blocks.len(), tiles.repeats as usize))
+                })
+                .expect("tiled resting clip")
+        });
+        let (blocks, per_tile) = blocks;
+        // 40+ visible repeats paint as far fewer sprites.
+        assert!(
+            per_tile > 1 && blocks * per_tile >= 40,
+            "{blocks} x {per_tile}"
+        );
+        assert_eq!(sprites, blocks, "one sprite per visible tile");
+        assert_eq!(
+            crate::editor::midi_thumbnail::rendered_notes(&mut visual, id, false).len(),
+            first.len(),
+            "only the first pass paints as quads"
+        );
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("clip-note-tiles-{}", id.value()).into_boxed_str(),
+                ))
+                .is_some()
         );
     }
 }

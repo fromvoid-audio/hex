@@ -2280,7 +2280,7 @@ impl EditorView {
                     span
                 };
                 let visible = match self.midi_visible_notes.try_borrow_mut() {
-                    Ok(mut cache) => cache.get(
+                    Ok(mut cache) => cache.get_tiled(
                         &state.project,
                         clip,
                         visible_start,
@@ -2288,7 +2288,7 @@ impl EditorView {
                         merge_frames,
                     ),
                     // Re-entrant build: compute without the cache.
-                    Err(_) => super::midi_loop_notes::visible_notes(
+                    Err(_) => super::midi_loop_notes::visible_notes_tiled(
                         &state.project,
                         clip,
                         visible_start,
@@ -2314,7 +2314,38 @@ impl EditorView {
                             visible_end,
                         )
                     });
-                let (notes, _) = midi_note_body(midi_clip_id, note_shapes, fit, false);
+                let (mut notes, _) = midi_note_body(midi_clip_id, note_shapes, fit, false);
+                // Tileable repeats paint one rasterized period per repeat.
+                if let Some(visible) = visible.filter(|visible| visible.tiles.is_some()) {
+                    let images = std::rc::Rc::clone(&self.midi_tile_images);
+                    let project = std::sync::Arc::clone(&state.project);
+                    notes = notes.child(
+                        div()
+                            .debug_selector(move || {
+                                format!("clip-note-tiles-{}", midi_clip_id.value())
+                            })
+                            .absolute()
+                            .inset_0()
+                            .child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, window, _| {
+                                        super::midi_loop_notes::paint_tiles(
+                                            window,
+                                            &images,
+                                            &project,
+                                            midi_clip_id,
+                                            &visible,
+                                            bounds,
+                                            (visible_start, visible_end),
+                                        );
+                                    },
+                                )
+                                .absolute()
+                                .inset_0(),
+                            ),
+                    );
+                }
                 midi = midi.child(loop_handles::body(
                     clip_waveform_body(notes),
                     clip.looping(),
