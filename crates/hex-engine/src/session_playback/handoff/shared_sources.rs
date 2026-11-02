@@ -2299,6 +2299,24 @@ mod tests {
                     );
                 }
             }
+            // An octave up, band-limited reconstruction (#4089) of the
+            // 4-frame loop keeps only its mean: every other partial lies at
+            // or above the output Nyquist. The cursor is checked by the
+            // literal unity segments on either side.
+            fn octave(runtime: &mut SessionPlayback, count: usize) {
+                let mut output = vec![[0.0; 2]; count];
+                for chunk in output.chunks_mut(3) {
+                    runtime.render(chunk).unwrap();
+                }
+                let mean: [f32; 2] = std::array::from_fn(|channel| {
+                    PCM.iter().map(|frame| frame[channel]).sum::<f32>() / 4.0 * 0.5
+                });
+                for frame in output {
+                    for channel in 0..2 {
+                        assert!((frame[channel] - mean[channel]).abs() < 1e-3, "{frame:?}");
+                    }
+                }
+            }
             let mut f = fixture();
             let neutral = f.editor.project().clone();
             let mut old = started(&f);
@@ -2318,7 +2336,7 @@ mod tests {
             tuned.try_inherit_state_from(&mut old).unwrap();
             assert_eq!(tuned.mutable_instruments.iter().flatten().count(), 1);
             assert!(tuned.tail_mutable_instruments.iter().all(Option::is_none));
-            literal(&mut tuned, 12, 2, 21);
+            octave(&mut tuned, 21);
             f.editor
                 .execute(Command::SetTuning(neutral.tuning()))
                 .unwrap();

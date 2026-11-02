@@ -14,6 +14,8 @@ pub struct VoiceCoefficients {
     pub(super) loop_offsets: Option<(usize, usize)>,
     pub(super) reverse: bool,
     pub(super) step: u64,
+    /// Band-limited reconstruction above unity rate; derived from `step`.
+    pub(super) kernel: Option<super::interpolation::Kernel>,
     pub(super) channel_gain: [f64; 2],
     pub(super) gate: GateMode,
     pub(super) envelope: envelope::PreparedEnvelope,
@@ -104,7 +106,7 @@ impl VoiceCoefficients {
         pcm: DeviceResourcePcm<'_>,
         age_frames: u64,
         gate_frames: u64,
-        mut position: u128,
+        position: u128,
     ) -> StereoFrame {
         let channels = match pcm {
             DeviceResourcePcm::Mono(_) => SampleChannels::Mono,
@@ -120,6 +122,31 @@ impl VoiceCoefficients {
         if envelope == 0.0 {
             return [0.0; 2];
         }
+        let Some(value) = self.source_value::<CHECK_FINITE>(pcm, position) else {
+            return [0.0; 2];
+        };
+        // Gain in f64 so finite f32 sources do not overflow. Saturation at
+        // the representation boundary avoids NaN/Inf from otherwise valid
+        // finite PCM and the bounded gain domain.
+        std::array::from_fn(|channel| {
+            let value = value[channel] * self.channel_gain[channel] * envelope;
+            value.clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
+        })
+    }
+
+    /// Reconstructed source at a Q32 playback position, before gain and
+    /// envelope. `None` means silence (past a nonlooping end, a missing frame
+    /// or, when checked, non-finite PCM).
+    #[inline]
+    pub(super) fn source_value<const CHECK_FINITE: bool>(
+        &self,
+        pcm: DeviceResourcePcm<'_>,
+        mut position: u128,
+    ) -> Option<[f64; 2]> {
+        let length = self.region.end - self.region.start;
+        // Whether playback has wrapped at least once: the loop end then
+        // precedes the loop start in playback history.
+        let mut wrapped = false;
         // Integer modulo preserves loop phase without converting the carried
         // source cursor (or a stateless age-derived position) to f64.
         if let Some((start, end)) = self.loop_offsets {
@@ -127,45 +154,69 @@ impl VoiceCoefficients {
             let start = start as u128 * ONE;
             if position >= end {
                 position = start + (position - end) % (end - start);
+                wrapped = true;
             }
-        } else if position >= (self.region.end - self.region.start) as u128 * ONE {
-            return [0.0; 2];
+        } else if position >= length as u128 * ONE {
+            return None;
         }
         let index = (position >> FRACTION_BITS) as usize;
+        let fraction = (position % ONE) as f64 / ONE as f64;
+        let source_index = |offset: usize| {
+            if self.reverse {
+                self.region.end - 1 - offset
+            } else {
+                self.region.start + offset
+            }
+        };
+        if let Some(kernel) = self.kernel {
+            // Pitched-up path; see `interpolation` for the law. Taps follow
+            // playback history: past a Classic loop end they continue at its
+            // start; before the loop start of a wrapped pass they come from
+            // the loop end. Other taps outside the region read silence.
+            let index = i64::try_from(index).ok()?;
+            return kernel.reconstruct::<CHECK_FINITE>(index, fraction, |offset| {
+                let offset = match self.loop_offsets {
+                    Some((start, end)) => {
+                        let (start, end) = (start as i64, end as i64);
+                        let span = end - start;
+                        if offset >= end {
+                            start + (offset - end) % span
+                        } else if wrapped && offset < start {
+                            end - 1 - (start - 1 - offset) % span
+                        } else {
+                            offset
+                        }
+                    }
+                    None => offset,
+                };
+                let offset = usize::try_from(offset).ok()?;
+                if offset >= length {
+                    return None;
+                }
+                pcm.frame(source_index(offset))
+            });
+        }
         let mut next = index + 1;
         if let Some((start, end)) = self.loop_offsets {
             if next == end {
                 next = start;
             }
         }
-        next = next.min(self.region.end - self.region.start - 1);
-        let source_index = |index| {
-            if self.reverse {
-                self.region.end - 1 - index
-            } else {
-                self.region.start + index
-            }
-        };
+        next = next.min(length - 1);
         let (Some(a), Some(b)) = (
             pcm.frame(source_index(index)),
             pcm.frame(source_index(next)),
         ) else {
-            return [0.0; 2];
+            return None;
         };
         if CHECK_FINITE && a.iter().chain(&b).any(|value| !value.is_finite()) {
-            return [0.0; 2];
+            return None;
         }
-        let fraction = (position % ONE) as f64 / ONE as f64;
-        // Interpolate/gain in f64 so finite f32 endpoints do not overflow the
-        // subtraction. Saturation at the representation boundary avoids NaN/Inf
-        // from otherwise valid finite PCM and the bounded gain domain.
-        std::array::from_fn(|channel| {
-            let value = (f64::from(a[channel]) * (1.0 - fraction)
-                + f64::from(b[channel]) * fraction)
-                * self.channel_gain[channel]
-                * envelope;
-            value.clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
-        })
+        // Interpolate in f64 so finite f32 endpoints do not overflow the
+        // subtraction.
+        Some(std::array::from_fn(|channel| {
+            f64::from(a[channel]) * (1.0 - fraction) + f64::from(b[channel]) * fraction
+        }))
     }
 
     /// Fill caller-owned output. Overflowed ages are defined silence; they do
