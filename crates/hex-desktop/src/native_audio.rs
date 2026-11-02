@@ -3,6 +3,7 @@
 use crate::{
     audio_policy::{AudioPolicy, MAX_RESIDENT_FRAMES, RUNTIME_CELLS},
     native_sources::DomainSources,
+    startup_failure::{Stage, StartupFailure},
 };
 use hex_audio::{
     AudioCandidateDomainToken, AudioCandidatePreparationToken, AudioCandidateTicket,
@@ -1431,13 +1432,17 @@ impl WorkerAudioSink for NativeAudioSink {
     }
 }
 
+/// Builds the editor backend, tagging each fallible step with its startup stage.
 pub(super) fn backend(
     flags: hex_audio::audio_diagnostics::AudioDiagnosticsFlags,
-) -> Result<EditorBackend, String> {
+) -> Result<EditorBackend, StartupFailure> {
     let source_reservation = AudioPolicy::source_reservation();
-    let resident_native = AudioPolicy::new()?.resident_native;
+    let resident_native = AudioPolicy::new()
+        .map_err(StartupFailure::at(Stage::AudioPolicy))?
+        .resident_native;
     let (events, audio_events) = mpsc::sync_channel(4);
-    let recovery = hex_session::service::untitled_recovery_path()?;
+    let recovery = hex_session::service::untitled_recovery_path()
+        .map_err(StartupFailure::at(Stage::RecoveryLocation))?;
     let mut sink = NativeAudioSink::new(events);
     sink.audio_diagnostics = flags;
     let service = Service::with_audio_sink_and_native_reservation(
@@ -1447,7 +1452,7 @@ pub(super) fn backend(
         Box::new(sink),
         resident_native,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| StartupFailure::new(Stage::Session, e.to_string()))?;
     Ok(EditorBackend {
         service,
         audio_events,

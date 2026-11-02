@@ -237,10 +237,14 @@ impl Callback {
         else {
             return;
         };
-        match active
-            .playback
-            .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
-        {
+        // A resume from a paused position ramps in, as on the resident path.
+        let play = PlaybackAction::Transport(PlaybackCommand::Play);
+        let applied = if self.status.closing.load(Acquire) {
+            active.playback.try_apply_action(play)
+        } else {
+            active.playback.try_apply_declicked_action(play)
+        };
+        match applied {
             Ok(()) => {
                 self.stream_pending_play = None;
                 self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
