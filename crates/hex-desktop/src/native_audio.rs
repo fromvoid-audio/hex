@@ -24,6 +24,7 @@ use std::sync::{
 mod plugins;
 mod resident;
 mod resident_files;
+mod route_follow;
 mod sampler;
 mod section_edit;
 mod verified_gain;
@@ -107,6 +108,13 @@ pub(super) struct NativeAudioSink {
     // One coalesced status may wait behind an accepted ordinary submission. Status changes
     // never overwrite the exact tuple needed to complete keyboard/restore/gain/seek tracking.
     pending_status_observation: Option<EditorAudioEvent>,
+    /// One route-change notice for the delivered output (#4131).
+    pending_route_event: Option<EditorAudioEvent>,
+    /// Samples the default output route off this worker; `None` when the
+    /// watch thread could not start, which only disables route following.
+    route_watch: Option<hex_audio::OutputRouteWatch>,
+    route_seen: u64,
+    route_follow: route_follow::RouteFollow,
     desired: Option<Arc<CanonicalAudioSourceSnapshot>>,
     gain_source: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
     gain_watermark: Option<GainWatermark>,
@@ -164,6 +172,10 @@ impl NativeAudioSink {
             pending_open_event: None,
             pending_observation: None,
             pending_status_observation: None,
+            pending_route_event: None,
+            route_watch: None,
+            route_seen: 0,
+            route_follow: Default::default(),
             desired: None,
             gain_source: None,
             gain_watermark: None,
@@ -223,6 +235,7 @@ impl NativeAudioSink {
         self.pending_open_event = None; // Client close only: endpoint Drop is terminal-owned
         self.pending_observation = None;
         self.pending_status_observation = None;
+        self.pending_route_event = None;
         self.preparation = None;
         self.domains = std::array::from_fn(|_| None);
         self.submitted = std::array::from_fn(|_| None);
@@ -463,6 +476,7 @@ impl NativeAudioSink {
             &mut self.pending_open_event,
             &mut self.pending_observation,
             &mut self.pending_status_observation,
+            &mut self.pending_route_event,
         ] {
             let Some(event) = pending.take() else {
                 continue;
@@ -481,6 +495,25 @@ impl NativeAudioSink {
         }
         if disconnected {
             self.relinquish_output();
+        }
+    }
+    /// Compares newly confirmed default routes with the delivered output's
+    /// route and queues one `OutputRouteChanged` notice when it moved.
+    fn observe_route(&mut self) {
+        if let Some(route) = self
+            .route_watch
+            .as_ref()
+            .and_then(|watch| watch.latest_if_newer(&mut self.route_seen))
+        {
+            self.route_follow.confirm(route);
+        }
+        let delivered = self.output_identity.zip(self.output.as_ref());
+        if let Some(output_identity) = self
+            .route_follow
+            .output_to_move(delivered.map(|(identity, output)| (identity, output.route.as_ref())))
+        {
+            self.pending_route_event =
+                Some(EditorAudioEvent::OutputRouteChanged { output_identity });
         }
     }
     fn maintain_returns(&mut self, control: &mut hex_audio::prepared::PublicationControl) {
@@ -1235,6 +1268,7 @@ impl WorkerAudioSink for NativeAudioSink {
     }
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
         self.plugins.initialize();
+        self.route_watch = hex_audio::OutputRouteWatch::spawn().ok();
         self.request_open(None, None);
         loop {
             if shutdown.load(Acquire) {
@@ -1423,6 +1457,7 @@ impl WorkerAudioSink for NativeAudioSink {
         self.poll_section_edit();
         self.poll_open();
         self.deliver_open();
+        self.observe_route();
         if let Some(mut output) = self.output.take() {
             if self.output_generation.is_some() {
                 if self.sampler.is_some() {

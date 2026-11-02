@@ -875,6 +875,17 @@ impl EditorView {
                     self.retain_publication_observation(context, output_identity, state);
                     changed = true;
                 }
+                crate::EditorAudioEvent::OutputRouteChanged { output_identity } => {
+                    if self
+                        .audio
+                        .as_ref()
+                        .and_then(|audio| audio.control.output_identity())
+                        == Some(output_identity)
+                    {
+                        self.route_follow = Some(output_identity);
+                        changed = true;
+                    }
+                }
             }
         }
         changed
@@ -2120,6 +2131,7 @@ impl EditorView {
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         visible_change |= pending_before != pending_after;
+        visible_change |= self.follow_output_route();
         visible_change |= self.finish_audio_recovery_tick();
         visible_change |= self.tick_track_meters(Instant::now());
         visible_change |= self.tick_latency_rebuild();
