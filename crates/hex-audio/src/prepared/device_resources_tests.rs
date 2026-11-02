@@ -438,8 +438,17 @@ fn shared_sampler_tuning_preview_cancel_keeps_actual_live_cursor_without_callbac
     let revision = control
         .publish_with_policy_and_context_generation(tuned, PublicationPolicy::InheritRuntime, 7)
         .unwrap();
-    for (i, frame) in block(&mut callback).iter().enumerate() {
-        assert_eq!(*frame, PCM[(7 + 2 * i) % 4].map(|sample| sample * 3.0));
+    // An octave up, the band-limited sampler (#4089) keeps only the 4-frame
+    // loop's mean; every other partial is at or above the output Nyquist.
+    // block() probes this pitched-up render for callback allocations. The
+    // cursor is checked by the unity segments on either side.
+    let mean: [f32; 2] = std::array::from_fn(|channel| {
+        PCM.iter().map(|frame| frame[channel]).sum::<f32>() / 4.0 * 3.0
+    });
+    for frame in block(&mut callback) {
+        for channel in 0..2 {
+            assert!((frame[channel] - mean[channel]).abs() < 3e-3, "{frame:?}");
+        }
     }
     assert_eq!(control.status.applied_revision.load(Acquire), revision);
     assert!(!input.is_cancelled());
