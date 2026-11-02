@@ -144,7 +144,9 @@ pub enum SessionPlaybackError {
     /// before any ownership change; the publication owner retries after
     /// rendering advances the committed transitions. Never answered by a
     /// reset, detached tail or fresh runtime, which would drop or duplicate
-    /// an audible branch.
+    /// an audible branch. An idle predecessor that renders no device chains
+    /// (paused, no monitoring) is never left busy: the planner settles its
+    /// silent transitions instead (Pulse #4558).
     DeviceTransitionBusy,
     MutableInstrumentRuntime,
     MutableInstrumentDiagnostic(&'static str),

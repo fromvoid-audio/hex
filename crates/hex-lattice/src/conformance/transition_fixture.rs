@@ -6,7 +6,8 @@
 //!   `TRANSITION_FRAMES` into fixed inline storage of `CAPACITY` slots, and
 //!   keeps every still-active transition it inherits.
 //! - A same-mode handoff carries the active transitions unchanged.
-//! - Rendering ages every transition; `reset` clears them.
+//! - Rendering ages every transition; `reset` clears them, and
+//!   `settle_idle_transitions` completes them (counted in the [`Probe`]).
 //! - When `previous` already holds `CAPACITY` live transitions, a mode change
 //!   reports `transition_busy_from` instead of dropping one.
 //!
@@ -35,12 +36,18 @@ pub const TRANSITION_FRAMES: u32 = 64;
 #[derive(Debug, Default)]
 pub struct Probe {
     dropped: AtomicU32,
+    settled: AtomicU32,
 }
 impl Probe {
     /// Active transitions a handoff had to discard because the host did not
     /// defer it. A conforming host keeps this at zero.
     pub fn dropped_transitions(&self) -> u32 {
         self.dropped.load(Relaxed)
+    }
+    /// Active transitions completed by idle-predecessor settlement
+    /// (Pulse #4558) rather than by rendering.
+    pub fn settled_transitions(&self) -> u32 {
+        self.settled.load(Relaxed)
     }
 }
 
@@ -94,6 +101,11 @@ impl NativeProcessorRuntime for Runtime {
         }
     }
     fn reset(&mut self) {
+        self.remaining = [0; CAPACITY];
+    }
+    fn settle_idle_transitions(&mut self) {
+        let active = u32::try_from(self.active()).unwrap_or(u32::MAX);
+        self.probe.settled.fetch_add(active, Relaxed);
         self.remaining = [0; CAPACITY];
     }
     fn is_quiescent(&self) -> bool {
