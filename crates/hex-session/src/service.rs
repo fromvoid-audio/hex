@@ -72,6 +72,7 @@ mod plugin_state_save;
 pub use plugin_state_save::{PluginStateCapture, PluginStateSaveInput};
 pub mod diagnostics;
 mod request_cancellation;
+mod save_status;
 pub use plugin_effect::{
     NativeDeviceState, PluginEffectCompletion, PluginEffectControl, PluginEffectDestination,
     PluginEffectInsertion, PluginEffectPreparation, PluginEffectPreparationState,
@@ -1749,7 +1750,7 @@ struct DocumentHandle {
 
 struct SaveCurrentCommit {
     dirty: bool,
-    status: &'static str,
+    status: String,
     error: Option<String>,
 }
 
@@ -1789,7 +1790,7 @@ fn save_document_as(
             let commit = match outcome.warning {
                 Some(warning) => SaveCurrentCommit {
                     dirty: true,
-                    status: "project was published, but durability could not be confirmed",
+                    status: "project was published, but durability could not be confirmed".into(),
                     error: Some(format!(
                         "complete project was published at {}, but could not {}: {}",
                         hex_storage::text::verbatim(outcome.path.display()),
@@ -1799,7 +1800,7 @@ fn save_document_as(
                 },
                 None => SaveCurrentCommit {
                     dirty: false,
-                    status: "project saved",
+                    status: save_status::SAVED.into(),
                     error: None,
                 },
             };
@@ -1817,6 +1818,9 @@ fn save_document_as(
     }
 }
 
+/// Binds the replaced document and reports the save. A durability warning
+/// keeps the document dirty with an error; lost file attributes only extend the
+/// success status, because the project itself was saved.
 fn apply_current_save_outcome(
     document: &mut DocumentHandle,
     outcome: hex_storage::ReplaceOutcome,
@@ -1826,7 +1830,7 @@ fn apply_current_save_outcome(
     match outcome.warning {
         Some(warning) => SaveCurrentCommit {
             dirty: true,
-            status: "project was published, but durability could not be confirmed",
+            status: "project was published, but durability could not be confirmed".into(),
             error: Some(format!(
                 "complete project was published at {}, but could not {}: {}; recovery copy is at {}",
                 hex_storage::text::verbatim(outcome.path.display()),
@@ -1835,9 +1839,10 @@ fn apply_current_save_outcome(
                 hex_storage::text::verbatim(outcome.recovery_path.display())
             )),
         },
+        // Lost file attributes are non-fatal: the project is saved and clean.
         None => SaveCurrentCommit {
             dirty: false,
-            status: "project saved",
+            status: save_status::saved_status(&outcome.metadata_warnings),
             error: None,
         },
     }
@@ -6230,7 +6235,7 @@ fn run_worker(
                                             (Arc::clone(source), state.comparison_audio.clone())
                                         }),
                                     );
-                                    status = Some(commit.status.into());
+                                    status = Some(commit.status);
                                 }
                                 Err(reason) => error = Some(reason),
                             },
@@ -6314,7 +6319,7 @@ fn run_worker(
                                     Ok(outcome) => {
                                         let commit = apply_current_save_outcome(handle, outcome);
                                         unsaved = commit.dirty;
-                                        status = Some(commit.status.into());
+                                        status = Some(commit.status);
                                         error = commit.error;
                                         state = view_state_bound(
                                             &session,
@@ -11257,6 +11262,50 @@ mod service_tests {
             .expect("next Save Current must match the committed token");
         assert!(next.warning.is_none());
         assert_eq!(next.path, path);
+    }
+
+    #[test]
+    fn lost_file_attributes_keep_a_clean_save_and_name_the_loss_in_its_status() {
+        let directory = TestDir::new();
+        let path = directory.0.join("Tagged.hex");
+        let project = Project::new(48_000).expect("project");
+        let token = hex_storage::save_new_with_token(&path, &project).expect("create project");
+        let metadata_warning = |attribute: &str| hex_storage::MetadataWarning {
+            attribute: Some(attribute.to_owned()),
+            operation: "write a file attribute",
+            source: io::Error::other("injected attribute failure"),
+        };
+
+        let mut outcome =
+            hex_storage::replace_existing(&path, &token, &project).expect("replace project");
+        outcome.metadata_warnings = vec![metadata_warning("com.apple.metadata:_kMDItemUserTags")];
+        let mut document = DocumentHandle {
+            path: path.clone(),
+            token,
+        };
+        let commit = apply_current_save_outcome(&mut document, outcome);
+        assert!(!commit.dirty);
+        assert!(commit.error.is_none(), "{:?}", commit.error);
+        assert_eq!(
+            text::plain(&commit.status),
+            "project saved · finder tags could not be kept · could not write a file attribute \
+             com.apple.metadata:_kMDItemUserTags: injected attribute failure"
+        );
+
+        let mut outcome = hex_storage::replace_existing(&path, &document.token, &project)
+            .expect("replace project again");
+        outcome.metadata_warnings = vec![metadata_warning("user.other")];
+        outcome.warning = Some(hex_storage::ReplaceWarning {
+            operation: "synchronize the project directory",
+            source: io::Error::other("injected durability failure"),
+        });
+        let commit = apply_current_save_outcome(&mut document, outcome);
+        assert!(commit.dirty, "durability warnings keep their precedence");
+        assert_eq!(
+            commit.status,
+            "project was published, but durability could not be confirmed"
+        );
+        assert!(commit.error.is_some());
     }
 
     #[test]
