@@ -33,7 +33,10 @@ fn profile_library_queries() {
                 entries.rotate_left(count / 3);
                 entries.reverse();
             }
-            let catalog = SampleCatalog { entries };
+            let catalog = SampleCatalog {
+                entries,
+                ..SampleCatalog::default()
+            };
             for query in ["", "kick", "group-1 pad", "missing"] {
                 let terms: Vec<_> = query.split_whitespace().collect();
                 let mut expected: Vec<_> = original
@@ -183,7 +186,10 @@ fn query_normalization_matches_legacy_global_place_and_native_path_semantics() {
         entries.push(e);
     }
     entries.sort_by(legacy_order);
-    let catalog = SampleCatalog { entries };
+    let catalog = SampleCatalog {
+        entries,
+        ..SampleCatalog::default()
+    };
     let listing = DirectoryListing {
         directory: "/ROOT".into(),
         entries: vec![
@@ -254,4 +260,48 @@ fn query_normalization_matches_legacy_global_place_and_native_path_semantics() {
             }
         }
     }
+}
+
+/// Opt-in release scan-throughput profile over a generated temporary folder:
+/// 2,000 WAV-named files of 128 KiB in 20 subfolders (256 MiB). The first scan
+/// fingerprints every file (page cache warm from generation); the second reuses
+/// every record through size/mtime. Run with
+/// `cargo test -p hex-library --release -- --ignored profile_scan_throughput --nocapture`.
+#[test]
+#[ignore = "opt-in optimized scan throughput profile; writes 256 MiB to the temp dir"]
+fn profile_scan_throughput() {
+    const FILES: usize = 2_000;
+    const BYTES: usize = 128 * 1024;
+    let root = std::env::temp_dir().join(format!("hex-scan-profile-{}", std::process::id()));
+    let body: Vec<u8> = (0..BYTES).map(|i| (i % 251) as u8).collect();
+    for i in 0..FILES {
+        let path = root.join(format!("group-{:02}/sample-{i:05}.wav", i % 20));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut bytes = body.clone();
+        bytes[..8].copy_from_slice(&(i as u64).to_le_bytes());
+        fs::write(path, bytes).unwrap();
+    }
+    let roots = [root.clone()];
+    let start = Instant::now();
+    let first = scan_samples(&roots);
+    let full = start.elapsed();
+    assert_eq!(first.fingerprinted, FILES);
+    let start = Instant::now();
+    let second = scan_samples_with(
+        &roots,
+        ScanControl {
+            previous: Some(&first.catalog),
+            ..ScanControl::default()
+        },
+    );
+    let incremental = start.elapsed();
+    assert_eq!(second.reused, FILES);
+    let _ = fs::remove_dir_all(&root);
+    println!(
+        "scan {FILES} files x {BYTES} B: fingerprint {:.1} ms ({:.0} files/s), incremental {:.1} ms ({:.0} files/s)",
+        full.as_secs_f64() * 1e3,
+        FILES as f64 / full.as_secs_f64(),
+        incremental.as_secs_f64() * 1e3,
+        FILES as f64 / incremental.as_secs_f64(),
+    );
 }

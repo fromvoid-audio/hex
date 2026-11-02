@@ -23,6 +23,10 @@ pub(super) struct ExportLane {
     pub(super) active: Option<ActiveExport>,
     next_id: u64,
     pub(super) native_hold: NativeSamplerReservationHold,
+    /// Control of the most recently dispatched cancellable job. Teardown
+    /// cancels it before joining, so an in-flight render stops at its next
+    /// block and removes its temporary file instead of running to completion.
+    dispatched_control: Option<hex_export::ExportControl>,
 }
 impl ExportLane {
     pub(super) fn new(
@@ -37,6 +41,7 @@ impl ExportLane {
             active: None,
             next_id: 1,
             native_hold: NativeSamplerReservationHold::default(),
+            dispatched_control: None,
         }
     }
     pub(super) fn poll(&mut self) {
@@ -62,6 +67,10 @@ impl ExportLane {
                 self.active = None;
             }
         }
+    }
+    /// An admitted export still needs worker polls for its terminal.
+    pub(super) fn pending(&self) -> bool {
+        self.active.is_some()
     }
     pub(super) fn admission<'a>(
         &'a self,
@@ -204,7 +213,7 @@ impl ExportLane {
             None => (None, None),
         };
         let scratch = hex_export::control_storage_allowance(
-            job.controlled.as_ref().map(|(_, signal, _, _)| signal),
+            job.controlled.as_ref().map(|controlled| &controlled.signal),
         )
         .map_err(|error| error.to_string())?;
         let runtime_bytes = runtime_bytes
@@ -296,7 +305,7 @@ impl ExportLane {
             format!("export resource preparation refused: {error:?}").to_lowercase()
         })?;
         let scratch = hex_export::control_storage_allowance(
-            job.controlled.as_ref().map(|(_, signal, _, _)| signal),
+            job.controlled.as_ref().map(|controlled| &controlled.signal),
         )
         .map_err(|error| {
             format!("export resource preparation refused: {error:?}").to_lowercase()
@@ -410,12 +419,17 @@ impl ExportLane {
     }
     pub(super) fn submit(&mut self, job: ExportJob) -> Result<(), ExportEvent> {
         let job_id = job.job_id;
+        let control = job
+            .controlled
+            .as_ref()
+            .map(|controlled| controlled.control.clone());
         let result = match self.work.as_ref() {
             Some(work) => work.try_send(ExportWork::Render(job)),
             None => Err(TrySendError::Disconnected(ExportWork::Render(job))),
         };
         match result {
             Ok(()) => {
+                self.dispatched_control = control;
                 if let Some(active) = self.active.as_mut().filter(|a| a.job_id == job_id) {
                     let previous =
                         std::mem::replace(&mut active.dispatch, DispatchState::Pending(None));
@@ -449,6 +463,11 @@ impl Drop for ExportLane {
     fn drop(&mut self) {
         // Runs only on the Session control worker. Closing input must precede
         // joining; the anchor survives every missing/disconnected completion.
+        // Cancellation after publication began is refused by the control and
+        // that job completes normally.
+        if let Some(control) = self.dispatched_control.take() {
+            control.cancel();
+        }
         self.work.take();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -477,13 +496,14 @@ mod tests {
             run_export_worker(
                 work_rx,
                 events_tx,
-                Arc::new(|_, _, _, _| Err("unexpected asset-free exporter".into())),
+                Arc::new(|_, _, _, _, _, _, _, _| Err("unexpected asset-free exporter".into())),
                 finished_tx,
                 Arc::new(AtomicBool::new(false)),
                 worker_hook,
             )
         });
         let mut lane = ExportLane::new(work_tx, finished_rx, worker);
+        assert!(!lane.pending(), "an empty lane lets the worker idle");
         let mut previous_id = 0;
         for generation in 0..3 {
             let (entered_tx, entered) = mpsc::sync_channel(1);
@@ -513,6 +533,7 @@ mod tests {
                 lane.active.is_some(),
                 "a pending actual job has not transferred or dropped"
             );
+            assert!(lane.pending(), "admitted custody keeps the busy cadence");
             assert!(lane.submit(next).is_ok());
             entered.recv_timeout(Duration::from_secs(5)).unwrap();
             injected_terminal.send(previous_id).unwrap();
@@ -536,10 +557,11 @@ mod tests {
                     .unwrap();
                 lane.poll();
                 assert!(lane.active.is_none());
+                assert!(!lane.pending());
             } else {
                 assert!(result.result.unwrap_err().contains("notification failed"));
                 assert!(lane.active.is_some());
-                let end = Instant::now() + Duration::from_secs(5);
+                let end = Instant::now() + crate::test_wait::HANG_BOUND;
                 while !lane.worker.as_ref().unwrap().is_finished() && Instant::now() < end {
                     thread::sleep(Duration::from_millis(1));
                 }

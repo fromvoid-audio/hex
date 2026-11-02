@@ -1,8 +1,11 @@
 //! Functional view-local EQ catalog: shared production geometry/widgets/axes.
 //! Registered control-side response only; never fabricates a live analyzer.
 use super::*;
+use hex_devices::eq::EqState;
 #[path = "../../src/editor/device_panel/eq_panel/axes.rs"]
 mod axes;
+#[path = "../../src/editor/device_panel/eq_panel/sampling.rs"]
+mod sampling;
 use hex_widgets::{NumericControlEvent, SelectorChanged, ToggleChanged};
 
 pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
@@ -135,7 +138,7 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
 }
 
 pub(super) fn model(fixture: &Fixture, cx: &gpui::App) -> Option<ResponseGraphModel> {
-    use hex_engine::eq::{EqState, Node, NodeId, NodeKind};
+    use hex_devices::eq::{Node, NodeId, NodeKind};
     let value = |i: usize| fixture.numbers[i].entity.read(cx).value() as f32;
     let mut state = EqState {
         mode: fixture.selectors[0].read(cx).selected() as u8,
@@ -169,29 +172,16 @@ pub(super) fn model(fixture: &Fixture, cx: &gpui::App) -> Option<ResponseGraphMo
     let Ok(authored) = state.encode() else {
         return None;
     };
-    let frequencies: Vec<_> = (0..96)
-        .map(|i| 20.0 * (1000.0_f32.ln() * i as f32 / 95.0).exp())
-        .collect();
-    let Ok(Some(response)) =
-        hex_engine::native_effect_frequency_response(&authored, 48000, &frequencies)
-    else {
-        return None;
-    };
-    let curve = |channel: usize| {
-        frequencies
-            .iter()
-            .zip(&response)
-            .map(|(f, m)| {
-                [
-                    axes::x(*f, 48000),
-                    ((m[channel].max(0.00001).log10() * 20.0 + 24.0) / 48.0).clamp(0.0, 1.0),
-                ]
-            })
-            .collect()
-    };
+    let mut curves = sampling::curves(&state, 48_000, |frequencies| {
+        hex_devices::native_effect_frequency_response(&authored, 48_000, frequencies).ok()?
+    })?;
+    if bank == 2 || bank == 4 {
+        curves.swap(0, 1);
+    }
+    let [primary, secondary] = curves;
     let model = ResponseGraphModel {
-        primary: curve(0),
-        secondary: curve(1),
+        primary,
+        secondary,
         analyzer: None,
         input_analyzer: None,
         analyzer_peak: None,

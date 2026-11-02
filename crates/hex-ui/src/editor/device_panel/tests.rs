@@ -37,6 +37,7 @@ mod parameter_rows_tests;
 mod reverb_ui_tests;
 mod saturator_ui_tests;
 mod shortcut_text_tests;
+mod vst3_degraded_tests;
 
 fn receive_service_event(service: &Service) -> Event {
     let deadline = crate::test_wait::hang_deadline();
@@ -5964,3 +5965,101 @@ fn shared_housing_placeholders_open_in_editor_without_device_commands(cx: &mut T
 }
 
 mod navigation_capture_tests;
+
+/// User report (Pulse #3273): after clipping, a one-pixel red line stayed at
+/// the top of the device meter. It is the held peak, drawn in the clipping
+/// color above unity, which never decayed and could not be cleared. A click
+/// now clears the held peaks; quiet repaints keep them cleared and a fresh
+/// overload draws the line again.
+#[gpui::test]
+fn clicking_a_device_meter_clears_its_held_overload_line(cx: &mut TestAppContext) {
+    let _output_fixture_guard = eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let prepared = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &state.project,
+            &Default::default(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .expect("prepared revision"),
+    );
+    let meter = Arc::clone(
+        prepared
+            .arrangement()
+            .device_meter(device.value())
+            .expect("device meter"),
+    );
+    let deadline = crate::test_wait::hang_deadline();
+    let (mut output, _backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(output) => break output,
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::yield_now()
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    let client = output.take_client().expect("audio client");
+    let (handle, editor) = actor_editor_window(cx, service, Arc::clone(&state), track);
+    editor.update(cx, |view, cx| {
+        view.audio = Some(crate::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "meter fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.audible_playback = Some(super::super::PlaybackCandidate {
+            worker_requires_preroll: None,
+            observation: None,
+            audio_revision: 1,
+            project_generation: view.project_generation,
+            state: Arc::clone(&state),
+            prepared_revision: Some(Arc::clone(&prepared)),
+            seek_request_id: None,
+            device_preview_identity: None,
+            tuning_preview_identity: None,
+        });
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(880.0), px(540.0)));
+    let repaint = |visual: &mut VisualTestContext| {
+        editor.update(visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+    };
+    let meter_selector =
+        Box::leak(format!("device-{}-output-meter", device.value()).into_boxed_str());
+    let left_peak = Box::leak(format!("{meter_selector}-left-peak").into_boxed_str());
+    let right_peak = Box::leak(format!("{meter_selector}-right-peak").into_boxed_str());
+    let clipping = Some(gpui::rgb(crate::theme::meter_colors().clipping).into());
+
+    meter.observe_output(&[[1.5, 0.5]]);
+    repaint(&mut visual);
+    assert_eq!(visual.rendered_background(left_peak), clipping);
+    assert!(visual.debug_bounds(right_peak).is_some());
+    for clear in 0..2 {
+        let bounds = visual.debug_bounds(meter_selector).expect("device meter");
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        repaint(&mut visual);
+        assert!(visual.debug_bounds(left_peak).is_none(), "clear {clear}");
+        assert!(visual.debug_bounds(right_peak).is_none(), "clear {clear}");
+    }
+    // Quiet telemetry repaints stay cleared; nothing relatches the old event.
+    for _ in 0..3 {
+        meter.observe_output(&[[0.0, 0.0]]);
+        repaint(&mut visual);
+        assert!(visual.debug_bounds(left_peak).is_none());
+    }
+    // A fresh non-clipping reading draws a normal peak; a fresh overload rearms.
+    meter.observe_output(&[[0.5, 0.0]]);
+    repaint(&mut visual);
+    assert_ne!(visual.rendered_background(left_peak), clipping);
+    meter.observe_output(&[[0.0, 2.0]]);
+    repaint(&mut visual);
+    assert_eq!(visual.rendered_background(right_peak), clipping);
+}

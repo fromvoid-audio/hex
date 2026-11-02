@@ -120,9 +120,10 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
         "derived root must exceed its budget"
     );
     let error = format!("{:?}", terminal.error);
+    // #4145 names the bounded transform domain and its recovery path.
     assert!(
-        error.contains("budget") || error.contains("limit") || error.contains("memory"),
-        "expected bounded preparation refusal: {error}"
+        error.contains("support clips up to") && error.contains("trim or split the clip first"),
+        "expected bounded transform-domain refusal: {error}"
     );
     for _ in 0..3 {
         repaint(&mut visual, &editor);
@@ -1351,7 +1352,8 @@ fn event_fade_single_sample_can_author_both_ends_after_zoom(cx: &mut TestAppCont
             .events[0]
             .fade
             .unwrap();
-        assert_eq!((fade.shape().fade_in(), fade.shape().fade_out()), (1, 1));
+        // Top handles push each other: the fade in takes the single sample.
+        assert_eq!((fade.shape().fade_in(), fade.shape().fade_out()), (1, 0));
     });
     fade_key(&mut visual, false);
     assert!(visual.debug_bounds("audio-event-fade-in-top-1").is_some());

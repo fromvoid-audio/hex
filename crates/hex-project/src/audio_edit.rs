@@ -10,6 +10,39 @@ pub use timing::AudioClipTiming;
 
 pub const MAX_AUDIO_POINTS: usize = 1_024;
 pub const MAX_AUDIO_DOMAIN_FRAMES: u64 = 16_777_216;
+
+/// Refusal for an edit whose whole root must fit the bounded resident transform
+/// workspace (reverse, pitch, warp and stretch; #4145). Durations are
+/// `MAX_AUDIO_DOMAIN_FRAMES / rate` rounded down for common project rates, so
+/// the static message stays exact; other rates name the frame cap instead.
+pub(crate) fn transform_domain_limit(sample_rate: u32) -> Invalid {
+    Invalid(match sample_rate {
+        44_100 => {
+            "reverse, pitch, warp and stretch support clips up to about 6:20 at 44.1 khz; trim or split the clip first"
+        }
+        48_000 => {
+            "reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; trim or split the clip first"
+        }
+        88_200 => {
+            "reverse, pitch, warp and stretch support clips up to about 3:10 at 88.2 khz; trim or split the clip first"
+        }
+        96_000 => {
+            "reverse, pitch, warp and stretch support clips up to about 2:54 at 96 khz; trim or split the clip first"
+        }
+        176_400 => {
+            "reverse, pitch, warp and stretch support clips up to about 1:35 at 176.4 khz; trim or split the clip first"
+        }
+        192_000 => {
+            "reverse, pitch, warp and stretch support clips up to about 1:27 at 192 khz; trim or split the clip first"
+        }
+        _ => {
+            "reverse, pitch, warp and stretch support clips up to 16777216 frames; trim or split the clip first"
+        }
+    })
+}
+
+/// A retained domain whose crop selects no frames; distinct from the size limit.
+pub(crate) const EMPTY_DOMAIN_CROP: Invalid = Invalid("audio domain crop selects no frames");
 pub const SOURCE_GAIN_UNITY: u32 = 65_536;
 pub const MAX_SOURCE_GAIN: u32 = SOURCE_GAIN_UNITY * 4;
 
@@ -107,6 +140,29 @@ impl WarpMode {
         Ok(())
     }
 }
+/// Versioned source reconstruction law for this content's pitch/warp render.
+/// Each law's output is fixed once shipped; new content uses the newest law.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum WarpResampler {
+    /// Frozen 64-tap Blackman law that rendered every warp/pitch before v2.
+    V1,
+    /// Rate-scaled Kaiser law with a stopband at the output Nyquist.
+    #[default]
+    V2,
+}
+impl WarpResampler {
+    /// Law implied when saved content does not name one. Content that reads
+    /// fractional source positions (pitch or warp) was authored under v1 and
+    /// keeps it. Other content reads integer positions at unity rate, which both
+    /// laws reproduce exactly, so it takes the current default.
+    pub fn implied(pitch_cents: i16, warp_enabled: bool) -> Self {
+        if pitch_cents != 0 || warp_enabled {
+            Self::V1
+        } else {
+            Self::V2
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WarpSettings {
     pub mode: WarpMode,
@@ -151,6 +207,16 @@ pub struct AudioClipContent {
     pub warp: Option<WarpSettings>,
     pub warp_enabled: bool,
     pub source_gain: Vec<SourceGainPoint>,
+    /// Law used by the root pitch/warp render. Directed content views carry
+    /// their own law in [`AudioContentView::read_resampler`].
+    pub warp_resampler: WarpResampler,
+}
+impl AudioClipContent {
+    /// True when the stored law differs from [`WarpResampler::implied`], so a
+    /// saved document must name it explicitly.
+    pub fn has_explicit_warp_resampler(&self) -> bool {
+        self.warp_resampler != WarpResampler::implied(self.pitch_cents, self.warp_enabled)
+    }
 }
 
 /// Effective processing domain with instance-owned loop and fade settings.
@@ -450,6 +516,45 @@ impl AudioClipEdit {
             residual(end, tempo.beat_to_frame(BeatTime::from_raw(beat_end))?)?;
         Ok(())
     }
+    /// Retain a structurally moved musical span, keeping `candidate` when its
+    /// start and end both stay within the one-sample residual of their beats.
+    /// Otherwise the span moves (never resizes) to the allowed start nearest the
+    /// candidate: frame-shifted fragments carry one rounding step per edit, and
+    /// a second step must not refuse the edit. Returns the start.
+    pub(crate) fn retain_moved_frame_span(
+        &mut self,
+        candidate: u64,
+        duration: u64,
+        tempo: &TempoMap,
+    ) -> Result<u64, Invalid> {
+        let Some(beat) = self.live_musical_start() else {
+            return Ok(candidate);
+        };
+        let length = self
+            .placement
+            .map_or(self.view_end - self.view_start, |p| p.outer_length.length());
+        let beat_end = beat
+            .raw()
+            .checked_add(length)
+            .ok_or(Invalid("audio placement beat end overflow"))?;
+        let start = i128::from(tempo.beat_to_frame(beat)?);
+        let end = i128::from(tempo.beat_to_frame(BeatTime::from_raw(beat_end))?);
+        let duration_i = i128::from(duration);
+        let low = (start - 1).max(end - duration_i - 1).max(0);
+        let high = (start + 1).min(end - duration_i + 1);
+        if low > high {
+            return Err(Invalid(
+                "audio structural placement exceeds one-sample rounding residual",
+            ));
+        }
+        let placed = u64::try_from(i128::from(candidate).clamp(low, high))
+            .map_err(|_| Invalid("audio placement frame overflow"))?;
+        let placed_end = placed
+            .checked_add(duration)
+            .ok_or(Invalid("audio placement frame overflow"))?;
+        self.retain_frame_bounds(placed, placed_end, tempo)?;
+        Ok(placed)
+    }
     pub(crate) fn freeze_processing(&mut self, tempo: Arc<TempoMap>) -> Result<(), Invalid> {
         if self.live_musical_start().is_some() && self.processing_projection.is_none() {
             self.processing_projection = Some(Arc::new(AudioProcessingProjection {
@@ -495,6 +600,7 @@ impl AudioClipEdit {
                     warp: None,
                     warp_enabled: false,
                     source_gain: Vec::new(),
+                    warp_resampler: WarpResampler::default(),
                 }),
                 source_phase: clip.source_phase,
                 looping: clip.looping,
@@ -773,10 +879,11 @@ impl AudioClipEdit {
             return Err(Invalid("active warp needs settings and markers"));
         }
         let (_, length, view_start, view_end) = self.projected_domain(tempo)?;
-        if length == 0 || length > MAX_AUDIO_DOMAIN_FRAMES || view_start >= view_end {
-            return Err(Invalid(
-                "full audio domain exceeds its 16777216 frame limit or has an empty crop",
-            ));
+        if length > MAX_AUDIO_DOMAIN_FRAMES {
+            return Err(transform_domain_limit(tempo.sample_rate()));
+        }
+        if length == 0 || view_start >= view_end {
+            return Err(EMPTY_DOMAIN_CROP);
         }
         if self.processing_projection.is_some()
             && self.placement.is_none()
@@ -1171,6 +1278,33 @@ pub(crate) fn offset_frame(frame: u64, offset: i8) -> Result<u64, Invalid> {
 
 #[cfg(test)]
 mod content_tests;
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    #[test]
+    fn transform_limit_names_the_exact_duration_for_common_rates() {
+        for (rate, label) in [
+            (44_100, "44.1 khz"),
+            (48_000, "48 khz"),
+            (88_200, "88.2 khz"),
+            (96_000, "96 khz"),
+            (176_400, "176.4 khz"),
+            (192_000, "192 khz"),
+        ] {
+            let seconds = MAX_AUDIO_DOMAIN_FRAMES / u64::from(rate);
+            let duration = format!("{}:{:02} at {label};", seconds / 60, seconds % 60);
+            let message = transform_domain_limit(rate).0;
+            assert!(message.contains(&duration), "{rate}: {message}");
+            assert!(message.ends_with("trim or split the clip first"));
+            assert_eq!(message, message.to_lowercase());
+        }
+        let other = transform_domain_limit(22_050).0;
+        assert!(other.contains("16777216 frames") && !other.contains("khz"));
+        assert_ne!(EMPTY_DOMAIN_CROP.0, transform_domain_limit(48_000).0);
+    }
+}
 
 #[path = "audio_edit/aliases.rs"]
 mod aliases;

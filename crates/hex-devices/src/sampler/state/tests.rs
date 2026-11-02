@@ -29,6 +29,7 @@ fn current_modes_roundtrip_and_patch_preserves_actual_host_metadata() {
         state.reverse = true;
         state.detune_cents = -31.25;
         state.envelope.release_seconds = 0.375;
+        state.loop_crossfade_ms = 12.5;
         let native = state
             .to_native()
             .unwrap()
@@ -67,9 +68,10 @@ fn current_modes_roundtrip_and_patch_preserves_actual_host_metadata() {
 
 #[test]
 fn malformed_truncated_reserved_nonfinite_and_unsupported_formats_refuse() {
+    // The v3 layout; v1/v2 layouts are covered by the historical encoder.
     let valid = SamplerState::for_source_frames(16)
         .unwrap()
-        .to_native()
+        .to_current_native()
         .unwrap();
     for end in 0..valid.payload().len() {
         assert!(
@@ -108,7 +110,7 @@ fn malformed_truncated_reserved_nonfinite_and_unsupported_formats_refuse() {
             .is_err()
         );
     }
-    for index in 0..9 {
+    for index in 0..10 {
         let mut bytes = valid.payload().to_vec();
         bytes[24 + index * 8..32 + index * 8].copy_from_slice(&f64::NAN.to_le_bytes());
         assert!(
@@ -118,12 +120,39 @@ fn malformed_truncated_reserved_nonfinite_and_unsupported_formats_refuse() {
             .is_err()
         );
     }
+    // v1 never stored loop coordinates while a classic loop was off.
+    let mut v1_off = historical_payload(&SamplerState::for_source_frames(16).unwrap());
+    v1_off[16..24].copy_from_slice(&[3, 0, 0, 0, 11, 0, 0, 0]);
+    assert_eq!(
+        SamplerState::from_native(&NativeDeviceState::new(TYPE_ID, 1, v1_off).unwrap()),
+        Err(Error::MalformedState)
+    );
+    // Each version has exactly its own prefix length.
+    for version in [1, 2] {
+        assert_eq!(
+            SamplerState::from_native(
+                &NativeDeviceState::new(TYPE_ID, version, valid.payload().to_vec()).unwrap()
+            ),
+            Err(Error::MalformedState)
+        );
+    }
     assert_eq!(
         SamplerState::from_native(
-            &NativeDeviceState::new(TYPE_ID, 1, valid.payload().to_vec()).unwrap()
+            &NativeDeviceState::new(TYPE_ID, STATE_VERSION, valid.payload()[..96].to_vec())
+                .unwrap()
         ),
-        Err(Error::InvalidStateVersion)
+        Err(Error::MalformedState)
     );
+    for crossfade in [-1.0, MAX_LOOP_CROSSFADE_MS + 1.0] {
+        let mut bytes = valid.payload().to_vec();
+        bytes[96..104].copy_from_slice(&f64::to_le_bytes(crossfade));
+        assert_eq!(
+            SamplerState::from_native(
+                &NativeDeviceState::new(TYPE_ID, STATE_VERSION, bytes).unwrap()
+            ),
+            Err(Error::InvalidParameterValue)
+        );
+    }
     assert_eq!(
         SamplerState::from_native(
             &NativeDeviceState::new(TYPE_ID, STATE_VERSION + 1, valid.payload().to_vec()).unwrap()
@@ -378,14 +407,26 @@ fn authored_pitch_gain_region_and_absolute_tuning_reach_actual_pair() {
         2,
     )
     .unwrap();
+    // +12 under neutral tuning is pitched up: the stateless plan query is the
+    // band-limited oracle at source positions 0 and 2 of the 4-frame region.
+    let octave = crate::sampler::PreparedSamplerPlan::new(
+        crate::sampler::SampleShape::new(6, 8_000, crate::sampler::SampleChannels::Mono).unwrap(),
+        8_000,
+        authored.settings(),
+    )
+    .unwrap()
+    .prepare_tuned_voice_coefficients(60, 127, &TuningTable::default())
+    .unwrap()
+    .unwrap();
+    let neutral_expected: [StereoFrame; 6] =
+        std::array::from_fn(|age| octave.sample(DeviceResourcePcm::Mono(&pcm), age as u64, 0));
+    assert_eq!(neutral_expected[2..], [[0.0; 2]; 4]);
+    assert!(neutral_expected[..2].iter().all(|frame| frame[0] > 0.0));
     drop(state);
     drop(authored);
     // Independent literal oracles separate transpose from project tuning.
     for (prepared, expected) in [
-        (
-            neutral,
-            [[1.5; 2], [3.5; 2], [0.0; 2], [0.0; 2], [0.0; 2], [0.0; 2]],
-        ),
+        (neutral, neutral_expected),
         (
             prepared,
             [[1.5; 2], [2.5; 2], [3.5; 2], [4.5; 2], [0.0; 2], [0.0; 2]],
@@ -434,6 +475,7 @@ fn disabled_classic_loop_remembers_range_across_codec_and_trim_without_implicit_
         loop_region: Region { start: 2, end: 6 },
     };
     let original = state.to_native().unwrap();
+    // Crossfade off saves the older-reader v2 layout.
     assert_eq!(original.state_version(), 2);
     assert_eq!(original.payload().len(), 96);
     let mut enabled = SamplerState::from_native(&original).unwrap();
@@ -474,5 +516,214 @@ fn disabled_classic_loop_remembers_range_across_codec_and_trim_without_implicit_
     assert!(
         disabled.to_native().is_err(),
         "off is not permission for empty loop ranges"
+    );
+}
+
+/// Historical states keep opening (Pulse #3956). In v1 (commit 57f122b59) a
+/// classic loop region existed only while looping; off stored (0, 0).
+#[test]
+fn sampler_v1_states_migrate_keeping_loop_behaviour_gains_and_source() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let source = vec![DeviceAssetReference {
+        slot: DeviceAssetSlot::new(SOURCE_SLOT).unwrap(),
+        asset: DeviceAssetKey::new(9).unwrap(),
+    }];
+    let authored = |loop_enabled| {
+        let mut state = SamplerState::for_source_frames(16).unwrap();
+        state.region = Region { start: 2, end: 14 };
+        state.mode = AuthoredMode::Classic {
+            loop_enabled,
+            loop_region: Region { start: 3, end: 11 },
+        };
+        state
+    };
+    let v1 = |loop_enabled: bool| {
+        let mut payload = historical_payload(&authored(loop_enabled));
+        if !loop_enabled {
+            payload[16..24].fill(0);
+        }
+        NativeDeviceState::new(TYPE_ID, 1, payload)
+            .unwrap()
+            .with_asset_references(source.clone())
+            .unwrap()
+            .with_output_gain_millidb(-1500)
+            .unwrap()
+    };
+    let definition = &super::super::catalog::DEFINITION;
+    for loop_enabled in [true, false] {
+        let old = v1(loop_enabled);
+        let migrated = definition.migrate_state(&old).unwrap();
+        assert_eq!(migrated.state_version(), STATE_VERSION);
+        assert_eq!(migrated.asset_references(), old.asset_references());
+        assert_eq!(migrated.output_gain_millidb(), -1500);
+        let mut expected = authored(loop_enabled);
+        if !loop_enabled {
+            // Off stays off; the dormant loop covers the playback region.
+            expected.mode = AuthoredMode::Classic {
+                loop_enabled: false,
+                loop_region: Region { start: 2, end: 14 },
+            };
+        }
+        assert_eq!(SamplerState::from_native(&migrated).unwrap(), expected);
+        assert_eq!(
+            definition.migrate_state(&migrated).unwrap(),
+            migrated,
+            "idempotent"
+        );
+    }
+}
+
+/// Independent v1/v2 encoder (96-byte prefix, no crossfade) for historical
+/// fixtures: mode, gate, reverse, root, voices, slice base, slice count, four
+/// u32 frames (region, loop region) and nine f64 values, then slice starts.
+/// It follows the layout of commit 57f122b59 (v1) and the 21 Oct 2026 v2.
+fn historical_payload(state: &SamplerState) -> Vec<u8> {
+    let (mode, gate, loop_region, starts, base) = match &state.mode {
+        AuthoredMode::Classic {
+            loop_enabled,
+            loop_region,
+        } => (u8::from(*loop_enabled), 0, *loop_region, &[][..], 0),
+        AuthoredMode::OneShot { gate } => (
+            2,
+            u8::from(*gate == GateMode::Trigger),
+            Region { start: 0, end: 0 },
+            &[][..],
+            0,
+        ),
+        AuthoredMode::Slice {
+            starts,
+            base_note,
+            gate,
+        } => (
+            3,
+            u8::from(*gate == GateMode::Trigger),
+            Region { start: 0, end: 0 },
+            starts.as_slice(),
+            *base_note,
+        ),
+    };
+    let mut bytes = vec![
+        mode,
+        gate,
+        u8::from(state.reverse),
+        state.root_note,
+        state.voices,
+        base,
+    ];
+    bytes.extend_from_slice(&(starts.len() as u16).to_le_bytes());
+    for value in [
+        state.region.start,
+        state.region.end,
+        loop_region.start,
+        loop_region.end,
+    ] {
+        bytes.extend_from_slice(&(value as u32).to_le_bytes());
+    }
+    for value in [
+        state.transpose_semitones,
+        state.detune_cents,
+        state.gain,
+        state.pan,
+        state.velocity_amount,
+        state.envelope.attack_seconds,
+        state.envelope.decay_seconds,
+        state.envelope.sustain,
+        state.envelope.release_seconds,
+    ] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    assert_eq!(bytes.len(), 96);
+    for &start in starts {
+        bytes.extend_from_slice(&(start as u32).to_le_bytes());
+    }
+    bytes
+}
+
+/// v2 (21 Oct 2026) states keep opening with the crossfade off (Pulse #4088):
+/// every mode, host gains and the source binding survive the registry's v3
+/// migration; the saved form stays byte-identical v2 until a crossfade is
+/// authored, which saves and reopens as v3; the v2 empty marker stays empty.
+#[test]
+fn sampler_v2_states_migrate_and_save_as_v2_until_a_crossfade_needs_v3() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let definition = &super::super::catalog::DEFINITION;
+    let source = vec![DeviceAssetReference {
+        slot: DeviceAssetSlot::new(SOURCE_SLOT).unwrap(),
+        asset: DeviceAssetKey::new(9).unwrap(),
+    }];
+    for mode in [
+        AuthoredMode::Classic {
+            loop_enabled: false,
+            loop_region: Region { start: 3, end: 11 },
+        },
+        AuthoredMode::Classic {
+            loop_enabled: true,
+            loop_region: Region { start: 3, end: 11 },
+        },
+        AuthoredMode::OneShot {
+            gate: GateMode::Trigger,
+        },
+        AuthoredMode::Slice {
+            starts: vec![2, 5, 9],
+            base_note: 48,
+            gate: GateMode::Gate,
+        },
+    ] {
+        let mut expected = SamplerState::for_source_frames(16).unwrap();
+        expected.region = Region { start: 2, end: 14 };
+        expected.mode = mode;
+        expected.reverse = true;
+        expected.gain = 0.75;
+        expected.envelope.attack_seconds = 0.125;
+        let v2 = NativeDeviceState::new(TYPE_ID, 2, historical_payload(&expected))
+            .unwrap()
+            .with_asset_references(source.clone())
+            .unwrap()
+            .with_input_gain_millidb(-750)
+            .unwrap()
+            .with_output_gain_millidb(1250)
+            .unwrap();
+        // Decoding v2 directly already yields the crossfade-off settings.
+        assert_eq!(SamplerState::from_native(&v2).unwrap(), expected);
+        let migrated = definition.migrate_state(&v2).unwrap();
+        assert_eq!(migrated.state_version(), STATE_VERSION);
+        assert_eq!(migrated.payload().len(), v2.payload().len() + 8);
+        assert_eq!(migrated.asset_references(), v2.asset_references());
+        assert_eq!(migrated.input_gain_millidb(), -750);
+        assert_eq!(migrated.output_gain_millidb(), 1250);
+        assert_eq!(SamplerState::from_native(&migrated).unwrap(), expected);
+        assert_eq!(definition.migrate_state(&migrated).unwrap(), migrated);
+        // The saved form of either is the original v2 state, byte for byte,
+        // and so is a crossfade-off edit that changes nothing.
+        assert_eq!(saved_form(&v2).unwrap(), v2);
+        assert_eq!(saved_form(&migrated).unwrap(), v2);
+        assert_eq!(expected.replace_in(&v2).unwrap(), v2);
+        // An authored crossfade saves as v3 and reopens with the same state.
+        let mut edited = expected.clone();
+        edited.loop_crossfade_ms = 250.0;
+        let saved = edited.replace_in(&v2).unwrap();
+        assert_eq!(saved.state_version(), STATE_VERSION);
+        assert_eq!(saved.payload().len(), v2.payload().len() + 8);
+        assert_eq!(saved_form(&saved).unwrap(), saved);
+        let reopened = NativeDeviceState::new(TYPE_ID, STATE_VERSION, saved.payload().to_vec())
+            .unwrap()
+            .with_host_metadata_from(&saved)
+            .unwrap();
+        assert_eq!(SamplerState::from_native(&reopened).unwrap(), edited);
+    }
+    let empty = NativeDeviceState::new(TYPE_ID, 2, b"empty".to_vec())
+        .unwrap()
+        .with_output_gain_millidb(-3000)
+        .unwrap();
+    assert!(is_empty_state(&empty));
+    let migrated = definition.migrate_state(&empty).unwrap();
+    assert_eq!(migrated.state_version(), STATE_VERSION);
+    assert!(is_empty_state(&migrated));
+    assert_eq!(migrated.output_gain_millidb(), -3000);
+    assert_eq!(definition.migrate_state(&migrated).unwrap(), migrated);
+    assert_eq!(saved_form(&migrated).unwrap(), empty);
+    assert_eq!(
+        empty_state().unwrap().state_version(),
+        COMPATIBLE_STATE_VERSION
     );
 }

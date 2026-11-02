@@ -9,7 +9,7 @@ mod gates;
 mod volume;
 use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix, midi_note_bank::PreparedMidiNote};
 pub(crate) use current_sampler::CurrentSamplerEventCustody;
-use density::admit_voice_density;
+use density::{admit_held_voice_density, admit_voice_density};
 pub(crate) use gates::PreparedMidiGateTemplate;
 use hex_devices::SineTable;
 use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument};
@@ -37,6 +37,16 @@ pub(crate) fn admit_transport_loop_density(
     release_raw: u64,
 ) -> Result<usize, MidiTemplateError> {
     density::admit_transport_loop_density(intro, repeats, first_pass, period, release_raw)
+}
+
+/// Held-only transport-loop density for instruments that steal releasing voices.
+pub(crate) fn admit_held_transport_loop_density(
+    intro: &[TransportDensitySpan],
+    repeats: &[TransportDensitySpan],
+    first_pass: u64,
+    period: u64,
+) -> Result<usize, MidiTemplateError> {
+    density::admit_held_transport_loop_density(intro, repeats, first_pass, period)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -80,6 +90,7 @@ pub struct PreparedMidiInstrumentTemplate {
     intro_root: Option<usize>,
     repeat_root: Option<usize>,
     max_active_voices: usize,
+    admitted_voices: usize,
     max_query_onsets: usize,
     max_span_hits: usize,
     max_query_visits: usize,
@@ -435,6 +446,17 @@ impl MidiReleaseVoice {
             end_frame,
             voice: self.voice,
         }))
+    }
+
+    /// End this voice no later than performance `frame`, a loop wrap.
+    /// Unedited looped playback stops an occurrence at the wrap, so a voice
+    /// released before it must not sound over the next pass.
+    pub(crate) fn ending_by(self, frame: u64) -> Self {
+        Self {
+            gate_end_frame: self.gate_end_frame.min(frame),
+            end_frame: self.end_frame.min(frame),
+            ..self
+        }
     }
 
     pub(crate) fn from_finite_span(
@@ -863,6 +885,7 @@ impl PreparedMidiInstrumentTemplate {
             source.period,
             release_raw,
         )?;
+        let mut admitted_voices = max_active_voices;
         if let Some(limits) = mutable_limits {
             let max_events = limits
                 .max_events_per_query
@@ -875,7 +898,14 @@ impl PreparedMidiInstrumentTemplate {
             let max_voices = limits
                 .max_active_occurrences
                 .min(crate::midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK);
-            if max_active_voices > max_voices {
+            // A stealing instrument frees releasing slots on demand, so its
+            // slots bound held density only; releases still bound the proof
+            // ledger and span buffers through `max_active_voices`.
+            if limits.steals_releasing_voices {
+                admitted_voices =
+                    admit_held_voice_density(&intro, &repeats, source.first_pass, source.period)?;
+            }
+            if admitted_voices > max_voices {
                 return Err(MidiTemplateError::InvalidSource(
                     "mutable midi source exceeds instrument voice capacity",
                 ));
@@ -938,6 +968,7 @@ impl PreparedMidiInstrumentTemplate {
             intro_root,
             repeat_root,
             max_active_voices,
+            admitted_voices,
             max_query_onsets,
             max_span_hits,
             max_query_visits: if has_sources {
@@ -960,6 +991,13 @@ impl PreparedMidiInstrumentTemplate {
 
     pub fn max_active_voices(&self) -> usize {
         self.max_active_voices
+    }
+
+    /// Voice slots this template occupies in its admitted instrument: held
+    /// density for an instrument that steals releasing voices, otherwise
+    /// `max_active_voices` (releases included).
+    pub(crate) fn admitted_voices(&self) -> usize {
+        self.admitted_voices
     }
 
     pub(crate) fn note_bank(&self) -> &std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank> {

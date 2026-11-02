@@ -113,6 +113,16 @@ fn current_sampler_console_templates_construct_with_paired_storage() {
     assert!(config.matches_state(native));
     assert!(!config.matches_state(&native.clone().with_input_gain_db(-6.0).unwrap()));
     assert!(!config.matches_state(&native.clone().with_output_gain_db(-6.0).unwrap()));
+    // The captured saved version is part of the exact configuration.
+    let other_version = hex_lattice_contract::NativeDeviceState::new(
+        native.type_id(),
+        native.state_version() - 1,
+        native.payload().to_vec(),
+    )
+    .unwrap()
+    .with_host_metadata_from(native)
+    .unwrap();
+    assert!(!config.matches_state(&other_version));
     assert!(
         owner
             .inner
@@ -151,6 +161,63 @@ fn current_sampler_console_templates_construct_with_paired_storage() {
     assert_eq!(output, [[0.0; 2]; 12]);
     cell.cleanup_on_control().unwrap();
 }
+
+/// Prepared gated release of the four-frame fixture sampler at the 16 kHz
+/// console rate. Literal-PCM oracles derive from it, so a host declick floor
+/// changes only how long the expected release lasts.
+fn release_frames(release_seconds: f64) -> u64 {
+    let mut state = hex_devices::sampler::state::SamplerState::for_source_frames(4).unwrap();
+    state.envelope.release_seconds = release_seconds;
+    hex_devices::sampler::PreparedSamplerPlan::new(
+        hex_devices::sampler::SampleShape::new(
+            4,
+            8000,
+            hex_devices::sampler::SampleChannels::Stereo,
+        )
+        .unwrap(),
+        16000,
+        state.settings(),
+    )
+    .unwrap()
+    .prepare_voice_coefficients(60, 127)
+    .unwrap()
+    .unwrap()
+    .release_frames()
+}
+
+/// Linear release level `steps` frames after note-off.
+fn release_level(steps: u64, release: u64) -> f64 {
+    if steps >= release {
+        0.0
+    } else {
+        1.0 - steps as f64 / release as f64
+    }
+}
+
+fn assert_pcm_near(actual: &[[f32; 2]], expected: &[[f64; 2]]) {
+    assert_eq!(actual.len(), expected.len());
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        for channel in 0..2 {
+            assert!(
+                (f64::from(actual[channel]) - expected[channel]).abs() < 1e-6,
+                "frame {index}: {actual:?} != {expected:?}"
+            );
+        }
+    }
+}
+
+/// Fixture source at pitch 60: four 8 kHz frames read at half speed. The last
+/// entry is the looping case, interpolating from the end into the loop start.
+const HALF_SPEED: [[f64; 2]; 8] = [
+    [0.125, -0.25],
+    [0.3125, -0.125],
+    [0.5, 0.0],
+    [0.1875, 0.125],
+    [-0.125, 0.25],
+    [-0.0625, 0.125],
+    [0.0, 0.0],
+    [0.0625, -0.125],
+];
 
 fn mixed_fixture() -> (
     Project,
@@ -324,6 +391,14 @@ fn prepare(
     project: &Project,
     sources: Vec<(hex_project::AssetId, crate::OwnedAudioSource)>,
 ) -> AudioCandidatePreparation {
+    try_prepare(project, sources).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// `prepare`, returning the CURRENT preparation refusal instead of panicking.
+fn try_prepare(
+    project: &Project,
+    sources: Vec<(hex_project::AssetId, crate::OwnedAudioSource)>,
+) -> Result<AudioCandidatePreparation, String> {
     let quote = AudioCandidateReservationQuote::for_project(project, sources.len()).unwrap();
     let limits = quote.storage_reservation(65536).unwrap();
     let work = sources.iter().map(|(_, s)| s.frames()).sum();
@@ -347,7 +422,7 @@ fn prepare(
         work,
         &AtomicBool::new(false),
     )
-    .unwrap_or_else(|e| panic!("{e:?}"));
+    .map_err(|e| format!("{e:?}"))?;
     cell.owner_on_control()
         .unwrap()
         .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
@@ -358,7 +433,7 @@ fn prepare(
             max_construction_peak_bytes: limits.max_construction_data_bytes,
         })
         .unwrap();
-    cell
+    Ok(cell)
 }
 #[test]
 fn current_sampler_console_mixed_scene_loops_have_literal_pcm_and_partition_invariance() {
@@ -381,18 +456,21 @@ fn current_sampler_console_mixed_scene_loops_have_literal_pcm_and_partition_inva
             owner.test_render(&mut block).unwrap();
             pcm.extend(block);
         }
+        // Each four-frame note releases from gate4 until the half-speed
+        // source ends at age8; the second track's octave voice ends at age4.
+        let after_off = release_level(1, release_frames(2.0 / 16000.0));
         let expected = [
             [0.21875, -0.34375],
             [0.59375, -0.09375],
             [0.46875, 0.15625],
             [0.21875, 0.15625],
             [-0.09375, 0.28125],
-            [0.0, 0.09375],
+            [-0.0625 * after_off + 0.03125, 0.125 * after_off + 0.03125],
             [0.03125, 0.03125],
             [0.03125, 0.03125],
         ];
-        assert_eq!(&pcm[..8], &expected);
-        assert_eq!(&pcm[8..16], &expected);
+        assert_pcm_near(&pcm[..8], &expected);
+        assert_pcm_near(&pcm[8..16], &expected);
         owner
             .test_apply_action(crate::PlaybackAction::LaunchAndPlay(
                 crate::SessionPlaybackCommand::LaunchScene {
@@ -403,18 +481,18 @@ fn current_sampler_console_mixed_scene_loops_have_literal_pcm_and_partition_inva
             .unwrap();
         let mut next = [[0.0; 2]; 8];
         owner.test_render(&mut next).unwrap();
-        assert_eq!(
-            next,
-            [
+        assert_pcm_near(
+            &next,
+            &[
                 [0.125, -0.25],
                 [0.3125, -0.125],
                 [0.5, 0.0],
                 [0.1875, 0.125],
                 [-0.125, 0.25],
-                [-0.03125, 0.0625],
+                [-0.0625 * after_off, 0.125 * after_off],
                 [0.0; 2],
-                [0.0; 2]
-            ]
+                [0.0; 2],
+            ],
         );
         results.push(pcm);
         cell.cleanup_on_control().unwrap();
@@ -445,7 +523,18 @@ fn current_sampler_console_retrigger_keeps_old_release_and_uses_a_new_occurrence
         .unwrap();
     let mut pcm = [[0.0; 2]; 3];
     owner.test_render(&mut pcm).unwrap();
-    assert_eq!(pcm, [[0.4375, -0.375], [0.5625, -0.125], [0.5, 0.0]]);
+    // The old occurrence releases from its gate at frame1 while the new
+    // occurrence starts at age0 on the same frame.
+    let release = release_frames(2.0 / 16000.0);
+    let expected: Vec<_> = (0..3)
+        .map(|step| {
+            let old = HALF_SPEED[step + 1];
+            let level = release_level(step as u64, release);
+            let new = HALF_SPEED[step];
+            [old[0] * level + new[0], old[1] * level + new[1]]
+        })
+        .collect();
+    assert_pcm_near(&pcm, &expected);
     cell.cleanup_on_control().unwrap();
 }
 
@@ -507,14 +596,17 @@ fn current_sampler_console_quantized_scene_cut_matches_immediate_cut_at_boundary
 }
 
 #[test]
-fn current_sampler_console_scene_capacity_refusal_preserves_pending_routes_and_pcm() {
+fn current_sampler_console_one_voice_scene_relaunch_steals_the_release() {
+    // The second track's sampler declares stealing. With one voice, its old
+    // release and the incoming voice no longer refuse the scene: the release
+    // is stolen into the declick pool. Two voices are the no-steal oracle.
     let mut results = Vec::new();
-    for refuse in [false, true] {
-        let (project, sources, a, b, _) = mixed_fixture();
+    for voices in [2, 1] {
+        let (project, sources, a, _, _) = mixed_fixture();
         let second = project.tracks()[1].instrument().unwrap();
         let mut state =
             hex_devices::sampler::state::SamplerState::from_native(second.state()).unwrap();
-        state.voices = 1;
+        state.voices = voices;
         let native = state
             .to_native()
             .unwrap()
@@ -529,71 +621,46 @@ fn current_sampler_console_scene_capacity_refusal_preserves_pending_routes_and_p
             .unwrap();
         let mut cell = prepare(editor.project(), sources);
         let owner = cell.owner_on_control().unwrap();
-        let scene = |scene, quantization| {
-            crate::PlaybackAction::Session(crate::SessionPlaybackCommand::LaunchScene {
-                scene,
-                quantization,
-            })
-        };
+        let scene = crate::PlaybackAction::Session(crate::SessionPlaybackCommand::LaunchScene {
+            scene: a,
+            quantization: crate::LaunchQuantization::Immediate,
+        });
         owner
             .test_apply_action(crate::PlaybackAction::Transport(
                 crate::PlaybackCommand::Play,
             ))
             .unwrap();
-        owner
-            .test_apply_action(scene(a, crate::LaunchQuantization::Immediate))
-            .unwrap();
+        owner.test_apply_action(scene).unwrap();
         owner.test_render(&mut [[0.0; 2]; 1]).unwrap();
-        owner
-            .test_apply_action(scene(b, crate::LaunchQuantization::FourQuarter))
-            .unwrap();
-        let before: Vec<_> = (0..3)
-            .map(|i| {
-                owner
-                    .inner
-                    .runtime
-                    .as_ref()
-                    .unwrap()
-                    .playback
-                    .session_route_status(i)
-                    .unwrap()
-            })
-            .collect();
-        if refuse {
-            // First track can retrigger, but the second's factory has one voice:
-            // its old release plus incoming voice cannot fit. Entire scene refuses.
-            assert!(
-                owner
-                    .test_apply_action(scene(a, crate::LaunchQuantization::Immediate))
-                    .is_err()
-            );
-            let after: Vec<_> = (0..3)
-                .map(|i| {
-                    owner
-                        .inner
-                        .runtime
-                        .as_ref()
-                        .unwrap()
-                        .playback
-                        .session_route_status(i)
-                        .unwrap()
-                })
-                .collect();
-            assert_eq!(before, after);
-            assert!(
-                owner
-                    .test_apply_action(crate::PlaybackAction::Session(
-                        crate::SessionPlaybackCommand::Seek(1)
-                    ))
-                    .is_err()
-            );
-        }
+        owner.test_apply_action(scene).unwrap();
         let mut pcm = [[0.0; 2]; 16];
-        owner.test_render(&mut pcm).unwrap();
+        owner.test_render(&mut pcm[..1]).unwrap();
+        assert_eq!(
+            owner
+                .inner
+                .runtime
+                .as_ref()
+                .unwrap()
+                .playback
+                .test_current_sampler_route_proofs(1),
+            Some((2, 1, 1)),
+            "the old proof keeps its quiet deadline beside the new held voice"
+        );
+        owner.test_render(&mut pcm[1..]).unwrap();
         results.push(pcm);
         cell.cleanup_on_control().unwrap();
     }
-    assert_eq!(results[0], results[1]);
+    let (oracle, stolen) = (results[0], results[1]);
+    assert_eq!(stolen[0], oracle[0], "the declick starts at unity");
+    assert_ne!(stolen[1], oracle[1], "the stolen release is declicked");
+    for channel in 0..2 {
+        assert!((stolen[1][channel] - oracle[1][channel]).abs() <= 1.0 / 16.0);
+    }
+    assert_eq!(
+        stolen[2..],
+        oracle[2..],
+        "the stolen voice retires with its own two-frame release"
+    );
 }
 
 #[test]
@@ -727,20 +794,25 @@ fn current_sampler_console_held_note_crosses_quantized_cut_with_literal_release_
             }
         }
         // A's loop is audible and held through frame31999. At32000 A receives
-        // NoteOff while B starts, then A's two-frame release ends. B keeps looping.
-        assert_eq!(
-            pcm,
-            [
-                [-0.0625, 0.125],
-                [0.0; 2],
-                [0.0625, -0.125],
-                [0.25, -0.5],
-                [0.65625, -0.0625],
-                [-0.125, 0.25],
-                [0.0; 2],
-                [0.125, -0.25]
-            ]
-        );
+        // NoteOff while B starts, then A's prepared release ends. B keeps looping.
+        let release = release_frames(2.0 / 16000.0);
+        let source = [[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0, 0.0]];
+        let expected: Vec<_> = (31997_u64..32005)
+            .map(|frame| {
+                let a = HALF_SPEED[(frame % 8) as usize];
+                let level = frame
+                    .checked_sub(32000)
+                    .map_or(1.0, |steps| release_level(steps, release));
+                let b = frame
+                    .checked_sub(32000)
+                    .map_or([0.0; 2], |age| source[(age % 4) as usize]);
+                [a[0] * level + b[0], a[1] * level + b[1]]
+            })
+            .collect();
+        assert_pcm_near(&pcm, &expected);
+        // Drain any remaining release before checking A's retired proof.
+        let drain = (32000 + release).saturating_sub(32005) as usize;
+        owner.test_render(&mut vec![[0.0; 2]; drain]).unwrap();
         let playback = &owner.inner.runtime.as_ref().unwrap().playback;
         let route = playback.session_route_status(0).unwrap();
         assert_eq!(
@@ -763,6 +835,9 @@ mod cue;
 
 #[path = "console_tests/source_metadata.rs"]
 mod source_metadata;
+
+#[path = "console_tests/steal_density.rs"]
+mod steal_density;
 
 #[path = "console_tests/volume.rs"]
 mod volume;

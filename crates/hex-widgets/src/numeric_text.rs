@@ -44,7 +44,9 @@ impl EntityInputHandler for NumericControl {
             .map(|range| range_bytes_to_utf16(&self.text, range.clone()))
     }
 
-    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.caret_activity = self.caret_activity.wrapping_add(1);
+        cx.notify();
         self.marked = None;
         self.invalidate_text_pointer_selection();
     }
@@ -56,6 +58,8 @@ impl EntityInputHandler for NumericControl {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.caret_activity = self.caret_activity.wrapping_add(1);
+        cx.notify();
         self.invalidate_text_pointer_selection();
         let new_text = new_text.replace(['\n', '\r'], "");
         let range = range
@@ -94,6 +98,8 @@ impl EntityInputHandler for NumericControl {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.caret_activity = self.caret_activity.wrapping_add(1);
+        cx.notify();
         self.invalidate_text_pointer_selection();
         let new_text = new_text.replace(['\n', '\r'], "");
         let range = range
@@ -317,7 +323,7 @@ impl Element for NumericTextElement {
                 rgb(selection_tint(input.style)),
             )
         });
-        let cursor = (input.editing && input.selected.is_empty()).then(|| {
+        let cursor = (input.editing.is_editing() && input.selected.is_empty()).then(|| {
             fill(
                 Bounds::new(
                     point(origin_x + cursor_x, bounds.top()),
@@ -350,7 +356,7 @@ impl Element for NumericTextElement {
             return;
         };
         let focus = self.input.read(cx).focus.clone();
-        if self.input.read(cx).editing {
+        if self.input.read(cx).editing.is_editing() {
             let input = self.input.clone();
             window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                 if phase.capture() && !bounds.contains(&event.position) {
@@ -370,7 +376,8 @@ impl Element for NumericTextElement {
         if focus.is_focused(window)
             && let Some(cursor) = state.cursor
         {
-            crate::text_caret::paint(cursor, self.input.entity_id(), window, cx);
+            let activity = self.input.read(cx).caret_activity;
+            crate::text_caret::paint(cursor, self.input.entity_id(), activity, window, cx);
         }
         let _ = state.line.paint(
             point(state.origin_x, bounds.top()),
@@ -445,6 +452,8 @@ mod tests {
             focus_marker: 0xaaaaaa,
             dial_rail: 0x000000,
             hover: 0x404040,
+            selection: 0x3350a0,
+            invalid: 0xff554c,
             font_size: 10.0,
             text_case: crate::TextCase::Preserve,
         }

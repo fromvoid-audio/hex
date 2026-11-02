@@ -56,6 +56,7 @@ fn audio_fixture(rate: u32) -> (Folder, Session, TrackId, ClipId, ClipId, Vec<Pa
             source_audio: audio.clone(),
             waveform: waveform::summarize(&audio, length).unwrap(),
             audio,
+            file_identity: None,
         };
         let (created, _) = s.import_prepared_revision(prepared, None).unwrap();
         let Created::Imported { track: t, clip, .. } = created else {
