@@ -1203,7 +1203,8 @@ fn clip_loop_resize_preserves_audio_cycle_through_render_export_reopen_and_histo
     let decoded = decode_wav_file(&export, Limits::new(4096, 64)).unwrap();
     for (actual, expected) in decoded.audio().frames().iter().zip(&expected) {
         for channel in 0..2 {
-            assert!((actual[channel] - expected[channel]).abs() < 0.00004);
+            // Decode scale (1 LSB) plus rounding and ±1 LSB TPDF dither (1.5 LSB).
+            assert!((actual[channel] - expected[channel]).abs() < 2.6 / 32_768.0);
         }
     }
     assert!(session.undo());
@@ -1318,7 +1319,8 @@ fn clip_loop_resize_midi_trimmed_window_reopens_and_exports_the_same_prepared_no
     assert_eq!(decoded.frames(), frames);
     for (actual, expected) in decoded.audio().frames().iter().zip(&expected) {
         for channel in 0..2 {
-            assert!((actual[channel] - expected[channel]).abs() < 0.00004);
+            // Decode scale (1 LSB) plus rounding and ±1 LSB TPDF dither (1.5 LSB).
+            assert!((actual[channel] - expected[channel]).abs() < 2.6 / 32_768.0);
         }
     }
     assert!(session.undo());

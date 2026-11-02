@@ -204,7 +204,7 @@ fn older_schemas_and_malformed_laws_refuse() {
     for older in [63, 64] {
         assert!(mutate(&|v| v["version"] = older.into()).is_err());
     }
-    assert!(mutate(&|v| v["version"] = 67.into()).is_err());
+    assert!(mutate(&|v| v["version"] = (crate::NEWEST_SCHEMA_VERSION + 1).into()).is_err());
     for tag in [Value::from(0), 3.into(), "v2".into(), Value::Null] {
         let result = mutate(&|v| {
             explicit_domains(v)[0].insert("warp_resampler".into(), tag.clone());

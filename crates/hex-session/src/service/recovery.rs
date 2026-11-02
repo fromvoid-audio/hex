@@ -20,11 +20,41 @@ pub enum ProjectSource {
     },
 }
 
-/// Native application singleton, shared by development and review bundles.
-/// No fallback to another user's directory when HOME is unavailable.
+/// Slot 0 of the native application's untitled recovery directory, shared by
+/// development and review bundles; its parent anchors derived media folders.
+/// Running instances each claim their own slot with
+/// [`claim_untitled_recovery_slot`]. No fallback to another user's directory
+/// when HOME is unavailable.
 pub fn untitled_recovery_path() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME").ok_or("home directory is unavailable")?;
     Ok(PathBuf::from(home).join("Library/Application Support/hex/recovery/untitled.hex-journal"))
+}
+
+/// Claim this instance's own untitled recovery slot so concurrent hex
+/// instances never checkpoint over each other's untitled work (Pulse #3948).
+pub fn claim_untitled_recovery_slot() -> Result<hex_storage::UntitledSlotClaim, String> {
+    let slot = untitled_recovery_path()?;
+    let directory = slot.parent().ok_or("recovery directory is unavailable")?;
+    claim_untitled_slot_in(directory)
+}
+
+/// Create a missing recovery directory (refusing a symbolic link or file in its
+/// place, as checkpointing does) and claim an unowned slot inside it.
+fn claim_untitled_slot_in(directory: &Path) -> Result<hex_storage::UntitledSlotClaim, String> {
+    match std::fs::symlink_metadata(directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err("recovery directory must be a real directory".into());
+        }
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            return Err(hex_storage::text::lowercase_outside_verbatim(
+                &error.to_string(),
+            ));
+        }
+        _ => {}
+    }
+    std::fs::create_dir_all(directory)
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    hex_storage::UntitledSlotClaim::claim(directory).map_err(|error| error.to_string())
 }
 
 /// A readable journal left by a session that ended without saving or discarding
@@ -729,5 +759,49 @@ fn checkpoint_path(document: Option<&DocumentHandle>, untitled: &Path) -> Result
     match document {
         Some(handle) => hex_storage::journal_path(&handle.path).map_err(|e| e.to_string()),
         None => Ok(untitled.to_path_buf()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn scratch() -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "hex-untitled-claim-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    /// Regression for #3948: each instance gets its own untitled slot in a
+    /// freshly created recovery directory, starting with the historical name.
+    #[test]
+    fn concurrent_claims_create_the_directory_and_never_share_a_slot() {
+        let root = scratch();
+        let directory = root.join("recovery");
+        let first = claim_untitled_slot_in(&directory).unwrap();
+        let second = claim_untitled_slot_in(&directory).unwrap();
+        assert_eq!(first.path(), directory.join("untitled.hex-journal"));
+        assert_eq!(second.path(), directory.join("untitled-2.hex-journal"));
+        drop((first, second));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_recovery_directory_is_refused_without_following_it() {
+        let root = scratch();
+        std::fs::create_dir(&root).unwrap();
+        let target = root.join("elsewhere");
+        std::fs::create_dir(&target).unwrap();
+        let directory = root.join("recovery");
+        std::os::unix::fs::symlink(&target, &directory).unwrap();
+        let error = claim_untitled_slot_in(&directory).unwrap_err();
+        assert_eq!(error, "recovery directory must be a real directory");
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

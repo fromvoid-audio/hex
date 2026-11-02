@@ -95,7 +95,11 @@ fn explicit_cli_export_range_stems_and_destructive_overwrite_leave_no_backup() {
     assert_eq!(entries.len(), 1);
     let data = fs::read(&entries[0]).unwrap();
     assert_eq!(data.len(), 52);
-    assert_eq!(i16::from_le_bytes([data[44], data[45]]), 8192);
+    let stem_sample = i16::from_le_bytes([data[44], data[45]]);
+    assert!(
+        (i32::from(stem_sample) - 8192).abs() <= 1,
+        "dithered {stem_sample}"
+    );
     fs::write(directory.path().join("existing.wav"), b"old recording").unwrap();
     let refusal = run(
         &directory.0,
@@ -131,10 +135,22 @@ fn explicit_cli_export_range_stems_and_destructive_overwrite_leave_no_backup() {
             .to_string_lossy()
             .starts_with(".hex-export-")
     }));
-    assert_eq!(
-        &fs::read(directory.path().join("existing.wav")).unwrap()[44..],
-        &data[44..]
-    );
+    // Main and stem files carry independent ±1 LSB TPDF dither streams.
+    let replaced = fs::read(directory.path().join("existing.wav")).unwrap();
+    assert_eq!(replaced.len(), data.len());
+    for (main, stem) in replaced[44..]
+        .chunks_exact(2)
+        .zip(data[44..].chunks_exact(2))
+    {
+        let (main, stem) = (
+            i16::from_le_bytes([main[0], main[1]]),
+            i16::from_le_bytes([stem[0], stem[1]]),
+        );
+        assert!(
+            (i32::from(main) - i32::from(stem)).abs() <= 2,
+            "{main} vs {stem}"
+        );
+    }
     assert!(
         !run(
             &directory.0,
@@ -332,7 +348,8 @@ fn renders_converted_source_at_project_rate_and_refuses_changed_source_shape() {
     .expect("conversion reference");
     for (rendered, reference) in output.audio().frames().iter().zip(reference.frames()) {
         for channel in 0..2 {
-            assert!((rendered[channel] - reference[channel]).abs() <= 1.0 / 32768.0);
+            // Decode scale (1 LSB) plus rounding and ±1 LSB TPDF dither (1.5 LSB).
+            assert!((rendered[channel] - reference[channel]).abs() <= 2.6 / 32_768.0);
         }
     }
     fs::write(&source, wav(&samples[..479])).expect("changed source");

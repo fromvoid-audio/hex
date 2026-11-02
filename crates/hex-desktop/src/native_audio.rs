@@ -1515,14 +1515,16 @@ pub(super) fn backend(
         .map_err(StartupFailure::at(Stage::AudioPolicy))?
         .resident_native;
     let (events, audio_events) = mpsc::sync_channel(4);
-    let recovery = hex_session::service::untitled_recovery_path()
+    // This instance's own untitled slot, held for the service's lifetime so a
+    // concurrently running hex never checkpoints into it (Pulse #3948).
+    let recovery = hex_session::service::claim_untitled_recovery_slot()
         .map_err(StartupFailure::at(Stage::RecoveryLocation))?;
     let mut sink = NativeAudioSink::new(events);
     sink.audio_diagnostics = flags;
-    let service = Service::with_audio_sink_and_native_reservation(
+    let service = Service::with_audio_sink_and_claimed_recovery(
         32,
         MAX_RESIDENT_FRAMES,
-        Some(recovery),
+        recovery,
         Box::new(sink),
         resident_native,
     )

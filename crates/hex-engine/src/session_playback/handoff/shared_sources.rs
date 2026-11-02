@@ -18,6 +18,7 @@ impl SharedSourceHandoff {
     pub(super) fn handles_new(&self, index: usize) -> bool {
         self.new_for_old.contains(&index) || self.retarget_for_old.contains(&index)
     }
+    #[allow(clippy::too_many_arguments)] // Explicit candidate/donor owners and timing facts.
     pub(super) fn prepare(
         revision: &PreparedRevision,
         runtimes: &[Option<MutableInstrumentTrackRuntime>],
@@ -25,6 +26,7 @@ impl SharedSourceHandoff {
         admission: Option<&crate::session_inventory::PreparedSessionMidiAdmission>,
         previous: &SessionPlayback,
         timing_changed: bool,
+        arrangement_tempo_remap: bool,
         spans: &mut MidiSpanBuffer,
     ) -> Result<Self, SessionPlaybackError> {
         let mut plan = Self {
@@ -104,7 +106,14 @@ impl SharedSourceHandoff {
                 }
                 continue;
             };
-            let exact = !timing_changed
+            // An edited base map cuts every held Arrangement gate at the cut
+            // (Pulse #4117); a proof from any other owner keeps stale frames.
+            let retimed = arrangement_tempo_remap
+                && super::arrangement_only_proofs(previous, old_runtime)
+                && routes
+                    .get(new_index)
+                    .is_some_and(|route| route.owner == RouteOwner::Arrangement);
+            let exact = (!timing_changed || retimed)
                 && previous
                     .revision
                     .retained_source_configuration_matches(revision, source);
@@ -2299,6 +2308,24 @@ mod tests {
                     );
                 }
             }
+            // An octave up, band-limited reconstruction (#4089) of the
+            // 4-frame loop keeps only its mean: every other partial lies at
+            // or above the output Nyquist. The cursor is checked by the
+            // literal unity segments on either side.
+            fn octave(runtime: &mut SessionPlayback, count: usize) {
+                let mut output = vec![[0.0; 2]; count];
+                for chunk in output.chunks_mut(3) {
+                    runtime.render(chunk).unwrap();
+                }
+                let mean: [f32; 2] = std::array::from_fn(|channel| {
+                    PCM.iter().map(|frame| frame[channel]).sum::<f32>() / 4.0 * 0.5
+                });
+                for frame in output {
+                    for channel in 0..2 {
+                        assert!((frame[channel] - mean[channel]).abs() < 1e-3, "{frame:?}");
+                    }
+                }
+            }
             let mut f = fixture();
             let neutral = f.editor.project().clone();
             let mut old = started(&f);
@@ -2318,7 +2345,7 @@ mod tests {
             tuned.try_inherit_state_from(&mut old).unwrap();
             assert_eq!(tuned.mutable_instruments.iter().flatten().count(), 1);
             assert!(tuned.tail_mutable_instruments.iter().all(Option::is_none));
-            literal(&mut tuned, 12, 2, 21);
+            octave(&mut tuned, 21);
             f.editor
                 .execute(Command::SetTuning(neutral.tuning()))
                 .unwrap();
