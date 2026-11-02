@@ -298,7 +298,7 @@ fn strict_current_state_refuses_before_patching_and_preserves_its_source() {
             DeviceContractError::MalformedState,
         ),
         (
-            NativeDeviceState::new(TYPE_ID, STATE_VERSION, nonfinite).unwrap(),
+            NativeDeviceState::new(TYPE_ID, original.state_version(), nonfinite).unwrap(),
             DeviceContractError::InvalidParameterValue,
         ),
     ] {
@@ -328,5 +328,63 @@ fn strict_current_state_refuses_before_patching_and_preserves_its_source() {
     assert_eq!(
         patch_sampler_parameter_on_control(SamplerParameter::Gain, &original, 0.5).unwrap(),
         expected.to_native().unwrap()
+    );
+}
+
+#[test]
+fn loop_crossfade_patches_in_classic_mode_only_and_preserves_every_other_field() {
+    use crate::sampler::{GateMode, Region, state::AuthoredMode, state::SamplerState};
+    use SamplerParameter::LoopCrossfadeMs;
+    let mut authored = SamplerState::for_source_frames(64).unwrap();
+    authored.mode = AuthoredMode::Classic {
+        loop_enabled: true,
+        loop_region: Region { start: 8, end: 40 },
+    };
+    let original = authored
+        .to_native()
+        .unwrap()
+        .with_output_gain_millidb(-2000)
+        .unwrap();
+    assert_eq!(LoopCrossfadeMs.default_value(), 0.0);
+    assert_eq!(LoopCrossfadeMs.unit(), Some("ms"));
+    assert_eq!(
+        sampler_parameter_value_on_control(LoopCrossfadeMs, &original).unwrap(),
+        0.0
+    );
+    assert!(sampler_parameter_active_on_control(LoopCrossfadeMs, &original).unwrap());
+    for value in [0.5, 25.0, LoopCrossfadeMs.bounds().1] {
+        let patched =
+            patch_sampler_parameter_on_control(LoopCrossfadeMs, &original, value).unwrap();
+        assert_eq!(
+            sampler_parameter_value_on_control(LoopCrossfadeMs, &patched).unwrap(),
+            value
+        );
+        assert_eq!(patched.output_gain_millidb(), -2000);
+        let mut expected = authored.clone();
+        expected.loop_crossfade_ms = value;
+        assert_eq!(SamplerState::from_native(&patched).unwrap(), expected);
+        assert_eq!(
+            patch_sampler_parameter_on_control(LoopCrossfadeMs, &patched, 0.0).unwrap(),
+            original
+        );
+    }
+    for invalid in [-0.5, f64::NAN, LoopCrossfadeMs.bounds().1 + 1.0] {
+        assert_eq!(
+            patch_sampler_parameter_on_control(LoopCrossfadeMs, &original, invalid),
+            Err(ControlError::InvalidValue(LoopCrossfadeMs))
+        );
+    }
+    authored.mode = AuthoredMode::OneShot {
+        gate: GateMode::Gate,
+    };
+    let one_shot = authored.to_native().unwrap();
+    assert!(!sampler_parameter_active_on_control(LoopCrossfadeMs, &one_shot).unwrap());
+    assert_eq!(
+        sampler_parameter_value_on_control(LoopCrossfadeMs, &one_shot),
+        Err(ControlError::RequiresClassic)
+    );
+    assert_eq!(
+        patch_sampler_parameter_on_control(LoopCrossfadeMs, &one_shot, 5.0),
+        Err(ControlError::RequiresClassic)
     );
 }
