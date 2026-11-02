@@ -473,7 +473,8 @@ fn shared_sampler_tuning_preview_cancel_keeps_actual_live_cursor_without_callbac
         block(&mut callback);
         control.reclaim();
     }
-    assert_eq!(control.status.position.load(Acquire), paused);
+    // The queued Pause ends after its 21-frame fade at 8 kHz (#4151).
+    assert_eq!(control.status.position.load(Acquire), paused + 21);
     assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
     input.set_key(0, Some((60, 127, 2))).unwrap();
     for (i, frame) in block(&mut callback).iter().enumerate() {
