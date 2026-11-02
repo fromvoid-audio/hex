@@ -1,6 +1,6 @@
 //! # Purpose
 //! Render fixed-block PCM16 Arrangement exports and bounded float32 source
-//! bounces, with explicit publication and ordinary prepared runtime custody.
+//! bounces and resident source publication, with explicit publication and ordinary prepared runtime custody.
 //!
 //! # Dependencies
 //! Uses hex-engine and the standard library; callers supply the exact prepared revision and
@@ -32,12 +32,16 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 mod bounce;
 mod controlled;
 pub use bounce::{
-    MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS, render_arrangement_bounce_new, render_bounce_new,
+    MAX_ARRANGEMENT_BOUNCE_TAIL_SECONDS, render_arrangement_bounce_new,
+    render_arrangement_bounce_with_pages, render_bounce_new,
     render_bounce_new_with_device_resources,
 };
 mod pages;
 pub use pages::PreparedExportPages;
+mod resident_source;
+pub use resident_source::publish_resident_source_new;
 mod publication;
+mod stale_temporary;
 mod stems;
 pub use controlled::{
     ExportControl, ExportProgress, ExportSignal, render_prepared_controlled,
@@ -49,6 +53,7 @@ pub use controlled::{
     render_prepared_with_policy,
 };
 pub use publication::{OverwriteConsent, Publication};
+pub use stale_temporary::StaleTemporaries;
 pub use stems::{Stem, render_stems_new, render_stems_new_with_device_resources};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,6 +65,9 @@ pub struct ExportReport {
     /// Reserved for exceptional publication recovery; successful overwrite
     /// removes the displaced file and returns no backup path.
     pub recovery_path: Option<PathBuf>,
+    /// Abandoned `.hex-export-*.tmp` files swept from the destination
+    /// directory before staging; failures never block the export.
+    pub stale_temporaries: StaleTemporaries,
 }
 
 #[derive(Debug)]
@@ -225,7 +233,7 @@ pub fn render_prepared_new(
 /// Ordinary registered-resource export with the default source-length/startup-latency trimming
 /// policy. Nonzero stateful starts reconstruct bounded history before that same trim. The caller
 /// pins and admits the exact resource set for this synchronous control operation; no live input
-/// or Session route history is captured. Controlled ranges intentionally retain causal startup.
+/// or Session route history is captured. Controlled Main ranges use the same latency discard.
 /// Use the existing export worker's 8 MiB control stack for stateful construction.
 pub fn render_prepared_new_with_device_resources(
     path: &Path,
@@ -373,8 +381,8 @@ fn publish_encoded<R: BlockRenderer>(
         return Err(ExportError::Invalid("destination has no file name"));
     }
 
-    // Refuse a known collision before rendering; the hard link remains the
-    // authoritative race-safe create-new check at publication.
+    // Refuse a known collision before rendering; create-new publication remains
+    // the authoritative race-safe check (see `publication::publish_new`).
     if let Publication::Replace(consent) = publication {
         consent.validate(path)?;
     } else {
@@ -397,7 +405,10 @@ fn publish_encoded<R: BlockRenderer>(
             }
         }
     }
+    let stale_temporaries = stale_temporary::sweep(path);
     let (file, temporary_path) = create_temporary(path)?;
+    // Held until this function returns, so a concurrent sweep keeps the file.
+    let _ownership = stale_temporary::hold(&file);
     let write_result = prepare_renderer().and_then(|mut renderer| {
         write_wav(
             file,
@@ -415,16 +426,17 @@ fn publish_encoded<R: BlockRenderer>(
         return Err(error);
     }
 
-    match publication {
-        Publication::CreateNew => {
-            if let Err(source) = fs::hard_link(&temporary_path, path) {
+    let staging_remains = match publication {
+        Publication::CreateNew => match publication::publish_new(&temporary_path, path) {
+            Ok(published) => published.staging_remains(),
+            Err(source) => {
                 let _ = fs::remove_file(&temporary_path);
                 return Err(ExportError::Io {
                     operation: "publish the wav without replacing the destination",
                     source,
                 });
             }
-        }
+        },
         Publication::Replace(consent) => {
             if let Err(error) = publication::replace_staged(&temporary_path, path, consent, || {}) {
                 if !matches!(error, ExportError::PublicationConflict { .. }) {
@@ -432,13 +444,17 @@ fn publish_encoded<R: BlockRenderer>(
                 }
                 return Err(error);
             }
+            true
         }
-    }
+    };
 
     // After a confirmed successful exchange this removes the displaced old
     // export. It is not retained as a routine backup. On a race, the earlier
     // error preserves unexpected displaced data instead of deleting it.
-    let cleanup_error = fs::remove_file(&temporary_path).err();
+    // An exclusive-rename publication already consumed the staging name.
+    let cleanup_error = staging_remains
+        .then(|| fs::remove_file(&temporary_path).err())
+        .flatten();
     #[cfg(unix)]
     let sync_error = sync_parent_directory(path).err();
     #[cfg(not(unix))]
@@ -468,6 +484,7 @@ fn publish_encoded<R: BlockRenderer>(
         frames,
         data_bytes,
         recovery_path: None,
+        stale_temporaries,
     })
 }
 
@@ -477,7 +494,7 @@ fn create_temporary(destination: &Path) -> Result<(File, PathBuf), ExportError> 
     for _ in 0..MAX_TEMP_ATTEMPTS {
         let identifier = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         // Keep temporary names short even near the final filename length limit.
-        let temporary_name = format!(".hex-export-{}-{identifier}.tmp", std::process::id());
+        let temporary_name = stale_temporary::name(std::process::id(), identifier);
         let temporary_path = parent.join(temporary_name);
         match OpenOptions::new()
             .write(true)
@@ -672,6 +689,39 @@ mod tests {
         assert_eq!(&bytes[36..40], b"data");
         assert_eq!(read_u32(&bytes, 40), 4);
         assert_eq!(&bytes[44..], &[0xff, 0x7f, 0x01, 0x80]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_sweeps_an_abandoned_temporary_and_reports_it() {
+        let dir = TestDir::new();
+        let abandoned = dir
+            .0
+            .join(stale_temporary::name(std::process::id().wrapping_add(1), 9));
+        fs::write(&abandoned, b"interrupted render").unwrap();
+        let path = dir.0.join("swept.wav");
+        let report = render_new(&path, &project(vec![[0.5, -0.5]; 2], 1.0), 0, 2).unwrap();
+        assert_eq!(
+            report.stale_temporaries,
+            StaleTemporaries {
+                removed: 1,
+                failed: 0
+            }
+        );
+        assert!(!abandoned.exists());
+        assert!(path.exists());
+        let leftovers = fs::read_dir(&dir.0)
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".hex-export-")
+            })
+            .count();
+        assert_eq!(leftovers, 0, "the export removes its own temporary too");
     }
 
     #[test]
@@ -996,6 +1046,56 @@ mod tests {
         );
         assert_eq!(fs::read(stage).unwrap(), b"external changed recording");
         assert_eq!(fs::read(target).unwrap(), b"new staged export");
+    }
+
+    /// Regression for #4201: exFAT/FAT/SMB volumes refuse hard links, which
+    /// used to fail every create-new wav export.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn wav_export_publishes_on_volumes_without_hard_links_and_never_replaces() {
+        use publication::simulate::{Volume, volume};
+        let source = project(vec![[0.5, -0.5]; 2], 1.0);
+        let reference_dir = TestDir::new();
+        let reference = reference_dir.0.join("reference.wav");
+        render_new(&reference, &source, 0, 2).unwrap();
+        let expected = fs::read(&reference).unwrap();
+        for capability in [
+            Volume::NoHardLinks(rustix::io::Errno::NOTSUP.raw_os_error()),
+            Volume::NoHardLinks(rustix::io::Errno::PERM.raw_os_error()),
+            Volume::NoAtomicCreate,
+        ] {
+            let dir = TestDir::new();
+            let _volume = volume(capability);
+            let path = dir.0.join("usb.wav");
+            render_new(&path, &source, 0, 2).expect("export without hard links");
+            assert_eq!(fs::read(&path).unwrap(), expected);
+            // Only the export remains: no staging leftovers.
+            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+
+            let staging = dir.0.join("staging");
+            fs::write(&staging, b"newer").unwrap();
+            let error = publication::publish_new(&staging, &path).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+            assert_eq!(fs::read(&path).unwrap(), expected);
+            assert_eq!(fs::read(&staging).unwrap(), b"newer");
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn other_link_failures_pass_through_without_fallback() {
+        use publication::simulate::{Volume, volume};
+        for errno in [rustix::io::Errno::ACCESS, rustix::io::Errno::NOSPC] {
+            let dir = TestDir::new();
+            let _volume = volume(Volume::NoHardLinks(errno.raw_os_error()));
+            let path = dir.0.join("refused.wav");
+            let error = render_new(&path, &project(vec![[0.5, -0.5]; 2], 1.0), 0, 2)
+                .expect_err("link failure is reported");
+            assert!(
+                matches!(&error, ExportError::Io { source, .. } if source.raw_os_error() == Some(errno.raw_os_error()))
+            );
+            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

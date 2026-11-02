@@ -272,10 +272,10 @@ fn comparison_metadata_event_backpressure_keeps_native_source_and_order_without_
     service.submit(Request::Undo).unwrap();
     service.submit(Request::Redo).unwrap();
     let before = polls.load(Ordering::Relaxed);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
     while polls.load(Ordering::Relaxed) <= before + 3 {
         assert!(std::time::Instant::now() < deadline);
-        std::thread::yield_now();
+        crate::test_wait::pause();
     }
     assert_eq!(sources.lock().unwrap().len(), count);
     let mut previous = initial.state;
