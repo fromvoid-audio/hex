@@ -15,6 +15,10 @@ pub struct AudioCandidateRuntimeStatus {
     pub sampler_console: bool,
     pub route_state_generation: u64,
     pub route_count: usize,
+    /// Frames by which Main output trails `position`.
+    pub main_output_latency_frames: u32,
+    /// Content-clock loop law that wraps `position`.
+    pub content_loop: Option<hex_project::LoopRegion>,
 }
 impl ClaimedAudioCandidateRuntime {
     fn current_playback(&self) -> Option<&Playback> {
@@ -48,6 +52,8 @@ impl ClaimedAudioCandidateRuntime {
                 .is_some_and(|r| r.sampler_console_available()),
             route_state_generation: playback.session_route_state_generation(),
             route_count: playback.session_route_count(),
+            main_output_latency_frames: playback.main_output_latency_frames(),
+            content_loop: playback.automation_capture_loop(),
         })
     }
     /// Scalar effective clock metadata from the current admitted runtime only.
