@@ -19,6 +19,10 @@ const RECOVERY_HEADER_BYTES: usize = 24;
 const MAX_COMPONENT_BYTES: usize = 255;
 const RECOVERY_SUFFIX: &str = ".hex-recovery";
 const MAX_TEMP_ATTEMPTS: usize = 32;
+/// In-place saves never follow a symbolic link, so a project opened through one
+/// can only be saved to a new regular file.
+const SYMLINK_TARGET_REFUSAL: &str = "project file is a symbolic link, so hex cannot replace it \
+     in place. use save as to save it as a regular file";
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// Validated previous contents available for explicit recovery.
@@ -255,9 +259,7 @@ fn check_target(path: &Path, expected: &FileToken) -> Result<Permissions, Storag
         Err(error) => return Err(error.into()),
     };
     if metadata.file_type().is_symlink() {
-        return Err(StorageError::Invalid(
-            "project replacement refuses symbolic-link targets",
-        ));
+        return Err(StorageError::Invalid(SYMLINK_TARGET_REFUSAL));
     }
     if !metadata.is_file() {
         return Err(StorageError::Invalid(
@@ -317,7 +319,8 @@ fn inspect_recovery(path: &Path, basename: &str) -> Result<SidecarState, Storage
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
                 return Err(StorageError::Invalid(
-                    "recovery sidecar is a symbolic link; refusing replacement",
+                    "recovery sidecar is a symbolic link; refusing replacement. use save as to save \
+                     under a new name",
                 ));
             }
             if !metadata.is_file() {
@@ -672,10 +675,22 @@ mod tests {
         changed.push(b'\n');
         fs::write(&target, &changed).expect("external formatting edit");
 
-        assert!(matches!(
-            replace_existing(&target, &token, &project(44_100)),
-            Err(StorageError::Conflict { path }) if path == target
-        ));
+        let conflict = replace_existing(&target, &token, &project(44_100));
+        assert!(matches!(&conflict, Err(StorageError::Conflict { path }) if *path == target));
+        let message = conflict
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        let message = crate::text::plain(&message);
+        assert!(message.starts_with(&format!(
+            "project changed outside hex at {}",
+            target.display()
+        )));
+        for step in ["use save as", "reopen the original", "compare"] {
+            assert!(message.contains(step), "{message:?} must name {step:?}");
+        }
+        let app_text = message.replace(&target.display().to_string(), "");
+        assert_eq!(app_text, app_text.to_lowercase());
         assert_eq!(
             fs::read(&target).expect("unchanged external content"),
             changed
@@ -996,12 +1011,17 @@ mod tests {
         save_new(&actual, &original).expect("actual project");
         std::os::unix::fs::symlink(&actual, &target_link).expect("target symlink");
         let (_, token) = load_with_token(&target_link).expect("token from linked load");
+        let refused = replace_existing(&target_link, &token, &project(44_100));
         assert!(matches!(
-            replace_existing(&target_link, &token, &project(44_100)),
-            Err(StorageError::Invalid(
-                "project replacement refuses symbolic-link targets"
-            ))
+            &refused,
+            Err(StorageError::Invalid(reason)) if *reason == SYMLINK_TARGET_REFUSAL
         ));
+        let message = refused
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.contains("symbolic link") && message.contains("use save as"));
+        assert_eq!(message, message.to_lowercase());
         assert_eq!(fs::read_link(&target_link).expect("link stays"), actual);
         assert_eq!(load(&actual).expect("real target unchanged"), original);
 
@@ -1012,7 +1032,9 @@ mod tests {
         std::os::unix::fs::symlink("external", &sidecar).expect("sidecar symlink");
         assert!(matches!(
             replace_existing(&normal, &normal_token, &project(44_100)),
-            Err(StorageError::Invalid(reason)) if reason.contains("recovery sidecar is a symbolic link")
+            Err(StorageError::Invalid(reason))
+                if reason.contains("recovery sidecar is a symbolic link")
+                    && reason.contains("use save as")
         ));
         assert_eq!(
             fs::read_link(&sidecar).expect("sidecar link stays"),
