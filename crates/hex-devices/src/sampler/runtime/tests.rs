@@ -164,7 +164,9 @@ fn capacity_refusal_and_speculative_rollback_leave_actual_pair_unchanged() {
     process(&mut runtime, &[on(0, 1, 60)], &mut committed, &resources);
     assert_eq!(speculative, committed);
     assert_eq!(committed, [[1.0; 2], [3.0; 2]]);
-    // Equal-offset gate-off frees a zero-release slot before the next onset.
+    // No release is zero: an equal-offset gate-off makes the held voice
+    // stealable, so the next onset takes its slot while the old voice
+    // continues its floored release under the steal declick.
     committed.fill([0.0; 2]);
     process(
         &mut runtime,
@@ -172,7 +174,10 @@ fn capacity_refusal_and_speculative_rollback_leave_actual_pair_unchanged() {
         &mut committed,
         &resources,
     );
-    assert_eq!(committed, [[1.0; 2], [3.0; 2]]);
+    let release = crate::sampler::envelope::release_floor_frames(8_000);
+    let fade = prepared.steal_fade_frames() as f64;
+    let stolen = 7.0 * release_level(1, release) * (1.0 - 1.0 / fade);
+    assert_frames_near(&committed, &[[1.0 + 5.0; 2], [3.0 + stolen; 2]]);
     assert!(!runtime.committed_is_quiescent());
     runtime.reset();
     assert!(runtime.committed_is_quiescent());
@@ -338,11 +343,17 @@ fn preparation_and_pair_caller_limits_refuse_without_rendering() {
         );
     }
     let prepared = bound.prepare_runtime_on_control(32, 1024, &tuning).unwrap();
+    // The declared tail always includes the release floor, even when the
+    // authored release is zero; a zero-tail host refuses below.
+    assert_eq!(
+        prepared.max_release_tail_frames(),
+        crate::sampler::envelope::release_floor_frames(8_000)
+    );
     let limits = NativeInstrumentRuntimeLimits {
         max_pair_bytes: prepared.declared_twin_bytes() * 2,
         max_events_per_block: 1024,
         max_active_occurrences: 32,
-        max_tail_frames: 0,
+        max_tail_frames: prepared.max_release_tail_frames(),
     };
     assert!(NativeInstrumentRuntimePair::new(&prepared, limits).is_ok());
     for refused in [
@@ -356,6 +367,14 @@ fn preparation_and_pair_caller_limits_refuse_without_rendering() {
         },
         NativeInstrumentRuntimeLimits {
             max_active_occurrences: 31,
+            ..limits
+        },
+        NativeInstrumentRuntimeLimits {
+            max_tail_frames: limits.max_tail_frames - 1,
+            ..limits
+        },
+        NativeInstrumentRuntimeLimits {
+            max_tail_frames: 0,
             ..limits
         },
     ] {
@@ -696,7 +715,17 @@ fn gain_batch_can_cover_more_incoming_identities_than_simultaneously_active_voic
         )
         .unwrap();
     runtime.commit_block();
-    assert_eq!(output, [[0.5; 2]; 7]);
+    // Every released voice is stolen into the declick pool with its gain
+    // frozen at the steal, so the whole mix is the unity-gain mix halved.
+    let mut unity = [[0.0; 2]; 7];
+    process(&mut pair(&prepared), &events, &mut unity, &resources);
+    assert!(
+        unity[0][0] > 1.0,
+        "released voices still sound while stolen"
+    );
+    for (actual, unity) in output.iter().zip(unity) {
+        assert_eq!(*actual, [unity[0] * 0.5, unity[1] * 0.5]);
+    }
 }
 
 #[test]
@@ -1326,6 +1355,7 @@ fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
     let mut runtime = SamplerRuntime {
         prepared,
         active: [None; MAX_SAMPLER_RUNTIME_VOICES],
+        fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
     };
     runtime.active[0] = Some(ActiveVoice {
         occurrence: 7,
@@ -1345,3 +1375,6 @@ fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
         (age, position, None)
     );
 }
+
+mod release_floor;
+mod steal;

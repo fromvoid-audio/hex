@@ -797,11 +797,19 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             .command_with_ticket(PlaybackCommand::Play)
             .unwrap();
     });
-    let mut sample = [[0.0; 2]; 1];
-    backend.render(&mut sample).unwrap();
+    // Resume from a nonzero cursor ramps in (128 frames at 48 kHz, rate
+    // scaled; 257 frames cover up to 96 kHz). The prerolled voice must sound
+    // from the first frame and settle at its exact level after the ramp.
+    let mut ramp = [[0.0; 2]; 257];
+    backend.render(&mut ramp).unwrap();
+    assert!(
+        ramp[0][0] > 0.0 && ramp.windows(2).all(|pair| pair[0][0] <= pair[1][0]),
+        "prerolled sampler history must remain playable through the ramp-in: {:?}",
+        &ramp[..4]
+    );
     assert_eq!(
-        sample, [[0.25; 2]; 1],
-        "prerolled sampler history must remain playable"
+        ramp[256], [0.25; 2],
+        "prerolled sampler history must settle at its exact level"
     );
     hold.store(true, std::sync::atomic::Ordering::Release);
     editor.update(cx, |view, cx| {

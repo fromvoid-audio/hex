@@ -303,7 +303,7 @@ impl EditorView {
         };
         match self.service.submit(request) {
             Ok(()) => {
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.worker_submitted();
                 self.pending_restart_request = Some((project_generation, request_id));
                 self.status = "preparing audio output".into();
                 true
@@ -1103,6 +1103,16 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if self.state.is_none() {
+                        let reason = self
+                            .service
+                            .startup_failure()
+                            .unwrap_or("project worker stopped before loading");
+                        visible_change |= replace_error(
+                            &mut self.error,
+                            &format!("{reason} · restart hex to try again"),
+                        );
+                    }
                     self.midi_service_disconnected();
                     self.gain_take_service_disconnected();
                     if self.cancel_new_preparation() {
@@ -1164,10 +1174,12 @@ impl EditorView {
                 let gain_take_request = self.pending_gain_take_matches(&request);
                 let device_automation_request = self.pending_device_automation_matches(&request);
                 let time_copy_request = self.pending_time_copy_matches(&request);
+                let import_intent = super::truncated_import::ImportIntent::capture(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
                         self.worker_requests_pending =
                             self.worker_requests_pending.saturating_add(1);
+                        self.truncated_import_submitted(import_intent);
                         if time_copy_request {
                             self.time_copy_submitted();
                         }
@@ -2293,6 +2305,8 @@ impl EditorView {
         self.audio_events_request_complete(&event);
         self.clip_loop_request_complete(&event);
         self.clip_move_request_complete(&event);
+        self.truncated_import
+            .observe(self.project_generation, &event);
         self.section_request_complete(&event);
         self.track_reorder_complete(&event);
         self.midi_drag_request_complete(&event);
@@ -3249,6 +3263,7 @@ impl EditorView {
     }
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
+        self.wake_poll();
         if self.update_preparing() {
             self.error = Some("cancel update before editing".into());
             return false;
@@ -3304,6 +3319,23 @@ impl EditorView {
             } else {
                 "finish or cancel gain recording before another project action".into()
             });
+            return false;
+        }
+        if self.gain_lane.draft.is_some() && matches!(&request, Request::Edit(_)) {
+            self.error = Some("finish or cancel the gain point gesture before editing".into());
+            return false;
+        }
+        if self.automation_view.devices.point_draft_active() && matches!(&request, Request::Edit(_))
+        {
+            self.error =
+                Some("finish or cancel the automation point gesture before editing".into());
+            return false;
+        }
+        if matches!(&request, Request::Edit(_))
+            && (self.gain_lane.numeric_draft_active()
+                || self.sampler_parameter.numeric_draft_active())
+        {
+            self.error = Some("finish or cancel the numeric draft before editing".into());
             return false;
         }
         #[cfg(test)]
@@ -3473,6 +3505,7 @@ impl EditorView {
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
                 | Request::ImportToSession { .. }
+                | Request::RecoverTruncatedImport(_)
                 | Request::RelinkMedia(_)
                 | Request::Open(_)
                 | Request::OpenWith { .. }
@@ -3579,9 +3612,11 @@ impl EditorView {
         let gain_request = self.pending_gain_matches(&request);
         let gain_take_request = self.pending_gain_take_matches(&request);
         let device_automation_request = self.pending_device_automation_matches(&request);
+        let import_intent = super::truncated_import::ImportIntent::capture(&request);
         match self.service.submit(request) {
             Ok(()) => {
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.worker_submitted();
+                self.truncated_import_submitted(import_intent);
                 if resize_request {
                     self.trim_request_submitted();
                 }
@@ -3662,6 +3697,7 @@ impl EditorView {
     }
 
     pub(super) fn request_seek(&mut self, frame: u64) {
+        self.wake_poll();
         self.latency_rebuild = None;
         if self.section_install_pending() {
             self.error = Some("applying edit · wait for audio".into());
@@ -3904,6 +3940,7 @@ impl EditorView {
         command: hex_engine::SessionPlaybackCommand,
         revision: u64,
     ) {
+        self.wake_poll();
         self.invalidate_prepared_seek();
         if !matches!(
             command,
@@ -4010,6 +4047,7 @@ impl EditorView {
     }
 
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
+        self.wake_poll();
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
             self.latency_rebuild = None;
             self.sampler_edit_resume = None;

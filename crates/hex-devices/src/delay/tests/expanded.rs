@@ -323,3 +323,141 @@ fn each_lfo_wave_has_an_effective_morph_control() {
         );
     }
 }
+/// FNV-1a over the exact output bits, pinned from the pre-#3923 per-lane
+/// gain computation so hoisting it stays bit-identical.
+fn bit_hash(frames: &[StereoFrame]) -> u64 {
+    frames
+        .iter()
+        .flatten()
+        .flat_map(|sample| sample.to_bits().to_le_bytes())
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
+}
+#[test]
+fn mix_gains_are_bit_identical_through_a_dry_wet_glide() {
+    let input: Vec<_> = (0..2000)
+        .map(|i| {
+            let x = ((i * 7919) % 1013) as f32 / 1013.0 - 0.5;
+            [x, -0.6 * x]
+        })
+        .collect();
+    let mut hashes = Vec::new();
+    for equal_loudness in [true, false] {
+        let settings = |mix: f32| {
+            state(&[
+                (EQUAL_LOUDNESS, ParameterValue::Bool(equal_loudness)),
+                (DRY_WET, ParameterValue::Float(mix)),
+                (FEEDBACK, ParameterValue::Float(0.5)),
+            ])
+        };
+        let mut old = owned(8000, &settings(0.2));
+        let mut warm = input[..300].to_vec();
+        old.begin_block();
+        old.process_block(&mut warm, &EMPTY_DEVICE_RESOURCES);
+        old.commit_block();
+        let new = settings(0.9);
+        let [mut a, mut b] = [owned(8000, &new), owned(8000, &new)];
+        assert!(a.can_inherit_from(old.as_ref()));
+        a.inherit_from(old.as_ref());
+        b.inherit_from(old.as_ref());
+        let run = |runtime: &mut dyn OwnedProcessorRuntime, partitions: &[usize]| {
+            let mut out = input.clone();
+            let mut start = 0;
+            for n in partitions.iter().cycle() {
+                if start == out.len() {
+                    break;
+                }
+                let end = (start + n).min(out.len());
+                runtime.begin_block();
+                runtime.process_block(&mut out[start..end], &EMPTY_DEVICE_RESOURCES);
+                runtime.commit_block();
+                start = end;
+            }
+            out
+        };
+        let whole = run(a.as_mut(), &[2000]);
+        assert_eq!(whole, run(b.as_mut(), &[1, 37, 256]));
+        hashes.push(bit_hash(&whole));
+    }
+    assert_eq!(hashes, [0x2d82_076c_5306_2e2b, 0xaaf8_7a92_bfc1_1756]);
+}
+
+#[test]
+fn mix_law_switch_preserves_baseline_output_bits() {
+    let input: Vec<_> = (0..600)
+        .map(|i| {
+            let x = ((i * 137) % 257) as f32 / 257.0 - 0.5;
+            [x, -0.4 * x]
+        })
+        .collect();
+    let mut hashes = Vec::new();
+    for from in [false, true] {
+        let settings = |equal| {
+            state(&[
+                (EQUAL_LOUDNESS, ParameterValue::Bool(equal)),
+                (DRY_WET, ParameterValue::Float(0.37)),
+            ])
+        };
+        let mut old = owned(8000, &settings(from));
+        let mut warm = input[..200].to_vec();
+        old.begin_block();
+        old.process_block(&mut warm, &EMPTY_DEVICE_RESOURCES);
+        old.commit_block();
+        let mut next = owned(8000, &settings(!from));
+        next.inherit_from(old.as_ref());
+        let mut result = input.clone();
+        for chunk in result.chunks_mut(37) {
+            next.begin_block();
+            next.process_block(chunk, &EMPTY_DEVICE_RESOURCES);
+            next.commit_block();
+        }
+        hashes.push(bit_hash(&result));
+    }
+    assert_eq!(
+        hashes,
+        [2_796_805_341_501_958_959, 10_884_490_847_827_003_050]
+    );
+}
+
+#[test]
+fn block_bypass_matches_single_frame_history_across_tempo_change() {
+    let s = state(&[
+        (FEEDBACK, ParameterValue::Float(0.6)),
+        (SMOOTHING, ParameterValue::Choice(0)),
+    ]);
+    for size in [1, 64, 256] {
+        let mut block = owned(8000, &s);
+        let mut reference = owned(8000, &s);
+        let input: Vec<_> = (0..size)
+            .map(|i| [(i + 1) as f32 / 256.0, -((i + 1) as f32) / 512.0])
+            .collect();
+        let clock = |start| Clock {
+            start,
+            breakpoint: size / 2,
+            first: 90_000_000,
+            second: 150_000_000,
+        };
+        let mut dry = input.clone();
+        block.begin_block();
+        reference.begin_block();
+        block.process_bypassed_block_with_clock(&mut dry, Some(&clock(0)), &EMPTY_DEVICE_RESOURCES);
+        for (offset, frame) in input.iter().enumerate() {
+            let mut discarded = [*frame];
+            reference.process_block_with_clock(
+                &mut discarded,
+                Some(&clock(offset)),
+                &EMPTY_DEVICE_RESOURCES,
+            );
+        }
+        block.commit_block();
+        reference.commit_block();
+        assert_eq!(dry, input);
+        let tail = [[0.0; 2]; 4000];
+        let [a, b] = [block, reference].map(|mut runtime| {
+            musical(runtime.as_mut(), &tail, &[64], 0, 150_000_000, 150_000_000)
+        });
+        assert_eq!(a, b);
+        assert!(a.iter().any(|frame| *frame != [0.0; 2]));
+    }
+}

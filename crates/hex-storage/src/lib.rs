@@ -3,7 +3,8 @@
 //! source-bound automation recording drafts. Drafts are not canonical lane references.
 //!
 //! # Dependencies
-//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2.
+//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2, plus
+//! libc errno/flags and rustix's safe exclusive rename for create-new publication.
 //!
 //! # Does not own
 //! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
@@ -13,6 +14,7 @@ mod files;
 mod journal;
 pub mod preset;
 pub mod project_name;
+mod publication;
 pub mod text;
 pub mod tuning_library;
 pub use journal::{
@@ -34,13 +36,30 @@ pub use replacement::{
 };
 use std::{fmt, io, path::PathBuf};
 
-/// Current saved-project schema; independent of the application version.
-/// Schema64 admits sinc v2 media conversion metadata; earlier schemas carry only
-/// identity and sinc v1 assets and migrate unchanged.
+/// Current saved-project schema for projects without sinc v2 media; independent
+/// of the application version. Such projects keep the layout older readers open.
 /// Schema63 records automatic track names; earlier names migrate as user-set.
 /// Schema62 adds independent MIDI clip gain; schema61 migrates at unity.
 /// Schema59 is a reserved incompatible development layout and remains unsupported.
-pub const CURRENT_SCHEMA_VERSION: u32 = 64;
+pub const CURRENT_SCHEMA_VERSION: u32 = 63;
+
+/// Schema written only for projects containing `SINC_CONVERSION_V2` assets:
+/// schema63 plus each catalog row's actual conversion version. Readers before
+/// schema64 refuse it as newer, so saving one over an older file needs consent.
+pub const SINC_V2_SCHEMA_VERSION: u32 = 64;
+
+/// Newest schema this build opens; anything above it is refused as newer.
+pub const NEWEST_SCHEMA_VERSION: u32 = SINC_V2_SCHEMA_VERSION;
+
+/// Schema [`encode`] writes for `project`: [`SINC_V2_SCHEMA_VERSION`] when it
+/// contains sinc v2 media, otherwise [`CURRENT_SCHEMA_VERSION`].
+pub fn schema_version_for(project: &Project) -> u32 {
+    if schema::conversion_v2::contains_v2(project) {
+        SINC_V2_SCHEMA_VERSION
+    } else {
+        CURRENT_SCHEMA_VERSION
+    }
+}
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -66,6 +85,8 @@ pub enum JournalChange {
 pub enum StorageError {
     Io(io::Error),
     Json(serde_json::Error),
+    /// Another owner currently holds the automation draft's exclusive lock.
+    AutomationDraftBusy(io::Error),
     /// The operation's visible state is retained; lock cleanup failed.
     JournalLockRelease {
         path: PathBuf,
@@ -117,6 +138,9 @@ impl fmt::Display for StorageError {
                 Ok(())
             }
             Self::Io(error) => write!(f, "project file error: {error}"),
+            Self::AutomationDraftBusy(error) => {
+                write!(f, "automation draft is busy; try again: {error}")
+            }
             Self::Json(error) => write!(f, "invalid project json: {error}"),
             Self::Invalid(reason) => f.write_str(reason),
             Self::Conflict { path } => {
@@ -153,7 +177,7 @@ impl std::error::Error for StorageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::JournalLockRelease { source, .. } => Some(source),
-            Self::Io(e) => Some(e),
+            Self::Io(e) | Self::AutomationDraftBusy(e) => Some(e),
             Self::Json(e) => Some(e),
             Self::Invalid(_) | Self::Conflict { .. } => None,
             Self::PublishedButNotDurable { source, .. }
@@ -181,13 +205,18 @@ impl From<serde_json::Error> for StorageError {
 /// activation, including retained roots (schema57), and bounded nested audio
 /// sources (schema58), consistent shared audio event projections (schema60),
 /// independent audio event gain (schema61), MIDI clip gain (schema62),
-/// automatic track name origin (schema63), and sinc v2 media conversion
-/// metadata (schema64).
+/// and automatic track name origin (schema63). Only a project containing sinc
+/// v2 media is written as schema64 (see [`schema_version_for`]); every other
+/// project stays schema63, byte-compatible with older readers.
 /// Schema59 is reserved and explicitly refused.
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::conversion_v2::encode(project)?)
+    if schema::conversion_v2::contains_v2(project) {
+        encode_document(&schema::conversion_v2::encode(project)?)
+    } else {
+        encode_document(&schema::track_name_origin::encode(project)?)
+    }
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -349,6 +378,9 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// violating current model invariants refuse rather than lose musical data.
 /// Newer/unknown fields, duplicate keys and malformed inventories refuse.
 /// Saving uses the current schema through existing atomic publication/recovery.
+/// From schema30 upward the migration chain parses the bytes once (after one
+/// duplicate-field check) and each frozen layer adapts that single value in
+/// place; layers never re-serialize the document for the next one.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     #[derive(serde::Deserialize)]
     struct CurrentHeader<'a> {
@@ -360,8 +392,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
-        CURRENT_SCHEMA_VERSION => schema::conversion_v2::decode(bytes),
-        63 => schema::track_name_origin::decode(bytes),
+        SINC_V2_SCHEMA_VERSION => schema::conversion_v2::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::track_name_origin::decode(bytes),
         62 => schema::midi_clip_gain::decode(bytes),
         61 => schema::event_gain::decode(bytes),
         60 => schema::alias_projection_v60::decode(bytes),
@@ -394,14 +426,16 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         37 => schema::DocumentV11::decode(bytes),
         1..=33 => schema::legacy::decode(bytes, header.version),
         34..=36 => schema::tuning::decode_version(bytes, header.version),
-        version if version > CURRENT_SCHEMA_VERSION => Err(StorageError::Invalid(
+        version if version > NEWEST_SCHEMA_VERSION => Err(StorageError::Invalid(
             "project uses a newer schema; open it with a newer hex version; original file unchanged",
         )),
         _ => Err(StorageError::Invalid(
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
-    if header.version < 64 && schema::conversion_v2::require_v1_conversions(&project).is_err() {
+    if header.version < SINC_V2_SCHEMA_VERSION
+        && schema::conversion_v2::require_v1_conversions(&project).is_err()
+    {
         return Err(StorageError::Invalid(
             "historical project schema contains unsupported media conversion metadata; original file unchanged",
         ));
