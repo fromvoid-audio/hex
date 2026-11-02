@@ -104,11 +104,7 @@ impl MeterMap {
             let current = points[index];
             let delta = current.beat.raw() - previous.beat.raw();
             let previous_bar_length = previous.meter.bar_length_raw();
-            let complete = delta / previous_bar_length;
-            let fragment = u64::from(delta % previous_bar_length != 0);
-            let bars = complete
-                .checked_add(fragment)
-                .ok_or(Invalid("meter bar numbering overflow"))?;
+            let bars = delta.div_ceil(previous_bar_length);
             let first_bar = first_bar_at_point[index - 1]
                 .checked_add(bars)
                 .ok_or(Invalid("meter bar numbering overflow"))?;
