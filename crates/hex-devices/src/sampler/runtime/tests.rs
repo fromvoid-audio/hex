@@ -1326,6 +1326,7 @@ fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
     let mut runtime = SamplerRuntime {
         prepared,
         active: [None; MAX_SAMPLER_RUNTIME_VOICES],
+        fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
     };
     runtime.active[0] = Some(ActiveVoice {
         occurrence: 7,
@@ -1345,3 +1346,5 @@ fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
         (age, position, None)
     );
 }
+
+mod steal;
