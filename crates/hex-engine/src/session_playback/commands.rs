@@ -984,6 +984,7 @@ impl SessionPlayback {
                                 &mut next_order,
                                 ReleaseEntry {
                                     source_origin,
+                                    timeline: ReleaseTimeline::Arrangement,
                                     monitor_offset: 0,
                                     location: match ReleaseLocation::new(audio_index, None) {
                                         Ok(location) => location,
@@ -1129,6 +1130,7 @@ impl SessionPlayback {
                             &mut self.release_order_scratch,
                             ReleaseEntry {
                                 source_origin,
+                                timeline: ReleaseTimeline::Session,
                                 monitor_offset: 0,
                                 location: ReleaseLocation::new(audio_index, None)?,
                                 track_id: route.id,

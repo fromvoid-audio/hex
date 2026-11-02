@@ -1,5 +1,5 @@
 use super::*;
-use crate::oversampling::spectrum::largest_inharmonic_db;
+use crate::oversampling::spectrum::inharmonic_energy_db;
 use hex_lattice::{DevicePreparationContext, EMPTY_DEVICE_RESOURCES, TuningTable};
 
 fn state() -> NativeDeviceState {
@@ -310,10 +310,10 @@ fn filter_preview_matches_measured_runtime_band_response() {
     }
 }
 
-/// Pulse #3958: a 7 kHz sine at full drive and 48 kHz keeps every
-/// non-harmonic (aliased) component below -60 db relative to the fundamental.
+/// Pulse #3958: a 7 kHz sine at full drive and 48 kHz keeps summed
+/// non-harmonic (aliased) energy below -60 db relative to the fundamental.
 /// The former 4x linear-interpolation path measured -23.1 db (tone 0.5) and
-/// -24.6 db (tone 1.0).
+/// -24.6 db (tone 1.0) for its largest single component.
 #[test]
 fn full_drive_7khz_sine_aliasing_stays_below_minus_60_db() {
     let rate = 48_000;
@@ -322,7 +322,10 @@ fn full_drive_7khz_sine_aliasing_stays_below_minus_60_db() {
         let mut s = patch(&state(), parameter::DRIVE, 1.0);
         s = patch(&s, parameter::DRY_WET, 1.0);
         s = patch(&s, parameter::TONE, tone);
-        let worst = largest_inharmonic_db(&render(&s, rate, &input), 7000.0, rate);
-        assert!(worst < -60.0, "tone {tone}: inharmonic peak {worst:.1} db");
+        let energy = inharmonic_energy_db(&render(&s, rate, &input), 7000.0, rate);
+        assert!(
+            energy < -60.0,
+            "tone {tone}: inharmonic energy {energy:.1} db"
+        );
     }
 }

@@ -552,6 +552,63 @@ mod ui_tests {
         editor.update(&mut visual, |view, _| view.audio = None);
     }
     #[gpui::test]
+    fn failed_session_startup_replaces_loading_with_a_visible_error(cx: &mut TestAppContext) {
+        use super::super::EditorView;
+        use gpui::AppContext;
+        struct OfflineSink;
+        impl hex_session::service::WorkerAudioSink for OfflineSink {
+            fn initialize(&mut self, _: &std::sync::atomic::AtomicBool) -> Result<u32, String> {
+                Err("fixture device unavailable".into())
+            }
+            fn canonical_changed(
+                &mut self,
+                _: std::sync::Arc<hex_session::service::CanonicalAudioSourceSnapshot>,
+            ) {
+            }
+            fn poll(&mut self) {}
+            fn close(&mut self) {}
+        }
+        // History capacity 0 makes the worker's session construction fail.
+        let service =
+            hex_session::service::Service::with_audio_sink(0, 0, None, Box::new(OfflineSink))
+                .unwrap();
+        let handle = *cx.add_window(|_, _| gpui::Empty);
+        let editor = cx
+            .update_window(handle, |_, window, cx| {
+                window.replace_root(cx, |window, cx| {
+                    EditorView::new(window, cx, service, Err("offline startup test".into()))
+                })
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let error = editor.update(&mut visual, |v, cx| {
+                if v.tick(cx) {
+                    cx.notify();
+                }
+                v.error.as_deref().map(str::to_owned)
+            });
+            if let Some(error) = error {
+                assert_eq!(
+                    error,
+                    "project session could not start: project edit failed: \
+                     history capacity must be 1..128 · restart hex to try again"
+                );
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "startup failure never surfaced"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| assert!(v.state.is_none()));
+        assert!(visual.debug_bounds("project loading").is_none());
+        assert!(visual.debug_bounds("editor-status-message").is_some());
+    }
+    #[gpui::test]
     fn compact_toolbar_startup_loading_and_real_service_ready_keep_both_indicators(
         cx: &mut TestAppContext,
     ) {
