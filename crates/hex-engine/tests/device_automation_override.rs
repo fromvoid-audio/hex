@@ -134,21 +134,30 @@ fn oracle(kind: usize, frame: usize, from: f64, to: f64, transition: bool, age: 
     };
     match kind {
         0 => SIGNAL.map(|v| v * value as f32),
-        1 => SIGNAL.map(|dry| {
-            let x = f64::from(dry) * 10.0_f64.powf(value / 20.0);
-            let wet = if x.abs() <= 0.5 {
-                x
-            } else {
-                x.signum() * (1.0 - 0.25 / x.abs())
-            };
-            (f64::from(dry) * 0.5 + wet * 0.5) as f32
-        }),
+        1 => SIGNAL.map(|dry| saturate(dry, 10.0_f64.powf(value / 20.0))),
         _ => std::array::from_fn(|channel| {
             let phase = frame as f64 / f64::from(RATE) + channel as f64 * 0.5;
             let sine = (1.0 + (std::f64::consts::TAU * phase).sin()) * 0.5;
             (f64::from(SIGNAL[channel]) * (1.0 - value + value * sine)) as f32
         }),
     }
+}
+/// Saturator's soft clip at half dry/wet for one drive gain.
+fn saturate(dry: f32, drive: f64) -> f32 {
+    let x = f64::from(dry) * drive;
+    let wet = if x.abs() <= 0.5 {
+        x
+    } else {
+        x.signum() * (1.0 - 0.25 / x.abs())
+    };
+    (f64::from(dry) * 0.5 + wet * 0.5) as f32
+}
+/// A direct Drive edit inherited from a live runtime ramps the linear gain
+/// over 5 ms (40 frames at `RATE`), even while Dry/Wet stays automated.
+fn saturator_direct_ramp(from_db: f64, to_db: f64, age: usize) -> [f32; 2] {
+    let (from, to) = (10.0_f64.powf(from_db / 20.0), 10.0_f64.powf(to_db / 20.0));
+    let drive = from + (to - from) * ((age + 1) as f64 / 40.0).min(1.0);
+    SIGNAL.map(|dry| saturate(dry, drive))
 }
 
 #[test]
@@ -272,6 +281,9 @@ fn native_provider_read_manual_base_and_reenable_preserve_independent_targets_an
         candidate.render(&mut block).unwrap();
         let expected: Vec<_> = (0..BLOCK)
             .map(|i| {
+                if kind == 1 {
+                    return saturator_direct_ramp(f64::from(authored), f64::from(manual), i);
+                }
                 oracle(
                     kind,
                     BLOCK + i,
@@ -282,6 +294,11 @@ fn native_provider_read_manual_base_and_reenable_preserve_independent_targets_an
                 )
             })
             .collect();
+        if kind == 1 {
+            // The ramp is audible, then lands exactly on the manual base.
+            assert_ne!(expected[0], expected[39]);
+            assert_eq!(expected[39], expected[BLOCK - 1]);
+        }
         close(&block, &expected);
         f.editor
             .execute(Command::SetDeviceAutomationReadSelection {
