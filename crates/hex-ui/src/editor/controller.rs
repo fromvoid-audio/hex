@@ -3323,6 +3323,24 @@ impl EditorView {
             self.error = Some("finish or cancel the numeric draft before editing".into());
             return false;
         }
+        if matches!(
+            &request,
+            Request::GainLane { .. }
+                | Request::DeviceAutomation { .. }
+                | Request::DeviceAutomationControl { .. }
+                | Request::SamplerEdit(_)
+        ) {
+            let gain_conflict = (self.gain_lane.draft.is_some()
+                || self.gain_lane.numeric_draft_active())
+                && !self.pending_gain_matches(&request);
+            let automation_conflict = self.automation_view.devices.point_draft_active()
+                && !self.pending_device_automation_matches(&request);
+            let sampler_conflict = self.sampler_parameter.numeric_draft_active();
+            if gain_conflict || automation_conflict || sampler_conflict {
+                self.error = Some("finish or cancel the local draft before editing".into());
+                return false;
+            }
+        }
         #[cfg(test)]
         match &request {
             Request::CopyTimeRange(_) => self.last_time_request = Some(("copy", None)),

@@ -449,6 +449,15 @@ pub(in crate::editor) mod native {
                 hex_project::Command::Mute { track, muted: true }
             )));
             assert!(view.gain_numeric_editing(cx));
+            let generation = view.project_generation;
+            let revision = view.state.as_ref().unwrap().revision;
+            assert!(
+                !view.enqueue(hex_session::service::Request::DeviceAutomationControl {
+                    project_generation: generation,
+                    revision,
+                    edit: hex_session::service::DeviceAutomationControlEdit::Reenable,
+                })
+            );
             assert_eq!(
                 view.gain_lane
                     .gain
