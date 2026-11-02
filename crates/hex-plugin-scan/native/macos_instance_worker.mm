@@ -5,9 +5,11 @@
 #include "macos_instance.hpp"
 #include "macos_instance_wire.hpp"
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <fcntl.h>
+#include <poll.h>
 #include <optional>
 #include <thread>
 
@@ -18,6 +20,23 @@ enum Failure : uint32_t { Configuration=1,Admission=2,ClassFailure=3,Setup=4,Pre
     Processing=7,ProtocolFailure=8,Cancelled=9,Teardown=10,HostControl=11,Unexpected=12,InstanceOpen=13,Restore=14,
     Quiescence=15,Resume=16 };
 struct Refusal {}; // Expected local/SDK return-code refusal, never an exception from foreign code.
+// Main-lane wait after a published failure: at most `milliseconds` per call,
+// never dispatching foreign callbacks. Returns true once the peer has closed
+// the socket. Unread request bytes stay for the worker; their readiness
+// sleeps rather than turning the wait into a spin.
+constexpr int failed_main_wait_ms=5;
+bool wait_for_peer_close(int channel) {
+    pollfd descriptor{channel,POLLIN,0};
+    const int ready=::poll(&descriptor,1,failed_main_wait_ms);
+    if(ready==0) return false;
+    if(ready>0) {
+        uint8_t byte=0;const auto peer=::recv(channel,&byte,1,MSG_PEEK|MSG_DONTWAIT);
+        // A closed peer with unread bytes still reports hangup.
+        if(peer==0 || (descriptor.revents&POLLHUP)) return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(failed_main_wait_ms));
+    return false;
+}
 struct Module {
     CFBundleRef bundle=nullptr;IPluginFactory* factory=nullptr;
     bool native_attempted=false,loaded=false,entered=false,opened=false;bool (*exit)()=nullptr;
@@ -606,7 +625,12 @@ int main(int argc,char** argv) {
                     if(worker_failure.load()) {
                         // The joining worker/guardian owns terminal progress.
                         // Do not dispatch more foreign callbacks after failure.
-                        std::this_thread::yield();continue;
+                        // Block briefly instead of spinning, and retire on EOF
+                        // unless the worker itself is receiving (it then sees
+                        // EOF and finishes); a hung DSP/stop never returns.
+                        if(wait_for_peer_close(channel) && phase.load(std::memory_order_acquire)!=1 &&
+                            !done.load(std::memory_order_acquire)) std::_Exit(Cancelled);
+                        continue;
                     }
                     // The worker owns active response framing. Publishing a
                     // main-lane failure lets it finish any current response
