@@ -12,6 +12,9 @@ pub struct VoiceCoefficients {
     pub(super) channels: SampleChannels,
     pub(super) region: Region,
     pub(super) loop_offsets: Option<(usize, usize)>,
+    /// Effective seam crossfade in source frames (offset order). Zero is a
+    /// hard seam; otherwise it never exceeds the loop length or its pre-roll.
+    pub(super) loop_crossfade: usize,
     pub(super) reverse: bool,
     pub(super) step: u64,
     /// Band-limited reconstruction above unity rate; derived from `step`.
@@ -125,6 +128,9 @@ impl VoiceCoefficients {
         let Some(value) = self.source_value::<CHECK_FINITE>(pcm, position) else {
             return [0.0; 2];
         };
+        let Some(value) = self.loop_crossfade_value::<CHECK_FINITE>(pcm, position, value) else {
+            return [0.0; 2];
+        };
         // Gain in f64 so finite f32 sources do not overflow. Saturation at
         // the representation boundary avoids NaN/Inf from otherwise valid
         // finite PCM and the bounded gain domain.
@@ -154,7 +160,10 @@ impl VoiceCoefficients {
             let start = start as u128 * ONE;
             if position >= end {
                 position = start + (position - end) % (end - start);
-                wrapped = true;
+                // With a seam crossfade, playback reached the loop start
+                // through the faded-in pre-roll, so band-limited taps before
+                // the loop start read that pre-roll, not the loop end.
+                wrapped = self.loop_crossfade == 0;
             }
         } else if position >= length as u128 * ONE {
             return None;
@@ -194,9 +203,47 @@ impl VoiceCoefficients {
         }))
     }
 
+    /// Classic loop seam crossfade (#4088). In the last `loop_crossfade`
+    /// frames of each loop pass, the reconstructed tail blends linearly into
+    /// the same-length pre-roll ending at the loop start, reconstructed by
+    /// the same linear or band-limited law at its own (unwrapped) position, so
+    /// the blend reaches the post-wrap source exactly at the seam. Preparation
+    /// bounds the length by the pre-roll, so the earlier position never
+    /// precedes the region. Off, or outside the fade, returns `direct` as is.
+    #[inline]
+    fn loop_crossfade_value<const CHECK_FINITE: bool>(
+        &self,
+        pcm: DeviceResourcePcm<'_>,
+        position: u128,
+        direct: [f64; 2],
+    ) -> Option<[f64; 2]> {
+        let Some((start, end)) = self.loop_offsets else {
+            return Some(direct);
+        };
+        if self.loop_crossfade == 0 {
+            return Some(direct);
+        }
+        let (start, end) = (start as u128 * ONE, end as u128 * ONE);
+        let phase = if position >= end {
+            start + (position - end) % (end - start)
+        } else {
+            position
+        };
+        let fade_start = end - self.loop_crossfade as u128 * ONE;
+        if phase < fade_start {
+            return Some(direct);
+        }
+        let pre_roll = self.source_value::<CHECK_FINITE>(pcm, phase - (end - start))?;
+        let weight = (phase - fade_start) as f64 / (self.loop_crossfade as u128 * ONE) as f64;
+        Some(std::array::from_fn(|channel| {
+            direct[channel] * (1.0 - weight) + pre_roll[channel] * weight
+        }))
+    }
+
     /// Pitched-up path; see `interpolation` for the law. Taps follow
     /// playback history: past a Classic loop end they continue at its start;
-    /// before the loop start of a wrapped pass they come from the loop end.
+    /// before the loop start of a wrapped pass they come from the loop end
+    /// (from the faded-in pre-roll when a seam crossfade is on).
     /// Other taps outside the region read silence.
     #[inline]
     fn band_limited<const CHECK_FINITE: bool>(
@@ -474,3 +521,6 @@ fn dot_stereo_rows_reversed(frames: &[[f32; 2]], lower: &[f32], upper: &[f32]) -
     }
     result
 }
+
+#[cfg(test)]
+mod tests;
