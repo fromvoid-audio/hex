@@ -329,6 +329,22 @@ pub trait NativeProcessorRuntime: StdAny + Send {
     fn can_retarget_parameters_from(&self, _previous: &dyn NativeProcessorRuntime) -> bool {
         false
     }
+    /// Bounded live-transition admission (Pulse #4178). True when this
+    /// candidate can take over `previous` (its committed runtime) only by
+    /// capturing more still-audible transitions, such as outgoing routing or
+    /// audition branches, than its fixed inline capacity holds. It is not an
+    /// incompatibility: the host must then refuse the WHOLE handoff before
+    /// any ownership mutation with a transient busy result and retry after
+    /// rendering advances `previous`. Never answer this by reporting a
+    /// history copy or retarget as unsupported, because the host treats those
+    /// as reset, detached-tail or fresh-runtime handoffs instead of a refusal.
+    /// It must become false once `previous` has rendered past its oldest
+    /// captured transition, and after `reset`. The query must be bounded,
+    /// allocation-free, infallible, lock-free and read-only. The default
+    /// (false) is correct for runtimes that never hold live transitions.
+    fn transition_busy_from(&self, _previous: &dyn NativeProcessorRuntime) -> bool {
+        false
+    }
     fn as_any(&self) -> &dyn StdAny;
     /// Optional, transient live-audition controls. These are audio-owned and
     /// deliberately excluded from persisted device state.
@@ -1370,6 +1386,27 @@ impl NativeRuntimeChain {
     /// runtime compatibility changed remain freshly reset on the candidate.
     pub fn can_inherit_from(&self, previous: &Self) -> bool {
         self.can_inherit_from_excluding_old_range(previous, 0..0)
+    }
+
+    /// Whether any stateful entry must defer a handoff from the same-identity
+    /// entry of `previous` until that committed runtime's live transitions
+    /// drain (Pulse #4178; see `NativeProcessorRuntime::transition_busy_from`).
+    /// Hosts check this during pure handoff preflight, before inheritance,
+    /// tail capture or reset classification, and refuse the whole handoff as
+    /// transient instead of choosing another history path. It is conservative
+    /// for entries a retained tail would keep. Bounded and allocation-free:
+    /// one identity scan per candidate entry, like `can_inherit_from`.
+    pub fn transition_busy_from(&self, previous: &Self) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.runtime.is_stateful()
+                && previous
+                    .entries
+                    .iter()
+                    .find(|old| {
+                        Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
+                    })
+                    .is_some_and(|old| entry.runtime.transition_busy_from(&old.runtime))
+        })
     }
 
     /// Preflight history inheritance while leaving a range of old chain entries
