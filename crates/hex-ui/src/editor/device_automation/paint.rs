@@ -631,6 +631,36 @@ impl EditorView {
             if click.len() > hex_project::MAX_DEVICE_AUTOMATION_POINTS_PER_LANE {
                 return false;
             }
+            // Adding points comes first: a plain blank press inserts the point
+            // and drags it, as before marquee selection; only Shift draws a band.
+            if !hex_widgets::MarqueeMode::starts(event.modifiers) {
+                if !self.capture_device_automation_pointer(target, window, cx) {
+                    return false;
+                }
+                let rest = click
+                    .iter()
+                    .copied()
+                    .filter(|point| point.beat != value.beat)
+                    .collect();
+                self.automation_view.devices.selected = Some(Selection::one(target, value.beat));
+                self.automation_view.devices.draft = Some(Draft {
+                    target,
+                    revision,
+                    points: click,
+                    group: vec![value],
+                    rest,
+                    collapse: false,
+                    initial: value,
+                    point: value,
+                    viewport,
+                    rect,
+                    origin: pos,
+                });
+                self.gain_lane.selected = None;
+                self.focus.focus(window);
+                cx.notify();
+                return true;
+            }
             let Some(band) = hex_widgets::Marquee::new(pos) else {
                 return false;
             };

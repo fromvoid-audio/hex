@@ -266,7 +266,7 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
                     gpui::Hsla::from(gpui::rgb(if select {
                         theme::color(theme::PaletteRole::Primary)
                     } else {
-                        0x000000
+                        theme::color(theme::PaletteRole::ClipOutline)
                     })),
                     "selection outline remains independent"
                 );

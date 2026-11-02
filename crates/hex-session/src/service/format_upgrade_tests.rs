@@ -1,6 +1,6 @@
 //! Control-worker consent preserves the older file until an explicit save.
 use super::*;
-use std::{fs, sync::atomic::AtomicU64, time::Duration};
+use std::{fs, sync::atomic::AtomicU64};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Files(PathBuf);
@@ -21,7 +21,10 @@ impl Drop for Files {
     }
 }
 fn next(service: &Service) -> Event {
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap()
 }
 fn request(service: &Service, request: Request) -> Event {
     service.submit(request).unwrap();
