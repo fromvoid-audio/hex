@@ -3,8 +3,8 @@
 //! The caret blinks in fixed ~500 ms steps. Each visible phase change is
 //! scheduled by one executor timer that notifies only the input entity, so an
 //! idle focused field costs two window frames per second instead of a frame loop.
-//! Moving or resizing the caret (typing, deleting, cursor motion) restarts the
-//! visible phase, so there is no blink gap right after a keystroke.
+//! Input activity or moving/resizing the caret restarts the visible phase,
+//! including edits that leave text and geometry unchanged.
 //!
 //! Selection, IME and source text stay with their input owners. Keyed state,
 //! including the pending timer, is dropped when that caret stops painting
@@ -22,6 +22,7 @@ const WAKE_SLACK: Duration = Duration::from_millis(1);
 struct Blink {
     epoch: Instant,
     anchor: Bounds<Pixels>,
+    activity: u64,
     /// Phase the pending timer wakes for, with the task that owns the wake.
     wake: Option<(u128, Task<()>)>,
 }
@@ -40,18 +41,26 @@ fn until_next_phase(elapsed: Duration) -> Duration {
     BLINK_PHASE.saturating_sub(into) + WAKE_SLACK
 }
 
-pub(crate) fn paint(mut block: PaintQuad, owner: EntityId, window: &mut Window, cx: &mut App) {
+pub(crate) fn paint(
+    mut block: PaintQuad,
+    owner: EntityId,
+    activity: u64,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let now = cx.background_executor().now();
     let anchor = block.bounds;
     let state = window.use_keyed_state(("text-block-caret", owner.as_u64()), cx, |_, _| Blink {
         epoch: now,
         anchor,
+        activity,
         wake: None,
     });
     let (current, elapsed, needs_wake) = state.update(cx, |blink, _| {
-        if blink.anchor != anchor {
+        if blink.anchor != anchor || blink.activity != activity {
             blink.epoch = now;
             blink.anchor = anchor;
+            blink.activity = activity;
             blink.wake = None;
         }
         let elapsed = now.saturating_duration_since(blink.epoch);

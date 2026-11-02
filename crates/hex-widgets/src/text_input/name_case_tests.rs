@@ -662,3 +662,47 @@ fn profile_text_selection(cx: &mut TestAppContext) {
         );
     }
 }
+
+#[gpui::test]
+fn same_position_input_restarts_hidden_caret(cx: &mut TestAppContext) {
+    let (handle, input) = fixture(cx, "x");
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_keystrokes("end");
+    visual.run_until_parked();
+    let caret = gpui::Background::from(gpui::rgb(config().style.accent)).opacity(0.5);
+    let is_visible = |visual: &mut VisualTestContext| {
+        visual
+            .rendered_filled_quads("clip-name-input")
+            .iter()
+            .any(|(_, fill)| *fill == caret)
+    };
+    assert!(is_visible(&mut visual));
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(510));
+    visual.run_until_parked();
+    assert!(!is_visible(&mut visual));
+    // Delete at the end changes neither the text nor the caret geometry.
+    visual.simulate_keystrokes("delete");
+    visual.run_until_parked();
+    assert!(is_visible(&mut visual));
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(510));
+    visual.run_until_parked();
+    assert!(!is_visible(&mut visual));
+    visual.simulate_keystrokes("right");
+    visual.run_until_parked();
+    assert!(is_visible(&mut visual));
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(510));
+    visual.run_until_parked();
+    assert!(!is_visible(&mut visual));
+    visual.update(|window, cx| input.update(cx, |input, cx| input.unmark_text(window, cx)));
+    visual.run_until_parked();
+    assert!(is_visible(&mut visual));
+    visual.update(|window, _| window.blur());
+    visual.run_until_parked();
+    assert!(!is_visible(&mut visual));
+}
