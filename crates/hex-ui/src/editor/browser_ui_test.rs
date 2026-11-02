@@ -3392,6 +3392,67 @@ fn browser_result_reset_cancels_preparing_and_playing_audition(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn browser_superseded_preview_preparations_are_cancelled(cx: &mut TestAppContext) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    std::fs::write(directory.0.join("second.wav"), mono_pcm_wav(16)).unwrap();
+    editor.update(&mut visual, |view, cx| {
+        view.refresh_browser_tree(cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, cx| {
+        // An audition still decoding when the selection moves on is cancelled.
+        let audition = Arc::new(AtomicBool::new(false));
+        view.browser.playback_in_flight = Some(Arc::clone(&audition));
+        view.browser.results_focused = false;
+        view.browser.selected_index = 0;
+        view.move_browser_selection(true, cx);
+        assert!(audition.load(Ordering::Relaxed), "new selection cancels it");
+        let stopped = Arc::new(AtomicBool::new(false));
+        view.browser.playback_in_flight = Some(Arc::clone(&stopped));
+        view.cancel_browser_sample_playback();
+        assert!(stopped.load(Ordering::Relaxed), "stop cancels it");
+        view.browser.playback_in_flight = None;
+
+        let key = |name: &str| super::PreviewKey {
+            path: directory.0.join(name),
+            sample_rate: 48_000,
+        };
+        let job = |key| super::PreviewRequest {
+            key,
+            slot: super::PreviewSlot::default(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        let selected = job(key("selected.wav"));
+        view.browser.preview_selected = Some(selected.key.clone());
+        view.browser.preview_in_flight = Some(selected.clone());
+        view.queue_browser_audio_preview(key("hovered.wav"), super::PreviewSlot::default(), cx);
+        assert!(
+            !selected.cancel.load(Ordering::Relaxed),
+            "the selected row keeps its waveform job"
+        );
+        let hovered = job(key("hovered.wav"));
+        view.browser.preview_in_flight = Some(hovered.clone());
+        view.queue_browser_audio_preview(key("later.wav"), super::PreviewSlot::default(), cx);
+        assert!(
+            hovered.cancel.load(Ordering::Relaxed),
+            "a superseded hover waveform job is cancelled"
+        );
+        assert_eq!(
+            view.browser
+                .preview_pending
+                .as_ref()
+                .map(|pending| &pending.key),
+            Some(&key("later.wav"))
+        );
+        view.browser.preview_in_flight = None;
+        view.browser.preview_pending = None;
+    });
+}
+
+#[gpui::test]
 fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
     cx: &mut TestAppContext,
 ) {
@@ -3403,7 +3464,11 @@ fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
         )
         .unwrap();
     }
-    let metadata = Rc::new(hex_session::service::prepare_audio_preview(&path, 48_000).unwrap());
+    let metadata = Rc::new(
+        hex_session::service::PreviewSources::default()
+            .prepare_waveform(&path, 48_000, &std::sync::atomic::AtomicBool::new(false))
+            .unwrap(),
+    );
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(&mut visual, |view, cx| {
         view.browser.auto_audition = false;
