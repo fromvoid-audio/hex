@@ -101,7 +101,7 @@ fn native_asset_import_keeps_original_pcm_capacity_and_rejects_clip_reuse() {
             metadata.playback_frames(),
             metadata.conversion_version()
         ),
-        (8000, 4, 8, hex_project::SINC_CONVERSION_V1)
+        (8000, 4, 8, hex_project::SINC_CONVERSION_V2)
     );
     assert!(s.audio(id).is_none());
     assert!(s.media.is_empty());

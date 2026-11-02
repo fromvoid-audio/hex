@@ -4,6 +4,32 @@ mod pause_analytic;
 
 impl SessionPlayback {
     pub fn apply(&mut self, command: SessionPlaybackCommand) -> Result<(), SessionPlaybackError> {
+        self.admits_transport(&command)?;
+        self.candidate_admission_open = false;
+        if self.linear_arrangement_export
+            && matches!(
+                command,
+                SessionPlaybackCommand::LaunchClip { .. }
+                    | SessionPlaybackCommand::CueMidiClip { .. }
+                    | SessionPlaybackCommand::LaunchScene { .. }
+                    | SessionPlaybackCommand::StopTrack { .. }
+                    | SessionPlaybackCommand::StopAllClips { .. }
+                    | SessionPlaybackCommand::BackToArrangement { .. }
+                    | SessionPlaybackCommand::CancelPending { .. }
+            )
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.apply_admitted(command)
+    }
+
+    /// Refusals that depend only on this runtime's prepared shape, not on its
+    /// clock or voice state. A declicked Pause/Stop is checked here when it is
+    /// requested, before its fade begins.
+    pub(crate) fn admits_transport(
+        &self,
+        command: &SessionPlaybackCommand,
+    ) -> Result<(), SessionPlaybackError> {
         if self.current_sampler_console
             && matches!(
                 command,
@@ -25,26 +51,25 @@ impl SessionPlayback {
                 "sampler supports frame-zero offline export only",
             ));
         }
-        self.candidate_admission_open = false;
-        if self.linear_arrangement_export
-            && matches!(
-                command,
-                SessionPlaybackCommand::LaunchClip { .. }
-                    | SessionPlaybackCommand::CueMidiClip { .. }
-                    | SessionPlaybackCommand::LaunchScene { .. }
-                    | SessionPlaybackCommand::StopTrack { .. }
-                    | SessionPlaybackCommand::StopAllClips { .. }
-                    | SessionPlaybackCommand::BackToArrangement { .. }
-                    | SessionPlaybackCommand::CancelPending { .. }
-            )
-        {
-            return Err(SessionPlaybackError::InvalidCommand);
-        }
+        Ok(())
+    }
+
+    fn apply_admitted(
+        &mut self,
+        command: SessionPlaybackCommand,
+    ) -> Result<(), SessionPlaybackError> {
         match command {
             SessionPlaybackCommand::Play => self.playing = true,
             SessionPlaybackCommand::Pause => {
                 self.invalidate_native_parameter_input();
                 if self.playing {
+                    // Pause releases every held instrument note and never
+                    // re-chases it on resume; only new note-ons play (#4139).
+                    // Analytic routes capture releases and suppress the held
+                    // occurrences. Every instrument track binds a native
+                    // source, so its mutable runtime is a source owner and is
+                    // cut below and rendered while paused. Only sampler-only
+                    // offline export lacks one, and it refuses Pause.
                     self.pause_analytic_sources()?;
                     // A removed receiver may already own a detached release.
                     // Only explicit discontinuities reset admitted monitoring.
@@ -984,6 +1009,7 @@ impl SessionPlayback {
                                 &mut next_order,
                                 ReleaseEntry {
                                     source_origin,
+                                    timeline: ReleaseTimeline::Arrangement,
                                     monitor_offset: 0,
                                     location: match ReleaseLocation::new(audio_index, None) {
                                         Ok(location) => location,
@@ -1129,6 +1155,7 @@ impl SessionPlayback {
                             &mut self.release_order_scratch,
                             ReleaseEntry {
                                 source_origin,
+                                timeline: ReleaseTimeline::Session,
                                 monitor_offset: 0,
                                 location: ReleaseLocation::new(audio_index, None)?,
                                 track_id: route.id,

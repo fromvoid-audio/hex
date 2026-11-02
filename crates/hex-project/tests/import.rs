@@ -781,3 +781,25 @@ fn beats_import_is_visible_before_one_prepare_and_refusal_preserves_redo_and_ids
         })
         .unwrap();
 }
+
+#[test]
+fn new_device_imports_record_sinc_v2_or_identity_conversion() {
+    let mut editor = editor(4);
+    for (rate, expected) in [
+        (44_100, hex_project::SINC_CONVERSION_V2),
+        (48_000, hex_project::IDENTITY_CONVERSION),
+    ] {
+        let Created::Asset(asset) = editor
+            .execute(Command::ImportDeviceAsset {
+                path: PathBuf::from(format!("Media/device-{rate}.wav")),
+                sample_rate: rate,
+                frames: 4_410,
+            })
+            .expect("device asset")
+        else {
+            panic!("asset")
+        };
+        let asset = editor.project().asset(asset).expect("asset");
+        assert_eq!(asset.conversion_version(), expected);
+    }
+}
