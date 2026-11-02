@@ -1,6 +1,6 @@
 //! # Purpose
 //! Render fixed-block PCM16 Arrangement exports and bounded float32 source
-//! bounces, with explicit publication and ordinary prepared runtime custody.
+//! bounces and resident source publication, with explicit publication and ordinary prepared runtime custody.
 //!
 //! # Dependencies
 //! Uses hex-engine and the standard library; callers supply the exact prepared revision and
@@ -38,6 +38,8 @@ pub use bounce::{
 };
 mod pages;
 pub use pages::PreparedExportPages;
+mod resident_source;
+pub use resident_source::publish_resident_source_new;
 mod publication;
 mod stems;
 pub use controlled::{

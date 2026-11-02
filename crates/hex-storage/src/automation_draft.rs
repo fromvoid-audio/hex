@@ -46,7 +46,7 @@ mod take;
 pub use take::{
     AutomationSharedData, CompletedAutomationTake, MAX_PREVIEW_QUERIES, MAX_SCALAR_RANGE_FRAMES,
     MAX_SPANS_PER_STEP, PreparedAutomationTake, PreparedAutomationTakeDataLayout,
-    ProjectedAutomationSpan, ProjectedSpanCursor, SpanReadProgress, SpanReadState,
+    ProjectedAutomationSpan, ProjectedSpanCursor, SpanReadProgress, SpanReadState, TakeOpenError,
     automation_projection_fingerprint,
 };
 
@@ -531,7 +531,15 @@ impl DraftReader {
             ));
         }
         let mut file = File::open(path)?;
-        fs2::FileExt::try_lock_shared(&file)?;
+        fs2::FileExt::try_lock_shared(&file).map_err(|error| {
+            if error.raw_os_error().is_some()
+                && error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+            {
+                StorageError::AutomationDraftBusy(error)
+            } else {
+                StorageError::Io(error)
+            }
+        })?;
         let mut prefix = [0; PREFIX_BYTES];
         file.read_exact(&mut prefix)?;
         if &prefix[..8] != MAGIC || prefix[12..16] != [0; 4] {
