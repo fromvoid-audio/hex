@@ -104,7 +104,13 @@ fn run() -> Result<(), Box<dyn Error>> {
             source_length: beat / 2,
         })?;
         editor.execute(Command::Gain { track, gain: 0.5 })?;
-        if !editor.undo() || !editor.redo() {
+        if editor
+            .undo_prepared(|_| Ok::<(), hex_project::Invalid>(()))?
+            .is_none()
+            || editor
+                .redo_prepared(|_| Ok::<(), hex_project::Invalid>(()))?
+                .is_none()
+        {
             return Err("edit history could not restore the gain change".into());
         }
     }

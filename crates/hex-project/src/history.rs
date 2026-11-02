@@ -428,6 +428,51 @@ impl Editor {
 }
 
 #[cfg(test)]
+mod prepared_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn prepared_undo_and_redo_preserve_the_bounded_history() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        for name in ["first", "second", "third"] {
+            editor
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap();
+        }
+        for expected_tracks in [2, 1] {
+            assert!(
+                editor
+                    .undo_prepared(|_| Ok::<(), Invalid>(()))
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(editor.project().tracks().len(), expected_tracks);
+        }
+        assert!(
+            editor
+                .undo_prepared(|_| Ok::<(), Invalid>(()))
+                .unwrap()
+                .is_none()
+        );
+        for expected_tracks in [2, 3] {
+            assert!(
+                editor
+                    .redo_prepared(|_| Ok::<(), Invalid>(()))
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(editor.project().tracks().len(), expected_tracks);
+        }
+        assert!(
+            editor
+                .redo_prepared(|_| Ok::<(), Invalid>(()))
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[cfg(test)]
 mod gain_touch_epoch_tests {
     use super::*;
     #[test]
