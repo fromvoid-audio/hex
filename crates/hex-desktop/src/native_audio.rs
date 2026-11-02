@@ -3,6 +3,7 @@
 use crate::{
     audio_policy::{AudioPolicy, MAX_RESIDENT_FRAMES, RUNTIME_CELLS},
     native_sources::DomainSources,
+    startup_failure::{Stage, StartupFailure},
 };
 use hex_audio::{
     AudioCandidateDomainToken, AudioCandidatePreparationToken, AudioCandidateTicket,
@@ -31,8 +32,27 @@ use verified_gain::{GainWatermark, VerifiedKey, VerifiedSource};
 mod tests;
 
 #[cfg(all(test, feature = "allocation-probe"))]
-type OutputFactory =
-    Box<dyn FnMut(Option<u32>) -> Result<Option<WorkerPreparedOutput>, String> + Send>;
+type OutputFactory = Box<
+    dyn FnMut(Option<u32>) -> Result<Option<WorkerPreparedOutput>, hex_audio::OutputOpenError>
+        + Send,
+>;
+
+/// Refuses an output whose negotiated rate differs from the document rate the
+/// open requested, as the same typed recoverable outcome hex-audio reports.
+/// The refused output is dropped into its existing lifecycle retirement.
+fn rate_checked(
+    requested_hz: Option<u32>,
+    output: WorkerPreparedOutput,
+) -> Result<WorkerPreparedOutput, hex_audio::OutputOpenError> {
+    match requested_hz {
+        Some(project_hz) if project_hz != output.sample_rate => Err(hex_audio::RateMismatch {
+            device_hz: output.sample_rate,
+            project_hz,
+        }
+        .into()),
+        _ => Ok(output),
+    }
+}
 
 struct Domain {
     token: AudioCandidateDomainToken,
@@ -99,7 +119,8 @@ pub(super) struct NativeAudioSink {
     open_pending: bool,
     requested_rate: Option<u32>,
     restart_request: Option<u64>,
-    open_error: Option<String>,
+    /// A typed `RateMismatch` stays distinct so the UI can offer retry.
+    open_error: Option<hex_audio::OutputOpenError>,
     next_catalog: u64,
     domains: [Option<Domain>; 2],
     preparation: Option<Preparation>,
@@ -110,6 +131,11 @@ pub(super) struct NativeAudioSink {
     sampler: Option<sampler::Sampler>,
     sampler_parameter: Option<sampler::EditPending>,
     section_edit: Option<section_edit::Pending>,
+    /// Stopped edit taken with no output: no callback renders or moves the
+    /// cursor, so control state is the position witness (#3917).
+    offline_section_edit: Option<hex_session::service::ArrangementEditPosition>,
+    /// Last scheduled cursor read from a relinquished output.
+    last_stopped_frame: u64,
     ordinary_pcm_frames: u64,
     verified_pcm_frames: u64,
     suspended_output: Option<u64>,
@@ -161,6 +187,8 @@ impl NativeAudioSink {
             sampler: None,
             sampler_parameter: None,
             section_edit: None,
+            offline_section_edit: None,
+            last_stopped_frame: 0,
             ordinary_pcm_frames: 0,
             verified_pcm_frames: 0,
             suspended_output: None,
@@ -178,8 +206,16 @@ impl NativeAudioSink {
         // Publication/StreamOwner relinquish before any event can backpressure.
         // All accepted construction stays inside Root's terminal/lifecycle book.
         self.retain_relinquished_output();
+        if let Some(control) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+        {
+            self.last_stopped_frame = control.status.position.load(Acquire);
+        }
         drop(self.output.take());
         self.section_edit = None;
+        self.offline_section_edit = None;
         self.resident.current_submission = None;
         self.resident.applied_loop = None;
         self.opening = None;
@@ -221,7 +257,7 @@ impl NativeAudioSink {
                     "audio lifecycle ownership mismatch"
                 }
             };
-            self.open_error = Some(format!("{reason}; save your project and restart hex"));
+            self.open_error = Some(format!("{reason}; save your project and restart hex").into());
             self.open_pending = false;
             // Abandon only this result request. The lifecycle owner retains the
             // old output lease, failed resources and first destructor payload.
@@ -230,7 +266,11 @@ impl NativeAudioSink {
         }
         #[cfg(all(test, feature = "allocation-probe"))]
         if let Some(factory) = self.output_factory.as_mut() {
-            match factory(self.requested_rate) {
+            match factory(self.requested_rate).and_then(|output| {
+                output
+                    .map(|o| rate_checked(self.requested_rate, o))
+                    .transpose()
+            }) {
                 Ok(Some(output)) => {
                     self.opened_output(output);
                     self.open_pending = false;
@@ -258,7 +298,7 @@ impl NativeAudioSink {
                     hex_audio::RecoveryOpenError::Busy | hex_audio::RecoveryOpenError::QueueFull,
                 ) => return,
                 Err(error) => {
-                    self.open_error = Some(error.to_string());
+                    self.open_error = Some(error.to_string().into());
                     self.open_pending = false;
                     return;
                 }
@@ -267,14 +307,19 @@ impl NativeAudioSink {
         let Some(opening) = self.opening.as_mut() else {
             return;
         };
-        match opening.try_take() {
+        let requested_rate = self.requested_rate;
+        match opening
+            .try_take()
+            .map(|taken| taken.map(|result| result.and_then(|o| rate_checked(requested_rate, o))))
+        {
             Ok(Some(Ok(output))) => {
                 self.opened_output(output);
                 self.open_pending = false;
                 self.opening = None;
             }
             Ok(Some(Err(error))) => {
-                if self.plugins.wants_profile() {
+                // A rate mismatch is not a buffer-profile refusal; report it.
+                if self.plugins.wants_profile() && error.rate_mismatch().is_none() {
                     self.plugins
                         .refuse_profile(format!("vst3 output profile unavailable: {error}"));
                     self.opening = None;
@@ -286,7 +331,7 @@ impl NativeAudioSink {
             }
             Ok(None) => {}
             Err(error) => {
-                self.open_error = Some(error.to_string());
+                self.open_error = Some(error.to_string().into());
                 self.open_pending = false;
                 self.opening = None;
             }
@@ -336,7 +381,7 @@ impl NativeAudioSink {
             self.pending_open_event = Some(EditorAudioEvent::Unavailable {
                 project_generation: generation,
                 restart_request: self.restart_request,
-                error,
+                error: error.into(),
             });
             return;
         }
@@ -1016,6 +1061,9 @@ impl WorkerAudioSink for NativeAudioSink {
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         Some(crate::streamed_export::render)
     }
+    fn streamed_bouncer(&self) -> Option<hex_session::StreamedBouncer> {
+        Some(crate::streamed_export::bounce)
+    }
     fn resident_file_seek_preparer(
         &self,
     ) -> Option<hex_session::service::ResidentFileSeekPreparer> {
@@ -1198,7 +1246,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 return Ok(output.sample_rate);
             }
             if let Some(error) = self.open_error.as_ref() {
-                return Err(error.clone());
+                return Err(error.to_string());
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -1413,13 +1461,17 @@ impl WorkerAudioSink for NativeAudioSink {
     }
 }
 
+/// Builds the editor backend, tagging each fallible step with its startup stage.
 pub(super) fn backend(
     flags: hex_audio::audio_diagnostics::AudioDiagnosticsFlags,
-) -> Result<EditorBackend, String> {
+) -> Result<EditorBackend, StartupFailure> {
     let source_reservation = AudioPolicy::source_reservation();
-    let resident_native = AudioPolicy::new()?.resident_native;
+    let resident_native = AudioPolicy::new()
+        .map_err(StartupFailure::at(Stage::AudioPolicy))?
+        .resident_native;
     let (events, audio_events) = mpsc::sync_channel(4);
-    let recovery = hex_session::service::untitled_recovery_path()?;
+    let recovery = hex_session::service::untitled_recovery_path()
+        .map_err(StartupFailure::at(Stage::RecoveryLocation))?;
     let mut sink = NativeAudioSink::new(events);
     sink.audio_diagnostics = flags;
     let service = Service::with_audio_sink_and_native_reservation(
@@ -1429,7 +1481,7 @@ pub(super) fn backend(
         Box::new(sink),
         resident_native,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| StartupFailure::new(Stage::Session, e.to_string()))?;
     Ok(EditorBackend {
         service,
         audio_events,

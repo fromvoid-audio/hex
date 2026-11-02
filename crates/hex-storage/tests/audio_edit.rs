@@ -81,7 +81,8 @@ fn musical_root_crop_warp_envelope_and_frozen_fade_roundtrip_and_malformed_bound
         .unwrap();
     let json = hex_storage::encode(editor.project()).unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&json).unwrap();
-    assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+    // Warped content renders with the v2 warp resampler.
+    assert_eq!(value["version"], hex_storage::WARP_RESAMPLER_SCHEMA_VERSION);
     assert_eq!(hex_storage::decode(&json).unwrap(), *editor.project());
     let text = String::from_utf8(json).unwrap();
     assert!(text.contains("complex_pro"));
