@@ -3,7 +3,7 @@ use hex_devices::saturator::{SATURATOR_TYPE_ID, parameter as p};
 use hex_engine::{
     Audio, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand, SineTable, compile,
 };
-use hex_lattice_contract::ParameterId;
+use hex_lattice_contract::{ParameterId, ParameterValue};
 use hex_project::{
     AutomationInterpolation as Shape, AutomationPoint, AutomationValue, BeatTime, Command, Created,
     Editor, Project,
@@ -27,6 +27,72 @@ fn close(actual: &[[f32; 2]], expected: &[[f32; 2]]) {
             assert!((a[ch] - e[ch]).abs() < 2e-6, "frame {i}: {a:?} != {e:?}");
         }
     }
+}
+
+/// The authored lanes in canonical units at a timeline frame (beat 1 = 4000
+/// frames at 8 kHz/120 bpm), written independently of the automation compiler.
+fn authored_schedule(parameter: ParameterId, frame: usize) -> Option<ParameterValue> {
+    let t = (frame as f32 / 4000.0).min(1.0);
+    Some(match parameter {
+        p::DRIVE => ParameterValue::Float(18.0 * t),
+        p::OUTPUT => ParameterValue::Float(6.0),
+        p::DRY_WET => ParameterValue::Float(t),
+        p::CURVE => ParameterValue::Choice(u32::from(frame >= 4000)),
+        _ => return None,
+    })
+}
+
+type Lanes<'a> = &'a dyn Fn(ParameterId, usize) -> Option<ParameterValue>;
+
+struct Schedule<'a> {
+    ids: [ParameterId; 4],
+    lanes: Lanes<'a>,
+    start: usize,
+}
+
+impl hex_lattice::NativeParameterAutomation for Schedule<'_> {
+    fn parameter_ids(&self) -> &[ParameterId] {
+        &self.ids
+    }
+    fn value_at(&self, parameter: ParameterId, offset: usize) -> Option<ParameterValue> {
+        (self.lanes)(parameter, self.start + offset)
+    }
+}
+
+/// Independent oracle: a fresh standalone oversampled Saturator runtime fed
+/// the dry source from `start` (playback start and seek reset history). The
+/// device output stays silent until its declared latency has elapsed since
+/// the playback epoch, as the host discards pre-epoch origins.
+fn oracle(
+    state: &hex_lattice_contract::NativeDeviceState,
+    lanes: Option<Lanes<'_>>,
+    start: usize,
+    len: usize,
+) -> Vec<[f32; 2]> {
+    use hex_devices::saturator::SaturatorDefinition;
+    use hex_lattice::PreparedNativeProcessor as _;
+    let ids = [p::DRIVE, p::OUTPUT, p::DRY_WET, p::CURVE];
+    let authored: &[ParameterId] = if lanes.is_some() { &ids } else { &[] };
+    let prepared = SaturatorDefinition::prepare_owned(state, RATE, authored).unwrap();
+    let latency = prepared.algorithmic_latency_frames().unwrap() as usize;
+    assert_eq!(latency, 11);
+    let mut runtime = prepared.create_runtime();
+    let mut frames = vec![[0.75, -0.25]; len];
+    if let Some(lanes) = lanes {
+        let schedule = Schedule { ids, lanes, start };
+        runtime
+            .process_block_with_automation(
+                &mut frames,
+                None,
+                &schedule,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+    } else {
+        runtime.process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    }
+    frames[..latency.min(len)].fill([0.0; 2]);
+    frames
 }
 
 #[test]
@@ -83,28 +149,15 @@ fn all_saturator_controls_drive_real_pcm_with_partition_seek_clear_and_history()
     offline.play();
     let mut actual = vec![[0.0; 2]; FRAMES];
     offline.render(&mut actual).unwrap();
-    let expected: Vec<_> = (0..FRAMES)
-        .map(|frame| {
-            let t = (frame as f64 / 4000.0).min(1.0);
-            let drive = 10.0_f64.powf(18.0 * t / 20.0);
-            let output = 10.0_f64.powf(6.0 / 20.0);
-            [0.75, -0.25].map(|dry: f64| {
-                let x = dry * drive;
-                let wet = if frame >= 4000 {
-                    x.clamp(-1.0, 1.0)
-                } else if x.abs() <= 0.5 {
-                    x
-                } else {
-                    x.signum() * (1.0 - 0.25 / x.abs())
-                };
-                (dry * (1.0 - t) + wet * output * t) as f32
-            })
-        })
-        .collect();
+    let base_state = editor.project().device(device).unwrap().state().clone();
+    let expected = oracle(&base_state, Some(&authored_schedule), 0, FRAMES);
     close(&actual, &expected);
     offline.seek(3993);
     offline.render(&mut actual[..32]).unwrap();
-    close(&actual[..32], &expected[3993..4025]);
+    close(
+        &actual[..32],
+        &oracle(&base_state, Some(&authored_schedule), 3993, 32),
+    );
     let revision = Arc::new(
         PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
             .unwrap(),
@@ -135,8 +188,7 @@ fn all_saturator_controls_drive_real_pcm_with_partition_seek_clear_and_history()
     let mut cleared = Renderer::new(&graph);
     cleared.play();
     cleared.render(&mut actual).unwrap();
-    let soft = [(1.0 - 0.25 / 0.75) as f32, -0.25];
-    close(&actual, &vec![soft; FRAMES]);
+    close(&actual, &oracle(&base_state, None, 0, FRAMES));
     for _ in authored {
         assert!(editor.undo());
     }
