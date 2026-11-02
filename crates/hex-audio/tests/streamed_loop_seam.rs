@@ -75,9 +75,9 @@ fn dc_wav(path: &PathBuf) {
 
 /// DC is continuous across the seam, so rendering the outgoing side from a
 /// missing page would show as a dip below `LEVEL` after a wrap. The overrun
-/// page is first demanded by the first wrapped chunk; until it is resident the
-/// readiness rule holds that whole chunk silent without advancing the
-/// transport, as at a linear page crossing. Later wraps find it cached.
+/// page is the page after the one holding the loop end, so the playhead's
+/// bounded lookahead (#4075) loads it before the first wrap demands it: no
+/// wrap holds the transport, and every frame plays at `LEVEL`.
 #[test]
 fn streamed_loop_seam_crossfade_is_continuous_and_callback_allocation_free() {
     let stamp = SystemTime::now()
@@ -236,8 +236,8 @@ fn streamed_loop_seam_crossfade_is_continuous_and_callback_allocation_free() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert!(
-        held_at.iter().all(|held| *held == (1, LOOP_START)),
-        "only the first wrap may wait for its overrun page: {held_at:?}"
+        held_at.is_empty(),
+        "lookahead made the overrun resident before the wrap: {held_at:?}"
     );
     let control = output.publication.control().unwrap();
     assert!(control.retire_audio_candidate_domain(domain));

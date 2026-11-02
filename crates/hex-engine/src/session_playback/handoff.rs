@@ -4329,6 +4329,9 @@ impl SessionPlayback {
         self.arrangement_loop_pass = arrangement_cut_pass;
         self.interactive_start_frame = previous.interactive_start_frame;
         self.playing = previous.playing;
+        // Streamed voices continuing the same source position keep their
+        // page-miss fade across the replacement (`crate::stream_miss_fade`).
+        self.stream_miss_fades = previous.stream_miss_fades;
         // Preparing the first live input can activate a stopped candidate
         // before this donor has ever monitored. Preserve that admission as
         // well as existing release intent when a later edit removes the input.

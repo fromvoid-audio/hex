@@ -125,6 +125,25 @@ pub trait MediaPages {
         None
     }
     fn request_scalar_page(&mut self, _key: crate::ScalarSourceKey, _page_index: u64) {}
+
+    /// Speculatively request the page after the one the playhead is reading
+    /// (bounded lookahead, #4075). Never required for readiness, never waits;
+    /// providers without a request queue ignore it.
+    fn prefetch_page(&mut self, _key: StreamSourceKey, _page_index: u64) {}
+
+    /// The page together with the per-voice miss-fade table lent by the
+    /// session runtime (`crate::stream_miss_fade`). Views without a table
+    /// return `None` and keep source-local silence on a miss.
+    fn page_and_miss_fades(
+        &mut self,
+        key: StreamSourceKey,
+        page_index: u64,
+    ) -> (
+        Option<BorrowedMediaPage<'_>>,
+        Option<&mut crate::StreamMissFades>,
+    ) {
+        (self.page(key, page_index), None)
+    }
 }
 
 impl StreamedSourceMetadata {
@@ -144,3 +163,6 @@ impl StreamedSourceMetadata {
         } = key;
     }
 }
+
+#[cfg(test)]
+mod prefetch_tests;
