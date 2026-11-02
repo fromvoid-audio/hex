@@ -12211,6 +12211,7 @@ mod service_tests {
                     sample_rate: project.arrangement().sample_rate(),
                     frames,
                     data_bytes: u32::try_from(frames * 4).unwrap_or(u32::MAX),
+                    clipped_samples: 0,
                     recovery_path: None,
                     stale_temporaries: Default::default(),
                 })

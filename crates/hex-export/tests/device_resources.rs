@@ -460,7 +460,7 @@ fn registered_resources_export_mix_range_captures_stems_and_float_bounce() {
             .unwrap();
             let bytes = fs::read(bounce).unwrap();
             assert_eq!(u16::from_le_bytes([bytes[20], bytes[21]]), 3);
-            let actual: Vec<_> = bytes[44..]
+            let actual: Vec<_> = bytes[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..]
                 .chunks_exact(4)
                 .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
                 .collect();
