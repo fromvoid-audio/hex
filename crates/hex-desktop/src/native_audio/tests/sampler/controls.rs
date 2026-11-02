@@ -563,8 +563,18 @@ pub(super) fn exercise(
                 ),
                 (0, 0, 0, 0)
             );
+            // The looping voice declicks over the prepared release floor and
+            // then stops, without keyboard-toggle cancellation.
+            for (i, frame) in released.iter().enumerate() {
+                let bound = 0.5 * gain as f32 * super::floored_release_level(i, 0);
+                assert!(
+                    frame.iter().all(|sample| sample.abs() <= bound + 1e-6),
+                    "loop key release {i} exceeds its declick: {frame:?}"
+                );
+            }
             assert_eq!(
-                released, [[0.0; 2]; 64],
+                &released[super::RELEASE_FLOOR_FRAMES..],
+                &[[0.0; 2]; 64 - super::RELEASE_FLOOR_FRAMES],
                 "actual loop key release must stop without keyboard-toggle cancellation"
             );
         }
