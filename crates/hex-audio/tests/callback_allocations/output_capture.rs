@@ -261,9 +261,11 @@ fn automated_saturator_callback_publication_and_late_failure_retry_are_allocatio
         .map_err(Into::into)
 }
 /// Pulse #4122: a flexible EQ stereo to mid/side switch during playback
-/// captures the outgoing routing into fade storage allocated at runtime
-/// creation. The published handoff and the crossfading callback blocks
-/// allocate and free nothing.
+/// captures the outgoing routing (even when the same replacement removes
+/// nodes) into fade storage allocated at runtime creation. A second switch
+/// published while that fade runs is deferred as busy by the callback and
+/// admitted once the fade drains. The handoffs, the deferral and the
+/// crossfading callback blocks allocate and free nothing.
 #[test]
 fn flexible_eq_channel_mode_switch_crossfade_is_allocation_free() -> Result<(), Box<dyn Error>> {
     std::thread::Builder::new()
@@ -281,6 +283,7 @@ fn run_flexible_eq_mode_switch_probe() -> Result<(), Box<dyn Error>> {
     let mut settings = EqState::default();
     settings.add(Node::new(NodeId::new(1)?, 1_000.0, 12.0, 0)?)?;
     settings.add(Node::new(NodeId::new(2)?, 1_000.0, -6.0, 3)?)?;
+    settings.add(Node::new(NodeId::new(3)?, 3_000.0, 6.0, 0)?)?;
     editor.execute(Command::ReplaceDeviceState {
         device,
         state: settings.encode()?,
@@ -297,7 +300,11 @@ fn run_flexible_eq_mode_switch_probe() -> Result<(), Box<dyn Error>> {
     let mut output = [[0.0; 2]; 512];
     measured_block(&mut callback, &mut output);
     assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
+    // One replacement switches to mid/side and removes both stereo bells, so
+    // the outgoing routing has more bands than the incoming one has nodes.
     settings.mode = 2;
+    settings.remove(NodeId::new(1)?)?;
+    settings.remove(NodeId::new(3)?)?;
     editor.execute(Command::ReplaceDeviceState {
         device,
         state: settings.encode()?,
@@ -309,9 +316,29 @@ fn run_flexible_eq_mode_switch_probe() -> Result<(), Box<dyn Error>> {
         .map_err(|_| "replacement")?;
     // Small blocks keep the mode crossfade active across several callbacks.
     let mut small = [[0.0; 2]; 64];
+    measured_block(&mut callback, &mut small);
+    assert_eq!(control.reclaim(), 1, "first switch admitted");
+    settings.mode = 1;
+    editor.execute(Command::ReplaceDeviceState {
+        device,
+        state: settings.encode()?,
+    })?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "second replacement")?;
+    // 128 of the 256 fade frames have rendered: the second switch is busy.
+    measured_block(&mut callback, &mut small);
+    assert_eq!(control.reclaim(), 0, "second switch deferred while fading");
     for _ in 0..8 {
         measured_block(&mut callback, &mut small);
     }
+    assert_eq!(
+        control.reclaim(),
+        1,
+        "second switch admitted after the fade"
+    );
     assert!(control.status.rejected_revision().is_none());
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut output);
