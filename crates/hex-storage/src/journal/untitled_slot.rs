@@ -56,6 +56,27 @@ impl UntitledSlotClaim {
         ))
     }
 
+    /// Claim every other slot in `directory` whose journal an ended instance
+    /// left behind (Pulse #4575), lowest index first, so one launch can offer
+    /// all of them. `own` is skipped; slots a live instance owns are never
+    /// claimed. A slot whose owner entry cannot be locked (for example a
+    /// symbolic link in its place) is left untouched and not returned.
+    /// Holding a returned claim keeps other launching instances from adopting
+    /// or offering the same leftover; drop it once its offer is resolved.
+    pub fn claim_leftovers(directory: &Path, own: &Path) -> Vec<Self> {
+        (0..MAX_UNTITLED_SLOTS)
+            .map(|index| untitled_slot_path(directory, index))
+            .filter(|path| path != own && fs::symlink_metadata(path).is_ok())
+            .filter_map(|path| match try_own(&path) {
+                Ok(Some(owner)) => Some(Self {
+                    path,
+                    _owner: owner,
+                }),
+                Ok(None) | Err(_) => None,
+            })
+            .collect()
+    }
+
     /// The untitled journal this claim exclusively owns.
     pub fn path(&self) -> &Path {
         &self.path
@@ -218,6 +239,56 @@ mod tests {
         ));
         assert!(fs::symlink_metadata(&owner).expect("kept").is_symlink());
         assert!(!dir.0.join("elsewhere").exists());
+    }
+
+    /// Regression for #4575: two ended instances left journals; one launch
+    /// claims both leftovers, never the live-owned slot nor its own.
+    #[test]
+    fn one_launch_claims_every_unowned_leftover_but_no_live_slot() {
+        let dir = Temp::new();
+        let live = UntitledSlotClaim::claim(&dir.0).expect("live instance");
+        assert_eq!(live.path(), untitled_slot_path(&dir.0, 0));
+        Journal::open_empty(live.path().to_path_buf())
+            .expect("live slot")
+            .checkpoint(&Project::new(48_000).expect("project"))
+            .expect("live checkpoint");
+        let ended = child(&dir.0, "44100");
+        assert_eq!(Path::new(&ended), untitled_slot_path(&dir.0, 1));
+        // Two more ended instances left their journals in slots 3 and 4.
+        let leftovers = [untitled_slot_path(&dir.0, 3), untitled_slot_path(&dir.0, 4)];
+        for leftover in &leftovers {
+            Journal::open_empty(leftover.clone())
+                .expect("ended slot")
+                .checkpoint(&Project::new(44_100).expect("project"))
+                .expect("ended checkpoint");
+        }
+
+        let own = UntitledSlotClaim::claim(&dir.0).expect("relaunch");
+        assert_eq!(own.path(), Path::new(&ended));
+        let others = UntitledSlotClaim::claim_leftovers(&dir.0, own.path());
+        let paths: Vec<&Path> = others.iter().map(UntitledSlotClaim::path).collect();
+        assert_eq!(
+            paths,
+            leftovers.iter().map(PathBuf::as_path).collect::<Vec<_>>()
+        );
+        // Held leftovers are not adopted by another launching instance.
+        let next = UntitledSlotClaim::claim(&dir.0).expect("next instance");
+        assert_eq!(next.path(), untitled_slot_path(&dir.0, 2));
+        assert!(UntitledSlotClaim::claim_leftovers(&dir.0, next.path()).is_empty());
+        drop(others);
+        let released = UntitledSlotClaim::claim_leftovers(&dir.0, next.path());
+        let paths: Vec<&Path> = released.iter().map(UntitledSlotClaim::path).collect();
+        assert_eq!(
+            paths,
+            leftovers.iter().map(PathBuf::as_path).collect::<Vec<_>>()
+        );
+        // Nothing was removed or rewritten by claiming.
+        for leftover in &leftovers {
+            assert_eq!(
+                load_journal(leftover).expect("kept"),
+                Project::new(44_100).expect("project")
+            );
+        }
     }
 
     #[test]

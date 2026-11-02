@@ -233,6 +233,7 @@ fn fixture_at_rate(
         source_audio: audio.clone(),
         audio,
         waveform,
+        file_identity: None,
     };
     let (Created::Imported { clip, .. }, revision) =
         session.import_prepared_revision(prepared, None).unwrap()
@@ -569,6 +570,7 @@ fn grouped_repeat_transaction_prepares_complete_multi_source_waveform_root() {
         source_audio: audio.clone(),
         waveform: waveform::summarize(&audio, 128).unwrap(),
         audio,
+        file_identity: None,
     };
     let (Created::Imported { clip: second, .. }, previous) = session
         .import_prepared_revision(imported, Some(&previous))

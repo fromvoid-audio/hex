@@ -68,6 +68,10 @@ impl ExportLane {
             }
         }
     }
+    /// An admitted export still needs worker polls for its terminal.
+    pub(super) fn pending(&self) -> bool {
+        self.active.is_some()
+    }
     pub(super) fn admission<'a>(
         &'a self,
         current: Option<ControlSamplerSelection<'a>>,
@@ -499,6 +503,7 @@ mod tests {
             )
         });
         let mut lane = ExportLane::new(work_tx, finished_rx, worker);
+        assert!(!lane.pending(), "an empty lane lets the worker idle");
         let mut previous_id = 0;
         for generation in 0..3 {
             let (entered_tx, entered) = mpsc::sync_channel(1);
@@ -528,6 +533,7 @@ mod tests {
                 lane.active.is_some(),
                 "a pending actual job has not transferred or dropped"
             );
+            assert!(lane.pending(), "admitted custody keeps the busy cadence");
             assert!(lane.submit(next).is_ok());
             entered.recv_timeout(Duration::from_secs(5)).unwrap();
             injected_terminal.send(previous_id).unwrap();
@@ -551,6 +557,7 @@ mod tests {
                     .unwrap();
                 lane.poll();
                 assert!(lane.active.is_none());
+                assert!(!lane.pending());
             } else {
                 assert!(result.result.unwrap_err().contains("notification failed"));
                 assert!(lane.active.is_some());

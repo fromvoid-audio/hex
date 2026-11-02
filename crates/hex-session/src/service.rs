@@ -104,7 +104,8 @@ use hex_storage::FileToken;
 use recovery::absolute_document_path;
 pub use recovery::{
     LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart,
-    claim_untitled_recovery_slot, kept_journal, leftover_recovery, untitled_recovery_path,
+    claim_untitled_recovery_slot, kept_journal, leftover_recovery, untitled_leftovers,
+    untitled_recovery_path,
 };
 use std::{
     collections::BTreeMap,
@@ -1476,6 +1477,13 @@ impl Service {
         result
     }
 
+    /// Iterations of the worker's request-wait loop since start (#4574): each
+    /// is one bounded native/control poll. A read-only diagnostic scalar for
+    /// idle wake measurement; it grants no ordering or completion evidence.
+    pub fn worker_wakes(&self) -> u64 {
+        self.diagnostics.worker_wakes()
+    }
+
     /// Install one read-only control observer. Logging has no effect on request
     /// admission, canonical state, cancellation or publication authority.
     pub fn set_diagnostic_observer(
@@ -2078,6 +2086,12 @@ fn run_tuning_library_operation_in_using(
     (result, prepared)
 }
 
+/// Control lanes that still need worker polls (#4574): a resident seek
+/// awaiting its result or completion delivery, or an admitted export.
+fn control_lanes_pending(seek: Option<&resident_seek::Lane>, export: &ExportLane) -> bool {
+    seek.is_some_and(resident_seek::Lane::pending) || export.pending()
+}
+
 #[allow(clippy::too_many_arguments)] // Existing worker composition plus private ownership of the existing seek worker.
 fn run_worker(
     mut session: Session,
@@ -2401,7 +2415,8 @@ fn run_worker(
                         prepared: Some(p),
                     }
                 }),
-            )
+            );
+            control_lanes_pending(resident_seek.as_ref(), &export_lane)
         },
     ) {
         // Requests whose handler takes the stopped Arrangement lease first begin
