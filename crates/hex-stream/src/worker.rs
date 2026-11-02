@@ -8,7 +8,7 @@ use crate::{
 use hex_engine::{StreamResourceKey, StreamedSourceMetadata};
 use std::collections::VecDeque;
 pub(crate) mod scalar;
-use hex_media::{ResampleKernel, ResamplePlan, VerifiedWavReader};
+use hex_media::{ResampleKernel, ResamplePlan, ResampleVersion, VerifiedWavReader};
 use rtrb::{Consumer, Producer, PushError};
 use scalar::ScalarJob;
 use std::{
@@ -703,10 +703,16 @@ fn build_catalog(
         {
             return Err(StreamFailureKind::SourceChanged);
         }
-        let kernel_index = kernels.iter().position(|(source_rate, target_rate, _)| {
-            *source_rate == reader.sample_rate()
-                && *target_rate == definition.metadata.project_rate()
-        });
+        // The asset's saved conversion version selects the law; v1 media stays v1.
+        let version = ResampleVersion::for_conversion(definition.metadata.conversion_version())
+            .map_err(map_import_error)?;
+        let kernel_index = kernels
+            .iter()
+            .position(|(source_rate, target_rate, kernel)| {
+                *source_rate == reader.sample_rate()
+                    && *target_rate == definition.metadata.project_rate()
+                    && kernel.version() == version
+            });
         let kernel = if let Some(index) = kernel_index {
             kernels[index].2.clone()
         } else {
@@ -722,9 +728,12 @@ fn build_catalog(
             if kernel_budget_reserved > config.max_kernel_table_bytes {
                 return Err(StreamFailureKind::CapacityExhausted);
             }
-            let kernel =
-                ResampleKernel::new(reader.sample_rate(), definition.metadata.project_rate())
-                    .map_err(map_import_error)?;
+            let kernel = ResampleKernel::with_version(
+                reader.sample_rate(),
+                definition.metadata.project_rate(),
+                version,
+            )
+            .map_err(map_import_error)?;
             kernel_bytes = kernel_bytes
                 .checked_add(kernel.table_payload_bytes())
                 .ok_or(StreamFailureKind::CapacityExhausted)?;
@@ -767,6 +776,7 @@ fn build_catalog(
             reader.sample_rate(),
             definition.metadata.project_rate(),
             reader.source_frames(),
+            plan.kernel_support_radius(),
         )?;
         if window_bound > source_scratch.len() || window_bound > reader.max_window_frames() {
             return Err(StreamFailureKind::CapacityExhausted);
@@ -870,6 +880,7 @@ fn max_source_window(
     source_rate: u32,
     target_rate: u32,
     source_frames: u64,
+    support_radius: usize,
 ) -> Result<usize, StreamFailureKind> {
     if source_rate == target_rate {
         return usize::try_from(source_frames.min(hex_engine::STREAM_PAGE_FRAMES as u64))
@@ -879,14 +890,8 @@ fn max_source_window(
         .checked_mul(u128::from(source_rate))
         .ok_or(StreamFailureKind::CapacityExhausted)?
         .div_ceil(u128::from(target_rate));
-    let radius = if target_rate >= source_rate {
-        32_u128
-    } else {
-        32_u128
-            .checked_mul(u128::from(source_rate))
-            .ok_or(StreamFailureKind::CapacityExhausted)?
-            .div_ceil(u128::from(target_rate))
-    };
+    let radius =
+        u128::try_from(support_radius).map_err(|_| StreamFailureKind::CapacityExhausted)?;
     let span = output_span
         .checked_add(
             radius

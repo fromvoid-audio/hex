@@ -193,17 +193,39 @@ impl Session {
     pub(crate) fn verify_import(&self, path: PathBuf) -> Result<VerifiedAudioFile, SessionError> {
         self.verify_import_with_pending(path, &[], || false)
     }
+    /// Verify a saved asset's file, binding its saved conversion law so the
+    /// verified facts match the asset and streamed output reproduces it.
+    pub(crate) fn verify_asset(
+        &self,
+        path: PathBuf,
+        asset: &hex_project::Asset,
+    ) -> Result<VerifiedAudioFile, SessionError> {
+        self.verify_with(path, &[], Some(asset.conversion_version()), || false)
+    }
     pub(crate) fn verify_import_with_pending(
         &self,
         path: PathBuf,
         pending: &[VerifiedAudioFile],
+        canceled: impl FnMut() -> bool,
+    ) -> Result<VerifiedAudioFile, SessionError> {
+        self.verify_with(path, pending, None, canceled)
+    }
+    fn verify_with(
+        &self,
+        path: PathBuf,
+        pending: &[VerifiedAudioFile],
+        conversion: Option<u32>,
         mut canceled: impl FnMut() -> bool,
     ) -> Result<VerifiedAudioFile, SessionError> {
         let limits = self.remaining_source_reservation(path.capacity(), pending)?;
-        let mut source =
-            VerifiedAudioFile::inspect(path, self.project().sample_rate(), limits, || {
-                self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
-            })?;
+        let rate = self.project().sample_rate();
+        let cancel = || self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled();
+        let mut source = match conversion {
+            None => VerifiedAudioFile::inspect(path, rate, limits, cancel)?,
+            Some(version) => {
+                VerifiedAudioFile::inspect_for_conversion(path, rate, version, limits, cancel)?
+            }
+        };
         if self.audio_mode() == DocumentAudioMode::Resident {
             source.prepare_waveform_on_control(|| {
                 self.shutdown.load(std::sync::atomic::Ordering::Acquire) || canceled()
