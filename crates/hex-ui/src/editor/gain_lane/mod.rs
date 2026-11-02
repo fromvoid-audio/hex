@@ -29,6 +29,7 @@ pub(super) struct Draft {
 }
 struct NumericBinding {
     entity: Entity<NumericControl>,
+    edit_state: hex_widgets::NumericEditState,
     _subscription: Subscription,
     key: (TrackId, BeatTime, u64, u64),
 }
@@ -43,6 +44,12 @@ pub(super) struct GainLane {
     pub(super) error: Option<String>,
 }
 impl GainLane {
+    pub(super) fn numeric_draft_active(&self) -> bool {
+        self.gain
+            .as_ref()
+            .is_some_and(|binding| binding.edit_state.is_editing())
+    }
+
     pub(super) fn pointer_is_active(&self) -> bool {
         self.draft.is_some_and(|draft| draft.pointer.is_some())
     }

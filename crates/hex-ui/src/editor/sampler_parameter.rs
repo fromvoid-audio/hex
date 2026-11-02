@@ -26,6 +26,7 @@ struct Control {
     gesture: Option<Target>,
     focus: gpui::FocusHandle,
     entity: Entity<NumericControl>,
+    edit_state: hex_widgets::NumericEditState,
     _subscription: gpui::Subscription,
 }
 struct Pending {
@@ -74,6 +75,13 @@ pub(super) struct State {
     pending: Option<Pending>,
     // Retired controls from this panel cycle only; drained at every render.
     retired_focus: Vec<gpui::FocusHandle>,
+}
+impl State {
+    pub(super) fn numeric_draft_active(&self) -> bool {
+        self.controls
+            .values()
+            .any(|control| control.edit_state.is_editing() || control.gesture.is_some())
+    }
 }
 impl Drop for State {
     fn drop(&mut self) {
@@ -594,6 +602,7 @@ impl EditorView {
                 }
             };
             let entity = cx.new(|cx| NumericControl::from_config(cx, config));
+            let edit_state = entity.read(cx).edit_state();
             let focus = entity.read(cx).focus_handle(cx);
             let subscription = cx.subscribe(
                 &entity,
@@ -634,6 +643,7 @@ impl EditorView {
                     gesture: None,
                     focus,
                     entity,
+                    edit_state,
                     _subscription: subscription,
                 },
             );
