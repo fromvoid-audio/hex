@@ -110,6 +110,7 @@ pub(super) struct NativeAudioSink {
     pending_status_observation: Option<EditorAudioEvent>,
     /// One route-change notice for the delivered output (#4131).
     pending_route_event: Option<EditorAudioEvent>,
+    pending_degraded_event: Option<EditorAudioEvent>,
     /// Samples the default output route off this worker; `None` when the
     /// watch thread could not start, which only disables route following.
     route_watch: Option<hex_audio::OutputRouteWatch>,
@@ -173,6 +174,7 @@ impl NativeAudioSink {
             pending_observation: None,
             pending_status_observation: None,
             pending_route_event: None,
+            pending_degraded_event: None,
             route_watch: None,
             route_seen: 0,
             route_follow: Default::default(),
@@ -236,6 +238,7 @@ impl NativeAudioSink {
         self.pending_observation = None;
         self.pending_status_observation = None;
         self.pending_route_event = None;
+        self.pending_degraded_event = None;
         self.preparation = None;
         self.domains = std::array::from_fn(|_| None);
         self.submitted = std::array::from_fn(|_| None);
@@ -477,6 +480,7 @@ impl NativeAudioSink {
             &mut self.pending_observation,
             &mut self.pending_status_observation,
             &mut self.pending_route_event,
+            &mut self.pending_degraded_event,
         ] {
             let Some(event) = pending.take() else {
                 continue;
@@ -1478,6 +1482,12 @@ impl WorkerAudioSink for NativeAudioSink {
                     &mut output,
                     self.desired.as_ref().map(|source| source.context()),
                 );
+                if let Some((output_identity, devices)) = self.plugins.take_degraded_change() {
+                    self.pending_degraded_event = Some(EditorAudioEvent::DegradedPlugins {
+                        output_identity,
+                        devices,
+                    });
+                }
             }
             self.ordinary_pcm_frames = output
                 .publication

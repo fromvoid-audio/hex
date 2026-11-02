@@ -761,6 +761,8 @@ pub(super) struct EditorView {
     pending_recovery_generation: Option<u64>,
     /// Output whose default route changed and still awaits its recovery.
     route_follow: Option<u64>,
+    /// Vst3 devices the current output reports as degraded.
+    degraded_plugins: crate::editor_backend::DegradedDevices,
     pending_audio_result: Option<PendingEditorAudioResult>,
     pending_publication_observation: Option<PendingEditorPublicationObservation>,
     document_audio_mode: hex_session::DocumentAudioMode,
@@ -1500,6 +1502,7 @@ impl EditorView {
             pending_restart_request: None,
             pending_recovery_generation: None,
             route_follow: None,
+            degraded_plugins: Default::default(),
             pending_audio_result: None,
             pending_publication_observation: None,
             document_audio_mode: hex_session::DocumentAudioMode::Resident,
