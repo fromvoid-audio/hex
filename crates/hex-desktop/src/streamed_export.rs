@@ -43,6 +43,7 @@ pub(crate) fn render_with_config(
         request.start(),
         request.frames(),
         request.signal().clone(),
+        request.format(),
         request.control(),
         request.publication(),
         &mut pages,

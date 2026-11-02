@@ -384,6 +384,7 @@ fn postcommit_open_failure(kind: FailedEdit) {
         start: 0,
         frames: Some(8),
         signal: hex_session::service::ExportSignal::Main,
+        format: hex_export::ExportFormat::Pcm16,
         overwrite: false,
         control: hex_export_control(),
     });

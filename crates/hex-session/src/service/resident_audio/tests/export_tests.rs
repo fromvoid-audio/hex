@@ -121,6 +121,7 @@ fn ordinary_export_source_remains_charged_through_new_cancel_and_physical_comple
                 frames: Some(12),
                 signal: hex_export::ExportSignal::Main,
                 control: control.clone(),
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             },
         );
