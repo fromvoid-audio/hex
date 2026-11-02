@@ -29,6 +29,7 @@ pub(super) struct Local {
     collapse: Option<NodeId>,
     before: Option<Snapshot>,
     group_drag: Option<GroupDrag>,
+    option_drag: Option<(Node, f32)>,
     scroll: Option<LocalScroll>,
     created: Option<NodeId>,
 }
@@ -67,6 +68,7 @@ impl Local {
             collapse: None,
             before: None,
             group_drag: None,
+            option_drag: None,
             scroll: None,
             created: None,
         })
@@ -619,6 +621,13 @@ fn event_graph(
                         origin: event.position,
                         nodes,
                     });
+                } else if event.modifiers.alt
+                    && !event.modifiers.platform
+                    && !event.modifiers.control
+                    && let Some(node) = id.and_then(|id| state.node(id).ok()).copied()
+                    && node.kind == NodeKind::Bell
+                {
+                    local.option_drag = Some((node, event.position[1]));
                 }
             }
         }
@@ -650,11 +659,24 @@ fn event_graph(
                 let Some(node) = state.nodes.iter_mut().find(|node| node.id == id) else {
                     return Ok(());
                 };
-                set_position(node, event.position);
+                if let Some((original, origin_y)) = local.option_drag {
+                    if node.id != original.id
+                        || node.kind != original.kind
+                        || node.bank != original.bank
+                    {
+                        return Err("eq option-drag node changed during edit".into());
+                    }
+                    node.frequency_hz = original.frequency_hz;
+                    node.gain_db = original.gain_db;
+                    node.q = group_move::option_q(original.q, event.position[1] - origin_y);
+                } else {
+                    set_position(node, event.position);
+                }
             }
             if event.phase == ResponseGraphPhase::Commit {
                 local.before = None;
                 local.group_drag = None;
+                local.option_drag = None;
             }
         }
         ResponseGraphPhase::Cancel => {
@@ -665,6 +687,7 @@ fn event_graph(
             }
             local.created = None;
             local.group_drag = None;
+            local.option_drag = None;
             local.collapse = None;
         }
         ResponseGraphPhase::Release | ResponseGraphPhase::ReleaseOutside => {
@@ -677,6 +700,7 @@ fn event_graph(
             local.collapse = None;
             local.before = None;
             local.group_drag = None;
+            local.option_drag = None;
             local.created = None;
         }
         _ => {}
@@ -845,6 +869,49 @@ mod tests {
             position,
             modifiers: gpui::Modifiers::default(),
         }
+    }
+
+    #[gpui::test]
+    fn option_bell_drag_changes_only_q_and_cancel_restores(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            let before = current(fixture, cx).unwrap();
+            let mut begin = event(ResponseGraphPhase::Begin, 1, [0.5, 0.625]);
+            begin.modifiers.alt = true;
+            event_graph(fixture, begin, cx).unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Change, 1, [0.7, 0.725]),
+                cx,
+            )
+            .unwrap();
+            let changed = current(fixture, cx).unwrap();
+            assert_eq!(changed.nodes[0].frequency_hz, before.nodes[0].frequency_hz);
+            assert_eq!(changed.nodes[0].gain_db, before.nodes[0].gain_db);
+            assert!(changed.nodes[0].q > before.nodes[0].q);
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Cancel, 1, [0.7, 0.725]),
+                cx,
+            )
+            .unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), before);
+            event_graph(fixture, begin, cx).unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Commit, 1, [0.7, 0.725]),
+                cx,
+            )
+            .unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), changed);
+        });
     }
 
     #[gpui::test]

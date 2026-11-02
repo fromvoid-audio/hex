@@ -36,6 +36,11 @@ pub(super) fn values(
     (frequency_from_x(x, rate), vertical)
 }
 
+/// Bell option-drag maps pointer displacement relative to the original Q.
+pub(super) fn option_q(initial: f32, displacement: f32) -> f32 {
+    (initial * ((18.0_f32 / 0.1).ln() * displacement).exp()).clamp(0.1, 18.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
