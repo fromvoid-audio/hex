@@ -64,7 +64,31 @@ fn limits() -> DraftReadLimits {
         max_source_bytes: 16 * 1024 * 1024,
     }
 }
+// Tests that have dropped their writer wait for the actual shared lock before
+// opening. A retained descriptor still fails after the bound; production reader
+// admission remains nonblocking and its contention tests use it directly.
+#[cfg(unix)]
+pub(super) fn wait_for_shared_lock(
+    path: &Path,
+    bound: std::time::Duration,
+) -> std::io::Result<File> {
+    let file = File::open(path)?;
+    let start = std::time::Instant::now();
+    loop {
+        match fs2::FileExt::try_lock_shared(&file) {
+            Ok(()) => return Ok(file),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && start.elapsed() < bound =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
 fn open(path: &Path) -> DraftReader {
+    #[cfg(unix)]
+    let _released = wait_for_shared_lock(path, std::time::Duration::from_millis(250)).unwrap();
     DraftReader::open(path, limits()).unwrap()
 }
 
@@ -83,7 +107,16 @@ fn duration_independent_pages_preserve_more_than_65536_exact_applications() {
         for (offset, slot) in batch[..count].iter_mut().enumerate() {
             *slot = event(first + offset as u64);
         }
-        writer.append(&batch[..count]).unwrap();
+        // This test exercises large-draft paging, not per-batch crash durability.
+        // The real finish below syncs the entire file; the separate sync-failure
+        // and interrupted-process tests cover the append durability boundary.
+        writer
+            .append_with(
+                &batch[..count],
+                |file, bytes| file.write_all(bytes),
+                |_| Ok(()),
+            )
+            .unwrap();
     }
     let end = clock(event(COUNT));
     assert_eq!(
@@ -738,4 +771,24 @@ fn actual_process_exit_releases_writer_lock_and_recovers_the_exact_durable_prefi
         assert_eq!(*actual, Some(event(index as u64)));
     }
     assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_wait_observes_actual_shared_lock_and_does_not_hide_a_retained_owner() {
+    let dir = TestDir::new();
+    let path = dir.path();
+    let (source, target, provenance) = fixture();
+    let writer = DraftWriter::create_new(&path, &source, target, provenance).unwrap();
+    let retained = writer.file.try_clone().unwrap();
+    drop(writer);
+    let error = wait_for_shared_lock(&path, std::time::Duration::from_millis(20)).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        drop(retained);
+    });
+    let reader = open(&path);
+    assert_eq!(reader.outcome(), DraftOutcome::Interrupted);
+    release.join().unwrap();
 }

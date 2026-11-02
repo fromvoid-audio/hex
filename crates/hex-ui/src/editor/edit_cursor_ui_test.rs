@@ -1396,6 +1396,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         bounce_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
+        import_truncation: None,
         save_complete: false,
         save_correlation: None,
         document_format_upgrade_required: false,
@@ -2415,16 +2416,17 @@ fn selected_clips_hide_the_point_cursor_and_supply_the_earliest_play_start(
     let (project, source, target, audio) = audio_project();
     let mut model = Editor::new(project, 8).unwrap();
     model
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+        })
+        .unwrap();
+    // Place the clip after the tempo edit, which preserves musical onsets.
+    model
         .execute(Command::MoveClip {
             clip: audio,
             track: source,
             start: 60_000,
-        })
-        .unwrap();
-    model
-        .execute(Command::SetTempoPoint {
-            beat: BeatTime::ZERO,
-            tempo: hex_project::Tempo::new(90_000_000).unwrap(),
         })
         .unwrap();
     let Created::Clip(midi) = model
