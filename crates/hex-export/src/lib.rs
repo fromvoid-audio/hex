@@ -381,8 +381,8 @@ fn publish_encoded<R: BlockRenderer>(
         return Err(ExportError::Invalid("destination has no file name"));
     }
 
-    // Refuse a known collision before rendering; the hard link remains the
-    // authoritative race-safe create-new check at publication.
+    // Refuse a known collision before rendering; create-new publication remains
+    // the authoritative race-safe check (see `publication::publish_new`).
     if let Publication::Replace(consent) = publication {
         consent.validate(path)?;
     } else {
@@ -426,16 +426,17 @@ fn publish_encoded<R: BlockRenderer>(
         return Err(error);
     }
 
-    match publication {
-        Publication::CreateNew => {
-            if let Err(source) = fs::hard_link(&temporary_path, path) {
+    let staging_remains = match publication {
+        Publication::CreateNew => match publication::publish_new(&temporary_path, path) {
+            Ok(published) => published.staging_remains(),
+            Err(source) => {
                 let _ = fs::remove_file(&temporary_path);
                 return Err(ExportError::Io {
                     operation: "publish the wav without replacing the destination",
                     source,
                 });
             }
-        }
+        },
         Publication::Replace(consent) => {
             if let Err(error) = publication::replace_staged(&temporary_path, path, consent, || {}) {
                 if !matches!(error, ExportError::PublicationConflict { .. }) {
@@ -443,13 +444,17 @@ fn publish_encoded<R: BlockRenderer>(
                 }
                 return Err(error);
             }
+            true
         }
-    }
+    };
 
     // After a confirmed successful exchange this removes the displaced old
     // export. It is not retained as a routine backup. On a race, the earlier
     // error preserves unexpected displaced data instead of deleting it.
-    let cleanup_error = fs::remove_file(&temporary_path).err();
+    // An exclusive-rename publication already consumed the staging name.
+    let cleanup_error = staging_remains
+        .then(|| fs::remove_file(&temporary_path).err())
+        .flatten();
     #[cfg(unix)]
     let sync_error = sync_parent_directory(path).err();
     #[cfg(not(unix))]
@@ -1041,6 +1046,56 @@ mod tests {
         );
         assert_eq!(fs::read(stage).unwrap(), b"external changed recording");
         assert_eq!(fs::read(target).unwrap(), b"new staged export");
+    }
+
+    /// Regression for #4201: exFAT/FAT/SMB volumes refuse hard links, which
+    /// used to fail every create-new wav export.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn wav_export_publishes_on_volumes_without_hard_links_and_never_replaces() {
+        use publication::simulate::{Volume, volume};
+        let source = project(vec![[0.5, -0.5]; 2], 1.0);
+        let reference_dir = TestDir::new();
+        let reference = reference_dir.0.join("reference.wav");
+        render_new(&reference, &source, 0, 2).unwrap();
+        let expected = fs::read(&reference).unwrap();
+        for capability in [
+            Volume::NoHardLinks(rustix::io::Errno::NOTSUP.raw_os_error()),
+            Volume::NoHardLinks(rustix::io::Errno::PERM.raw_os_error()),
+            Volume::NoAtomicCreate,
+        ] {
+            let dir = TestDir::new();
+            let _volume = volume(capability);
+            let path = dir.0.join("usb.wav");
+            render_new(&path, &source, 0, 2).expect("export without hard links");
+            assert_eq!(fs::read(&path).unwrap(), expected);
+            // Only the export remains: no staging leftovers.
+            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+
+            let staging = dir.0.join("staging");
+            fs::write(&staging, b"newer").unwrap();
+            let error = publication::publish_new(&staging, &path).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+            assert_eq!(fs::read(&path).unwrap(), expected);
+            assert_eq!(fs::read(&staging).unwrap(), b"newer");
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn other_link_failures_pass_through_without_fallback() {
+        use publication::simulate::{Volume, volume};
+        for errno in [rustix::io::Errno::ACCESS, rustix::io::Errno::NOSPC] {
+            let dir = TestDir::new();
+            let _volume = volume(Volume::NoHardLinks(errno.raw_os_error()));
+            let path = dir.0.join("refused.wav");
+            let error = render_new(&path, &project(vec![[0.5, -0.5]; 2], 1.0), 0, 2)
+                .expect_err("link failure is reported");
+            assert!(
+                matches!(&error, ExportError::Io { source, .. } if source.raw_os_error() == Some(errno.raw_os_error()))
+            );
+            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
