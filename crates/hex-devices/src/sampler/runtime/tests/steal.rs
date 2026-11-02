@@ -165,50 +165,53 @@ fn steal_burst(start_id: u64, count: u64) -> Vec<NativeInstrumentEvent> {
 }
 
 #[test]
-fn steal_burst_beyond_the_fade_pool_is_refused_instead_of_cutting_a_fading_voice() {
+fn steal_burst_beyond_the_fade_pool_drops_the_onset_instead_of_cutting_a_fading_voice() {
     let views = [view(&DC)];
     let resources = BorrowedDeviceResources(&views);
     let prepared = one_voice(views[0]);
     let fade = prepared.steal_fade_frames();
-    let pool = MAX_SAMPLER_RUNTIME_VOICES as u64;
-    let mut runtime = pair(&prepared);
-
-    // One steal more than the pool holds: refused, output and state untouched.
-    let mut untouched = [[9.0; 2]; 4];
-    runtime.begin_block();
-    assert_eq!(
-        runtime.process_block(&steal_burst(1, pool + 1), &mut untouched, &resources),
-        Err(Error::EventCapacityExceeded)
-    );
-    assert_eq!(untouched, [[9.0; 2]; 4]);
-    runtime.rollback_block();
-    assert!(runtime.committed_is_quiescent());
-
-    // Exactly the pool: every stolen voice declicks; nothing is cut.
-    let mut output = vec![[0.0; 2]; 2 * fade as usize];
-    process(&mut runtime, &steal_burst(1, pool), &mut output, &resources);
     let release = prepared.max_release_tail_frames() as f64;
-    for (index, frame) in output.iter().enumerate() {
+    let pool = MAX_SAMPLER_RUNTIME_VOICES as u64;
+    // Fill the pool, release the voice holding the slot, then one more onset:
+    // no fade slot is free, so that onset is dropped and nothing is cut.
+    let mut events = steal_burst(1, pool);
+    events.extend([off(0, pool + 1), on(0, pool + 2, 60), off(3, pool + 2)]);
+    let frames = 2 * fade as usize;
+    let reference = render(&prepared, &events, frames, frames, &resources);
+    for block in [1, 7, 64, 128] {
+        assert_eq!(
+            render(&prepared, &events, frames, block, &resources),
+            reference,
+            "block {block}"
+        );
+    }
+    for (index, frame) in reference.iter().enumerate() {
         let age = index as f64;
+        let releasing = 1.0 - age / release;
         let stolen = if index < fade as usize {
-            pool as f64 * (1.0 - age / release) * (1.0 - age / fade as f64)
+            pool as f64 * releasing * (1.0 - age / fade as f64)
         } else {
             0.0
         };
         assert!(
-            (f64::from(frame[0]) - (1.0 + stolen)).abs() < 1e-4,
+            (f64::from(frame[0]) - (releasing + stolen)).abs() < 1e-4,
             "frame {index}: {frame:?}"
         );
     }
-    let mut ids = [0; MAX_SAMPLER_RUNTIME_VOICES];
-    assert_eq!(runtime.active_occurrence_ids(&mut ids), Ok(1));
-    assert_eq!(ids[0], pool + 1);
-
-    // Once the declicks finish the pool is free again.
+    let mut runtime = pair(&prepared);
     process(
         &mut runtime,
-        &[off(0, pool + 1), on(0, pool + 2, 60)],
-        &mut [[0.0; 2]; 4],
+        &events,
+        &mut vec![[0.0; 2]; frames],
         &resources,
     );
+    let mut ids = [0; MAX_SAMPLER_RUNTIME_VOICES];
+    assert_eq!(runtime.active_occurrence_ids(&mut ids), Ok(1));
+    assert_eq!(ids[0], pool + 1, "the dropped onset never became active");
+    // Once the declicks finish, the next onset steals normally again.
+    let mut next = [[0.0; 2]; 4];
+    process(&mut runtime, &[on(0, pool + 3, 60)], &mut next, &resources);
+    assert_eq!(runtime.active_occurrence_ids(&mut ids), Ok(1));
+    assert_eq!(ids[0], pool + 3);
+    assert!((next[0][0] - 1.0 - (1.0 - frames as f32 / release as f32)).abs() < 1e-4);
 }

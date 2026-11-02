@@ -236,6 +236,16 @@ struct FadingVoice {
 }
 type Fading = [Option<FadingVoice>; MAX_SAMPLER_RUNTIME_VOICES];
 
+/// Outcome of a note-on that found every voice slot occupied.
+enum Steal {
+    /// The oldest releasing voice moved into the fade pool.
+    Stolen,
+    /// No voice is releasing: the note-on is refused.
+    AllHeld,
+    /// Every fade slot is still declicking: the note-on is dropped.
+    FadePoolFull,
+}
+
 /// Opaque fixed-storage sampler processor created only by its prepared factory.
 /// Hosts may identify this concrete audited type; no source owner is stored here.
 ///
@@ -252,11 +262,12 @@ type Fading = [Option<FadingVoice>; MAX_SAMPLER_RUNTIME_VOICES];
 /// still mixed, and it retires no later than its own release would have, so
 /// `max_release_tail_frames` still bounds quiescence. Steals never cut a
 /// sounding voice: when all `MAX_SAMPLER_RUNTIME_VOICES` fade slots are still
-/// declicking (a burst of steals within one declick), the note-on is refused
-/// with `EventCapacityExceeded` exactly like the all-held case, leaving every
-/// voice, fade and committed state untouched for the host's existing refusal
-/// path. Admission and processing make the same decision, so a preflighted
-/// block never refuses during processing.
+/// declicking (more steals than that within one declick), the incoming note-on
+/// is dropped as a voice-limit outcome instead. The block still renders, every
+/// other event (including every NoteOff) is applied, the dropped occurrence
+/// never becomes active, and its later NoteOff is ignored like any unknown
+/// occurrence. Admission and processing make the same decision, so a
+/// preflighted block never refuses during processing.
 pub struct SamplerRuntime {
     prepared: PreparedSamplerRuntime,
     active: Active,
@@ -377,17 +388,13 @@ impl SamplerRuntime {
         Ok(())
     }
     /// Move the oldest releasing voice into a free fade slot, freeing its
-    /// voice slot. Returns false, changing nothing, when every slot is still
-    /// held or every fade slot is still declicking.
+    /// voice slot. Changes nothing unless it returns `Steal::Stolen`.
     fn steal(
         &self,
         active: &mut Active,
         fading: &mut Fading,
         gain_at: &dyn Fn(u64) -> f64,
-    ) -> bool {
-        let Some(target) = fading.iter().position(Option::is_none) else {
-            return false;
-        };
+    ) -> Steal {
         let mut oldest: Option<(usize, u64)> = None;
         for (index, entry) in active[..self.prepared.voices].iter().enumerate() {
             if let Some(voice) = entry
@@ -397,15 +404,21 @@ impl SamplerRuntime {
                 oldest = Some((index, voice.age));
             }
         }
-        let Some(voice) = oldest.and_then(|(index, _)| active[index].take()) else {
-            return false;
+        let Some((index, _)) = oldest else {
+            return Steal::AllHeld;
+        };
+        let Some(target) = fading.iter().position(Option::is_none) else {
+            return Steal::FadePoolFull;
+        };
+        let Some(voice) = active[index].take() else {
+            return Steal::AllHeld;
         };
         fading[target] = Some(FadingVoice {
             voice,
             start: voice.age,
             gain: gain_at(voice.occurrence),
         });
-        true
+        Steal::Stolen
     }
     fn event(
         &self,
@@ -450,10 +463,12 @@ impl SamplerRuntime {
                 if velocity == 0 || self.prepared.notes[usize::from(pitch)].is_none() {
                     return Ok(());
                 }
-                if !active[..self.prepared.voices].iter().any(Option::is_none)
-                    && !self.steal(active, fading, gain_at)
-                {
-                    return Err(Error::EventCapacityExceeded);
+                if !active[..self.prepared.voices].iter().any(Option::is_none) {
+                    match self.steal(active, fading, gain_at) {
+                        Steal::Stolen => {}
+                        Steal::FadePoolFull => return self.advance(active, fading, 0),
+                        Steal::AllHeld => return Err(Error::EventCapacityExceeded),
+                    }
                 }
                 let entry = active[..self.prepared.voices]
                     .iter_mut()
