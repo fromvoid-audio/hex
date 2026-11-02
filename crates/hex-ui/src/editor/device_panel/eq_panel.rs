@@ -24,6 +24,7 @@ mod scroll_queue;
 pub(in crate::editor) use scroll_queue::after_worker_event as after_scroll_worker_event;
 mod response;
 mod sampling;
+mod selection;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
 pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
@@ -896,16 +897,7 @@ fn marquee_event(
     let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
         return;
     };
-    let ids: Vec<NodeId> = event
-        .selected
-        .iter()
-        .filter_map(|id| NodeId::new(u64::from(*id)).ok())
-        .collect();
-    panel.selected = panel
-        .selected
-        .filter(|id| ids.contains(id))
-        .or_else(|| ids.last().copied());
-    panel.group = if ids.len() > 1 { ids } else { Vec::new() };
+    selection::apply_marquee(&mut panel.selected, &mut panel.group, &event.selected);
     panel.collapse = None;
     cx.notify();
 }
