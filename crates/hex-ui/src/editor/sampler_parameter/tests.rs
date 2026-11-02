@@ -2,6 +2,17 @@ use super::*;
 use gpui::{TestAppContext, VisualTestContext};
 use hex_project::{Command, Created, Editor, Project};
 
+pub(in crate::editor) fn sampler_text(view: &EditorView, cx: &gpui::App) -> String {
+    view.sampler_parameter
+        .controls
+        .get(&SamplerParameter::AttackMs)
+        .unwrap()
+        .entity
+        .read(cx)
+        .display_text()
+        .to_owned()
+}
+
 fn numeric_sampler_fixture(
     cx: &mut TestAppContext,
 ) -> (
