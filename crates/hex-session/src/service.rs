@@ -5,6 +5,7 @@ use crate::arrangement_seek::{
 use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureSnapshot};
 use crate::import_batch::AudioBatchDestination;
 use crate::import_batch_decode::{AudioBatchContext, AudioBatchControl, AudioBatchImport};
+use crate::resident_import::{IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT, decode_resident_import};
 use crate::tuning_gesture::{
     TuningGestureAck, TuningGestureMachine, TuningGestureRequest, TuningGestureSnapshot,
     TuningLibraryOperation, TuningLibraryResult,
@@ -32,6 +33,8 @@ mod comparison_audio;
 #[cfg(test)]
 mod console_track_tests;
 mod export_lane;
+#[cfg(test)]
+mod resident_limit_tests;
 mod shutdown;
 #[cfg(test)]
 mod startup_failure_tests;
@@ -42,7 +45,9 @@ mod resident_audio;
 mod resident_preview;
 mod resident_seek;
 mod stopped_arrangement;
+mod truncated_import;
 pub use resident_seek::{ResidentArrangementSeekIntent, ResidentArrangementSeekResult};
+pub use truncated_import::{ImportTruncation, TruncatedImportRecovery};
 pub(crate) mod sampler_export;
 mod sampler_parameter;
 use audio_sink::WorkerEvents;
@@ -81,6 +86,8 @@ mod format_upgrade_tests;
 #[cfg(test)]
 #[path = "service/limiter_tests.rs"]
 mod limiter_tests;
+#[cfg(test)]
+mod long_source_tests;
 pub mod missing_media;
 pub mod preset;
 mod recovery;
@@ -111,8 +118,6 @@ const REQUEST_CAPACITY: usize = 32;
 #[cfg(test)]
 mod snapshot_queue_tests;
 const EVENT_CAPACITY: usize = 2;
-const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
-const IMPORT_FRAME_LIMIT: usize = 8_000_000;
 // Browser audition is independent of canonical resident-import admission. Bound
 // encoded input to 512 MiB and each decoded/converted stereo buffer to 256 MiB.
 // Source and converted PCM can coexist during conversion (512 MiB total);
@@ -248,6 +253,9 @@ pub struct Event {
     pub recovery_failure: Option<Arc<RecoveryFailure>>,
     /// Original failing batch member, kept separate from app-owned explanation.
     pub audio_batch_failure: Option<AudioBatchMemberFailure>,
+    /// A single-file import refused because its WAV data is truncated; a
+    /// consumer may offer `Request::RecoverTruncatedImport`.
+    pub import_truncation: Option<ImportTruncation>,
     pub request_complete: bool,
     /// Metadata-only completion of one first-load action, on success or refusal.
     pub sampler_load_complete: Option<SamplerLoadCompletion>,
@@ -366,18 +374,23 @@ pub fn prepare_audio_preview(
 
 /// Decode a bounded browser one-shot on a background worker, independent of
 /// canonical project/history. PCM is finite stereo at the actual output rate.
-/// Supports WAV files up to 512 MiB, with at most 33,554,432 frames both before
-/// and after conversion (256 MiB per stereo f32 buffer). Never truncates a source
-/// to fit. Resident import retains its separate, smaller resource ceilings.
+/// Supports streamable (fixed-frame) WAV files up to 512 MiB, with at most
+/// 33,554,432 frames both before and after conversion (256 MiB per stereo f32
+/// buffer); import can stream those when a source reservation is available.
+/// Resident-only WAV encodings such as ADPCM keep the resident import caps.
+/// Other resource constraints can still refuse an import. Never truncates a source.
 pub fn prepare_sample_preview(
     path: impl AsRef<Path>,
     output_sample_rate: u32,
 ) -> Result<hex_engine::Audio, String> {
-    let decoded = decode_wav_file(
+    let path = path.as_ref();
+    // A failed fixed-frame probe takes the more restrictive resident path.
+    let probe = hex_media::WavFrameReader::open(
         path,
-        Limits::new(BROWSER_PREVIEW_FILE_LIMIT, BROWSER_PREVIEW_FRAME_LIMIT),
+        hex_media::WavReaderLimits::new(u64::MAX, u64::MAX, 32, 4096),
     )
-    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    .ok();
+    let decoded = decode_preview_source(path, probe)?;
     let audio = hex_media::resample(
         decoded.audio(),
         output_sample_rate,
@@ -388,6 +401,28 @@ pub fn prepare_sample_preview(
     )
     .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     Ok(audio)
+}
+
+fn decode_preview_source(
+    path: &Path,
+    probe: Option<hex_media::WavFrameReader>,
+) -> Result<hex_media::DecodedAudio, String> {
+    let decoded = if probe.is_some() {
+        decode_wav_file(
+            path,
+            Limits::new(BROWSER_PREVIEW_FILE_LIMIT, BROWSER_PREVIEW_FRAME_LIMIT),
+        )
+    } else {
+        decode_resident_import(path)
+    }
+    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    if probe
+        .as_ref()
+        .is_some_and(|reader| !reader.matches_file_identity(decoded.file_identity()))
+    {
+        return Err("audio file changed while preparing preview · retry".into());
+    }
+    Ok(decoded)
 }
 
 /// Stable captured identities; instrument expectation is explicit, never an effect ID.
@@ -714,6 +749,9 @@ pub enum Request {
         value: hex_lattice_contract::ParameterValue,
     },
     Import(PathBuf),
+    /// Repeat one single-file import, explicitly recovering the readable whole
+    /// frames of a truncated WAV into resident media; see `truncated_import`.
+    RecoverTruncatedImport(TruncatedImportRecovery),
     /// Point offline assets at found files as one undoable edit. The files are
     /// decoded on the worker and must match the saved rate and frame count.
     RelinkMedia(BTreeMap<hex_project::AssetId, PathBuf>),
@@ -2182,6 +2220,7 @@ fn run_worker(
                 error: None,
                 recovery_failure: None,
                 audio_batch_failure: None,
+                import_truncation: None,
                 request_complete: false,
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
@@ -2221,6 +2260,7 @@ fn run_worker(
             error: Some(error),
             recovery_failure: None,
             audio_batch_failure: None,
+            import_truncation: None,
             request_complete: false,
             sampler_load_complete: None,
             sampler_edit_complete: None,
@@ -2395,7 +2435,7 @@ fn run_worker(
         events.begin_diagnostics(&queued, project_generation, revision);
         events.begin_request(&document_intent, queued.document_intent);
         let save_correlation = queued.save_correlation;
-        let request = queued.request;
+        let (request, mut import_decode) = truncated_import::admit(queued.request);
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
             _ => None,
@@ -3355,6 +3395,10 @@ fn run_worker(
             error = Some(reason);
         } else {
             match request {
+                // `truncated_import::admit` unwraps every recovery at receipt.
+                Request::RecoverTruncatedImport(_) => {
+                    error = Some("truncated import recovery was not admitted".into());
+                }
                 Request::RestartRecovery(intent) => {
                     let result = if device_gesture.snapshot().is_some()
                         || tuning_gesture.snapshot().is_some()
@@ -4467,7 +4511,7 @@ fn run_worker(
                             resident_seek.as_ref(),
                             resident_preview.as_ref(),
                         );
-                        decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+                        decode_resident_import(path)
                             .map_err(|reason| reason.to_string())
                             .and_then(|decoded| {
                                 session
@@ -4555,6 +4599,7 @@ fn run_worker(
                                 resident_preview.as_ref(),
                             ),
                             &mut resident_snapshot,
+                            &mut import_decode,
                         )
                     })();
                     match result {
@@ -4632,6 +4677,7 @@ fn run_worker(
                         resident_seek.as_ref(),
                         resident_preview.as_ref(),
                     ),
+                    &mut import_decode,
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -4657,6 +4703,7 @@ fn run_worker(
                         resident_seek.as_ref(),
                         resident_preview.as_ref(),
                     ),
+                    &mut import_decode,
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -4683,6 +4730,7 @@ fn run_worker(
                             resident_seek.as_ref(),
                             resident_preview.as_ref(),
                         ),
+                        &mut import_decode,
                     ) {
                         Ok(prepared) => {
                             unsaved = true;
@@ -4712,6 +4760,7 @@ fn run_worker(
                         resident_seek.as_ref(),
                         resident_preview.as_ref(),
                     ),
+                    &mut import_decode,
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -4736,6 +4785,7 @@ fn run_worker(
                         resident_seek.as_ref(),
                         resident_preview.as_ref(),
                     ),
+                    &mut import_decode,
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -5734,13 +5784,14 @@ fn run_worker(
                                         &mut resident_snapshot,
                                     )
                                 } else {
-                                    session.bounce_arrangement_adopting(
+                                    session.bounce_arrangement_adopting_with(
                                         target,
                                         in_place,
                                         adoption,
                                         &root,
                                         &control,
                                         compiled.as_ref().map(|(_, p)| p.as_ref()),
+                                        events.streamed_bouncer(),
                                     )
                                 }
                             })
@@ -7395,6 +7446,21 @@ fn run_worker(
             }
             stopped_playback_restore_complete = true;
         }
+        let import_truncation = import_decode.refused().cloned();
+        if let (Some(message), Some(path)) = (&mut error, import_decode.recovered_path()) {
+            *message = format!(
+                "{message} · recovered source retained at {}",
+                hex_storage::text::verbatim(path.display())
+            );
+        }
+        if error.is_none()
+            && let Some(note) = import_decode.recovery_note()
+        {
+            status = Some(match status {
+                Some(status) => format!("{status} · {note}"),
+                None => note,
+            });
+        }
         if !events.send_with_control_poll(
             Event {
                 state: Arc::clone(&state),
@@ -7413,6 +7479,7 @@ fn run_worker(
                 bounce_complete,
                 audio_batch_complete,
                 audio_batch_failure,
+                import_truncation,
                 save_complete,
                 save_correlation: if save_complete {
                     save_correlation
@@ -7718,9 +7785,13 @@ fn import(
     path: PathBuf,
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
+    decode: &mut truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, String> {
     let path = absolute_document_path(&path)?;
-    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
+    if let Some(source) = decode
+        .plan(session, &path, None)
+        .map_err(|e| e.to_string())?
+    {
         return session
             .import_verified_revision(
                 source,
@@ -7742,8 +7813,13 @@ fn import(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    let decoded = decode
+        .decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+        .map_err(|error| {
+            hex_storage::text::lowercase_outside_verbatim(&truncated_import::decode_error_text(
+                error,
+            ))
+        })?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -7762,6 +7838,7 @@ fn import(
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn import_to_track(
     session: &mut Session,
     path: PathBuf,
@@ -7770,9 +7847,13 @@ fn import_to_track(
     previous: Option<&PreparedRevision>,
     overwrite: bool,
     admission: sampler_export::Admission<'_>,
+    decode: &mut truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, String> {
     let path = absolute_document_path(&path)?;
-    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
+    if let Some(source) = decode
+        .plan(session, &path, None)
+        .map_err(|e| e.to_string())?
+    {
         return session
             .import_verified_revision(
                 source,
@@ -7795,8 +7876,13 @@ fn import_to_track(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    let decoded = decode
+        .decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+        .map_err(|error| {
+            hex_storage::text::lowercase_outside_verbatim(&truncated_import::decode_error_text(
+                error,
+            ))
+        })?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -7826,9 +7912,13 @@ fn import_to_new_track(
     start: u64,
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
+    decode: &mut truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, String> {
     let path = absolute_document_path(&path)?;
-    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
+    if let Some(source) = decode
+        .plan(session, &path, None)
+        .map_err(|e| e.to_string())?
+    {
         return session
             .import_verified_revision(
                 source,
@@ -7860,8 +7950,13 @@ fn import_to_new_track(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    let decoded = decode
+        .decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+        .map_err(|error| {
+            hex_storage::text::lowercase_outside_verbatim(&truncated_import::decode_error_text(
+                error,
+            ))
+        })?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -7887,9 +7982,13 @@ fn import_to_session(
     scene: hex_project::SceneId,
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
+    decode: &mut truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, String> {
     let path = absolute_document_path(&path)?;
-    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
+    if let Some(source) = decode
+        .plan(session, &path, None)
+        .map_err(|e| e.to_string())?
+    {
         return session
             .import_verified_revision(
                 source,
@@ -7908,8 +8007,13 @@ fn import_to_session(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    let decoded = decode
+        .decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+        .map_err(|error| {
+            hex_storage::text::lowercase_outside_verbatim(&truncated_import::decode_error_text(
+                error,
+            ))
+        })?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -12302,6 +12406,7 @@ mod service_tests {
                     frames,
                     data_bytes: u32::try_from(frames * 4).unwrap_or(u32::MAX),
                     recovery_path: None,
+                    stale_temporaries: Default::default(),
                 })
             })
         };

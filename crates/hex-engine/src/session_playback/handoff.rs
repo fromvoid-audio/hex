@@ -379,6 +379,41 @@ impl SessionPlayback {
             result => result,
         }
     }
+    /// Whether any same-identity device chain must defer this handoff until
+    /// the predecessor's committed live transitions drain (Pulse #4178).
+    /// Pairs track chains by route identity and Return chains by bus identity,
+    /// as the planner does; read-only, bounded and allocation-free.
+    pub(super) fn device_transition_busy(&self, previous: &Self) -> bool {
+        let tracks = self
+            .routes
+            .iter()
+            .zip(&self.device_chains)
+            .any(|(route, chain)| {
+                previous
+                    .routes
+                    .iter()
+                    .position(|old| old.id == route.id)
+                    .and_then(|index| previous.device_chains.get(index))
+                    .is_some_and(|old| chain.transition_busy_from(old))
+            });
+        let returns = self
+            .revision
+            .arrangement()
+            .return_buses()
+            .iter()
+            .zip(&self.return_chains)
+            .any(|(bus, chain)| {
+                previous
+                    .revision
+                    .arrangement()
+                    .return_buses()
+                    .iter()
+                    .position(|old| old.id == bus.id)
+                    .and_then(|index| previous.return_chains.get(index))
+                    .is_some_and(|old| chain.transition_busy_from(old))
+            });
+        tracks || returns || self.main_chain.transition_busy_from(&previous.main_chain)
+    }
     fn inherit_state_planned_once(
         &mut self,
         previous: &mut Self,
@@ -396,6 +431,11 @@ impl SessionPlayback {
             || previous.analytic_continuations.len() != MAX_TRACKS
         {
             return Err(SessionPlaybackError::SharedAnalyticContext);
+        }
+        // Before every inheritance, tail or reset classification (Pulse
+        // #4178): even the reset handoff transfers Main history.
+        if self.device_transition_busy(previous) {
+            return Err(SessionPlaybackError::DeviceTransitionBusy);
         }
         if self
             .compensation
@@ -3757,11 +3797,33 @@ impl SessionPlayback {
         }
         // Pure inputs only: refuse before any commit, so the live path can
         // restart instead of leaving the old graph applied.
+        // A detached old track suffix is summed straight into Main's input.
+        // Under compensation it may carry over only where that sum stays on
+        // Main's clock in both revisions, with the clock itself unchanged: no
+        // tempo map or loop edit remaps it (Pulse #4188).
+        let detached_tails_aligned = match (
+            previous.revision.arrangement().signal_graph.as_deref(),
+            self.revision.arrangement().signal_graph.as_deref(),
+        ) {
+            (Some(old), Some(new)) => {
+                !timing_changed
+                    && old_loop == new_loop
+                    && !new.has_group_outputs()
+                    && old.main_input_arrival() == new.main_input_arrival()
+                    && old_track_tail_slots
+                        .iter()
+                        .enumerate()
+                        .all(|(index, slot)| {
+                            slot.is_none() || old.detached_suffix_reaches_main_aligned(index)
+                        })
+            }
+            _ => false,
+        };
         if (self.revision.arrangement().main_latency_frames() > 0
             || previous.revision.arrangement().main_latency_frames() > 0)
             && (return_tail_plan.captures_bus()
                 || old_track_mutable_tail_slots.iter().any(Option::is_some)
-                || old_track_tail_slots.iter().any(Option::is_some)
+                || (old_track_tail_slots.iter().any(Option::is_some) && !detached_tails_aligned)
                 || previous.tail_output_active.iter().any(|&active| active)
                 || previous
                     .return_effect_tails

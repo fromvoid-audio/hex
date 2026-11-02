@@ -13150,6 +13150,13 @@ mod effect_tail_budget_tests;
 mod return_effect_tail_tests;
 #[path = "saturator_tests.rs"]
 mod saturator_tests;
+#[path = "transition_busy_tests.rs"]
+mod transition_busy_tests;
+
+#[path = "eq8_mode_tests.rs"]
+mod eq8_mode_tests;
+#[path = "flexible_eq_mode_tests.rs"]
+mod flexible_eq_mode_tests;
 
 #[path = "compressor_tests.rs"]
 mod compressor_tests;
