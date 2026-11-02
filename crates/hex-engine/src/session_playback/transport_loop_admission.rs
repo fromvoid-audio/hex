@@ -13,19 +13,24 @@ struct PeriodicSpan {
     start: u64,
 }
 
+/// Admit one track's periodic stream. With `steals_releasing_voices` the
+/// declared slots bound held density only. The returned envelope still counts
+/// releases, because live input shares the per-track proof ledger with them.
 pub(super) fn admit_track(
     track: &Track,
     region: LoopRegion,
     release_tail_frames: u64,
     declared_max_events: usize,
     declared_max_voices: usize,
+    steals_releasing_voices: bool,
 ) -> Result<usize, SessionPlaybackError> {
-    admit_tracks(
+    admit_streams(
         &[track],
         region,
         release_tail_frames,
         declared_max_events,
         declared_max_voices,
+        steals_releasing_voices,
     )
 }
 
@@ -38,6 +43,25 @@ pub(super) fn admit_tracks(
     release_tail_frames: u64,
     declared_max_events: usize,
     declared_max_voices: usize,
+) -> Result<usize, SessionPlaybackError> {
+    // Shared sources keep the conservative releases-included envelope.
+    admit_streams(
+        tracks,
+        region,
+        release_tail_frames,
+        declared_max_events,
+        declared_max_voices,
+        false,
+    )
+}
+
+fn admit_streams(
+    tracks: &[&Track],
+    region: LoopRegion,
+    release_tail_frames: u64,
+    declared_max_events: usize,
+    declared_max_voices: usize,
+    steals_releasing_voices: bool,
 ) -> Result<usize, SessionPlaybackError> {
     let period = region
         .end()
@@ -167,9 +191,18 @@ pub(super) fn admit_tracks(
         release_tail_frames,
     )
     .map_err(|_| SessionPlaybackError::MutableInstrumentLoopDensity)?;
-    if first_seam_edge_max > event_limit || max_voices > voice_limit {
+    let admitted_voices = if steals_releasing_voices {
+        crate::midi_template::admit_held_transport_loop_density(
+            &intro, &repeats, first_pass, period,
+        )
+        .map_err(|_| SessionPlaybackError::MutableInstrumentLoopDensity)?
+    } else {
+        max_voices
+    };
+    if first_seam_edge_max > event_limit || admitted_voices > voice_limit {
         return Err(SessionPlaybackError::MutableInstrumentLoopDensity);
     }
+    // The envelope keeps releases: live input shares the proof ledger.
     Ok(max_voices)
 }
 

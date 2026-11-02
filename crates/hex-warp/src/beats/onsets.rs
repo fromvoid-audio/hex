@@ -202,6 +202,7 @@ mod tests {
             used: 0,
             scratch: 0,
             base_scratch: 0,
+            resampler: Resampler::V1,
         };
         work.scratch(scratch(rate) + MAX_POINTS * 8).unwrap();
         detect(

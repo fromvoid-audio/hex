@@ -152,6 +152,7 @@ pub(super) fn render_source_instrument_chunk<T: crate::prepared_tempo::MidiTempo
                 raw: true,
                 timing: context.timing,
                 table: context.table,
+                seam: None,
             },
             spans,
             performance_frame,

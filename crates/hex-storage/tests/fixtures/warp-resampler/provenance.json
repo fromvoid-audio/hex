@@ -1,0 +1,8 @@
+{
+  "writer_source": "e0b401f74",
+  "writer_schema": 64,
+  "writer": "schema64-writer.rs",
+  "writer_command": "cargo run --locked -p hex-storage --example w4128 -- schema64.json (writer copied to crates/hex-storage/examples/w4128.rs in an export of the writer source)",
+  "fixture_sha256": "f929be7b2b0ae70c77974fc445bd7c681ff5db6d7560f6d3fa4344c22d901e55",
+  "input": "Original synthetic project at 48000 hz with one 96000 hz sinc v2 asset: a +700 cent clip and its alias, a RePitch-warped clip, a source-gain-only clip, and a group retaining two -300 cent roots. No media files are referenced or required."
+}
