@@ -330,6 +330,14 @@ impl Editor {
         true
     }
 
+    /// Undo without an external preparation step. Returns false only when
+    /// history is empty; reservation failures leave history unchanged.
+    /// Callers that must prepare playback before committing use `undo_prepared`.
+    pub fn try_undo(&mut self) -> Result<bool, Invalid> {
+        self.undo_prepared(|_| Ok::<(), Invalid>(()))
+            .map(|result| result.is_some())
+    }
+
     /// Prepare the previous snapshot before moving it across history. Failure
     /// leaves the project, allocator high-water mark, and both history stacks
     /// unchanged.
@@ -384,6 +392,14 @@ impl Editor {
         true
     }
 
+    /// Redo without an external preparation step. Returns false only when
+    /// history is empty; reservation failures leave history unchanged.
+    /// Callers that must prepare playback before committing use `redo_prepared`.
+    pub fn try_redo(&mut self) -> Result<bool, Invalid> {
+        self.redo_prepared(|_| Ok::<(), Invalid>(()))
+            .map(|result| result.is_some())
+    }
+
     /// Prepare the next snapshot before moving it across history. Failure
     /// leaves the project, allocator high-water mark, and both history stacks
     /// unchanged.
@@ -430,6 +446,24 @@ impl Editor {
 #[cfg(test)]
 mod prepared_capacity_tests {
     use super::*;
+
+    #[test]
+    fn fallible_simple_transitions_report_empty_and_retain_capacity() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+        assert!(!editor.try_undo().unwrap());
+        assert!(!editor.try_redo().unwrap());
+        for name in ["first", "second"] {
+            editor
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap();
+        }
+        assert!(editor.try_undo().unwrap());
+        assert_eq!(editor.project().tracks().len(), 1);
+        assert!(!editor.try_undo().unwrap());
+        assert!(editor.try_redo().unwrap());
+        assert_eq!(editor.project().tracks().len(), 2);
+        assert!(!editor.try_redo().unwrap());
+    }
 
     #[test]
     fn prepared_undo_and_redo_preserve_the_bounded_history() {
