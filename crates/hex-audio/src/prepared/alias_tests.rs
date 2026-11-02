@@ -98,6 +98,9 @@ fn alias_edit_unique_removal_and_shutdown_do_not_reclaim_sources_in_callback() {
         control.reclaim();
     }
     control.command(PlaybackCommand::Stop).unwrap();
+    // The queued Stop fades over 128 frames: one block and the first frame
+    // of the next, which is the fade's final zero (#4151).
+    measured(&mut callback, &mut output);
     measured(&mut callback, &mut output);
     assert_eq!(output, [[0.0; 2]; 127]);
     control.request_shutdown();
@@ -284,6 +287,8 @@ fn alias_source_edit_undo_redo_reaches_active_callback_without_allocations() {
         edited
     );
     control.command(PlaybackCommand::Stop).unwrap();
+    // The 128-frame queued Stop fade spans one 127-frame block (#4151).
+    measured(&mut callback, &mut output);
     measured(&mut callback, &mut output);
     assert_eq!(output, [[0.0; 2]; 127]);
     control.request_shutdown();

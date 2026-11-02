@@ -94,7 +94,17 @@ fn normalized_all_four_lanes_apply_discrete_endpoints_and_five_ms_transitions_in
                 (0.5 + 0.5 * w, 1.0 + (rates[0] - 1.0) * w, 180.0 + 180.0 * w)
             };
             let gains = [phase, (phase + degrees / 360.0).rem_euclid(1.0)].map(|p| {
-                let square = if p < 0.5 { 1.0 } else { 0.0 };
+                // Square edges end a 1 ms linear transition (Pulse #3959).
+                let edge = rate * 0.001;
+                let square = if (0.5 - edge..0.5).contains(&p) && 0.5 - p <= edge {
+                    (0.5 - p) / edge
+                } else if p >= 1.0 - edge {
+                    1.0 - (1.0 - p) / edge
+                } else if p < 0.5 {
+                    1.0
+                } else {
+                    0.0
+                };
                 let lfo = if second {
                     let triangle = 1.0 - (2.0 * (p + 0.25).rem_euclid(1.0) - 1.0).abs();
                     square * (1.0 - w) + triangle * w

@@ -11,6 +11,11 @@ use hex_lattice_contract::{
 use std::any::Any;
 
 pub const COMPRESSOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.compressor");
+/// Current state version. Supported saved versions (Pulse #3956), each a
+/// little-endian f32 prefix of the next:
+/// - v1 (11 Oct 2026, 24 bytes): no dry/wet; migrates fully wet (1.0), as v1 rendered.
+/// - v2 (18 Oct 2026, 28 bytes): no detector; migrates to Peak, v2's only detector.
+/// - v3 (18 Oct 2026, 32 bytes): adds the detector choice.
 pub const COMPRESSOR_STATE_VERSION: u32 = 3;
 const STATE_BYTES: usize = 32;
 const MIN_SAMPLE_RATE: u32 = 8_000;
@@ -171,11 +176,14 @@ fn decode(state: &NativeDeviceState) -> Result<CompressorSettings, DeviceContrac
     if state.type_id() != COMPRESSOR_TYPE_ID {
         return Err(DeviceContractError::WrongDeviceType);
     }
-    if state.state_version() != COMPRESSOR_STATE_VERSION {
-        return Err(DeviceContractError::UnsupportedStateVersion);
-    }
+    let expected = match state.state_version() {
+        1 => 24,
+        2 => 28,
+        COMPRESSOR_STATE_VERSION => STATE_BYTES,
+        _ => return Err(DeviceContractError::UnsupportedStateVersion),
+    };
     let bytes = state.payload();
-    if bytes.len() != STATE_BYTES {
+    if bytes.len() != expected {
         return Err(DeviceContractError::MalformedState);
     }
     let read = |offset| {
@@ -193,12 +201,16 @@ fn decode(state: &NativeDeviceState) -> Result<CompressorSettings, DeviceContrac
         release_ms: read(12),
         knee_db: read(16),
         makeup_db: read(20),
-        dry_wet: read(24),
-        detector: Detector::from_choice(u32::from_le_bytes(
-            bytes[28..32]
-                .try_into()
-                .map_err(|_| DeviceContractError::MalformedState)?,
-        ))?,
+        dry_wet: if expected >= 28 { read(24) } else { 1.0 },
+        detector: if expected == STATE_BYTES {
+            Detector::from_choice(u32::from_le_bytes(
+                bytes[28..32]
+                    .try_into()
+                    .map_err(|_| DeviceContractError::MalformedState)?,
+            ))?
+        } else {
+            Detector::Peak
+        },
     };
     validate(settings)?;
     Ok(settings)

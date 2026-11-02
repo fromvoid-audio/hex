@@ -11,15 +11,17 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     // Check duplicate keys before the private version projection can collapse them.
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: Value) -> Result<Project, StorageError> {
     if value.get("version").and_then(Value::as_u64) != Some(60) {
         return Err(StorageError::Invalid(
             "invalid audio alias projection schema",
         ));
     }
     value["version"] = 58.into();
-    super::nested_audio::decode(&serde_json::to_vec(&value)?)
+    super::nested_audio::decode_value(value)
 }
 
 #[cfg(test)]

@@ -276,6 +276,8 @@ fn render_stems_with_resources_and_hook(
         frames,
         data_bytes: bytes,
         recovery_path: None,
+        // Stem batches stage in their own directory, outside this sweep.
+        stale_temporaries: StaleTemporaries::default(),
     })
 }
 
