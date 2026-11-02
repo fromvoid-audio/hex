@@ -330,6 +330,7 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
         wav.extend_from_slice(&8192_i16.to_le_bytes());
     }
     std::fs::write(&wav_path, wav).unwrap();
+    let _output_serial = hex_audio::worker_fixture::serial_output();
     let deadline = crate::test_wait::hang_deadline();
     let (mut output, mut backend) = loop {
         match hex_audio::worker_fixture::open(48_000) {
