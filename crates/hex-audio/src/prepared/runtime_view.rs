@@ -81,6 +81,8 @@ impl RuntimeRef<'_> {
                 sampler_console: false,
                 route_state_generation: p.session_route_state_generation(),
                 route_count: p.session_route_count(),
+                main_output_latency_frames: p.main_output_latency_frames(),
+                content_loop: p.automation_capture_loop(),
             }),
         }
     }
@@ -101,6 +103,18 @@ impl RuntimeRef<'_> {
     }
     pub(super) fn metronome_enabled(&self) -> bool {
         self.status().is_some_and(|s| s.metronome_enabled)
+    }
+    /// Audible-playhead facts: Main output latency and the enabled content
+    /// loop as half-open `(start, end)` frames.
+    pub(super) fn audible_timing(&self) -> (u32, Option<(u64, u64)>) {
+        self.status().map_or((0, None), |s| {
+            (
+                s.main_output_latency_frames,
+                s.content_loop
+                    .filter(|region| region.enabled())
+                    .map(|region| (region.start(), region.end())),
+            )
+        })
     }
     pub(super) fn session_capability_status(&self) -> SessionCapabilityStatus {
         self.status()
