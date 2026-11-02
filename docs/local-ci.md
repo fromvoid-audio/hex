@@ -432,6 +432,38 @@ reproducible, inactive generated outputs. Do not delete projects, source, accept
 artifacts or another worktree's target merely to get a run started. Do not edit
 ownership markers to claim a successful check.
 
+## Controlled macOS VST3 fixtures
+
+The opt-in native instance tests use a clean, pinned VST3 SDK checkout and
+original fixture bundles, not installed plug-ins. `build.py` owns the exact SDK
+and submodule pins; `macos_bootstrap.py` checks those revisions, tracked changes
+and MIT license files before building. Keep the checkout outside the repository
+and choose fresh output directories. Set `HEX_VST3_SDK` locally to its path.
+
+```sh
+test ! -e artifacts/vst3-local-controlled
+test ! -e artifacts/vst3-local-instance
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py build \
+  --sdk "$HEX_VST3_SDK" --output artifacts/vst3-local-controlled
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py build --instance-only \
+  --sdk "$HEX_VST3_SDK" --output artifacts/vst3-local-instance
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py verify \
+  --receipt artifacts/vst3-local-controlled/controlled-macos.json
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py verify \
+  --receipt artifacts/vst3-local-instance/controlled-macos.json
+HEX_VST3_MACOS_RECEIPT="$PWD/artifacts/vst3-local-controlled/controlled-macos.json" \
+HEX_VST3_INSTANCE_RECEIPT="$PWD/artifacts/vst3-local-instance/controlled-macos.json" \
+  cargo test -p hex-plugin-host --lib --locked \
+  native::tests::epoch::actual_current_capture_uses_same_quiescent_instance_and_keeps_startup_historical \
+  -- --ignored --exact
+```
+
+Receipts are bound to the native sources and SDK pins. Rebuild them after those
+inputs change. This controlled helper test does not establish installed plug-in,
+native UI, listening, device deadline or release acceptance. Keep SDK paths and
+local receipts out of Git; record the exact receipt hashes and result with the
+issue or PR being verified.
+
 ## Focused commands
 
 For partial edit feedback, optionally select the owning library or named
