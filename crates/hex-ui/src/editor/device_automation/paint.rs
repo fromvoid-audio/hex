@@ -233,32 +233,15 @@ fn plot(
     cx: &mut Context<EditorView>,
 ) -> gpui::Stateful<Div> {
     let target = entry.target;
-    let all_points = view.automation_view.devices.points_ref(state, target);
-    // Include one neighbor at each edge so clipping preserves interpolation.
-    let first = all_points
-        .partition_point(|point| {
-            state
-                .project
-                .tempo_map()
-                .beat_to_frame(point.beat)
-                .is_ok_and(|frame| frame < viewport.start)
-        })
-        .saturating_sub(1);
-    let end = all_points
-        .partition_point(|point| {
-            state
-                .project
-                .tempo_map()
-                .beat_to_frame(point.beat)
-                .is_ok_and(|frame| frame <= viewport.end().unwrap_or(u64::MAX))
-        })
-        .saturating_add(1)
-        .min(all_points.len());
-    let points = all_points.get(first..end).unwrap_or_default().to_vec();
-    let selected = view.automation_view.devices.selected.clone();
+    // The paint closure re-borrows the displayed lane at paint time, so render
+    // neither copies nor traverses its points (#4097).
+    let dotted = view
+        .automation_view
+        .devices
+        .points_ref(&state.project, target)
+        .is_empty();
     let project = state.project.clone();
     let revision = state.revision;
-    let dotted = all_points.is_empty();
     let base = view.live_device_automation_base(&entry);
     let entity = cx.entity();
     let label = entry.label.clone();
@@ -306,7 +289,61 @@ fn plot(
                         ))
                     };
                     let color = rgb(theme::color(theme::PaletteRole::Secondary));
-                    if points.is_empty() {
+                    let lanes = &entity.read(cx).automation_view.devices;
+                    let all_points = lanes.points_ref(&project, target);
+                    let tempo = project.tempo_map();
+                    let range = super::plot_geometry::visible_range(
+                        all_points,
+                        viewport.start,
+                        viewport.end().unwrap_or(u64::MAX),
+                        |point| tempo.beat_to_frame(point.beat).ok(),
+                    );
+                    let points = all_points.get(range).unwrap_or_default();
+                    if let Some(first) = points.first() {
+                        let selected = lanes.selected.as_ref();
+                        let paths = super::plot_geometry::reduce(
+                            points.iter().filter_map(|value| {
+                                let position = xy(value.beat, value.value.get())?;
+                                Some(super::plot_geometry::PlotPoint {
+                                    x: f32::from(position.x),
+                                    y: f32::from(position.y),
+                                    step: value.outgoing == AutomationInterpolation::Step,
+                                    selected: selected.is_some_and(|selected| {
+                                        selected.contains(target, value.beat)
+                                    }),
+                                })
+                            }),
+                            entry.is_discrete(),
+                            window.scale_factor(),
+                        );
+                        let mut path = PathBuilder::stroke(px(1.5));
+                        path.move_to(point(
+                            px(rect[0]),
+                            px(rect[1] + (1.0 - first.value.get()) * (rect[3] - 8.0) + 4.0),
+                        ));
+                        for &(x, y) in &paths.line {
+                            path.line_to(point(px(x), px(y)));
+                        }
+                        if let Some(&(_, y)) = paths.line.last() {
+                            path.line_to(point(px(rect[0] + rect[2]), px(y)));
+                        }
+                        if let Ok(path) = path.build() {
+                            window.paint_path(path, color);
+                        }
+                        for &(x, y, selected) in &paths.markers {
+                            let position = point(px(x), px(y));
+                            if !bounds.contains(&position) {
+                                continue;
+                            }
+                            let mut marker =
+                                PathBuilder::stroke(px(if selected { 3.0 } else { 2.0 }));
+                            marker.move_to(point(position.x - px(2.0), position.y));
+                            marker.line_to(point(position.x + px(2.0), position.y));
+                            if let Ok(marker) = marker.build() {
+                                window.paint_path(marker, color);
+                            }
+                        }
+                    } else {
                         let y = rect[1] + (1.0 - base) * (rect[3] - 8.0) + 4.0;
                         let mut x = 0.0;
                         while x < rect[2] {
@@ -317,68 +354,6 @@ fn plot(
                                 window.paint_path(path, color);
                             }
                             x += 9.0;
-                        }
-                    } else {
-                        let mut path = PathBuilder::stroke(px(1.5));
-                        let first = &points[0];
-                        let first_value = first.value.get();
-                        path.move_to(point(
-                            px(rect[0]),
-                            px(rect[1] + (1.0 - first_value) * (rect[3] - 8.0) + 4.0),
-                        ));
-                        let positions: Vec<_> = points
-                            .iter()
-                            .filter_map(|value| Some((value, xy(value.beat, value.value.get())?)))
-                            .collect();
-                        let source: Vec<_> = positions
-                            .iter()
-                            .map(|(value, position)| {
-                                (
-                                    f32::from(position.x) - rect[0],
-                                    f32::from(position.y),
-                                    value.outgoing == AutomationInterpolation::Step,
-                                )
-                            })
-                            .collect();
-                        let vertices =
-                            super::plot_geometry::expand_steps(&source, entry.is_discrete());
-                        // Include the screen offset when grouping physical pixels.
-                        let scale = window.scale_factor();
-                        let columns: Vec<_> = vertices
-                            .iter()
-                            .map(|&(x, y, _)| ((rect[0] + x) * scale, y))
-                            .collect();
-                        let kept = super::plot_geometry::column_vertices(&columns);
-                        let kept_markers: Vec<_> =
-                            kept.iter().filter_map(|&index| vertices[index].2).collect();
-                        for &index in &kept {
-                            let (x, y, _) = vertices[index];
-                            path.line_to(point(px(rect[0] + x), px(y)));
-                        }
-                        // One marker per kept vertex, plus every selected point so selection
-                        // feedback survives the column reduction.
-                        let mut next_kept = kept_markers.iter().peekable();
-                        for (index, (value, position)) in positions.iter().enumerate() {
-                            let is_kept = next_kept.next_if(|kept| **kept == index).is_some();
-                            let is_selected = selected
-                                .as_ref()
-                                .is_some_and(|selected| selected.contains(target, value.beat));
-                            if !(is_kept || is_selected) || !bounds.contains(position) {
-                                continue;
-                            }
-                            let mut marker =
-                                PathBuilder::stroke(px(if is_selected { 3.0 } else { 2.0 }));
-                            marker.move_to(point(position.x - px(2.0), position.y));
-                            marker.line_to(point(position.x + px(2.0), position.y));
-                            if let Ok(marker) = marker.build() {
-                                window.paint_path(marker, color);
-                            }
-                        }
-                        if let Some((_, y, _)) = vertices.last() {
-                            path.line_to(point(px(rect[0] + rect[2]), px(*y)));
-                        }
-                        if let Ok(path) = path.build() {
-                            window.paint_path(path, color);
                         }
                     }
                     {
