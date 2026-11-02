@@ -96,7 +96,8 @@ fn fixture() -> Project {
         &hex_project::MeterMap::common_time(),
         "section reorder must not persist synthetic same-meter seams"
     );
-    e.project().clone()
+    // Its envelopes are relabelled as historical schemas below.
+    implied_warp_laws(e.project())
 }
 #[test]
 fn current_format_roundtrips_section_ids_case_colors_ranges_frozen_processing_and_automation() {
@@ -727,4 +728,27 @@ fn marker_resize_overlap_roundtrips_with_unchanged_music() {
     assert_eq!(editor.project().snapshot(), before);
     assert!(editor.redo());
     assert_eq!(editor.project().snapshot(), after);
+}
+
+/// Model a project authored before schema65 warp resampler laws: visible clip
+/// content takes the law its pitch/warp state implies (v1 when it reads
+/// fractional positions). This fixture relabels current envelopes as historical
+/// schemas; it has no retained roots or aliases.
+fn implied_warp_laws(project: &hex_project::Project) -> hex_project::Project {
+    let mut snapshot = project.snapshot();
+    for track in &mut snapshot.tracks {
+        if let hex_project::TrackContentSnapshot::Hybrid { audio_clips, .. } = &mut track.content {
+            for edit in audio_clips.iter_mut().filter_map(|clip| clip.edit.as_mut()) {
+                let domain = std::sync::Arc::make_mut(&mut edit.domain);
+                domain.warp_resampler =
+                    hex_project::WarpResampler::implied(domain.pitch_cents, domain.warp_enabled);
+            }
+        }
+    }
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    assert!(
+        hex_storage::schema_version_for(&project) < hex_storage::WARP_RESAMPLER_SCHEMA_VERSION,
+        "only visible clip content is converted"
+    );
+    project
 }

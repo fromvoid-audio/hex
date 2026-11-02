@@ -35,7 +35,7 @@ impl FileToken {
     /// an unexpected header conservatively requires confirmation too.
     pub fn requires_format_upgrade(&self) -> bool {
         self.1.is_none_or(|version| {
-            version != crate::CURRENT_SCHEMA_VERSION && version != crate::SINC_V2_SCHEMA_VERSION
+            !(crate::CURRENT_SCHEMA_VERSION..=crate::NEWEST_SCHEMA_VERSION).contains(&version)
         })
     }
 

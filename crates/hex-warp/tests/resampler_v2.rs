@@ -117,6 +117,67 @@ fn v2_rejects_aliasing_at_rate_four_and_one_and_a_half() {
     }
 }
 
+/// Saved-project migration relies on this: unpitched, unwarped content reads
+/// integer source positions at unity rate, where both laws return the source
+/// frames exactly, so such content may take v2 without changing its output.
+#[test]
+fn unpitched_resample_is_identical_under_both_laws() {
+    let source: Vec<Frame> = (0..4_096u32)
+        .map(|n| {
+            let v = ((n.wrapping_mul(2_654_435_761) >> 8) as f32 / 16_777_216.0) - 0.5;
+            [v, v * -0.75]
+        })
+        .collect();
+    let envelope = [
+        GainPoint {
+            source_frame: 0,
+            gain_q16: 65_536,
+        },
+        GainPoint {
+            source_frame: 900,
+            gain_q16: 20_000,
+        },
+    ];
+    let output = 5_000usize;
+    let map = TimeMap::new(
+        vec![MapSegment {
+            output_start: 0,
+            output_end: output as u64,
+            source_start_q32: 0,
+            source_end_q32: (output as i128) << 32,
+        }],
+        output,
+    )
+    .unwrap();
+    let request = Request {
+        attacks: &[],
+        input: Input {
+            frames: &source,
+            sample_rate: RATE,
+            region_start: 123,
+            region_length: 1_777,
+            phase: 37,
+            looping: true,
+            envelope: &envelope,
+        },
+        map: &map,
+        output_frames: output,
+        pitch_cents: 0,
+        mode: Mode::Resample,
+    };
+    let v1 = render(&request, &mut || false).unwrap().frames;
+    let v2 = render_with_resampler(&request, Resampler::V2, &mut || false)
+        .unwrap()
+        .frames;
+    let bits = |frames: &[Frame]| -> Vec<[u32; 2]> {
+        frames
+            .iter()
+            .map(|f| [f[0].to_bits(), f[1].to_bits()])
+            .collect()
+    };
+    assert_eq!(bits(&v1), bits(&v2));
+}
+
 #[test]
 fn v2_passband_stays_flat_below_its_transition() {
     for (hz, cents) in [
