@@ -103,8 +103,8 @@ mod stopped_playback_tests;
 use hex_storage::FileToken;
 use recovery::absolute_document_path;
 pub use recovery::{
-    LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart, kept_journal,
-    leftover_recovery, untitled_recovery_path,
+    LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart,
+    claim_untitled_recovery_slot, kept_journal, leftover_recovery, untitled_recovery_path,
 };
 use std::{
     collections::BTreeMap,
@@ -973,6 +973,10 @@ pub struct Service {
     resident_seek_results: Option<Receiver<ResidentArrangementSeekResult>>,
     resident_seek_count: AtomicUsize,
     recovery_slot: Option<PathBuf>,
+    /// Exclusive per-instance ownership of `recovery_slot` (Pulse #3948).
+    /// `Drop` stops the worker before fields drop, so the slot is released only
+    /// after checkpointing ends (or the bounded shutdown detached the worker).
+    _recovery_claim: Option<hex_storage::UntitledSlotClaim>,
     startup_failure: Arc<std::sync::OnceLock<String>>,
     /// `None` once joined; kept after a timed-out shutdown for a later retry.
     worker: Option<JoinHandle<()>>,
@@ -1123,6 +1127,27 @@ impl Service {
             Some(native),
         )
     }
+
+    /// Desktop composition with an untitled slot this instance exclusively
+    /// owns; the service keeps the claim until it is dropped (Pulse #3948).
+    pub fn with_audio_sink_and_claimed_recovery(
+        history_capacity: usize,
+        max_resident_frames: u64,
+        recovery: hex_storage::UntitledSlotClaim,
+        audio: Box<dyn WorkerAudioSink>,
+        native: crate::ResidentNativeReservation,
+    ) -> Result<Self, ServiceError> {
+        let mut service = Self::with_audio_sink_and_native_reservation(
+            history_capacity,
+            max_resident_frames,
+            Some(recovery.path().to_path_buf()),
+            audio,
+            native,
+        )?;
+        service._recovery_claim = Some(recovery);
+        Ok(service)
+    }
+
     fn with_exporter_and_recovery(
         sample_rate: u32,
         history_capacity: usize,
@@ -1373,6 +1398,7 @@ impl Service {
             resident_seek_results: Some(seek_results_rx),
             resident_seek_count: AtomicUsize::new(0),
             recovery_slot,
+            _recovery_claim: None,
             startup_failure,
             worker: Some(worker),
         })
@@ -11498,6 +11524,7 @@ mod service_tests {
             resident_seek_results: None,
             resident_seek_count: AtomicUsize::new(0),
             recovery_slot: None,
+            _recovery_claim: None,
             startup_failure: Default::default(),
             worker: Some(thread::spawn(|| {})),
         };

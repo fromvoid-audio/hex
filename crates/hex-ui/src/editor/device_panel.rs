@@ -2559,6 +2559,7 @@ fn render_instrument(
                     hex_engine::SamplerParameter::LoopEnabled,
                     hex_engine::SamplerParameter::LoopStartFrame,
                     hex_engine::SamplerParameter::LoopEndFrame,
+                    hex_engine::SamplerParameter::LoopCrossfadeMs,
                 ] {
                     fields.push(view.sampler_parameter_control(track, device, parameter, cx));
                 }
@@ -2576,7 +2577,10 @@ fn render_instrument(
         }
         let controls = div()
             .grid()
-            .grid_cols(if loop_error.is_none() { 11 } else { 8 })
+            // One dense row: twelve classic controls at the sampler's inline
+            // value width (see `SAMPLER_INLINE_VALUE_WIDTH`) fit the 1024 px
+            // device body, keeping the waveform overview's full height.
+            .grid_cols(if loop_error.is_none() { 12 } else { 8 })
             .gap(px(2.0))
             .w_full()
             .flex_shrink_0()
