@@ -16,6 +16,9 @@ use hex_project::Command;
 use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
 
+/// Status-bar disk-overload slot; fits the four-character `disk` label.
+pub(super) const DISK_OVERLOAD_WIDTH: f32 = 32.0;
+
 impl EditorView {
     pub(super) fn history_action(&mut self, request: SessionRequest, cx: &mut Context<Self>) {
         if !self.cancel_sampler_drafts(cx)
@@ -385,6 +388,7 @@ impl EditorView {
                 .into()
             }),
         );
+        bar = bar.child(disk_overload_slot(&self.disk_overload));
         if let Some(status) = self.audio_status() {
             let applied_audio = status.applied_revision.load(Relaxed);
             let misses = status.deadline_misses.load(Relaxed);
@@ -441,6 +445,36 @@ impl EditorView {
         }
         bar.child(super::device_panel::bottom_bar(self, cx))
     }
+}
+
+/// Fixed-width disk-overload slot, so lighting it never shifts the bar. Its
+/// label and tooltip are lowercase app text through `theme::text`.
+fn disk_overload_slot(state: &super::disk_overload::DiskOverload) -> gpui::Stateful<gpui::Div> {
+    let slot = div()
+        .id("editor-disk-overload")
+        .debug_selector(|| "editor-disk-overload".into())
+        .w(px(DISK_OVERLOAD_WIDTH))
+        .h_full()
+        .flex_none()
+        .truncate()
+        .text_center();
+    if !state.shown() {
+        return slot;
+    }
+    let description = super::disk_overload::description(state.count());
+    slot.tooltip(move |_, cx| {
+        cx.new(|_| super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Identification,
+            description: description.clone().into(),
+        })
+        .into()
+    })
+    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+    .child(
+        div()
+            .debug_selector(|| "editor-disk-overload-lit".into())
+            .child(theme::text("disk")),
+    )
 }
 
 fn status_slot(

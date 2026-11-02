@@ -7,6 +7,25 @@ pub(super) struct RecordedStreamOutcome {
     pub(super) rejected_action: Option<(u64, PlaybackActionRejection)>,
     pub(super) fault: Option<Invalid>,
 }
+/// Count an audible stream starvation: this chunk held silence for pages
+/// while `playing` (published after the previous callback) was already true
+/// and no Play or stream action pre-roll was waiting. One relaxed RMW; no
+/// allocation or waiting. Install/replacement holds outside an active stream
+/// view are not counted.
+pub(super) fn count_starvation(
+    status: &Status,
+    play_pending: bool,
+    action_pending: bool,
+    outcome: &crate::candidate_custody::StreamOutcome,
+) {
+    let buffering = matches!(
+        outcome.progress,
+        crate::candidate_custody::StreamProgress::Buffering { .. }
+    );
+    if buffering && !play_pending && !action_pending && status.playing.load(Relaxed) {
+        status.stream_starved_callbacks.fetch_add(1, Relaxed);
+    }
+}
 pub(super) fn record_outcome(
     status: &Status,
     pending_play: &mut Option<u64>,
@@ -608,5 +627,50 @@ impl Callback {
                 .stream_applied_command_prefix
                 .store(self.stream_prefix, Release);
         }
+    }
+}
+
+#[cfg(test)]
+mod starvation_tests {
+    use super::{Relaxed, Status, count_starvation};
+    use crate::candidate_custody::{StreamOutcome, StreamProgress};
+
+    fn outcome(progress: StreamProgress) -> StreamOutcome {
+        StreamOutcome {
+            progress,
+            play_applied: false,
+            readiness_refused: false,
+            source_changed: false,
+            fault: None,
+            action_rejection: None,
+            action_applied: None,
+            activated: None,
+        }
+    }
+
+    #[test]
+    fn only_holds_during_established_playback_count_as_starvation() {
+        let status = Status::default();
+        let held = outcome(StreamProgress::Buffering {
+            committed_frames: 64,
+        });
+        let complete = outcome(StreamProgress::Complete);
+        // Stopped, Play pre-roll and action pre-roll holds are expected waits.
+        count_starvation(&status, false, false, &held);
+        status.playing.store(true, Relaxed);
+        count_starvation(&status, true, false, &held);
+        count_starvation(&status, false, true, &held);
+        count_starvation(&status, false, false, &complete);
+        assert_eq!(status.stream_starved_callbacks.load(Relaxed), 0);
+        count_starvation(&status, false, false, &held);
+        count_starvation(
+            &status,
+            false,
+            false,
+            &outcome(StreamProgress::Buffering {
+                committed_frames: 0,
+            }),
+        );
+        assert_eq!(status.stream_starved_callbacks.load(Relaxed), 2);
     }
 }
