@@ -1,6 +1,12 @@
 use super::EditorView;
 use gpui::{App, AppContext, Context, Global, PromptButton, PromptLevel, Window};
 use std::cell::Cell;
+use std::time::Duration;
+
+/// Bound for joining the project workers when hex quits. macOS termination
+/// exits without dropping the editor, so a cancelled export's cleanup would
+/// otherwise be cut off; the UI never waits longer than this.
+const QUIT_SHUTDOWN_BOUND: Duration = Duration::from_secs(1);
 
 /// App-wide quit custody shared by Hex's own Quit paths and OS termination
 /// requests (Dock Quit, logout, restart, shutdown), which macOS delivers through
@@ -189,7 +195,23 @@ impl EditorView {
         } else {
             self.cancel_browser_sample_playback();
             self.stop();
+            self.shutdown_service_for_quit(cx);
             quit_confirmed(cx);
+        }
+    }
+
+    /// Join the session and export workers within [`QUIT_SHUTDOWN_BOUND`]
+    /// before a confirmed quit. A timeout is logged and quitting continues;
+    /// the workers stay signalled.
+    fn shutdown_service_for_quit(&mut self, cx: &mut Context<Self>) {
+        if let Err(error) = self.service.shutdown(QUIT_SHUTDOWN_BOUND) {
+            let error = error.to_string();
+            eprintln!("hex: {error}");
+            if let Some(unavailable) =
+                crate::diagnostics::record_state(cx, "quit shutdown incomplete", Some(&error))
+            {
+                eprintln!("{unavailable}");
+            }
         }
     }
 
@@ -255,6 +277,9 @@ impl EditorView {
                             control.cancel();
                         }
                         view.stop();
+                        if quit {
+                            view.shutdown_service_for_quit(cx);
+                        }
                     } else {
                         if quit {
                             quit_refused(cx);
@@ -869,6 +894,11 @@ mod window_tests {
         cx.run_until_parked();
         assert!(!cx.has_pending_prompt());
         assert_eq!(cx.quit_replies(), [true]);
+        // The project workers were joined before terminate was answered.
+        assert!(editor.read_with(cx, |view, _| matches!(
+            view.service.submit(Request::Undo),
+            Err(hex_session::service::SubmitError::Closed(_))
+        )));
         cx.update_window(handle, |_, window, _| window.remove_window())
             .expect("remove test window");
     }
