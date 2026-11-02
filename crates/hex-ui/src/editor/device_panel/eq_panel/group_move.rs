@@ -1,6 +1,9 @@
 //! Pure EQ graph coordinates and grouped-node movement; no gesture custody.
 use super::{eq::NodeKind, node_geometry::edits_q};
 
+/// Group drags carry two parameters per node in the host snapshot.
+pub(super) const MAX_GROUP_NODES: usize = 32;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Vertical {
     Gain(f32),
