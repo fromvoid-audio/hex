@@ -130,8 +130,15 @@ pub enum StorageError {
         source: io::Error,
     },
     Invalid(&'static str),
-    /// The document bytes differ from the snapshot captured when it was loaded.
+    /// The project document bytes differ from the snapshot captured when it was
+    /// loaded, typically because another hex instance or editor saved it. Its
+    /// message names the next steps: save as, then reopen or compare.
     Conflict {
+        path: PathBuf,
+    },
+    /// A recovery journal slot differs from the bytes this writer last owned.
+    /// The slot is left untouched; the open project stays in memory.
+    JournalConflict {
         path: PathBuf,
     },
     /// A complete destination exists, but cleanup or directory durability failed.
@@ -178,13 +185,18 @@ impl fmt::Display for StorageError {
             }
             Self::Json(error) => write!(f, "invalid project json: {error}"),
             Self::Invalid(reason) => f.write_str(reason),
-            Self::Conflict { path } => {
-                write!(
-                    f,
-                    "project changed outside hex at {}",
-                    crate::text::verbatim(path.display())
-                )
-            }
+            Self::Conflict { path } => write!(
+                f,
+                "project changed outside hex at {}; your version was not saved. \
+                 use save as to keep it under a new name, then reopen the original \
+                 to load or compare the outside changes",
+                crate::text::verbatim(path.display())
+            ),
+            Self::JournalConflict { path } => write!(
+                f,
+                "project changed outside hex at {}",
+                crate::text::verbatim(path.display())
+            ),
             Self::PublishedButNotDurable {
                 path,
                 operation,
@@ -214,7 +226,7 @@ impl std::error::Error for StorageError {
             Self::JournalLockRelease { source, .. } => Some(source),
             Self::Io(e) | Self::AutomationDraftBusy(e) => Some(e),
             Self::Json(e) => Some(e),
-            Self::Invalid(_) | Self::Conflict { .. } => None,
+            Self::Invalid(_) | Self::Conflict { .. } | Self::JournalConflict { .. } => None,
             Self::PublishedButNotDurable { source, .. }
             | Self::RecoveryBackupPublished { source, .. } => Some(source),
         }

@@ -11208,7 +11208,12 @@ mod service_tests {
         let error = next_event(&service).error.expect("conflict error");
         assert_eq!(
             text::plain(&error),
-            format!("project changed outside hex at {}", path.display())
+            format!(
+                "project changed outside hex at {}; your version was not saved. use save as to \
+                 keep it under a new name, then reopen the original to load or compare the \
+                 outside changes",
+                path.display()
+            )
         );
     }
 
