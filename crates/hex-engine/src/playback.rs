@@ -1532,6 +1532,12 @@ impl Playback {
         Ok(())
     }
 
+    /// Apply a pending declicked Pause/Stop now, at the current frame, so
+    /// a host can settle its own transport effects before a later action.
+    pub fn finish_transport_fade(&mut self) {
+        self.complete_transport_fade();
+    }
+
     /// The Pause/Stop whose fade is in progress, if any.
     pub fn pending_transport_fade(&self) -> Option<PlaybackAction> {
         self.transport_fade.pending()

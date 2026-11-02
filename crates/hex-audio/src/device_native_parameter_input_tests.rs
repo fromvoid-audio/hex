@@ -550,9 +550,15 @@ fn stopped_native_begin_release_aborts_once_and_releases_publication_admission()
     let (mut control, mut callback, mut target) = fixture(false);
     control.command(hex_engine::PlaybackCommand::Stop).unwrap();
     let mut source = [[0.0; 2]; 1];
-    let rendered = render(&mut callback, &mut source);
-    assert!(rendered.is_ok());
-    assert!(write(&mut callback, &mut source, &rendered, 2));
+    // A queued Stop renders its 128-frame fade before it stops (#4151).
+    for _ in 0..256 {
+        let rendered = render(&mut callback, &mut source);
+        assert!(rendered.is_ok());
+        assert!(write(&mut callback, &mut source, &rendered, 2));
+        if !control.status.playing.load(Acquire) {
+            break;
+        }
+    }
     assert!(!control.status.playing.load(Acquire));
     target.transport_epoch = control.status.transport_epoch.load(Acquire);
     control

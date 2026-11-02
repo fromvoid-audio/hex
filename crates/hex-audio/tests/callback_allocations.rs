@@ -3180,7 +3180,12 @@ fn legacy_fallback_owns_persistent_stateful_renderer_off_callback() -> Result<()
     measured_block(&mut callback, &mut output);
     assert_eq!(output, expected_seek);
 
-    oracle.apply(PlaybackCommand::Stop);
+    // The callback declicks a queued Stop over this 128-frame block (#4151).
+    oracle
+        .try_apply_declicked_action(hex_engine::playback::PlaybackAction::Transport(
+            PlaybackCommand::Stop,
+        ))
+        .map_err(|_| "oracle Stop refused")?;
     let mut expected_stop = [[1.0; 2]; 128];
     oracle.render(&mut expected_stop)?;
     control
