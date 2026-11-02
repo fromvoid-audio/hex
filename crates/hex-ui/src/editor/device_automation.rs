@@ -10,7 +10,7 @@
 //! delete/shape act on every selected point; each is one whole-lane request,
 //! so one Undo reverts the group edit.
 #[cfg(all(test, feature = "ui-test-support"))]
-mod host_tests;
+pub(super) mod host_tests;
 mod paint;
 mod read_selection;
 #[cfg(test)]
