@@ -6182,7 +6182,9 @@ mod tests {
             ),
             (0, 0, 0, 0)
         );
-        assert_eq!(output[0], [0.16; 2]);
+        // The Seek applies after its 21-frame fade at 8 kHz, where the
+        // undamped metronome click at frame zero follows (#4140).
+        assert_eq!(output[21], [0.16; 2]);
         control.command(PlaybackCommand::Pause).unwrap();
         let allocations = allocation_counter::measure(|| {
             // The first block is the queued Pause's 128-frame fade (#4151).
@@ -8676,11 +8678,16 @@ mod tests {
         callback.begin_block();
         assert_eq!(control.status.applied_revision.load(Acquire), revision - 1);
         assert_eq!(control.status.consumed_command.load(Acquire), ticket);
-        assert_eq!(control.status.position.load(Acquire), 13);
+        // A Seek while playing fades out, jumps and ramps in (#4140).
+        assert_eq!(control.status.position.load(Acquire), 0);
         assert!(control.status.publication_pending.load(Acquire));
+        let mut fade_out = [[0.0; 2]; 128];
+        callback.render(&mut fade_out).unwrap();
+        assert_eq!(control.status.position.load(Acquire), 13);
+        let ramp = |frame: usize| [0.25 * (frame + 1) as f32 / 128.0; 2];
         let mut before_retry = [[0.0; 2]; 8];
         callback.render(&mut before_retry).unwrap();
-        assert_eq!(before_retry, [[0.25; 2]; 8]);
+        assert_eq!(before_retry, std::array::from_fn(ramp));
         assert_eq!(control.status.position.load(Acquire), 21);
         assert_eq!(control.reclaim(), RETIRED);
         callback.begin_block();
@@ -8688,7 +8695,7 @@ mod tests {
         assert_fresh_fence_rejection(&mut control, revision);
         let mut after_retry = [[0.0; 2]; 8];
         callback.render(&mut after_retry).unwrap();
-        assert_eq!(after_retry, [[0.25; 2]; 8]);
+        assert_eq!(after_retry, std::array::from_fn(|frame| ramp(frame + 8)));
         assert_eq!(control.status.position.load(Acquire), 29);
         assert_eq!(control.reclaim(), 1);
         control.request_shutdown();

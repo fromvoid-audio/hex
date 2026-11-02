@@ -255,6 +255,78 @@ fn a_command_during_the_fade_completes_the_pending_stop_first() {
     }
 }
 
+/// Play 1000 frames, Seek to 5000 while playing, then 1000 more frames.
+/// Returns the output, the position mid-fade and at the end, and the
+/// completion.
+fn seek_while_playing(
+    mut playback: Playback,
+    block: usize,
+) -> (Vec<Frame>, u64, u64, Option<TransportFadeCompletion>) {
+    let mut output = Vec::new();
+    declicked(&mut playback, PlaybackCommand::Play);
+    render(&mut playback, block, 1000, &mut output);
+    declicked(&mut playback, PlaybackCommand::Seek(5000));
+    assert!(playback.playing());
+    assert_eq!(
+        playback.pending_transport_fade(),
+        Some(PlaybackAction::Transport(PlaybackCommand::Seek(5000)))
+    );
+    render(&mut playback, block, F / 2, &mut output);
+    let mid_fade = playback.position();
+    render(&mut playback, block, 1000 - F / 2, &mut output);
+    assert!(playback.playing());
+    (
+        output,
+        mid_fade,
+        playback.position(),
+        playback.take_transport_fade_completion(),
+    )
+}
+
+#[test]
+fn seek_while_playing_fades_out_jumps_and_ramps_in_for_every_block_size() {
+    for (name, make) in [
+        ("session", session_playback as fn() -> Playback),
+        ("linear", linear_playback),
+    ] {
+        let (reference, mid_fade, end, completion) = seek_while_playing(make(), 1);
+        // The old position runs on through the fade; the target follows it.
+        assert_eq!(mid_fade, 1000 + F as u64 / 2, "{name}");
+        assert_eq!(end, 5000 + 1000 - F as u64, "{name}: target after the fade");
+        assert_eq!(
+            completion,
+            Some(TransportFadeCompletion {
+                action: PlaybackAction::Transport(PlaybackCommand::Seek(5000)),
+                audible_end_frame: 1000 + F as u64,
+                applied: true,
+            }),
+            "{name}"
+        );
+        let step = largest_step(&reference[1..]);
+        assert!(step <= 1.0 / F as f32 + 1e-6, "{name}: step {step}");
+        assert_eq!(reference[999], [1.0, -1.0], "{name}");
+        assert_eq!(
+            reference[1000 + F - 1],
+            [0.0, 0.0],
+            "{name}: fade ends at zero"
+        );
+        assert_eq!(reference[1000 + F][0], 1.0 / F as f32, "{name}: ramp in");
+        assert_eq!(reference[1000 + 2 * F - 1], [1.0, -1.0], "{name}");
+        for block in [7, 64, 100, 512] {
+            let (output, ..) = seek_while_playing(make(), block);
+            assert_eq!(output, reference, "{name}: block size {block}");
+        }
+    }
+}
+
+#[test]
+fn a_paused_seek_stays_immediate() {
+    let mut playback = session_playback();
+    declicked(&mut playback, PlaybackCommand::Seek(700));
+    assert_eq!(playback.pending_transport_fade(), None);
+    assert_eq!(playback.position(), 700);
+}
+
 #[test]
 fn immediate_actions_and_stopped_transports_are_not_deferred() {
     let mut playback = session_playback();
