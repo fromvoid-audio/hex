@@ -325,3 +325,37 @@ fn members_without_file_identity_never_reuse() {
     assert_eq!(session.reusable_import_asset(&anonymous), None);
     assert!(session.reusable_import_asset(&prepared(&path)).is_some());
 }
+
+#[test]
+fn pre_decode_lookup_matches_only_an_unchanged_resident_file_and_shares_its_pcm() {
+    let folder = Folder::new();
+    let path = folder.0.join("hit.wav");
+    write_wav(&path, 48);
+    let mut session = session();
+    let destination = AudioBatchDestination::NewTracks {
+        before_track: None,
+        start: 0,
+    };
+    assert!(session.unchanged_resident_import(&path).is_none());
+    batch(&mut session, vec![prepared(&path)], destination);
+    let residency_after_first = residency(&session);
+
+    let member = session
+        .unchanged_resident_import(&path)
+        .expect("unchanged file matches");
+    let resident = session.media.values().next().expect("resident");
+    assert!(member.audio.shares_pcm_with(&resident.audio));
+    assert!(member.source_audio.shares_pcm_with(&resident.source_audio));
+    batch(&mut session, vec![member], destination);
+    assert_eq!(session.project().assets().count(), 1);
+    assert_eq!(residency(&session), residency_after_first);
+
+    // Another path to the same bytes, or a changed or missing file, needs a decode.
+    let other = folder.0.join("linked.wav");
+    fs::hard_link(&path, &other).expect("hard link");
+    assert!(session.unchanged_resident_import(&other).is_none());
+    write_wav(&path, 49);
+    assert!(session.unchanged_resident_import(&path).is_none());
+    fs::remove_file(&path).expect("remove");
+    assert!(session.unchanged_resident_import(&path).is_none());
+}

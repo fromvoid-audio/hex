@@ -91,6 +91,8 @@ mod effect_bus_tests;
 #[cfg(test)]
 mod format_upgrade_tests;
 #[cfg(test)]
+mod import_reuse_tests;
+#[cfg(test)]
 #[path = "service/limiter_tests.rs"]
 mod limiter_tests;
 #[cfg(test)]
@@ -7818,31 +7820,14 @@ fn run_export_worker(
     }
 }
 
-fn import(
-    session: &mut Session,
+/// Decode and convert `path` for a resident import, bounded by the remaining
+/// resident frame budget. Callers first offer the file to
+/// [`Session::unchanged_resident_import`], which needs no decode.
+fn decode_resident_member(
+    session: &Session,
     path: PathBuf,
-    previous: Option<&PreparedRevision>,
-    admission: sampler_export::Admission<'_>,
     decode: &mut truncated_import::ImportDecode,
-) -> Result<Arc<PreparedRevision>, String> {
-    let path = absolute_document_path(&path)?;
-    if let Some(source) = decode
-        .plan(session, &path, None)
-        .map_err(|e| e.to_string())?
-    {
-        return session
-            .import_verified_revision(
-                source,
-                VerifiedImportDestination::NewTrack {
-                    before: None,
-                    start: 0,
-                },
-                previous,
-            )
-            .map(|(_, prepared)| prepared)
-            .map_err(|e| e.to_string());
-    }
-
+) -> Result<PreparedImport, String> {
     let remaining_frames = session
         .max_resident_frames()
         .saturating_sub(session.resident_frames());
@@ -7858,7 +7843,7 @@ fn import(
                 error,
             ))
         })?;
-    let prepared = PreparedImport::at_rate(
+    PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
         ResampleLimits {
@@ -7866,7 +7851,42 @@ fn import(
             max_output_frames: output_limit,
         },
     )
-    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
+}
+
+/// Import `path` onto a new track. An unchanged file already resident reuses
+/// its asset without decoding; see `import_reuse`.
+fn import(
+    session: &mut Session,
+    path: PathBuf,
+    previous: Option<&PreparedRevision>,
+    admission: sampler_export::Admission<'_>,
+    decode: &mut truncated_import::ImportDecode,
+) -> Result<Arc<PreparedRevision>, String> {
+    let path = absolute_document_path(&path)?;
+    let reused = session.unchanged_resident_import(&path);
+    if reused.is_none()
+        && let Some(source) = decode
+            .plan(session, &path, None)
+            .map_err(|e| e.to_string())?
+    {
+        return session
+            .import_verified_revision(
+                source,
+                VerifiedImportDestination::NewTrack {
+                    before: None,
+                    start: 0,
+                },
+                previous,
+            )
+            .map(|(_, prepared)| prepared)
+            .map_err(|e| e.to_string());
+    }
+
+    let prepared = match reused {
+        Some(prepared) => prepared,
+        None => decode_resident_member(session, path, decode)?,
+    };
     admission
         .check_legacy_stage(session, std::slice::from_ref(&prepared))
         .map_err(|e| e.to_string())?;
@@ -7888,9 +7908,11 @@ fn import_to_track(
     decode: &mut truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, String> {
     let path = absolute_document_path(&path)?;
-    if let Some(source) = decode
-        .plan(session, &path, None)
-        .map_err(|e| e.to_string())?
+    let reused = session.unchanged_resident_import(&path);
+    if reused.is_none()
+        && let Some(source) = decode
+            .plan(session, &path, None)
+            .map_err(|e| e.to_string())?
     {
         return session
             .import_verified_revision(
@@ -7906,30 +7928,10 @@ fn import_to_track(
             .map_err(|e| e.to_string());
     }
 
-    let remaining_frames = session
-        .max_resident_frames()
-        .saturating_sub(session.resident_frames());
-    let output_limit = usize::try_from(remaining_frames)
-        .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?;
-    if output_limit == 0 {
-        return Err("resident audio frame limit reached".into());
-    }
-    let decoded = decode
-        .decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| {
-            hex_storage::text::lowercase_outside_verbatim(&truncated_import::decode_error_text(
-                error,
-            ))
-        })?;
-    let prepared = PreparedImport::at_rate(
-        decoded,
-        session.project().sample_rate(),
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: output_limit,
-        },
-    )
-    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    let prepared = match reused {
+        Some(prepared) => prepared,
+        None => decode_resident_member(session, path, decode)?,
+    };
     admission
         .check_legacy_stage(session, std::slice::from_ref(&prepared))
         .map_err(|e| e.to_string())?;
@@ -7953,9 +7955,11 @@ fn import_to_new_track(
     decode: &mut truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, String> {
     let path = absolute_document_path(&path)?;
-    if let Some(source) = decode
-        .plan(session, &path, None)
-        .map_err(|e| e.to_string())?
+    let reused = session.unchanged_resident_import(&path);
+    if reused.is_none()
+        && let Some(source) = decode
+            .plan(session, &path, None)
+            .map_err(|e| e.to_string())?
     {
         return session
             .import_verified_revision(
@@ -7977,33 +7981,13 @@ fn import_to_new_track(
     if before_track.is_some_and(|track| project.track(track).is_none()) {
         return Err("track insertion anchor no longer exists".into());
     }
-    if project.assets().count() >= hex_project::MAX_ASSETS {
+    if reused.is_none() && project.assets().count() >= hex_project::MAX_ASSETS {
         return Err("asset limit reached".into());
     }
-    let remaining_frames = session
-        .max_resident_frames()
-        .saturating_sub(session.resident_frames());
-    let output_limit = usize::try_from(remaining_frames)
-        .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?;
-    if output_limit == 0 {
-        return Err("resident audio frame limit reached".into());
-    }
-    let decoded = decode
-        .decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| {
-            hex_storage::text::lowercase_outside_verbatim(&truncated_import::decode_error_text(
-                error,
-            ))
-        })?;
-    let prepared = PreparedImport::at_rate(
-        decoded,
-        session.project().sample_rate(),
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: output_limit,
-        },
-    )
-    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    let prepared = match reused {
+        Some(prepared) => prepared,
+        None => decode_resident_member(session, path, decode)?,
+    };
     admission
         .check_legacy_stage(session, std::slice::from_ref(&prepared))
         .map_err(|e| e.to_string())?;
@@ -8023,9 +8007,11 @@ fn import_to_session(
     decode: &mut truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, String> {
     let path = absolute_document_path(&path)?;
-    if let Some(source) = decode
-        .plan(session, &path, None)
-        .map_err(|e| e.to_string())?
+    let reused = session.unchanged_resident_import(&path);
+    if reused.is_none()
+        && let Some(source) = decode
+            .plan(session, &path, None)
+            .map_err(|e| e.to_string())?
     {
         return session
             .import_verified_revision(
@@ -8037,30 +8023,10 @@ fn import_to_session(
             .map_err(|e| e.to_string());
     }
 
-    let remaining_frames = session
-        .max_resident_frames()
-        .saturating_sub(session.resident_frames());
-    let output_limit = usize::try_from(remaining_frames)
-        .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?;
-    if output_limit == 0 {
-        return Err("resident audio frame limit reached".into());
-    }
-    let decoded = decode
-        .decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| {
-            hex_storage::text::lowercase_outside_verbatim(&truncated_import::decode_error_text(
-                error,
-            ))
-        })?;
-    let prepared = PreparedImport::at_rate(
-        decoded,
-        session.project().sample_rate(),
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: output_limit,
-        },
-    )
-    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    let prepared = match reused {
+        Some(prepared) => prepared,
+        None => decode_resident_member(session, path, decode)?,
+    };
     admission
         .check_legacy_stage(session, std::slice::from_ref(&prepared))
         .map_err(|e| e.to_string())?;
@@ -11247,7 +11213,12 @@ mod service_tests {
         let error = next_event(&service).error.expect("conflict error");
         assert_eq!(
             text::plain(&error),
-            format!("project changed outside hex at {}", path.display())
+            format!(
+                "project changed outside hex at {}; your version was not saved. use save as to \
+                 keep it under a new name, then reopen the original to load or compare the \
+                 outside changes",
+                path.display()
+            )
         );
     }
 
