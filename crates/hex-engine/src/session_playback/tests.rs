@@ -13153,6 +13153,9 @@ mod saturator_tests;
 #[path = "transition_busy_tests.rs"]
 mod transition_busy_tests;
 
+#[path = "eq8_mode_tests.rs"]
+mod eq8_mode_tests;
+
 #[path = "compressor_tests.rs"]
 mod compressor_tests;
 

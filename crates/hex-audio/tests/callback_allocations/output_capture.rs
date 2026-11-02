@@ -260,6 +260,97 @@ fn automated_saturator_callback_publication_and_late_failure_retry_are_allocatio
         .map_err(|_| "saturator allocation probe panicked")?
         .map_err(Into::into)
 }
+/// Pulse #4106: an EQ8 stereo to mid/side switch during playback hands the
+/// outgoing routing to a fixed inline crossfade. A second (mid/side to
+/// left/right) switch published while that fade runs is deferred as busy by the
+/// callback and admitted once the fade drains. The handoffs, the deferral and
+/// the crossfading callback blocks allocate and free nothing.
+#[test]
+fn eq8_channel_mode_switch_crossfade_is_allocation_free() -> Result<(), Box<dyn Error>> {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| run_eq8_mode_switch_probe().map_err(|e| e.to_string()))?
+        .join()
+        .map_err(|_| "eq8 mode switch allocation probe panicked")?
+        .map_err(Into::into)
+}
+fn run_eq8_mode_switch_probe() -> Result<(), Box<dyn Error>> {
+    use hex_devices::eq8::{EQ8_DEFINITION, parameter};
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let (project, track, _) = source()?;
+    let mut editor = Editor::new(project, 16)?;
+    let device = editor.project().track(track).ok_or("track")?.devices()[0].id();
+    let mut state = EQ8_DEFINITION.default_state()?;
+    for (id, value) in [
+        (parameter::enabled(0, 0), ParameterValue::Bool(true)),
+        (parameter::frequency(0, 0), ParameterValue::Float(1_000.0)),
+        (parameter::gain(0, 0), ParameterValue::Float(12.0)),
+    ] {
+        state = EQ8_DEFINITION.patch_parameter(&state, id, value)?;
+    }
+    editor.execute(Command::ReplaceDeviceState {
+        device,
+        state: state.clone(),
+    })?;
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "publish")?;
+    control
+        .command_with_ticket(PlaybackCommand::Play)
+        .map_err(|_| "play")?;
+    let mut output = [[0.0; 2]; 512];
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
+    editor.execute(Command::ReplaceDeviceState {
+        device,
+        state: EQ8_DEFINITION.patch_parameter(
+            &state,
+            parameter::MODE,
+            ParameterValue::Choice(2),
+        )?,
+    })?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "replacement")?;
+    // Small blocks keep the mode crossfade active across several callbacks.
+    let mut small = [[0.0; 2]; 64];
+    measured_block(&mut callback, &mut small);
+    assert_eq!(control.reclaim(), 1, "first switch admitted");
+    editor.execute(Command::ReplaceDeviceState {
+        device,
+        state: EQ8_DEFINITION.patch_parameter(
+            &state,
+            parameter::MODE,
+            ParameterValue::Choice(1),
+        )?,
+    })?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "second replacement")?;
+    // 128 of the 256 fade frames have rendered: the second switch is busy.
+    measured_block(&mut callback, &mut small);
+    assert_eq!(control.reclaim(), 0, "second switch deferred while fading");
+    for _ in 0..8 {
+        measured_block(&mut callback, &mut small);
+    }
+    assert_eq!(
+        control.reclaim(),
+        1,
+        "second switch admitted after the fade"
+    );
+    assert!(control.status.rejected_revision().is_none());
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
 /// Pulse #4085: a direct (unautomated) Saturator drive/output edit is
 /// published as a replacement whose history handoff ramps the gains. The
 /// handoff and the ramping callback blocks allocate and free nothing.
