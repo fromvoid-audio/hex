@@ -171,41 +171,66 @@ fn translated_musical_copies_share_roots_with_exact_output_at_constant_tempo() {
     }
 }
 
+fn faded_musical_copies_stay_exact(mode: WarpMode) {
+    // Authored fades record their absolute projection; still exact either way.
+    let (editor, _, media) = copies(mode, false, None);
+    let context = isolated(64 * 1024 * 1024, 32 * 1024 * 1024, 64);
+    assert_eq!(
+        render(
+            &prepare(&editor, &media, &context),
+            0,
+            (UNALIGNED + 3 * BEAT_FRAMES) as usize,
+            257
+        ),
+        independent(&editor, &media),
+        "{mode:?} fades"
+    );
+}
+
+fn tempo_musical_copies_stay_exact_and_unshared(mode: WarpMode) {
+    // A second tempo makes every onset's projection distinct.
+    let (mut editor, _, media) = copies(mode, true, Some(5));
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::from_raw(BeatTime::ONE.raw() * 10),
+            tempo: Tempo::new(97_000_000).unwrap(),
+        })
+        .unwrap();
+    let context = isolated(64 * 1024 * 1024, 32 * 1024 * 1024, 64);
+    let prepared = prepare(&editor, &media, &context);
+    assert_eq!(
+        render(&prepared, 0, (UNALIGNED + 3 * BEAT_FRAMES) as usize, 63),
+        independent(&editor, &media),
+        "{mode:?} tempo"
+    );
+    let views = views_by_start(&editor, &prepared);
+    assert!(
+        !views[&0].shares_pcm_with(&views[&ALIGNED[0]]),
+        "{mode:?} tempo"
+    );
+}
+
 #[test]
-fn musical_copies_stay_exact_and_unshared_where_translation_is_not_free() {
-    for mode in [MODES[0], MODES[2], MODES[4]] {
-        // Authored fades record their absolute projection; still exact either way.
-        let (editor, _, media) = copies(mode, false, None);
-        let context = isolated(64 * 1024 * 1024, 32 * 1024 * 1024, 64);
-        assert_eq!(
-            render(
-                &prepare(&editor, &media, &context),
-                0,
-                (UNALIGNED + 3 * BEAT_FRAMES) as usize,
-                257
-            ),
-            independent(&editor, &media),
-            "{mode:?} fades"
-        );
-        // A second tempo makes every onset's projection distinct.
-        let (mut editor, _, media) = copies(mode, true, Some(5));
-        editor
-            .execute(Command::SetTempoPoint {
-                beat: BeatTime::from_raw(BeatTime::ONE.raw() * 10),
-                tempo: Tempo::new(97_000_000).unwrap(),
-            })
-            .unwrap();
-        let context = isolated(64 * 1024 * 1024, 32 * 1024 * 1024, 64);
-        let prepared = prepare(&editor, &media, &context);
-        assert_eq!(
-            render(&prepared, 0, (UNALIGNED + 3 * BEAT_FRAMES) as usize, 63),
-            independent(&editor, &media),
-            "{mode:?} tempo"
-        );
-        let views = views_by_start(&editor, &prepared);
-        assert!(
-            !views[&0].shares_pcm_with(&views[&ALIGNED[0]]),
-            "{mode:?} tempo"
-        );
-    }
+fn repitch_faded_copies_stay_exact() {
+    faded_musical_copies_stay_exact(MODES[0]);
+}
+#[test]
+fn transient_faded_copies_stay_exact() {
+    faded_musical_copies_stay_exact(MODES[2]);
+}
+#[test]
+fn texture_faded_copies_stay_exact() {
+    faded_musical_copies_stay_exact(MODES[4]);
+}
+#[test]
+fn repitch_tempo_copies_stay_exact_and_unshared() {
+    tempo_musical_copies_stay_exact_and_unshared(MODES[0]);
+}
+#[test]
+fn transient_tempo_copies_stay_exact_and_unshared() {
+    tempo_musical_copies_stay_exact_and_unshared(MODES[2]);
+}
+#[test]
+fn texture_tempo_copies_stay_exact_and_unshared() {
+    tempo_musical_copies_stay_exact_and_unshared(MODES[4]);
 }
