@@ -1396,6 +1396,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         bounce_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
+        import_truncation: None,
         save_complete: false,
         save_correlation: None,
         document_format_upgrade_required: false,

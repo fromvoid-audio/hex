@@ -216,10 +216,67 @@ impl EditorView {
         self.session_capability_message = None;
     }
 
+    /// Scheduled cursor: the frame edits, insertion, zoom anchors and transport
+    /// commands act on.
     pub(super) fn cursor_position(&self) -> u64 {
-        self.recovery.position().unwrap_or_else(|| {
-            self.audio_status()
-                .map_or(self.offline_cursor, |status| status.position.load(Relaxed))
+        cursor_frame(
+            self.recovery.position(),
+            self.audio_status(),
+            self.offline_cursor,
+            Cursor::Scheduled,
+        )
+    }
+
+    /// Display-only playhead: the frame now leaving Main output, which trails
+    /// the scheduled cursor by the graph's Main latency.
+    pub(super) fn audible_cursor_position(&self) -> u64 {
+        cursor_frame(
+            self.recovery.position(),
+            self.audio_status(),
+            self.offline_cursor,
+            Cursor::Audible,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Cursor {
+    Scheduled,
+    Audible,
+}
+
+/// A pending recovery position wins, then the live callback status, then the
+/// offline cursor.
+fn cursor_frame(
+    recovery: Option<u64>,
+    status: Option<&hex_audio::prepared::Status>,
+    offline: u64,
+    cursor: Cursor,
+) -> u64 {
+    recovery.unwrap_or_else(|| {
+        status.map_or(offline, |status| match cursor {
+            Cursor::Scheduled => status.position.load(Relaxed),
+            Cursor::Audible => status.audible_position.load(Relaxed),
         })
+    })
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::{Cursor, cursor_frame};
+    use std::sync::atomic::Ordering::Relaxed;
+
+    #[test]
+    fn playhead_shows_the_audible_frame_while_edits_use_the_scheduled_one() {
+        let status = hex_audio::prepared::Status::default();
+        status.position.store(960, Relaxed);
+        status.audible_position.store(672, Relaxed);
+        assert_eq!(cursor_frame(None, Some(&status), 0, Cursor::Audible), 672);
+        assert_eq!(cursor_frame(None, Some(&status), 0, Cursor::Scheduled), 960);
+        // Recovery and offline cursors are not latency-shifted.
+        for cursor in [Cursor::Audible, Cursor::Scheduled] {
+            assert_eq!(cursor_frame(Some(48), Some(&status), 0, cursor), 48);
+            assert_eq!(cursor_frame(None, None, 96, cursor), 96);
+        }
     }
 }

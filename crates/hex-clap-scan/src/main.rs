@@ -4,11 +4,11 @@ use hex_clap_scan::{
     hash,
 };
 #[cfg(target_os = "linux")]
+use hex_scan_supervisor as supervisor;
+#[cfg(target_os = "linux")]
 use serde::Serialize;
 #[cfg(target_os = "linux")]
 use std::{path::PathBuf, time::Duration};
-#[cfg(target_os = "linux")]
-mod supervisor;
 #[cfg(target_os = "linux")]
 #[derive(Serialize)]
 struct Report {
@@ -94,6 +94,7 @@ fn main() {
                 1,
                 Duration::from_millis(deadline),
                 &[],
+                hex_clap_scan::MAX_PACKET,
             )?;
             if let Some(lease) = pending.as_mut() {
                 output.packet.clear();

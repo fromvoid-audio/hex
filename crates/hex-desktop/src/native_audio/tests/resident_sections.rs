@@ -1319,6 +1319,92 @@ fn offline_metadata_edits_and_history_do_not_require_an_applied_loop_witness() {
     assert!(h.submitted.is_none());
 }
 
+/// Regression for #3917: with no output there is no callback to fence, so a
+/// structural edit and its history complete from control state instead of
+/// refusing, and the retained result installs when an output opens.
+#[test]
+fn structural_section_edits_complete_without_an_output_then_install_on_restart() {
+    let _native = native_fixture();
+    let gate = Arc::new(AtomicBool::new(false));
+    let mut h = ResidentHarness::with_open_gate(8192, Arc::clone(&gate));
+    let initial = h.next();
+    let (added, intro) = add(&mut h, initial.state.revision, "offline", 0, 2);
+    let started = Instant::now();
+    let duplicated = h.run(section_request(
+        added.state.revision,
+        Command::DuplicateArrangementSection(intro),
+    ));
+    // No fence poll: well under the session's 100 ms acknowledgement deadline.
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(duplicated.state.project.arrangement_sections().len(), 2);
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.arrangement_sections().len(), 1);
+    let redone = h.run(Request::Redo);
+    assert_eq!(
+        redone.state.project.snapshot(),
+        duplicated.state.project.snapshot()
+    );
+    assert!(h.audio.is_none() && h.submitted.is_none());
+    assert!(h.pending_present.load(Acquire));
+    gate.store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .submit(Request::RestartAudio {
+            project_generation: 0,
+            request_id: 1,
+        })
+        .unwrap();
+    let restarted = h.next();
+    assert!(restarted.error.is_none(), "{:?}", restarted.error);
+    h.wait_fresh_output(0);
+    let (_, metadata) = h.applied(0);
+    assert_eq!(metadata.context.editor_revision, redone.state.revision);
+}
+
+/// Regression for #3917: a latched output fault refuses a stopped edit at
+/// once with a recoverable error instead of waiting on a fence.
+#[test]
+fn latched_output_faults_refuse_section_edits_promptly_and_keep_the_project() {
+    let _native = native_fixture();
+    let mut h = ResidentHarness::new();
+    let initial = h.next();
+    let (applied, _) = h.applied(0);
+    let (added, intro) = add(&mut h, initial.state.revision, "intro", 0, 2);
+    h.applied(applied);
+    for fault in [true, false] {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        status
+            .device_fault
+            .store(fault, std::sync::atomic::Ordering::Release);
+        status
+            .render_fault
+            .store(!fault, std::sync::atomic::Ordering::Release);
+        let started = Instant::now();
+        h.service
+            .submit(section_request(
+                added.state.revision,
+                Command::DuplicateArrangementSection(intro),
+            ))
+            .unwrap();
+        let refused = h.next();
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "{:?}",
+            started.elapsed()
+        );
+        let error = refused.error.as_deref().expect("fault refusal");
+        assert!(error.contains("restart audio"), "{error}");
+        assert_eq!(error, error.to_lowercase());
+        assert_eq!(
+            refused.state.project.snapshot(),
+            added.state.project.snapshot()
+        );
+    }
+}
+
 /// Submit an immediate section launch and leave it unapplied by the callback.
 fn submit_pending_launch(h: &mut ResidentHarness, request_id: u64, revision: u64) {
     let mut intent = h.seek_intent(request_id, revision, None, None);
