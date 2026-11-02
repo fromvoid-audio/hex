@@ -4,6 +4,7 @@ use super::*;
 use hex_devices::eq::{self, EqState, Node, NodeId, NodeKind};
 use hex_widgets::{
     ResponseGraphEvent, ResponseGraphMarqueeEvent, ResponseGraphMarqueePhase, ResponseGraphPhase,
+    ResponseGraphScrollEvent, ResponseGraphScrollPhase,
 };
 #[path = "../../src/editor/device_panel/eq_panel/axes.rs"]
 mod axes;
@@ -15,6 +16,8 @@ mod node_geometry;
 mod sampling;
 #[path = "../../src/editor/device_panel/eq_panel/selection.rs"]
 mod selection;
+#[path = "../../src/editor/device_panel/eq_panel/slope.rs"]
+mod slope;
 use hex_widgets::{NumericControlEvent, SelectorChanged, ToggleChanged};
 
 /// Ephemeral catalog state; it never owns a project or audio resource.
@@ -26,6 +29,7 @@ pub(super) struct Local {
     collapse: Option<NodeId>,
     before: Option<Snapshot>,
     group_drag: Option<GroupDrag>,
+    scroll: Option<LocalScroll>,
     created: Option<NodeId>,
 }
 
@@ -38,6 +42,14 @@ struct Snapshot {
 struct GroupDrag {
     origin: [f32; 2],
     nodes: Vec<(Node, [f32; 2])>,
+}
+
+struct LocalScroll {
+    node: NodeId,
+    stream: u64,
+    value: u32,
+    last_steps: i32,
+    before: Snapshot,
 }
 
 impl Local {
@@ -55,6 +67,7 @@ impl Local {
             collapse: None,
             before: None,
             group_drag: None,
+            scroll: None,
             created: None,
         })
     }
@@ -274,6 +287,28 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
             cx.notify();
         }),
     );
+    subscriptions.push(
+        cx.subscribe(&graph, |view, _, event: &ResponseGraphScrollEvent, cx| {
+            let cancel = event.phase == ResponseGraphScrollPhase::Cancel;
+            if !cancel && (view.disabled || view.entry != Entry::Eq) {
+                return;
+            }
+            if event.phase == ResponseGraphScrollPhase::Begin && !view.finish_drafts(cx) {
+                if let Some(fixture) = view.fixtures.get(&Entry::Eq) {
+                    fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
+                }
+                cx.notify();
+                return;
+            }
+            if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
+                if let Err(error) = scroll(fixture, *event, cx) {
+                    fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
+                    view.error = Some(error);
+                }
+            }
+            cx.notify();
+        }),
+    );
     Ok(Fixture {
         entry: Entry::Eq,
         _subscriptions: subscriptions,
@@ -317,7 +352,7 @@ fn select_bank(fixture: &mut Fixture, bank: u8, cx: &mut Context<Gallery>) -> Re
     if fixture
         .eq_local
         .as_ref()
-        .is_some_and(|local| local.before.is_some())
+        .is_some_and(|local| local.before.is_some() || local.scroll.is_some())
     {
         return Err("finish the eq graph edit before changing banks".into());
     }
@@ -364,6 +399,79 @@ fn marquee(
         .collect();
     selection::apply_marquee(&mut local.selected, &mut local.group, &members);
     local.collapse = None;
+    let selected = local
+        .selected
+        .and_then(|id| local.state.node(id).ok().copied());
+    if let Some(node) = selected {
+        set_controls(fixture, node, cx)?;
+    }
+    Ok(())
+}
+
+fn scroll(
+    fixture: &mut Fixture,
+    event: ResponseGraphScrollEvent,
+    cx: &mut Context<Gallery>,
+) -> Result<(), String> {
+    if event.gesture_id == 0 {
+        return Ok(());
+    }
+    let mut state = current(fixture, cx).ok_or("eq fixture unavailable")?;
+    let local = fixture.eq_local.as_mut().ok_or("eq fixture unavailable")?;
+    if event.phase == ResponseGraphScrollPhase::Begin {
+        if local.before.is_some() || local.scroll.is_some() {
+            return Err("finish the current eq edit first".into());
+        }
+        let id = NodeId::new(u64::from(event.node_id)).map_err(|e| e.to_string())?;
+        let node = *state.node(id).map_err(|_| "eq scroll node unavailable")?;
+        if node.bank != local.bank || !matches!(node.kind, NodeKind::LowCut | NodeKind::HighCut) {
+            return Err("eq scroll node unavailable".into());
+        }
+        let before = Snapshot {
+            state: state.clone(),
+            selected: local.selected,
+            group: local.group.clone(),
+        };
+        local.selected = Some(id);
+        local.scroll = Some(LocalScroll {
+            node: id,
+            stream: event.gesture_id,
+            value: u32::from(node.slope),
+            last_steps: 0,
+            before,
+        });
+    } else {
+        let Some(mut scroll) = local.scroll.take() else {
+            return Ok(());
+        };
+        if scroll.node.value() != event.node_id || scroll.stream != event.gesture_id {
+            local.scroll = Some(scroll);
+            return Ok(());
+        }
+        if event.phase == ResponseGraphScrollPhase::Cancel {
+            state = scroll.before.state;
+            local.selected = scroll.before.selected;
+            local.group = scroll.before.group;
+        } else {
+            let Some(node) = state.nodes.iter_mut().find(|node| node.id == scroll.node) else {
+                local.scroll = Some(scroll);
+                return Err("eq scroll node unavailable".into());
+            };
+            if node.bank != local.bank || !matches!(node.kind, NodeKind::LowCut | NodeKind::HighCut)
+            {
+                local.scroll = Some(scroll);
+                return Err("eq scroll node changed during edit".into());
+            }
+            let delta = event.steps.saturating_sub(scroll.last_steps);
+            scroll.value = slope::advance(scroll.value, delta);
+            scroll.last_steps = event.steps;
+            node.slope = scroll.value as u8;
+            if event.phase != ResponseGraphScrollPhase::Commit {
+                local.scroll = Some(scroll);
+            }
+        }
+    }
+    local.state = state;
     let selected = local
         .selected
         .and_then(|id| local.state.node(id).ok().copied());
@@ -623,6 +731,28 @@ pub(super) fn sync(fixture: &Fixture, disabled: bool, cx: &mut Context<Gallery>)
     let Some(model) = model(fixture, cx) else {
         return;
     };
+    let eligible = if disabled
+        || fixture
+            .eq_local
+            .as_ref()
+            .is_none_or(|local| local.before.is_some())
+        || fixture.numbers.iter().any(|number| {
+            number.entity.read(cx).is_editing() || number.entity.read(cx).is_interacting()
+        }) {
+        Vec::new()
+    } else {
+        let bank = fixture.eq_local.as_ref().map_or(0, |local| local.bank);
+        current(fixture, cx).map_or_else(Vec::new, |state| {
+            state
+                .nodes
+                .iter()
+                .filter(|node| {
+                    node.bank == bank && matches!(node.kind, NodeKind::LowCut | NodeKind::HighCut)
+                })
+                .map(|node| node.id.value())
+                .collect()
+        })
+    };
     fixture.graph.update(cx, |graph, cx| {
         if disabled {
             graph.cancel(cx);
@@ -630,6 +760,7 @@ pub(super) fn sync(fixture: &Fixture, disabled: bool, cx: &mut Context<Gallery>)
         graph.set_editable(!disabled, cx);
         graph.set_creation_enabled(!disabled);
         graph.set_marquee_enabled(!disabled, cx);
+        let _ = graph.set_scroll_nodes(eligible, cx);
         let _ = graph.set_axes(Some(axes::frequency_axes(48000)), cx);
         let _ = graph.set_model(
             model,
@@ -1492,6 +1623,115 @@ mod tests {
             event_graph(fixture, event(ResponseGraphPhase::Cancel, 2, start), cx).unwrap();
             assert_eq!(current(fixture, cx).unwrap(), before);
             assert_eq!(fixture.eq_local.as_ref().unwrap().group.len(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn scroll_stream_clamps_and_cancel_restores_state(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            fixture.selectors[1].update(cx, |selector, cx| selector.set_selected(3, cx).unwrap());
+            let before = current(fixture, cx).unwrap();
+            let event = |phase, gesture_id, steps| ResponseGraphScrollEvent {
+                phase,
+                node_id: 1,
+                gesture_id,
+                steps,
+            };
+            scroll(fixture, event(ResponseGraphScrollPhase::Begin, 7, 0), cx).unwrap();
+            scroll(fixture, event(ResponseGraphScrollPhase::Change, 7, 10), cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap().nodes[0].slope, 3);
+            scroll(fixture, event(ResponseGraphScrollPhase::Change, 8, -10), cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap().nodes[0].slope, 3);
+            assert!(select_bank(fixture, 1, cx).is_err());
+            scroll(fixture, event(ResponseGraphScrollPhase::Change, 7, 9), cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap().nodes[0].slope, 2);
+            scroll(fixture, event(ResponseGraphScrollPhase::Cancel, 7, 9), cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), before);
+            assert!(fixture.eq_local.as_ref().unwrap().scroll.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn scroll_rejects_non_cut_and_foreign_bank_nodes(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            let event = ResponseGraphScrollEvent {
+                phase: ResponseGraphScrollPhase::Begin,
+                node_id: 1,
+                gesture_id: 1,
+                steps: 0,
+            };
+            assert!(scroll(fixture, event, cx).is_err());
+            let local = fixture.eq_local.as_mut().unwrap();
+            local.bank = 1;
+            fixture.selectors[1].update(cx, |selector, cx| selector.set_selected(4, cx).unwrap());
+            assert!(scroll(fixture, event, cx).is_err());
+            assert!(fixture.eq_local.as_ref().unwrap().scroll.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn wheel_on_cut_node_changes_slope(cx: &mut TestAppContext) {
+        use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, VisualTestContext, point, px, size};
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.fixtures[&Entry::Eq].selectors[1]
+                    .update(cx, |kind, cx| kind.set_selected(3, cx).unwrap());
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        let graph = view.read_with(cx, |view, _| view.fixtures[&Entry::Eq].graph.clone());
+        let plot = graph.read_with(&visual, |graph, _| graph.plot_bounds().unwrap());
+        let position = view.read_with(cx, |view, cx| {
+            model(&view.fixtures[&Entry::Eq], cx).unwrap().nodes[0].position
+        });
+        let screen = point(
+            plot.left() + plot.size.width * position[0],
+            plot.top() + plot.size.height * (1.0 - position[1]),
+        );
+        visual.simulate_event(ScrollWheelEvent {
+            position: screen,
+            delta: ScrollDelta::Lines(point(0.0, 1.0)),
+            touch_phase: TouchPhase::Started,
+            ..Default::default()
+        });
+        visual.simulate_event(ScrollWheelEvent {
+            position: screen,
+            delta: ScrollDelta::default(),
+            touch_phase: TouchPhase::Ended,
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                view.fixtures[&Entry::Eq].selectors[2].read(cx).selected(),
+                1
+            )
         });
     }
 

@@ -439,7 +439,7 @@ pub(super) fn scroll_event_core(
         return;
     }
     let delta = event.steps.saturating_sub(scroll.last_steps);
-    scroll.value = (i64::from(scroll.value) + i64::from(delta)).clamp(0, 3) as u32;
+    scroll.value = slope::advance(scroll.value, delta);
     scroll.last_steps = event.steps;
     let value = ParameterValue::Choice(scroll.value);
     let result = if event.phase == Phase::Commit {
