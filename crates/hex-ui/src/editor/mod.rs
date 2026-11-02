@@ -21,6 +21,7 @@ mod arrangement_sections;
 mod arrangement_seek;
 mod audio_admission;
 mod audio_event_editor;
+mod audio_unavailable;
 mod automation_view;
 mod bounce;
 mod browser;
@@ -313,7 +314,7 @@ enum PendingEditorAudioResult {
     Unavailable {
         project_generation: u64,
         restart_request: Option<u64>,
-        error: String,
+        error: hex_audio::OutputOpenError,
     },
 }
 

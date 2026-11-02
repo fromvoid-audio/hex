@@ -54,7 +54,7 @@ impl Harness {
                     Ok(Some(output))
                 }
                 Err(e) if e == "audio output is open or still shutting down" => Ok(None),
-                Err(e) => Err(e),
+                Err(e) => Err(e.into()),
             }
         }));
         let observation = Arc::new(Mutex::new(Observation::default()));
@@ -477,7 +477,7 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
                 Ok(Some(output))
             }
             Err(e) if e == "audio output is open or still shutting down" => Ok(None),
-            Err(e) => Err(e),
+            Err(e) => Err(e.into()),
         }
     }));
     let observation = Arc::new(Mutex::new(Observation::default()));
@@ -512,7 +512,7 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
                 h.backend.lock().unwrap().take();
             }
             Ok(EditorAudioEvent::Unavailable { error, .. }) => {
-                assert_eq!(error, "injected fresh output failure");
+                assert_eq!(error.to_string(), "injected fresh output failure");
                 break;
             }
             Ok(EditorAudioEvent::Opened { .. }) => {
