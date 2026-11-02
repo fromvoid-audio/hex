@@ -333,6 +333,7 @@ pub struct NumericControl {
     pub(crate) invalid_text: bool,
     pub(crate) text: String,
     pub(crate) text_modified: bool,
+    pub(crate) caret_activity: u64,
     pub(crate) selected: Range<usize>,
     pub(crate) reversed: bool,
     pub(crate) marked: Option<Range<usize>>,
@@ -437,6 +438,7 @@ impl NumericControl {
             commit_unchanged_text: false,
             editing: NumericEditState(Rc::new(Cell::new(false))),
             text_modified: false,
+            caret_activity: 0,
             invalid_text: false,
             text,
             selected: 0..0,
@@ -1509,6 +1511,7 @@ impl NumericControl {
     }
 
     pub(crate) fn move_to(&mut self, offset: usize) {
+        self.caret_activity = self.caret_activity.wrapping_add(1);
         self.invalidate_text_pointer_selection();
         let offset = offset.min(self.text.len());
         self.selected = offset..offset;
@@ -1516,6 +1519,7 @@ impl NumericControl {
     }
 
     pub(crate) fn select_to(&mut self, offset: usize) {
+        self.caret_activity = self.caret_activity.wrapping_add(1);
         self.invalidate_text_pointer_selection();
         let offset = offset.min(self.text.len());
         if self.reversed {

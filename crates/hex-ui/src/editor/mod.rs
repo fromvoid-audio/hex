@@ -21,6 +21,7 @@ mod arrangement_sections;
 mod arrangement_seek;
 mod audio_admission;
 mod audio_event_editor;
+mod audio_unavailable;
 mod automation_view;
 mod bounce;
 mod browser;
@@ -147,6 +148,9 @@ mod missing_media;
 mod user_errors;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
+mod midi_loop_notes;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod midi_loop_profile;
 mod midi_ruler;
 mod midi_scene;
 mod midi_selection;
@@ -166,6 +170,7 @@ mod output_meter_ui_test;
 mod overview;
 mod overview_waveform;
 mod play_intent;
+mod poll_cadence;
 mod project_directory;
 mod project_recovery;
 mod project_spectrum;
@@ -252,7 +257,7 @@ use hex_session::service::{Request, Service, ViewState};
 use recent_projects::RecentProjectsState;
 use recovery_state::RecoveryState;
 use refresh::RedrawGate;
-use std::{collections::VecDeque, rc::Rc, sync::Arc, time::Duration};
+use std::{collections::VecDeque, rc::Rc, sync::Arc};
 use viewport::Viewport;
 
 pub(super) const UI_REQUEST_CAPACITY: usize = 32;
@@ -309,7 +314,7 @@ enum PendingEditorAudioResult {
     Unavailable {
         project_generation: u64,
         restart_request: Option<u64>,
-        error: String,
+        error: hex_audio::OutputOpenError,
     },
 }
 
@@ -464,7 +469,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     dialogs::install_project_actions(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
-            cx.quit();
+            close::quit_confirmed(cx);
         }
     })
     .detach();
@@ -661,6 +666,7 @@ fn install_close_guard(window: &mut Window, cx: &mut App, view: gpui::WeakEntity
 
 pub(super) fn open_backend(cx: &mut App, backend: crate::EditorBackend) -> Result<(), String> {
     configure_editor_app(cx)?;
+    close::install_quit_gate(cx);
     cx.open_window(editor_window_options(cx), move |window, cx| {
         let view = cx.new(|cx| EditorView::new_with_backend(window, cx, backend));
         install_close_guard(window, cx, view.downgrade());
@@ -821,6 +827,7 @@ pub(super) struct EditorView {
     piano_view_clip: Option<(u64, ClipId)>,
     piano_zoom_wheel_accum: f32,
     piano_pitch_wheel_accum: f32,
+    poll_cadence: poll_cadence::PollCadence,
     piano_pitch_scroll_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
@@ -948,6 +955,8 @@ pub(super) struct EditorView {
     overview_waveform_cache: Rc<std::cell::RefCell<overview_waveform::Cache>>,
     pub(in crate::editor) waveform_geometry_cache:
         Rc<std::cell::RefCell<waveform_geometry::WaveformGeometryCache>>,
+    midi_visible_notes: std::cell::RefCell<midi_loop_notes::VisibleNotesCache>,
+    midi_tile_images: Rc<std::cell::RefCell<midi_loop_notes::TileImages>>,
     active_clip_drag: Option<drag::ClipDrag>,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
@@ -1286,24 +1295,7 @@ impl EditorView {
                 ),
             ),
         };
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                if this
-                    .update(cx, |view, cx| {
-                        if view.tick(cx) {
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
+        let poll_cadence = Self::spawn_poll(window, cx);
         let keyboard_window_id = window.window_handle().window_id();
         let keyboard_entity = cx.entity().downgrade();
         let computer_keyboard_keys = cx.intercept_keystrokes(move |event, window, cx| {
@@ -1311,6 +1303,9 @@ impl EditorView {
                 return;
             }
             crate::diagnostics::record_key(cx, event);
+            if let Some(entity) = keyboard_entity.upgrade() {
+                entity.update(cx, |view, _| view.wake_poll());
+            }
             // A key during the potentially slow helper handshake cancels the
             // pending quit before the key can alter a project or local draft.
             if let Some(entity) = keyboard_entity.upgrade()
@@ -1562,6 +1557,7 @@ impl EditorView {
             piano_view_clip: None,
             piano_zoom_wheel_accum: 0.0,
             piano_pitch_wheel_accum: 0.0,
+            poll_cadence,
             piano_pitch_scroll_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
@@ -1689,6 +1685,8 @@ impl EditorView {
             waveform_geometry_cache: Rc::new(std::cell::RefCell::new(
                 waveform_geometry::WaveformGeometryCache::default(),
             )),
+            midi_visible_notes: Default::default(),
+            midi_tile_images: Default::default(),
             active_clip_drag: None,
             active_browser_audio_drag: None,
             active_native_device_drag: None,

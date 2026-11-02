@@ -548,7 +548,7 @@ impl EditorView {
         match self.service.submit(Request::TuningGesture(request)) {
             Ok(()) => {
                 self.tuning.client.mark_submitted();
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.worker_submitted();
                 true
             }
             Err(SubmitError::Full(_)) => false,

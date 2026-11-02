@@ -21,7 +21,7 @@ fn actual_native_harness() -> Harness {
                 Ok(Some(output))
             }
             Err(error) if error == "audio output is open or still shutting down" => Ok(None),
-            Err(error) => Err(error),
+            Err(error) => Err(error.into()),
         }
     }));
     let observation = Arc::new(Mutex::new(Observation::default()));

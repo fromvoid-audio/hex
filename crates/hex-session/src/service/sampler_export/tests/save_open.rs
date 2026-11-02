@@ -280,7 +280,7 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
             }
             "future-project" => {
                 let mut document: serde_json::Value = serde_json::from_slice(&saved_bytes).unwrap();
-                document["version"] = (hex_storage::CURRENT_SCHEMA_VERSION + 1).into();
+                document["version"] = (hex_storage::NEWEST_SCHEMA_VERSION + 1).into();
                 open_path = saved.with_file_name("future.hex");
                 fs::write(&open_path, serde_json::to_vec(&document).unwrap()).unwrap();
             }

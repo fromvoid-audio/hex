@@ -3,7 +3,8 @@
 //! source-bound automation recording drafts. Drafts are not canonical lane references.
 //!
 //! # Dependencies
-//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2.
+//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2, plus
+//! libc errno/flags and rustix's safe exclusive rename for create-new publication.
 //!
 //! # Does not own
 //! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
@@ -13,6 +14,7 @@ mod files;
 mod journal;
 pub mod preset;
 pub mod project_name;
+mod publication;
 pub mod text;
 pub mod tuning_library;
 pub use journal::{
@@ -34,11 +36,41 @@ pub use replacement::{
 };
 use std::{fmt, io, path::PathBuf};
 
-/// Current saved-project schema; independent of the application version.
+/// Current saved-project schema for projects without sinc v2 media; independent
+/// of the application version. Such projects keep the layout older readers open.
 /// Schema63 records automatic track names; earlier names migrate as user-set.
 /// Schema62 adds independent MIDI clip gain; schema61 migrates at unity.
 /// Schema59 is a reserved incompatible development layout and remains unsupported.
 pub const CURRENT_SCHEMA_VERSION: u32 = 63;
+
+/// Schema written only for projects containing `SINC_CONVERSION_V2` assets:
+/// schema63 plus each catalog row's actual conversion version. Readers before
+/// schema64 refuse it as newer, so saving one over an older file needs consent.
+pub const SINC_V2_SCHEMA_VERSION: u32 = 64;
+
+/// Schema written only for projects whose audio content names a warp resampler
+/// law other than the one its pitch/warp state implies (in practice, content
+/// rendered with the v2 law): schema64 (or schema63) plus an optional
+/// `warp_resampler` domain field. See `schema::warp_resampler` for migration.
+/// Readers before schema65 refuse it as newer, so such a save needs consent.
+pub const WARP_RESAMPLER_SCHEMA_VERSION: u32 = 65;
+
+/// Newest schema this build opens; anything above it is refused as newer.
+pub const NEWEST_SCHEMA_VERSION: u32 = WARP_RESAMPLER_SCHEMA_VERSION;
+
+/// Schema [`encode`] writes for `project`: [`WARP_RESAMPLER_SCHEMA_VERSION`]
+/// when content names an explicit warp resampler law,
+/// [`SINC_V2_SCHEMA_VERSION`] when it contains sinc v2 media, otherwise
+/// [`CURRENT_SCHEMA_VERSION`].
+pub fn schema_version_for(project: &Project) -> u32 {
+    if schema::warp_resampler::contains_explicit(project) {
+        WARP_RESAMPLER_SCHEMA_VERSION
+    } else if schema::conversion_v2::contains_v2(project) {
+        SINC_V2_SCHEMA_VERSION
+    } else {
+        CURRENT_SCHEMA_VERSION
+    }
+}
 
 /// Older readers rejected documents above this size. This is compatibility
 /// metadata for overwrite consent, never an admission limit for this reader.
@@ -183,13 +215,22 @@ impl From<serde_json::Error> for StorageError {
 /// independent MIDI note activation (schema56), and independent audio event
 /// activation, including retained roots (schema57), and bounded nested audio
 /// sources (schema58), consistent shared audio event projections (schema60),
-/// independent audio event gain (schema61), MIDI clip gain (schema62), and
-/// automatic track name origin (schema63).
+/// independent audio event gain (schema61), MIDI clip gain (schema62),
+/// and automatic track name origin (schema63). Only a project containing sinc
+/// v2 media is written as schema64 (see [`schema_version_for`]); every other
+/// project stays schema63, byte-compatible with older readers. Only content
+/// naming an explicit warp resampler law makes a project schema65.
 /// Schema59 is reserved and explicitly refused.
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::track_name_origin::encode(project)?)
+    if schema::warp_resampler::contains_explicit(project) {
+        encode_document(&schema::warp_resampler::encode(project)?)
+    } else if schema::conversion_v2::contains_v2(project) {
+        encode_document(&schema::conversion_v2::encode(project)?)
+    } else {
+        encode_document(&schema::track_name_origin::encode(project)?)
+    }
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -205,6 +246,8 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::warp_resampler::require_implied(project)?;
+    schema::conversion_v2::require_v1_conversions(project)?;
     schema::track_name_origin::require_user_names(project)?;
     schema::midi_clip_gain::require_unity(project)?;
     schema::event_gain::require_unity(project)?;
@@ -302,6 +345,8 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
     Ok(output.0)
 }
 /// Open current and evidenced historical schemas without file/media I/O.
+/// Schema64 catalog rows may carry sinc v2 conversion; a v2 row in any earlier
+/// schema refuses. Schema63 and older migrate their identity/v1 assets unchanged.
 /// Schema55 requires authored/base read selection on every device envelope.
 /// Schema53 and older select authored curves. Schema54 belongs to the evidenced
 /// unmerged printed-output branch a4c1a99c2 and is explicitly unsupported here;
@@ -362,6 +407,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
+        WARP_RESAMPLER_SCHEMA_VERSION => schema::warp_resampler::decode(bytes),
+        SINC_V2_SCHEMA_VERSION => schema::conversion_v2::decode(bytes),
         CURRENT_SCHEMA_VERSION => schema::track_name_origin::decode(bytes),
         62 => schema::midi_clip_gain::decode(bytes),
         61 => schema::event_gain::decode(bytes),
@@ -395,13 +442,27 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         37 => schema::DocumentV11::decode(bytes),
         1..=33 => schema::legacy::decode(bytes, header.version),
         34..=36 => schema::tuning::decode_version(bytes, header.version),
-        version if version > CURRENT_SCHEMA_VERSION => Err(StorageError::Invalid(
+        version if version > NEWEST_SCHEMA_VERSION => Err(StorageError::Invalid(
             "project uses a newer schema; open it with a newer hex version; original file unchanged",
         )),
         _ => Err(StorageError::Invalid(
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
+    if header.version < WARP_RESAMPLER_SCHEMA_VERSION
+        && schema::warp_resampler::require_implied(&project).is_err()
+    {
+        return Err(StorageError::Invalid(
+            "historical project schema contains a warp resampler version; original file unchanged",
+        ));
+    }
+    if header.version < SINC_V2_SCHEMA_VERSION
+        && schema::conversion_v2::require_v1_conversions(&project).is_err()
+    {
+        return Err(StorageError::Invalid(
+            "historical project schema contains unsupported media conversion metadata; original file unchanged",
+        ));
+    }
     if header.version < 52 {
         schema::clip_aliases::require_legacy_compatible(&project)?;
     }

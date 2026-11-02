@@ -77,7 +77,7 @@ BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'corem
               # Signal only the owned local-update helper group on desktop control workers.
               'nix': {'hex-desktop'},
               # Safe publication/standalone child ownership; host event-only socket readiness.
-              'rustix': {'hex-export', 'hex-plugin-scan', 'hex-clap-scan', 'hex-scan-supervisor', 'hex-plugin-host'},
+              'rustix': {'hex-export', 'hex-storage', 'hex-plugin-scan', 'hex-clap-scan', 'hex-scan-supervisor', 'hex-plugin-host'},
               # Advisory document/catalog and desktop update-lifetime locks stay on control boundaries.
               'fs2': {'hex-storage', 'hex-plugin-catalog', 'hex-desktop'}}
 # Build-only hash checks of observed pinned rtrb constructor files. This does

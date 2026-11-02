@@ -329,6 +329,39 @@ pub trait NativeProcessorRuntime: StdAny + Send {
     fn can_retarget_parameters_from(&self, _previous: &dyn NativeProcessorRuntime) -> bool {
         false
     }
+    /// Bounded live-transition admission (Pulse #4178). True when this
+    /// candidate can take over `previous` (its committed runtime) only by
+    /// capturing more still-audible transitions, such as outgoing routing or
+    /// audition branches, than its fixed inline capacity holds. It is not an
+    /// incompatibility: the host must then refuse the WHOLE handoff before
+    /// any ownership mutation with a transient busy result and retry after
+    /// rendering advances `previous`. Never answer this by reporting a
+    /// history copy or retarget as unsupported, because the host treats those
+    /// as reset, detached-tail or fresh-runtime handoffs instead of a refusal.
+    /// It must become false once `previous` has rendered past its oldest
+    /// captured transition, and after `reset`. The query must be bounded,
+    /// allocation-free, infallible, lock-free and read-only. The default
+    /// (false) is correct for runtimes that never hold live transitions.
+    fn transition_busy_from(&self, _previous: &dyn NativeProcessorRuntime) -> bool {
+        false
+    }
+    /// Idle-predecessor settlement (Pulse #4558). The host calls this on a
+    /// committed runtime only while its graph renders no device chains (a
+    /// paused transport without monitoring, keyboard or tail input), when a
+    /// handoff would otherwise be `transition_busy_from` this runtime forever
+    /// because nothing renders it. Its output is silent then and a resume
+    /// ramps in from silence, so complete every pending live transition at
+    /// once: discard only the outgoing, inaudible branches and keep the
+    /// current routing and its history unchanged, as if the transitions had
+    /// finished. Afterwards no candidate may be `transition_busy_from` this
+    /// runtime. Must be bounded, allocation-free, infallible and lock-free.
+    /// The host calls it only on a runtime that a candidate reports busy
+    /// from, so the default `reset` (coarser: it also clears the current
+    /// routing's frozen history) is correct for any runtime; providers with
+    /// live transitions may override it to keep that history.
+    fn settle_idle_transitions(&mut self) {
+        self.reset();
+    }
     fn as_any(&self) -> &dyn StdAny;
     /// Optional, transient live-audition controls. These are audio-owned and
     /// deliberately excluded from persisted device state.
@@ -1370,6 +1403,48 @@ impl NativeRuntimeChain {
     /// runtime compatibility changed remain freshly reset on the candidate.
     pub fn can_inherit_from(&self, previous: &Self) -> bool {
         self.can_inherit_from_excluding_old_range(previous, 0..0)
+    }
+
+    /// Whether any stateful entry must defer a handoff from the same-identity
+    /// entry of `previous` until that committed runtime's live transitions
+    /// drain (Pulse #4178; see `NativeProcessorRuntime::transition_busy_from`).
+    /// Hosts check this during pure handoff preflight, before inheritance,
+    /// tail capture or reset classification, and refuse the whole handoff as
+    /// transient instead of choosing another history path. It is conservative
+    /// for entries a retained tail would keep. Bounded and allocation-free:
+    /// one identity scan per candidate entry, like `can_inherit_from`.
+    /// Settle the committed runtimes that `candidate` is
+    /// `transition_busy_from`, while this (previous) chain's graph renders
+    /// nothing (Pulse #4558). Pairs entries exactly as
+    /// `transition_busy_from`; bounded and allocation-free. See
+    /// `NativeProcessorRuntime::settle_idle_transitions`.
+    pub fn settle_idle_transitions_for(&mut self, candidate: &Self) {
+        for entry in candidate
+            .entries
+            .iter()
+            .filter(|entry| entry.runtime.is_stateful())
+        {
+            if let Some(old) = self
+                .entries
+                .iter_mut()
+                .find(|old| Self::same_runtime_identity(entry, old) && old.runtime.is_stateful())
+                && entry.runtime.transition_busy_from(&old.runtime)
+            {
+                old.runtime.settle_idle_transitions();
+            }
+        }
+    }
+    pub fn transition_busy_from(&self, previous: &Self) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.runtime.is_stateful()
+                && previous
+                    .entries
+                    .iter()
+                    .find(|old| {
+                        Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
+                    })
+                    .is_some_and(|old| entry.runtime.transition_busy_from(&old.runtime))
+        })
     }
 
     /// Preflight history inheritance while leaving a range of old chain entries

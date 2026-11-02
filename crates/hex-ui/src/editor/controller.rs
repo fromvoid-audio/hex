@@ -303,7 +303,7 @@ impl EditorView {
         };
         match self.service.submit(request) {
             Ok(()) => {
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.worker_submitted();
                 self.pending_restart_request = Some((project_generation, request_id));
                 self.status = "preparing audio output".into();
                 true
@@ -786,8 +786,7 @@ impl EditorView {
                                         recovery_status = Some("restoring audio graph");
                                     } else {
                                         self.fail_audio_recovery(
-                                            "audio opened but graph restore was not admitted"
-                                                .into(),
+                                            "audio opened but graph restore was not admitted",
                                         );
                                     }
                                 }
@@ -863,7 +862,7 @@ impl EditorView {
                     }
                     self.pending_restart_request = None;
                     self.pending_recovery_generation = None;
-                    let message = format!("audio unavailable · {}", error.to_lowercase());
+                    let message = super::audio_unavailable::unavailable_message(&error);
                     self.status = message.clone();
                     self.error = Some(message.into());
                     changed = true;
@@ -1007,9 +1006,10 @@ impl EditorView {
     pub(super) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
         if crate::diagnostics::actions_enabled(cx) {
             let query_bytes = self.browser.search.read(cx).text().len();
-            crate::diagnostics::record_view(
-                cx,
-                format!(
+            crate::diagnostics::record_view(cx, |snapshot| {
+                use std::fmt::Write as _;
+                let _ = write!(
+                    snapshot,
                     " generation={} revision={:?} track={:?} clip={:?} scene={:?} mode={:?} viewport={:?} browser_open={} browser_query_bytes={} forced_time_selection={}",
                     self.project_generation,
                     self.state.as_ref().map(|s| s.revision),
@@ -1021,8 +1021,8 @@ impl EditorView {
                     self.browser.open,
                     query_bytes,
                     self.time_selection_key_held
-                ),
-            );
+                );
+            });
         }
         crate::diagnostics::record_audio(cx, self.audio.as_mut());
         let logging_failure =
@@ -1404,19 +1404,19 @@ impl EditorView {
         if let Some(audio) = self.audio.as_mut() {
             let _ = audio.control.spectrum_retry_pending();
             let _ = audio.control.audition_retry_pending();
-            let spectra = audio.control.spectrum_latest_pairs();
-            let changed = self.device_panel.spectrum_results.len() != spectra.len()
-                || spectra.iter().any(|result| {
-                    self.device_panel
-                        .spectrum_results
-                        .get(&result.output.stamp.target)
-                        != Some(result)
-                });
+            // Read into a retained buffer: a steady-state tick allocates nothing.
+            let spectra = &mut self.device_panel.spectrum_scratch;
+            audio.control.spectrum_latest_pairs_into(spectra);
+            let results = &mut self.device_panel.spectrum_results;
+            let changed = results.len() != spectra.len()
+                || spectra
+                    .iter()
+                    .any(|result| results.get(&result.output.stamp.target) != Some(result));
             if changed {
-                self.device_panel.spectrum_results.clear();
-                self.device_panel.spectrum_results.extend(
+                results.clear();
+                results.extend(
                     spectra
-                        .into_iter()
+                        .drain(..)
                         .map(|result| (result.output.stamp.target, result)),
                 );
                 visible_change = true;
@@ -2700,7 +2700,7 @@ impl EditorView {
                             restart_request,
                         ) == AudioEventDisposition::Current =>
                         {
-                            let message = format!("audio unavailable · {}", error.to_lowercase());
+                            let message = super::audio_unavailable::unavailable_message(&error);
                             self.status = message.clone();
                             self.error = Some(message.into());
                             self.pending_restart_request = None;
@@ -3263,6 +3263,7 @@ impl EditorView {
     }
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
+        self.wake_poll();
         if self.update_preparing() {
             self.error = Some("cancel update before editing".into());
             return false;
@@ -3614,7 +3615,7 @@ impl EditorView {
         let import_intent = super::truncated_import::ImportIntent::capture(&request);
         match self.service.submit(request) {
             Ok(()) => {
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.worker_submitted();
                 self.truncated_import_submitted(import_intent);
                 if resize_request {
                     self.trim_request_submitted();
@@ -3696,6 +3697,7 @@ impl EditorView {
     }
 
     pub(super) fn request_seek(&mut self, frame: u64) {
+        self.wake_poll();
         self.latency_rebuild = None;
         if self.section_install_pending() {
             self.error = Some("applying edit · wait for audio".into());
@@ -3938,6 +3940,7 @@ impl EditorView {
         command: hex_engine::SessionPlaybackCommand,
         revision: u64,
     ) {
+        self.wake_poll();
         self.invalidate_prepared_seek();
         if !matches!(
             command,
@@ -4044,6 +4047,7 @@ impl EditorView {
     }
 
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
+        self.wake_poll();
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
             self.latency_rebuild = None;
             self.sampler_edit_resume = None;

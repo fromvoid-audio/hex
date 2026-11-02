@@ -16,7 +16,7 @@ pub mod midi_recording;
 
 use hex_engine::{Audio, Project as PlaybackProject};
 use hex_media::{
-    DecodedAudio, ImportError as MediaInvalid, ResampleLimits, resample,
+    DecodedAudio, ImportError as MediaInvalid, ResampleLimits, resample_with_version,
     waveform::{self, Waveform},
 };
 use hex_project::{
@@ -153,27 +153,46 @@ impl PreparedImport {
         )
     }
 
-    /// Convert and summarize before committing any canonical state. Bounds are
-    /// checked before allocating converted PCM; original source metadata stays intact.
+    /// Convert and summarize a new import before committing any canonical
+    /// state. Bounds are checked before allocating converted PCM; original
+    /// source metadata stays intact. New imports use
+    /// [`hex_project::import_conversion_version`].
     pub fn at_rate(
         decoded: DecodedAudio,
         project_rate: u32,
         limits: ResampleLimits,
     ) -> Result<Self, SessionError> {
+        let version = hex_project::import_conversion_version(decoded.sample_rate(), project_rate);
+        Self::for_conversion(decoded, project_rate, limits, version)
+    }
+
+    /// Reproduce an existing asset's derived audio with its saved conversion
+    /// law, so reopened, recovered and relinked media render exactly as saved.
+    /// Unknown versions and versions inconsistent with the rates refuse.
+    pub fn for_conversion(
+        decoded: DecodedAudio,
+        project_rate: u32,
+        limits: ResampleLimits,
+        conversion_version: u32,
+    ) -> Result<Self, SessionError> {
         let source_sample_rate = decoded.sample_rate();
         let source_frames = u64::try_from(decoded.frames())
             .map_err(|_| SessionError::Invalid("source frame count exceeds project range"))?;
-        let audio = resample(decoded.audio(), project_rate, limits)?;
+        if (source_sample_rate == project_rate)
+            != (conversion_version == hex_project::IDENTITY_CONVERSION)
+        {
+            return Err(SessionError::Invalid(
+                "media conversion version differs from its sample rates",
+            ));
+        }
+        let version = hex_media::ResampleVersion::for_conversion(conversion_version)?;
+        let audio = resample_with_version(decoded.audio(), project_rate, limits, version)?;
         let waveform = waveform::summarize(&audio, waveform::MAX_BINS)?;
         Ok(Self {
             path: decoded.path().to_path_buf(),
             source_sample_rate,
             source_frames,
-            conversion_version: if source_sample_rate == project_rate {
-                hex_project::IDENTITY_CONVERSION
-            } else {
-                hex_project::SINC_CONVERSION_V1
-            },
+            conversion_version,
             source_audio: decoded.into_audio(),
             audio,
             waveform,
@@ -335,13 +354,14 @@ impl Session {
                     SessionError::Invalid("resident frame limit exceeds addressable range")
                 })?
             };
-            let prepared = PreparedImport::at_rate(
+            let prepared = PreparedImport::for_conversion(
                 decoded,
                 project.sample_rate(),
                 ResampleLimits {
                     max_source_frames: 8_000_000,
                     max_output_frames: output_limit,
                 },
+                metadata.conversion_version(),
             )?;
             remaining = remaining
                 .checked_sub(

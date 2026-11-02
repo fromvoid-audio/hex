@@ -121,6 +121,8 @@ pub use gain_envelope::{
     MAX_PREPARED_GAIN_BYTES, MAX_PREPARED_GAIN_KNOTS,
 };
 mod clip_index;
+mod loop_seam;
+pub(crate) use loop_seam::LoopSeam;
 mod return_feed_plan;
 mod signal_graph;
 mod stream_demand;
@@ -2879,6 +2881,80 @@ impl RendererRuntime {
                 .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
     }
 
+    /// Settle this paused (previous) linear graph's committed transitions
+    /// that `candidate` is busy from (Pulse #4558), pairing chains exactly as
+    /// `transition_busy_from`; bounded and allocation-free.
+    pub(crate) fn settle_idle_transitions_for(
+        &mut self,
+        project: &Project,
+        candidate: &Self,
+        candidate_project: &Project,
+    ) {
+        for (index, track) in candidate_project.tracks().iter().enumerate() {
+            let Some(track_id) = track.canonical_track_id() else {
+                continue;
+            };
+            if let Some((old, chain)) = project
+                .tracks()
+                .iter()
+                .position(|old| old.canonical_track_id() == Some(track_id))
+                .and_then(|old| self.device_chains.get_mut(old))
+                .zip(candidate.device_chains.get(index))
+            {
+                old.settle_idle_transitions_for(chain);
+            }
+        }
+        for (index, bus) in candidate_project.return_buses().iter().enumerate() {
+            if let Some((old, chain)) = project
+                .return_buses()
+                .iter()
+                .position(|old| old.id == bus.id)
+                .and_then(|old| self.return_chains.get_mut(old))
+                .zip(candidate.return_chains.get(index))
+            {
+                old.settle_idle_transitions_for(chain);
+            }
+        }
+        self.main_chain
+            .settle_idle_transitions_for(&candidate.main_chain);
+    }
+
+    /// Whether a same-identity chain must defer this handoff until the
+    /// predecessor's committed live transitions drain (Pulse #4178). Pairs
+    /// chains exactly as `can_inherit_from`; read-only and allocation-free.
+    pub(crate) fn transition_busy_from(
+        &self,
+        project: &Project,
+        previous: &Self,
+        previous_project: &Project,
+    ) -> bool {
+        let tracks = project.tracks().iter().enumerate().any(|(index, track)| {
+            track.canonical_track_id().is_some_and(|track_id| {
+                previous_project
+                    .tracks()
+                    .iter()
+                    .position(|old| old.canonical_track_id() == Some(track_id))
+                    .and_then(|old| previous.device_chains.get(old))
+                    .zip(self.device_chains.get(index))
+                    .is_some_and(|(old, candidate)| candidate.transition_busy_from(old))
+            })
+        });
+        let returns = project
+            .return_buses()
+            .iter()
+            .enumerate()
+            .any(|(index, bus)| {
+                previous_project
+                    .return_buses()
+                    .iter()
+                    .position(|old| old.id == bus.id)
+                    .and_then(|old| previous.return_chains.get(old))
+                    .zip(self.return_chains.get(index))
+                    .is_some_and(|(old, candidate)| candidate.transition_busy_from(old))
+            });
+        tracks || returns || self.main_chain.transition_busy_from(&previous.main_chain)
+    }
+
     pub(crate) fn can_inherit_from(
         &self,
         project: &Project,
@@ -3798,6 +3874,7 @@ pub use midi_template::{
 pub use playback::{
     PlaybackAction, PlaybackActionError, PlaybackActionRejection, PlaybackCommand,
     PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability, SessionCapabilityStatus,
+    TransportFadeCompletion,
 };
 pub use prepared_revision::PreparedRevision;
 pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};

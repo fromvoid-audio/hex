@@ -32,6 +32,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// 64-frame blocks covering the queued Pause/Stop declick fade at rates up
+/// to 96 kHz (256 frames; Pulse #4151), so oracles assert the settled
+/// transport after it rather than in the first block.
+const FADE_BLOCKS: usize = 256_usize.div_ceil(64);
 static NEXT: AtomicU64 = AtomicU64::new(0);
 // The actual native constructor retains the process-wide output lease.
 static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
@@ -603,7 +607,7 @@ impl Harness {
                     Ok(Some(output))
                 }
                 Err(error) if error == "audio output is open or still shutting down" => Ok(None),
-                Err(error) => Err(error),
+                Err(error) => Err(error.into()),
             }
         }));
         let observation = Arc::new(Mutex::new(Observation::default()));
@@ -1177,12 +1181,15 @@ fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_dom
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let output = h.render();
+        h.render();
         let status = h.audio.as_ref().unwrap().status().unwrap();
         if status.stream_applied_command_prefix.load(Acquire) == play {
-            // The real upsampler has a source-start boundary response. The
-            // end of this block and the next complete block are constant PCM.
-            assert!(output[63].iter().all(|s| (*s - 0.25).abs() < 0.0001));
+            // The real upsampler has a source-start boundary response: sinc v2
+            // (new imports) reaches 64 source frames, 128 project frames at
+            // 24k→48k. The block after that response is constant PCM.
+            h.render();
+            let settled = h.render();
+            assert!(settled.iter().flatten().all(|s| (*s - 0.25).abs() < 0.0001));
             break;
         }
         assert!(
@@ -1233,10 +1240,23 @@ fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_dom
         .control
         .command_with_ticket(PlaybackCommand::Pause)
         .unwrap();
+    // The Pause fades out first, then freezes the cursor at its audible end.
+    for _ in 0..FADE_BLOCKS {
+        h.render();
+    }
+    let paused = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    assert!(paused > 12288 + 64 && paused <= 12288 + 64 + 256);
     for _ in 0..2 {
         assert_eq!(h.render(), [[0.0; 2]; 64]);
         let status = h.audio.as_ref().unwrap().status().unwrap();
-        assert_eq!(status.position.load(Acquire), 12288 + 64);
+        assert_eq!(status.position.load(Acquire), paused);
         assert_eq!(status.stream_applied_command_prefix.load(Acquire), pause);
         assert!(!status.playing.load(Acquire));
     }
