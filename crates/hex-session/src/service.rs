@@ -5,6 +5,7 @@ use crate::arrangement_seek::{
 use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureSnapshot};
 use crate::import_batch::AudioBatchDestination;
 use crate::import_batch_decode::{AudioBatchContext, AudioBatchControl, AudioBatchImport};
+use crate::resident_import::{IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT, decode_resident_import};
 use crate::tuning_gesture::{
     TuningGestureAck, TuningGestureMachine, TuningGestureRequest, TuningGestureSnapshot,
     TuningLibraryOperation, TuningLibraryResult,
@@ -32,6 +33,8 @@ mod comparison_audio;
 #[cfg(test)]
 mod console_track_tests;
 mod export_lane;
+#[cfg(test)]
+mod resident_limit_tests;
 mod shutdown;
 #[cfg(test)]
 mod startup_failure_tests;
@@ -113,28 +116,6 @@ const REQUEST_CAPACITY: usize = 32;
 #[cfg(test)]
 mod snapshot_queue_tests;
 const EVENT_CAPACITY: usize = 2;
-/// Per-file resident decode caps. Larger WAV sources are diverted to verified streaming.
-pub(crate) const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
-pub(crate) const IMPORT_FRAME_LIMIT: usize = 8_000_000;
-/// The shared refusal for sources that only the resident decoder reads (ADPCM WAV).
-/// Fixed-frame WAV past these caps streams instead, so only those sources reach it.
-pub(crate) const RESIDENT_ONLY_LIMIT: &str = "resident audio import is limited to 64 mib and \
-    8000000 frames per file (about 2:46 at 48 khz); adpcm wav cannot stream, so convert it \
-    to pcm or float wav to import or audition longer audio";
-/// Resident import decode under the per-file caps. Every resident import path and
-/// browser audition of a non-streamable source share this, so they agree.
-pub(crate) fn decode_resident_import(
-    path: impl AsRef<Path>,
-) -> Result<hex_media::DecodedAudio, hex_media::ImportError> {
-    decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT)).map_err(|error| {
-        match error {
-            hex_media::ImportError::LimitExceeded(_) => {
-                hex_media::ImportError::LimitExceeded(RESIDENT_ONLY_LIMIT)
-            }
-            other => other,
-        }
-    })
-}
 // Browser audition is independent of canonical resident-import admission. Bound
 // encoded input to 512 MiB and each decoded/converted stereo buffer to 256 MiB.
 // Source and converted PCM can coexist during conversion (512 MiB total);
@@ -390,9 +371,9 @@ pub fn prepare_audio_preview(
 /// canonical project/history. PCM is finite stereo at the actual output rate.
 /// Supports streamable (fixed-frame) WAV files up to 512 MiB, with at most
 /// 33,554,432 frames both before and after conversion (256 MiB per stereo f32
-/// buffer); import streams those. A source only the resident decoder reads (ADPCM)
-/// keeps the resident import caps and refusal, so audition never admits a file that
-/// import refuses (Pulse #4143). Never truncates a source to fit.
+/// buffer); import can stream those when a source reservation is available.
+/// Resident-only WAV encodings such as ADPCM keep the resident import caps.
+/// Other resource constraints can still refuse an import. Never truncates a source.
 pub fn prepare_sample_preview(
     path: impl AsRef<Path>,
     output_sample_rate: u32,

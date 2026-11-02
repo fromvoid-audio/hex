@@ -430,8 +430,8 @@ pub(crate) fn exceeds_resident_decode(
     let bytes = std::fs::metadata(path)
         .map_err(|_| SessionError::Invalid("could not read audio file metadata"))?
         .len();
-    Ok(bytes > crate::service::IMPORT_FILE_LIMIT as u64
-        || source_frames > crate::service::IMPORT_FRAME_LIMIT as u64)
+    Ok(bytes > crate::resident_import::IMPORT_FILE_LIMIT as u64
+        || source_frames > crate::resident_import::IMPORT_FRAME_LIMIT as u64)
 }
 // File-backed sources use the same typed prepared-import commands and destination
 // laws as decoded sources. IDs/default track behavior remain owned by the project.

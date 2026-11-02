@@ -13,7 +13,7 @@ use std::{
     },
 };
 
-const SOURCE_FRAMES: usize = crate::service::IMPORT_FRAME_LIMIT;
+const SOURCE_FRAMES: usize = crate::resident_import::IMPORT_FRAME_LIMIT;
 const RETAINED_FRAMES: u64 = 8_000_000;
 const OPEN: u8 = 0;
 const CANCEL_REQUESTED: u8 = 1;
@@ -479,7 +479,7 @@ impl AudioBatchImport {
             };
             self.control.publish(1, index + 1, index);
             self.check(current)?;
-            let decoded = crate::service::decode_resident_import(path).map_err(|e| {
+            let decoded = crate::resident_import::decode_resident_import(path).map_err(|e| {
                 AudioBatchError::Member {
                     member: index + 1,
                     path: original.clone(),
