@@ -1,4 +1,5 @@
 use super::*;
+use crate::oversampling::spectrum::inharmonic_energy_db;
 use hex_lattice::{DevicePreparationContext, EMPTY_DEVICE_RESOURCES, TuningTable};
 
 fn state() -> NativeDeviceState {
@@ -147,10 +148,12 @@ fn registered_metadata_codec_and_invalid_inputs() {
 fn mix_is_exact_bypass_advances_history_and_blocks_are_invariant() {
     let input = sine(997.0, 48_000, 0.3, 2_049);
     let s = state();
-    assert_eq!(
-        render(&patch(&s, parameter::DRY_WET, 0.0), 48_000, &input),
-        input
-    );
+    // Zero mix is the exact dry signal, delayed by the declared latency.
+    let latency = prepared(&s, 48_000).algorithmic_latency_frames().unwrap() as usize;
+    assert_eq!(latency, crate::oversampling::LATENCY_FRAMES);
+    let zero_mix = render(&patch(&s, parameter::DRY_WET, 0.0), 48_000, &input);
+    assert!(zero_mix[..latency].iter().all(|f| *f == [0.0; 2]));
+    assert_eq!(zero_mix[latency..], input[..input.len() - latency]);
     let expected = render(&s, 48_000, &input);
     let mut split = input.clone();
     let mut runtime = prepared(&s, 48_000).create_runtime();
@@ -303,6 +306,26 @@ fn filter_preview_matches_measured_runtime_band_response() {
         assert!(
             (f64::from(y) - actual_y).abs() < 0.002,
             "{hz}: {y} vs {actual_y}"
+        );
+    }
+}
+
+/// Pulse #3958: a 7 kHz sine at full drive and 48 kHz keeps summed
+/// non-harmonic (aliased) energy below -60 db relative to the fundamental.
+/// The former 4x linear-interpolation path measured -23.1 db (tone 0.5) and
+/// -24.6 db (tone 1.0) for its largest single component.
+#[test]
+fn full_drive_7khz_sine_aliasing_stays_below_minus_60_db() {
+    let rate = 48_000;
+    let input = sine(7000.0, rate, 1.0, (1 << 16) + 2048);
+    for tone in [0.5, 1.0] {
+        let mut s = patch(&state(), parameter::DRIVE, 1.0);
+        s = patch(&s, parameter::DRY_WET, 1.0);
+        s = patch(&s, parameter::TONE, tone);
+        let energy = inharmonic_energy_db(&render(&s, rate, &input), 7000.0, rate);
+        assert!(
+            energy < -60.0,
+            "tone {tone}: inharmonic energy {energy:.1} db"
         );
     }
 }

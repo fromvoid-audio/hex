@@ -72,8 +72,10 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
 }
 
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid fade position envelope"))?;
@@ -86,7 +88,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .ok_or(StorageError::Invalid("fade curve positions are missing"))?,
     )?;
     object.insert("version".into(), 37.into());
-    let project = super::tuning::decode_version(&serde_json::to_vec(&value)?, 37)?;
+    let project = super::tuning::decode_version_value(value, 37)?;
     let mut rows = BTreeMap::new();
     for row in positions.0 {
         if rows.insert(row.clip, row).is_some() {
