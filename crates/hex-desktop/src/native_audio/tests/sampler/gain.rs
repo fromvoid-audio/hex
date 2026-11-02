@@ -348,7 +348,7 @@ fn postcommit_open_failure(kind: FailedEdit) {
                 h.backend.lock().unwrap().take();
             }
             Ok(EditorAudioEvent::Unavailable { error, .. }) => {
-                assert!(error.contains("fixture hardware open failed"));
+                assert!(error.to_string().contains("fixture hardware open failed"));
                 h.audio = None;
                 h.backend.lock().unwrap().take();
                 break;
@@ -384,6 +384,7 @@ fn postcommit_open_failure(kind: FailedEdit) {
         start: 0,
         frames: Some(8),
         signal: hex_session::service::ExportSignal::Main,
+        format: hex_export::ExportFormat::Pcm16,
         overwrite: false,
         control: hex_export_control(),
     });
@@ -396,14 +397,15 @@ fn postcommit_open_failure(kind: FailedEdit) {
         std::thread::sleep(Duration::from_millis(1));
     }
     let bytes = fs::read(path).unwrap();
-    assert_eq!(
-        i16::from_le_bytes([bytes[44], bytes[45]]),
-        (expected_pcm[0] * 32768.0) as i16
-    );
-    assert_eq!(
-        i16::from_le_bytes([bytes[46], bytes[47]]),
-        (expected_pcm[1] * 32768.0) as i16
-    );
+    // PCM16 export applies ±1 LSB TPDF dither.
+    for (offset, expected) in [(44, expected_pcm[0]), (46, expected_pcm[1])] {
+        let actual = i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        let expected = (expected * 32768.0) as i16;
+        assert!(
+            (i32::from(actual) - i32::from(expected)).abs() <= 1,
+            "{actual} not within one lsb of {expected}"
+        );
+    }
     h.service
         .as_ref()
         .unwrap()

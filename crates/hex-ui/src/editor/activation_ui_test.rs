@@ -59,7 +59,7 @@ fn split_midi_trim_preview_keeps_the_retained_source_window() {
     let tail = &project.track(track).unwrap().midi_clips()[2];
     let trim = tail.preview_edge_trim(TrimEdge::Right, b(12)).unwrap();
     assert_eq!(
-        super::tracks::midi_trim_note_shapes(project, tail, trim, 192_000, 288_000),
+        super::tracks::midi_trim_note_shapes(project, tail, trim, 192_000, 288_000, 0),
         vec![(0.0, 0.5, 60), (0.75, 0.25, 60)]
     );
 }

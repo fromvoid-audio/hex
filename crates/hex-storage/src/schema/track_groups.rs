@@ -87,8 +87,10 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     Ok(value)
 }
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid track hierarchy envelope"))?;
@@ -101,7 +103,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .ok_or(StorageError::Invalid("track hierarchy inventory missing"))?,
     )?;
     object.insert("version".into(), 43.into());
-    let mut snapshot = super::grouped_audio::decode(&serde_json::to_vec(&value)?)?.snapshot();
+    let mut snapshot = super::grouped_audio::decode_value(value)?.snapshot();
     if rows.len() != snapshot.tracks.len() {
         return Err(StorageError::Invalid(
             "track hierarchy inventory is incomplete",

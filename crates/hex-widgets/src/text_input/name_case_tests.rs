@@ -18,6 +18,8 @@ fn config() -> TextInputConfig {
         focus_marker: 0xaaaaaa,
         dial_rail: 0,
         hover: 0x404040,
+        selection: 0x3350a0,
+        invalid: 0xff554c,
         font_size: 12.0,
         text_case: crate::TextCase::Lowercase,
     };
@@ -70,6 +72,32 @@ fn fixture(cx: &mut TestAppContext, original: &str) -> (gpui::AnyWindowHandle, E
         .unwrap()
         .read_with(cx, |view, _| view.input.clone());
     (*handle, input)
+}
+
+#[gpui::test]
+fn selection_highlight_paints_the_injected_style_color(cx: &mut TestAppContext) {
+    const SELECTION: u32 = 0x2a6f3b;
+    let handle = cx.add_window(|window, cx| {
+        let input = cx.new(|cx| {
+            let mut config = config();
+            config.style.selection = SELECTION;
+            let mut input = TextInput::new(cx, config);
+            input.set_text("kick", cx);
+            input.select_all_text(cx);
+            input
+        });
+        input.update(cx, |input, _| input.focus(window));
+        NameCaseRoot { input }
+    });
+    let visual = &mut VisualTestContext::from_window(*handle, cx);
+    visual.run_until_parked();
+    let fills = visual.rendered_filled_quads("clip-name-input");
+    assert!(
+        fills
+            .iter()
+            .any(|(_, fill)| *fill == gpui::Background::from(gpui::rgb(SELECTION))),
+        "selection must follow ControlStyle::selection: {fills:?}"
+    );
 }
 
 #[gpui::test]
@@ -633,4 +661,126 @@ fn profile_text_selection(cx: &mut TestAppContext) {
             percentile(100)
         );
     }
+}
+
+#[gpui::test]
+fn same_position_input_restarts_hidden_caret(cx: &mut TestAppContext) {
+    let (handle, input) = fixture(cx, "x");
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_keystrokes("end");
+    visual.run_until_parked();
+    let caret = gpui::Background::from(gpui::rgb(config().style.accent)).opacity(0.5);
+    let is_visible = |visual: &mut VisualTestContext| {
+        visual
+            .rendered_filled_quads("clip-name-input")
+            .iter()
+            .any(|(_, fill)| *fill == caret)
+    };
+    assert!(is_visible(&mut visual));
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(510));
+    visual.run_until_parked();
+    assert!(!is_visible(&mut visual));
+    // Delete at the end changes neither the text nor the caret geometry.
+    visual.simulate_keystrokes("delete");
+    visual.run_until_parked();
+    assert!(is_visible(&mut visual));
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(510));
+    visual.run_until_parked();
+    assert!(!is_visible(&mut visual));
+    visual.simulate_keystrokes("right");
+    visual.run_until_parked();
+    assert!(is_visible(&mut visual));
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(510));
+    visual.run_until_parked();
+    assert!(!is_visible(&mut visual));
+    visual.update(|window, cx| input.update(cx, |input, cx| input.unmark_text(window, cx)));
+    visual.run_until_parked();
+    assert!(is_visible(&mut visual));
+    visual.update(|window, _| window.blur());
+    visual.run_until_parked();
+    assert!(!is_visible(&mut visual));
+}
+
+struct RemovableRoot {
+    input: Entity<TextInput>,
+    shown: bool,
+    blink_notifies: usize,
+    _blink: gpui::Subscription,
+}
+impl gpui::Render for RemovableRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w(px(400.0))
+            .children(self.shown.then(|| self.input.clone()))
+    }
+}
+
+#[gpui::test]
+fn removing_a_focused_input_stops_its_blink_wakes(cx: &mut TestAppContext) {
+    let handle = cx.add_window(|window, cx| {
+        // A collapsed selection paints the caret.
+        let input = cx.new(|cx| TextInput::new(cx, config()));
+        input.update(cx, |input, _| input.focus(window));
+        // The idle blink timer is the input's only notify source here.
+        let blink = cx.observe(&input, |root: &mut RemovableRoot, _, _| {
+            root.blink_notifies += 1;
+        });
+        RemovableRoot {
+            input,
+            shown: true,
+            blink_notifies: 0,
+            _blink: blink,
+        }
+    });
+    let root = handle.root(cx).unwrap();
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    let notifies =
+        |visual: &mut VisualTestContext| root.read_with(visual, |root, _| root.blink_notifies);
+    let start = notifies(&mut visual);
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    visual.run_until_parked();
+    let blinking = notifies(&mut visual) - start;
+    assert!(
+        (3..=5).contains(&blinking),
+        "a focused idle caret steps about twice a second, got {blinking} wakes in 2 s"
+    );
+    visual.update(|_, cx| {
+        root.update(cx, |root, cx| {
+            root.shown = false;
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    let removed = notifies(&mut visual);
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    visual.run_until_parked();
+    // GPUI keeps the last painted frame's keyed state until the next draw, so
+    // the one wake already scheduled may still land; it draws nothing new.
+    let settled = notifies(&mut visual);
+    assert!(
+        settled - removed <= 1,
+        "a removed caret kept waking: {} wakes in 2 s",
+        settled - removed
+    );
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    visual.run_until_parked();
+    assert_eq!(
+        notifies(&mut visual),
+        settled,
+        "a removed caret must stop scheduling blink wakes"
+    );
 }

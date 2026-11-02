@@ -112,6 +112,8 @@ pub enum PaletteRole {
     SecondaryText,
     Hover,
     Border,
+    /// Unselected clip boundary/outline stroke.
+    ClipOutline,
     Grid,
     Text,
     Muted,
@@ -135,6 +137,7 @@ struct ThemeTokens {
     raised: u32,
     hover: u32,
     border: u32,
+    clip_outline: u32,
     muted: u32,
     primary_dark: u32,
     waveform: u32,
@@ -159,6 +162,8 @@ impl ThemeTokens {
             raised: darken(background, 6),
             hover: lighten(background, 12),
             border: darken(background, 17),
+            // Keep outlines dark against clip fills while following custom backgrounds.
+            clip_outline: mix(0x000000, darken(background, 42), 0.25),
             muted: mix(background, text, 0.68),
             primary_dark: mix(background, primary, 0.08),
             waveform: contrast_text(mix(primary, text, 0.15), text),
@@ -176,6 +181,7 @@ impl ThemeTokens {
             PaletteRole::SecondaryText => self.secondary_text,
             PaletteRole::Hover | PaletteRole::Grid => self.hover,
             PaletteRole::Border => self.border,
+            PaletteRole::ClipOutline => self.clip_outline,
             PaletteRole::Text => self.colors.text.packed(),
             PaletteRole::Muted => self.muted,
             PaletteRole::Primary => self.colors.primary.packed(),
@@ -196,6 +202,31 @@ thread_local! {
 
 pub fn color(role: PaletteRole) -> u32 {
     ACTIVE_THEME.with(|theme| theme.get().color(role))
+}
+
+/// Test-only injection of the clip-outline role. The returned guard restores
+/// the derived tokens of the active preferences when dropped.
+#[cfg(test)]
+#[allow(dead_code)]
+#[must_use]
+pub(crate) fn inject_test_clip_outline(outline: u32) -> TestClipOutline {
+    ACTIVE_THEME.with(|theme| {
+        let mut tokens = theme.get();
+        tokens.clip_outline = outline;
+        theme.set(tokens);
+    });
+    TestClipOutline
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) struct TestClipOutline;
+
+#[cfg(test)]
+impl Drop for TestClipOutline {
+    fn drop(&mut self) {
+        apply_preferences(preferences());
+    }
 }
 
 pub fn preferences() -> hex_preferences::ThemePreferences {
@@ -307,9 +338,15 @@ pub fn load_fonts(cx: &App) -> Result<(), String> {
 /// then removes the marks. Pass bare paths, project IDs or saved names unmarked
 /// only through `verbatim`, never as plain text.
 pub fn text(value: impl AsRef<str>) -> SharedString {
-    use hex_session::service::text;
-    text::plain(&text::lowercase_outside_verbatim(value.as_ref())).into()
+    verbatim_text::plain(&verbatim_text::lowercase_outside_verbatim(value.as_ref())).into()
 }
+
+// hex-sandbox compiles this file by path without depending on hex-session or
+// hex-storage, so compile hex-storage's dependency-free text module the same way.
+// Producers in other crates use `verbatim`; this copy only consumes marks.
+#[allow(dead_code)]
+#[path = "../../hex-storage/src/text.rs"]
+mod verbatim_text;
 
 /// Reusable element palette for tracks, collections and other semantic markers.
 /// Fixed, restrained hues are mixed with the active neutral surfaces.
@@ -439,7 +476,7 @@ mod tests {
     fn text_lowercases_app_text_but_keeps_marked_paths_exact() {
         let message = format!(
             "Project Changed Outside Hex At {}",
-            hex_session::service::text::verbatim("/Users/Me/My Songs/Live Set.hex")
+            super::verbatim_text::verbatim("/Users/Me/My Songs/Live Set.hex")
         );
         assert_eq!(
             text(message).as_ref(),
@@ -457,6 +494,7 @@ mod tests {
         assert_eq!(color(PaletteRole::Text), defaults.text.packed());
         assert_eq!(color(PaletteRole::Primary), defaults.primary.packed());
         assert_eq!(color(PaletteRole::Secondary), defaults.secondary.packed());
+        assert_eq!(color(PaletteRole::ClipOutline), 0x000000);
         assert!(colors_are_legible(defaults));
         assert!(contrast_ratio(color(PaletteRole::ClipFill), color(PaletteRole::ClipText)) >= 4.5);
         assert!(
@@ -465,6 +503,16 @@ mod tests {
                 color(PaletteRole::SecondaryText)
             ) >= 4.5
         );
+    }
+
+    #[test]
+    fn clip_outline_follows_custom_background() {
+        let _restore = RestoreTheme(preferences());
+        apply_preferences(hex_preferences::ThemePreferences {
+            background: hex_preferences::RgbColor::new(0x80, 0x70, 0x60),
+            ..hex_preferences::ThemePreferences::default()
+        });
+        assert_eq!(color(PaletteRole::ClipOutline), 0x16120e);
     }
 
     #[test]

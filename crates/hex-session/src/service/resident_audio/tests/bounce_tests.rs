@@ -115,7 +115,7 @@ fn arrangement_bounce_publication_case(whole_track: bool) {
     let receive = || {
         service
             .events
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(crate::test_wait::HANG_BOUND)
             .unwrap()
     };
     let _ = receive();

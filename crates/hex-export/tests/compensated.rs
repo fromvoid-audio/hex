@@ -129,11 +129,12 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
         .flatten()
         .flat_map(|sample| ((sample * 32767.0_f32).round() as i16).to_le_bytes())
         .collect();
-    assert_eq!(&a[44..], expected);
+    assert_pcm_bytes_near(&a[44..], &expected, "legacy");
     use hex_export::{ExportControl, ExportSignal, controlled_frame_count};
     let main = ExportSignal::Main;
+    // Main is latency-compensated: the automatic range is the source, not startup.
     let frames = controlled_frame_count(prepared.arrangement(), 0, None, &main).unwrap();
-    assert_eq!(frames, 17 + u64::from(compiled.main_latency_frames()));
+    assert_eq!(frames, 17);
     assert_eq!(
         controlled_frame_count(prepared.arrangement(), 0, Some(17), &main).unwrap(),
         17
@@ -175,9 +176,10 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
         )
         .unwrap();
         assert_eq!(report.frames, 17 + capture_latency - start);
-        assert_eq!(
+        assert_pcm_bytes_near(
             &std::fs::read(path).unwrap()[44..],
-            &capture_expected[start as usize * 4..]
+            &capture_expected[start as usize * 4..],
+            "capture",
         );
     }
     let stem_path = directory.join("stems");
@@ -202,7 +204,11 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
     )
     .unwrap();
     let stem_file = stem_path.join(format!("track-{}-source.wav", track.value()));
-    assert_eq!(&std::fs::read(stem_file).unwrap()[44..], &capture_expected);
+    assert_pcm_bytes_near(
+        &std::fs::read(stem_file).unwrap()[44..],
+        &capture_expected,
+        "stem",
+    );
     for (label, span) in [("automatic", frames), ("explicit", 17)] {
         let path = directory.join(format!("{label}.wav"));
         let report = hex_export::render_prepared_controlled(
@@ -215,11 +221,7 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
         )
         .unwrap();
         assert_eq!(report.frames, span);
-        let bytes = std::fs::read(path).unwrap();
-        let latency = compiled.main_latency_frames() as usize;
-        let mut causal = vec![0; latency * 4];
-        causal.extend_from_slice(&expected);
-        assert_eq!(&bytes[44..], &causal[..span as usize * 4]);
+        assert_pcm_bytes_near(&std::fs::read(path).unwrap()[44..], &expected, label);
     }
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -313,7 +315,7 @@ fn automatic_return_and_stems_include_pre_main_latency_but_not_main_latency() {
             .flatten()
             .flat_map(|s| ((s * 32767.0_f32).round() as i16).to_le_bytes()),
     );
-    assert_eq!(&std::fs::read(path).unwrap()[44..], &expected);
+    assert_pcm_bytes_near(&std::fs::read(path).unwrap()[44..], &expected, "return");
 
     let stems = [
         Stem {
@@ -343,14 +345,117 @@ fn automatic_return_and_stems_include_pre_main_latency_but_not_main_latency() {
         &ExportControl::default(),
     )
     .unwrap();
-    assert_eq!(
+    assert_pcm_bytes_near(
         &std::fs::read(batch.join(format!("track-{}-source.wav", track.value()))).unwrap()[44..],
-        &expected
+        &expected,
+        "track stem",
     );
-    assert_eq!(
+    assert_pcm_bytes_near(
         &std::fs::read(batch.join(format!("return-{}-bus.wav", bus.value()))).unwrap()[44..],
-        &expected
+        &expected,
+        "return stem",
     );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// Time-selection Main export with track and Main latency (7 + 7 frames): file
+/// frame 0 is the selection start and the length is exactly the requested span.
+/// Spans below and above the renderer's 256-frame block, and starts that need
+/// stateful preroll, cover the discard crossing block boundaries.
+#[test]
+fn main_selection_export_is_latency_compensated_to_the_selection_start() {
+    use hex_export::{ExportControl, ExportSignal, controlled_frame_count};
+    const SOURCE: u64 = 700;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { track, asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "ramp".into(),
+            path: "memory.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: SOURCE,
+            playback_frames: SOURCE,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: Definition.default_state().unwrap(),
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: Definition.default_state().unwrap(),
+        })
+        .unwrap();
+    // Every frame is distinct and audible, so any offset or truncation shows.
+    let samples: Vec<[f32; 2]> = (0..SOURCE)
+        .map(|i| {
+            let value = ((i % 97) + 1) as f32 / 256.0;
+            [value, -value]
+        })
+        .collect();
+    let pcm: Vec<u8> = samples
+        .iter()
+        .flatten()
+        .flat_map(|sample| ((sample * 32767.0_f32).round() as i16).to_le_bytes())
+        .collect();
+    let media = BTreeMap::from([(asset, Audio::new(48_000, samples).unwrap())]);
+    let effects: [&dyn NativeDeviceDefinition; 1] = [&Definition];
+    let effects = NativeDeviceRegistry::new(&effects).unwrap();
+    let prepared = Arc::new(
+        PreparedRevision::prepare_with_test_registries(
+            editor.project(),
+            &media,
+            Arc::new(SineTable::new()),
+            None,
+            &effects,
+            &hex_engine_instruments(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(prepared.arrangement().main_latency_frames(), 14);
+    let directory = std::env::temp_dir().join(format!(
+        "hex-selection-latency-{}-{}",
+        std::process::id(),
+        NEXT_RETURN.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let main = ExportSignal::Main;
+    for (start, requested) in [
+        (0, Some(17)),
+        (300, Some(17)),
+        (300, Some(300)),
+        (250, Some(400)),
+        (300, None),
+    ] {
+        let span = controlled_frame_count(prepared.arrangement(), start, requested, &main).unwrap();
+        assert_eq!(span, requested.unwrap_or(SOURCE - start), "{start}");
+        let path = directory.join(format!("selection-{start}-{span}.wav"));
+        let report = hex_export::render_prepared_controlled(
+            &path,
+            Arc::clone(&prepared),
+            start,
+            span,
+            main.clone(),
+            &ExportControl::default(),
+        )
+        .unwrap();
+        assert_eq!(report.frames, span);
+        let bytes = std::fs::read(path).unwrap();
+        assert_eq!(bytes.len() as u64, 44 + span * 4);
+        let range = start as usize * 4..(start + span) as usize * 4;
+        assert_pcm_bytes_near(
+            &bytes[44..],
+            &pcm[range],
+            &format!("start {start}, span {span}"),
+        );
+    }
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -539,4 +644,22 @@ fn automatic_ranges_include_finite_serial_and_routed_return_tails() {
         );
     }
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// PCM16 export applies ±1 LSB TPDF dither, so each decoded sample lands
+/// within one LSB of the plain-rounding oracle bytes.
+fn assert_pcm_bytes_near(actual: &[u8], expected: &[u8], context: &str) {
+    assert_eq!(actual.len(), expected.len(), "{context}");
+    for (index, (actual, expected)) in actual
+        .chunks_exact(2)
+        .zip(expected.chunks_exact(2))
+        .enumerate()
+    {
+        let actual = i16::from_le_bytes([actual[0], actual[1]]);
+        let expected = i16::from_le_bytes([expected[0], expected[1]]);
+        assert!(
+            (i32::from(actual) - i32::from(expected)).abs() <= 1,
+            "{context} sample {index}: {actual} not within one lsb of {expected}"
+        );
+    }
 }

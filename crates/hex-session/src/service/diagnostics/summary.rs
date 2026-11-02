@@ -4,7 +4,7 @@
 //! report counts, with at most eight IDs where the typed selection allows it.
 use super::{Description, FirstIds, Parameter, Snapshot};
 use crate::service::Request;
-use hex_project::Command;
+use hex_project::{Command, ExistingAudioPlacement};
 macro_rules! describe {
     ($kind:literal; [$($key:literal => $value:expr),*]; omitted=$omitted:literal) => {{
         let mut description = Description::new($kind);
@@ -679,6 +679,31 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("import_prepared_session_audio_clip"; ["track" => track.value(), "scene" => scene.value(), "name_redacted_bytes" => name.len(), "path_redacted_bytes" => path.as_os_str().len(), "source_sample_rate" => source_sample_rate, "source_frames" => source_frames, "playback_frames" => playback_frames, "conversion_version" => conversion_version, "source_start" => source_start, "source_end" => source_end]; omitted="")
         }
+        Command::ImportExistingAudio { asset, placement } => match placement {
+            ExistingAudioPlacement::NewTrack {
+                name,
+                before_track,
+                start,
+            } => {
+                describe!("import_existing_audio_track_at"; ["asset" => asset.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start" => start]; omitted="")
+            }
+            ExistingAudioPlacement::Clip {
+                track,
+                start,
+                overwrite,
+            } => {
+                describe!("import_existing_audio_clip"; ["asset" => asset.value(), "track" => track.value(), "start" => start, "overwrite" => overwrite]; omitted="")
+            }
+            ExistingAudioPlacement::Session {
+                track,
+                scene,
+                name,
+                source_start,
+                source_end,
+            } => {
+                describe!("import_existing_session_audio_clip"; ["asset" => asset.value(), "track" => track.value(), "scene" => scene.value(), "name_redacted_bytes" => name.len(), "source_start" => source_start, "source_end" => source_end]; omitted="")
+            }
+        },
         Command::MoveTrackBefore { track, before } => {
             describe!("move_track_before"; ["track" => track.value(), "before" => before.map(|id| id.value())]; omitted="")
         }
@@ -1481,6 +1506,9 @@ pub(super) fn request(value: &Request) -> Description {
         Request::RelinkMedia(relinks) => {
             describe!("relink_media"; ["count" => relinks.len()]; omitted="paths")
         }
+        Request::RecoverTruncatedImport(_) => {
+            describe!("recover_truncated_import"; []; omitted="request")
+        }
         Request::Import(value0) => {
             describe!("import"; ["value0_redacted_bytes" => value0.as_os_str().len()]; omitted="")
         }
@@ -1590,10 +1618,11 @@ pub(super) fn request(value: &Request) -> Description {
             path,
             start,
             frames,
+            format,
             overwrite,
             ..
         } => {
-            describe!("export_range"; ["path_redacted_bytes" => path.as_os_str().len(), "start" => start, "frames" => frames, "overwrite" => overwrite]; omitted="signal,control")
+            describe!("export_range"; ["path_redacted_bytes" => path.as_os_str().len(), "start" => start, "frames" => frames, "format" => format, "overwrite" => overwrite]; omitted="signal,control")
         }
     }
 }

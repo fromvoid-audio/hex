@@ -5,6 +5,7 @@ use crate::arrangement_seek::{
 use crate::device_gesture::{GestureAck, GestureMachine, GestureRequest, GestureSnapshot};
 use crate::import_batch::AudioBatchDestination;
 use crate::import_batch_decode::{AudioBatchContext, AudioBatchControl, AudioBatchImport};
+use crate::resident_import::{IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT, decode_resident_import};
 use crate::tuning_gesture::{
     TuningGestureAck, TuningGestureMachine, TuningGestureRequest, TuningGestureSnapshot,
     TuningLibraryOperation, TuningLibraryResult,
@@ -13,13 +14,17 @@ use crate::verified_import::VerifiedImportDestination;
 use crate::{DocumentAudioMode, PreparedImport, Session, SessionError, SourcePlanReservation};
 use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
-pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
+pub use hex_export::{ExportControl, ExportFormat, ExportProgress, ExportSignal, Stem};
 use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
+/// Save As filename admission for the recovery files storage keeps beside a project.
+pub use hex_storage::project_name;
 /// Verbatim spans keep paths case-sensitive in lowercase status and error text.
 pub use hex_storage::text;
 use hex_tuning::ProjectTuning;
 mod arrangement_sections;
+mod browser_preview;
+pub use browser_preview::{AudioPreview, PreviewFailure, PreviewSources};
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
@@ -30,13 +35,21 @@ mod comparison_audio;
 #[cfg(test)]
 mod console_track_tests;
 mod export_lane;
+#[cfg(test)]
+mod resident_limit_tests;
+mod shutdown;
+#[cfg(test)]
+mod startup_failure_tests;
+pub use shutdown::{DROP_SHUTDOWN_BOUND, ShutdownError};
 mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
 mod resident_audio;
 mod resident_preview;
 mod resident_seek;
 mod stopped_arrangement;
+mod truncated_import;
 pub use resident_seek::{ResidentArrangementSeekIntent, ResidentArrangementSeekResult};
+pub use truncated_import::{ImportTruncation, TruncatedImportRecovery};
 pub(crate) mod sampler_export;
 mod sampler_parameter;
 use audio_sink::WorkerEvents;
@@ -67,6 +80,8 @@ pub use plugin_effect::{
 use request_cancellation::QueuedRequest;
 pub use request_cancellation::RequestCancellation;
 #[cfg(test)]
+mod conversion_selection_tests;
+#[cfg(test)]
 mod correlated_save_tests;
 #[cfg(test)]
 mod effect_bus_tests;
@@ -75,6 +90,8 @@ mod format_upgrade_tests;
 #[cfg(test)]
 #[path = "service/limiter_tests.rs"]
 mod limiter_tests;
+#[cfg(test)]
+mod long_source_tests;
 pub mod missing_media;
 pub mod preset;
 mod recovery;
@@ -86,8 +103,9 @@ mod stopped_playback_tests;
 use hex_storage::FileToken;
 use recovery::absolute_document_path;
 pub use recovery::{
-    LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart, kept_journal,
-    leftover_recovery, untitled_recovery_path,
+    LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart,
+    claim_untitled_recovery_slot, kept_journal, leftover_recovery, untitled_leftovers,
+    untitled_recovery_path,
 };
 use std::{
     collections::BTreeMap,
@@ -105,15 +123,6 @@ const REQUEST_CAPACITY: usize = 32;
 #[cfg(test)]
 mod snapshot_queue_tests;
 const EVENT_CAPACITY: usize = 2;
-const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
-const IMPORT_FRAME_LIMIT: usize = 8_000_000;
-// Browser audition is independent of canonical resident-import admission. Bound
-// encoded input to 512 MiB and each decoded/converted stereo buffer to 256 MiB.
-// Source and converted PCM can coexist during conversion (512 MiB total);
-// resident decoding can temporarily hold encoded bytes alongside source PCM.
-const BROWSER_PREVIEW_FILE_LIMIT: usize = 512 * 1024 * 1024;
-const BROWSER_PREVIEW_FRAME_LIMIT: usize = 32 * 1024 * 1024;
-const BROWSER_PREVIEW_BINS: usize = 4096;
 const EXPORT_EVENT_CAPACITY: usize = 1;
 
 #[derive(Clone)]
@@ -242,6 +251,9 @@ pub struct Event {
     pub recovery_failure: Option<Arc<RecoveryFailure>>,
     /// Original failing batch member, kept separate from app-owned explanation.
     pub audio_batch_failure: Option<AudioBatchMemberFailure>,
+    /// A single-file import refused because its WAV data is truncated; a
+    /// consumer may offer `Request::RecoverTruncatedImport`.
+    pub import_truncation: Option<ImportTruncation>,
     pub request_complete: bool,
     /// Metadata-only completion of one first-load action, on success or refusal.
     pub sampler_load_complete: Option<SamplerLoadCompletion>,
@@ -328,60 +340,6 @@ pub struct ExportEvent {
     pub revision: u64,
     pub path: PathBuf,
     pub result: Result<ExportReport, String>,
-}
-
-/// Bounded audio metadata prepared away from the UI for browser drag feedback.
-#[derive(Clone, Debug)]
-pub struct AudioPreview {
-    pub playback_frames: u64,
-    pub sample_rate: u32,
-    pub waveform: Arc<Waveform>,
-}
-
-/// Decode and convert an audio source under the browser audition limits, then
-/// retain only its bounded waveform summary and full converted playback length.
-pub fn prepare_audio_preview(
-    path: impl AsRef<Path>,
-    project_sample_rate: u32,
-) -> Result<AudioPreview, String> {
-    let audio = prepare_sample_preview(path, project_sample_rate)?;
-    let playback_frames = u64::try_from(audio.frames().len())
-        .map_err(|_| "converted frame count exceeds project range".to_owned())?;
-    let waveform = Arc::new(
-        hex_media::waveform::summarize_peaks(&audio, BROWSER_PREVIEW_BINS)
-            .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?,
-    );
-    Ok(AudioPreview {
-        playback_frames,
-        sample_rate: project_sample_rate,
-        waveform,
-    })
-}
-
-/// Decode a bounded browser one-shot on a background worker, independent of
-/// canonical project/history. PCM is finite stereo at the actual output rate.
-/// Supports WAV files up to 512 MiB, with at most 33,554,432 frames both before
-/// and after conversion (256 MiB per stereo f32 buffer). Never truncates a source
-/// to fit. Resident import retains its separate, smaller resource ceilings.
-pub fn prepare_sample_preview(
-    path: impl AsRef<Path>,
-    output_sample_rate: u32,
-) -> Result<hex_engine::Audio, String> {
-    let decoded = decode_wav_file(
-        path,
-        Limits::new(BROWSER_PREVIEW_FILE_LIMIT, BROWSER_PREVIEW_FRAME_LIMIT),
-    )
-    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
-    let audio = hex_media::resample(
-        decoded.audio(),
-        output_sample_rate,
-        ResampleLimits {
-            max_source_frames: BROWSER_PREVIEW_FRAME_LIMIT,
-            max_output_frames: BROWSER_PREVIEW_FRAME_LIMIT,
-        },
-    )
-    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
-    Ok(audio)
 }
 
 /// Stable captured identities; instrument expectation is explicit, never an effect ID.
@@ -708,6 +666,9 @@ pub enum Request {
         value: hex_lattice_contract::ParameterValue,
     },
     Import(PathBuf),
+    /// Repeat one single-file import, explicitly recovering the readable whole
+    /// frames of a truncated WAV into resident media; see `truncated_import`.
+    RecoverTruncatedImport(TruncatedImportRecovery),
     /// Point offline assets at found files as one undoable edit. The files are
     /// decoded on the worker and must match the saved rate and frame count.
     RelinkMedia(BTreeMap<hex_project::AssetId, PathBuf>),
@@ -833,19 +794,88 @@ pub enum Request {
     RestoreStoppedPlayback,
     /// Worker-local continuation of the existing stopped restoration request.
     ContinueStoppedPlaybackRestore,
+    /// Whole-project Main export: exactly `ExportRange { start: 0, frames: None }`
+    /// on Main, default (dithered PCM16) format, create-new, so its causal
+    /// length includes declared finite tails.
     Export(PathBuf),
     /// Explicit half-open Arrangement range; worker captures the current revision.
+    /// `format` applies to the single file or to every stem file of a batch.
+    /// It is a per-request choice and is never saved in the project.
     ExportRange {
         path: PathBuf,
         start: u64,
         frames: Option<u64>,
         signal: hex_export::ExportSignal,
         control: hex_export::ExportControl,
+        format: hex_export::ExportFormat,
         overwrite: bool,
     },
 }
 
+/// Fields of the one canonical export request shape: destination, optional
+/// explicit frame count and the controlled render parts.
+type ExportRangeParts = (PathBuf, Option<u64>, ControlledExport);
+
+/// Controlled render parts an admitted export job carries to the worker.
+struct ControlledExport {
+    start: u64,
+    signal: hex_export::ExportSignal,
+    control: hex_export::ExportControl,
+    format: hex_export::ExportFormat,
+    overwrite: bool,
+}
+
+impl ControlledExport {
+    /// The automatic whole-project Main export in the default format.
+    fn whole_main() -> Self {
+        Self {
+            start: 0,
+            signal: hex_export::ExportSignal::Main,
+            control: hex_export::ExportControl::default(),
+            format: hex_export::ExportFormat::default(),
+            overwrite: false,
+        }
+    }
+
+    /// Publication policy: confirmed replacement only with overwrite consent.
+    fn publication(&self, path: &Path) -> Result<hex_export::Publication, hex_export::ExportError> {
+        if self.overwrite {
+            hex_export::Publication::confirmed_save(path)
+        } else {
+            Ok(hex_export::Publication::CreateNew)
+        }
+    }
+}
+
 impl Request {
+    /// The canonical `ExportRange` parts of an export request; `Export` is its
+    /// automatic whole-project Main spelling. Other requests return `None`.
+    fn into_export_range(self) -> Option<ExportRangeParts> {
+        match self {
+            Request::Export(path) => Some((path, None, ControlledExport::whole_main())),
+            Request::ExportRange {
+                path,
+                start,
+                frames,
+                signal,
+                control,
+                format,
+                overwrite,
+            } => Some((
+                path,
+                frames,
+                ControlledExport {
+                    start,
+                    signal,
+                    control,
+                    format,
+                    overwrite,
+                },
+            )),
+            _ => None,
+        }
+    }
+
     /// Control requests that must observe the completed parameter gesture.
     /// Project replacement keeps previews intact until candidate publication;
     /// only the successful `project_replaced` path retires their ownership.
@@ -961,11 +991,13 @@ impl std::error::Error for ServiceError {
 #[cfg(test)]
 type ExportTestHook = Arc<std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 
-/// UI-owned endpoints. Dropping both channels detaches the worker without joining it.
+/// UI-owned endpoints. `shutdown` stops and joins the session worker, which
+/// joins the export worker it owns; dropping calls it with a short bound.
 pub struct Service {
     #[cfg(test)]
     export_test_hook: ExportTestHook,
-    requests: request_cancellation::Sender,
+    /// `None` after shutdown, which disconnects an idle blocking worker.
+    requests: Option<request_cancellation::Sender>,
     events: diagnostics::EventReceiver,
     diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
@@ -975,18 +1007,57 @@ pub struct Service {
     resident_seek_results: Option<Receiver<ResidentArrangementSeekResult>>,
     resident_seek_count: AtomicUsize,
     recovery_slot: Option<PathBuf>,
-    _worker: JoinHandle<()>,
+    /// Exclusive per-instance ownership of `recovery_slot` (Pulse #3948).
+    /// `Drop` stops the worker before fields drop, so the slot is released only
+    /// after checkpointing ends (or the bounded shutdown detached the worker).
+    _recovery_claim: Option<hex_storage::UntitledSlotClaim>,
+    startup_failure: Arc<std::sync::OnceLock<String>>,
+    /// `None` once joined; kept after a timed-out shutdown for a later retry.
+    worker: Option<JoinHandle<()>>,
 }
 
 impl Drop for Service {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
+        // Bounded: an uncancellable job past the bound stays detached rather
+        // than blocking the dropping thread. Quit paths call `shutdown` first.
+        let _ = self.shutdown(DROP_SHUTDOWN_BOUND);
     }
 }
 
+/// Ordinary controlled range renderer: path, revision, start, frames, signal,
+/// format, control and publication. Tests substitute it to observe worker custody.
 type Exporter = Arc<
-    dyn Fn(&Path, &Arc<PreparedRevision>, u64, u64) -> Result<ExportReport, String> + Send + Sync,
+    dyn Fn(
+            &Path,
+            &Arc<PreparedRevision>,
+            u64,
+            u64,
+            hex_export::ExportSignal,
+            hex_export::ExportFormat,
+            &hex_export::ExportControl,
+            &hex_export::Publication,
+        ) -> Result<ExportReport, String>
+        + Send
+        + Sync,
 >;
+
+fn canonical_exporter() -> Exporter {
+    Arc::new(
+        |path, prepared, start, frames, signal, format, control, publication| {
+            hex_export::render_prepared_with_policy(
+                path,
+                Arc::clone(prepared),
+                start,
+                frames,
+                signal,
+                format,
+                control,
+                publication,
+            )
+            .map_err(|error| error.to_string())
+        },
+    )
+}
 
 struct ExportJob {
     job_id: u64,
@@ -997,12 +1068,7 @@ struct ExportJob {
     path: PathBuf,
     prepared: Arc<PreparedRevision>,
     frames: u64,
-    controlled: Option<(
-        u64,
-        hex_export::ExportSignal,
-        hex_export::ExportControl,
-        bool,
-    )>,
+    controlled: Option<ControlledExport>,
 }
 
 enum ExportWork {
@@ -1020,10 +1086,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             None,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string())
-            }),
+            canonical_exporter(),
         )
     }
 
@@ -1039,10 +1102,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             Some(untitled_path),
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string())
-            }),
+            canonical_exporter(),
         )
     }
 
@@ -1076,10 +1136,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             recovery,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string())
-            }),
+            canonical_exporter(),
             Some(audio),
         )
     }
@@ -1096,14 +1153,32 @@ impl Service {
             history_capacity,
             max_resident_frames,
             recovery,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|e| e.to_string())
-            }),
+            canonical_exporter(),
             Some(audio),
             Some(native),
         )
     }
+
+    /// Desktop composition with an untitled slot this instance exclusively
+    /// owns; the service keeps the claim until it is dropped (Pulse #3948).
+    pub fn with_audio_sink_and_claimed_recovery(
+        history_capacity: usize,
+        max_resident_frames: u64,
+        recovery: hex_storage::UntitledSlotClaim,
+        audio: Box<dyn WorkerAudioSink>,
+        native: crate::ResidentNativeReservation,
+    ) -> Result<Self, ServiceError> {
+        let mut service = Self::with_audio_sink_and_native_reservation(
+            history_capacity,
+            max_resident_frames,
+            Some(recovery.path().to_path_buf()),
+            audio,
+            native,
+        )?;
+        service._recovery_claim = Some(recovery);
+        Ok(service)
+    }
+
     fn with_exporter_and_recovery(
         sample_rate: u32,
         history_capacity: usize,
@@ -1132,10 +1207,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             None,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string())
-            }),
+            canonical_exporter(),
             None,
             Some(reservation),
         )
@@ -1257,11 +1329,16 @@ impl Service {
             })
             .map_err(ServiceError::Worker)?;
         let worker_shutdown = Arc::clone(&shutdown);
+        let startup_failure = Arc::new(std::sync::OnceLock::new());
+        let worker_startup_failure = Arc::clone(&startup_failure);
         let worker = thread::Builder::new()
             .name("hex-session".into())
             // Structural stopped publications reuse the bounded preroll constructor.
             .stack_size(crate::arrangement_seek::SEEK_WORKER_STACK_BYTES)
             .spawn(move || {
+                // Establish export-worker custody before fallible session startup,
+                // so an early return still closes and joins that worker.
+                let export_lane = ExportLane::new(export_work_tx, finished_rx, export_worker);
                 let mut events = WorkerEvents::new_with_diagnostics(
                     event_tx,
                     Arc::clone(&worker_shutdown),
@@ -1275,15 +1352,20 @@ impl Service {
                             Ok(rate) => (rate, None),
                             Err(error) => (48_000, Some(error)),
                         };
-                        let Ok(session) = Session::new_with_audio_mode_in_overview_domain(
+                        let session = match Session::new_with_audio_mode_in_overview_domain(
                             rate,
                             history_capacity,
                             max_resident_frames,
                             DocumentAudioMode::Resident,
                             events.ordinary_source_reservation(),
                             overview_budget.clone(),
-                        ) else {
-                            return;
+                        ) {
+                            Ok(session) => session,
+                            Err(error) => {
+                                let _ = worker_startup_failure
+                                    .set(format!("project session could not start: {error}"));
+                                return;
+                            }
                         };
                         if let Some(error) = error {
                             events.startup_failed(error);
@@ -1295,19 +1377,22 @@ impl Service {
                                     events.startup_failed(format!(
                                         "native resident reservation unavailable: {reason}"
                                     ));
-                                    let Ok(session) =
-                                        Session::new_with_audio_mode_in_overview_domain(
-                                            rate,
-                                            history_capacity,
-                                            max_resident_frames,
-                                            DocumentAudioMode::Resident,
-                                            events.ordinary_source_reservation(),
-                                            overview_budget.clone(),
-                                        )
-                                    else {
-                                        return;
-                                    };
-                                    session
+                                    match Session::new_with_audio_mode_in_overview_domain(
+                                        rate,
+                                        history_capacity,
+                                        max_resident_frames,
+                                        DocumentAudioMode::Resident,
+                                        events.ordinary_source_reservation(),
+                                        overview_budget.clone(),
+                                    ) {
+                                        Ok(session) => session,
+                                        Err(error) => {
+                                            let _ = worker_startup_failure.set(format!(
+                                                "project session could not start: {error}"
+                                            ));
+                                            return;
+                                        }
+                                    }
                                 }
                             },
                             None => session,
@@ -1321,7 +1406,7 @@ impl Service {
                     request_rx,
                     worker_document_intent,
                     events,
-                    ExportLane::new(export_work_tx, finished_rx, export_worker),
+                    export_lane,
                     actor_export_events,
                     recovery,
                     resident_seek,
@@ -1331,7 +1416,10 @@ impl Service {
         Ok(Self {
             #[cfg(test)]
             export_test_hook,
-            requests: request_cancellation::Sender::new(request_tx, document_intent),
+            requests: Some(request_cancellation::Sender::new(
+                request_tx,
+                document_intent,
+            )),
             diagnostics: Arc::clone(&diagnostics),
             events: diagnostics::EventReceiver::new(event_rx, diagnostics),
             export_events: export_event_rx,
@@ -1341,8 +1429,15 @@ impl Service {
             resident_seek_results: Some(seek_results_rx),
             resident_seek_count: AtomicUsize::new(0),
             recovery_slot,
-            _worker: worker,
+            _recovery_claim: None,
+            startup_failure,
+            worker: Some(worker),
         })
+    }
+
+    /// Construction failure recorded before the initial-state sender disconnects.
+    pub fn startup_failure(&self) -> Option<&str> {
+        self.startup_failure.get().map(String::as_str)
     }
 
     /// Submit without waiting for worker capacity.
@@ -1374,11 +1469,19 @@ impl Service {
             return Err(SubmitError::Busy(request));
         }
         let diagnostic = self.diagnostics.begin(&request);
-        let result = self
-            .requests
-            .submit_traced_save(request, diagnostic, Some(correlation));
+        let result = match self.requests.as_ref() {
+            Some(requests) => requests.submit_traced_save(request, diagnostic, Some(correlation)),
+            None => Err(SubmitError::Closed(request)),
+        };
         self.diagnostics.returned(diagnostic, &result);
         result
+    }
+
+    /// Iterations of the worker's request-wait loop since start (#4574): each
+    /// is one bounded native/control poll. A read-only diagnostic scalar for
+    /// idle wake measurement; it grants no ordering or completion evidence.
+    pub fn worker_wakes(&self) -> u64 {
+        self.diagnostics.worker_wakes()
     }
 
     /// Install one read-only control observer. Logging has no effect on request
@@ -1421,7 +1524,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            return match try_submit_traced(&self.requests, request, diagnostic) {
+            return match try_submit_traced(self.requests.as_ref(), request, diagnostic) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.resident_seek_count.fetch_sub(1, Ordering::AcqRel);
@@ -1437,7 +1540,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            match try_submit_traced(&self.requests, request, diagnostic) {
+            match try_submit_traced(self.requests.as_ref(), request, diagnostic) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.export_busy.store(false, Ordering::Release);
@@ -1445,7 +1548,7 @@ impl Service {
                 }
             }
         } else {
-            try_submit_traced(&self.requests, request, diagnostic)
+            try_submit_traced(self.requests.as_ref(), request, diagnostic)
         }
     }
 
@@ -1550,11 +1653,14 @@ fn try_submit(sender: &request_cancellation::Sender, request: Request) -> Result
 }
 #[allow(clippy::result_large_err)]
 fn try_submit_traced(
-    sender: &request_cancellation::Sender,
+    sender: Option<&request_cancellation::Sender>,
     request: Request,
     diagnostic: Option<diagnostics::DiagnosticRequest>,
 ) -> Result<(), SubmitError> {
-    sender.submit_traced(request, diagnostic)
+    match sender {
+        Some(sender) => sender.submit_traced(request, diagnostic),
+        None => Err(SubmitError::Closed(request)),
+    }
 }
 
 fn view_state(
@@ -1980,6 +2086,12 @@ fn run_tuning_library_operation_in_using(
     (result, prepared)
 }
 
+/// Control lanes that still need worker polls (#4574): a resident seek
+/// awaiting its result or completion delivery, or an admitted export.
+fn control_lanes_pending(seek: Option<&resident_seek::Lane>, export: &ExportLane) -> bool {
+    seek.is_some_and(resident_seek::Lane::pending) || export.pending()
+}
+
 #[allow(clippy::too_many_arguments)] // Existing worker composition plus private ownership of the existing seek worker.
 fn run_worker(
     mut session: Session,
@@ -2094,6 +2206,7 @@ fn run_worker(
                 error: None,
                 recovery_failure: None,
                 audio_batch_failure: None,
+                import_truncation: None,
                 request_complete: false,
                 sampler_load_complete: None,
                 sampler_edit_complete: None,
@@ -2133,6 +2246,7 @@ fn run_worker(
             error: Some(error),
             recovery_failure: None,
             audio_batch_failure: None,
+            import_truncation: None,
             request_complete: false,
             sampler_load_complete: None,
             sampler_edit_complete: None,
@@ -2301,13 +2415,49 @@ fn run_worker(
                         prepared: Some(p),
                     }
                 }),
-            )
+            );
+            control_lanes_pending(resident_seek.as_ref(), &export_lane)
         },
     ) {
+        // Requests whose handler takes the stopped Arrangement lease first begin
+        // it here; a live callback that has not answered parks the request and
+        // returns this worker to its loop (see `stopped_arrangement`, #4544).
+        let fences_first = events.resident_publication_enabled()
+            && session.audio_mode() == DocumentAudioMode::Resident
+            && match &queued.request {
+                Request::EditArrangementSection {
+                    project_generation: captured_generation,
+                    revision: captured_revision,
+                    command,
+                } => {
+                    *captured_generation == project_generation
+                        && *captured_revision == revision
+                        && arrangement_sections::is_command(command)
+                        && command.requires_section_publication()
+                }
+                Request::Undo | Request::Redo => {
+                    let redo = matches!(&queued.request, Request::Redo);
+                    session.editor.next_history_requires_stopped_bounce(redo)
+                        || session.section_history_requires_publication(redo)
+                }
+                _ => false,
+            };
+        let queued = if fences_first {
+            let source = hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision: revision,
+            };
+            match events.defer_stopped_fence(queued, source) {
+                Some(queued) => queued,
+                None => continue,
+            }
+        } else {
+            queued
+        };
         events.begin_diagnostics(&queued, project_generation, revision);
         events.begin_request(&document_intent, queued.document_intent);
         let save_correlation = queued.save_correlation;
-        let request = queued.request;
+        let (request, mut import_decode) = truncated_import::admit(queued.request);
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
             _ => None,
@@ -3267,6 +3417,10 @@ fn run_worker(
             error = Some(reason);
         } else {
             match request {
+                // `truncated_import::admit` unwraps every recovery at receipt.
+                Request::RecoverTruncatedImport(_) => {
+                    error = Some("truncated import recovery was not admitted".into());
+                }
                 Request::RestartRecovery(intent) => {
                     let result = if device_gesture.snapshot().is_some()
                         || tuning_gesture.snapshot().is_some()
@@ -4379,7 +4533,7 @@ fn run_worker(
                             resident_seek.as_ref(),
                             resident_preview.as_ref(),
                         );
-                        decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+                        decode_resident_import(path)
                             .map_err(|reason| reason.to_string())
                             .and_then(|decoded| {
                                 session
@@ -4467,6 +4621,7 @@ fn run_worker(
                                 resident_preview.as_ref(),
                             ),
                             &mut resident_snapshot,
+                            &mut import_decode,
                         )
                     })();
                     match result {
@@ -4544,6 +4699,7 @@ fn run_worker(
                         resident_seek.as_ref(),
                         resident_preview.as_ref(),
                     ),
+                    &mut import_decode,
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -4569,6 +4725,7 @@ fn run_worker(
                         resident_seek.as_ref(),
                         resident_preview.as_ref(),
                     ),
+                    &mut import_decode,
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -4595,6 +4752,7 @@ fn run_worker(
                             resident_seek.as_ref(),
                             resident_preview.as_ref(),
                         ),
+                        &mut import_decode,
                     ) {
                         Ok(prepared) => {
                             unsaved = true;
@@ -4624,6 +4782,7 @@ fn run_worker(
                         resident_seek.as_ref(),
                         resident_preview.as_ref(),
                     ),
+                    &mut import_decode,
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -4648,6 +4807,7 @@ fn run_worker(
                         resident_seek.as_ref(),
                         resident_preview.as_ref(),
                     ),
+                    &mut import_decode,
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -4920,10 +5080,14 @@ fn run_worker(
                                 resident_preview.as_ref(),
                             ),
                         ) {
-                            Ok((_, prepared)) => {
+                            Ok((result, prepared)) => {
                                 if session.project() != state.project.as_ref() {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
+                                }
+                                // Clip pastes report the clips they created.
+                                if matches!(clipboard, ArrangementClipboard::Clips(_)) {
+                                    created = Some(result);
                                 }
                                 status = Some(
                                     match clipboard {
@@ -4976,10 +5140,13 @@ fn run_worker(
                                 resident_preview.as_ref(),
                             ),
                         ) {
-                            Ok((_, prepared)) => {
+                            Ok((result, prepared)) => {
                                 if session.project() != state.project.as_ref() {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
+                                }
+                                if matches!(clipboard, ArrangementClipboard::Clips(_)) {
+                                    created = Some(result);
                                 }
                                 status = Some("time selection inserted".into());
                             }
@@ -5639,13 +5806,14 @@ fn run_worker(
                                         &mut resident_snapshot,
                                     )
                                 } else {
-                                    session.bounce_arrangement_adopting(
+                                    session.bounce_arrangement_adopting_with(
                                         target,
                                         in_place,
                                         adoption,
                                         &root,
                                         &control,
                                         compiled.as_ref().map(|(_, p)| p.as_ref()),
+                                        events.streamed_bouncer(),
                                     )
                                 }
                             })
@@ -5827,6 +5995,10 @@ fn run_worker(
                         resident_seek.as_ref(),
                         resident_preview.as_ref(),
                     );
+                    let prefence = events.take_stopped_fence(hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    });
                     let result = events
                         .resident_audio()
                         .ok_or(SessionError::Invalid("native worker unavailable"))
@@ -5838,6 +6010,7 @@ fn run_worker(
                                 sink,
                                 admission,
                                 &mut resident_snapshot,
+                                prefence,
                             )
                         });
                     match result {
@@ -6195,112 +6368,60 @@ fn run_worker(
                         }
                     }
                 }
-                Request::Export(path) => {
-                    status = Some("export queued".into());
-                    let clip_end = compiled
-                        .as_ref()
-                        .and_then(|(_, prepared)| prepared.arrangement().audible_end_frame())
-                        .unwrap_or(0);
-                    let job = match (compiled.as_ref(), clip_end) {
-                        (_, 0) => Err("nothing to export".to_owned()),
-                        (Some((compiled_revision, prepared)), frames)
-                            if *compiled_revision == revision =>
-                        {
-                            Ok(ExportJob {
-                                job_id: 0,
-                                streamed: None,
-                                sources: None,
-                                resources: None,
-                                revision,
-                                path: path.clone(),
-                                prepared: Arc::clone(prepared),
-                                frames,
-                                controlled: None,
-                            })
+                request @ (Request::Export(_) | Request::ExportRange { .. }) => {
+                    // Both spellings are export requests, so their parts always exist.
+                    if let Some((path, frames, controlled)) = request.into_export_range() {
+                        let job = match compiled.as_ref() {
+                            Some((compiled_revision, prepared))
+                                if *compiled_revision == revision =>
+                            {
+                                hex_export::controlled_frame_count(
+                                    prepared.arrangement(),
+                                    controlled.start,
+                                    frames,
+                                    &controlled.signal,
+                                )
+                                .map_err(|error| error.to_string())
+                                .map(|frames| ExportJob {
+                                    job_id: 0,
+                                    streamed: None,
+                                    sources: None,
+                                    resources: None,
+                                    revision,
+                                    path: path.clone(),
+                                    prepared: Arc::clone(prepared),
+                                    frames,
+                                    controlled: Some(controlled),
+                                })
+                            }
+                            _ => Err("latest project revision has not compiled".to_owned()),
                         }
-                        _ => Err("latest project revision has not compiled".to_owned()),
-                    }
-                    .and_then(|mut job| {
-                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
-                            || job.prepared.arrangement().contains_streamed_sources()
-                        {
-                            job.streamed = Some(streamed_export::StreamedExportJob::capture(
-                                &session,
-                                &state.project,
-                                project_generation,
-                                revision,
-                                events.streamed_exporter(),
-                            )?);
-                        }
-                        Ok(job)
-                    });
-                    match job {
-                        Ok(job) => export_job = Some(job),
-                        Err(reason) => {
-                            export_completion = Some(ExportEvent {
-                                revision,
-                                path,
-                                result: Err(reason),
-                            });
-                        }
-                    }
-                }
-                Request::ExportRange {
-                    path,
-                    start,
-                    frames,
-                    signal,
-                    control,
-                    overwrite,
-                } => {
-                    let job = match compiled.as_ref() {
-                        Some((compiled_revision, prepared)) if *compiled_revision == revision => {
-                            hex_export::controlled_frame_count(
-                                prepared.arrangement(),
-                                start,
-                                frames,
-                                &signal,
-                            )
-                            .map_err(|error| error.to_string())
-                            .map(|frames| ExportJob {
-                                job_id: 0,
-                                streamed: None,
-                                sources: None,
-                                resources: None,
-                                revision,
-                                path: path.clone(),
-                                prepared: Arc::clone(prepared),
-                                frames,
-                                controlled: Some((start, signal, control, overwrite)),
-                            })
-                        }
-                        _ => Err("latest project revision has not compiled".to_owned()),
-                    }
-                    .and_then(|mut job| {
-                        if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
-                            || job.prepared.arrangement().contains_streamed_sources()
-                        {
-                            job.streamed = Some(streamed_export::StreamedExportJob::capture(
-                                &session,
-                                &state.project,
-                                project_generation,
-                                revision,
-                                events.streamed_exporter(),
-                            )?);
-                        }
-                        Ok(job)
-                    });
-                    match job {
-                        Ok(job) => {
-                            status = Some("export queued".into());
-                            export_job = Some(job);
-                        }
-                        Err(reason) => {
-                            export_completion = Some(ExportEvent {
-                                revision,
-                                path,
-                                result: Err(reason),
-                            })
+                        .and_then(|mut job| {
+                            if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                                || job.prepared.arrangement().contains_streamed_sources()
+                            {
+                                job.streamed = Some(streamed_export::StreamedExportJob::capture(
+                                    &session,
+                                    &state.project,
+                                    project_generation,
+                                    revision,
+                                    events.streamed_exporter(),
+                                )?);
+                            }
+                            Ok(job)
+                        });
+                        match job {
+                            Ok(job) => {
+                                status = Some("export queued".into());
+                                export_job = Some(job);
+                            }
+                            Err(reason) => {
+                                export_completion = Some(ExportEvent {
+                                    revision,
+                                    path,
+                                    result: Err(reason),
+                                })
+                            }
                         }
                     }
                 }
@@ -7321,6 +7442,8 @@ fn run_worker(
                 }
             }
         }
+        // A lease resolved for this request but not consumed is released here.
+        events.finish_stopped_fence();
         if pending_plugin_effect.as_ref().is_some_and(|pending| {
             pending.insertion.context
                 != hex_engine::AudioSourceContext {
@@ -7350,6 +7473,21 @@ fn run_worker(
             }
             stopped_playback_restore_complete = true;
         }
+        let import_truncation = import_decode.refused().cloned();
+        if let (Some(message), Some(path)) = (&mut error, import_decode.recovered_path()) {
+            *message = format!(
+                "{message} · recovered source retained at {}",
+                hex_storage::text::verbatim(path.display())
+            );
+        }
+        if error.is_none()
+            && let Some(note) = import_decode.recovery_note()
+        {
+            status = Some(match status {
+                Some(status) => format!("{status} · {note}"),
+                None => note,
+            });
+        }
         if !events.send_with_control_poll(
             Event {
                 state: Arc::clone(&state),
@@ -7368,6 +7506,7 @@ fn run_worker(
                 bounce_complete,
                 audio_batch_complete,
                 audio_batch_failure,
+                import_truncation,
                 save_complete,
                 save_correlation: if save_complete {
                     save_correlation
@@ -7516,30 +7655,21 @@ fn run_export_worker(
                 if job.sources.is_some() {
                     Err("export cannot combine streamed pages with private constructor source scopes".into())
                 } else {
-                    let (start, signal, control, overwrite) =
-                        job.controlled.take().unwrap_or_else(|| {
-                            (
-                                0,
-                                hex_export::ExportSignal::Main,
-                                hex_export::ExportControl::default(),
-                                false,
-                            )
-                        });
-                    let policy = if overwrite {
-                        hex_export::Publication::confirmed_save(&job.path)
-                    } else {
-                        Ok(hex_export::Publication::CreateNew)
-                    };
-                    match policy {
+                    let controlled = job
+                        .controlled
+                        .take()
+                        .unwrap_or_else(ControlledExport::whole_main);
+                    match controlled.publication(&job.path) {
                         Ok(publication) => (streamed.render)(&StreamedExportRequest {
                             source: &streamed.source,
                             prepared: &job.prepared,
                             resources: job.resources.as_ref(),
                             path: &job.path,
-                            start,
+                            start: controlled.start,
                             frames: job.frames,
-                            signal: &signal,
-                            control: &control,
+                            signal: &controlled.signal,
+                            format: controlled.format,
+                            control: &controlled.control,
                             publication: &publication,
                         }),
                         Err(error) => Err(error.to_string()),
@@ -7548,22 +7678,19 @@ fn run_export_worker(
             } else if job.sources.is_some() && job.resources.is_some() {
                 Err("export cannot combine private and ordinary source scopes".into())
             } else if let Some(resources) = job.resources.take() {
-                if let Some((start, signal, control, overwrite)) = job.controlled.take() {
-                    let policy = if overwrite {
-                        hex_export::Publication::confirmed_save(&job.path)
-                    } else {
-                        Ok(hex_export::Publication::CreateNew)
-                    };
-                    policy
+                if let Some(controlled) = job.controlled.take() {
+                    controlled
+                        .publication(&job.path)
                         .and_then(|policy| {
                             hex_export::render_prepared_with_device_resources_and_policy(
                                 &job.path,
                                 job.prepared,
                                 &resources,
-                                start,
+                                controlled.start,
                                 job.frames,
-                                signal,
-                                &control,
+                                controlled.signal,
+                                controlled.format,
+                                &controlled.control,
                                 &policy,
                             )
                         })
@@ -7579,55 +7706,45 @@ fn run_export_worker(
                     .map_err(|error| error.to_string())
                 }
             } else if let Some(sources) = job.sources.take() {
-                let (start, signal, control, overwrite) =
-                    job.controlled.take().unwrap_or_else(|| {
-                        (
-                            0,
-                            hex_export::ExportSignal::Main,
-                            hex_export::ExportControl::default(),
-                            false,
-                        )
-                    });
-                let policy = if overwrite {
-                    hex_export::Publication::confirmed_save(&job.path)
-                } else {
-                    Ok(hex_export::Publication::CreateNew)
-                };
-                policy
+                let controlled = job
+                    .controlled
+                    .take()
+                    .unwrap_or_else(ControlledExport::whole_main);
+                controlled
+                    .publication(&job.path)
                     .and_then(|policy| {
                         hex_export::render_control_sampler_with_policy(
                             &job.path,
                             job.prepared,
                             sources,
-                            start,
+                            controlled.start,
                             job.frames,
-                            signal,
-                            &control,
-                            &policy,
-                        )
-                    })
-                    .map_err(|e| e.to_string())
-            } else if let Some((start, signal, control, overwrite)) = job.controlled {
-                let policy = if overwrite {
-                    hex_export::Publication::confirmed_save(&job.path)
-                } else {
-                    Ok(hex_export::Publication::CreateNew)
-                };
-                policy
-                    .and_then(|policy| {
-                        hex_export::render_prepared_with_policy(
-                            &job.path,
-                            job.prepared,
-                            start,
-                            job.frames,
-                            signal,
-                            &control,
+                            controlled.signal,
+                            controlled.format,
+                            &controlled.control,
                             &policy,
                         )
                     })
                     .map_err(|e| e.to_string())
             } else {
-                exporter(&job.path, &job.prepared, 0, job.frames)
+                // Every service request carries controlled parts; a bare job
+                // renders as the automatic whole-project Main export.
+                let controlled = job.controlled.unwrap_or_else(ControlledExport::whole_main);
+                controlled
+                    .publication(&job.path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|policy| {
+                        exporter(
+                            &job.path,
+                            &job.prepared,
+                            controlled.start,
+                            job.frames,
+                            controlled.signal,
+                            controlled.format,
+                            &controlled.control,
+                            &policy,
+                        )
+                    })
             };
             (
                 job.job_id,
@@ -7667,9 +7784,13 @@ fn import(
     path: PathBuf,
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
+    decode: &mut truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, String> {
     let path = absolute_document_path(&path)?;
-    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
+    if let Some(source) = decode
+        .plan(session, &path, None)
+        .map_err(|e| e.to_string())?
+    {
         return session
             .import_verified_revision(
                 source,
@@ -7691,8 +7812,13 @@ fn import(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    let decoded = decode
+        .decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+        .map_err(|error| {
+            hex_storage::text::lowercase_outside_verbatim(&truncated_import::decode_error_text(
+                error,
+            ))
+        })?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -7711,6 +7837,7 @@ fn import(
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn import_to_track(
     session: &mut Session,
     path: PathBuf,
@@ -7719,9 +7846,13 @@ fn import_to_track(
     previous: Option<&PreparedRevision>,
     overwrite: bool,
     admission: sampler_export::Admission<'_>,
+    decode: &mut truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, String> {
     let path = absolute_document_path(&path)?;
-    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
+    if let Some(source) = decode
+        .plan(session, &path, None)
+        .map_err(|e| e.to_string())?
+    {
         return session
             .import_verified_revision(
                 source,
@@ -7744,8 +7875,13 @@ fn import_to_track(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    let decoded = decode
+        .decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+        .map_err(|error| {
+            hex_storage::text::lowercase_outside_verbatim(&truncated_import::decode_error_text(
+                error,
+            ))
+        })?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -7775,9 +7911,13 @@ fn import_to_new_track(
     start: u64,
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
+    decode: &mut truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, String> {
     let path = absolute_document_path(&path)?;
-    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
+    if let Some(source) = decode
+        .plan(session, &path, None)
+        .map_err(|e| e.to_string())?
+    {
         return session
             .import_verified_revision(
                 source,
@@ -7809,8 +7949,13 @@ fn import_to_new_track(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    let decoded = decode
+        .decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+        .map_err(|error| {
+            hex_storage::text::lowercase_outside_verbatim(&truncated_import::decode_error_text(
+                error,
+            ))
+        })?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -7836,9 +7981,13 @@ fn import_to_session(
     scene: hex_project::SceneId,
     previous: Option<&PreparedRevision>,
     admission: sampler_export::Admission<'_>,
+    decode: &mut truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, String> {
     let path = absolute_document_path(&path)?;
-    if let Some(source) = session.plan_file_import(&path).map_err(|e| e.to_string())? {
+    if let Some(source) = decode
+        .plan(session, &path, None)
+        .map_err(|e| e.to_string())?
+    {
         return session
             .import_verified_revision(
                 source,
@@ -7857,8 +8006,13 @@ fn import_to_session(
     if output_limit == 0 {
         return Err("resident audio frame limit reached".into());
     }
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    let decoded = decode
+        .decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+        .map_err(|error| {
+            hex_storage::text::lowercase_outside_verbatim(&truncated_import::decode_error_text(
+                error,
+            ))
+        })?;
     let prepared = PreparedImport::at_rate(
         decoded,
         session.project().sample_rate(),
@@ -7951,6 +8105,8 @@ mod browser_instrument_tests;
 #[cfg(test)]
 mod clip_move_tests;
 #[cfg(test)]
+mod clip_paste_tests;
+#[cfg(test)]
 #[path = "service/track_reorder_tests.rs"]
 mod track_reorder_tests;
 
@@ -7996,13 +8152,13 @@ mod service_tests {
                 start_playing: true,
             })
             .expect("admit seek");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         let result = loop {
             if let Some(result) = service.try_arrangement_seek_result() {
                 break result;
             }
             assert!(Instant::now() < deadline, "seek result did not arrive");
-            thread::yield_now();
+            crate::test_wait::pause();
         };
         assert_eq!(result.request_id, request_id);
         assert_eq!(result.mode, ArrangementSeekMode::LinearArrangement);
@@ -8044,7 +8200,7 @@ mod service_tests {
                 start_playing: false,
             })
             .expect("admit interactive seek");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         let result = loop {
             if let Some(result) = service.try_arrangement_seek_result() {
                 break result;
@@ -8053,7 +8209,7 @@ mod service_tests {
                 Instant::now() < deadline,
                 "interactive seek did not complete"
             );
-            thread::yield_now();
+            crate::test_wait::pause();
         };
         assert_eq!(result.request_id, request_id);
         assert_eq!(result.mode, ArrangementSeekMode::Interactive);
@@ -8164,13 +8320,13 @@ mod service_tests {
                 start_playing: false,
             })
             .expect("admit stateful interactive seek");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         let result = loop {
             if let Some(result) = service.try_arrangement_seek_result() {
                 break result;
             }
             assert!(Instant::now() < deadline, "stateful seek did not complete");
-            thread::yield_now();
+            crate::test_wait::pause();
         };
         assert_eq!(result.request_id, request_id);
         assert_eq!(result.mode, ArrangementSeekMode::Interactive);
@@ -8684,158 +8840,6 @@ mod service_tests {
                     .beat_to_frame(clip.start())
                     .is_ok_and(|frame| frame == 216_000))
         );
-    }
-
-    #[test]
-    fn browser_preview_keeps_full_audio_above_old_byte_and_frame_limits() {
-        use std::io::{Seek, SeekFrom, Write};
-        let directory = TestDir::new();
-        let path = directory.0.join("large.wav");
-        // Sparse IEEE-float mono audio crosses both old limits without a large
-        // test-construction buffer. The last sample proves no prefix truncation.
-        let frames = IMPORT_FILE_LIMIT / 8 + 1;
-        let data_bytes = u32::try_from(frames * 8).unwrap();
-        let mut header = wav_mono(&[]);
-        header[4..8].copy_from_slice(&(36 + data_bytes).to_le_bytes());
-        header[20..22].copy_from_slice(&3_u16.to_le_bytes());
-        header[28..32].copy_from_slice(&(48_000_u32 * 8).to_le_bytes());
-        header[32..34].copy_from_slice(&8_u16.to_le_bytes());
-        header[34..36].copy_from_slice(&64_u16.to_le_bytes());
-        header[40..44].copy_from_slice(&data_bytes.to_le_bytes());
-        let mut file = fs::File::create(&path).unwrap();
-        file.write_all(&header).unwrap();
-        file.set_len(44 + u64::from(data_bytes)).unwrap();
-        file.seek(SeekFrom::End(-8)).unwrap();
-        file.write_all(&0.5_f64.to_le_bytes()).unwrap();
-        drop(file);
-        assert!(fs::metadata(&path).unwrap().len() > IMPORT_FILE_LIMIT as u64);
-        assert!(frames > IMPORT_FRAME_LIMIT);
-
-        let audio = prepare_sample_preview(&path, 48_000).unwrap();
-        assert_eq!(audio.sample_rate(), 48_000);
-        assert_eq!(audio.frames().len(), frames);
-        assert_eq!(audio.frames()[0], [0.0; 2]);
-        assert_eq!(audio.frames().last(), Some(&[0.5; 2]));
-        drop(audio);
-        let preview = prepare_audio_preview(&path, 48_000).unwrap();
-        assert_eq!(preview.playback_frames, frames as u64);
-        assert_eq!(preview.sample_rate, 48_000);
-        assert_eq!(preview.waveform.source_frames, frames);
-        assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
-        assert_eq!(
-            preview
-                .waveform
-                .peaks_for_frames(frames - 1, frames)
-                .unwrap(),
-            [hex_media::waveform::Peak { min: 0.0, max: 0.5 }; 2]
-        );
-    }
-
-    #[test]
-    fn browser_preview_refuses_excess_source_and_converted_frames() {
-        use std::io::Write;
-        let directory = TestDir::new();
-        let path = directory.0.join("too-long.wav");
-        let frames = u32::try_from(BROWSER_PREVIEW_FRAME_LIMIT + 1).unwrap();
-        let mut header = wav_mono(&[]);
-        header[28..32].copy_from_slice(&48_000_u32.to_le_bytes());
-        header[32..34].copy_from_slice(&1_u16.to_le_bytes());
-        header[34..36].copy_from_slice(&8_u16.to_le_bytes());
-        header[40..44].copy_from_slice(&frames.to_le_bytes());
-        // The odd data payload has a required padding byte.
-        header[4..8].copy_from_slice(&(37 + frames).to_le_bytes());
-        let mut file = fs::File::create(&path).unwrap();
-        file.write_all(&header).unwrap();
-        file.set_len(45 + u64::from(frames)).unwrap();
-        drop(file);
-        assert!(
-            prepare_sample_preview(&path, 48_000)
-                .unwrap_err()
-                .contains("decoded frames")
-        );
-
-        let source_frames = BROWSER_PREVIEW_FRAME_LIMIT / 24 + 1;
-        let mut bytes = wav_mono(&vec![0; source_frames]);
-        bytes[24..28].copy_from_slice(&8_000_u32.to_le_bytes());
-        bytes[28..32].copy_from_slice(&16_000_u32.to_le_bytes());
-        fs::write(&path, bytes).unwrap();
-        assert!(
-            prepare_sample_preview(&path, 192_000)
-                .unwrap_err()
-                .contains("output frames")
-        );
-    }
-
-    #[test]
-    fn browser_audio_preview_reports_converted_bounded_waveform_metadata() {
-        let directory = TestDir::new();
-        let path = directory.0.join("tone.WAV");
-        for overrun in [0, 4] {
-            let mut bytes = wav_mono(&[4_000; 96]);
-            let size = u32::try_from(bytes.len() - 8).unwrap() + overrun;
-            bytes[4..8].copy_from_slice(&size.to_le_bytes());
-            fs::write(&path, &bytes).expect("write wav fixture");
-
-            let preview = prepare_audio_preview(&path, 24_000).expect("prepare preview");
-            assert_eq!(preview.playback_frames, 48);
-            assert_eq!(preview.sample_rate, 24_000);
-            assert_eq!(preview.waveform.source_frames, 48);
-            assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
-            assert!(!preview.waveform.bins.is_empty());
-            let pcm = prepare_sample_preview(&path, 24_000).expect("prepare playback");
-            assert_eq!(pcm.sample_rate(), 24_000);
-            assert_eq!(pcm.frames().len(), 48);
-            assert!(
-                pcm.frames()
-                    .iter()
-                    .all(|frame| frame[0] > 0.0 && frame[0] == frame[1])
-            );
-            assert_eq!(fs::read(&path).unwrap(), bytes);
-        }
-    }
-
-    #[test]
-    fn browser_preview_has_detail_beyond_legacy_48_bars_and_keeps_edge_transients() {
-        let directory = TestDir::new();
-        let path = directory.0.join("detail.wav");
-        let mut frames = vec![0_i16; 8195];
-        frames[4097] = 24_000;
-        frames[8194] = -16_000;
-        fs::write(&path, wav_mono(&frames)).unwrap();
-        let preview = prepare_audio_preview(&path, 48_000).unwrap();
-        assert_eq!(preview.waveform.bins.len(), 4096);
-        assert_eq!(preview.waveform.source_frames, 8195);
-        let first = preview.waveform.peaks_for_frames(0, 2).unwrap();
-        assert_eq!(first, [hex_media::waveform::Peak { min: 0.0, max: 0.0 }; 2]);
-        let middle = preview.waveform.peaks_for_frames(4097, 4098).unwrap();
-        assert!(
-            middle
-                .iter()
-                .all(|peak| peak.min == 0.0 && peak.max == 24_000.0 / 32768.0)
-        );
-        let last = preview.waveform.peaks_for_frames(8194, 8195).unwrap();
-        assert!(
-            last.iter()
-                .all(|peak| peak.min == -16_000.0 / 32768.0 && peak.max == 0.0)
-        );
-    }
-
-    #[test]
-    fn browser_sample_playback_decodes_at_output_rate_and_reports_bad_sources() {
-        let directory = TestDir::new();
-        let path = directory.0.join("tone.WAV");
-        fs::write(&path, wav_mono(&[4_000; 96])).unwrap();
-        let pcm = prepare_sample_preview(&path, 24_000).unwrap();
-        assert_eq!(pcm.sample_rate(), 24_000);
-        assert_eq!(pcm.frames().len(), 48);
-        assert!(
-            pcm.frames()
-                .iter()
-                .all(|frame| { frame[0] > 0.0 && frame[0] == frame[1] && frame[0].is_finite() })
-        );
-        assert!(prepare_sample_preview(directory.0.join("missing.wav"), 48_000).is_err());
-        fs::write(&path, b"bad wave").unwrap();
-        assert!(prepare_sample_preview(&path, 48_000).is_err());
     }
 
     #[test]
@@ -10296,7 +10300,7 @@ mod service_tests {
         );
         assert_eq!(
             next_export_event(&service).result.unwrap_err(),
-            "nothing to export"
+            "invalid wav export: invalid export range"
         );
         let replace_key = GestureKey {
             generation: 1,
@@ -11160,26 +11164,21 @@ mod service_tests {
         assert_eq!(retried.state.project.tracks()[0].midi_clips().len(), 2);
     }
 
+    #[track_caller]
     pub(super) fn next_event(service: &Service) -> Event {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            match service.try_event() {
-                Ok(event) => return event,
-                Err(TryRecvError::Empty) if Instant::now() < deadline => {
-                    thread::yield_now();
-                }
-                Err(error) => panic!("service event did not arrive: {error}"),
-            }
+        match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+            Ok(event) => event,
+            Err(error) => panic!("service event did not arrive: {error}"),
         }
     }
 
     fn next_export_event(service: &Service) -> ExportEvent {
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         loop {
             match service.try_export_event() {
                 Ok(event) => return event,
                 Err(TryRecvError::Empty) if Instant::now() < deadline => {
-                    thread::yield_now();
+                    crate::test_wait::pause();
                 }
                 Err(error) => panic!("export event did not arrive: {error}"),
             }
@@ -11314,13 +11313,25 @@ mod service_tests {
         let exporter: Exporter = {
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
-            Arc::new(move |path, project, start, frames| {
-                entered.wait();
-                release.wait();
-                hex_export::render_prepared_new(path, Arc::clone(project), start, frames).map_err(
-                    |error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()),
-                )
-            })
+            Arc::new(
+                move |path, project, start, frames, signal, format, control, publication| {
+                    entered.wait();
+                    release.wait();
+                    hex_export::render_prepared_with_policy(
+                        path,
+                        Arc::clone(project),
+                        start,
+                        frames,
+                        signal,
+                        format,
+                        control,
+                        publication,
+                    )
+                    .map_err(|error| {
+                        hex_storage::text::lowercase_outside_verbatim(&error.to_string())
+                    })
+                },
+            )
         };
         let service = Service::with_exporter(48_000, 16, 8, exporter).expect("service");
         let _ = next_event(&service);
@@ -11358,10 +11369,10 @@ mod service_tests {
         assert_eq!(completed.path, output);
         assert!(completed.result.is_ok());
         let bytes = fs::read(completed.path).expect("read exported snapshot");
-        assert_eq!(read_u16(&bytes, 44), 0x4000);
-        assert_eq!(read_u16(&bytes, 46), 0x4000);
-        assert_eq!(read_u16(&bytes, 48), 0x2000);
-        assert_eq!(read_u16(&bytes, 50), 0x2000);
+        assert_pcm16_near(&bytes, 44, 0x4000);
+        assert_pcm16_near(&bytes, 46, 0x4000);
+        assert_pcm16_near(&bytes, 48, 0x2000);
+        assert_pcm16_near(&bytes, 50, 0x2000);
     }
 
     #[test]
@@ -11384,6 +11395,7 @@ mod service_tests {
                 frames: Some(1),
                 signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
                 control: cancelled,
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             })
             .unwrap();
@@ -11400,6 +11412,7 @@ mod service_tests {
                 signal: ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]),
                 control: control.clone(),
                 // Native save confirmation also permits a new destination.
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: true,
             })
             .unwrap();
@@ -11409,8 +11422,8 @@ mod service_tests {
         assert_eq!(completed.result.unwrap().frames, 1);
         let bytes = fs::read(output).unwrap();
         assert_eq!(bytes.len(), 48);
-        assert_eq!(read_u16(&bytes, 44), 0x2000);
-        assert_eq!(read_u16(&bytes, 46), 0x2000);
+        assert_pcm16_near(&bytes, 44, 0x2000);
+        assert_pcm16_near(&bytes, 46, 0x2000);
         assert_eq!(
             control.progress(),
             ExportProgress {
@@ -11420,8 +11433,63 @@ mod service_tests {
         );
     }
 
-    fn read_u16(bytes: &[u8], offset: usize) -> u16 {
-        u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+    #[test]
+    fn export_range_writes_the_requested_format_from_one_render() {
+        let directory = TestDir::new();
+        let source = directory.0.join("formats.wav");
+        fs::write(&source, wav_mono(&[16_384, -8_192])).unwrap();
+        let service = Service::new(48_000, 16, 8).unwrap();
+        next_event(&service);
+        service.submit(Request::Import(source)).unwrap();
+        next_event(&service);
+        let export = |format: hex_export::ExportFormat| {
+            let path = directory.0.join(format!("{format:?}.wav"));
+            service
+                .submit(Request::ExportRange {
+                    path: path.clone(),
+                    start: 0,
+                    frames: Some(2),
+                    signal: ExportSignal::Main,
+                    control: ExportControl::default(),
+                    format,
+                    overwrite: false,
+                })
+                .unwrap();
+            next_event(&service);
+            let report = next_export_event(&service).result.unwrap();
+            assert_eq!(report.clipped_samples, 0);
+            fs::read(path).unwrap()
+        };
+        let float = export(hex_export::ExportFormat::Float32);
+        let pcm24 = export(hex_export::ExportFormat::Pcm24);
+        let pcm16 = export(hex_export::ExportFormat::Pcm16);
+        // Header format tag and bits per sample follow the request.
+        let word = |bytes: &[u8], at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        assert_eq!((word(&float, 20), word(&float, 34)), (3, 32));
+        assert_eq!((word(&pcm24, 20), word(&pcm24, 34)), (1, 24));
+        assert_eq!((word(&pcm16, 20), word(&pcm16, 34)), (1, 16));
+        let samples: Vec<f32> = float[58..]
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        assert_eq!(samples.len(), 4);
+        assert!((samples[0] - 0.5).abs() < 1e-4 && (samples[2] + 0.25).abs() < 1e-4);
+        for (index, sample) in samples.iter().enumerate() {
+            let at = 44 + index * 3;
+            let packed = i32::from_le_bytes([0, pcm24[at], pcm24[at + 1], pcm24[at + 2]]) >> 8;
+            let expected = (f64::from(*sample) * 8_388_607.0).round() as i32;
+            assert_eq!(packed, expected, "pcm24 sample {index}");
+            assert_pcm16_near(&pcm16, 44 + index * 2, (sample * 32_767.0).round() as i16);
+        }
+    }
+
+    /// PCM16 export applies ±1 LSB TPDF dither: within one LSB of `expected`.
+    fn assert_pcm16_near(bytes: &[u8], offset: usize, expected: i16) {
+        let actual = i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        assert!(
+            (i32::from(actual) - i32::from(expected)).abs() <= 1,
+            "sample at {offset}: {actual} not within one lsb of {expected}"
+        );
     }
 
     #[test]
@@ -11441,9 +11509,56 @@ mod service_tests {
         assert_eq!(result.path, path);
         assert_eq!(
             result.result.expect_err("empty project refusal"),
-            "nothing to export"
+            "invalid wav export: invalid export range"
         );
         assert!(!result.path.exists());
+    }
+
+    #[test]
+    fn whole_project_export_matches_automatic_export_range_including_effect_tail() {
+        let directory = TestDir::new();
+        let source = directory.0.join("tail.wav");
+        fs::write(&source, wav_mono(&[16_384, -8_192])).unwrap();
+        let service = Service::new(48_000, 8, 8).unwrap();
+        next_event(&service);
+        service.submit(Request::Import(source)).unwrap();
+        let track = next_event(&service).state.project.tracks()[0].id();
+        let state = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+            "hex.reverb",
+        ))
+        .unwrap();
+        service
+            .submit(Request::Edit(Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            }))
+            .unwrap();
+        assert!(next_event(&service).error.is_none());
+        let whole = directory.0.join("whole.wav");
+        service.submit(Request::Export(whole.clone())).unwrap();
+        next_event(&service);
+        let exported = next_export_event(&service).result.unwrap();
+        let range = directory.0.join("range.wav");
+        service
+            .submit(Request::ExportRange {
+                path: range.clone(),
+                start: 0,
+                frames: None,
+                signal: ExportSignal::Main,
+                control: ExportControl::default(),
+                format: hex_export::ExportFormat::Pcm16,
+                overwrite: false,
+            })
+            .unwrap();
+        next_event(&service);
+        let ranged = next_export_event(&service).result.unwrap();
+        // The automatic range drains the reverb's declared tail past the 2-frame clip.
+        assert!(exported.frames > 2, "{}", exported.frames);
+        assert_eq!(exported.frames, ranged.frames);
+        let bytes = fs::read(whole).unwrap();
+        assert_eq!(bytes.len() as u64, 44 + exported.frames * 4);
+        assert_eq!(bytes, fs::read(range).unwrap());
     }
 
     #[test]
@@ -11454,10 +11569,10 @@ mod service_tests {
         let service = Service {
             diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
-            requests: request_cancellation::Sender::new(
+            requests: Some(request_cancellation::Sender::new(
                 requests,
                 Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            ),
+            )),
             events: diagnostics::EventReceiver::new(
                 events,
                 Arc::new(diagnostics::Hooks::default()),
@@ -11469,7 +11584,9 @@ mod service_tests {
             resident_seek_results: None,
             resident_seek_count: AtomicUsize::new(0),
             recovery_slot: None,
-            _worker: thread::spawn(|| {}),
+            _recovery_claim: None,
+            startup_failure: Default::default(),
+            worker: Some(thread::spawn(|| {})),
         };
         assert!(matches!(
             service.submit(Request::Export(PathBuf::from("busy.wav"))),
@@ -12186,7 +12303,7 @@ mod service_tests {
         let exporter: Exporter = {
             let entered = Arc::clone(&entered);
             let release = Arc::clone(&release);
-            Arc::new(move |path, project, _, frames| {
+            Arc::new(move |path, project, _, frames, _, _, _, _| {
                 entered.wait();
                 release.wait();
                 let _ = finished_sender.send(());
@@ -12195,7 +12312,9 @@ mod service_tests {
                     sample_rate: project.arrangement().sample_rate(),
                     frames,
                     data_bytes: u32::try_from(frames * 4).unwrap_or(u32::MAX),
+                    clipped_samples: 0,
                     recovery_path: None,
+                    stale_temporaries: Default::default(),
                 })
             })
         };

@@ -171,7 +171,7 @@ impl EditorView {
         match self.service.submit(Request::DeviceGesture(gesture)) {
             Ok(()) => {
                 self.device_gesture.mark_submitted();
-                self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
+                self.worker_submitted();
                 true
             }
             Err(SubmitError::Full(_)) => false,
@@ -572,6 +572,7 @@ mod tests {
                 frames: Some(256),
                 signal: hex_session::service::ExportSignal::Main,
                 control: control.clone(),
+                format: hex_session::service::ExportFormat::Pcm16,
                 overwrite: false,
             },
             Request::Undo,

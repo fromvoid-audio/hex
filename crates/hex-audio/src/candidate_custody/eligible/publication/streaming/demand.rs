@@ -422,6 +422,15 @@ impl hex_engine::MediaPages for PagePair<'_> {
     }
     fn request_scalar_page(&mut self, _key: hex_engine::ScalarSourceKey, _index: u64) {}
     fn request_page(&mut self, _key: hex_engine::StreamSourceKey, _index: u64) {}
+    fn prefetch_page(&mut self, key: hex_engine::StreamSourceKey, index: u64) {
+        // Each endpoint ignores sources outside its catalog.
+        for pages in [self.left.as_mut(), self.right.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            pages.prefetch_page(key, index);
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StreamProgress {
@@ -600,7 +609,7 @@ impl ActiveView<'_> {
                     .ok_or(hex_engine::Invalid("stream current owner missing"))
                     .and_then(|runtime| {
                         runtime
-                            .apply_action(hex_engine::PlaybackAction::Transport(
+                            .apply_declicked_action(hex_engine::PlaybackAction::Transport(
                                 hex_engine::PlaybackCommand::Play,
                             ))
                             .map_err(|_| hex_engine::Invalid("ready stream Play refused"))
