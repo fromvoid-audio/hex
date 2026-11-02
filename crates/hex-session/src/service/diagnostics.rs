@@ -572,6 +572,40 @@ mod tests {
     }
 
     #[test]
+    fn existing_asset_import_projection_names_its_asset_and_redacts_names() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "fixture.wav".into(),
+                sample_rate: 48_000,
+                frames: 16,
+            })
+            .unwrap()
+        else {
+            panic!("asset fixture");
+        };
+        let name = "私的な曲名🎵";
+        let description = summary::request(&Request::Edit(Command::ImportExistingAudio {
+            asset,
+            placement: hex_project::ExistingAudioPlacement::NewTrack {
+                name: name.into(),
+                before_track: None,
+                start: 7,
+            },
+        }));
+        assert_eq!(
+            description.operation,
+            Some("import_existing_audio_track_at")
+        );
+        let text = &description.details.text;
+        assert!(!text.contains(name));
+        assert!(text.contains(&format!("asset={}", asset.value())));
+        assert!(text.contains(&format!("name_redacted_bytes={}", name.len())));
+        assert!(text.contains("start=7"));
+    }
+
+    #[test]
     fn real_service_preserves_outcomes_and_correlates_refused_edit_without_private_text() {
         let service = Service::new(48_000, 8, 0).unwrap();
         // Initial state predates observer installation and has no fabricated request.
