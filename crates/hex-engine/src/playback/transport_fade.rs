@@ -4,7 +4,10 @@
 //! The transport keeps rendering for `F = max(1, round(rate * 128 / 48000))`
 //! frames (about 2.7 ms) under a linear ramp to zero, and the command applies
 //! only at that boundary. The reported pause position is therefore the
-//! command frame plus `F`, the audible end. The paused or stopped output that
+//! command frame plus `F`, the audible end. Stop keeps its reset to frame
+//! zero; its audible end is reported only by the completed fade outcome
+//! (`TransportFadeCompletion`), never as the transport position. The paused
+//! or stopped output that
 //! follows (release tails, monitoring) ramps back in over `F` frames, as does
 //! Play from a paused, nonzero position. Play from frame zero keeps its first
 //! transient.
@@ -90,6 +93,21 @@ impl Pending {
     }
 }
 
+/// Outcome of a deferred Pause/Stop applied at its fade end, or completed
+/// early by a later action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TransportFadeCompletion {
+    /// The deferred Pause/Stop that was applied.
+    pub action: PlaybackAction,
+    /// Transport frame at which the fade ended: the command frame plus `F`,
+    /// or earlier when another action completed the fade first. After Stop
+    /// this differs from the reset transport position.
+    pub audible_end_frame: u64,
+    /// False when the action was refused at the fade end and Playback fell
+    /// back to Stop (see `take_transport_fade_failure`).
+    pub applied: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct TransportFade {
     /// The deferred Pause/Stop, applied once `out_elapsed` reaches `F`.
@@ -99,6 +117,8 @@ pub(crate) struct TransportFade {
     in_left: u32,
     /// A deferred action that could not apply at its fade end.
     failure: Option<PlaybackActionRejection>,
+    /// The latest completed deferred action, until taken.
+    completion: Option<TransportFadeCompletion>,
 }
 
 impl TransportFade {
@@ -125,8 +145,17 @@ impl TransportFade {
     pub(crate) fn clear(&mut self) {
         *self = Self {
             failure: self.failure,
+            completion: self.completion,
             ..Self::default()
         };
+    }
+
+    pub(crate) fn record_completion(&mut self, completion: TransportFadeCompletion) {
+        self.completion = Some(completion);
+    }
+
+    pub(crate) fn take_completion(&mut self) -> Option<TransportFadeCompletion> {
+        self.completion.take()
     }
 
     pub(crate) fn record_failure(&mut self, rejection: PlaybackActionRejection) {

@@ -8,6 +8,7 @@ use std::sync::Arc;
 mod candidate_storage;
 mod metronome;
 mod transport_fade;
+pub use transport_fade::TransportFadeCompletion;
 mod tuning_audition;
 use metronome::Metronome;
 
@@ -1541,6 +1542,13 @@ impl Playback {
         self.transport_fade.take_failure()
     }
 
+    /// The latest deferred Pause/Stop completion and its audible end frame,
+    /// reported once. Stop resets the transport position to zero, so this is
+    /// the only place its audible end is observable.
+    pub fn take_transport_fade_completion(&mut self) -> Option<TransportFadeCompletion> {
+        self.transport_fade.take_completion()
+    }
+
     fn admit_declicked_stop(&self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
         let command = match action {
             PlaybackAction::Transport(PlaybackCommand::Pause) => {
@@ -1573,7 +1581,15 @@ impl Playback {
         let Some(action) = self.transport_fade.take_pending() else {
             return;
         };
-        match self.apply_now(action) {
+        let audible_end_frame = self.position();
+        let result = self.apply_now(action);
+        self.transport_fade
+            .record_completion(TransportFadeCompletion {
+                action,
+                audible_end_frame,
+                applied: result.is_ok(),
+            });
+        match result {
             // Paused tails and monitoring return without a step.
             Ok(()) if transport_fade::pauses(action) => self
                 .transport_fade
@@ -2466,9 +2482,11 @@ impl Playback {
 
     /// Render one callback as parts split only at a pending fade end. Each
     /// part is followed by its declick gain and then monitor-only metronome
-    /// and tuning audio. A refused part silences the whole callback; parts
-    /// already rendered keep their committed clock, as consecutive callbacks
-    /// would. Without a pending fade this is exactly one part.
+    /// and tuning audio. A refused first part keeps the renderer's own atomic
+    /// refusal (the output is left as the renderer left it). A part refused
+    /// after an earlier part rendered silences the whole callback; rendered
+    /// parts keep their committed clock, as consecutive callbacks would.
+    /// Without a pending fade this is exactly one part.
     fn render_declicked(
         &mut self,
         output: &mut [Frame],
@@ -2482,7 +2500,9 @@ impl Playback {
             let playing = self.playing();
             let chunk = &mut output[offset..end];
             if let Err(error) = part(self, chunk, offset) {
-                output.fill([0.0; 2]);
+                if offset > 0 {
+                    output.fill([0.0; 2]);
+                }
                 return Err(error);
             }
             let completed = self.transport_fade.apply(chunk, frames);
