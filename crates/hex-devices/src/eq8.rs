@@ -1224,5 +1224,8 @@ pub static EQ8_DEFINITION: Eq8Definition = Eq8Definition;
 #[path = "eq8/mode_fade_tests.rs"]
 mod mode_fade_tests;
 #[cfg(test)]
+#[path = "eq8/steady_state_digest_tests.rs"]
+mod steady_state_digest_tests;
+#[cfg(test)]
 #[path = "eq8/tests.rs"]
 mod tests;
