@@ -558,7 +558,18 @@ fn resident_session_batch_stops_at_quantized_relaunch_boundary() {
         } else {
             [0.0; 2]
         };
-        *output = [others[0] + first[0], others[1] + first[1]];
+        // The replaced first clip fades over the shared 128-frame declick
+        // until its own 32-frame end.
+        let release = if (10..32).contains(&elapsed) {
+            let gain = (128 - (elapsed - 10)) as f32 / 128.0;
+            [0.125 * gain, -0.25 * gain]
+        } else {
+            [0.0; 2]
+        };
+        *output = [
+            others[0] + first[0] + release[0],
+            others[1] + first[1] + release[1],
+        ];
     }
     for partition in [1, 7, 17, 48] {
         let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();

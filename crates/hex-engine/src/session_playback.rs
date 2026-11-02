@@ -311,6 +311,8 @@ struct TrackRoute {
     pending: Option<PendingRoute>,
     current_incarnation: u64,
     current_first_frame: bool,
+    /// Outgoing Session audio clip still fading; see `audio_release`.
+    audio_release: Option<audio_release::AudioRouteRelease>,
 }
 
 #[derive(Clone, Copy)]
@@ -1670,6 +1672,7 @@ impl SessionPlayback {
                 pending: None,
                 current_incarnation: 0,
                 current_first_frame: false,
+                audio_release: None,
             });
         }
         let mut mutable_count = 0_usize;
@@ -2444,6 +2447,7 @@ pub(super) fn base_timing_for(
     })
 }
 
+mod audio_release;
 mod capture;
 mod meter_capture;
 mod release_location;
