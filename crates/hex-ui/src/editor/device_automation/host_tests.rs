@@ -888,6 +888,48 @@ fn lane_plain_blank_drag_adds_a_point_and_drags_it_without_a_marquee(cx: &mut Te
     assert_eq!(selected_beats(&visual, &editor), [added.beat]);
 }
 
+#[gpui::test]
+fn unrelated_edit_refuses_during_automation_gesture_but_release_commits(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, track, device) = window(cx, "hex.utility", Slot::Track);
+    let target =
+        DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+    header_assign(&mut visual, &editor, owner, target);
+    let at = lane_point(&mut visual, device, target, [0.6, 0.5]);
+    visual.simulate_mouse_down(at, MouseButton::Left, CMD);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.automation_view.devices.draft.is_some());
+        assert!(!view.enqueue(Request::Edit(Command::Mute { track, muted: true })));
+        assert!(view.automation_view.devices.draft.is_some());
+        assert_eq!(view.worker_requests_pending, 0);
+        assert!(
+            view.error
+                .as_deref()
+                .unwrap()
+                .contains("automation point gesture")
+        );
+    });
+    visual.simulate_mouse_up(at, MouseButton::Left, CMD);
+    visual.run_until_parked();
+    pump(&mut visual, &editor);
+    assert_eq!(lane_points(&visual, &editor, device, target).len(), 1);
+}
+
+#[gpui::test]
+fn selection_marquee_does_not_block_an_unrelated_edit(cx: &mut TestAppContext) {
+    let (mut visual, editor, owner, track, device) = window(cx, "hex.utility", Slot::Track);
+    let target =
+        DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+    header_assign(&mut visual, &editor, owner, target);
+    let at = lane_point(&mut visual, device, target, [0.6, 0.5]);
+    visual.simulate_mouse_down(at, MouseButton::Left, SHIFT);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.automation_view.devices.marquee.is_some());
+        assert!(view.automation_view.devices.draft.is_none());
+        assert!(view.enqueue(Request::Edit(Command::Mute { track, muted: true })));
+    });
+    visual.simulate_mouse_up(at, MouseButton::Left, SHIFT);
+}
+
 /// The bound control displays the in-flight gesture value before canonical state.
 fn utility_gain_value(
     visual: &mut VisualTestContext,

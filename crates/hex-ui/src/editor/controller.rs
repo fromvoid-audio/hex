@@ -3310,6 +3310,12 @@ impl EditorView {
             self.error = Some("finish or cancel the gain point gesture before editing".into());
             return false;
         }
+        if self.automation_view.devices.point_draft_active() && matches!(&request, Request::Edit(_))
+        {
+            self.error =
+                Some("finish or cancel the automation point gesture before editing".into());
+            return false;
+        }
         #[cfg(test)]
         match &request {
             Request::CopyTimeRange(_) => self.last_time_request = Some(("copy", None)),
