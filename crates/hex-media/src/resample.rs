@@ -1,7 +1,7 @@
 //! Bounded, deterministic sample-rate conversion for control-side work.
 use crate::{
-    ImportError, ResampleKernel,
-    resample_kernel::{PHASE_COUNT, validate_rates},
+    ImportError, ResampleKernel, ResampleVersion,
+    resample_kernel::{PHASE_COUNT, V2_PHASE_COUNT, validate_rates},
 };
 use hex_engine::Audio;
 use hex_project::converted_frame_count;
@@ -20,15 +20,25 @@ pub fn resample(
     target_rate: u32,
     limits: ResampleLimits,
 ) -> Result<Audio, ImportError> {
+    resample_with_version(source, target_rate, limits, ResampleVersion::V1)
+}
+
+/// Convert validated stereo PCM into the target rate with an explicit
+/// conversion law. Identity-rate conversions share the input unchanged.
+pub fn resample_with_version(
+    source: &Audio,
+    target_rate: u32,
+    limits: ResampleLimits,
+    version: ResampleVersion,
+) -> Result<Audio, ImportError> {
     let source_frames = u64::try_from(source.frames().len())
         .map_err(|_| ImportError::Invalid("source frame count exceeds project range"))?;
     let max_source_frames = u64::try_from(limits.max_source_frames)
         .map_err(|_| ImportError::Invalid("source frame limit exceeds project range"))?;
     let max_output_frames = u64::try_from(limits.max_output_frames)
         .map_err(|_| ImportError::Invalid("output frame limit exceeds project range"))?;
-    let plan = ResamplePlan::new(
-        source.sample_rate(),
-        target_rate,
+    let plan = ResamplePlan::with_kernel(
+        ResampleKernel::with_version(source.sample_rate(), target_rate, version)?,
         source_frames,
         max_source_frames,
         max_output_frames,
@@ -160,10 +170,8 @@ impl ResamplePlan {
                     .map_err(|_| ImportError::Invalid("output window frame count overflow"))?,
             )
             .ok_or(ImportError::Invalid("output window range overflow"))?;
-        let (first_center, _) =
-            source_position(global_output_start, self.source_rate(), self.target_rate())?;
-        let (last_center, _) =
-            source_position(last_output, self.source_rate(), self.target_rate())?;
+        let (first_center, _, _) = self.position(global_output_start)?;
+        let (last_center, _, _) = self.position(last_output)?;
         let radius = u64::try_from(self.kernel.inner.radius)
             .map_err(|_| ImportError::Invalid("resampling support exceeds project range"))?;
         let start = first_center.saturating_sub(radius);
@@ -359,8 +367,7 @@ impl ResamplePlan {
                     ImportError::Invalid("output frame offset exceeds project range")
                 })?)
                 .ok_or(ImportError::Invalid("output frame index overflow"))?;
-            let (center, phase_index) =
-                source_position(global_index, self.source_rate(), self.target_rate())?;
+            let (center, phase_index, fraction) = self.position(global_index)?;
             let row_start = phase_index
                 .checked_mul(self.kernel.inner.taps)
                 .ok_or(ImportError::Invalid("resampling table index overflow"))?;
@@ -413,16 +420,67 @@ impl ResamplePlan {
                 ))?;
             let mut left = 0.0_f64;
             let mut right = 0.0_f64;
-            for (&weight, frame) in weights.iter().zip(frames) {
-                if weight == 0.0 {
-                    continue;
+            match self.kernel.version() {
+                ResampleVersion::V1 => {
+                    for (&weight, frame) in weights.iter().zip(frames) {
+                        if weight == 0.0 {
+                            continue;
+                        }
+                        left += f64::from(frame[0]) * weight;
+                        right += f64::from(frame[1]) * weight;
+                    }
                 }
-                left += f64::from(frame[0]) * weight;
-                right += f64::from(frame[1]) * weight;
+                ResampleVersion::V2 => {
+                    // The closing row follows every interpolated row.
+                    let next = self
+                        .kernel
+                        .inner
+                        .weights
+                        .get(row_end + first_weight..row_end + end_weight)
+                        .ok_or(ImportError::Invalid(
+                            "resampling kernel table is incomplete",
+                        ))?;
+                    for ((&low, &high), frame) in weights.iter().zip(next).zip(frames) {
+                        let weight = low + (high - low) * fraction;
+                        left += f64::from(frame[0]) * weight;
+                        right += f64::from(frame[1]) * weight;
+                    }
+                }
             }
             *destination = [checked_sample(left)?, checked_sample(right)?];
         }
         Ok(())
+    }
+}
+
+impl ResamplePlan {
+    /// Source center, phase row and the fraction toward the next row for one
+    /// output frame. v1 rounds to the nearest of its rows (fraction 0); v2
+    /// floors to its row and interpolates by the exact rational remainder.
+    fn position(&self, output_index: u64) -> Result<(u64, usize, f64), ImportError> {
+        match self.kernel.version() {
+            ResampleVersion::V1 => {
+                let (center, phase) =
+                    source_position(output_index, self.source_rate(), self.target_rate())?;
+                Ok((center, phase, 0.0))
+            }
+            ResampleVersion::V2 => {
+                let target = u128::from(self.target_rate());
+                let position = u128::from(output_index)
+                    .checked_mul(u128::from(self.source_rate()))
+                    .ok_or(ImportError::Invalid("resampling position overflow"))?;
+                let center = u64::try_from(position / target).map_err(|_| {
+                    ImportError::Invalid("resampling position exceeds project range")
+                })?;
+                let scaled = (position % target)
+                    .checked_mul(V2_PHASE_COUNT as u128)
+                    .ok_or(ImportError::Invalid("resampling phase overflow"))?;
+                // remainder < target, so the row is below V2_PHASE_COUNT.
+                let row = (scaled / target) as usize;
+                let fraction = (scaled % target) as f64 / target as f64;
+                Ok((center, row, fraction))
+            }
+        }
     }
 }
 

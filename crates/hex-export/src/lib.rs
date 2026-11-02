@@ -1,6 +1,6 @@
 //! # Purpose
 //! Render fixed-block PCM16 Arrangement exports and bounded float32 source
-//! bounces, with explicit publication and ordinary prepared runtime custody.
+//! bounces and resident source publication, with explicit publication and ordinary prepared runtime custody.
 //!
 //! # Dependencies
 //! Uses hex-engine and the standard library; callers supply the exact prepared revision and
@@ -37,6 +37,8 @@ pub use bounce::{
 };
 mod pages;
 pub use pages::PreparedExportPages;
+mod resident_source;
+pub use resident_source::publish_resident_source_new;
 mod publication;
 mod stems;
 pub use controlled::{
@@ -225,7 +227,7 @@ pub fn render_prepared_new(
 /// Ordinary registered-resource export with the default source-length/startup-latency trimming
 /// policy. Nonzero stateful starts reconstruct bounded history before that same trim. The caller
 /// pins and admits the exact resource set for this synchronous control operation; no live input
-/// or Session route history is captured. Controlled ranges intentionally retain causal startup.
+/// or Session route history is captured. Controlled Main ranges use the same latency discard.
 /// Use the existing export worker's 8 MiB control stack for stateful construction.
 pub fn render_prepared_new_with_device_resources(
     path: &Path,
