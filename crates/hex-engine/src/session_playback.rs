@@ -2062,6 +2062,14 @@ impl SessionPlayback {
         }
     }
 
+    /// The Arrangement audio loop seam (`crate::loop_seam`) for a source chunk
+    /// at `frame` on loop pass `loop_pass`, if that pass began by wrapping.
+    pub(crate) fn loop_seam_at(&self, frame: u64, loop_pass: u64) -> Option<crate::LoopSeam> {
+        self.active_loop_region_at(frame).and_then(|region| {
+            crate::LoopSeam::for_pass(region, loop_pass, self.revision.arrangement().sample_rate())
+        })
+    }
+
     /// The saved/audition loop participates only while the cursor is before
     /// its end, on every pass. An absolute seek at or after the end begins a
     /// linear pass; a cursor before the start plays into the loop and wraps.
