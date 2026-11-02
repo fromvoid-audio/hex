@@ -330,27 +330,34 @@ fn plot(
                             .iter()
                             .filter_map(|value| Some((value, xy(value.beat, value.value.get())?)))
                             .collect();
-                        let columns: Vec<_> = positions
+                        let source: Vec<_> = positions
                             .iter()
-                            .map(|(_, position)| {
-                                (f32::from(position.x) - rect[0], f32::from(position.y))
+                            .map(|(value, position)| {
+                                (
+                                    f32::from(position.x) - rect[0],
+                                    f32::from(position.y),
+                                    value.outgoing == AutomationInterpolation::Step,
+                                )
                             })
                             .collect();
+                        let vertices =
+                            super::plot_geometry::expand_steps(&source, entry.is_discrete());
+                        // Include the screen offset when grouping physical pixels.
+                        let scale = window.scale_factor();
+                        let columns: Vec<_> = vertices
+                            .iter()
+                            .map(|&(x, y, _)| ((rect[0] + x) * scale, y))
+                            .collect();
                         let kept = super::plot_geometry::column_vertices(&columns);
-                        let mut previous = None;
+                        let kept_markers: Vec<_> =
+                            kept.iter().filter_map(|&index| vertices[index].2).collect();
                         for &index in &kept {
-                            let (value, position) = positions[index];
-                            if let Some((old, shape)) = previous {
-                                if shape == AutomationInterpolation::Step || entry.is_discrete() {
-                                    path.line_to(point(position.x, old));
-                                }
-                            }
-                            path.line_to(position);
-                            previous = Some((position.y, value.outgoing));
+                            let (x, y, _) = vertices[index];
+                            path.line_to(point(px(rect[0] + x), px(y)));
                         }
                         // One marker per kept vertex, plus every selected point so selection
                         // feedback survives the column reduction.
-                        let mut next_kept = kept.iter().peekable();
+                        let mut next_kept = kept_markers.iter().peekable();
                         for (index, (value, position)) in positions.iter().enumerate() {
                             let is_kept = next_kept.next_if(|kept| **kept == index).is_some();
                             let is_selected = selected
@@ -367,8 +374,8 @@ fn plot(
                                 window.paint_path(marker, color);
                             }
                         }
-                        if let Some((y, _)) = previous {
-                            path.line_to(point(px(rect[0] + rect[2]), y));
+                        if let Some((_, y, _)) = vertices.last() {
+                            path.line_to(point(px(rect[0] + rect[2]), px(*y)));
                         }
                         if let Ok(path) = path.build() {
                             window.paint_path(path, color);

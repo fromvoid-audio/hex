@@ -7,8 +7,28 @@
 //! painted shape is unchanged at pixel resolution while the vertex count is
 //! bounded by four per column. Points must arrive ordered by `x`.
 
+/// Expand each held segment before reduction so dropping a source point never
+/// changes the interpolation of the segment preceding a retained point.
+/// The optional index identifies a source point for marker painting.
+pub(super) fn expand_steps(
+    points: &[(f32, f32, bool)],
+    discrete: bool,
+) -> Vec<(f32, f32, Option<usize>)> {
+    let mut vertices = Vec::with_capacity(points.len());
+    for (index, &(x, y, _)) in points.iter().enumerate() {
+        if index > 0 {
+            let (_, previous_y, previous_step) = points[index - 1];
+            if previous_step || discrete {
+                vertices.push((x, previous_y, None));
+            }
+        }
+        vertices.push((x, y, Some(index)));
+    }
+    vertices
+}
+
 /// Indices of the vertices to paint, ascending, at most four per column.
-/// A column is `floor(x)` in logical pixels relative to the plot origin;
+/// A column is `floor(x)` in physical screen pixels;
 /// non-finite positions are kept as their own vertices.
 pub(super) fn column_vertices(positions: &[(f32, f32)]) -> Vec<usize> {
     let mut kept = Vec::with_capacity(positions.len().min(1024));
@@ -42,7 +62,7 @@ pub(super) fn column_vertices(positions: &[(f32, f32)]) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::column_vertices;
+    use super::{column_vertices, expand_steps};
     use std::collections::BTreeMap;
 
     /// Vertical extent of a polyline in each pixel column, including the
@@ -97,6 +117,60 @@ mod tests {
             let (reduced_low, reduced_high) = reduced[column];
             assert!((low - reduced_low).abs() < 1.0e-3, "column {column}");
             assert!((high - reduced_high).abs() < 1.0e-3, "column {column}");
+        }
+    }
+
+    #[test]
+    fn reduction_keeps_mixed_step_and_linear_pixel_extents() {
+        let points = [
+            (0.1, 2.0, true),
+            (0.2, 8.0, false),
+            (0.3, 3.0, true),
+            (0.4, 9.0, false),
+            (0.5, 4.0, false),
+            (3.0, 7.0, false),
+        ];
+        for discrete in [false, true] {
+            let expanded = expand_steps(&points, discrete);
+            let positions: Vec<_> = expanded.iter().map(|&(x, y, _)| (x, y)).collect();
+            let kept = column_vertices(&positions);
+            let reduced: Vec<_> = kept.iter().map(|&index| positions[index]).collect();
+            assert_eq!(raster(&positions), raster(&reduced));
+        }
+    }
+
+    #[test]
+    fn mixed_dense_curves_preserve_physical_pixel_extents_at_multiple_scales() {
+        let points: Vec<_> = (0..1024)
+            .map(|index| {
+                (
+                    index as f32 / 32.0,
+                    ((index * 37) % 101) as f32,
+                    index % 3 == 0,
+                )
+            })
+            .collect();
+        for scale in [1.0_f32, 2.0] {
+            for offset in [0.0_f32, 0.37] {
+                let expanded = expand_steps(&points, false);
+                let positions: Vec<_> = expanded
+                    .iter()
+                    .map(|&(x, y, _)| ((x + offset) * scale, y))
+                    .collect();
+                let kept = column_vertices(&positions);
+                assert!(kept.len() <= 4 * (32 * scale as usize + 2));
+                let reduced: Vec<_> = kept.iter().map(|&index| positions[index]).collect();
+                let (full, reduced) = (raster(&positions), raster(&reduced));
+                assert_eq!(
+                    full.keys().collect::<Vec<_>>(),
+                    reduced.keys().collect::<Vec<_>>()
+                );
+                for (column, (low, high)) in full {
+                    let (reduced_low, reduced_high) = reduced[&column];
+                    assert!((low - reduced_low).abs() < 1e-3, "column {column}");
+                    assert!((high - reduced_high).abs() < 1e-3, "column {column}");
+                }
+            }
         }
     }
 
