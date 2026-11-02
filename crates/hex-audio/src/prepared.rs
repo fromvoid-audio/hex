@@ -111,6 +111,7 @@ mod ordinary_streaming;
 use spectrum_stages::SpectrumStage;
 use spectrum_stages::SpectrumStages;
 mod streaming;
+mod transport_fade;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
 pub(crate) mod candidate_tests;
@@ -1350,9 +1351,7 @@ pub struct Callback {
     // capacity can accumulate before this callback publishes and flushes them.
     stream_outcomes: [Option<(u64, action_outcomes::Outcome)>; ACTION_OUTCOME_CAPACITY],
     stream_outcome_count: usize,
-    // Ticket of the queued Pause/Stop whose declick fade is pending (#4151).
-    // A transport change that fails at the fade end is reported under it.
-    transport_fade_ticket: Option<u64>,
+    transport_fade: Option<transport_fade::PendingFade>,
     yield_stream_successor_once: bool,
     stream_prefix: u64,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
@@ -1498,7 +1497,7 @@ pub fn channel_with_spectrum(
             stream_pending_play: None,
             stream_outcomes: [None; ACTION_OUTCOME_CAPACITY],
             stream_outcome_count: 0,
-            transport_fade_ticket: None,
+            transport_fade: None,
             yield_stream_successor_once: false,
             stream_prefix: 0,
             held_retirement: None,
@@ -3822,6 +3821,10 @@ impl Callback {
         // A publication can complete a streamed terminal before handing the
         // same block to resident consumption. Preserve completion order.
         self.flush_stream_outcomes();
+        if cut.stop_through.is_some() {
+            // The immediate priority Stop follows an interrupted fade's effects.
+            self.settle_transport_fade();
+        }
         if let Some(through_ticket) = cut.stop_through {
             if !fault && !self.status.closing.load(Acquire) {
                 self.recovery_position_frozen = false;
@@ -3847,19 +3850,10 @@ impl Callback {
                     .as_mut()
                     .and_then(ActivePublication::current_mut)
                 {
-                    // Closing keeps the immediate cut; otherwise Stop fades
-                    // out first and still resets to frame zero (#4138).
-                    if self.status.closing.load(Acquire) {
-                        active
-                            .playback
-                            .apply_priority_stop(&self.status.keyboard_activation);
-                    } else {
-                        active
-                            .playback
-                            .apply_declicked_priority_stop(&self.status.keyboard_activation);
-                    }
+                    active
+                        .playback
+                        .apply_priority_stop(&self.status.keyboard_activation);
                 }
-                self.transport_fade_ticket = None;
                 self.invalidate_processor_audition_request();
             }
         }
@@ -3880,6 +3874,8 @@ impl Callback {
             if !fault {
                 self.trace_command_dequeued(queued, cut);
             }
+            // Each command follows the audible end of an earlier fade.
+            self.settle_transport_fade();
             if fault && sampler_edit::is_stop(queued.action) {
                 self.status.recovery_position.store(0, Release);
                 *staged = Some((queued.ticket, action_outcomes::Outcome::Applied));
@@ -3937,13 +3933,8 @@ impl Callback {
             {
                 #[cfg(all(test, feature = "allocation-probe"))]
                 self.apply_candidate_action(queued.action);
-                if matches!(
-                    queued.action,
-                    PlaybackAction::Transport(PlaybackCommand::Stop)
-                ) {
-                    self.revoke_current_sampler_keyboard();
-                }
                 let mut invalidate_audition = false;
+                let mut fading = false;
                 let outcome;
                 let closing = self.status.closing.load(Acquire);
                 if let Some(mut active) = self
@@ -3958,9 +3949,8 @@ impl Callback {
                     };
                     match applied {
                         Ok(()) => {
-                            self.transport_fade_ticket = (active.playback.pending_transport_fade()
-                                == Some(queued.action))
-                            .then_some(queued.ticket);
+                            fading =
+                                active.playback.pending_transport_fade() == Some(queued.action);
                             outcome = action_outcomes::Outcome::Applied;
                             if recovery_cursor_action(queued.action) {
                                 self.recovery_position_frozen = false;
@@ -3984,6 +3974,17 @@ impl Callback {
                     );
                 }
                 *staged = Some((queued.ticket, outcome));
+                let stop = matches!(
+                    queued.action,
+                    PlaybackAction::Transport(PlaybackCommand::Stop)
+                );
+                if fading {
+                    // The output transport, epoch and sampler keyboard stay
+                    // live until the fade's audible end.
+                    self.begin_transport_fade(queued.ticket, stop, false);
+                } else if stop {
+                    self.revoke_current_sampler_keyboard();
+                }
                 if invalidate_audition
                     || matches!(
                         queued.action,
@@ -3994,9 +3995,15 @@ impl Callback {
                     self.invalidate_midi_recording(
                         crate::midi_recording::AbortReason::TransportChanged,
                     );
-                    self.invalidate_gain_recording(
-                        crate::gain_recording::AbortReason::TransportChanged,
-                    );
+                    if fading {
+                        self.abort_transport_inputs(
+                            crate::gain_recording::AbortReason::TransportChanged,
+                        );
+                    } else {
+                        self.invalidate_gain_recording(
+                            crate::gain_recording::AbortReason::TransportChanged,
+                        );
+                    }
                 }
                 if invalidate_audition {
                     self.invalidate_processor_audition_request();
@@ -4035,6 +4042,8 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        // The fault Stop below revokes every transport effect immediately.
+        self.transport_fade = None;
         self.recovery_position_frozen = true;
         if self.streamed_transport_mode() {
             self.cancel_stream_for_fault();
@@ -4116,37 +4125,27 @@ impl Callback {
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         let block = self.scheduled_transport();
         let result = self.render_inner(output);
-        self.report_transport_fade_failure();
+        if self.transport_fade.is_some() && !self.transport_fade_pending() {
+            self.settle_transport_fade();
+        }
         if let Some((position, performance, true)) = block
             && result.is_ok()
             && !output.is_empty()
         {
-            self.audible_clock.push(position, performance, output.len());
+            // A declicked Pause/Stop can end inside the block; only the frames
+            // its performance clock advanced were played (#4151).
+            let frames = match self.scheduled_transport() {
+                Some((_, after, false)) => usize::try_from(after.saturating_sub(performance))
+                    .map_or(output.len(), |played| played.min(output.len())),
+                _ => output.len(),
+            };
+            if frames > 0 {
+                self.audible_clock.push(position, performance, frames);
+            }
         }
         self.publish_audible_position();
         self.flush_stream_outcomes();
         result
-    }
-
-    /// A declicked Pause/Stop was reported Applied when consumed; a transport
-    /// change refused at its fade end is published under the same ticket.
-    fn report_transport_fade_failure(&mut self) {
-        let Some(mut active) = self
-            .active
-            .as_mut()
-            .and_then(ActivePublication::current_mut)
-        else {
-            self.transport_fade_ticket = None;
-            return;
-        };
-        let failure = active.playback.take_transport_fade_failure();
-        let pending = active.playback.pending_transport_fade().is_some();
-        if let (Some(reason), Some(ticket)) = (failure, self.transport_fade_ticket) {
-            self.status.publish_rejected_action(ticket, reason);
-        }
-        if !pending {
-            self.transport_fade_ticket = None;
-        }
     }
 
     /// Scheduled position, performance frame and playing state of the current graph.
@@ -4655,6 +4654,25 @@ impl Callback {
         // Reuse the existing transport-discontinuity owner/epoch; asynchronous
         // output must not expose pre-seek/pause/stop buffers in a new context.
         self.revoke_output_transport();
+        self.abort_transport_inputs(reason);
+        let prior_epoch = self
+            .status
+            .transport_epoch
+            .fetch_update(AcqRel, Acquire, |epoch| epoch.checked_add(1));
+        if matches!(reason, crate::gain_recording::AbortReason::OutputFailed) {
+            self.status
+                .last_output_fault_epoch
+                .store(prior_epoch.unwrap_or_else(|epoch| epoch), Release);
+        }
+        if prior_epoch.is_err() {
+            self.status.gain_recording_fault.store(true, Release);
+        }
+    }
+    /// Abort the gain take and native parameter gesture without revoking the
+    /// output transport or advancing its epoch. A declicked Pause/Stop does
+    /// this when consumed; the rest of `invalidate_gain_recording` follows at
+    /// its fade end.
+    fn abort_transport_inputs(&mut self, reason: crate::gain_recording::AbortReason) {
         self.gain_recording.abort(reason);
         self.invalidate_native_parameter_input(match reason {
             crate::gain_recording::AbortReason::SourceChanged => {
@@ -4679,18 +4697,6 @@ impl Callback {
             .and_then(ActivePublication::current_mut)
         {
             active.playback.clear_gain_recording_override();
-        }
-        let prior_epoch = self
-            .status
-            .transport_epoch
-            .fetch_update(AcqRel, Acquire, |epoch| epoch.checked_add(1));
-        if matches!(reason, crate::gain_recording::AbortReason::OutputFailed) {
-            self.status
-                .last_output_fault_epoch
-                .store(prior_epoch.unwrap_or_else(|epoch| epoch), Release);
-        }
-        if prior_epoch.is_err() {
-            self.status.gain_recording_fault.store(true, Release);
         }
     }
     fn invalidate_native_parameter_input(
@@ -6027,7 +6033,9 @@ mod tests {
             );
             assert!(control.status.metronome_enabled.load(Relaxed));
             assert_eq!(control.status.position.load(Relaxed), 37);
-            assert_eq!(control.status.playing.load(Relaxed), cancelled);
+            // A queued Pause is Applied when consumed but keeps playing
+            // through its fade until a render reaches its audible end (#4151).
+            assert!(control.status.playing.load(Relaxed));
             control.request_shutdown();
             callback.begin_block();
             control.reclaim();
@@ -6177,8 +6185,11 @@ mod tests {
         assert_eq!(output[0], [0.16; 2]);
         control.command(PlaybackCommand::Pause).unwrap();
         let allocations = allocation_counter::measure(|| {
-            callback.begin_block();
-            callback.render(&mut output).unwrap();
+            // The first block is the queued Pause's 128-frame fade (#4151).
+            for _ in 0..2 {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            }
         });
         assert_eq!(
             (
@@ -6500,8 +6511,11 @@ mod tests {
         for command in [PlaybackCommand::Seek(0), PlaybackCommand::Stop] {
             control.command(command).unwrap();
             let counts = allocation_counter::measure(|| {
-                callback.begin_block();
-                callback.render(&mut block).unwrap();
+                // A queued Stop fades over 128 frames, past one block (#4151).
+                for _ in 0..1 + usize::from(command == PlaybackCommand::Stop) {
+                    callback.begin_block();
+                    callback.render(&mut block).unwrap();
+                }
             });
             assert_eq!(
                 (

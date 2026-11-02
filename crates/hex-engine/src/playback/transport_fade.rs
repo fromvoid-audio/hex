@@ -68,8 +68,6 @@ enum Pending {
     Stop,
     SessionPause,
     SessionStop,
-    /// The output's priority Stop; its keyboard handling already happened.
-    PriorityStop,
 }
 
 impl Pending {
@@ -91,7 +89,6 @@ impl Pending {
             Self::Stop => PlaybackAction::Transport(PlaybackCommand::Stop),
             Self::SessionPause => PlaybackAction::Session(crate::SessionPlaybackCommand::Pause),
             Self::SessionStop => PlaybackAction::Session(crate::SessionPlaybackCommand::Stop),
-            Self::PriorityStop => PlaybackAction::Transport(PlaybackCommand::Stop),
         }
     }
 }
@@ -133,24 +130,6 @@ impl TransportFade {
     pub(crate) fn begin_out(&mut self, action: PlaybackAction) {
         self.pending = Pending::from_action(action);
         self.out_elapsed = 0;
-    }
-
-    /// A priority Stop replaces a pending fade without restarting its ramp.
-    pub(crate) fn begin_priority_stop(&mut self) {
-        if self.pending.is_none() {
-            self.out_elapsed = 0;
-        }
-        self.pending = Some(Pending::PriorityStop);
-    }
-
-    /// Remove a pending priority Stop; other pending actions stay.
-    pub(crate) fn take_priority_stop(&mut self) -> bool {
-        if self.pending != Some(Pending::PriorityStop) {
-            return false;
-        }
-        self.pending = None;
-        self.out_elapsed = 0;
-        true
     }
 
     pub(crate) fn begin_in(&mut self, frames: u32) {

@@ -366,22 +366,6 @@ impl ClaimedAudioCandidateRuntime {
             .ok_or(crate::PlaybackActionError::SessionNotPrepared)?
             .apply_action(action)
     }
-    /// `apply_priority_stop` with the transport declick: the keyboard prefix
-    /// is revoked now and the transport Stop follows after its fade.
-    pub fn apply_declicked_priority_stop(
-        &mut self,
-        clock: &crate::computer_keyboard::KeyboardActivationClock,
-    ) -> Result<(), crate::PlaybackActionError> {
-        let runtime = self.current_owner()?;
-        if runtime.sampler_sources.is_some() {
-            runtime.apply_declicked_action(crate::PlaybackAction::Transport(
-                crate::PlaybackCommand::Stop,
-            ))
-        } else {
-            runtime.playback.apply_declicked_priority_stop(clock);
-            Ok(())
-        }
-    }
     /// `apply_action` with the transport declick of
     /// `Playback::try_apply_declicked_action`.
     pub fn apply_declicked_action(
@@ -396,6 +380,12 @@ impl ClaimedAudioCandidateRuntime {
             .runtime
             .as_ref()
             .and_then(|runtime| runtime.playback.pending_transport_fade())
+    }
+    /// `Playback::finish_transport_fade` on the current runtime.
+    pub fn finish_transport_fade(&mut self) {
+        if let Some(runtime) = self.inner.runtime.as_mut() {
+            runtime.playback.finish_transport_fade();
+        }
     }
     /// One deferred Pause/Stop refusal recorded at its fade end.
     pub fn take_transport_fade_failure(&mut self) -> Option<crate::PlaybackActionRejection> {

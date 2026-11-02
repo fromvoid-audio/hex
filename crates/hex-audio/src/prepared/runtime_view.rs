@@ -295,16 +295,10 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.apply_declicked_action(action),
         }
     }
-    /// Priority Stop whose transport Stop follows its fade.
-    pub(super) fn apply_declicked_priority_stop(
-        &mut self,
-        clock: &hex_engine::computer_keyboard::KeyboardActivationClock,
-    ) {
+    pub(super) fn finish_transport_fade(&mut self) {
         match self {
-            Self::Legacy(p) => p.apply_declicked_priority_stop(clock),
-            Self::Eligible(p) => {
-                let _ = p.apply_declicked_priority_stop(clock);
-            }
+            Self::Legacy(p) => p.finish_transport_fade(),
+            Self::Eligible(p) => p.finish_transport_fade(),
         }
     }
     pub(super) fn pending_transport_fade(&self) -> Option<PlaybackAction> {

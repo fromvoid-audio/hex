@@ -305,7 +305,8 @@ fn split_client_stream_case(case: StreamCase) {
                 outcome: ActionOutcome::Applied
             })
         );
-        assert!(!client.status().unwrap().playing.load(Acquire));
+        // A streamed Pause is Applied at once but plays through its fade (#4151).
+        assert!(client.status().unwrap().playing.load(Acquire));
         assert_eq!(
             client.status().unwrap().consumed_command.load(Acquire),
             pause
@@ -1405,7 +1406,8 @@ fn original_quantized_due_survives_pause_cancel_and_revocable_prewarm_pool_press
             c.render(&mut output[..8]).unwrap();
         })
     }));
-    assert_eq!(control.status.performance_frame.load(Acquire), 4008);
+    // The streamed Pause keeps the clock running through its fade (#4151).
+    assert_eq!(control.status.performance_frame.load(Acquire), 4016);
     data.owner_mut().unwrap().run(|c, _| {
         assert_eq!(
             c.active
