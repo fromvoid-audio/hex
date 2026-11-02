@@ -120,6 +120,7 @@ pub use gain_envelope::{
     GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, GainPreviewSegment,
     MAX_PREPARED_GAIN_BYTES, MAX_PREPARED_GAIN_KNOTS,
 };
+mod clip_index;
 mod return_feed_plan;
 mod signal_graph;
 mod stream_demand;
@@ -521,6 +522,11 @@ struct ClipMetadata {
     streamed: Option<Arc<StreamedSourceMetadata>>,
 }
 impl Clip {
+    /// The frame range outside which this clip never renders.
+    fn index_bounds(&self) -> (u64, u64) {
+        (self.start, self.end)
+    }
+
     /// The timeline interval is [start, start + duration). Loops repeat the entire source.
     pub fn new(audio: Audio, start: u64, duration: u64, looping: bool) -> Result<Self, Invalid> {
         if duration == 0 {
@@ -817,6 +823,10 @@ pub struct Track {
     source_input_enabled: bool,
     audio_content_enabled: bool,
     clips: Vec<Clip>,
+    /// Control-built `clip_index` over `clips`; rendering never scans them.
+    clip_index: Vec<clip_index::ClipIndexEntry>,
+    /// Whether any clip pages from a stream; fixed with `clips`.
+    has_streamed_clips: bool,
     mix: PreparedTrackMix,
     source_mix: PreparedTrackMix,
     gain_envelope: Option<gain_envelope::PreparedGainEnvelope>,
@@ -1057,6 +1067,8 @@ impl Track {
     ) -> Result<Self, Invalid> {
         Ok(Self {
             track_id: None,
+            clip_index: clip_index::build(&clips, Clip::index_bounds),
+            has_streamed_clips: clips.iter().any(Clip::is_streamed),
             clips,
             mix: PreparedTrackMix::new(gain, balance, muted)?,
             source_mix: PreparedTrackMix::new(gain, balance, muted)?,
@@ -1113,6 +1125,8 @@ impl Track {
         };
         Ok(Self {
             track_id: None,
+            clip_index: clip_index::build(&clips, Clip::index_bounds),
+            has_streamed_clips: clips.iter().any(Clip::is_streamed),
             clips,
             mix,
             source_mix,
@@ -1471,7 +1485,7 @@ impl Track {
         if self.has_gain_automation() {
             return Err(Invalid("automated track requires project rendering"));
         }
-        if self.clips.iter().any(Clip::is_streamed) {
+        if self.has_streamed_clips {
             return Err(Invalid("streamed clips require a media page provider"));
         }
         self.render_additive_with_midi_floor(start_frame, output, None, None)
@@ -1816,18 +1830,24 @@ impl Track {
             );
             return;
         }
-        for clip in &self.clips {
-            if !clip.is_streamed() {
-                self.render_resident_clip(
-                    clip,
-                    start_frame,
-                    end_frame,
-                    output,
-                    capture.as_deref_mut(),
-                    source_mix,
-                );
-            }
-        }
+        clip_index::visit(
+            &self.clip_index,
+            &self.clips,
+            start_frame,
+            end_frame,
+            |clip| {
+                if !clip.is_streamed() {
+                    self.render_resident_clip(
+                        clip,
+                        start_frame,
+                        end_frame,
+                        output,
+                        capture.as_deref_mut(),
+                        source_mix,
+                    );
+                }
+            },
+        );
     }
 
     fn render_unmuted_range_with_pages(
@@ -1887,29 +1907,35 @@ impl Track {
         mut capture: Option<&mut [Frame]>,
         source_mix: PreparedTrackMix,
     ) {
-        for clip in &self.clips {
-            if !clip.is_streamed() {
-                self.render_resident_clip(
-                    clip,
-                    start_frame,
-                    end_frame,
-                    output,
-                    capture.as_deref_mut(),
-                    source_mix,
-                );
-                continue;
-            }
-            clip.visit_streamed_spans(start_frame, end_frame, |source, span| {
-                render_streamed_page_span_captured(
-                    source_mix,
-                    source,
-                    span,
-                    output,
-                    pages,
-                    capture.as_deref_mut(),
-                )
-            });
-        }
+        clip_index::visit(
+            &self.clip_index,
+            &self.clips,
+            start_frame,
+            end_frame,
+            |clip| {
+                if !clip.is_streamed() {
+                    self.render_resident_clip(
+                        clip,
+                        start_frame,
+                        end_frame,
+                        output,
+                        capture.as_deref_mut(),
+                        source_mix,
+                    );
+                    return;
+                }
+                clip.visit_streamed_spans(start_frame, end_frame, |source, span| {
+                    render_streamed_page_span_captured(
+                        source_mix,
+                        source,
+                        span,
+                        output,
+                        pages,
+                        capture.as_deref_mut(),
+                    )
+                });
+            },
+        );
     }
 
     fn render_resident_clip(
@@ -2853,6 +2879,80 @@ impl RendererRuntime {
                 .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
     }
 
+    /// Settle this paused (previous) linear graph's committed transitions
+    /// that `candidate` is busy from (Pulse #4558), pairing chains exactly as
+    /// `transition_busy_from`; bounded and allocation-free.
+    pub(crate) fn settle_idle_transitions_for(
+        &mut self,
+        project: &Project,
+        candidate: &Self,
+        candidate_project: &Project,
+    ) {
+        for (index, track) in candidate_project.tracks().iter().enumerate() {
+            let Some(track_id) = track.canonical_track_id() else {
+                continue;
+            };
+            if let Some((old, chain)) = project
+                .tracks()
+                .iter()
+                .position(|old| old.canonical_track_id() == Some(track_id))
+                .and_then(|old| self.device_chains.get_mut(old))
+                .zip(candidate.device_chains.get(index))
+            {
+                old.settle_idle_transitions_for(chain);
+            }
+        }
+        for (index, bus) in candidate_project.return_buses().iter().enumerate() {
+            if let Some((old, chain)) = project
+                .return_buses()
+                .iter()
+                .position(|old| old.id == bus.id)
+                .and_then(|old| self.return_chains.get_mut(old))
+                .zip(candidate.return_chains.get(index))
+            {
+                old.settle_idle_transitions_for(chain);
+            }
+        }
+        self.main_chain
+            .settle_idle_transitions_for(&candidate.main_chain);
+    }
+
+    /// Whether a same-identity chain must defer this handoff until the
+    /// predecessor's committed live transitions drain (Pulse #4178). Pairs
+    /// chains exactly as `can_inherit_from`; read-only and allocation-free.
+    pub(crate) fn transition_busy_from(
+        &self,
+        project: &Project,
+        previous: &Self,
+        previous_project: &Project,
+    ) -> bool {
+        let tracks = project.tracks().iter().enumerate().any(|(index, track)| {
+            track.canonical_track_id().is_some_and(|track_id| {
+                previous_project
+                    .tracks()
+                    .iter()
+                    .position(|old| old.canonical_track_id() == Some(track_id))
+                    .and_then(|old| previous.device_chains.get(old))
+                    .zip(self.device_chains.get(index))
+                    .is_some_and(|(old, candidate)| candidate.transition_busy_from(old))
+            })
+        });
+        let returns = project
+            .return_buses()
+            .iter()
+            .enumerate()
+            .any(|(index, bus)| {
+                previous_project
+                    .return_buses()
+                    .iter()
+                    .position(|old| old.id == bus.id)
+                    .and_then(|old| previous.return_chains.get(old))
+                    .zip(self.return_chains.get(index))
+                    .is_some_and(|(old, candidate)| candidate.transition_busy_from(old))
+            });
+        tracks || returns || self.main_chain.transition_busy_from(&previous.main_chain)
+    }
+
     pub(crate) fn can_inherit_from(
         &self,
         project: &Project,
@@ -3772,6 +3872,7 @@ pub use midi_template::{
 pub use playback::{
     PlaybackAction, PlaybackActionError, PlaybackActionRejection, PlaybackCommand,
     PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability, SessionCapabilityStatus,
+    TransportFadeCompletion,
 };
 pub use prepared_revision::PreparedRevision;
 pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};

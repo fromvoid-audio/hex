@@ -331,3 +331,97 @@ fn schema60_and_schema61_save_require_consent_or_save_as_for_current_schema() {
         assert_eq!(upgraded["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     }
 }
+
+/// A 32 kHz mono ramp, so sinc v1 and v2 produce different project PCM.
+fn ramp_wav(path: &Path, frames: u32) {
+    let rate = 32_000_u32;
+    let mut bytes = Vec::from(*b"RIFF");
+    bytes.extend_from_slice(&(36 + frames * 2).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&rate.to_le_bytes());
+    bytes.extend_from_slice(&(rate * 2).to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(frames * 2).to_le_bytes());
+    for index in 0..frames {
+        bytes.extend_from_slice(&((index % 64) as i16 * 400 - 12_800).to_le_bytes());
+    }
+    fs::write(path, bytes).unwrap();
+}
+
+/// A schema64 project whose only asset carries sinc v2 conversion metadata.
+fn sinc_v2_project(files: &Files) -> PathBuf {
+    let media = files.0.join("ramp.wav");
+    ramp_wav(&media, 3_200);
+    let decoded =
+        hex_media::decode_wav_file(&media, hex_media::Limits::new(1 << 20, 8_000)).unwrap();
+    let prepared = crate::PreparedImport::at_rate_with_conversion(
+        decoded,
+        48_000,
+        ResampleLimits {
+            max_source_frames: 8_000,
+            max_output_frames: 8_000,
+        },
+        hex_project::SINC_CONVERSION_V2,
+    )
+    .unwrap();
+    let mut session = crate::Session::new(48_000, 16, 100_000).unwrap();
+    session.import_prepared_revision(prepared, None).unwrap();
+    let path = files.0.join("v2.hex");
+    let bytes = hex_storage::encode(session.project()).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["version"], hex_storage::SINC_V2_SCHEMA_VERSION);
+    fs::write(&path, bytes).unwrap();
+    path
+}
+
+#[test]
+fn sinc_v2_project_opens_resident_and_saves_without_consent() {
+    let files = Files::new();
+    let path = sinc_v2_project(&files);
+    let original = fs::read(&path).unwrap();
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    next(&service);
+    // Reconstruction compares the derived conversion version with the saved
+    // asset, so a successful open proves the media was converted with v2.
+    let opened = request(&service, Request::Open(path.clone()));
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert!(!opened.document_format_upgrade_required);
+    let asset = opened.state.project.assets().next().unwrap();
+    assert_eq!(asset.conversion_version(), hex_project::SINC_CONVERSION_V2);
+    let saved = request(&service, Request::SaveCurrent);
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    assert!(!saved.save_confirmation_required);
+    assert_eq!(fs::read(&path).unwrap(), original);
+
+    let streamed = request(
+        &service,
+        Request::OpenWithAudioMode {
+            source: ProjectSource::Saved(path.clone()),
+            relinks: BTreeMap::new(),
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(SourcePlanReservation {
+                reader: hex_media::VerifiedWavReaderLimits {
+                    reader: hex_media::WavReaderLimits {
+                        max_file_bytes: 64 * 1024 * 1024,
+                        max_source_frames: 8_000_000,
+                        max_header_count: 32,
+                        max_window_frames: 4096,
+                    },
+                    max_manifest_bytes: 1024 * 1024,
+                },
+                max_retained_sources: 4,
+                max_path_bytes: 1024 * 1024,
+                max_manifest_bytes: 4 * 1024 * 1024,
+            }),
+        },
+    );
+    let error = streamed.error.as_deref().unwrap_or_default().to_string();
+    assert!(error.contains("sinc v2"), "{error}");
+    assert!(!streamed.project_replaced);
+    assert_eq!(fs::read(&path).unwrap(), original);
+}

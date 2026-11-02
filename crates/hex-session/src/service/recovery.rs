@@ -236,10 +236,27 @@ pub(super) fn open_source_with_limits(
     // factual file inputs with its admitted offline graph; the fresh output
     // verifies its real catalog and delivers the endpoint before queue submission.
     // File facts alone never promise page readiness or callback application.
+    // A plain asset past the per-file resident decode caps was imported as a
+    // streamed file; reopening must keep it file-backed even when the total
+    // working set would otherwise fit (Pulse #3949).
+    let oversized_plain_asset = online_assets(&project).any(|asset| {
+        asset.original_source().is_none()
+            && !asset_requires_resident_processing(&project, asset.id())
+            && crate::verified_import::exceeds_resident_decode(
+                &asset_media_path(&project_dir, asset),
+                asset.source_frames(),
+            )
+            .unwrap_or(false)
+    });
     let ordinary_file_backed = mode == DocumentAudioMode::Resident
         && reservation.is_some()
-        && required_pcm > frame_allowance;
+        && (required_pcm > frame_allowance || oversized_plain_asset);
     if mode == DocumentAudioMode::VerifiedStreaming {
+        // Verified pages convert with the sinc v1 kernel only; never play a v2
+        // asset through a different conversion law.
+        if online_assets(&project).any(asset_requires_sinc_v2) {
+            return Err("verified streaming cannot play sinc v2 media yet; reopen the project with resident audio; original file unchanged".into());
+        }
         let reservation = reservation
             .ok_or("verified source reservation is required")?
             .validate()
@@ -260,11 +277,7 @@ pub(super) fn open_source_with_limits(
         .with_shutdown(Arc::clone(&current.shutdown));
         // Verify every retained asset, including unused records, without decoding PCM.
         for asset in online_assets(&project) {
-            let path = if asset.path().is_absolute() {
-                asset.path().to_path_buf()
-            } else {
-                project_dir.join(asset.path())
-            };
+            let path = asset_media_path(&project_dir, asset);
             let source = candidate.verify_import(path).map_err(|e| e.to_string())?;
             if !source.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
@@ -301,11 +314,7 @@ pub(super) fn open_source_with_limits(
     // Load unreferenced assets too: the editor can place them later. Missing
     // media is either offline (recorded on the project) or rejects the candidate.
     for asset in online_assets(&project) {
-        let media_path = if asset.path().is_absolute() {
-            asset.path().to_path_buf()
-        } else {
-            project_dir.join(asset.path())
-        };
+        let media_path = asset_media_path(&project_dir, asset);
         if current.shutdown.load(Ordering::Acquire) {
             return Err("project open cancelled".into());
         }
@@ -451,7 +460,7 @@ pub(super) fn open_source_with_limits(
         } else {
             remaining_frames
         };
-        let prepared = PreparedImport::at_rate(
+        let prepared = PreparedImport::at_rate_with_conversion(
             decoded,
             project.sample_rate(),
             ResampleLimits {
@@ -459,6 +468,7 @@ pub(super) fn open_source_with_limits(
                 max_output_frames: usize::try_from(output_allowance)
                     .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?,
             },
+            asset.conversion_version(),
         )
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
         remaining_frames = remaining_frames
@@ -540,6 +550,14 @@ pub(super) fn open_source_with_limits(
     ))
 }
 
+fn asset_media_path(project_dir: &Path, asset: &hex_project::Asset) -> PathBuf {
+    if asset.path().is_absolute() {
+        asset.path().to_path_buf()
+    } else {
+        project_dir.join(asset.path())
+    }
+}
+
 fn online_assets(project: &Project) -> impl Iterator<Item = &hex_project::Asset> {
     project
         .assets()
@@ -575,7 +593,16 @@ fn with_missing_media_offline(project: Project, base: &Path) -> Result<Project, 
 /// Keep every materialized processing dependency resident, including retained
 /// grouped roots. File selection must not turn a valid saved edit into an
 /// unsupported streamed transform merely because another plain asset is large.
+/// Verified file pages convert with the sinc v1 kernel only.
+fn asset_requires_sinc_v2(asset: &hex_project::Asset) -> bool {
+    asset.conversion_version() == hex_project::SINC_CONVERSION_V2
+}
+
 fn asset_requires_resident_processing(project: &Project, asset: hex_project::AssetId) -> bool {
+    // A sinc v2 asset reconstructs its exact PCM only through resident decoding.
+    if project.asset(asset).is_some_and(asset_requires_sinc_v2) {
+        return true;
+    }
     let requires = |clip: &hex_project::Clip| {
         (clip.asset() == asset && hex_engine::audio_transform::AudioTransformPreparation::clip_requires_resident_source(clip))
             || clip.audio_edit().and_then(|edit| edit.domain.events.as_ref())

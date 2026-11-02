@@ -11,6 +11,34 @@ use shared_source::{render_source_instrument_chunk, shared_source_has_route};
 use std::sync::Arc;
 
 impl SessionPlayback {
+    /// An edit at the stopped origin may have retained an original bus/Main
+    /// endpoint. Drain its actual zero-input tail before it can return. A
+    /// paused transport away from the origin retains its existing freeze;
+    /// explicit Stop has already reset the tail bank in the command owner.
+    fn stopped_edit_tails(&self) -> bool {
+        self.performance_frame == 0
+            && self.arrangement_frame == 0
+            && self
+                .return_effect_tails
+                .slots()
+                .iter()
+                .flatten()
+                .any(|tail| tail.output_active)
+    }
+
+    /// Whether `render` skips every device chain: the transport is not
+    /// playing and no source monitoring, keyboard, sampler console or
+    /// stopped-edit tail feeds them. The output is then silent and committed
+    /// chain state stays frozen, so live device transitions cannot drain by
+    /// rendering (Pulse #4558).
+    pub(super) fn renders_no_device_chains(&self) -> bool {
+        !self.playing
+            && !self.monitor_source_releases
+            && self.computer_keyboard.is_none()
+            && self.current_sampler_keyboards.is_empty()
+            && !self.stopped_edit_tails()
+    }
+
     /// Render a complete block transactionally. A refusal after any chunk
     /// silences the requested block and leaves committed route/clock state as-is.
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), SessionPlaybackError> {
@@ -56,23 +84,6 @@ impl SessionPlayback {
         )
     }
 
-    pub(crate) fn render_current_sampler<P: MediaPages + ?Sized>(
-        &mut self,
-        output: &mut [Frame],
-        pages: Option<&mut P>,
-        observer: Option<&mut crate::NodeSignalObserver<'_>>,
-        project: Option<&mut ProjectOutputTap<'_, '_>>,
-        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
-    ) -> Result<(), SessionPlaybackError> {
-        self.render_current_sampler_with_foreign(
-            output,
-            pages,
-            observer,
-            project,
-            sources,
-            &mut hex_lattice::RefuseForeign,
-        )
-    }
     pub(crate) fn render_current_sampler_with_foreign<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
@@ -395,24 +406,9 @@ impl SessionPlayback {
             ));
         }
         output.fill([0.0; 2]);
-        // An edit at the stopped origin may have retained an original bus/Main
-        // endpoint. Drain its actual zero-input tail before it can return. A
-        // paused transport away from the origin retains its existing freeze;
-        // explicit Stop has already reset the tail bank in the command owner.
-        let stopped_edit_tails = self.performance_frame == 0
-            && self.arrangement_frame == 0
-            && self
-                .return_effect_tails
-                .slots()
-                .iter()
-                .flatten()
-                .any(|tail| tail.output_active);
+        let stopped_edit_tails = self.stopped_edit_tails();
         if output.is_empty()
-            || (!self.playing
-                && !self.monitor_source_releases
-                && self.computer_keyboard.is_none()
-                && self.current_sampler_keyboards.is_empty()
-                && !stopped_edit_tails)
+            || self.renders_no_device_chains()
             || (!self.playing
                 && self.computer_keyboard.is_none()
                 && self.current_sampler_keyboards.is_empty()
