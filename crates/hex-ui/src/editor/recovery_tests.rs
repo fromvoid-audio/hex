@@ -99,6 +99,50 @@ fn restart_from_fault(cx: &mut gpui::TestAppContext, stop: bool) {
     drop(backend);
     output.publication.close();
 }
+#[gpui::test]
+fn a_changed_output_route_restarts_audio_once_its_guards_allow(cx: &mut gpui::TestAppContext) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let identity = client.output_identity().unwrap();
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "route fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        // A notice for an output that is no longer current is dropped.
+        view.route_follow = Some(identity + 1);
+        assert!(!view.follow_output_route());
+        assert_eq!(view.route_follow, None);
+        // An open dialog defers the move without reporting an error.
+        let error = view.error.clone();
+        view.route_follow = Some(identity);
+        view.save_dialog_open = true;
+        assert!(!view.follow_output_route());
+        assert_eq!(view.route_follow, Some(identity));
+        assert_eq!(view.error, error);
+        assert!(view.pending_recovery_generation.is_none());
+        // Once allowed, the move uses the restart-audio recovery exactly once.
+        view.save_dialog_open = false;
+        assert!(view.follow_output_route());
+        assert_eq!(view.route_follow, None);
+        assert!(view.pending_recovery_generation.is_some());
+        assert!(view.pending_restart_request.is_some());
+        assert_eq!(view.status.to_string(), "audio output changed · reopening");
+        assert!(!view.follow_output_route());
+    });
+    drop(backend);
+    output.publication.close();
+}
 impl WorkerAudioSink for Sink {
     fn resident_publication_enabled(&self) -> bool {
         true
