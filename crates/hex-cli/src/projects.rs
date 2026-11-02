@@ -147,6 +147,7 @@ pub fn render_project(input: &Path, output: &Path) -> Result<(), Box<dyn Error>>
                 0,
                 frames,
                 signal,
+                hex_export::ExportFormat::default(),
                 &hex_export::ExportControl::default(),
                 &hex_export::Publication::CreateNew,
             )
@@ -163,6 +164,17 @@ pub fn render_project(input: &Path, output: &Path) -> Result<(), Box<dyn Error>>
 
 const EXPORT_STACK_BYTES: usize = 8 * 1024 * 1024;
 
+/// `--format=` value: dithered 16-bit PCM (default), packed 24-bit PCM or
+/// 32-bit float.
+fn parse_format(name: &str) -> Result<hex_export::ExportFormat, Box<dyn Error>> {
+    match name {
+        "pcm16" => Ok(hex_export::ExportFormat::Pcm16),
+        "pcm24" => Ok(hex_export::ExportFormat::Pcm24),
+        "float32" => Ok(hex_export::ExportFormat::Float32),
+        _ => Err("unknown export format; use pcm16, pcm24 or float32".into()),
+    }
+}
+
 fn prepare(
     project: &Project,
     media: &BTreeMap<hex_project::AssetId, Audio>,
@@ -177,8 +189,8 @@ fn prepare(
 
 /// Explicit offline range/scope adapter; retains the bounded project/media loader.
 pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
-    if !(5..=7).contains(&args.len()) {
-        return Err("usage: hex-cli export-project <project.hex> <destination> <start-frame> <end-frame> [--tracks=ids|--returns=ids|--stems=track-ids] [--overwrite]".into());
+    if !(5..=8).contains(&args.len()) {
+        return Err("usage: hex-cli export-project <project.hex> <destination> <start-frame> <end-frame> [--tracks=ids|--returns=ids|--stems=track-ids] [--format=pcm16|pcm24|float32] [--overwrite]".into());
     }
     let start: u64 = args[3].to_str().ok_or("invalid start frame")?.parse()?;
     let end: u64 = args[4].to_str().ok_or("invalid end frame")?.parse()?;
@@ -188,10 +200,13 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
         .ok_or("export range must be nonempty and ordered")?;
     let mut scope = None;
     let mut overwrite = false;
+    let mut format = None;
     for arg in &args[5..] {
         let text = arg.to_str().ok_or("invalid export option")?;
         if text == "--overwrite" && !overwrite {
             overwrite = true;
+        } else if let Some(name) = text.strip_prefix("--format=").filter(|_| format.is_none()) {
+            format = Some(parse_format(name)?);
         } else if scope.is_none()
             && (text.starts_with("--tracks=")
                 || text.starts_with("--returns=")
@@ -298,6 +313,7 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
                 start,
                 frames,
                 signal,
+                format.unwrap_or_default(),
                 &render_control,
                 &publication,
             )
@@ -324,4 +340,20 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
         println!("previous file preserved at {}", recovery.display());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_format;
+    use hex_export::ExportFormat;
+
+    #[test]
+    fn format_option_names_map_to_export_formats_and_refuse_unknown_names() {
+        assert_eq!(parse_format("pcm16").unwrap(), ExportFormat::Pcm16);
+        assert_eq!(parse_format("pcm24").unwrap(), ExportFormat::Pcm24);
+        assert_eq!(parse_format("float32").unwrap(), ExportFormat::Float32);
+        for name in ["", "PCM24", "pcm32", "float64"] {
+            assert!(parse_format(name).is_err(), "{name}");
+        }
+    }
 }

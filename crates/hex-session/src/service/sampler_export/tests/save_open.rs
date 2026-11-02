@@ -9,6 +9,7 @@ fn export_pcm(service: &Service, path: PathBuf) -> Vec<[i16; 2]> {
             frames: Some(8),
             signal: ExportSignal::Main,
             control: Default::default(),
+            format: hex_export::ExportFormat::Pcm16,
             overwrite: false,
         })
         .unwrap();

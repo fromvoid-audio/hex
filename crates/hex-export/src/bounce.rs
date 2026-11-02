@@ -55,7 +55,7 @@ fn render_bounce_using(
         start,
         frames,
         &Publication::CreateNew,
-        WavEncoding::Float32,
+        ExportFormat::Float32,
         || {
             let control = ExportControl::default();
             let playback = controlled::prepare_bounce_runtime(
@@ -261,7 +261,7 @@ pub fn render_arrangement_bounce_with_pages(
         start,
         rendered,
         &Publication::CreateNew,
-        WavEncoding::Float32,
+        ExportFormat::Float32,
         || {
             Ok(Samples {
                 audio: &audio,
