@@ -436,14 +436,24 @@ impl Gallery {
 
     fn finish_drafts(&mut self, cx: &mut Context<Self>) -> bool {
         if let Some(fixture) = self.fixtures.get(&self.entry) {
+            let mut prepared = Vec::new();
             for number in &fixture.numbers {
-                if let Err(error) = number
+                match number
                     .entity
-                    .update(cx, |control, cx| control.finish_edit(cx))
+                    .update(cx, |control, cx| control.prepare_finish_edit_for_owner(cx))
                 {
-                    self.error = Some(format!("finish the fixture value · {error}"));
-                    return false;
+                    Ok(Some(value)) => prepared.push((number.entity.clone(), value)),
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.error = Some(format!("finish the fixture value · {error}"));
+                        return false;
+                    }
                 }
+            }
+            for (entity, value) in prepared {
+                entity.update(cx, |control, cx| {
+                    control.accept_finish_edit_for_owner(value, cx)
+                });
             }
         }
         self.error = None;

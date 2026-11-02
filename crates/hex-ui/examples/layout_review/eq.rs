@@ -1305,6 +1305,130 @@ mod tests {
     }
 
     #[gpui::test]
+    fn draft_barrier_finishes_captured_numeric_drag_once(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, MouseButton, VisualTestContext, point, px, size};
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let field = visual
+            .debug_bounds("fixture-eq-numeric-2-value")
+            .unwrap()
+            .center();
+        let moved = point(field.x, field.y - px(20.0));
+        visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let number = view.read_with(cx, |view, _| {
+            view.fixtures[&Entry::Eq].numbers[2].entity.clone()
+        });
+        assert!(number.read_with(cx, |number, _| number.is_interacting()));
+        visual.update(|_, cx| view.update(cx, |view, cx| assert!(view.finish_drafts(cx))));
+        let accepted = number.read_with(cx, |number, _| number.value());
+        assert_ne!(accepted, 6.0);
+        assert!(!number.read_with(cx, |number, _| number.is_interacting()));
+        visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(number.read_with(cx, |number, _| number.value()), accepted);
+    }
+
+    #[gpui::test]
+    fn draft_barrier_validates_all_controls_before_accepting_any(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, VisualTestContext, px, size};
+        cx.update(hex_widgets::bind_numeric_control_keys);
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let q = visual
+            .debug_bounds("fixture-eq-numeric-3-value")
+            .unwrap()
+            .center();
+        let gain = visual
+            .debug_bounds("fixture-eq-numeric-2-value")
+            .unwrap()
+            .center();
+        visual.simulate_click(q, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid q");
+        visual.simulate_click(gain, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("-12");
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let fixture = &view.fixtures[&Entry::Eq];
+            assert!(fixture.numbers[2].entity.read(cx).is_editing());
+            assert!(fixture.numbers[3].entity.read(cx).is_editing());
+            assert_eq!(fixture.numbers[2].entity.read(cx).value(), 6.0);
+        });
+        visual.update(|_, cx| view.update(cx, |view, cx| assert!(!view.finish_drafts(cx))));
+        view.read_with(cx, |view, cx| {
+            let fixture = &view.fixtures[&Entry::Eq];
+            assert!(fixture.numbers[2].entity.read(cx).is_editing());
+            assert_eq!(fixture.numbers[2].entity.read(cx).value(), 6.0);
+            assert!(view.error.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn draft_barrier_accepts_without_deferred_numeric_events(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, VisualTestContext, px, size};
+        use std::{cell::RefCell, rc::Rc};
+        cx.update(hex_widgets::bind_numeric_control_keys);
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let capture = seen.clone();
+        let _subscription = view.update(cx, |view, cx| {
+            let number = view.fixtures[&Entry::Eq].numbers[2].entity.clone();
+            cx.subscribe(&number, move |_, _, event: &NumericControlEvent, _| {
+                capture.borrow_mut().push(event.phase)
+            })
+        });
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let field = visual
+            .debug_bounds("fixture-eq-numeric-2-value")
+            .unwrap()
+            .center();
+        visual.simulate_click(field, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("-12");
+        visual.run_until_parked();
+        seen.borrow_mut().clear();
+        visual.update(|_, cx| view.update(cx, |view, cx| assert!(view.finish_drafts(cx))));
+        visual.run_until_parked();
+        assert!(
+            seen.borrow().is_empty(),
+            "barrier must not leave deferred numeric events"
+        );
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                current(&view.fixtures[&Entry::Eq], cx).unwrap().nodes[0].gain_db,
+                -12.0
+            )
+        });
+    }
+
+    #[gpui::test]
     fn invalid_control_draft_refuses_graph_removal(cx: &mut TestAppContext) {
         use gpui::{Modifiers, VisualTestContext, px, size};
         cx.update(hex_widgets::bind_numeric_control_keys);
