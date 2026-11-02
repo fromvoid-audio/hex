@@ -593,16 +593,16 @@ impl NumericControl {
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         self.text_mouse = None;
         self.text_click.clear();
-        if let Some(press) = self.press.take() {
-            if press.dragging {
-                self.value = press.start_value;
-                self.draft = press.start_value;
-                self.text = self.spec.format(self.draft).unwrap_or_default();
-                cx.emit(NumericControlEvent {
-                    phase: NumericEventPhase::Cancel,
-                    value: self.draft,
-                });
-            }
+        if let Some(press) = self.press.take()
+            && press.dragging
+        {
+            self.value = press.start_value;
+            self.draft = press.start_value;
+            self.text = self.spec.format(self.draft).unwrap_or_default();
+            cx.emit(NumericControlEvent {
+                phase: NumericEventPhase::Cancel,
+                value: self.draft,
+            });
         }
         if self.editing.is_editing() {
             self.editing.0.set(false);
