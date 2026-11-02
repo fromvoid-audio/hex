@@ -142,7 +142,7 @@ impl SessionPlayback {
                         *analytic
                             .get_mut(index)
                             .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
-                    } else if track.clips.iter().all(|clip| !clip.is_streamed()) {
+                    } else if !track.has_streamed_clips {
                         if track.audio_content_enabled() {
                             track
                                 .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
