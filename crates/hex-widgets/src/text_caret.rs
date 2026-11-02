@@ -8,7 +8,9 @@
 //!
 //! Selection, IME and source text stay with their input owners. Keyed state,
 //! including the pending timer, is dropped when that caret stops painting
-//! (focus loss or removal), which cancels further scheduling.
+//! (focus loss or removal), which cancels further scheduling. GPUI retains the
+//! last painted frame's keyed state until its next draw, so at most the one
+//! already-scheduled wake may still notify the owner; it schedules nothing more.
 use gpui::{App, Bounds, EntityId, PaintQuad, Pixels, Task, Window};
 use std::time::{Duration, Instant};
 
