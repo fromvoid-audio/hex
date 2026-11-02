@@ -2,6 +2,7 @@ use super::*;
 use crate::routed_midi_fixture;
 mod authored_history;
 mod cue;
+mod instrument_matrix_ramp;
 mod interactive_start;
 mod release_timeline;
 mod tempo_continuity;
