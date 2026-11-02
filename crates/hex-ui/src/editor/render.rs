@@ -475,6 +475,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.wake_poll_if_busy();
         self.reconcile_update_ready(window, cx);
         #[cfg(all(test, feature = "ui-test-support"))]
         let _navigation_timer =
@@ -568,6 +569,8 @@ impl Render for EditorView {
         let trim_pointer_entity = cx.entity();
         let midi_trim_pointer_entity = cx.entity();
         div()
+            // Pointer presses leave the idle poll cadence before any handler runs.
+            .capture_any_mouse_down(cx.listener(|view, _, _, _| view.wake_poll()))
             .when(crate::diagnostics::actions_enabled(cx), |root| {
                 root.capture_any_mouse_down(|event, _, cx| {
                     crate::diagnostics::record_pointer(

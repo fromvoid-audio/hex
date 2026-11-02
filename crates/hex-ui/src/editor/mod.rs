@@ -169,6 +169,7 @@ mod output_meter_ui_test;
 mod overview;
 mod overview_waveform;
 mod play_intent;
+mod poll_cadence;
 mod project_directory;
 mod project_recovery;
 mod project_spectrum;
@@ -255,7 +256,7 @@ use hex_session::service::{Request, Service, ViewState};
 use recent_projects::RecentProjectsState;
 use recovery_state::RecoveryState;
 use refresh::RedrawGate;
-use std::{collections::VecDeque, rc::Rc, sync::Arc, time::Duration};
+use std::{collections::VecDeque, rc::Rc, sync::Arc};
 use viewport::Viewport;
 
 pub(super) const UI_REQUEST_CAPACITY: usize = 32;
@@ -825,6 +826,7 @@ pub(super) struct EditorView {
     piano_view_clip: Option<(u64, ClipId)>,
     piano_zoom_wheel_accum: f32,
     piano_pitch_wheel_accum: f32,
+    poll_cadence: poll_cadence::PollCadence,
     piano_pitch_scroll_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
@@ -1292,24 +1294,7 @@ impl EditorView {
                 ),
             ),
         };
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                if this
-                    .update(cx, |view, cx| {
-                        if view.tick(cx) {
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
+        let poll_cadence = Self::spawn_poll(window, cx);
         let keyboard_window_id = window.window_handle().window_id();
         let keyboard_entity = cx.entity().downgrade();
         let computer_keyboard_keys = cx.intercept_keystrokes(move |event, window, cx| {
@@ -1317,6 +1302,9 @@ impl EditorView {
                 return;
             }
             crate::diagnostics::record_key(cx, event);
+            if let Some(entity) = keyboard_entity.upgrade() {
+                entity.update(cx, |view, _| view.wake_poll());
+            }
             // A key during the potentially slow helper handshake cancels the
             // pending quit before the key can alter a project or local draft.
             if let Some(entity) = keyboard_entity.upgrade()
@@ -1568,6 +1556,7 @@ impl EditorView {
             piano_view_clip: None,
             piano_zoom_wheel_accum: 0.0,
             piano_pitch_wheel_accum: 0.0,
+            poll_cadence,
             piano_pitch_scroll_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
