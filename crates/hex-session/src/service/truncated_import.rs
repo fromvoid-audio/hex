@@ -158,7 +158,7 @@ impl ImportDecode {
             let max_output = limits
                 .max_frames
                 .checked_mul(8)
-                .and_then(|n| n.checked_add(44))
+                .and_then(|n| n.checked_add(hex_export::FLOAT32_WAV_HEADER_BYTES as usize))
                 .ok_or(SessionError::Invalid("recovery output limit overflows"))?;
             for _ in 0..16 {
                 let serial = NEXT_RECOVERED_SOURCE.fetch_add(1, Ordering::Relaxed);

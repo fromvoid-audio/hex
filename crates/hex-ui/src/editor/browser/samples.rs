@@ -4,6 +4,7 @@ use hex_library::catalog::{SampleCatalog, ScanControl, scan_samples_with};
 use std::{
     collections::BTreeSet,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    time::Duration,
 };
 
 /// The Samples listing model shared by row construction and its count label.
@@ -56,9 +57,44 @@ pub(super) struct SampleBrowser {
     in_flight: bool,
     pending: bool,
     loaded: bool,
+    /// Periodic rescan cadence; scans run on control workers, never the UI.
+    rescan: RescanBackoff,
     pub(super) status: Option<String>,
     visible: RefCell<Option<VisibleCache>>,
     folder_visible: RefCell<Option<FolderCache>>,
+}
+
+/// Shortest periodic rescan interval, used after a scan found a change.
+const RESCAN_MIN: Duration = Duration::from_secs(30);
+/// Longest interval reached while consecutive scans find nothing new.
+const RESCAN_MAX: Duration = Duration::from_secs(300);
+
+/// Polling cadence for library changes made outside hex. Each completed scan
+/// that found no change doubles the wait up to [`RESCAN_MAX`]; a change resets
+/// it to [`RESCAN_MIN`]. Place edits still rescan immediately. This bounds the
+/// full-tree walk of an idle library to about twelve per hour instead of 120;
+/// filesystem notifications would need a separate native-boundary decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RescanBackoff {
+    interval: Duration,
+}
+
+impl Default for RescanBackoff {
+    fn default() -> Self {
+        Self {
+            interval: RESCAN_MIN,
+        }
+    }
+}
+
+impl RescanBackoff {
+    fn completed(&mut self, changed: bool) {
+        self.interval = if changed {
+            RESCAN_MIN
+        } else {
+            self.interval.saturating_mul(2).min(RESCAN_MAX)
+        };
+    }
 }
 
 impl SampleBrowser {
@@ -178,9 +214,14 @@ impl EditorView {
             let this = cx.entity().downgrade();
             cx.spawn(async move |_, cx| {
                 loop {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_secs(30))
-                        .await;
+                    // Read before sleeping; a scan finishing meanwhile adjusts
+                    // the following interval.
+                    let Ok(interval) =
+                        this.update(cx, |view, _| view.browser.samples.rescan.interval)
+                    else {
+                        break;
+                    };
+                    cx.background_executor().timer(interval).await;
                     if this
                         .update(cx, |view, cx| view.refresh_sample_catalog(cx))
                         .is_err()
@@ -285,8 +326,9 @@ impl EditorView {
                     #[cfg(test)]
                     let gate = test_environment.before_catalog_save().await;
                     // A cancelled scan is partial; keep the last complete cache.
+                    // An unchanged catalog is not rewritten or synced.
                     let saved = if scan.cancelled {
-                        Ok(())
+                        Ok(false)
                     } else {
                         scan.catalog.save(&database)
                     };
@@ -319,7 +361,8 @@ impl EditorView {
                     } else {
                         Some(status.join(" · "))
                     };
-                    view.apply_sample_catalog(scan.catalog, cx);
+                    let changed = view.apply_sample_catalog(scan.catalog, cx);
+                    view.browser.samples.rescan.completed(changed);
                 } else {
                     view.browser.samples.pending = true;
                 }
@@ -355,16 +398,23 @@ impl EditorView {
         .detach();
     }
 
-    pub(super) fn apply_sample_catalog(&mut self, catalog: SampleCatalog, cx: &mut Context<Self>) {
+    /// Publish `catalog`; returns whether it differed from the shown one.
+    pub(super) fn apply_sample_catalog(
+        &mut self,
+        catalog: SampleCatalog,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let remap = !self.browser_place_unavailable()
             && matches!(
                 self.browser.section,
                 BrowserSection::All | BrowserSection::Samples | BrowserSection::Place(_)
             );
         let selection = remap.then(|| self.browser_selected_item(cx)).flatten();
-        if self.browser.samples.replace(catalog) && remap {
+        let changed = self.browser.samples.replace(catalog);
+        if changed && remap {
             self.restore_browser_selection(selection, cx);
         }
+        changed
     }
 
     pub(super) fn sample_results_count_text(&self, cx: &App) -> String {
@@ -507,5 +557,19 @@ mod cache_tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn idle_library_rescans_back_off_and_a_change_restores_the_short_interval() {
+        let mut rescan = RescanBackoff::default();
+        assert_eq!(rescan.interval, RESCAN_MIN);
+        let mut waits = Vec::new();
+        for _ in 0..6 {
+            rescan.completed(false);
+            waits.push(rescan.interval.as_secs());
+        }
+        assert_eq!(waits, [60, 120, 240, 300, 300, 300]);
+        rescan.completed(true);
+        assert_eq!(rescan.interval, RESCAN_MIN);
     }
 }

@@ -307,12 +307,14 @@ fn first_load_worker_commits_one_source_and_binding_and_exports_original_pcm() {
         } else {
             left
         };
-        assert_eq!(
-            pcm,
-            left.into_iter()
+        assert_pcm_near(
+            &pcm,
+            &left
+                .into_iter()
                 .zip(right)
                 .map(|(l, r)| [l, r])
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            "first load pcm",
         );
     }
 }

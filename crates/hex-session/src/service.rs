@@ -23,6 +23,8 @@ pub use hex_storage::project_name;
 pub use hex_storage::text;
 use hex_tuning::ProjectTuning;
 mod arrangement_sections;
+mod browser_preview;
+pub use browser_preview::{AudioPreview, PreviewFailure, PreviewSources};
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
@@ -101,8 +103,9 @@ mod stopped_playback_tests;
 use hex_storage::FileToken;
 use recovery::absolute_document_path;
 pub use recovery::{
-    LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart, kept_journal,
-    leftover_recovery, untitled_recovery_path,
+    LeftoverRecovery, ProjectSource, RecoveryFailure, RecoveryRestart,
+    claim_untitled_recovery_slot, kept_journal, leftover_recovery, untitled_leftovers,
+    untitled_recovery_path,
 };
 use std::{
     collections::BTreeMap,
@@ -120,13 +123,6 @@ const REQUEST_CAPACITY: usize = 32;
 #[cfg(test)]
 mod snapshot_queue_tests;
 const EVENT_CAPACITY: usize = 2;
-// Browser audition is independent of canonical resident-import admission. Bound
-// encoded input to 512 MiB and each decoded/converted stereo buffer to 256 MiB.
-// Source and converted PCM can coexist during conversion (512 MiB total);
-// resident decoding can temporarily hold encoded bytes alongside source PCM.
-const BROWSER_PREVIEW_FILE_LIMIT: usize = 512 * 1024 * 1024;
-const BROWSER_PREVIEW_FRAME_LIMIT: usize = 32 * 1024 * 1024;
-const BROWSER_PREVIEW_BINS: usize = 4096;
 const EXPORT_EVENT_CAPACITY: usize = 1;
 
 #[derive(Clone)]
@@ -344,87 +340,6 @@ pub struct ExportEvent {
     pub revision: u64,
     pub path: PathBuf,
     pub result: Result<ExportReport, String>,
-}
-
-/// Bounded audio metadata prepared away from the UI for browser drag feedback.
-#[derive(Clone, Debug)]
-pub struct AudioPreview {
-    pub playback_frames: u64,
-    pub sample_rate: u32,
-    pub waveform: Arc<Waveform>,
-}
-
-/// Decode and convert an audio source under the browser audition limits, then
-/// retain only its bounded waveform summary and full converted playback length.
-pub fn prepare_audio_preview(
-    path: impl AsRef<Path>,
-    project_sample_rate: u32,
-) -> Result<AudioPreview, String> {
-    let audio = prepare_sample_preview(path, project_sample_rate)?;
-    let playback_frames = u64::try_from(audio.frames().len())
-        .map_err(|_| "converted frame count exceeds project range".to_owned())?;
-    let waveform = Arc::new(
-        hex_media::waveform::summarize_peaks(&audio, BROWSER_PREVIEW_BINS)
-            .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?,
-    );
-    Ok(AudioPreview {
-        playback_frames,
-        sample_rate: project_sample_rate,
-        waveform,
-    })
-}
-
-/// Decode a bounded browser one-shot on a background worker, independent of
-/// canonical project/history. PCM is finite stereo at the actual output rate.
-/// Supports streamable (fixed-frame) WAV files up to 512 MiB, with at most
-/// 33,554,432 frames both before and after conversion (256 MiB per stereo f32
-/// buffer); import can stream those when a source reservation is available.
-/// Resident-only WAV encodings such as ADPCM keep the resident import caps.
-/// Other resource constraints can still refuse an import. Never truncates a source.
-pub fn prepare_sample_preview(
-    path: impl AsRef<Path>,
-    output_sample_rate: u32,
-) -> Result<hex_engine::Audio, String> {
-    let path = path.as_ref();
-    // A failed fixed-frame probe takes the more restrictive resident path.
-    let probe = hex_media::WavFrameReader::open(
-        path,
-        hex_media::WavReaderLimits::new(u64::MAX, u64::MAX, 32, 4096),
-    )
-    .ok();
-    let decoded = decode_preview_source(path, probe)?;
-    let audio = hex_media::resample(
-        decoded.audio(),
-        output_sample_rate,
-        ResampleLimits {
-            max_source_frames: BROWSER_PREVIEW_FRAME_LIMIT,
-            max_output_frames: BROWSER_PREVIEW_FRAME_LIMIT,
-        },
-    )
-    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
-    Ok(audio)
-}
-
-fn decode_preview_source(
-    path: &Path,
-    probe: Option<hex_media::WavFrameReader>,
-) -> Result<hex_media::DecodedAudio, String> {
-    let decoded = if probe.is_some() {
-        decode_wav_file(
-            path,
-            Limits::new(BROWSER_PREVIEW_FILE_LIMIT, BROWSER_PREVIEW_FRAME_LIMIT),
-        )
-    } else {
-        decode_resident_import(path)
-    }
-    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
-    if probe
-        .as_ref()
-        .is_some_and(|reader| !reader.matches_file_identity(decoded.file_identity()))
-    {
-        return Err("audio file changed while preparing preview · retry".into());
-    }
-    Ok(decoded)
 }
 
 /// Stable captured identities; instrument expectation is explicit, never an effect ID.
@@ -1059,6 +974,10 @@ pub struct Service {
     resident_seek_results: Option<Receiver<ResidentArrangementSeekResult>>,
     resident_seek_count: AtomicUsize,
     recovery_slot: Option<PathBuf>,
+    /// Exclusive per-instance ownership of `recovery_slot` (Pulse #3948).
+    /// `Drop` stops the worker before fields drop, so the slot is released only
+    /// after checkpointing ends (or the bounded shutdown detached the worker).
+    _recovery_claim: Option<hex_storage::UntitledSlotClaim>,
     startup_failure: Arc<std::sync::OnceLock<String>>,
     /// `None` once joined; kept after a timed-out shutdown for a later retry.
     worker: Option<JoinHandle<()>>,
@@ -1209,6 +1128,27 @@ impl Service {
             Some(native),
         )
     }
+
+    /// Desktop composition with an untitled slot this instance exclusively
+    /// owns; the service keeps the claim until it is dropped (Pulse #3948).
+    pub fn with_audio_sink_and_claimed_recovery(
+        history_capacity: usize,
+        max_resident_frames: u64,
+        recovery: hex_storage::UntitledSlotClaim,
+        audio: Box<dyn WorkerAudioSink>,
+        native: crate::ResidentNativeReservation,
+    ) -> Result<Self, ServiceError> {
+        let mut service = Self::with_audio_sink_and_native_reservation(
+            history_capacity,
+            max_resident_frames,
+            Some(recovery.path().to_path_buf()),
+            audio,
+            native,
+        )?;
+        service._recovery_claim = Some(recovery);
+        Ok(service)
+    }
+
     fn with_exporter_and_recovery(
         sample_rate: u32,
         history_capacity: usize,
@@ -1459,6 +1399,7 @@ impl Service {
             resident_seek_results: Some(seek_results_rx),
             resident_seek_count: AtomicUsize::new(0),
             recovery_slot,
+            _recovery_claim: None,
             startup_failure,
             worker: Some(worker),
         })
@@ -1504,6 +1445,13 @@ impl Service {
         };
         self.diagnostics.returned(diagnostic, &result);
         result
+    }
+
+    /// Iterations of the worker's request-wait loop since start (#4574): each
+    /// is one bounded native/control poll. A read-only diagnostic scalar for
+    /// idle wake measurement; it grants no ordering or completion evidence.
+    pub fn worker_wakes(&self) -> u64 {
+        self.diagnostics.worker_wakes()
     }
 
     /// Install one read-only control observer. Logging has no effect on request
@@ -2108,6 +2056,12 @@ fn run_tuning_library_operation_in_using(
     (result, prepared)
 }
 
+/// Control lanes that still need worker polls (#4574): a resident seek
+/// awaiting its result or completion delivery, or an admitted export.
+fn control_lanes_pending(seek: Option<&resident_seek::Lane>, export: &ExportLane) -> bool {
+    seek.is_some_and(resident_seek::Lane::pending) || export.pending()
+}
+
 #[allow(clippy::too_many_arguments)] // Existing worker composition plus private ownership of the existing seek worker.
 fn run_worker(
     mut session: Session,
@@ -2431,7 +2385,8 @@ fn run_worker(
                         prepared: Some(p),
                     }
                 }),
-            )
+            );
+            control_lanes_pending(resident_seek.as_ref(), &export_lane)
         },
     ) {
         // Requests whose handler takes the stopped Arrangement lease first begin
@@ -8888,158 +8843,6 @@ mod service_tests {
     }
 
     #[test]
-    fn browser_preview_keeps_full_audio_above_old_byte_and_frame_limits() {
-        use std::io::{Seek, SeekFrom, Write};
-        let directory = TestDir::new();
-        let path = directory.0.join("large.wav");
-        // Sparse IEEE-float mono audio crosses both old limits without a large
-        // test-construction buffer. The last sample proves no prefix truncation.
-        let frames = IMPORT_FILE_LIMIT / 8 + 1;
-        let data_bytes = u32::try_from(frames * 8).unwrap();
-        let mut header = wav_mono(&[]);
-        header[4..8].copy_from_slice(&(36 + data_bytes).to_le_bytes());
-        header[20..22].copy_from_slice(&3_u16.to_le_bytes());
-        header[28..32].copy_from_slice(&(48_000_u32 * 8).to_le_bytes());
-        header[32..34].copy_from_slice(&8_u16.to_le_bytes());
-        header[34..36].copy_from_slice(&64_u16.to_le_bytes());
-        header[40..44].copy_from_slice(&data_bytes.to_le_bytes());
-        let mut file = fs::File::create(&path).unwrap();
-        file.write_all(&header).unwrap();
-        file.set_len(44 + u64::from(data_bytes)).unwrap();
-        file.seek(SeekFrom::End(-8)).unwrap();
-        file.write_all(&0.5_f64.to_le_bytes()).unwrap();
-        drop(file);
-        assert!(fs::metadata(&path).unwrap().len() > IMPORT_FILE_LIMIT as u64);
-        assert!(frames > IMPORT_FRAME_LIMIT);
-
-        let audio = prepare_sample_preview(&path, 48_000).unwrap();
-        assert_eq!(audio.sample_rate(), 48_000);
-        assert_eq!(audio.frames().len(), frames);
-        assert_eq!(audio.frames()[0], [0.0; 2]);
-        assert_eq!(audio.frames().last(), Some(&[0.5; 2]));
-        drop(audio);
-        let preview = prepare_audio_preview(&path, 48_000).unwrap();
-        assert_eq!(preview.playback_frames, frames as u64);
-        assert_eq!(preview.sample_rate, 48_000);
-        assert_eq!(preview.waveform.source_frames, frames);
-        assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
-        assert_eq!(
-            preview
-                .waveform
-                .peaks_for_frames(frames - 1, frames)
-                .unwrap(),
-            [hex_media::waveform::Peak { min: 0.0, max: 0.5 }; 2]
-        );
-    }
-
-    #[test]
-    fn browser_preview_refuses_excess_source_and_converted_frames() {
-        use std::io::Write;
-        let directory = TestDir::new();
-        let path = directory.0.join("too-long.wav");
-        let frames = u32::try_from(BROWSER_PREVIEW_FRAME_LIMIT + 1).unwrap();
-        let mut header = wav_mono(&[]);
-        header[28..32].copy_from_slice(&48_000_u32.to_le_bytes());
-        header[32..34].copy_from_slice(&1_u16.to_le_bytes());
-        header[34..36].copy_from_slice(&8_u16.to_le_bytes());
-        header[40..44].copy_from_slice(&frames.to_le_bytes());
-        // The odd data payload has a required padding byte.
-        header[4..8].copy_from_slice(&(37 + frames).to_le_bytes());
-        let mut file = fs::File::create(&path).unwrap();
-        file.write_all(&header).unwrap();
-        file.set_len(45 + u64::from(frames)).unwrap();
-        drop(file);
-        assert!(
-            prepare_sample_preview(&path, 48_000)
-                .unwrap_err()
-                .contains("decoded frames")
-        );
-
-        let source_frames = BROWSER_PREVIEW_FRAME_LIMIT / 24 + 1;
-        let mut bytes = wav_mono(&vec![0; source_frames]);
-        bytes[24..28].copy_from_slice(&8_000_u32.to_le_bytes());
-        bytes[28..32].copy_from_slice(&16_000_u32.to_le_bytes());
-        fs::write(&path, bytes).unwrap();
-        assert!(
-            prepare_sample_preview(&path, 192_000)
-                .unwrap_err()
-                .contains("output frames")
-        );
-    }
-
-    #[test]
-    fn browser_audio_preview_reports_converted_bounded_waveform_metadata() {
-        let directory = TestDir::new();
-        let path = directory.0.join("tone.WAV");
-        for overrun in [0, 4] {
-            let mut bytes = wav_mono(&[4_000; 96]);
-            let size = u32::try_from(bytes.len() - 8).unwrap() + overrun;
-            bytes[4..8].copy_from_slice(&size.to_le_bytes());
-            fs::write(&path, &bytes).expect("write wav fixture");
-
-            let preview = prepare_audio_preview(&path, 24_000).expect("prepare preview");
-            assert_eq!(preview.playback_frames, 48);
-            assert_eq!(preview.sample_rate, 24_000);
-            assert_eq!(preview.waveform.source_frames, 48);
-            assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
-            assert!(!preview.waveform.bins.is_empty());
-            let pcm = prepare_sample_preview(&path, 24_000).expect("prepare playback");
-            assert_eq!(pcm.sample_rate(), 24_000);
-            assert_eq!(pcm.frames().len(), 48);
-            assert!(
-                pcm.frames()
-                    .iter()
-                    .all(|frame| frame[0] > 0.0 && frame[0] == frame[1])
-            );
-            assert_eq!(fs::read(&path).unwrap(), bytes);
-        }
-    }
-
-    #[test]
-    fn browser_preview_has_detail_beyond_legacy_48_bars_and_keeps_edge_transients() {
-        let directory = TestDir::new();
-        let path = directory.0.join("detail.wav");
-        let mut frames = vec![0_i16; 8195];
-        frames[4097] = 24_000;
-        frames[8194] = -16_000;
-        fs::write(&path, wav_mono(&frames)).unwrap();
-        let preview = prepare_audio_preview(&path, 48_000).unwrap();
-        assert_eq!(preview.waveform.bins.len(), 4096);
-        assert_eq!(preview.waveform.source_frames, 8195);
-        let first = preview.waveform.peaks_for_frames(0, 2).unwrap();
-        assert_eq!(first, [hex_media::waveform::Peak { min: 0.0, max: 0.0 }; 2]);
-        let middle = preview.waveform.peaks_for_frames(4097, 4098).unwrap();
-        assert!(
-            middle
-                .iter()
-                .all(|peak| peak.min == 0.0 && peak.max == 24_000.0 / 32768.0)
-        );
-        let last = preview.waveform.peaks_for_frames(8194, 8195).unwrap();
-        assert!(
-            last.iter()
-                .all(|peak| peak.min == -16_000.0 / 32768.0 && peak.max == 0.0)
-        );
-    }
-
-    #[test]
-    fn browser_sample_playback_decodes_at_output_rate_and_reports_bad_sources() {
-        let directory = TestDir::new();
-        let path = directory.0.join("tone.WAV");
-        fs::write(&path, wav_mono(&[4_000; 96])).unwrap();
-        let pcm = prepare_sample_preview(&path, 24_000).unwrap();
-        assert_eq!(pcm.sample_rate(), 24_000);
-        assert_eq!(pcm.frames().len(), 48);
-        assert!(
-            pcm.frames()
-                .iter()
-                .all(|frame| { frame[0] > 0.0 && frame[0] == frame[1] && frame[0].is_finite() })
-        );
-        assert!(prepare_sample_preview(directory.0.join("missing.wav"), 48_000).is_err());
-        fs::write(&path, b"bad wave").unwrap();
-        assert!(prepare_sample_preview(&path, 48_000).is_err());
-    }
-
-    #[test]
     fn native_device_parameter_requests_patch_latest_actor_state() {
         let service = Service::new(48_000, 16, 0).expect("service");
         next_event(&service);
@@ -11565,10 +11368,10 @@ mod service_tests {
         assert_eq!(completed.path, output);
         assert!(completed.result.is_ok());
         let bytes = fs::read(completed.path).expect("read exported snapshot");
-        assert_eq!(read_u16(&bytes, 44), 0x4000);
-        assert_eq!(read_u16(&bytes, 46), 0x4000);
-        assert_eq!(read_u16(&bytes, 48), 0x2000);
-        assert_eq!(read_u16(&bytes, 50), 0x2000);
+        assert_pcm16_near(&bytes, 44, 0x4000);
+        assert_pcm16_near(&bytes, 46, 0x4000);
+        assert_pcm16_near(&bytes, 48, 0x2000);
+        assert_pcm16_near(&bytes, 50, 0x2000);
     }
 
     #[test]
@@ -11616,8 +11419,8 @@ mod service_tests {
         assert_eq!(completed.result.unwrap().frames, 1);
         let bytes = fs::read(output).unwrap();
         assert_eq!(bytes.len(), 48);
-        assert_eq!(read_u16(&bytes, 44), 0x2000);
-        assert_eq!(read_u16(&bytes, 46), 0x2000);
+        assert_pcm16_near(&bytes, 44, 0x2000);
+        assert_pcm16_near(&bytes, 46, 0x2000);
         assert_eq!(
             control.progress(),
             ExportProgress {
@@ -11627,8 +11430,13 @@ mod service_tests {
         );
     }
 
-    fn read_u16(bytes: &[u8], offset: usize) -> u16 {
-        u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+    /// PCM16 export applies ±1 LSB TPDF dither: within one LSB of `expected`.
+    fn assert_pcm16_near(bytes: &[u8], offset: usize, expected: i16) {
+        let actual = i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        assert!(
+            (i32::from(actual) - i32::from(expected)).abs() <= 1,
+            "sample at {offset}: {actual} not within one lsb of {expected}"
+        );
     }
 
     #[test]
@@ -11722,6 +11530,7 @@ mod service_tests {
             resident_seek_results: None,
             resident_seek_count: AtomicUsize::new(0),
             recovery_slot: None,
+            _recovery_claim: None,
             startup_failure: Default::default(),
             worker: Some(thread::spawn(|| {})),
         };
@@ -12449,6 +12258,7 @@ mod service_tests {
                     sample_rate: project.arrangement().sample_rate(),
                     frames,
                     data_bytes: u32::try_from(frames * 4).unwrap_or(u32::MAX),
+                    clipped_samples: 0,
                     recovery_path: None,
                     stale_temporaries: Default::default(),
                 })
