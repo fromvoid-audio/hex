@@ -129,7 +129,7 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
         .flatten()
         .flat_map(|sample| ((sample * 32767.0_f32).round() as i16).to_le_bytes())
         .collect();
-    assert_eq!(&a[44..], expected);
+    assert_pcm_bytes_near(&a[44..], &expected, "legacy");
     use hex_export::{ExportControl, ExportSignal, controlled_frame_count};
     let main = ExportSignal::Main;
     // Main is latency-compensated: the automatic range is the source, not startup.
@@ -176,9 +176,10 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
         )
         .unwrap();
         assert_eq!(report.frames, 17 + capture_latency - start);
-        assert_eq!(
+        assert_pcm_bytes_near(
             &std::fs::read(path).unwrap()[44..],
-            &capture_expected[start as usize * 4..]
+            &capture_expected[start as usize * 4..],
+            "capture",
         );
     }
     let stem_path = directory.join("stems");
@@ -203,7 +204,11 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
     )
     .unwrap();
     let stem_file = stem_path.join(format!("track-{}-source.wav", track.value()));
-    assert_eq!(&std::fs::read(stem_file).unwrap()[44..], &capture_expected);
+    assert_pcm_bytes_near(
+        &std::fs::read(stem_file).unwrap()[44..],
+        &capture_expected,
+        "stem",
+    );
     for (label, span) in [("automatic", frames), ("explicit", 17)] {
         let path = directory.join(format!("{label}.wav"));
         let report = hex_export::render_prepared_controlled(
@@ -216,11 +221,7 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
         )
         .unwrap();
         assert_eq!(report.frames, span);
-        assert_eq!(
-            &std::fs::read(path).unwrap()[44..],
-            &expected[..],
-            "{label}"
-        );
+        assert_pcm_bytes_near(&std::fs::read(path).unwrap()[44..], &expected, label);
     }
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -314,7 +315,7 @@ fn automatic_return_and_stems_include_pre_main_latency_but_not_main_latency() {
             .flatten()
             .flat_map(|s| ((s * 32767.0_f32).round() as i16).to_le_bytes()),
     );
-    assert_eq!(&std::fs::read(path).unwrap()[44..], &expected);
+    assert_pcm_bytes_near(&std::fs::read(path).unwrap()[44..], &expected, "return");
 
     let stems = [
         Stem {
@@ -344,13 +345,15 @@ fn automatic_return_and_stems_include_pre_main_latency_but_not_main_latency() {
         &ExportControl::default(),
     )
     .unwrap();
-    assert_eq!(
+    assert_pcm_bytes_near(
         &std::fs::read(batch.join(format!("track-{}-source.wav", track.value()))).unwrap()[44..],
-        &expected
+        &expected,
+        "track stem",
     );
-    assert_eq!(
+    assert_pcm_bytes_near(
         &std::fs::read(batch.join(format!("return-{}-bus.wav", bus.value()))).unwrap()[44..],
-        &expected
+        &expected,
+        "return stem",
     );
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -447,7 +450,11 @@ fn main_selection_export_is_latency_compensated_to_the_selection_start() {
         let bytes = std::fs::read(path).unwrap();
         assert_eq!(bytes.len() as u64, 44 + span * 4);
         let range = start as usize * 4..(start + span) as usize * 4;
-        assert_eq!(&bytes[44..], &pcm[range], "start {start}, span {span}");
+        assert_pcm_bytes_near(
+            &bytes[44..],
+            &pcm[range],
+            &format!("start {start}, span {span}"),
+        );
     }
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -637,4 +644,22 @@ fn automatic_ranges_include_finite_serial_and_routed_return_tails() {
         );
     }
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// PCM16 export applies ±1 LSB TPDF dither, so each decoded sample lands
+/// within one LSB of the plain-rounding oracle bytes.
+fn assert_pcm_bytes_near(actual: &[u8], expected: &[u8], context: &str) {
+    assert_eq!(actual.len(), expected.len(), "{context}");
+    for (index, (actual, expected)) in actual
+        .chunks_exact(2)
+        .zip(expected.chunks_exact(2))
+        .enumerate()
+    {
+        let actual = i16::from_le_bytes([actual[0], actual[1]]);
+        let expected = i16::from_le_bytes([expected[0], expected[1]]);
+        assert!(
+            (i32::from(actual) - i32::from(expected)).abs() <= 1,
+            "{context} sample {index}: {actual} not within one lsb of {expected}"
+        );
+    }
 }

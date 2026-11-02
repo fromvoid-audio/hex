@@ -577,8 +577,13 @@ fn pcm16(bytes: &[u8]) -> Vec<i16> {
         .collect()
 }
 
-fn quantize(sample: f32) -> i16 {
-    (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16
+/// PCM16 export applies ±1 LSB TPDF dither: within one LSB of rounding.
+fn assert_near(actual: i16, sample: f32) {
+    let rounded = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i32;
+    assert!(
+        (i32::from(actual) - rounded).abs() <= 1,
+        "{actual} not within one lsb of {rounded}"
+    );
 }
 
 #[test]
@@ -606,13 +611,8 @@ fn prepared_mutable_hybrid_export_matches_independent_ordered_pcm_oracle() {
             257 => LEVEL * 0.25,
             _ => 0.0,
         };
-        assert_eq!(
-            frame,
-            [
-                quantize(index as f32 / 2048.0 + mutable * 0.5),
-                quantize(-(index as f32) / 4096.0 + mutable * 0.5),
-            ]
-        );
+        assert_near(frame[0], index as f32 / 2048.0 + mutable * 0.5);
+        assert_near(frame[1], -(index as f32) / 4096.0 + mutable * 0.5);
     }
     let repeated = dir.0.join("hybrid-repeat.wav");
     hex_export::render_prepared_new(&repeated, Arc::clone(&revision), 0, 300)
@@ -635,7 +635,7 @@ fn linear_export_ignores_transport_and_unused_session_loops_but_refuses_arrangem
     hex_export::render_prepared_new(&path, Arc::clone(&revision), 0, 300)
         .expect("transport and Session loops do not wrap an Arrangement export");
     let samples = pcm16(&fs::read(path).expect("read linear wav")[44..]);
-    assert_eq!(samples[150 * 2], quantize(150.0 / 2048.0 + LEVEL * 0.5));
+    assert_near(samples[150 * 2], 150.0 / 2048.0 + LEVEL * 0.5);
 
     let refused_path = dir.0.join("authored-loop.wav");
     let (revision, _) = prepared_hybrid(false, false, true);

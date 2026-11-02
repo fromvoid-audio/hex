@@ -193,6 +193,11 @@ fn render_stems_with_resources_and_hook(
     let mut buffers = vec![[[0.0; 2]; FRAMES_PER_BLOCK]; ordered.len()];
     let mut main = [[0.0; 2]; FRAMES_PER_BLOCK];
     let mut clipped_samples = 0_u64;
+    let quantisers: Vec<_> = ordered
+        .iter()
+        .map(|stem| dither::Pcm16Quantiser::stem(stem.id))
+        .collect();
+    let mut position = start;
     let mut remaining = frames;
     while remaining > 0 {
         control.check()?;
@@ -217,17 +222,18 @@ fn render_stems_with_resources_and_hook(
                 .render_with_capture(&mut main[..count], &mut capture)
                 .map_err(ExportError::SessionRender)?;
         }
-        for (index, writer) in writers.iter_mut().enumerate() {
+        for ((index, writer), quantiser) in writers.iter_mut().enumerate().zip(&quantisers) {
             let output = capture
                 .output(index)
                 .ok_or(ExportError::Invalid("stem capture was not committed"))?;
             let mut pcm = [0_u8; FRAMES_PER_BLOCK * 4];
-            for (frame, bytes) in output.iter().zip(pcm[..count * 4].chunks_exact_mut(4)) {
+            let frames = output.iter().zip(position..);
+            for ((frame, at), bytes) in frames.zip(pcm[..count * 4].chunks_exact_mut(4)) {
                 for (channel, sample) in frame.iter().enumerate() {
                     if !sample.is_finite() {
                         return Err(ExportError::Invalid("render produced a non-finite sample"));
                     }
-                    let (pcm, over) = pcm16(*sample);
+                    let (pcm, over) = quantiser.quantise(*sample, at, channel);
                     clipped_samples += u64::from(over);
                     bytes[channel * 2..channel * 2 + 2].copy_from_slice(&pcm.to_le_bytes());
                 }
@@ -236,6 +242,7 @@ fn render_stems_with_resources_and_hook(
         }
         control.advance(count);
         remaining -= count as u64;
+        position = position.wrapping_add(count as u64);
     }
     for writer in &mut writers {
         control.check()?;
