@@ -3306,6 +3306,10 @@ impl EditorView {
             });
             return false;
         }
+        if self.gain_lane.draft.is_some() && matches!(&request, Request::Edit(_)) {
+            self.error = Some("finish or cancel the gain point gesture before editing".into());
+            return false;
+        }
         #[cfg(test)]
         match &request {
             Request::CopyTimeRange(_) => self.last_time_request = Some(("copy", None)),
