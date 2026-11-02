@@ -348,7 +348,7 @@ fn postcommit_open_failure(kind: FailedEdit) {
                 h.backend.lock().unwrap().take();
             }
             Ok(EditorAudioEvent::Unavailable { error, .. }) => {
-                assert!(error.contains("fixture hardware open failed"));
+                assert!(error.to_string().contains("fixture hardware open failed"));
                 h.audio = None;
                 h.backend.lock().unwrap().take();
                 break;

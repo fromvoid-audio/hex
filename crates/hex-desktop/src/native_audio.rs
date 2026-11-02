@@ -32,8 +32,27 @@ use verified_gain::{GainWatermark, VerifiedKey, VerifiedSource};
 mod tests;
 
 #[cfg(all(test, feature = "allocation-probe"))]
-type OutputFactory =
-    Box<dyn FnMut(Option<u32>) -> Result<Option<WorkerPreparedOutput>, String> + Send>;
+type OutputFactory = Box<
+    dyn FnMut(Option<u32>) -> Result<Option<WorkerPreparedOutput>, hex_audio::OutputOpenError>
+        + Send,
+>;
+
+/// Refuses an output whose negotiated rate differs from the document rate the
+/// open requested, as the same typed recoverable outcome hex-audio reports.
+/// The refused output is dropped into its existing lifecycle retirement.
+fn rate_checked(
+    requested_hz: Option<u32>,
+    output: WorkerPreparedOutput,
+) -> Result<WorkerPreparedOutput, hex_audio::OutputOpenError> {
+    match requested_hz {
+        Some(project_hz) if project_hz != output.sample_rate => Err(hex_audio::RateMismatch {
+            device_hz: output.sample_rate,
+            project_hz,
+        }
+        .into()),
+        _ => Ok(output),
+    }
+}
 
 struct Domain {
     token: AudioCandidateDomainToken,
@@ -100,7 +119,8 @@ pub(super) struct NativeAudioSink {
     open_pending: bool,
     requested_rate: Option<u32>,
     restart_request: Option<u64>,
-    open_error: Option<String>,
+    /// A typed `RateMismatch` stays distinct so the UI can offer retry.
+    open_error: Option<hex_audio::OutputOpenError>,
     next_catalog: u64,
     domains: [Option<Domain>; 2],
     preparation: Option<Preparation>,
@@ -237,7 +257,7 @@ impl NativeAudioSink {
                     "audio lifecycle ownership mismatch"
                 }
             };
-            self.open_error = Some(format!("{reason}; save your project and restart hex"));
+            self.open_error = Some(format!("{reason}; save your project and restart hex").into());
             self.open_pending = false;
             // Abandon only this result request. The lifecycle owner retains the
             // old output lease, failed resources and first destructor payload.
@@ -246,7 +266,11 @@ impl NativeAudioSink {
         }
         #[cfg(all(test, feature = "allocation-probe"))]
         if let Some(factory) = self.output_factory.as_mut() {
-            match factory(self.requested_rate) {
+            match factory(self.requested_rate).and_then(|output| {
+                output
+                    .map(|o| rate_checked(self.requested_rate, o))
+                    .transpose()
+            }) {
                 Ok(Some(output)) => {
                     self.opened_output(output);
                     self.open_pending = false;
@@ -274,7 +298,7 @@ impl NativeAudioSink {
                     hex_audio::RecoveryOpenError::Busy | hex_audio::RecoveryOpenError::QueueFull,
                 ) => return,
                 Err(error) => {
-                    self.open_error = Some(error.to_string());
+                    self.open_error = Some(error.to_string().into());
                     self.open_pending = false;
                     return;
                 }
@@ -283,14 +307,19 @@ impl NativeAudioSink {
         let Some(opening) = self.opening.as_mut() else {
             return;
         };
-        match opening.try_take() {
+        let requested_rate = self.requested_rate;
+        match opening
+            .try_take()
+            .map(|taken| taken.map(|result| result.and_then(|o| rate_checked(requested_rate, o))))
+        {
             Ok(Some(Ok(output))) => {
                 self.opened_output(output);
                 self.open_pending = false;
                 self.opening = None;
             }
             Ok(Some(Err(error))) => {
-                if self.plugins.wants_profile() {
+                // A rate mismatch is not a buffer-profile refusal; report it.
+                if self.plugins.wants_profile() && error.rate_mismatch().is_none() {
                     self.plugins
                         .refuse_profile(format!("vst3 output profile unavailable: {error}"));
                     self.opening = None;
@@ -302,7 +331,7 @@ impl NativeAudioSink {
             }
             Ok(None) => {}
             Err(error) => {
-                self.open_error = Some(error.to_string());
+                self.open_error = Some(error.to_string().into());
                 self.open_pending = false;
                 self.opening = None;
             }
@@ -352,7 +381,7 @@ impl NativeAudioSink {
             self.pending_open_event = Some(EditorAudioEvent::Unavailable {
                 project_generation: generation,
                 restart_request: self.restart_request,
-                error,
+                error: error.into(),
             });
             return;
         }
@@ -1217,7 +1246,7 @@ impl WorkerAudioSink for NativeAudioSink {
                 return Ok(output.sample_rate);
             }
             if let Some(error) = self.open_error.as_ref() {
-                return Err(error.clone());
+                return Err(error.to_string());
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }

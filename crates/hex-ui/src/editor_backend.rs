@@ -45,10 +45,12 @@ pub enum EditorAudioEvent {
         restart_request: Option<u64>,
         audio: EditorAudio,
     },
+    /// No output opened. A `RateMismatch` error is a recoverable paused
+    /// state; the UI names both rates and offers retry.
     Unavailable {
         project_generation: u64,
         restart_request: Option<u64>,
-        error: String,
+        error: hex_audio::OutputOpenError,
     },
     Publication {
         context: AudioSourceContext,
