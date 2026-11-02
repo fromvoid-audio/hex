@@ -53,6 +53,35 @@ fn render(
 }
 
 #[test]
+fn block_bypass_matches_single_frame_history_and_meter() {
+    for size in [1, 64, 256, 513] {
+        let factory = factory(48_000, &[]);
+        let mut block = factory.create_runtime().unwrap();
+        let mut reference = factory.create_runtime().unwrap();
+        let input: Vec<_> = (0..size)
+            .map(|i| [i as f32 / 256.0, -(i as f32) / 512.0])
+            .collect();
+        let mut dry = input.clone();
+        block.begin_block();
+        reference.begin_block();
+        block.process_bypassed_block_with_clock(&mut dry, None, &EMPTY_DEVICE_RESOURCES);
+        for frame in &input {
+            let mut discarded = [*frame];
+            reference.process_block(&mut discarded, &EMPTY_DEVICE_RESOURCES);
+        }
+        block.commit_block();
+        reference.commit_block();
+        assert_eq!(dry, input);
+        assert_eq!(block.take_dynamics_meter(), reference.take_dynamics_meter());
+        let tail = [[0.0; 2]; 512];
+        assert_eq!(
+            render(block.as_mut(), &tail, &[64]),
+            render(reference.as_mut(), &tail, &[64])
+        );
+    }
+}
+
+#[test]
 fn meter_reports_committed_post_input_gain_in_both_modes() {
     for settings in [
         vec![(GAIN, ParameterValue::Float(6.0))],

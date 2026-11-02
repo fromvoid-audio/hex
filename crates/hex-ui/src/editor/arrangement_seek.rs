@@ -513,6 +513,7 @@ impl EditorView {
         start_playing: bool,
         section: Option<hex_session::arrangement_seek::SectionLaunch>,
     ) {
+        self.wake_poll();
         if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error = Some(
                 if section.is_some() {

@@ -148,6 +148,9 @@ fn actual_worker_stopped_capture_sdk_refusal_retains_failure_and_native_lease() 
                 thread::yield_now();
             }
             NativeWorkerCaptureProgress::Captured(_) => panic!("SDK refusal cannot yield state"),
+            NativeWorkerCaptureProgress::Refused(refusal) => {
+                panic!("SDK refusal is not a helper refusal: {refusal}")
+            }
         }
     }
     let retired = owner.retire_on_control().unwrap();

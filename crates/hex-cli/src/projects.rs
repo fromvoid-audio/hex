@@ -1,12 +1,13 @@
 //! Headless native project import and render commands.
-use hex_engine::{Audio, compile};
-use hex_media::{Limits, ResampleLimits, decode_wav_file, resample};
+use hex_engine::Audio;
+use hex_media::{Limits, ResampleLimits, ResampleVersion, decode_wav_file, resample_with_version};
 use hex_project::{Command, Created, Editor, Project};
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     io,
     path::Path,
+    sync::Arc,
 };
 
 const MAX_MEDIA_FILE_BYTES: usize = 64 * 1024 * 1024;
@@ -94,13 +95,15 @@ fn load_arrangement(
             )
             .into());
         }
-        let prepared = resample(
+        // Reproduce the asset's saved conversion law; v1 media stays v1.
+        let prepared = resample_with_version(
             media.audio(),
             project.sample_rate(),
             ResampleLimits {
                 max_source_frames: MAX_DECODED_FRAMES as usize,
                 max_output_frames: usize::try_from(remaining_frames)?,
             },
+            ResampleVersion::for_conversion(asset.conversion_version())?,
         )?;
         let playback_frames = u64::try_from(prepared.frames().len())?;
         if playback_frames != asset.playback_frames() {
@@ -125,18 +128,51 @@ fn load_arrangement(
     Ok((project, media_bank))
 }
 
+/// Render the whole project through the canonical automatic Main export range:
+/// the causal renderer and declared-tail sizing the UI's `ExportRange` uses
+/// when no explicit frame count is given. Publication is create-new only.
 pub fn render_project(input: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
     let (project, media_bank) = load_arrangement(input)?;
-    let playback = compile::project(&project, &media_bank)?;
-    let timeline_end = playback
-        .audible_end_frame()
-        .filter(|end| *end > 0)
-        .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "project has no clips to render")
-        })?;
-    super::wav::render(output, &playback, timeline_end)?;
-    println!("rendered project to {}", output.display());
+    let prepared = prepare(&project, &media_bank)?;
+    let signal = hex_export::ExportSignal::Main;
+    let frames = hex_export::controlled_frame_count(prepared.arrangement(), 0, None, &signal)?;
+    let destination = output.to_owned();
+    let report = std::thread::Builder::new()
+        .name("hex-export".into())
+        .stack_size(EXPORT_STACK_BYTES)
+        .spawn(move || {
+            hex_export::render_prepared_with_policy(
+                &destination,
+                prepared,
+                0,
+                frames,
+                signal,
+                &hex_export::ExportControl::default(),
+                &hex_export::Publication::CreateNew,
+            )
+        })?
+        .join()
+        .map_err(|_| "export worker stopped")??;
+    println!(
+        "rendered {} frames to {}",
+        report.frames,
+        report.path.display()
+    );
     Ok(())
+}
+
+const EXPORT_STACK_BYTES: usize = 8 * 1024 * 1024;
+
+fn prepare(
+    project: &Project,
+    media: &BTreeMap<hex_project::AssetId, Audio>,
+) -> Result<Arc<hex_engine::PreparedRevision>, Box<dyn Error>> {
+    Ok(Arc::new(hex_engine::PreparedRevision::prepare(
+        project,
+        media,
+        Arc::new(hex_engine::SineTable::new()),
+        None,
+    )?))
 }
 
 /// Explicit offline range/scope adapter; retains the bounded project/media loader.
@@ -222,15 +258,12 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
     } else {
         hex_export::ExportSignal::Main
     };
-    let prepared = std::sync::Arc::new(hex_engine::PreparedRevision::prepare(
-        &project,
-        &media,
-        std::sync::Arc::new(hex_engine::SineTable::new()),
-        None,
-    )?);
+    let prepared = prepare(&project, &media)?;
     let path = Path::new(&args[2]);
+    // --overwrite consents to replacing an existing file; an absent target is
+    // still published create-new, matching the UI's confirmed save.
     let publication = if overwrite {
-        hex_export::Publication::Replace(hex_export::OverwriteConsent::inspect(path)?)
+        hex_export::Publication::confirmed_save(path)?
     } else {
         hex_export::Publication::CreateNew
     };
@@ -257,7 +290,7 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
     let render_control = control.clone();
     let worker = std::thread::Builder::new()
         .name("hex-export".into())
-        .stack_size(8 * 1024 * 1024)
+        .stack_size(EXPORT_STACK_BYTES)
         .spawn(move || {
             hex_export::render_prepared_with_policy(
                 &destination,
