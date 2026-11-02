@@ -17,7 +17,8 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-/// Maximum render work a request may ask the engine to perform.
+/// Maximum prefix replay a request may ask the engine to perform. Interactive
+/// and section destinations replay no prefix and are not limited by it.
 pub const MAX_SEEK_WORK_FRAMES: u64 = MAX_ARRANGEMENT_PREROLL_FRAMES;
 /// Dedicated control-side preparation stack for the bounded runtime
 /// constructor and preroll renderer. This reservation is independent of the
@@ -625,7 +626,7 @@ mod tests {
     }
 
     fn wait_for_ready(worker: &ArrangementSeekWorker) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         loop {
             if lock(&worker.shared.mailbox).ready.is_some() {
                 return;
@@ -687,7 +688,7 @@ mod tests {
     }
 
     fn wait_for_idle(worker: &ArrangementSeekWorker) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         loop {
             let mailbox = lock(&worker.shared.mailbox);
             if mailbox.running.is_none()
@@ -764,7 +765,7 @@ mod tests {
             mailbox.test_pause_drain = false;
         }
         worker.shared.wake.notify_one();
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         loop {
             if let Some(id) = worker.try_resident_completion() {
                 assert_eq!(id, 71);
@@ -935,13 +936,13 @@ mod tests {
         drop(overflow);
         drop(overflow_graph);
         drop(worker);
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         while retired_weak.upgrade().is_some() || held_weak.upgrade().is_some() {
             assert!(
                 Instant::now() < deadline,
                 "worker did not drain teardown results"
             );
-            thread::yield_now();
+            crate::test_wait::pause();
         }
         let observed_drop_thread = lock(&shared.mailbox)
             .last_result_drop_thread
@@ -1019,7 +1020,7 @@ mod tests {
         drop(mailbox);
         worker.shared.wake.notify_one();
         wait_for_idle(&worker);
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + crate::test_wait::HANG_BOUND;
         while retired_weak.upgrade().is_some() || ready_weak.upgrade().is_some() {
             assert!(
                 Instant::now() < deadline,
@@ -1050,6 +1051,41 @@ mod tests {
     }
 
     #[test]
+    fn interactive_and_section_seeks_exceed_the_linear_replay_budget() {
+        let graph = prepared();
+        let worker = ArrangementSeekWorker::new().expect("seek worker");
+        let destination = MAX_SEEK_WORK_FRAMES * 4 + 37;
+        let region = hex_project::LoopRegion::new(destination, destination + 4096, true).unwrap();
+        for (mode, expected) in [
+            (ArrangementSeekMode::Interactive, Ok(destination)),
+            (ArrangementSeekMode::SectionLoop(region), Ok(destination)),
+            (
+                ArrangementSeekMode::LinearArrangement,
+                Err(ArrangementPrerollError::WorkBudgetExceeded),
+            ),
+        ] {
+            // Resident seeks submit the full replay budget, never the destination.
+            worker
+                .submit(ArrangementSeekSpec {
+                    mode,
+                    destination_frame: destination,
+                    work_budget_frames: MAX_SEEK_WORK_FRAMES,
+                    start_playing: true,
+                    ..spec(Arc::clone(&graph), 3)
+                })
+                .expect("bounded request");
+            wait_for_ready(&worker);
+            let result = worker.try_result().expect("seek result");
+            assert_eq!(result.mode, mode);
+            assert_eq!(
+                result.result.map(|playback| playback.position()),
+                expected,
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
     fn dropping_worker_cancels_and_wakes_without_joining() {
         struct ExitSignal(mpsc::Sender<thread::ThreadId>);
         impl Drop for ExitSignal {
@@ -1064,7 +1100,7 @@ mod tests {
         let worker = ArrangementSeekWorker::with_preparer(move |_spec, cancelled| {
             let _keep_signal = &signal;
             while !cancelled.load(Ordering::Acquire) {
-                thread::yield_now();
+                crate::test_wait::pause();
             }
             Err(ArrangementPrerollError::Cancelled)
         })

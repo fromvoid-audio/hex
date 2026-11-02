@@ -1,5 +1,28 @@
-use hex_project::{ClipFade, ClipId, Command, Created, Editor, Project};
+use hex_project::{Clip, ClipFade, ClipId, Command, Created, Editor, Project};
 use std::path::PathBuf;
+
+// Audible envelope of one part: an inner event fade (root clock) times the
+// part's clip fade. A cut ramp lives on the event so no clip fade overhangs.
+fn envelope_gain(part: &Clip, frame: u64) -> f32 {
+    let Some(edit) = part.audio_edit() else {
+        return part.fade().gain_at(frame);
+    };
+    let root = edit.view_start + frame;
+    let events = part.audio_events();
+    let event = events
+        .events
+        .iter()
+        .find(|event| event.start <= root && root < event.end)
+        .expect("event under the view");
+    let inner = event.fade.map_or(1.0, |fade| {
+        fade.shape()
+            .gain_at(event.source_start + (root - event.start) - fade.source_start())
+    });
+    let outer = root
+        .checked_sub(edit.domain.fade_start)
+        .map_or(0.0, |age| edit.domain.fade.gain_at(age));
+    inner * outer
+}
 
 fn editor_with_clip(duration: u64) -> (Editor, ClipId) {
     let mut editor = Editor::new(Project::new(48_000).expect("project"), 16).expect("editor");
@@ -208,13 +231,19 @@ fn recursive_split_preserves_every_sample_of_original_envelope() {
         .unwrap();
     let segments = editor.project().tracks()[0].clips();
     assert_eq!(segments.len(), 3);
+    // The first cut crossed the fade in: its part keeps no overhanging clip fade.
+    assert_eq!(
+        (
+            segments[0].retained_fade().span(),
+            segments[0].retained_fade().offset()
+        ),
+        (4, 0)
+    );
     let mut absolute = 0;
     for segment in segments {
-        assert_eq!(segment.fade().span(), 11);
-        assert_eq!(segment.fade().offset(), absolute);
         for local in 0..segment.duration() {
             assert_eq!(
-                segment.fade().gain_at(local),
+                envelope_gain(segment, local),
                 original.gain_at(absolute + local)
             );
         }
@@ -276,7 +305,7 @@ fn shaped_fades_have_independent_silent_endpoints_curves_and_split_continuity() 
     for part in editor.project().tracks()[0].clips() {
         for frame in 0..part.duration() {
             assert_eq!(
-                part.fade().gain_at(frame),
+                envelope_gain(part, frame),
                 fade.gain_at(part.start() + frame)
             );
         }
@@ -384,17 +413,21 @@ fn two_axis_command_history_split_and_reanchor_retain_shape() {
     editor
         .execute(Command::SplitClip { clip, frame: 35 })
         .unwrap();
-    for part in editor.project().tracks()[0].clips() {
-        assert_eq!(
-            (
-                part.retained_fade().in_position(),
-                part.retained_fade().out_position()
-            ),
-            (250, 700)
-        );
+    let parts = editor.project().tracks()[0].clips();
+    // The crossed fade in moves to the inner event; the fade out stays local.
+    let inner = parts[0].audio_events().events[0].fade.unwrap().shape();
+    assert_eq!((inner.in_position(), inner.in_curve()), (250, 200));
+    assert_eq!(
+        (
+            parts[1].retained_fade().out_position(),
+            parts[1].retained_fade().out_curve()
+        ),
+        (700, -300)
+    );
+    for part in parts {
         for frame in 0..part.duration() {
             assert_eq!(
-                part.fade().gain_at(frame),
+                envelope_gain(part, frame),
                 fade.gain_at(part.start() + frame)
             );
         }

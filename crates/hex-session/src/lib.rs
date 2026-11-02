@@ -31,6 +31,7 @@ use std::{
 };
 
 mod arrangement_bounce;
+pub use arrangement_bounce::{StreamedBounceRequest, StreamedBouncer};
 pub mod arrangement_seek;
 mod audio_sources;
 mod clip_conversion;
@@ -39,12 +40,14 @@ mod source_overview;
 #[cfg(feature = "source-overview-test-support")]
 pub use source_overview::test_support as source_overview_test_support;
 pub use source_overview::{OriginalSourceOverview, OriginalSourceOverviews, SourceOverviewUsage};
+mod media_relink;
 mod resident_pcm;
 pub use native_assets::ResidentNativeReservation;
 mod verified_import;
 use audio_sources::MediaBank;
 pub use audio_sources::{
-    AudioSourceBinding, DocumentAudioMode, SourcePlanReservation, VerifiedAudioFile,
+    AudioSourceBinding, DocumentAudioMode, MAX_STREAMED_FILE_BYTES, MAX_STREAMED_SOURCE_FRAMES,
+    SourcePlanReservation, VerifiedAudioFile,
 };
 mod comparison_transition;
 mod device_comparison;
@@ -52,6 +55,9 @@ pub mod device_gesture;
 mod device_snapshot;
 pub mod import_batch;
 pub mod import_batch_decode;
+mod recovered_source;
+mod resident_import;
+pub use recovered_source::{RecoveredSource, RecoverySourceError, recover_wav_to_new_source};
 pub mod service;
 pub mod tuning_gesture;
 pub use hex_media::waveform::{Peak as CachedPeak, Waveform as CachedWaveform};
@@ -548,7 +554,8 @@ impl Session {
             source_overviews = source_overviews.inserted(&overview_budget, id, overview)?;
         }
         device_comparison::validate_project(&project)?;
-        let asset_count = project.assets().count();
+        // Offline assets (missing at open) intentionally have no media.
+        let asset_count = project.assets().count() - project.offline_assets().count();
         let editor = Editor::new(project, history_capacity)?;
         if prepared_assets
             .len()
@@ -2081,6 +2088,8 @@ fn prepare_with_waveforms_using(
 
 #[cfg(test)]
 mod audio_edit_tests;
+#[cfg(test)]
+pub(crate) mod test_wait;
 
 fn tuning_prepared_transition(
     prepared: hex_engine::PreparedRevision,

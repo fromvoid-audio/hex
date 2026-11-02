@@ -652,13 +652,23 @@ fn production_default_verified_gestures_rebase_barriers_and_restore_use_verified
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
+    // A changed static device matrix ramps over `rate.div_ceil(200)` frames
+    // (Pulse #4101); 8 blocks of 64 frames cover that ramp up to 96 kHz.
     let assert_pcm = |h: &mut ResidentHarness, sample: f32| {
         let deadline = Instant::now() + Duration::from_secs(10);
+        let mut ramp_blocks = 0;
         loop {
             let pcm = h.render();
             if pcm.iter().flatten().any(|value| *value != 0.0) {
-                assert_eq!(pcm, [[sample; 2]; 64]);
-                return;
+                if pcm == [[sample; 2]; 64] {
+                    return;
+                }
+                ramp_blocks += 1;
+                assert!(
+                    ramp_blocks <= 8,
+                    "output did not settle at {sample}: {pcm:?}"
+                );
+                continue;
             }
             // Verified source identity/admission ACK precedes asynchronous page readiness.
             assert!(
@@ -1273,4 +1283,55 @@ fn ordinary_mixed_original_sampler_and_file_sources_save_reopen_without_decoding
         );
         std::thread::yield_now();
     }
+}
+
+#[test]
+fn resident_offline_media_opens_silent_and_relinks_in_place_with_undo() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(32_768);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let source = files.wav(48_000, 8_192);
+    let imported = h.run(Request::Import(source.clone()));
+    let asset = imported.state.project.assets().next().unwrap().id();
+    h.applied(applied);
+    let path = files.0.join("offline.hex");
+    h.run(Request::SaveNew(path.clone()));
+    let moved = files.0.join("moved.wav");
+    std::fs::rename(&source, &moved).unwrap();
+
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let opened = h.run(Request::Open(path));
+    assert!(opened.state.project.asset_offline(asset));
+    let applied = finish_replacement(&mut h, &opened, old_output);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.0; 2]; 64], "offline clips are silent");
+
+    let relinked = h.run(Request::RelinkMedia(std::collections::BTreeMap::from([(
+        asset,
+        moved.clone(),
+    )])));
+    assert!(!relinked.state.project.asset_offline(asset));
+    assert_eq!(relinked.state.project.asset(asset).unwrap().path(), moved);
+    let (applied, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.editor_revision, relinked.state.revision);
+    assert!(
+        h.render().iter().any(|frame| *frame != [0.0; 2]),
+        "relinked media plays once admitted"
+    );
+
+    let undone = h.run(Request::Undo);
+    assert!(undone.state.project.asset_offline(asset));
+    h.applied(applied);
+    assert_eq!(
+        h.render(),
+        [[0.0; 2]; 64],
+        "undo returns the clip to silence"
+    );
 }

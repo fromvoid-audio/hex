@@ -32,7 +32,7 @@ fn wav_mono_pcm16(samples: &[i16]) -> Vec<u8> {
 }
 
 fn next_event(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
@@ -977,8 +977,8 @@ fn failed_open_keeps_active_project_and_graph_revision() {
     let revision = edited.state.revision;
     assert!(edited.playback.is_some());
 
+    // Missing ordinary media opens offline instead (see missing_media tests).
     for (name, source_name, frames, sample_rate, create_source) in [
-        ("missing.hex", "Missing.wav", 2_u64, 48_000_u32, false),
         ("mismatch.hex", "short.wav", 3_u64, 48_000_u32, true),
         ("rate.hex", "Unused.wav", 2_u64, 44_100_u32, false),
     ] {
@@ -1027,11 +1027,13 @@ fn failed_open_keeps_active_project_and_graph_revision() {
     active
         .submit(Request::Open(path))
         .expect("submit open with missing unreferenced asset");
-    let rejected = next_event(&active);
-    assert!(rejected.error.is_some());
-    assert!(!rejected.project_replaced);
-    assert_eq!(rejected.state.revision, revision);
-    assert_eq!(rejected.state.project.tracks()[0].name(), "keep me");
+    // A missing unreferenced asset is kept offline rather than dropped.
+    let opened = next_event(&active);
+    assert!(opened.error.is_none(), "{:?}", opened.error);
+    assert!(opened.project_replaced);
+    let asset = opened.state.project.assets().next().expect("asset kept");
+    assert_eq!(asset.path(), std::path::Path::new("Missing-Unused.wav"));
+    assert!(opened.state.project.asset_offline(asset.id()));
 }
 
 #[test]

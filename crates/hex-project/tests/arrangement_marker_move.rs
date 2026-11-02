@@ -515,3 +515,52 @@ fn marker_resize_carves_both_edges_and_cover_without_touching_music_or_history_f
         assert!(editor.redo(), "refusal retains redo");
     }
 }
+
+#[test]
+fn only_marker_commands_leave_every_audio_input_unchanged() {
+    let (project, section) = fixture(8);
+    let changed = |command: Command| {
+        let mut editor = Editor::new(project.clone(), 32).unwrap();
+        editor.execute(command).unwrap();
+        assert_ne!(editor.project(), &project);
+        project.differs_only_in_arrangement_sections(editor.project())
+    };
+    for command in [
+        Command::AddArrangementSection {
+            name: "Added".into(),
+            color: ElementColor::Green,
+            start: b(60),
+            end: b(64),
+        },
+        Command::MoveArrangementSectionMarker {
+            section,
+            start: b(2),
+        },
+        Command::RenameArrangementSection {
+            section,
+            name: "Renamed".into(),
+        },
+        Command::SetArrangementSectionColor {
+            section,
+            color: ElementColor::Green,
+        },
+        Command::RemoveArrangementSection(section),
+    ] {
+        assert!(changed(command));
+    }
+    for command in [
+        Command::DuplicateArrangementSection(section),
+        Command::DeleteArrangementSection(section),
+        Command::SetTempoPoint {
+            beat: b(4),
+            tempo: Tempo::new(100_000_000).unwrap(),
+        },
+        Command::SetLoopRegion {
+            start: 0,
+            end: 4_000,
+            enabled: true,
+        },
+    ] {
+        assert!(!changed(command));
+    }
+}

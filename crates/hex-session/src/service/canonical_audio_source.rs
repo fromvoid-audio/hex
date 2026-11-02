@@ -180,7 +180,7 @@ mod tests {
     fn next(service: &Service) -> Event {
         service
             .events
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(crate::test_wait::HANG_BOUND)
             .unwrap()
     }
     fn bank() -> hex_engine::OwnedAudioInputs {

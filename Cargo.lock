@@ -2589,6 +2589,7 @@ dependencies = [
 name = "hex-clap-scan"
 version = "0.1.0"
 dependencies = [
+ "hex-scan-supervisor",
  "rustix 1.1.5",
  "serde",
  "serde_json",
@@ -2748,6 +2749,7 @@ dependencies = [
 name = "hex-plugin-scan"
 version = "0.1.0"
 dependencies = [
+ "hex-scan-supervisor",
  "rustix 1.1.5",
  "serde",
  "serde_json",
@@ -2776,6 +2778,26 @@ version = "0.1.0"
 dependencies = [
  "hex-lattice-contract",
  "hex-tuning",
+]
+
+[[package]]
+name = "hex-sandbox"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "hex-devices",
+ "hex-preferences",
+ "hex-project",
+ "hex-widgets",
+]
+
+[[package]]
+name = "hex-scan-supervisor"
+version = "0.1.0"
+dependencies = [
+ "rustix 1.1.5",
+ "serde",
+ "signal-hook",
 ]
 
 [[package]]
@@ -2831,6 +2853,7 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "hex-audio",
+ "hex-devices",
  "hex-diagnostics",
  "hex-engine",
  "hex-lattice-contract",
@@ -2844,6 +2867,7 @@ dependencies = [
  "hex-session",
  "hex-tuning",
  "hex-widgets",
+ "image",
  "resvg",
  "serde_json",
  "usvg",
