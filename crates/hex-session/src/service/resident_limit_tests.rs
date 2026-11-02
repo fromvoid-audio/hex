@@ -15,10 +15,9 @@ impl Files {
         fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn long_pcm(&self) -> PathBuf {
-        let frames = 8_000_001_u32;
+    fn pcm_wav(&self, name: &str, frames: u32) -> PathBuf {
         let padded = frames + frames % 2;
-        let path = self.0.join("long-pcm.wav");
+        let path = self.0.join(name);
         let mut header = Vec::from(*b"RIFF");
         header.extend_from_slice(&(36 + padded).to_le_bytes());
         header.extend_from_slice(b"WAVEfmt ");
@@ -142,7 +141,9 @@ fn pcm_without_streaming_reservation_gets_an_accurate_resident_limit() {
     let files = Files::new();
     let service = Service::new(48_000, 16, 64_000_000).unwrap();
     let _ = next(&service);
-    service.submit(Request::Import(files.long_pcm())).unwrap();
+    service
+        .submit(Request::Import(files.pcm_wav("long-pcm.wav", 8_000_001)))
+        .unwrap();
     let refused = next(&service);
     let error = refused.error.as_deref().unwrap();
     assert!(
@@ -198,4 +199,24 @@ fn resident_audio_import_refuses_long_adpcm_with_the_same_explanation() {
     );
     assert_eq!(refused.state.revision, initial.state.revision);
     assert!(refused.state.project.tracks().is_empty());
+}
+
+#[test]
+fn preview_refuses_source_replaced_after_fixed_frame_probe() {
+    let files = Files::new();
+    let path = files.pcm_wav("source.wav", 4);
+    let reader = hex_media::WavFrameReader::open(
+        &path,
+        hex_media::WavReaderLimits::new(u64::MAX, u64::MAX, 32, 4096),
+    )
+    .unwrap();
+    let replacement = files.adpcm_wav("replacement.wav", 4);
+    fs::rename(replacement, &path).unwrap();
+    let error = decode_preview_source(&path, Some(reader))
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        error.contains("audio file changed") && error.contains("retry"),
+        "{error}"
+    );
 }

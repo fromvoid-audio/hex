@@ -379,21 +379,13 @@ pub fn prepare_sample_preview(
     output_sample_rate: u32,
 ) -> Result<hex_engine::Audio, String> {
     let path = path.as_ref();
-    // Unbounded header probe: failure means not streamable (or malformed), never a limit.
-    let streamable = hex_media::WavFrameReader::open(
+    // A failed fixed-frame probe takes the more restrictive resident path.
+    let probe = hex_media::WavFrameReader::open(
         path,
         hex_media::WavReaderLimits::new(u64::MAX, u64::MAX, 32, 4096),
     )
-    .is_ok();
-    let decoded = if streamable {
-        decode_wav_file(
-            path,
-            Limits::new(BROWSER_PREVIEW_FILE_LIMIT, BROWSER_PREVIEW_FRAME_LIMIT),
-        )
-    } else {
-        decode_resident_import(path)
-    }
-    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    .ok();
+    let decoded = decode_preview_source(path, probe)?;
     let audio = hex_media::resample(
         decoded.audio(),
         output_sample_rate,
@@ -404,6 +396,28 @@ pub fn prepare_sample_preview(
     )
     .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     Ok(audio)
+}
+
+fn decode_preview_source(
+    path: &Path,
+    probe: Option<hex_media::WavFrameReader>,
+) -> Result<hex_media::DecodedAudio, String> {
+    let decoded = if probe.is_some() {
+        decode_wav_file(
+            path,
+            Limits::new(BROWSER_PREVIEW_FILE_LIMIT, BROWSER_PREVIEW_FRAME_LIMIT),
+        )
+    } else {
+        decode_resident_import(path)
+    }
+    .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    if probe
+        .as_ref()
+        .is_some_and(|reader| !reader.matches_file_identity(decoded.file_identity()))
+    {
+        return Err("audio file changed while preparing preview · retry".into());
+    }
+    Ok(decoded)
 }
 
 /// Stable captured identities; instrument expectation is explicit, never an effect ID.
