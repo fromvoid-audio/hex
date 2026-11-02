@@ -54,6 +54,7 @@ pub mod device_gesture;
 mod device_snapshot;
 pub mod import_batch;
 pub mod import_batch_decode;
+mod resident_import;
 pub mod service;
 pub mod tuning_gesture;
 pub use hex_media::waveform::{Peak as CachedPeak, Waveform as CachedWaveform};
