@@ -41,6 +41,15 @@ struct AudioView {
     base_placement: Option<Placement>,
     base_start_delta: String,
     window: Window,
+    /// Schema66 read law, present only when it differs from
+    /// [`AudioContentView::implied_read_resampler`]; older layouts never
+    /// contain it (see `schema::content_view_resampler`).
+    #[serde(
+        default,
+        deserialize_with = "crate::audio_edit::present_warp_resampler",
+        skip_serializing_if = "Option::is_none"
+    )]
+    read_resampler: Option<u8>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,8 +64,8 @@ fn required_placement<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<Placement>, D::Error> {
     Option::deserialize(d)
 }
-impl From<AudioContentView> for AudioView {
-    fn from(v: AudioContentView) -> Self {
+impl AudioView {
+    fn new(v: AudioContentView, clock: AudioDomainClock) -> Self {
         Self {
             restore_plain: v.restore_plain,
             base_view_start: v.base_view_start,
@@ -69,11 +78,21 @@ impl From<AudioContentView> for AudioView {
             }),
             base_start_delta: v.base_start_delta.to_string(),
             window: v.window.into(),
+            read_resampler: v
+                .has_explicit_read_resampler(clock)
+                .then_some(crate::audio_edit::warp_resampler_tag(v.read_resampler)),
         }
     }
-}
-impl AudioView {
-    fn checked(self) -> Result<AudioContentView, StorageError> {
+    fn checked(self, clock: AudioDomainClock) -> Result<AudioContentView, StorageError> {
+        let implied = AudioContentView::implied_read_resampler(clock);
+        let read_resampler = self
+            .read_resampler
+            .map_or(Ok(implied), crate::audio_edit::warp_resampler_from_tag)?;
+        if self.read_resampler.is_some() && read_resampler == implied {
+            return Err(StorageError::Invalid(
+                "redundant read resampler version in directed audio view",
+            ));
+        }
         Ok(AudioContentView {
             restore_plain: self.restore_plain,
             base_view_start: self.base_view_start,
@@ -96,6 +115,7 @@ impl AudioView {
                 .parse()
                 .map_err(|_| StorageError::Invalid("invalid audio content base displacement"))?,
             window: self.window.checked()?,
+            read_resampler,
         })
     }
 }
@@ -202,12 +222,13 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     visit(
         &mut snapshot,
         |c| {
-            let view = c.edit.as_mut().and_then(|edit| edit.content_view.take());
+            let view = c.edit.as_mut().and_then(|edit| {
+                let clock = edit.domain.clock;
+                edit.content_view.take().map(|v| AudioView::new(v, clock))
+            });
             audio_rows.push(Row {
                 clip: c.id,
-                view: View::Audio {
-                    view: view.map(Into::into),
-                },
+                view: View::Audio { view },
             });
             Ok(())
         },
@@ -277,12 +298,10 @@ pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, Stor
                 ));
             };
             if let Some(view) = view {
-                c.edit
-                    .as_mut()
-                    .ok_or(StorageError::Invalid(
-                        "directed audio view requires a retained domain",
-                    ))?
-                    .content_view = Some(view.checked()?);
+                let edit = c.edit.as_mut().ok_or(StorageError::Invalid(
+                    "directed audio view requires a retained domain",
+                ))?;
+                edit.content_view = Some(view.checked(edit.domain.clock)?);
             }
         }
         for c in midi {

@@ -80,7 +80,11 @@ fn render_mode(domain: &AudioClipDomain) -> Result<hex_warp::Mode, Invalid> {
 /// Saved reconstruction law of the root pitch/warp render. The cache key holds
 /// the whole domain, so a law change never reuses another law's output.
 fn render_resampler(domain: &AudioClipDomain) -> hex_warp::Resampler {
-    match domain.warp_resampler {
+    warp_law(domain.warp_resampler)
+}
+
+fn warp_law(law: WarpResampler) -> hex_warp::Resampler {
+    match law {
         WarpResampler::V1 => hex_warp::Resampler::V1,
         WarpResampler::V2 => hex_warp::Resampler::V2,
     }

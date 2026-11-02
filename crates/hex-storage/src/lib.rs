@@ -55,15 +55,26 @@ pub const SINC_V2_SCHEMA_VERSION: u32 = 64;
 /// Readers before schema65 refuse it as newer, so such a save needs consent.
 pub const WARP_RESAMPLER_SCHEMA_VERSION: u32 = 65;
 
-/// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = WARP_RESAMPLER_SCHEMA_VERSION;
+/// Schema written only for projects with a directed audio content view whose
+/// read resampler law differs from the one its clip clock implies (in practice,
+/// a new musical-clock view read with v2): the schema65-or-older layout plus an
+/// optional `read_resampler` view field. See `schema::content_view_resampler`.
+/// Readers before schema66 refuse it as newer, so such a save needs consent.
+pub const CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION: u32 = 66;
 
-/// Schema [`encode`] writes for `project`: [`WARP_RESAMPLER_SCHEMA_VERSION`]
+/// Newest schema this build opens; anything above it is refused as newer.
+pub const NEWEST_SCHEMA_VERSION: u32 = CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION;
+
+/// Schema [`encode`] writes for `project`:
+/// [`CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION`] when a directed view names an
+/// explicit read law, [`WARP_RESAMPLER_SCHEMA_VERSION`]
 /// when content names an explicit warp resampler law,
 /// [`SINC_V2_SCHEMA_VERSION`] when it contains sinc v2 media, otherwise
 /// [`CURRENT_SCHEMA_VERSION`].
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::warp_resampler::contains_explicit(project) {
+    if schema::content_view_resampler::contains_explicit(project) {
+        CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION
+    } else if schema::warp_resampler::contains_explicit(project) {
         WARP_RESAMPLER_SCHEMA_VERSION
     } else if schema::conversion_v2::contains_v2(project) {
         SINC_V2_SCHEMA_VERSION
@@ -219,12 +230,15 @@ impl From<serde_json::Error> for StorageError {
 /// and automatic track name origin (schema63). Only a project containing sinc
 /// v2 media is written as schema64 (see [`schema_version_for`]); every other
 /// project stays schema63, byte-compatible with older readers. Only content
-/// naming an explicit warp resampler law makes a project schema65.
+/// naming an explicit warp resampler law makes a project schema65, and only a
+/// directed view naming an explicit read law makes it schema66.
 /// Schema59 is reserved and explicitly refused.
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if schema::warp_resampler::contains_explicit(project) {
+    if schema::content_view_resampler::contains_explicit(project) {
+        encode_document(&schema::content_view_resampler::encode(project)?)
+    } else if schema::warp_resampler::contains_explicit(project) {
         encode_document(&schema::warp_resampler::encode(project)?)
     } else if schema::conversion_v2::contains_v2(project) {
         encode_document(&schema::conversion_v2::encode(project)?)
@@ -246,6 +260,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::content_view_resampler::require_implied(project)?;
     schema::warp_resampler::require_implied(project)?;
     schema::conversion_v2::require_v1_conversions(project)?;
     schema::track_name_origin::require_user_names(project)?;
@@ -407,6 +422,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
+        CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION => schema::content_view_resampler::decode(bytes),
         WARP_RESAMPLER_SCHEMA_VERSION => schema::warp_resampler::decode(bytes),
         SINC_V2_SCHEMA_VERSION => schema::conversion_v2::decode(bytes),
         CURRENT_SCHEMA_VERSION => schema::track_name_origin::decode(bytes),
@@ -449,6 +465,13 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
+    if header.version < CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION
+        && schema::content_view_resampler::require_implied(&project).is_err()
+    {
+        return Err(StorageError::Invalid(
+            "historical project schema contains a directed view resampler version; original file unchanged",
+        ));
+    }
     if header.version < WARP_RESAMPLER_SCHEMA_VERSION
         && schema::warp_resampler::require_implied(&project).is_err()
     {
