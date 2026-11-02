@@ -1,5 +1,7 @@
 use super::fade_frames;
-use crate::playback::{Playback, PlaybackAction, PlaybackActionError, PlaybackCommand};
+use crate::playback::{
+    Playback, PlaybackAction, PlaybackActionError, PlaybackCommand, TransportFadeCompletion,
+};
 use crate::{Audio, Frame, PreparedRevision, ProjectOutputTap, ProjectSignal, SineTable};
 use hex_project::{Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::Arc};
@@ -60,9 +62,18 @@ fn render(playback: &mut Playback, block: usize, frames: usize, output: &mut Vec
     }
 }
 
+/// The positions and fade outcomes observed by `pause_resume_stop`.
+struct Observed {
+    paused: u64,
+    pause_end: Option<TransportFadeCompletion>,
+    stop_command: u64,
+    stopped: u64,
+    stop_end: Option<TransportFadeCompletion>,
+}
+
 /// Play 1000 frames, Pause, wait, resume at 2000, Stop at 3000, then 1000
-/// frames of silence. Returns the output and the positions after each fade.
-fn pause_resume_stop(mut playback: Playback, block: usize) -> (Vec<Frame>, u64, u64) {
+/// frames of silence. Returns the output and the observed positions.
+fn pause_resume_stop(mut playback: Playback, block: usize) -> (Vec<Frame>, Observed) {
     let mut output = Vec::new();
     declicked(&mut playback, PlaybackCommand::Play);
     render(&mut playback, block, 1000, &mut output);
@@ -72,12 +83,27 @@ fn pause_resume_stop(mut playback: Playback, block: usize) -> (Vec<Frame>, u64, 
     assert!(!playback.playing());
     assert_eq!(playback.pending_transport_fade(), None);
     let paused = playback.position();
+    let pause_end = playback.take_transport_fade_completion();
     declicked(&mut playback, PlaybackCommand::Play);
     render(&mut playback, block, 1000, &mut output);
+    let stop_command = playback.position();
     declicked(&mut playback, PlaybackCommand::Stop);
+    assert_eq!(playback.take_transport_fade_completion(), None);
     render(&mut playback, block, 1000, &mut output);
     assert!(!playback.playing());
-    (output, paused, playback.position())
+    let observed = Observed {
+        paused,
+        pause_end,
+        stop_command,
+        stopped: playback.position(),
+        stop_end: playback.take_transport_fade_completion(),
+    };
+    assert_eq!(
+        playback.take_transport_fade_completion(),
+        None,
+        "reported once"
+    );
+    (output, observed)
 }
 
 fn largest_step(output: &[Frame]) -> f32 {
@@ -98,18 +124,56 @@ fn fade_length_scales_with_rate_and_is_at_least_one_frame() {
 }
 
 #[test]
+fn render_failure_after_fade_clears_the_complete_output_buffer() {
+    let mut playback = linear_playback();
+    declicked(&mut playback, PlaybackCommand::Play);
+    declicked(&mut playback, PlaybackCommand::Pause);
+    let mut output = [[0.5; 2]; F + 8];
+    let result = playback.render_declicked(&mut output, |_, part, offset| {
+        part.fill([0.75; 2]);
+        if offset == 0 {
+            Ok(())
+        } else {
+            Err(crate::Invalid("injected render refusal"))
+        }
+    });
+    assert!(result.is_err());
+    assert!(output.iter().all(|frame| *frame == [0.0; 2]));
+}
+
+#[test]
 fn pause_stop_and_resume_ramp_a_dc_clip_identically_for_every_block_size() {
     for (name, make) in [
         ("session", session_playback as fn() -> Playback),
         ("linear", linear_playback),
     ] {
-        let (reference, paused, stopped) = pause_resume_stop(make(), 1);
+        let (reference, observed) = pause_resume_stop(make(), 1);
         assert_eq!(
-            paused,
+            observed.paused,
             1000 + F as u64,
             "{name}: pause reports its audible end"
         );
-        assert_eq!(stopped, 0, "{name}");
+        assert_eq!(
+            observed.pause_end,
+            Some(TransportFadeCompletion {
+                action: PlaybackAction::Transport(PlaybackCommand::Pause),
+                audible_end_frame: 1000 + F as u64,
+                applied: true,
+            }),
+            "{name}"
+        );
+        // Stop keeps its reset to frame zero; only the fade outcome reports
+        // the audible end, the Stop command frame plus F.
+        assert_eq!(observed.stopped, 0, "{name}");
+        assert_eq!(
+            observed.stop_end,
+            Some(TransportFadeCompletion {
+                action: PlaybackAction::Transport(PlaybackCommand::Stop),
+                audible_end_frame: observed.stop_command + F as u64,
+                applied: true,
+            }),
+            "{name}"
+        );
         // Frame zero keeps its transient; every later step is one ramp step.
         assert_eq!(reference[0], [1.0, -1.0], "{name}");
         assert!(
@@ -138,7 +202,7 @@ fn pause_stop_and_resume_ramp_a_dc_clip_identically_for_every_block_size() {
             "{name}: stopped output is silent"
         );
         for block in [7, 64, 512] {
-            let (output, _, _) = pause_resume_stop(make(), block);
+            let (output, _) = pause_resume_stop(make(), block);
             assert_eq!(output, reference, "{name}: block size {block}");
         }
     }
@@ -159,6 +223,15 @@ fn a_command_during_the_fade_completes_the_pending_stop_first() {
         assert_eq!(playback.pending_transport_fade(), None);
         assert!(!playback.playing());
         assert_eq!(playback.position(), 0);
+        // The early-completed Pause reports where its truncated fade ended.
+        assert_eq!(
+            playback.take_transport_fade_completion(),
+            Some(TransportFadeCompletion {
+                action: PlaybackAction::Transport(PlaybackCommand::Pause),
+                audible_end_frame: 1000 + F as u64 / 2,
+                applied: true,
+            })
+        );
 
         // Play from Stop keeps the first transient.
         declicked(&mut playback, PlaybackCommand::Play);

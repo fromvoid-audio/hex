@@ -342,7 +342,7 @@ fn terminal_reclaims_on_idle_control_without_ui_export_polling() {
     let files = Files::new(false);
     let service = Service::with_native_reservation(16000, 16, 1024, reservation()).unwrap();
     event(&service);
-    let worker_id = service._worker.thread().id();
+    let worker_id = service.worker.as_ref().unwrap().thread().id();
     let (_observer, dropped) =
         hex_engine::native_device_resources::control_drop_probe::observe(worker_id);
     assign(&service, files.source.clone());
@@ -371,7 +371,7 @@ fn dropping_service_is_prompt_and_joined_control_reclaims_blocked_export_source(
     let files = Files::new(false);
     let service = Service::with_native_reservation(16000, 16, 1024, reservation()).unwrap();
     event(&service);
-    let worker_id = service._worker.thread().id();
+    let worker_id = service.worker.as_ref().unwrap().thread().id();
     let (_observer, dropped) =
         hex_engine::native_device_resources::control_drop_probe::observe(worker_id);
     assign(&service, files.source.clone());
@@ -670,6 +670,7 @@ fn captured_export_new_and_media_open_check_complete_union_before_adoption() {
         files.source.clone(),
         None,
         Admission::default(),
+        &mut Default::default(),
     )
     .unwrap();
     let saved = files.source.parent().unwrap().join("media.hex");
@@ -893,13 +894,31 @@ fn legacy_staged_owner_union_has_independent_exact_byte_limits_before_commit() {
         },
     ] {
         fresh.native_reservation.as_mut().unwrap().storage = limits;
-        assert!(import(&mut fresh, files.source.clone(), None, admission).is_err());
+        assert!(
+            import(
+                &mut fresh,
+                files.source.clone(),
+                None,
+                admission,
+                &mut Default::default()
+            )
+            .is_err()
+        );
         assert_eq!(fresh.project().assets().count(), 0);
         assert!(!fresh.can_undo());
         assert_eq!(fresh.resident_frames(), 0);
     }
     fresh.native_reservation.as_mut().unwrap().storage = exact;
-    assert!(import(&mut fresh, files.source.clone(), None, admission).is_ok());
+    assert!(
+        import(
+            &mut fresh,
+            files.source.clone(),
+            None,
+            admission,
+            &mut Default::default()
+        )
+        .is_ok()
+    );
     assert_eq!(fresh.project().assets().count(), 1);
     assert!(fresh.can_undo());
 }

@@ -231,9 +231,12 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
     object.insert("content_views".into(), serde_json::to_value(audio_rows)?);
     Ok(value)
 }
+#[cfg(test)]
 pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?)
+}
+/// Decode an envelope parsed once by [`super::audio_events::parse_unique`].
+pub(crate) fn decode_value(mut value: serde_json::Value) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid directed content envelope"))?;
@@ -244,7 +247,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         StorageError::Invalid("directed content inventory is missing"),
     )?)?;
     object.insert("version".into(), 40.into());
-    let legacy = super::clip_activation::decode(&serde_json::to_vec(&value)?)?;
+    let legacy = super::clip_activation::decode_value(value)?;
     let mut rows = BTreeMap::new();
     for row in inventory.0 {
         if rows.insert(row.clip, row.view).is_some() {
