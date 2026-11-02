@@ -250,9 +250,13 @@ type Fading = [Option<FadingVoice>; MAX_SAMPLER_RUNTIME_VOICES];
 /// count toward `max_active_occurrences`, it ignores later events, and it takes
 /// no occurrence gain beyond the value frozen at the steal frame. Its audio is
 /// still mixed, and it retires no later than its own release would have, so
-/// `max_release_tail_frames` still bounds quiescence. If the pool is full, the
-/// incoming steal replaces the fading voice nearest the end of its declick;
-/// that residual cut is bounded by its remaining fade level.
+/// `max_release_tail_frames` still bounds quiescence. Steals never cut a
+/// sounding voice: when all `MAX_SAMPLER_RUNTIME_VOICES` fade slots are still
+/// declicking (a burst of steals within one declick), the note-on is refused
+/// with `EventCapacityExceeded` exactly like the all-held case, leaving every
+/// voice, fade and committed state untouched for the host's existing refusal
+/// path. Admission and processing make the same decision, so a preflighted
+/// block never refuses during processing.
 pub struct SamplerRuntime {
     prepared: PreparedSamplerRuntime,
     active: Active,
@@ -372,14 +376,18 @@ impl SamplerRuntime {
         }
         Ok(())
     }
-    /// Move the oldest releasing voice into the fade pool, freeing its slot.
-    /// Returns false when every slot is still held.
+    /// Move the oldest releasing voice into a free fade slot, freeing its
+    /// voice slot. Returns false, changing nothing, when every slot is still
+    /// held or every fade slot is still declicking.
     fn steal(
         &self,
         active: &mut Active,
         fading: &mut Fading,
         gain_at: &dyn Fn(u64) -> f64,
     ) -> bool {
+        let Some(target) = fading.iter().position(Option::is_none) else {
+            return false;
+        };
         let mut oldest: Option<(usize, u64)> = None;
         for (index, entry) in active[..self.prepared.voices].iter().enumerate() {
             if let Some(voice) = entry
@@ -392,18 +400,6 @@ impl SamplerRuntime {
         let Some(voice) = oldest.and_then(|(index, _)| active[index].take()) else {
             return false;
         };
-        // An empty fade slot, else the one nearest the end of its declick.
-        let elapsed = |entry: &Option<FadingVoice>| {
-            entry.map_or(u64::MAX, |fading| {
-                fading.voice.age.saturating_sub(fading.start)
-            })
-        };
-        let mut target = 0;
-        for (slot, entry) in fading.iter().enumerate() {
-            if elapsed(entry) > elapsed(&fading[target]) {
-                target = slot;
-            }
-        }
         fading[target] = Some(FadingVoice {
             voice,
             start: voice.age,

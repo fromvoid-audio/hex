@@ -171,14 +171,16 @@ pub trait PreparedMutableInstrumentRuntime: Send + Sync {
     /// note-on that finds all `max_active_occurrences` slots occupied then
     /// takes the slot of the runtime's oldest releasing occurrence instead of
     /// refusing; it still refuses with `EventCapacityExceeded` when every slot
-    /// is held. The stolen occurrence leaves the active set at that frame:
+    /// is held or its fixed declick storage is exhausted, so a steal never
+    /// hard-cuts a sounding voice. The stolen occurrence leaves the active set at that frame:
     /// `active_occurrence_ids` no longer reports it, it does not count toward
     /// `max_active_occurrences`, it ignores later events, and hosts must not
     /// send it occurrence gains (its gain is frozen at the steal frame). Its
     /// audio continues in provider-owned fixed storage with a bounded declick
     /// fade and never outlasts `max_release_tail_frames` after its note-off.
-    /// Hosts may therefore admit note density by held voices alone. The
-    /// default keeps the strict release-occupies-a-slot contract.
+    /// Hosts may therefore admit note density by held voices, but must keep
+    /// handling the refusal for steal bursts that exhaust the declick storage.
+    /// The default keeps the strict release-occupies-a-slot contract.
     fn steals_releasing_voices(&self) -> bool {
         false
     }
