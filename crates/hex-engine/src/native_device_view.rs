@@ -49,6 +49,9 @@ fn sampler_control_error(error: hex_devices::sampler::control::ControlError) -> 
             SamplerParameter::Gain => "sampler gain must be between zero and four",
             SamplerParameter::Transpose => "sampler pitch must be between -48 and 48 semitones",
             SamplerParameter::LoopEnabled => "sampler loop must be off or on",
+            SamplerParameter::LoopCrossfadeMs => {
+                "sampler loop crossfade must be between zero and 10000 ms"
+            }
             SamplerParameter::StartFrame
             | SamplerParameter::EndFrame
             | SamplerParameter::LoopStartFrame

@@ -327,7 +327,9 @@ impl DraftWriter {
                 .open(&temporary.path)?;
             fs2::FileExt::try_lock_exclusive(&file)?;
             file.seek(SeekFrom::End(0))?;
-            fs::hard_link(&temporary.path, path)?;
+            // The open locked handle must stay bound to the published draft,
+            // so a non-atomic copy is not an acceptable fallback here.
+            crate::publication::publish_new_atomic(&temporary.path, path)?;
             published = true;
             finish(&temporary.path, path).map_err(|(operation, source)| {
                 StorageError::PublishedButNotDurable {

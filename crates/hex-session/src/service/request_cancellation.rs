@@ -98,7 +98,10 @@ impl Sender {
         let intent = self.document_intent.load(Ordering::Acquire);
         let next = if replaces_document {
             let Some(next) = intent.checked_add(1) else {
-                return Err(SubmitError::Busy(request));
+                return Err(SubmitError::Busy(
+                    request,
+                    super::BusyReason::DocumentIntentExhausted,
+                ));
             };
             Some(next)
         } else {

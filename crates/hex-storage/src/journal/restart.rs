@@ -97,7 +97,7 @@ fn restart_with_hooks(
     let result = (|| {
         let check = || -> Result<(), StorageError> {
             if read(&token.path)?.as_deref() != Some(token.bytes.as_ref()) {
-                return Err(StorageError::Conflict {
+                return Err(StorageError::JournalConflict {
                     path: token.path.clone(),
                 });
             }
@@ -239,7 +239,10 @@ mod tests {
         assert_eq!(load_journal(&preserved).unwrap(), original);
         assert_eq!(load_journal(&path).unwrap(), replacement);
         let stale = restart_journal(&token, &original);
-        assert!(matches!(stale.result, Err(StorageError::Conflict { .. })));
+        assert!(matches!(
+            stale.result,
+            Err(StorageError::JournalConflict { .. })
+        ));
         assert!(stale.preserved_path.is_none());
         assert_eq!(load_journal(&path).unwrap(), replacement);
         assert!(Journal::open_empty(path).is_err());
@@ -282,7 +285,10 @@ mod tests {
         let foreign = b"different external journal bytes";
         fs::write(&path, foreign).unwrap();
         let outcome = restart_journal(&token, &Project::new(48_000).unwrap());
-        assert!(matches!(outcome.result, Err(StorageError::Conflict { .. })));
+        assert!(matches!(
+            outcome.result,
+            Err(StorageError::JournalConflict { .. })
+        ));
         assert!(outcome.journal.is_none() && outcome.preserved_path.is_none());
         assert_eq!(fs::read(&path).unwrap(), foreign);
     }

@@ -1,16 +1,14 @@
 //! Worker-side lease admission and same-instrument revision retention.
 use super::*;
+use crate::test_wait::HANG_BOUND;
 use hex_engine::live_expression::{LiveExpressionInput, Snapshot};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
-use std::time::{Duration, Instant};
+#[track_caller]
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Ok(event) = service.try_event() {
-            return event;
-        }
-        assert!(Instant::now() < deadline, "worker event timeout");
-        std::thread::sleep(Duration::from_millis(1));
+    // Blocks on the event channel itself instead of polling against a short deadline.
+    match service.events.recv_timeout(HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("worker event absent after {HANG_BOUND:?}: {error}"),
     }
 }
 #[test]

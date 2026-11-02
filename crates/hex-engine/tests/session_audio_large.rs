@@ -141,10 +141,27 @@ fn verify(distinct: bool) -> Result<(), Box<dyn Error>> {
         },
     ))
     .map_err(|error| error.message())?;
-    assert_eq!(
-        fixture::render_partitions(&mut next, &[1, 7, 13])?,
-        vec![[0.0; 2]; 21]
-    );
+    // Every stopped clip fades out over the shared 128-frame declick from its
+    // current source position (134 + 34 frames after launch).
+    let released = fixture::render_partitions(&mut next, &[1, 7, 13])?;
+    let sounding = fixture::finite_session_oracle(
+        editor.project(),
+        &fixture.media,
+        fixture.scene_b,
+        168,
+        released.len(),
+    )?;
+    assert!(sounding.iter().any(|frame| *frame != [0.0; 2]));
+    for (offset, (actual, full)) in released.iter().zip(&sounding).enumerate() {
+        let gain = (128 - offset) as f32 / 128.0;
+        for channel in 0..2 {
+            let expected = full[channel] * gain;
+            assert!(
+                (actual[channel] - expected).abs() <= 1e-5 * expected.abs().max(1.0),
+                "release frame {offset}: {actual:?} != {full:?} * {gain}"
+            );
+        }
+    }
     for index in 0..100 {
         assert_eq!(
             next.session_route_status(index).ok_or("route")?.owner,

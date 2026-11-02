@@ -180,13 +180,14 @@ fn native_tuning_current_generators_export_non_octave_pitch_and_exact_rendered_p
         for (frame, (samples, expected)) in bytes[44..].chunks_exact(4).zip(&direct).enumerate() {
             let left = i16::from_le_bytes([samples[0], samples[1]]);
             let right = i16::from_le_bytes([samples[2], samples[3]]);
-            assert_eq!(left, right, "{name} stereo frame{frame}");
+            // Channels carry independent dither, so centred mono differs by
+            // at most two LSB between channels.
+            assert!(
+                (i32::from(left) - i32::from(right)).abs() <= 2,
+                "{name} stereo frame{frame}"
+            );
             for (actual, value) in [left, right].into_iter().zip(expected) {
-                assert_eq!(
-                    actual,
-                    (value.clamp(-1.0, 1.0) * 32767.0).round() as i16,
-                    "{name} rendered frame{frame}"
-                );
+                assert_pcm16_near(actual, *value, &format!("{name} rendered frame{frame}"));
             }
             pcm.push(left);
         }
@@ -200,8 +201,11 @@ fn native_tuning_current_generators_export_non_octave_pitch_and_exact_rendered_p
         hex_export::render_bounce_new(&bounce_path, revision, 2048, FRAMES as u64, 1.0).unwrap();
         let bounce = fs::read(bounce_path).unwrap();
         assert_eq!(u16::from_le_bytes([bounce[20], bounce[21]]), 3);
-        assert_eq!(bounce.len(), 44 + FRAMES * 8);
-        for (frame, (bytes, expected)) in bounce[44..]
+        assert_eq!(
+            bounce.len(),
+            hex_export::FLOAT32_WAV_HEADER_BYTES as usize + FRAMES * 8
+        );
+        for (frame, (bytes, expected)) in bounce[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..]
             .chunks_exact(8)
             .zip(&direct[2048..])
             .enumerate()
@@ -226,4 +230,14 @@ fn native_tuning_current_generators_export_non_octave_pitch_and_exact_rendered_p
         );
         assert_eq!(fs::read(path).unwrap(), bytes);
     }
+}
+
+/// PCM16 export applies ±1 LSB TPDF dither, so each sample lands within one
+/// LSB of plain rounding.
+fn assert_pcm16_near(actual: i16, expected: f32, context: &str) {
+    let rounded = (expected.clamp(-1.0, 1.0) * 32_767.0).round() as i32;
+    assert!(
+        (i32::from(actual) - rounded).abs() <= 1,
+        "{context}: {actual} not within one lsb of {rounded}"
+    );
 }

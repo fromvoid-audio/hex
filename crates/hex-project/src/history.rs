@@ -225,8 +225,10 @@ impl Editor {
         )
     }
 
-    /// Apply the captured import policy to each new Arrangement source before
-    /// placement and preparation. Refusal preserves the complete previous history.
+    /// Apply the captured import policy to each new or reused Arrangement source
+    /// before placement and preparation. `Command::ImportExistingAudio` members
+    /// place an existing asset under the same law without adding one. Refusal
+    /// preserves the complete previous history.
     /// Console imports remain unwarped and reject a non-Off policy.
     pub fn execute_audio_imports_with_warp_prepared<T, E: From<Invalid>>(
         &mut self,
@@ -241,6 +243,9 @@ impl Editor {
                     Command::ImportPreparedAudioTrackAt { .. }
                         | Command::ImportPreparedAudioClip { .. }
                         | Command::ImportPreparedAudioClipWithOverwrite { .. }
+                ) || matches!(
+                    command,
+                    Command::ImportExistingAudio { placement, .. } if placement.is_arrangement()
                 )
             });
         if !arrangement && warp != crate::AudioImportWarp::Off {

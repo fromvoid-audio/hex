@@ -178,3 +178,55 @@ fn output_meter_status_snapshot_reaches_actual_editor_at_minimum_size(cx: &mut T
     editor.read_with(cx, |view, _| assert!(view.output_meter_frame.is_none()));
     assert_eq!(visual.debug_bounds("output-meter").unwrap(), slot);
 }
+
+#[gpui::test]
+fn stream_starvation_lights_compact_disk_overload_until_hold_expires(cx: &mut TestAppContext) {
+    let (handle, editor) = editor_window(
+        cx,
+        Project::new(48_000).unwrap(),
+        Arc::new(Default::default()),
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(960.0), px(600.0)));
+    visual.run_until_parked();
+    let slot = visual.debug_bounds("editor-disk-overload").unwrap();
+    let meter = visual.debug_bounds("output-meter").unwrap();
+    let diagnostics = visual.debug_bounds("editor-audio-diagnostics").unwrap();
+    assert_eq!(slot.size.width, px(super::render::DISK_OVERLOAD_WIDTH));
+    assert!(meter.right() <= slot.left() && slot.right() <= diagnostics.left());
+    assert!(visual.debug_bounds("editor-disk-overload-lit").is_none());
+
+    // Actual Status-boundary fixture: the callback counter, not simulated delivery.
+    let status = Status::default();
+    status.playing.store(true, Relaxed);
+    let start = Instant::now();
+    let mut observe = |at: Instant| {
+        let frame = AudioFrame::capture(&status);
+        let redraw = editor.update(&mut visual, |view, cx| {
+            let redraw = view.observe_audio_frame(Some(frame), false, at);
+            cx.notify();
+            redraw
+        });
+        visual.run_until_parked();
+        let lit = visual.debug_bounds("editor-disk-overload-lit");
+        assert_eq!(visual.debug_bounds("editor-disk-overload").unwrap(), slot);
+        assert_eq!(
+            visual.debug_bounds("editor-audio-diagnostics").unwrap(),
+            diagnostics
+        );
+        (redraw, lit)
+    };
+    assert!(observe(start).1.is_none());
+    status.stream_starved_callbacks.fetch_add(4, Relaxed);
+    let (redraw, lit) = observe(start);
+    assert!(redraw);
+    let lit = lit.expect("starvation lights the indicator");
+    assert!(lit.left() >= slot.left() && lit.right() <= slot.right());
+    // Still lit just before the hold expires; expiry is its own redraw.
+    let hold = super::disk_overload::HOLD;
+    let (redraw, lit) = observe(start + hold - std::time::Duration::from_millis(1));
+    assert!(!redraw && lit.is_some());
+    let (redraw, lit) = observe(start + hold);
+    assert!(redraw && lit.is_none());
+    editor.read_with(cx, |view, _| assert_eq!(view.disk_overload.count(), 4));
+}
