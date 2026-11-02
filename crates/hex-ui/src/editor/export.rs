@@ -259,17 +259,13 @@ impl EditorView {
                 }
                 match event.result {
                     Ok(report) => {
-                        self.status = format!(
-                            "exported rev {} · {} frames{}",
+                        self.status = export_status(
                             event.revision,
                             report.frames,
+                            report.clipped_samples,
                             report
                                 .recovery_path
-                                .map(|path| format!(
-                                    " · previous file at {}",
-                                    hex_session::service::text::verbatim(path.display())
-                                ))
-                                .unwrap_or_default()
+                                .map(|path| hex_session::service::text::verbatim(path.display())),
                         );
                         self.error = None;
                     }
@@ -286,6 +282,47 @@ impl EditorView {
             }
             Err(_) => changed,
         }
+    }
+}
+
+/// Completed-export status line. Integer exports that clamped overs report the
+/// clipped channel-sample count so a hot master is never silently flattened.
+fn export_status(
+    revision: u64,
+    frames: u64,
+    clipped_samples: u64,
+    previous_file: Option<String>,
+) -> String {
+    let mut status = format!("exported rev {revision} · {frames} frames");
+    match clipped_samples {
+        0 => {}
+        1 => status.push_str(" · 1 sample clipped"),
+        count => status.push_str(&format!(" · {count} samples clipped")),
+    }
+    if let Some(path) = previous_file {
+        status.push_str(&format!(" · previous file at {path}"));
+    }
+    status
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::export_status;
+
+    #[test]
+    fn export_status_reports_clipped_samples_only_when_present() {
+        assert_eq!(
+            export_status(3, 480, 0, None),
+            "exported rev 3 · 480 frames"
+        );
+        assert_eq!(
+            export_status(3, 480, 1, None),
+            "exported rev 3 · 480 frames · 1 sample clipped"
+        );
+        assert_eq!(
+            export_status(4, 2, 2, Some("/Old/Take.wav".into())),
+            "exported rev 4 · 2 frames · 2 samples clipped · previous file at /Old/Take.wav"
+        );
     }
 }
 
