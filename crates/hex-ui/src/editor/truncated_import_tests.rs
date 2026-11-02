@@ -10,6 +10,8 @@ use std::sync::Arc;
 fn settle(cx: &mut TestAppContext, handle: AnyWindowHandle, editor: &Entity<EditorView>) {
     let deadline = crate::test_wait::hang_deadline();
     loop {
+        // Park first so a just-answered prompt's task has enqueued its request.
+        cx.run_until_parked();
         let ready = editor.update(cx, |view, cx| {
             if view.tick(cx) {
                 cx.notify();
