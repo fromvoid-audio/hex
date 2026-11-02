@@ -2672,7 +2672,12 @@ mod tests {
             },
         )
         .unwrap();
-        let receive = || service.events.recv_timeout(Duration::from_secs(5)).unwrap();
+        let receive = || {
+            service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap()
+        };
         let initial = receive();
         assert!(initial.error.as_ref().unwrap().contains("fixture offline"));
         service
@@ -3183,7 +3188,7 @@ mod tests {
         assert!(queued_export.error.is_none(), "{:?}", queued_export.error);
         let exported = service
             .export_events
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(crate::test_wait::HANG_BOUND)
             .unwrap();
         assert!(exported.result.is_ok(), "{:?}", exported.result);
         assert!(files.output().exists());
@@ -3476,7 +3481,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(current.inputs.version, 1);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
         let result = loop {
             lane.drive(
                 &session,
@@ -3577,7 +3582,7 @@ mod tests {
             },
         )
         .unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
         let result = loop {
             lane.drive(
                 &session,
@@ -3593,7 +3598,7 @@ mod tests {
                 break result;
             }
             assert!(std::time::Instant::now() < deadline);
-            thread::yield_now();
+            crate::test_wait::pause();
         };
         assert!(result.result.unwrap_err().contains("seek target changed"));
         assert_eq!(observed.seek_attempts.load(Ordering::Acquire), 0);
@@ -3612,7 +3617,7 @@ mod tests {
     }
 
     fn wait_for_seek(service: &Service) -> ResidentArrangementSeekResult {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
         loop {
             if let Some(result) = service.try_resident_arrangement_seek_result() {
                 return result;
