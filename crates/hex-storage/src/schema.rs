@@ -9,6 +9,7 @@ pub(crate) mod clip_activation;
 pub(crate) mod clip_aliases;
 pub(crate) mod clip_names;
 pub(crate) mod combined;
+pub(crate) mod content_view_resampler;
 pub(crate) mod content_views;
 pub(crate) mod conversion_v2;
 pub(crate) mod crossfades;

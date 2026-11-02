@@ -207,7 +207,8 @@ pub struct AudioClipContent {
     pub warp: Option<WarpSettings>,
     pub warp_enabled: bool,
     pub source_gain: Vec<SourceGainPoint>,
-    /// Law used by the root pitch/warp render. Directed content views keep v1.
+    /// Law used by the root pitch/warp render. Directed content views carry
+    /// their own law in [`AudioContentView::read_resampler`].
     pub warp_resampler: WarpResampler,
 }
 impl AudioClipContent {
