@@ -1,9 +1,11 @@
 //! Functional view-local EQ catalog: shared production geometry/widgets/axes.
 //! Registered control-side response only; never fabricates a live analyzer.
 use super::*;
-use hex_devices::eq::EqState;
+use hex_devices::eq::{self, EqState};
 #[path = "../../src/editor/device_panel/eq_panel/axes.rs"]
 mod axes;
+#[path = "../../src/editor/device_panel/eq_panel/node_geometry.rs"]
+mod node_geometry;
 #[path = "../../src/editor/device_panel/eq_panel/sampling.rs"]
 mod sampling;
 use hex_widgets::{NumericControlEvent, SelectorChanged, ToggleChanged};
@@ -187,10 +189,7 @@ pub(super) fn model(fixture: &Fixture, cx: &gpui::App) -> Option<ResponseGraphMo
         analyzer_peak: None,
         nodes: vec![hex_widgets::ResponseGraphNode {
             id: 1,
-            position: [
-                axes::x(node.frequency_hz, 48000),
-                (node.gain_db + 24.0) / 48.0,
-            ],
+            position: node_geometry::node_position(&node, 48_000),
             enabled: node.enabled,
             selected: true,
         }],
@@ -273,4 +272,40 @@ pub(super) fn body(fixture: &Fixture) -> Div {
             div().child(theme::text("no audio")),
         ),
     )
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn cut_and_notch_positions_follow_q(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let (kind, q) = view.read_with(cx, |view, _| {
+            let fixture = &view.fixtures[&Entry::Eq];
+            (
+                fixture.selectors[1].clone(),
+                fixture.numbers[3].entity.clone(),
+            )
+        });
+        q.update(cx, |q, cx| q.set_external_value(18.0, cx).unwrap());
+        for index in [3, 4, 5] {
+            kind.update(cx, |kind, cx| kind.set_selected(index, cx).unwrap());
+            let model = view.read_with(cx, |view, cx| {
+                model(&view.fixtures[&Entry::Eq], cx).unwrap()
+            });
+            assert!(
+                (model.nodes[0].position[1] - 1.0).abs() < 0.0001,
+                "kind {index}: {:?}",
+                model.nodes[0].position
+            );
+        }
+    }
 }
