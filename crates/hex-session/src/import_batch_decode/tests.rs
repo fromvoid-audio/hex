@@ -175,7 +175,7 @@ fn one_file_with_legacy_riff_size_matches_worker_decode_and_single_import() {
     let baseline = fixture.project().clone();
     let mut old = Session::from_loaded(baseline.clone(), 16, 8_000_000, Vec::new()).unwrap();
     let mut new = Session::from_loaded(baseline, 16, 8_000_000, Vec::new()).unwrap();
-    let decoded = decode_wav_file(&path, Limits::new(FILE_BYTES, SOURCE_FRAMES)).unwrap();
+    let decoded = crate::resident_import::decode_resident_import(&path).unwrap();
     let prepared = PreparedImport::at_rate(
         decoded,
         48_000,
@@ -393,7 +393,7 @@ fn sparse_oversized_actual_files_enforce_file_and_source_frame_limits() {
     let bytes = files.0.join("bytes.wav");
     fs::File::create(&bytes)
         .unwrap()
-        .set_len((FILE_BYTES as u64) + 1)
+        .set_len((crate::resident_import::IMPORT_FILE_LIMIT as u64) + 1)
         .unwrap();
     let frames = files.0.join("frames.wav");
     fs::write(&frames, header(48_000, (SOURCE_FRAMES as u32) + 1)).unwrap();

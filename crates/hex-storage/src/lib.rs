@@ -3,7 +3,8 @@
 //! source-bound automation recording drafts. Drafts are not canonical lane references.
 //!
 //! # Dependencies
-//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2.
+//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2, plus
+//! libc errno/flags and rustix's safe exclusive rename for create-new publication.
 //!
 //! # Does not own
 //! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
@@ -13,6 +14,7 @@ mod files;
 mod journal;
 pub mod preset;
 pub mod project_name;
+mod publication;
 pub mod text;
 pub mod tuning_library;
 pub use journal::{
@@ -64,6 +66,8 @@ pub enum JournalChange {
 pub enum StorageError {
     Io(io::Error),
     Json(serde_json::Error),
+    /// Another owner currently holds the automation draft's exclusive lock.
+    AutomationDraftBusy(io::Error),
     /// The operation's visible state is retained; lock cleanup failed.
     JournalLockRelease {
         path: PathBuf,
@@ -115,6 +119,9 @@ impl fmt::Display for StorageError {
                 Ok(())
             }
             Self::Io(error) => write!(f, "project file error: {error}"),
+            Self::AutomationDraftBusy(error) => {
+                write!(f, "automation draft is busy; try again: {error}")
+            }
             Self::Json(error) => write!(f, "invalid project json: {error}"),
             Self::Invalid(reason) => f.write_str(reason),
             Self::Conflict { path } => {
@@ -151,7 +158,7 @@ impl std::error::Error for StorageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::JournalLockRelease { source, .. } => Some(source),
-            Self::Io(e) => Some(e),
+            Self::Io(e) | Self::AutomationDraftBusy(e) => Some(e),
             Self::Json(e) => Some(e),
             Self::Invalid(_) | Self::Conflict { .. } => None,
             Self::PublishedButNotDurable { source, .. }
@@ -343,6 +350,9 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// violating current model invariants refuse rather than lose musical data.
 /// Newer/unknown fields, duplicate keys and malformed inventories refuse.
 /// Saving uses the current schema through existing atomic publication/recovery.
+/// From schema30 upward the migration chain parses the bytes once (after one
+/// duplicate-field check) and each frozen layer adapts that single value in
+/// place; layers never re-serialize the document for the next one.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     #[derive(serde::Deserialize)]
     struct CurrentHeader<'a> {
