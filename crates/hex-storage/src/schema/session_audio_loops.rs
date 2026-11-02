@@ -76,9 +76,19 @@ pub(crate) fn decode49(bytes: &[u8]) -> Result<Project, StorageError> {
     decode_version(bytes, 49)
 }
 
+/// Decode a schema49 envelope parsed once by an upper migration layer.
+pub(crate) fn decode49_value(value: serde_json::Value) -> Result<Project, StorageError> {
+    decode_version_value(value, 49)
+}
+
 fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_version_value(super::audio_events::parse_unique(bytes)?, version)
+}
+
+fn decode_version_value(
+    mut value: serde_json::Value,
+    version: u64,
+) -> Result<Project, StorageError> {
     let object = value.as_object_mut().ok_or(StorageError::Invalid(
         "invalid console audio cycle envelope",
     ))?;
@@ -92,9 +102,9 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     // singleton contract. Only49 admits explicit receivers and shared bindings.
     let core = if version == 48 {
         object.insert("version".into(), 47.into());
-        super::native_sources::decode47(&serde_json::to_vec(&value)?)?
+        super::native_sources::decode47_value(value)?
     } else {
-        super::native_sources::decode49(&serde_json::to_vec(&value)?)?
+        super::native_sources::decode49_value(value)?
     };
     let mut snapshot = core.snapshot();
     let mut rows = rows.into_iter();

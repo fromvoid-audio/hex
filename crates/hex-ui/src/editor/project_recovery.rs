@@ -11,6 +11,8 @@ pub(super) enum OpenKind {
     Untitled,
     SavedEdits,
     PreviousSave,
+    /// A copy kept by discard or copy-on-first-edit: a journal or its folder.
+    Kept,
 }
 
 impl EditorView {
@@ -67,9 +69,14 @@ impl EditorView {
                         .update(cx, |_, cx| {
                             cx.prompt_for_paths(PathPromptOptions {
                                 files: true,
-                                directories: false,
+                                // Kept copies may be hidden dot-files: their folder is accepted.
+                                directories: matches!(kind, OpenKind::Kept),
                                 multiple: false,
-                                prompt: Some("choose saved project".into()),
+                                prompt: Some(if matches!(kind, OpenKind::Kept) {
+                                    "choose kept session".into()
+                                } else {
+                                    "choose saved project".into()
+                                }),
                             })
                         })
                         .map_err(|e| e.to_string())?;
@@ -87,6 +94,7 @@ impl EditorView {
                         OpenKind::Relink => ProjectSource::Saved(path),
                         OpenKind::SavedEdits => ProjectSource::SavedJournal(path),
                         OpenKind::PreviousSave => ProjectSource::PreviousSave(path),
+                        OpenKind::Kept => hex_session::service::kept_journal(&path)?,
                         OpenKind::Untitled => return Ok(None),
                     }
                 };

@@ -2,6 +2,12 @@
 //! materialized through the canonical MIDI playback law, never by adding raw
 //! authored onsets. Unselected occupancy in the outer span is a refusal: grouping
 //! must not invoke the placement owner's destructive overlap replacement.
+//!
+//! Activation policy: the grouped container is always active, and each
+//! source's deactivation moves into its material (inactive MIDI notes, inactive
+//! audio events). Grouping therefore never makes a deactivated clip audible, and
+//! the container stays editable as one active clip. The container takes its name
+//! and flavor from the earliest selected clip.
 use crate::{
     BeatTime, ClipId, Created, Invalid, MAX_CLIPS, MAX_NOTES, MidiClip, MidiClipGain,
     MidiClipVolume, MidiClipVolumePoint, MidiSource, NoteId, Project,
