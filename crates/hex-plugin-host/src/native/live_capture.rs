@@ -14,8 +14,10 @@ impl Prepared {
     /// continues. The acknowledgement means only that this exact request was
     /// admitted; the caller must poll through this same original worker. A
     /// second begin refuses without disturbing the first operation. An
-    /// `Error::StateExceedsLimit` refusal, here or from a poll, retires only this
+    /// `Error::CaptureRefused` refusal, here or from a poll, retires only this
     /// operation: the instance keeps processing and a later capture may begin.
+    /// The helper refuses a capture as still changing before this deadline
+    /// expires, so continuous plugin edits never fault the lease.
     /// Every other failure stays terminal. Startup and
     /// canonical state remain unchanged. Ordinary PCM progress checks the same
     /// capture deadline, so an abandoned operation cannot live indefinitely.
@@ -42,9 +44,9 @@ impl Prepared {
             Ok(Some(_)) => {
                 self.refuse_live_capture(Error::Protocol("live capture completed before admission"))
             }
-            Err(Error::StateExceedsLimit(refusal)) => {
+            Err(Error::CaptureRefused(refusal)) => {
                 self.live_capture_sequence = operation;
-                Err(Error::StateExceedsLimit(refusal))
+                Err(Error::CaptureRefused(refusal))
             }
             Err(cause) => self.refuse_live_capture(cause),
         }
@@ -67,9 +69,9 @@ impl Prepared {
                 }
                 Ok(state)
             }
-            Err(Error::StateExceedsLimit(refusal)) => {
+            Err(Error::CaptureRefused(refusal)) => {
                 self.live_capture = None;
-                Err(Error::StateExceedsLimit(refusal))
+                Err(Error::CaptureRefused(refusal))
             }
             Err(cause) => self.refuse_live_capture(cause),
         }
@@ -106,32 +108,18 @@ impl Prepared {
         self.lease
             .channel
             .read(&mut self.packet, until, &mut || token.check())?;
-        if self.packet.magic() == b"HXVIER01" {
-            return Err(Error::Worker(protocol::error(
-                self.packet.body()?,
-                self.config.binding,
-            )?));
-        }
-        if self.packet.magic() == protocol::CAPTURE_REFUSAL_MAGIC {
-            let refusal = protocol::capture_refusal(
-                self.packet.body()?,
-                &self.config,
-                self.sequence,
-                pending.operation,
-            )?;
-            token.check()?;
-            return Err(Error::StateExceedsLimit(refusal));
-        }
-        if self.packet.magic() != b"HXVLCA01" {
-            return Err(Error::Protocol("missing live capture acknowledgement"));
-        }
-        let state = protocol::live_captured_state(
+        let reply = protocol::live_capture_reply(
+            self.packet.magic(),
             self.packet.body()?,
             &self.config,
             self.sequence,
             pending.operation,
-        )?;
-        token.check()?;
-        Ok(state)
+        );
+        // Cancellation wins over a decoded reply or refusal; a worker error or
+        // malformed frame stays the terminal cause.
+        if matches!(reply, Ok(_) | Err(Error::CaptureRefused(_))) {
+            token.check()?;
+        }
+        reply
     }
 }
