@@ -598,3 +598,94 @@ fn resident_sampler_voice_steal_declick_allocates_and_frees_nothing_in_the_actua
     assert!((committed[8][0] - (1.0 + (1.0 - 4.0 / 64.0))).abs() < 1e-6);
     assert!((committed[23][0] - 1.0).abs() < 1e-6, "declick complete");
 }
+
+#[test]
+fn sampler_loop_crossfade_renders_through_repeated_seams_without_allocations_or_frees() {
+    use hex_devices::sampler::{Mode, PreparedSamplerPlan, Region, SampleChannels, SampleShape};
+    use hex_lattice::{
+        NativeInstrumentEvent, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+    };
+    // A ramp makes the 8..32 loop seam a large step that the crossfade hides.
+    let pcm: [f32; 32] = std::array::from_fn(|n| n as f32 / 32.0);
+    let views = [DeviceResourceView {
+        slot: DeviceAssetSlot::new(1).unwrap(),
+        identity: DeviceResourceIdentity {
+            asset: DeviceAssetKey::new(1).unwrap(),
+            content: [2; 32],
+            derivation_version: 1,
+            derivation: [3; 32],
+        },
+        sample_rate: 8_000,
+        pcm: DeviceResourcePcm::Mono(&pcm),
+    }];
+    let resources = BorrowedDeviceResources(&views);
+    let mut settings = hex_devices::sampler::Settings::new(Region { start: 0, end: 32 });
+    settings.mode = Mode::Classic {
+        loop_region: Some(Region { start: 8, end: 32 }),
+    };
+    // 8 source frames at 8 kHz: the whole pre-roll.
+    settings.loop_crossfade_ms = 1.0;
+    let prepared = PreparedSamplerPlan::new(
+        SampleShape::new(32, 8_000, SampleChannels::Mono).unwrap(),
+        8_000,
+        settings,
+    )
+    .unwrap()
+    .bind_source_on_control(views[0])
+    .unwrap()
+    .prepare_runtime_on_control(1, 128, &TuningTable::default())
+    .unwrap();
+    let limits = NativeInstrumentRuntimeLimits {
+        max_pair_bytes: 2 * 1024 * 1024,
+        max_events_per_block: 128,
+        max_active_occurrences: 1,
+        max_tail_frames: 8_000 * 600,
+    };
+    // 60 renders at unity (linear interpolation); 72 at 2x (band-limited).
+    for (pitch, bound) in [(60, 0.2), (72, 0.35)] {
+        let mut runtime = NativeInstrumentRuntimePair::new(&prepared, limits).unwrap();
+        let onset = [NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch,
+            velocity: 127,
+        }];
+        // 16 blocks of 24 frames cross the 24-frame loop seam 15 times.
+        let mut output = [[[0.0; 2]; 24]; 16];
+        let mut failure = None;
+        // Construction, binding and buffers stay outside; measure the rendering.
+        let measurement = allocation_counter::measure(|| {
+            runtime.reset();
+            for (index, block) in output.iter_mut().enumerate() {
+                runtime.begin_block();
+                let events: &[NativeInstrumentEvent] = if index == 0 { &onset } else { &[] };
+                if let Err(error) =
+                    runtime.process_block(std::hint::black_box(events), block, &resources)
+                {
+                    failure = Some(error);
+                    break;
+                }
+                runtime.commit_block();
+            }
+        });
+        assert_eq!(failure, None);
+        assert_eq!(
+            (
+                measurement.count_total,
+                measurement.bytes_total,
+                measurement.count_current,
+                measurement.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        // The ramp's slope is 1/32 per source frame; a hard seam would jump by
+        // 24/32. At 2x the 8-frame fade spans 4 output frames.
+        let frames: Vec<f32> = output.iter().flatten().map(|frame| frame[0]).collect();
+        let step = frames
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0, f32::max);
+        assert!(step < bound, "{pitch}: {step}");
+        assert!(frames[380] > 0.0, "the loop keeps sounding");
+    }
+}
