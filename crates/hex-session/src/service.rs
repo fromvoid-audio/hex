@@ -11367,10 +11367,10 @@ mod service_tests {
         assert_eq!(completed.path, output);
         assert!(completed.result.is_ok());
         let bytes = fs::read(completed.path).expect("read exported snapshot");
-        assert_eq!(read_u16(&bytes, 44), 0x4000);
-        assert_eq!(read_u16(&bytes, 46), 0x4000);
-        assert_eq!(read_u16(&bytes, 48), 0x2000);
-        assert_eq!(read_u16(&bytes, 50), 0x2000);
+        assert_pcm16_near(&bytes, 44, 0x4000);
+        assert_pcm16_near(&bytes, 46, 0x4000);
+        assert_pcm16_near(&bytes, 48, 0x2000);
+        assert_pcm16_near(&bytes, 50, 0x2000);
     }
 
     #[test]
@@ -11418,8 +11418,8 @@ mod service_tests {
         assert_eq!(completed.result.unwrap().frames, 1);
         let bytes = fs::read(output).unwrap();
         assert_eq!(bytes.len(), 48);
-        assert_eq!(read_u16(&bytes, 44), 0x2000);
-        assert_eq!(read_u16(&bytes, 46), 0x2000);
+        assert_pcm16_near(&bytes, 44, 0x2000);
+        assert_pcm16_near(&bytes, 46, 0x2000);
         assert_eq!(
             control.progress(),
             ExportProgress {
@@ -11429,8 +11429,13 @@ mod service_tests {
         );
     }
 
-    fn read_u16(bytes: &[u8], offset: usize) -> u16 {
-        u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+    /// PCM16 export applies ±1 LSB TPDF dither: within one LSB of `expected`.
+    fn assert_pcm16_near(bytes: &[u8], offset: usize, expected: i16) {
+        let actual = i16::from_le_bytes([bytes[offset], bytes[offset + 1]]);
+        assert!(
+            (i32::from(actual) - i32::from(expected)).abs() <= 1,
+            "sample at {offset}: {actual} not within one lsb of {expected}"
+        );
     }
 
     #[test]
