@@ -152,3 +152,63 @@ fn stolen_voice_leaves_the_active_set_and_refusal_remains_when_every_voice_is_he
     process(&mut runtime, &[off(0, 2)], &mut [[0.0; 2]; 64], &resources);
     assert!(runtime.committed_is_quiescent());
 }
+
+/// `count` steals in one frame on a one-voice runtime: every note-on after
+/// the first steals its predecessor, which is released on the same frame.
+fn steal_burst(start_id: u64, count: u64) -> Vec<NativeInstrumentEvent> {
+    let mut events = vec![on(0, start_id, 60)];
+    for id in start_id..start_id + count {
+        events.push(off(0, id));
+        events.push(on(0, id + 1, 60));
+    }
+    events
+}
+
+#[test]
+fn steal_burst_beyond_the_fade_pool_is_refused_instead_of_cutting_a_fading_voice() {
+    let views = [view(&DC)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = one_voice(views[0]);
+    let fade = prepared.steal_fade_frames();
+    let pool = MAX_SAMPLER_RUNTIME_VOICES as u64;
+    let mut runtime = pair(&prepared);
+
+    // One steal more than the pool holds: refused, output and state untouched.
+    let mut untouched = [[9.0; 2]; 4];
+    runtime.begin_block();
+    assert_eq!(
+        runtime.process_block(&steal_burst(1, pool + 1), &mut untouched, &resources),
+        Err(Error::EventCapacityExceeded)
+    );
+    assert_eq!(untouched, [[9.0; 2]; 4]);
+    runtime.rollback_block();
+    assert!(runtime.committed_is_quiescent());
+
+    // Exactly the pool: every stolen voice declicks; nothing is cut.
+    let mut output = vec![[0.0; 2]; 2 * fade as usize];
+    process(&mut runtime, &steal_burst(1, pool), &mut output, &resources);
+    let release = prepared.max_release_tail_frames() as f64;
+    for (index, frame) in output.iter().enumerate() {
+        let age = index as f64;
+        let stolen = if index < fade as usize {
+            pool as f64 * (1.0 - age / release) * (1.0 - age / fade as f64)
+        } else {
+            0.0
+        };
+        assert!(
+            (f64::from(frame[0]) - (1.0 + stolen)).abs() < 1e-4,
+            "frame {index}: {frame:?}"
+        );
+    }
+    let mut ids = [0; MAX_SAMPLER_RUNTIME_VOICES];
+    assert_eq!(runtime.active_occurrence_ids(&mut ids), Ok(1));
+    assert_eq!(ids[0], pool + 1);
+
+    // Once the declicks finish the pool is free again.
+    process(
+        &mut runtime,
+        &[off(0, pool + 1), on(0, pool + 2, 60)],
+        &mut [[0.0; 2]; 4],
+        &resources,
+    );
+}

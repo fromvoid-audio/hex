@@ -149,7 +149,10 @@ impl Drop for Temporary {
 }
 
 /// Create a complete new project without overwriting another file. Failed writes
-/// cannot expose partial JSON at the target path; old targets always remain intact.
+/// do not leave partial JSON at the target path; old targets always remain intact.
+/// Volumes without hard links or exclusive rename publish an exclusive synced
+/// copy instead, where only a crash during that copy can leave an incomplete
+/// new file (see `crate::publication`).
 /// A failure after linking reports `PublishedButNotDurable`; the complete target
 /// is retained and callers must not treat that error as absence of a saved file.
 pub fn save_new(path: impl AsRef<Path>, project: &Project) -> Result<(), StorageError> {
@@ -218,7 +221,7 @@ fn save_with_finish(
         ));
     }
     // Refuse known collisions before serialization or temporary-file work. The
-    // final hard link still enforces create-new atomically against races.
+    // final publication still refuses an existing destination against races.
     match fs::symlink_metadata(path) {
         Ok(_) => {
             return Err(std::io::Error::new(
@@ -259,7 +262,7 @@ fn save_with_finish(
     file.write_all(&bytes)?;
     file.sync_all()?;
     drop(file);
-    fs::hard_link(&temporary.0, path)?;
+    crate::publication::publish_new(&temporary.0, path)?;
     let warning = finish(&temporary.0, path)
         .err()
         .map(|(operation, source)| ReplaceWarning { operation, source });
@@ -275,7 +278,10 @@ fn save_with_finish(
 pub(crate) fn finish_publication(temporary: &Path, path: &Path) -> Result<(), FinishError> {
     // Attempt directory sync even when temporary cleanup failed. Neither step
     // may roll back a destination that has already been published.
-    let cleanup_error = fs::remove_file(temporary).err();
+    // An exclusive-rename publication already consumed the staging name.
+    let cleanup_error = fs::remove_file(temporary)
+        .err()
+        .filter(|error| error.kind() != std::io::ErrorKind::NotFound);
     #[cfg(unix)]
     let sync_error = {
         let parent = path
@@ -752,6 +758,37 @@ mod tests {
         let replacement = Project::new(44_100).expect("replacement");
         crate::replace_existing(&path, &token, &replacement).expect("next save");
         assert_eq!(load(&path).expect("replaced"), replacement);
+    }
+
+    /// Regression for #3915: exFAT/FAT/SMB volumes refuse hard links, which
+    /// used to fail Save As and the first overwrite's recovery sidecar.
+    #[cfg(unix)]
+    #[test]
+    fn volumes_without_hard_links_save_overwrite_and_recover() {
+        use crate::publication::simulate::{Volume, volume};
+        for capability in [
+            Volume::NoHardLinks(libc::ENOTSUP),
+            Volume::NoHardLinks(libc::EPERM),
+            Volume::NoAtomicCreate,
+        ] {
+            let dir = TestDir::new();
+            let _volume = volume(capability);
+            let path = dir.0.join("usb.hex");
+            let first = Project::new(48_000).expect("project");
+            let token = save_new_with_token(&path, &first).expect("save as");
+            assert_eq!(load(&path).expect("complete project"), first);
+            assert!(
+                matches!(save_new(&path, &first), Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists)
+            );
+            assert_eq!(load(&path).expect("untouched project"), first);
+            let second = Project::new(44_100).expect("replacement");
+            crate::replace_existing(&path, &token, &second).expect("first overwrite");
+            assert_eq!(load(&path).expect("replaced"), second);
+            let recovery = crate::load_recovery(&path).expect("recovery sidecar");
+            assert_eq!(recovery.project, first);
+            // Only the project and its sidecar remain: no staging leftovers.
+            assert_eq!(fs::read_dir(&dir.0).expect("directory").count(), 2);
+        }
     }
 
     #[test]

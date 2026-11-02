@@ -239,7 +239,8 @@ impl EditorView {
         let rows_viewport = viewport;
         let rows_grid = grid.clone();
         let track_scale_factor = window.scale_factor();
-        let playhead = self.cursor_position();
+        // What you hear, not the scheduled cursor ahead of it by Main latency.
+        let playhead = self.audible_cursor_position();
         let rows_entity = cx.entity();
         let rows = list(self.track_scroll.list.clone(), move |index, _, cx| {
             rows_entity

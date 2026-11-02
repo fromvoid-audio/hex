@@ -80,6 +80,8 @@ fn source() -> crate::OwnedAudioSource {
 
 #[test]
 fn current_sampler_cue_same_clip_reserves_old_release_and_fresh_incarnation_with_literal_pcm() {
+    // The outgoing incarnation's release starts at the cue frame.
+    let release = release_frames(2.0 / 16000.0) as usize;
     let mut results = Vec::new();
     for held in [false, true] {
         let (editor, asset, track, clip) = looping_source(
@@ -155,7 +157,7 @@ fn current_sampler_cue_same_clip_reserves_old_release_and_fresh_incarnation_with
                 .test_apply_action(PlaybackAction::Transport(crate::PlaybackCommand::Play))
                 .unwrap();
         }
-        let mut pcm = [[0.0; 2]; 8];
+        let mut pcm = vec![[0.0; 2]; release + 6];
         owner.test_render(&mut pcm[..1]).unwrap();
         assert_eq!(
             owner
@@ -178,7 +180,7 @@ fn current_sampler_cue_same_clip_reserves_old_release_and_fresh_incarnation_with
                 .test_current_sampler_route_proofs(0),
             Some((2, 1, 0))
         );
-        assert!(pcm[2..].iter().flatten().any(|v| v.abs() > 1e-5));
+        assert!(pcm[release..].iter().flatten().any(|v| v.abs() > 1e-5));
         let generation = owner
             .inner
             .runtime
@@ -213,8 +215,8 @@ fn current_sampler_cue_same_clip_reserves_old_release_and_fresh_incarnation_with
         cell.cleanup_on_control().unwrap();
     }
     assert_eq!(
-        results[0][2..],
-        results[1][2..],
+        results[0][release..],
+        results[1][release..],
         "after bounded outgoing release, same literal cued sampler PCM and exact velocity37"
     );
 }

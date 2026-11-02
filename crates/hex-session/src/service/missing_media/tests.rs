@@ -1,7 +1,7 @@
 //! Real files in an isolated temp folder; the user's media is never touched.
 use super::*;
 use crate::service::{Event, Request, Service};
-use std::{fs, sync::atomic::AtomicU64, time::Duration};
+use std::{fs, sync::atomic::AtomicU64};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -286,7 +286,10 @@ fn folder_search_survives_symlink_cycles() {
 }
 
 fn next(service: &Service) -> Event {
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap()
 }
 
 fn run(service: &Service, request: Request) -> Event {
