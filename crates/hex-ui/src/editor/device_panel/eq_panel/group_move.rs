@@ -1,14 +1,10 @@
 //! Pure EQ graph coordinates and grouped-node movement; no gesture custody.
-use super::eq::NodeKind;
+use super::{eq::NodeKind, node_geometry::edits_q};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Vertical {
     Gain(f32),
     Q(f32),
-}
-
-pub(super) fn edits_q(kind: NodeKind) -> bool {
-    matches!(kind, NodeKind::LowCut | NodeKind::HighCut | NodeKind::Notch)
 }
 
 pub(super) fn frequency_from_x(x: f32, rate: u32) -> f32 {
