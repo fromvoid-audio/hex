@@ -21,7 +21,9 @@ use hex_widgets::{
 mod axes;
 mod gestures;
 mod group_move;
-use group_move::{edits_q, frequency_from_x, q_from_y};
+use group_move::{frequency_from_x, q_from_y};
+mod node_geometry;
+use node_geometry::node_position;
 mod scroll_queue;
 pub(in crate::editor) use scroll_queue::after_worker_event as after_scroll_worker_event;
 mod response;
@@ -856,17 +858,6 @@ fn audition(view: &mut EditorView, device: DeviceId, id: NodeId) {
             view.device_panel.message = Some("eq audition unavailable for this node".into());
         }
     }
-}
-/// Normalized graph position; the inverse of `frequency_from_x`/`q_from_y`/gain.
-fn node_position(node: &Node, rate: u32) -> [f32; 2] {
-    [
-        axes::x(node.frequency_hz, rate),
-        if edits_q(node.kind) {
-            (node.q / 0.1).ln() / (18.0_f32 / 0.1).ln()
-        } else {
-            (node.gain_db + 24.0) / 48.0
-        },
-    ]
 }
 /// Removes `ids` in one atomic replacement, so one Undo restores them all.
 fn remove_nodes(
