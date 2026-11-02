@@ -388,14 +388,26 @@ fn authored_pitch_gain_region_and_absolute_tuning_reach_actual_pair() {
         2,
     )
     .unwrap();
+    // +12 under neutral tuning is pitched up: the stateless plan query is the
+    // band-limited oracle at source positions 0 and 2 of the 4-frame region.
+    let octave = crate::sampler::PreparedSamplerPlan::new(
+        crate::sampler::SampleShape::new(6, 8_000, crate::sampler::SampleChannels::Mono).unwrap(),
+        8_000,
+        authored.settings(),
+    )
+    .unwrap()
+    .prepare_tuned_voice_coefficients(60, 127, &TuningTable::default())
+    .unwrap()
+    .unwrap();
+    let neutral_expected: [StereoFrame; 6] =
+        std::array::from_fn(|age| octave.sample(DeviceResourcePcm::Mono(&pcm), age as u64, 0));
+    assert_eq!(neutral_expected[2..], [[0.0; 2]; 4]);
+    assert!(neutral_expected[..2].iter().all(|frame| frame[0] > 0.0));
     drop(state);
     drop(authored);
     // Independent literal oracles separate transpose from project tuning.
     for (prepared, expected) in [
-        (
-            neutral,
-            [[1.5; 2], [3.5; 2], [0.0; 2], [0.0; 2], [0.0; 2], [0.0; 2]],
-        ),
+        (neutral, neutral_expected),
         (
             prepared,
             [[1.5; 2], [2.5; 2], [3.5; 2], [4.5; 2], [0.0; 2], [0.0; 2]],
