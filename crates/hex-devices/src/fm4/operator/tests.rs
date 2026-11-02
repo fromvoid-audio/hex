@@ -192,7 +192,7 @@ fn query_partition_and_order_do_not_change_prepared_note_samples() {
 }
 
 #[test]
-fn input_and_inaudible_nyquist_validation_remain_control_side() {
+fn input_validation_remains_control_side_and_nyquist_operators_are_admitted() {
     let quiet = Oscillator::new(1.0, 0.0, 0.0).expect("quiet oscillator");
     let routing = Routing::new([[0.0; 4]; 4], [1.0, 0.0, 0.0, 0.0]).expect("routing");
     let envelopes = [config([0.0, 1.0, 0.5], [1, 2, 3]); 4];
@@ -211,5 +211,5 @@ fn input_and_inaudible_nyquist_validation_remain_control_side() {
     }
     let mut oscillators = [quiet; 4];
     oscillators[3] = Oscillator::new(128.0, 0.0, 0.0).expect("bounded ratio");
-    assert!(PreparedOperatorFm4::new(8000, 69, 127, oscillators, routing, envelopes).is_err());
+    assert!(PreparedOperatorFm4::new(8000, 69, 127, oscillators, routing, envelopes).is_ok());
 }

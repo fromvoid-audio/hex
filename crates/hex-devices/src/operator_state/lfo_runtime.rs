@@ -1339,7 +1339,7 @@ mod tests {
         assert!(
             edited
                 .preflight_events(&high, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
-                .is_err()
+                .is_ok()
         );
     }
 }

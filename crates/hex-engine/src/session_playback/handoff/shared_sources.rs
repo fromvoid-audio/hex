@@ -687,6 +687,52 @@ mod tests {
     #[test]
     fn shared_analytic_release_keeps_receiver_mix_and_one_nonlinear_suffix() {
         on_control(|| {
+            shared_analytic_release_through_receiver_suffix(
+                hex_devices::saturator::SATURATOR_TYPE_ID,
+                hex_devices::saturator::parameter::DRIVE,
+                30.0,
+                0,
+            )
+        });
+    }
+    /// Pulse #4188: Overdrive declares oversampler latency, so the released
+    /// notes run through a latent nonlinear receiver suffix.
+    #[test]
+    fn shared_analytic_release_runs_through_a_latent_nonlinear_receiver_suffix() {
+        on_control(|| {
+            shared_analytic_release_through_receiver_suffix(
+                hex_devices::overdrive::OVERDRIVE_TYPE_ID,
+                hex_devices::overdrive::parameter::DRIVE,
+                0.8,
+                0,
+            )
+        });
+    }
+    /// Pulse #4188: when compensation delays the receiver's own edge to Main,
+    /// a detached copy of its suffix would land early. The strict planner
+    /// refuses explicitly instead of committing a silent cut.
+    #[test]
+    fn misaligned_latent_receiver_suffix_release_refuses_instead_of_silencing() {
+        on_control(|| {
+            shared_analytic_release_through_receiver_suffix(
+                hex_devices::overdrive::OVERDRIVE_TYPE_ID,
+                hex_devices::overdrive::parameter::DRIVE,
+                0.8,
+                2,
+            )
+        });
+    }
+    /// Unbinding a shared source while its notes sound releases them through
+    /// the receiver's suffix exactly as a baseline that stops the track. With
+    /// `contributor_effects` copies of the effect on the contributor, the
+    /// contributor arrives later than the receiver and the handoff refuses.
+    fn shared_analytic_release_through_receiver_suffix(
+        effect: hex_lattice_contract::DeviceTypeId,
+        drive: hex_lattice_contract::ParameterId,
+        drive_value: f32,
+        contributor_effects: usize,
+    ) {
+        {
             let mut f = fixture();
             let device = f
                 .editor
@@ -721,16 +767,23 @@ mod tests {
                 })
                 .unwrap();
             let registry = hex_devices::native_registry().unwrap();
-            let definition = registry
-                .definition(hex_devices::saturator::SATURATOR_TYPE_ID)
-                .unwrap();
+            let definition = registry.definition(effect).unwrap();
             let state = definition
                 .patch_parameter(
                     &definition.default_state().unwrap(),
-                    hex_devices::saturator::parameter::DRIVE,
-                    hex_lattice_contract::ParameterValue::Float(30.0),
+                    drive,
+                    hex_lattice_contract::ParameterValue::Float(drive_value),
                 )
                 .unwrap();
+            for _ in 0..contributor_effects {
+                f.editor
+                    .execute(Command::InsertDevice {
+                        track: f.contributor,
+                        before: None,
+                        state: state.clone(),
+                    })
+                    .unwrap();
+            }
             f.editor
                 .execute(Command::InsertDevice {
                     track: f.receiver,
@@ -777,7 +830,11 @@ mod tests {
             let mut right = left;
             actual.render(&mut left).unwrap();
             baseline.render(&mut right).unwrap();
-            assert_eq!(left, right);
+            if contributor_effects == 0 {
+                // The baseline has no contributor, so only an equal latency
+                // layout renders the same prefix.
+                assert_eq!(left, right);
+            }
             baseline
                 .apply(SessionPlaybackCommand::StopTrack {
                     track: f.receiver,
@@ -791,6 +848,18 @@ mod tests {
                 })
                 .unwrap();
             let mut candidate = SessionPlayback::new(prepare(f.editor.project())).unwrap();
+            if contributor_effects != 0 {
+                assert!(matches!(
+                    candidate.try_inherit_state_from(&mut actual),
+                    Err(SessionPlaybackError::Arrangement(message))
+                        if message == super::super::COMPENSATED_TAILS_CHANGED
+                ));
+                assert!(
+                    candidate.candidate_admission_open,
+                    "refusal commits nothing"
+                );
+                return;
+            }
             candidate.try_inherit_state_from(&mut actual).unwrap();
             assert_eq!(candidate.releases.len(), 2);
             let group = candidate.releases[0].location.tail_group();
@@ -818,7 +887,7 @@ mod tests {
                     );
                 }
             }
-        });
+        }
     }
 
     #[test]
