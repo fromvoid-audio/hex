@@ -254,8 +254,8 @@ fn compact_rows_preserve_canonical_titles_selection_and_restore_body_on_expansio
     assert!(
         f.visual
             .debug_bounds(selector("midi-preview-count", f.clips[1].value()))
-            .is_some(),
-        "fixture has a genuine capped-preview count badge"
+            .is_none(),
+        "expanded rows draw every note and never a sample-count badge"
     );
     let before = f.editor.read_with(&f.visual, |view, _| {
         view.state.as_ref().unwrap().project.snapshot()
