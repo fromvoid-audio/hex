@@ -498,6 +498,8 @@ impl EditorView {
         self.applied_project_revision = None;
         self.observed_rejected_revision = 0;
         self.audio_admission.reset_audio();
+        // A new output prepares fresh endpoints; it reports its own set.
+        self.degraded_plugins = Default::default();
         if self
             .pending_publication_observation
             .as_ref()
@@ -680,7 +682,7 @@ impl EditorView {
         }
     }
 
-    fn poll_editor_audio_events(&mut self, cx: &mut App) -> bool {
+    pub(in crate::editor) fn poll_editor_audio_events(&mut self, cx: &mut App) -> bool {
         let mut changed = false;
         for _ in 0..UI_EVENT_BUDGET {
             let event = match self.audio_events.try_recv() {
@@ -883,6 +885,21 @@ impl EditorView {
                         == Some(output_identity)
                     {
                         self.route_follow = Some(output_identity);
+                        changed = true;
+                    }
+                }
+                crate::EditorAudioEvent::DegradedPlugins {
+                    output_identity,
+                    devices,
+                } => {
+                    if self
+                        .audio
+                        .as_ref()
+                        .and_then(|audio| audio.control.output_identity())
+                        == Some(output_identity)
+                    {
+                        self.degraded_plugins =
+                            crate::editor_backend::DegradedDevices::new(devices);
                         changed = true;
                     }
                 }
