@@ -155,7 +155,10 @@ fn invalid_correlation_does_not_admit_non_save_requests() {
     };
     assert!(matches!(
         service.submit_correlated_save(Request::SaveCurrent, identity),
-        Err(SubmitError::Busy(Request::SaveCurrent))
+        Err(SubmitError::Busy(
+            Request::SaveCurrent,
+            BusyReason::InvalidSaveCorrelation
+        ))
     ));
     assert!(matches!(
         service.submit_correlated_save(
@@ -165,6 +168,9 @@ fn invalid_correlation_does_not_admit_non_save_requests() {
                 ..identity
             }
         ),
-        Err(SubmitError::Busy(Request::Undo))
+        Err(SubmitError::Busy(
+            Request::Undo,
+            BusyReason::InvalidSaveCorrelation
+        ))
     ));
 }

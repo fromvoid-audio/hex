@@ -3,6 +3,20 @@ use crate::Invalid;
 
 pub const IDENTITY_CONVERSION: u32 = 0;
 pub const SINC_CONVERSION_V1: u32 = 1;
+/// Kaiser-windowed, phase-interpolated conversion (hex-media `ResampleVersion::V2`).
+/// Saved projects carry it from storage schema64; older schemas refuse it.
+pub const SINC_CONVERSION_V2: u32 = 2;
+
+/// Conversion law recorded for newly imported media: identity at the project
+/// rate, otherwise sinc v2 (decided 1 November 2026, Pulse #3953). Existing
+/// assets keep the version they were saved with; only new imports use this.
+pub const fn import_conversion_version(source_sample_rate: u32, project_sample_rate: u32) -> u32 {
+    if source_sample_rate == project_sample_rate {
+        IDENTITY_CONVERSION
+    } else {
+        SINC_CONVERSION_V2
+    }
+}
 
 /// Round the source duration to project frames, with positive half ties rounded
 /// upward. A nonempty source occupies at least one playback frame.
@@ -41,12 +55,12 @@ pub fn validate_conversion_metadata(
             "playback frame count differs from converted duration",
         ));
     }
-    let expected_version = if source_sample_rate == project_sample_rate {
-        IDENTITY_CONVERSION
+    let supported = if source_sample_rate == project_sample_rate {
+        conversion_version == IDENTITY_CONVERSION
     } else {
-        SINC_CONVERSION_V1
+        matches!(conversion_version, SINC_CONVERSION_V1 | SINC_CONVERSION_V2)
     };
-    if conversion_version != expected_version {
+    if !supported {
         return Err(Invalid("unsupported media conversion version"));
     }
     Ok(())
@@ -54,7 +68,21 @@ pub fn validate_conversion_metadata(
 
 #[cfg(test)]
 mod tests {
-    use super::{converted_frame_count, validate_conversion_metadata};
+    use super::{
+        IDENTITY_CONVERSION, converted_frame_count, import_conversion_version,
+        validate_conversion_metadata,
+    };
+
+    #[test]
+    fn new_imports_record_identity_or_the_current_sinc_law() {
+        assert_eq!(
+            import_conversion_version(48_000, 48_000),
+            IDENTITY_CONVERSION
+        );
+        let converted = import_conversion_version(44_100, 48_000);
+        assert_eq!(converted, super::SINC_CONVERSION_V2);
+        assert!(validate_conversion_metadata(44_100, 44_100, 48_000, 48_000, converted).is_ok());
+    }
 
     #[test]
     fn frame_count_uses_checked_positive_half_up_rounding() {
@@ -71,6 +99,9 @@ mod tests {
     #[test]
     fn metadata_requires_exact_duration_and_known_rate_specific_version() {
         assert!(validate_conversion_metadata(44_100, 44_100, 48_000, 48_000, 1).is_ok());
+        assert!(validate_conversion_metadata(44_100, 44_100, 48_000, 48_000, 2).is_ok());
+        assert!(validate_conversion_metadata(44_100, 44_100, 48_000, 48_000, 3).is_err());
+        assert!(validate_conversion_metadata(128, 48_000, 128, 48_000, 2).is_err());
         assert!(validate_conversion_metadata(128, 48_000, 128, 48_000, 0).is_ok());
         assert!(validate_conversion_metadata(44_100, 44_100, 48_000, 48_000, 0).is_err());
         assert!(validate_conversion_metadata(128, 48_000, 128, 48_000, 1).is_err());

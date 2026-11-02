@@ -37,6 +37,7 @@ mod parameter_rows_tests;
 mod reverb_ui_tests;
 mod saturator_ui_tests;
 mod shortcut_text_tests;
+mod vst3_degraded_tests;
 
 fn receive_service_event(service: &Service) -> Event {
     let deadline = crate::test_wait::hang_deadline();

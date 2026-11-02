@@ -605,6 +605,7 @@ impl Command {
             | Self::ImportPreparedAudioClip { .. }
             | Self::ImportPreparedAudioClipWithOverwrite { .. }
             | Self::ImportPreparedSessionAudioClip { .. }
+            | Self::ImportExistingAudio { .. }
             | Self::RemoveTrack(..)
             | Self::RemoveTracks(..)
             | Self::RenameTrack { .. }

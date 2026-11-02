@@ -13,6 +13,21 @@ use super::*;
 mod keyboard;
 use hex_project::{BeatTime, Command, Created};
 
+/// The sampler's prepared ~2 ms declick release floor at this fixture's
+/// 16 kHz output (#4087): no note-off releases in fewer frames.
+const RELEASE_FLOOR_FRAMES: usize = 32;
+
+/// Release level `steps` frames after a note-off whose prepared release is
+/// `max(authored, RELEASE_FLOOR_FRAMES)` frames.
+fn floored_release_level(steps: usize, authored: usize) -> f32 {
+    let release = authored.max(RELEASE_FLOOR_FRAMES);
+    if steps >= release {
+        0.0
+    } else {
+        1.0 - steps as f32 / release as f32
+    }
+}
+
 impl Harness {
     fn resident_sampler(frame_limit: u64) -> Self {
         Self::sampler_fixture(frame_limit, false)
@@ -39,7 +54,7 @@ impl Harness {
                     Ok(Some(output))
                 }
                 Err(e) if e == "audio output is open or still shutting down" => Ok(None),
-                Err(e) => Err(e),
+                Err(e) => Err(e.into()),
             }
         }));
         let observation = Arc::new(Mutex::new(Observation::default()));
@@ -244,17 +259,13 @@ fn service_sampler_original_wav_reaches_real_fresh_native_current_with_tuning_st
             .command(PlaybackCommand::Play)
             .unwrap();
         let output = h.render();
-        let left = if short_gate {
-            vec![0.125]
-        } else if tuned {
+        let left = if tuned {
             vec![0.125, 0.5, -0.125, 0.0]
         } else {
             vec![0.125, 0.3125, 0.5, 0.1875, -0.125, -0.0625, 0.0]
         };
         let right = if stereo {
-            if short_gate {
-                vec![-0.25]
-            } else if tuned {
+            if tuned {
                 vec![-0.25, 0.0, 0.25, 0.0]
             } else {
                 vec![-0.25, -0.125, 0.0, 0.125, 0.25, 0.125, 0.0]
@@ -264,7 +275,14 @@ fn service_sampler_original_wav_reaches_real_fresh_native_current_with_tuning_st
         };
         let mut expected = [[0.0; 2]; 64];
         for (index, (l, r)) in left.into_iter().zip(right).enumerate() {
-            expected[index] = [l, r];
+            // The short gate ends after frame 0; the prepared declick floor
+            // then ramps the rest of the one-shot down instead of cutting it.
+            let level = if short_gate && index > 0 {
+                floored_release_level(index - 1, 0)
+            } else {
+                1.0
+            };
+            expected[index] = [l * level, r * level];
         }
         for (a, b) in output.iter().zip(expected) {
             for i in 0..2 {
@@ -301,6 +319,7 @@ fn service_sampler_original_wav_reaches_real_fresh_native_current_with_tuning_st
             start: 0,
             frames: Some(12),
             signal: hex_session::service::ExportSignal::Main,
+            format: hex_export::ExportFormat::Pcm16,
             overwrite: false,
             control: hex_export_control(),
         });
@@ -333,7 +352,14 @@ fn service_sampler_original_wav_reaches_real_fresh_native_current_with_tuning_st
             .iter()
             .map(|f| [(f[0] * 32768.0) as i16, (f[1] * 32768.0) as i16])
             .collect::<Vec<_>>();
-        assert_eq!(pcm, literal);
+        // PCM16 export applies ±1 LSB TPDF dither.
+        assert_eq!(pcm.len(), literal.len());
+        for (actual, expected) in pcm.iter().flatten().zip(literal.iter().flatten()) {
+            assert!(
+                (i32::from(*actual) - i32::from(*expected)).abs() <= 1,
+                "{pcm:?} vs {literal:?}"
+            );
+        }
         assert_eq!(
             h.render(),
             [[0.0; 2]; 64],
@@ -459,7 +485,7 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
                 Ok(Some(output))
             }
             Err(e) if e == "audio output is open or still shutting down" => Ok(None),
-            Err(e) => Err(e),
+            Err(e) => Err(e.into()),
         }
     }));
     let observation = Arc::new(Mutex::new(Observation::default()));
@@ -494,7 +520,7 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
                 h.backend.lock().unwrap().take();
             }
             Ok(EditorAudioEvent::Unavailable { error, .. }) => {
-                assert_eq!(error, "injected fresh output failure");
+                assert_eq!(error.to_string(), "injected fresh output failure");
                 break;
             }
             Ok(EditorAudioEvent::Opened { .. }) => {

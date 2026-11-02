@@ -16,6 +16,7 @@
 //! paths explicitly clear near-silent or subnormal state, including reverb, EQ,
 //! utility, delay and the operator lowpass. Performance effects depend on the
 //! hardware and workload and require measurement.
+mod oversampling;
 mod parameter_binding;
 mod response;
 

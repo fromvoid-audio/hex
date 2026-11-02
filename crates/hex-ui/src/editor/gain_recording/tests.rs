@@ -949,6 +949,27 @@ fn explicit_discard_can_release_unresolved_capture_receipts_without_committing(
 }
 
 #[gpui::test]
+fn os_quit_during_active_gain_recording_is_cancelled_with_the_error(cx: &mut TestAppContext) {
+    let (mut visual, editor, _, _) = draft_window(cx);
+    visual.update(|_, cx| super::super::close::install_quit_gate(cx));
+    editor.update(&mut visual, |view, _| {
+        view.gain_recorder.mode = Mode::Touching
+    });
+    assert!(visual.simulate_should_quit());
+    visual.run_until_parked();
+    assert!(!visual.has_pending_prompt());
+    assert!(!visual.quit_request_pending());
+    assert_eq!(visual.quit_replies(), [false]);
+    editor.update(&mut visual, |view, _| {
+        assert_eq!(
+            view.error.as_deref(),
+            Some("finish or cancel gain recording before quitting")
+        );
+        view.gain_recorder.mode = Mode::Idle;
+    });
+}
+
+#[gpui::test]
 fn arming_gain_recording_preserves_active_sampler_text(cx: &mut TestAppContext) {
     use crate::editor::device_automation::host_tests::{Slot, TestWave, window_with_gain};
     use gpui::{Modifiers, px, size};

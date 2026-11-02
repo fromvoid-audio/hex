@@ -55,11 +55,12 @@ fn render_bounce_using(
         start,
         frames,
         &Publication::CreateNew,
-        WavEncoding::Float32,
+        ExportFormat::Float32,
         || {
             let control = ExportControl::default();
-            let playback =
-                controlled::prepare_bounce_runtime(revision, resources, start, frames, &control)?;
+            let playback = controlled::prepare_bounce_runtime(
+                revision, resources, start, frames, &control, None,
+            )?;
             Ok(BounceRenderer(playback, source_gain))
         },
     )
@@ -99,6 +100,35 @@ pub fn render_arrangement_bounce_new(
     include_tails: bool,
     control: &ExportControl,
 ) -> Result<ExportReport, ExportError> {
+    render_arrangement_bounce_with_pages(
+        path,
+        revision,
+        resources,
+        start,
+        frames,
+        include_tails,
+        control,
+        None,
+    )
+}
+
+/// As [`render_arrangement_bounce_new`], with an optional caller-owned offline
+/// page provider for file-backed (streamed) sources. Each block is prepared
+/// before any runtime mutation and completed after it, so a page miss fails the
+/// job instead of rendering silence. `finish` runs after the last block and before
+/// any publication; the provider's resources are its own and stay with the caller.
+/// Without a provider, a streamed source refuses as before.
+#[allow(clippy::too_many_arguments)] // Same bounce contract plus one borrowed provider.
+pub fn render_arrangement_bounce_with_pages(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    include_tails: bool,
+    control: &ExportControl,
+    mut pages: Option<&mut dyn PreparedExportPages>,
+) -> Result<ExportReport, ExportError> {
     control.check()?;
     if revision.arrangement().main_latency_frames() != 0 {
         return Err(ExportError::Invalid(
@@ -122,8 +152,14 @@ pub fn render_arrangement_bounce_new(
         .ok_or(ExportError::Invalid(
             "bounce including tail allowance exceeds its frame budget",
         ))?;
-    let mut playback =
-        controlled::prepare_bounce_runtime(revision, resources, start, maximum, control)?;
+    let mut playback = controlled::prepare_bounce_runtime(
+        revision,
+        resources,
+        start,
+        maximum,
+        control,
+        pages.as_deref_mut(),
+    )?;
     let mut audio = Vec::new();
     audio
         .try_reserve_exact(
@@ -138,9 +174,17 @@ pub fn render_arrangement_bounce_new(
         let boundary = if rendered < frames { frames } else { maximum };
         let count = (boundary - rendered).min(FRAMES_PER_BLOCK as u64) as usize;
         if count != 0 {
-            playback
-                .render(&mut block[..count])
-                .map_err(ExportError::SessionRender)?;
+            if let Some(pages) = pages.as_deref_mut() {
+                pages.prepare_chunk(&playback, count, control)?;
+                playback
+                    .render_with_pages(&mut block[..count], &mut crate::pages::PageView(pages))
+                    .map_err(ExportError::SessionRender)?;
+                pages.complete_chunk()?;
+            } else {
+                playback
+                    .render(&mut block[..count])
+                    .map_err(ExportError::SessionRender)?;
+            }
             if block[..count].iter().flatten().any(|s| !s.is_finite()) {
                 return Err(ExportError::Invalid("bounce produced a non-finite sample"));
             }
@@ -156,6 +200,10 @@ pub fn render_arrangement_bounce_new(
         }
     }
     drop(playback);
+    // Verify and release the provider before anything is published.
+    if let Some(pages) = pages {
+        pages.finish(control)?;
+    }
     if include_tails {
         let selected = usize::try_from(frames)
             .map_err(|_| ExportError::Invalid("bounce sample offset overflows"))?;
@@ -213,7 +261,7 @@ pub fn render_arrangement_bounce_new(
         start,
         rendered,
         &Publication::CreateNew,
-        WavEncoding::Float32,
+        ExportFormat::Float32,
         || {
             Ok(Samples {
                 audio: &audio,

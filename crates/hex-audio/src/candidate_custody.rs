@@ -1400,6 +1400,15 @@ mod tests {
             .as_ref() as *const dyn Any as *const ();
         root.advance_on_control();
         assert_eq!(drops.load(Ordering::SeqCst), 1);
+        // #4132: a later pass cannot complete a failed owner; the failure and
+        // its retained root stay latched, so retirement never releases them.
+        assert!(!crate::lifecycle::finish_cleanup_observed(&root, &status));
+        assert!(root.cleanup_failed());
+        assert_eq!(
+            status.failure(),
+            Some(crate::AudioLifecycleFailure::Cleanup)
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
         assert_eq!(
             lock(&root.0.execution)
                 .first_panic

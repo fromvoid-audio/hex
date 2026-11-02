@@ -79,9 +79,17 @@ fn assert_stereo_pcm(wav: &[u8], expected: &[i16]) {
     assert_eq!(&wav[..4], b"RIFF");
     assert_eq!(&wav[36..40], b"data");
     assert_eq!(wav.len(), 44 + expected.len() * 4);
+    // PCM16 export applies ±1 LSB TPDF dither; digital silence stays exact.
     for (frame, value) in wav[44..].chunks_exact(4).zip(expected) {
-        assert_eq!(i16::from_le_bytes([frame[0], frame[1]]), *value);
-        assert_eq!(i16::from_le_bytes([frame[2], frame[3]]), *value);
+        for actual in [
+            i16::from_le_bytes([frame[0], frame[1]]),
+            i16::from_le_bytes([frame[2], frame[3]]),
+        ] {
+            assert!(
+                (i32::from(actual) - i32::from(*value)).abs() <= 1,
+                "{actual} not within one lsb of {value}"
+            );
+        }
     }
 }
 

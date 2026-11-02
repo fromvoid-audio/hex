@@ -43,9 +43,48 @@ pub(crate) fn render_with_config(
         request.start(),
         request.frames(),
         request.signal().clone(),
+        request.format(),
         request.control(),
         request.publication(),
         &mut pages,
+    )
+}
+/// [`hex_session::StreamedBouncer`]: one isolated bounce item through the same
+/// independent verification, bounded pool and joining worker as export. File
+/// facts come from the document's captured bindings; the worker is joined and
+/// every file re-hashed before the bounce file is published. Nothing native is
+/// borrowed, so a bounce never waits on or disturbs the playing transport.
+pub(super) fn bounce(
+    request: &hex_session::StreamedBounceRequest<'_>,
+) -> Result<ExportReport, String> {
+    bounce_with_config(request, StreamConfig::initial()).map_err(|error| error.to_string())
+}
+
+pub(crate) fn bounce_with_config(
+    request: &hex_session::StreamedBounceRequest<'_>,
+    config: StreamConfig,
+) -> Result<ExportReport, ExportError> {
+    check(request.control())?;
+    let mut pages = VerifiedPages::capture_files(
+        request.prepared(),
+        |key| {
+            request.file(key.asset()).ok_or(ExportError::Invalid(
+                "verified bounce source binding is missing",
+            ))
+        },
+        Some(request.path()),
+        config,
+        request.control(),
+    )?;
+    hex_export::render_arrangement_bounce_with_pages(
+        request.path(),
+        Arc::clone(request.prepared()),
+        request.resources(),
+        request.start(),
+        request.frames(),
+        request.include_tails(),
+        request.control(),
+        Some(&mut pages),
     )
 }
 trait Cancellation {
@@ -181,7 +220,8 @@ impl VerifiedPages {
                             file.path().to_path_buf(),
                             metadata.clone(),
                             file.reader_limits(),
-                        ),
+                        )
+                        .with_verified_manifest(file.verified_manifest().clone()),
                     );
                     files.insert(index, (metadata.key(), file.clone()));
                 }

@@ -28,6 +28,19 @@ pub enum ResampleVersion {
     V2,
 }
 
+impl ResampleVersion {
+    /// The conversion law a saved asset's `conversion_version` names.
+    /// Identity assets never reach kernel weights, so they select v1, whose
+    /// identity plan shares the input unchanged. Unknown versions refuse.
+    pub fn for_conversion(conversion_version: u32) -> Result<Self, ImportError> {
+        match conversion_version {
+            hex_project::IDENTITY_CONVERSION | hex_project::SINC_CONVERSION_V1 => Ok(Self::V1),
+            hex_project::SINC_CONVERSION_V2 => Ok(Self::V2),
+            _ => Err(ImportError::Invalid("unsupported media conversion version")),
+        }
+    }
+}
+
 /// Cloneable, control-side handle to a prepared sinc kernel.
 ///
 /// Clones share one immutable table. There is no global cache; callers decide
@@ -131,6 +144,12 @@ impl ResampleKernel {
 
     pub fn version(&self) -> ResampleVersion {
         self.inner.version
+    }
+
+    /// Source frames read on each side of an output frame's center (already
+    /// scaled for downsampling); callers size source halos from this.
+    pub fn support_radius(&self) -> usize {
+        self.inner.radius
     }
 
     /// Actual capacity of the immutable f64 weight allocation, excluding Arc metadata.
