@@ -12238,15 +12238,7 @@ fn assert_loop_preroll_continuation(
     // (interactive_start tests); seeks share that empty-tail law.
     let mut oracle = SessionPlayback::new(Arc::clone(prepared)).unwrap();
     oracle.play_from(destination).unwrap();
-    let mut expected = render_checkpoint_partitioned(&mut oracle, &[17, 61, 193], 2500);
-    // The candidate is a Playback, whose output carries the loop-wrap ramp.
-    crate::playback::LoopWrapRamp::default().ramp(
-        &mut expected,
-        destination,
-        prepared.arrangement().loop_region(),
-        prepared.arrangement().main_latency_frames(),
-        prepared.arrangement().sample_rate(),
-    );
+    let expected = render_checkpoint_partitioned(&mut oracle, &[17, 61, 193], 2500);
     let runtime = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
         Arc::clone(prepared),
         requested,

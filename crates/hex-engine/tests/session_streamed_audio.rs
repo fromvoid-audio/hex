@@ -895,26 +895,21 @@ fn streamed_session_audio_remains_frame_anchored_across_arrangement_loop_wrap() 
     playback
         .render_with_pages(&mut across_wrap, &mut pages)
         .unwrap();
-    let mut expected = [[0.0; 2]; 10];
-    for (offset, frame) in expected.iter_mut().enumerate() {
-        *frame = sample(4_094 + offset as u64);
+    for (offset, frame) in across_wrap.iter().enumerate() {
+        let mut expected = sample(4_094 + offset as u64);
         if offset >= 2 {
+            // The wrapped Arrangement bed ramps in from the silence past the
+            // loop end (`loop_seam`, F = 128); the Session clip is untouched.
+            let k = (offset - 2) as f32;
+            let gain = (k + 1.0) / 128.0;
             let bed = sample((offset - 2) as u64 + 2);
-            frame[0] += bed[0];
-            frame[1] += bed[1];
+            expected[0] += bed[0] * gain;
+            expected[1] += bed[1] * gain;
         }
-    }
-    // The Session clip stays frame-anchored; the Playback mix carries the
-    // transport loop-wrap ramp.
-    hex_engine::playback::LoopWrapRamp::default().ramp(
-        &mut expected,
-        95_998,
-        loop_project.loop_region(),
-        playback.main_output_latency_frames(),
-        48_000,
-    );
-    for (offset, (frame, expected)) in across_wrap.iter().zip(expected).enumerate() {
-        assert_eq!(*frame, expected, "loop-crossing frame {offset}");
+        assert!(
+            (frame[0] - expected[0]).abs() < 1e-6 && (frame[1] - expected[1]).abs() < 1e-6,
+            "loop-crossing frame {offset}: {frame:?} != {expected:?}"
+        );
     }
     assert_eq!(playback.position(), 8);
     assert_eq!(playback.performance_frame(), 96_008);

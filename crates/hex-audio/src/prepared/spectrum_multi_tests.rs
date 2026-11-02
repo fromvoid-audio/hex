@@ -33,14 +33,7 @@ fn simultaneous_eq_taps_preserve_pcm_and_validate_every_owner_without_callback_a
     let now = Instant::now();
     let mut actual = [[0.0; 2]; 256];
     let mut expected = actual;
-    let region = oracle
-        .prepared_revision()
-        .unwrap()
-        .arrangement()
-        .loop_region();
-    let mut wrap = hex_engine::playback::LoopWrapRamp::default();
     for sequence in 0..16 {
-        let position = oracle.position();
         oracle.render(&mut expected).unwrap();
         let mut render = || {
             callback.begin_block();
@@ -79,10 +72,7 @@ fn simultaneous_eq_taps_preserve_pcm_and_validate_every_owner_without_callback_a
         let track = callback.spectrum_stages.get(0).unwrap();
         let send = callback.spectrum_stages.get(1).unwrap();
         let main = callback.spectrum_stages.get(2).unwrap();
-        // Main's analyzer taps the mix before the output's loop-wrap ramp.
-        let mut heard = main.frames;
-        wrap.ramp(&mut heard, position, region, 0, 48_000);
-        assert_eq!(heard, actual);
+        assert_eq!(main.frames, actual);
         assert!(actual.iter().flatten().any(|sample| sample.abs() > 0.001));
         for i in 0..256 {
             for channel in 0..2 {

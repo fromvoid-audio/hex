@@ -1728,30 +1728,3 @@ fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history
     );
     assert_eq!(notes.len(), 3);
 }
-
-/// Uninterrupted constant PCM at `level`, except Playback's loop-wrap declick:
-/// attenuated runs of at most `2F` frames (256 at 48 kHz) within `[0, level]`.
-/// A longer or out-of-range deviation is a real interruption.
-pub(super) struct SteadyLevel {
-    level: f32,
-    dipped: usize,
-}
-
-impl SteadyLevel {
-    pub(super) const fn new(level: f32) -> Self {
-        Self { level, dipped: 0 }
-    }
-
-    pub(super) fn accepts(&mut self, block: &[hex_engine::Frame]) -> bool {
-        const WRAP_RAMP_FRAMES: usize = 2 * 128;
-        block.iter().all(|frame| {
-            if frame.iter().all(|v| (*v - self.level).abs() < 1e-5) {
-                self.dipped = 0;
-                return true;
-            }
-            self.dipped += 1;
-            self.dipped <= WRAP_RAMP_FRAMES
-                && frame.iter().all(|v| (0.0..=self.level + 1e-5).contains(v))
-        })
-    }
-}

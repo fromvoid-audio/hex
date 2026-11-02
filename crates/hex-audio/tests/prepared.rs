@@ -27,19 +27,6 @@ fn publish(control: &mut prepared::Control, playback: Playback) -> u64 {
     }
 }
 
-/// Render the headless kernel oracle with the loop-wrap ramp the callback's
-/// `Playback` applies to its output.
-fn render_ramped(
-    expected: &mut hex_engine::SessionPlayback,
-    wrap: &mut hex_engine::playback::LoopWrapRamp,
-    output: &mut [[f32; 2]],
-) {
-    let position = expected.arrangement_frame();
-    let region = expected.prepared_revision().arrangement().loop_region();
-    expected.render(output).unwrap();
-    wrap.ramp(output, position, region, 0, 48_000);
-}
-
 fn session_project() -> (CanonicalProject, hex_project::TrackId, hex_project::ClipId) {
     let mut editor = Editor::new(CanonicalProject::new(48_000).unwrap(), 8).unwrap();
     let track = match editor
@@ -806,7 +793,6 @@ fn queued_scene_stop_and_arrangement_return_match_headless_pcm() {
     let scene = revision.session().scenes().first().unwrap().id;
     let mut expected = SessionPlayback::new(Arc::clone(&revision)).unwrap();
     expected.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut wrap = hex_engine::playback::LoopWrapRamp::default();
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
     publish(
         &mut control,
@@ -850,7 +836,7 @@ fn queued_scene_stop_and_arrangement_return_match_headless_pcm() {
         assert!(control.status.rejected_action().is_none());
         let mut reference = vec![[0.0; 2]; frames];
         let mut actual = reference.clone();
-        render_ramped(&mut expected, &mut wrap, &mut reference);
+        expected.render(&mut reference).unwrap();
         // Exercise device-style partitions rather than mirroring the oracle block.
         for block in actual.chunks_mut(127) {
             callback.begin_block();
@@ -884,7 +870,6 @@ fn callback_revision_transfer_matches_kernel_after_tempo_and_source_edits() {
     };
     expected.apply(launch).unwrap();
     expected.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut wrap = hex_engine::playback::LoopWrapRamp::default();
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
     publish(
         &mut control,
@@ -895,7 +880,7 @@ fn callback_revision_transfer_matches_kernel_after_tempo_and_source_edits() {
     callback.begin_block();
     let mut reference = vec![[0.0; 2]; 51_337];
     let mut actual = reference.clone();
-    render_ramped(&mut expected, &mut wrap, &mut reference);
+    expected.render(&mut reference).unwrap();
     callback.render(&mut actual).unwrap();
     assert_eq!(actual, reference);
 
@@ -939,7 +924,7 @@ fn callback_revision_transfer_matches_kernel_after_tempo_and_source_edits() {
         );
         let mut reference = vec![[0.0; 2]; 49_517];
         let mut actual = reference.clone();
-        render_ramped(&mut expected, &mut wrap, &mut reference);
+        expected.render(&mut reference).unwrap();
         for block in actual.chunks_mut(113) {
             callback.begin_block();
             callback.render(block).unwrap();

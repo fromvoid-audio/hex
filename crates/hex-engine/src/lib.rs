@@ -121,6 +121,8 @@ pub use gain_envelope::{
     MAX_PREPARED_GAIN_BYTES, MAX_PREPARED_GAIN_KNOTS,
 };
 mod clip_index;
+mod loop_seam;
+pub(crate) use loop_seam::LoopSeam;
 mod return_feed_plan;
 mod signal_graph;
 mod stream_demand;

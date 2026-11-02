@@ -8,11 +8,10 @@ use std::sync::Arc;
 mod candidate_storage;
 #[cfg(test)]
 mod idle_transition_tests;
-mod loop_wrap;
-pub use loop_wrap::LoopWrapRamp;
 mod metronome;
 mod transport_fade;
 pub use transport_fade::TransportFadeCompletion;
+pub(crate) use transport_fade::fade_frames;
 mod tuning_audition;
 use metronome::Metronome;
 
@@ -2520,20 +2519,8 @@ impl Playback {
         Ok(())
     }
 
-    /// The loop the transport cursor wraps in, if it is before that loop's end.
-    fn active_loop_region(&self) -> Option<hex_project::LoopRegion> {
-        match self.session_runtime.as_ref() {
-            Some(runtime) => runtime.active_loop_region(),
-            None => self
-                .project
-                .loop_region()
-                .filter(|region| region.enabled() && self.position < region.end()),
-        }
-    }
-
     /// Render one callback as parts split only at a pending fade end. Each
-    /// part is followed by its declick gain (transport fade, then the loop
-    /// wrap ramp in `loop_wrap`) and then monitor-only metronome
+    /// part is followed by its declick gain and then monitor-only metronome
     /// and tuning audio. A refused first part keeps the renderer's own atomic
     /// refusal (the output is left as the renderer left it). A part refused
     /// after an earlier part rendered silences the whole callback; rendered
@@ -2550,7 +2537,6 @@ impl Playback {
             let end = offset + self.transport_fade.part_len(output.len() - offset, frames);
             let start = self.position();
             let playing = self.playing();
-            let region = self.active_loop_region();
             let chunk = &mut output[offset..end];
             if let Err(error) = part(self, chunk, offset) {
                 if offset > 0 {
@@ -2559,10 +2545,6 @@ impl Playback {
                 return Err(error);
             }
             let completed = self.transport_fade.apply(chunk, frames);
-            let latency = self.main_output_latency_frames();
-            self.transport_fade
-                .loop_wrap
-                .apply(chunk, playing, start, region, latency, frames);
             self.mix_metronome(start, playing, chunk);
             self.mix_tuning_audition(chunk);
             if completed {

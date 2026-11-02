@@ -12,14 +12,15 @@ fn position(h: &ResidentHarness) -> u64 {
         .load(Acquire)
 }
 
-/// Render `blocks` callbacks of constant source PCM, apart from each loop
-/// wrap's declick; return the visited span.
+/// Render `blocks` callbacks of constant source PCM; return the visited span.
 fn play(h: &ResidentHarness, blocks: usize) -> (u64, u64) {
     let (mut low, mut high) = (u64::MAX, 0);
-    let mut steady = super::resident_preview::SteadyLevel::new(0.25);
     for _ in 0..blocks {
         assert!(
-            steady.accepts(&h.render()),
+            h.render()
+                .iter()
+                .flatten()
+                .all(|v| (*v - 0.25).abs() < 1e-5),
             "uninterrupted audio near {}",
             position(h)
         );
