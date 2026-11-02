@@ -819,14 +819,15 @@ fn finished_gain_receipts_survive_all_current_output_retirement_paths(cx: &mut T
 }
 
 #[gpui::test]
-fn cancelled_delivered_gain_take_releases_callback_and_preserves_project(cx: &mut TestAppContext) {
+fn redo_cancels_delivered_gain_take_and_preserves_project(cx: &mut TestAppContext) {
     let _output_fixture_guard =
         crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     let mut fixture = delivered_fixture(cx, false);
-    let (before, mut next_target) = fixture.editor.update(&mut fixture.visual, |view, _| {
+    let (before, mut next_target) = fixture.editor.update(&mut fixture.visual, |view, cx| {
         let before = view.state.as_ref().unwrap().project.snapshot();
         let target = view.gain_recorder.target.unwrap();
-        view.cancel_gain_recording();
+        view.history_action(Request::Redo, cx);
+        assert_eq!(view.worker_requests_pending, 0);
         assert!(view.gain_recorder.blocks_edits());
         assert_eq!(view.gain_recorder.events.len(), 1);
         (before, target)

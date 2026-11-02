@@ -10,7 +10,7 @@ mod paint;
 mod pending;
 use pending::PendingGain;
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
 use super::{EditorView, ViewState, viewport::Viewport};
 use gpui::{Context, Entity, Subscription, Window};
 use hex_project::{BeatTime, GainPoint, TrackId};
