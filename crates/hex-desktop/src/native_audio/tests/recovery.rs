@@ -58,6 +58,25 @@ fn pending_open_and_confirmed_lifecycle_failures_have_distinct_recovery_results(
         sink.poll();
         assert!(receiver.try_recv().is_err());
         assert_eq!(attempts.load(Acquire), 1); // no retry or new output
+        // #4132: a later manual restart cannot clear a latched failure; it is
+        // refused with the same recovery path and never opens an output.
+        sink.request_open(Some(48000), Some(18));
+        sink.poll();
+        let EditorAudioEvent::Unavailable {
+            restart_request,
+            error,
+            ..
+        } = receiver.try_recv().unwrap()
+        else {
+            panic!("expected the latched failure again");
+        };
+        assert_eq!(restart_request, Some(18));
+        assert!(
+            error
+                .to_string()
+                .contains("save your project and restart hex")
+        );
+        assert_eq!(attempts.load(Acquire), 1);
         assert!(Arc::ptr_eq(sink.desired.as_ref().unwrap(), &source));
     }
 }
