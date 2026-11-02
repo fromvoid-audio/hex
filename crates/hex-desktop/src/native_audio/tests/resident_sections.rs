@@ -703,7 +703,7 @@ fn live_section_edits_retain_sampler(micro_bpm: u32, copy_before_self: bool) {
     (applied, _) = h.applied(applied);
     // Original periodic PCM supplies an independent phase/amplitude oracle
     // at the actual content position, including non-quantum-aligned wraps.
-    let sampler_path = files.wav(48_000, 192_000);
+    let sampler_path = files.wav(48_000, 64_000);
     let mut bytes = fs::read(&sampler_path).unwrap();
     for (i, sample) in bytes[44..].chunks_exact_mut(2).enumerate() {
         let value =
