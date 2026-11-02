@@ -206,13 +206,14 @@ impl MidiClipVolume {
         boundaries.push(start.raw());
         boundaries.push(end.raw());
         let mut add = |raw| -> Result<(), Invalid> {
-            if start.raw() < raw && raw < end.raw() {
-                if let Err(index) = boundaries.binary_search(&raw) {
-                    if boundaries.len() == MAX_MIDI_VOLUME_POINTS_PER_CLIP {
-                        return Err(Invalid("materialized clip volume point limit reached"));
-                    }
-                    boundaries.insert(index, raw);
+            if start.raw() < raw
+                && raw < end.raw()
+                && let Err(index) = boundaries.binary_search(&raw)
+            {
+                if boundaries.len() == MAX_MIDI_VOLUME_POINTS_PER_CLIP {
+                    return Err(Invalid("materialized clip volume point limit reached"));
                 }
+                boundaries.insert(index, raw);
             }
             Ok(())
         };
