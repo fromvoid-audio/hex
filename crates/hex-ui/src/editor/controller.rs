@@ -1190,6 +1190,16 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if self.state.is_none() {
+                        let reason = self
+                            .service
+                            .startup_failure()
+                            .unwrap_or("project worker stopped before loading");
+                        visible_change |= replace_error(
+                            &mut self.error,
+                            &format!("{reason} · restart hex to try again"),
+                        );
+                    }
                     self.midi_service_disconnected();
                     self.gain_take_service_disconnected();
                     if self.cancel_new_preparation() {
@@ -2977,7 +2987,10 @@ impl EditorView {
             if let Some(intent) = group_copy_intent
                 && intent.is_current(self)
             {
-                self.select_copied_group(first, last, intent.count);
+                let count = self.state.as_ref().map_or(0, |state| {
+                    intent.expected_count(&state.project, first, last)
+                });
+                self.select_copied_group(first, last, count);
             }
         } else if let Some(hex_project::Created::Track(track)) = event.created {
             self.focused_return = None;
@@ -3398,6 +3411,23 @@ impl EditorView {
             } else {
                 "finish or cancel gain recording before another project action".into()
             });
+            return false;
+        }
+        if self.gain_lane.draft.is_some() && matches!(&request, Request::Edit(_)) {
+            self.error = Some("finish or cancel the gain point gesture before editing".into());
+            return false;
+        }
+        if self.automation_view.devices.point_draft_active() && matches!(&request, Request::Edit(_))
+        {
+            self.error =
+                Some("finish or cancel the automation point gesture before editing".into());
+            return false;
+        }
+        if matches!(&request, Request::Edit(_))
+            && (self.gain_lane.numeric_draft_active()
+                || self.sampler_parameter.numeric_draft_active())
+        {
+            self.error = Some("finish or cancel the numeric draft before editing".into());
             return false;
         }
         #[cfg(test)]

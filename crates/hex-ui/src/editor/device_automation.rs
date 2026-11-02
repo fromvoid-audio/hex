@@ -10,7 +10,7 @@
 //! delete/shape act on every selected point; each is one whole-lane request,
 //! so one Undo reverts the group edit.
 #[cfg(all(test, feature = "ui-test-support"))]
-mod host_tests;
+pub(super) mod host_tests;
 mod paint;
 mod read_selection;
 #[cfg(test)]
@@ -485,6 +485,9 @@ impl Lanes {
     }
     pub(super) fn pointer_active(&self) -> bool {
         self.draft.is_some() || self.marquee.is_some()
+    }
+    pub(super) fn point_draft_active(&self) -> bool {
+        self.draft.is_some()
     }
     pub(super) fn extra_height(&self, owner: Owner) -> f32 {
         self.extra
