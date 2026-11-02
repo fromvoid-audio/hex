@@ -20,3 +20,18 @@ pub(super) fn node_position(node: &Node, rate: u32) -> [f32; 2] {
         },
     ]
 }
+
+// Outer five percent of the plot; side cuts take precedence over bottom notches.
+pub(super) const CUT_CREATION_EDGE: f32 = 0.05;
+
+pub(super) fn creation_kind([x, y]: [f32; 2]) -> NodeKind {
+    if x <= CUT_CREATION_EDGE {
+        NodeKind::LowCut
+    } else if x >= 1.0 - CUT_CREATION_EDGE {
+        NodeKind::HighCut
+    } else if y <= CUT_CREATION_EDGE {
+        NodeKind::Notch
+    } else {
+        NodeKind::Bell
+    }
+}

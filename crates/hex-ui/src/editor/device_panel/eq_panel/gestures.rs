@@ -166,6 +166,9 @@ fn group_snapshot(
     delta: [f32; 2],
     rate: u32,
 ) -> Result<hex_lattice_contract::DeviceParameterSnapshot, &'static str> {
+    if nodes.len() > group_move::MAX_GROUP_NODES {
+        return Err("eq group move is limited to 32 nodes");
+    }
     let mut entries = Vec::with_capacity(nodes.len() * 2);
     for (node, origin) in nodes {
         let (frequency_hz, vertical) = group_move::values(node.kind, *origin, delta, rate);
@@ -469,6 +472,30 @@ pub(super) fn scroll_event_core(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn grouped_node_limit_matches_the_host_snapshot_capacity() {
+        assert_eq!(
+            group_move::MAX_GROUP_NODES * 2,
+            hex_lattice_contract::MAX_PARAMETER_SNAPSHOT_ENTRIES
+        );
+        let mut nodes: Vec<_> = (1..=32)
+            .map(|raw| {
+                (
+                    Node::new(NodeId::new(raw).unwrap(), 1_000.0, 0.0, 0).unwrap(),
+                    [0.5, 0.5],
+                )
+            })
+            .collect();
+        assert!(group_snapshot(&nodes, [0.0, 0.0], 48_000).is_ok());
+        nodes.push((
+            Node::new(NodeId::new(33).unwrap(), 1_000.0, 0.0, 0).unwrap(),
+            [0.5, 0.5],
+        ));
+        assert_eq!(
+            group_snapshot(&nodes, [0.0, 0.0], 48_000).unwrap_err(),
+            "eq group move is limited to 32 nodes"
+        );
+    }
     #[test]
     fn option_displacement_keeps_initial_q_and_bounds_without_gain_coordinate_jump() {
         for initial in [0.1, 0.707, 1.0, 18.0] {

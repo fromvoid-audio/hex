@@ -150,6 +150,7 @@ struct Fixture {
     toggles: Vec<Entity<Toggle>>,
     selectors: Vec<Entity<Selector>>,
     graph: Entity<ResponseGraph>,
+    eq_local: Option<eq::Local>,
     discrete_height: f32,
 }
 impl Fixture {
@@ -267,32 +268,34 @@ impl Fixture {
             toggles: switches,
             selectors: choices,
             graph,
+            eq_local: None,
             discrete_height: if generic { 22.0 } else { 14.0 },
         })
     }
     fn sync(&self, disabled: bool, cx: &mut Context<Gallery>) {
-        for number in &self.numbers {
+        let has_node = self.entry != Entry::Eq || eq::has_selected(self);
+        for (index, number) in self.numbers.iter().enumerate() {
             number.entity.update(cx, |control, cx| {
                 let _ = control.set_external_style(theme::device_style(number.role), cx);
-                control.set_enabled(!disabled, cx);
+                control.set_enabled(!disabled && (has_node || index == 0), cx);
             });
         }
-        for entity in &self.toggles {
+        for (index, entity) in self.toggles.iter().enumerate() {
             entity.update(cx, |control, cx| {
                 let _ = control
                     .set_external_style(theme::device_style(theme::DeviceStyleRole::Control), cx);
-                control.set_enabled(!disabled, cx);
+                control.set_enabled(!disabled && (has_node || index != 0), cx);
             });
         }
-        for entity in &self.selectors {
+        for (index, entity) in self.selectors.iter().enumerate() {
             entity.update(cx, |control, cx| {
                 let _ = control
                     .set_external_style(theme::device_style(theme::DeviceStyleRole::Control), cx);
-                control.set_enabled(!disabled, cx);
+                control.set_enabled(!disabled && (has_node || index == 0), cx);
             });
         }
         if self.entry == Entry::Eq {
-            eq::sync(self, cx);
+            eq::sync(self, disabled, cx);
             return;
         }
         self.graph.update(cx, |graph, cx| {
@@ -450,6 +453,11 @@ impl Gallery {
         if !self.finish_drafts(cx) {
             cx.notify();
             return;
+        }
+        if self.entry == Entry::Eq && entry != Entry::Eq {
+            if let Some(fixture) = self.fixtures.get(&Entry::Eq) {
+                fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
+            }
         }
         self.entry = entry;
         self.selected = false;
