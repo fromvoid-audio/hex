@@ -219,7 +219,8 @@ impl VerifiedPages {
                             file.path().to_path_buf(),
                             metadata.clone(),
                             file.reader_limits(),
-                        ),
+                        )
+                        .with_verified_manifest(file.verified_manifest().clone()),
                     );
                     files.insert(index, (metadata.key(), file.clone()));
                 }

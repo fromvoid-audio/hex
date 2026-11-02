@@ -873,9 +873,10 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
     assert_eq!(metadata.source_sample_rate(), 44_100);
     assert_eq!(metadata.source_frames(), 441);
     assert_eq!(metadata.playback_frames(), 480);
+    // New imports record and render sinc v2.
     assert_eq!(
         metadata.conversion_version(),
-        hex_project::SINC_CONVERSION_V1
+        hex_project::SINC_CONVERSION_V2
     );
     assert_eq!(
         session.project().clip(clip).expect("clip").source_length(),
@@ -887,6 +888,17 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
         .expect("prepared PCM")
         .frames()
         .to_vec();
+    let v2 = hex_media::resample_with_version(
+        session.source_audio(asset).unwrap(),
+        48_000,
+        hex_media::ResampleLimits {
+            max_source_frames: 441,
+            max_output_frames: 480,
+        },
+        hex_media::ResampleVersion::V2,
+    )
+    .expect("v2 oracle");
+    assert_eq!(original, v2.frames());
     assert!(session.undo());
     assert!(session.project().tracks().is_empty());
     assert_eq!(session.resident_frames(), 441 + 480);

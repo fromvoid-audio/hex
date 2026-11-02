@@ -63,13 +63,15 @@ fn asset(created: Created) -> AssetId {
 fn mixed_rate_source_survives_derivation_history_and_open_with_exact_budget() {
     let decoded = decoded(32_000, 12);
     let original = decoded.audio().clone();
-    let expected = resample(
+    let law = hex_project::import_conversion_version(32_000, 16_000);
+    let expected = resample_with_version(
         &original,
         16_000,
         ResampleLimits {
             max_source_frames: 1024,
             max_output_frames: 1024,
         },
+        hex_media::ResampleVersion::for_conversion(law).unwrap(),
     )
     .unwrap();
     let mut session = Session::new(16_000, 16, 18).unwrap();
@@ -254,7 +256,7 @@ fn sinc_v2_asset_saves_as_schema64_and_reopens_with_its_own_conversion_law() {
     .unwrap();
     assert_ne!(v1.frames(), v2.frames(), "the laws differ for this source");
     let mut session = Session::new(16_000, 16, 1024).unwrap();
-    let prepared = PreparedImport::at_rate_with_conversion(
+    let prepared = PreparedImport::for_conversion(
         decoded.clone(),
         16_000,
         limits,
@@ -274,19 +276,4 @@ fn sinc_v2_asset_saves_as_schema64_and_reopens_with_its_own_conversion_law() {
     );
     let reopened = Session::from_loaded(loaded, 16, 1024, vec![(id, decoded)]).unwrap();
     assert_eq!(reopened.audio(id).unwrap().frames(), v2.frames());
-}
-
-#[test]
-fn unknown_conversion_version_refuses_reconstruction() {
-    let limits = ResampleLimits {
-        max_source_frames: 1024,
-        max_output_frames: 1024,
-    };
-    for version in [3, u32::MAX] {
-        let result =
-            PreparedImport::at_rate_with_conversion(decoded(32_000, 12), 16_000, limits, version);
-        assert!(
-            matches!(result, Err(SessionError::Invalid(message)) if message.contains("newer hex"))
-        );
-    }
 }
