@@ -1350,6 +1350,9 @@ pub struct Callback {
     // capacity can accumulate before this callback publishes and flushes them.
     stream_outcomes: [Option<(u64, action_outcomes::Outcome)>; ACTION_OUTCOME_CAPACITY],
     stream_outcome_count: usize,
+    // Ticket of the queued Pause/Stop whose declick fade is pending (#4151).
+    // A transport change that fails at the fade end is reported under it.
+    transport_fade_ticket: Option<u64>,
     yield_stream_successor_once: bool,
     stream_prefix: u64,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
@@ -1495,6 +1498,7 @@ pub fn channel_with_spectrum(
             stream_pending_play: None,
             stream_outcomes: [None; ACTION_OUTCOME_CAPACITY],
             stream_outcome_count: 0,
+            transport_fade_ticket: None,
             yield_stream_successor_once: false,
             stream_prefix: 0,
             held_retirement: None,
@@ -3843,10 +3847,19 @@ impl Callback {
                     .as_mut()
                     .and_then(ActivePublication::current_mut)
                 {
-                    active
-                        .playback
-                        .apply_priority_stop(&self.status.keyboard_activation);
+                    // Closing keeps the immediate cut; otherwise Stop fades
+                    // out first and still resets to frame zero (#4138).
+                    if self.status.closing.load(Acquire) {
+                        active
+                            .playback
+                            .apply_priority_stop(&self.status.keyboard_activation);
+                    } else {
+                        active
+                            .playback
+                            .apply_declicked_priority_stop(&self.status.keyboard_activation);
+                    }
                 }
+                self.transport_fade_ticket = None;
                 self.invalidate_processor_audition_request();
             }
         }
@@ -3932,13 +3945,22 @@ impl Callback {
                 }
                 let mut invalidate_audition = false;
                 let outcome;
+                let closing = self.status.closing.load(Acquire);
                 if let Some(mut active) = self
                     .active
                     .as_mut()
                     .and_then(ActivePublication::current_mut)
                 {
-                    match active.playback.try_apply_action(queued.action) {
+                    let applied = if closing {
+                        active.playback.try_apply_action(queued.action)
+                    } else {
+                        active.playback.try_apply_declicked_action(queued.action)
+                    };
+                    match applied {
                         Ok(()) => {
+                            self.transport_fade_ticket = (active.playback.pending_transport_fade()
+                                == Some(queued.action))
+                            .then_some(queued.ticket);
                             outcome = action_outcomes::Outcome::Applied;
                             if recovery_cursor_action(queued.action) {
                                 self.recovery_position_frozen = false;
@@ -4094,6 +4116,7 @@ impl Callback {
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         let block = self.scheduled_transport();
         let result = self.render_inner(output);
+        self.report_transport_fade_failure();
         if let Some((position, performance, true)) = block
             && result.is_ok()
             && !output.is_empty()
@@ -4103,6 +4126,27 @@ impl Callback {
         self.publish_audible_position();
         self.flush_stream_outcomes();
         result
+    }
+
+    /// A declicked Pause/Stop was reported Applied when consumed; a transport
+    /// change refused at its fade end is published under the same ticket.
+    fn report_transport_fade_failure(&mut self) {
+        let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut)
+        else {
+            self.transport_fade_ticket = None;
+            return;
+        };
+        let failure = active.playback.take_transport_fade_failure();
+        let pending = active.playback.pending_transport_fade().is_some();
+        if let (Some(reason), Some(ticket)) = (failure, self.transport_fade_ticket) {
+            self.status.publish_rejected_action(ticket, reason);
+        }
+        if !pending {
+            self.transport_fade_ticket = None;
+        }
     }
 
     /// Scheduled position, performance frame and playing state of the current graph.

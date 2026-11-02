@@ -253,13 +253,25 @@ impl Callback {
         if matches!(action, PlaybackAction::Transport(PlaybackCommand::Stop)) {
             self.revoke_current_sampler_keyboard();
         }
+        let closing = self.status.closing.load(Acquire);
         if let Some(mut active) = self
             .active
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
-            match active.playback.try_apply_action(action) {
-                Ok(()) if recovery_cursor_action(action) && !self.status.closing.load(Acquire) => {
+            // Pause/Stop fade out before applying unless the stream is closing.
+            // Readiness invalidation and schedule refresh stay at command time.
+            let applied = if closing {
+                active.playback.try_apply_action(action)
+            } else {
+                active.playback.try_apply_declicked_action(action)
+            };
+            if applied.is_ok() {
+                self.transport_fade_ticket =
+                    (active.playback.pending_transport_fade() == Some(action)).then_some(ticket);
+            }
+            match applied {
+                Ok(()) if recovery_cursor_action(action) && !closing => {
                     self.recovery_position_frozen = false;
                     action_outcomes::Outcome::Applied
                 }
@@ -344,9 +356,16 @@ impl Callback {
             self.invalidate_stream_readiness();
             if !fault {
                 if let Some(ActivePublication::Legacy(active)) = self.active.as_mut() {
-                    active
-                        .playback
-                        .apply_priority_stop(&self.status.keyboard_activation);
+                    if self.status.closing.load(Acquire) {
+                        active
+                            .playback
+                            .apply_priority_stop(&self.status.keyboard_activation);
+                    } else {
+                        active
+                            .playback
+                            .apply_declicked_priority_stop(&self.status.keyboard_activation);
+                    }
+                    self.transport_fade_ticket = None;
                 } else {
                     let _ = self.apply_stream_zero_page_action(
                         PlaybackAction::Transport(PlaybackCommand::Stop),

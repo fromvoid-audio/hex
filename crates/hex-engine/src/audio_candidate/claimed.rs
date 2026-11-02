@@ -366,6 +366,48 @@ impl ClaimedAudioCandidateRuntime {
             .ok_or(crate::PlaybackActionError::SessionNotPrepared)?
             .apply_action(action)
     }
+    /// `apply_priority_stop` with the transport declick: the keyboard prefix
+    /// is revoked now and the transport Stop follows after its fade.
+    pub fn apply_declicked_priority_stop(
+        &mut self,
+        clock: &crate::computer_keyboard::KeyboardActivationClock,
+    ) -> Result<(), crate::PlaybackActionError> {
+        let runtime = self.current_owner()?;
+        if runtime.sampler_sources.is_some() {
+            runtime.apply_declicked_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Stop,
+            ))
+        } else {
+            runtime.playback.apply_declicked_priority_stop(clock);
+            Ok(())
+        }
+    }
+    /// `apply_action` with the transport declick of
+    /// `Playback::try_apply_declicked_action`.
+    pub fn apply_declicked_action(
+        &mut self,
+        action: crate::PlaybackAction,
+    ) -> Result<(), crate::PlaybackActionError> {
+        self.current_owner()?.apply_declicked_action(action)
+    }
+    /// The Pause/Stop whose fade is in progress, if any.
+    pub fn pending_transport_fade(&self) -> Option<crate::PlaybackAction> {
+        self.inner
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.playback.pending_transport_fade())
+    }
+    /// One deferred Pause/Stop refusal recorded at its fade end.
+    pub fn take_transport_fade_failure(&mut self) -> Option<crate::PlaybackActionRejection> {
+        self.inner
+            .runtime
+            .as_mut()
+            .and_then(|runtime| runtime.playback.take_transport_fade_failure())
+    }
+    fn current_owner(&mut self) -> Result<&mut RuntimeOwner, crate::PlaybackActionError> {
+        self.current_runtime_mut()
+            .ok_or(crate::PlaybackActionError::SessionNotPrepared)
+    }
     pub fn render(&mut self, output: &mut [crate::Frame]) -> Result<(), crate::Invalid> {
         if self.inner.phase != ClaimedPhase::Current {
             return Err(crate::Invalid("candidate runtime is not current"));

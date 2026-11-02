@@ -1579,7 +1579,14 @@ impl Playback {
     /// Apply a pending declicked Pause/Stop now, at the current frame.
     fn complete_transport_fade(&mut self) {
         if self.transport_fade.take_priority_stop() {
+            let audible_end_frame = self.position();
             self.apply_stop_with_keyboard(StopKeyboard::AlreadyStopped);
+            self.transport_fade
+                .record_completion(TransportFadeCompletion {
+                    action: PlaybackAction::Transport(PlaybackCommand::Stop),
+                    audible_end_frame,
+                    applied: true,
+                });
             return;
         }
         let Some(action) = self.transport_fade.take_pending() else {
