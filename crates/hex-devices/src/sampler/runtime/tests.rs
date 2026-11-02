@@ -72,6 +72,29 @@ fn process(
     pair.commit_block();
 }
 
+/// Linear release level `steps` frames after note-off. Expectations derive
+/// from the prepared release so a host declick floor changes only its length.
+fn release_level(steps: u64, release: u64) -> f64 {
+    if steps >= release {
+        0.0
+    } else {
+        1.0 - steps as f64 / release as f64
+    }
+}
+
+fn assert_frames_near(actual: &[StereoFrame], expected: &[[f64; 2]]) {
+    assert_eq!(actual.len(), expected.len());
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        for channel in 0..2 {
+            let error = (f64::from(actual[channel]) - expected[channel]).abs();
+            assert!(
+                error <= 1e-6 * expected[channel].abs().max(1.0),
+                "frame {index}: {actual:?} != {expected:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn actual_mutable_pair_keeps_trigger_audio_after_note_off_and_retires_at_source_end() {
     let pcm = [1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0];
@@ -141,7 +164,9 @@ fn capacity_refusal_and_speculative_rollback_leave_actual_pair_unchanged() {
     process(&mut runtime, &[on(0, 1, 60)], &mut committed, &resources);
     assert_eq!(speculative, committed);
     assert_eq!(committed, [[1.0; 2], [3.0; 2]]);
-    // Equal-offset gate-off frees a zero-release slot before the next onset.
+    // No release is zero: an equal-offset gate-off makes the held voice
+    // stealable, so the next onset takes its slot while the old voice
+    // continues its floored release under the steal declick.
     committed.fill([0.0; 2]);
     process(
         &mut runtime,
@@ -149,7 +174,10 @@ fn capacity_refusal_and_speculative_rollback_leave_actual_pair_unchanged() {
         &mut committed,
         &resources,
     );
-    assert_eq!(committed, [[1.0; 2], [3.0; 2]]);
+    let release = crate::sampler::envelope::release_floor_frames(8_000);
+    let fade = prepared.steal_fade_frames() as f64;
+    let stolen = 7.0 * release_level(1, release) * (1.0 - 1.0 / fade);
+    assert_frames_near(&committed, &[[1.0 + 5.0; 2], [3.0 + stolen; 2]]);
     assert!(!runtime.committed_is_quiescent());
     runtime.reset();
     assert!(runtime.committed_is_quiescent());
@@ -221,7 +249,8 @@ fn project_tuning_velocity_amount_and_gated_release_reach_actual_mutable_samples
     .bind_source_on_control(views[0])
     .unwrap();
     let prepared = bound.prepare_runtime_on_control(4, 259, &tuning).unwrap();
-    assert_eq!(prepared.max_release_tail_frames(), 2);
+    let release = prepared.max_release_tail_frames();
+    assert!(release >= 2);
     let mut runtime = pair(&prepared);
     let note = NativeInstrumentEvent::NoteOn {
         frame_offset: 0,
@@ -229,12 +258,21 @@ fn project_tuning_velocity_amount_and_gated_release_reach_actual_mutable_samples
         pitch: 61,
         velocity: 1,
     };
-    let mut output = [[0.0; 2]; 6];
+    let frames = 2 + release as usize + 2;
+    let mut output = vec![[0.0; 2]; frames];
     process(&mut runtime, &[note, off(2, 1)], &mut output, &resources);
-    assert_eq!(
-        output,
-        [[1.0; 2], [4.0; 2], [7.0; 2], [5.0; 2], [0.0; 2], [0.0; 2]]
-    );
+    // Pitch 61 steps 1.5 source frames per output frame around the 6-frame
+    // loop, so the literal (interpolated) source cycle is 1, 4, 7, 10.
+    let cycle = [1.0, 4.0, 7.0, 10.0];
+    let expected: Vec<_> = (0..frames as u64)
+        .map(|age| {
+            let level = age
+                .checked_sub(2)
+                .map_or(1.0, |steps| release_level(steps, release));
+            [cycle[(age % 4) as usize] * level; 2]
+        })
+        .collect();
+    assert_frames_near(&output, &expected);
     assert!(runtime.committed_is_quiescent());
     let original = prepared.create_runtime();
     let same = prepared.create_runtime();
@@ -305,11 +343,17 @@ fn preparation_and_pair_caller_limits_refuse_without_rendering() {
         );
     }
     let prepared = bound.prepare_runtime_on_control(32, 1024, &tuning).unwrap();
+    // The declared tail always includes the release floor, even when the
+    // authored release is zero; a zero-tail host refuses below.
+    assert_eq!(
+        prepared.max_release_tail_frames(),
+        crate::sampler::envelope::release_floor_frames(8_000)
+    );
     let limits = NativeInstrumentRuntimeLimits {
         max_pair_bytes: prepared.declared_twin_bytes() * 2,
         max_events_per_block: 1024,
         max_active_occurrences: 32,
-        max_tail_frames: 0,
+        max_tail_frames: prepared.max_release_tail_frames(),
     };
     assert!(NativeInstrumentRuntimePair::new(&prepared, limits).is_ok());
     for refused in [
@@ -323,6 +367,14 @@ fn preparation_and_pair_caller_limits_refuse_without_rendering() {
         },
         NativeInstrumentRuntimeLimits {
             max_active_occurrences: 31,
+            ..limits
+        },
+        NativeInstrumentRuntimeLimits {
+            max_tail_frames: limits.max_tail_frames - 1,
+            ..limits
+        },
+        NativeInstrumentRuntimeLimits {
+            max_tail_frames: 0,
             ..limits
         },
     ] {
@@ -570,16 +622,19 @@ fn occurrence_gain_scales_actual_gated_release_without_touching_the_other_voice(
     .unwrap()
     .prepare_runtime_on_control(4, 259, &hex_lattice::TuningTable::default())
     .unwrap();
+    let release = prepared.max_release_tail_frames();
+    assert!(release >= 4);
+    let frames = 2 + release as usize + 1;
     let mut runtime = pair(&prepared);
     let gain = NativeInstrumentOccurrenceGain::new(
         1,
         hex_lattice::INSTRUMENT_GAIN_UNITY / 2.0,
         hex_lattice::INSTRUMENT_GAIN_UNITY / 2.0,
-        7,
+        frames as u64,
         0,
     )
     .unwrap();
-    let mut output = [[0.0; 2]; 7];
+    let mut output = vec![[0.0; 2]; frames];
     runtime.begin_block();
     runtime
         .process_block_with_clock_and_occurrence_gains(
@@ -591,13 +646,16 @@ fn occurrence_gain_scales_actual_gated_release_without_touching_the_other_voice(
         )
         .unwrap();
     runtime.commit_block();
-    assert_eq!(
-        output,
-        [
-            [1.5; 2], [1.5; 2], [1.5; 2], [1.375; 2], [1.25; 2], [1.125; 2], [1.0; 2]
-        ]
-    );
-    let mut other_release = [[0.0; 2]; 5];
+    let expected: Vec<_> = (0..frames as u64)
+        .map(|age| {
+            let level = age
+                .checked_sub(2)
+                .map_or(1.0, |steps| release_level(steps, release));
+            [1.0 + 0.5 * level; 2]
+        })
+        .collect();
+    assert_frames_near(&output, &expected);
+    let mut other_release = vec![[0.0; 2]; release as usize + 1];
     runtime.begin_block();
     runtime
         .process_block(&[off(0, 2)], &mut other_release[..1], &resources)
@@ -613,10 +671,10 @@ fn occurrence_gain_scales_actual_gated_release_without_touching_the_other_voice(
         .unwrap();
     assert_eq!(runtime.active_occurrence_ids(&mut []), Ok(0));
     runtime.commit_block();
-    assert_eq!(
-        other_release,
-        [[1.0; 2], [0.75; 2], [0.5; 2], [0.25; 2], [0.0; 2]]
-    );
+    let expected: Vec<_> = (0..=release)
+        .map(|steps| [release_level(steps, release); 2])
+        .collect();
+    assert_frames_near(&other_release, &expected);
     assert!(runtime.committed_is_quiescent());
 }
 
@@ -657,7 +715,17 @@ fn gain_batch_can_cover_more_incoming_identities_than_simultaneously_active_voic
         )
         .unwrap();
     runtime.commit_block();
-    assert_eq!(output, [[0.5; 2]; 7]);
+    // Every released voice is stolen into the declick pool with its gain
+    // frozen at the steal, so the whole mix is the unity-gain mix halved.
+    let mut unity = [[0.0; 2]; 7];
+    process(&mut pair(&prepared), &events, &mut unity, &resources);
+    assert!(
+        unity[0][0] > 1.0,
+        "released voices still sound while stolen"
+    );
+    for (actual, unity) in output.iter().zip(unity) {
+        assert_eq!(*actual, [unity[0] * 0.5, unity[1] * 0.5]);
+    }
 }
 
 #[test]
@@ -860,31 +928,29 @@ fn gain_and_ads_retarget_preserves_occurrence_velocity_source_age_and_gate() {
         ],
         "new ADS/gain law starts at carried age4, not a fresh attack or source cursor"
     );
+    let release = target.max_release_tail_frames();
+    assert!(release >= 4);
+    // Release ramps from the frozen sustain (0.25) at gate age6 over the
+    // looping source, with left/right channel gains 1 and 2.
+    let released_frame = |age: u64| {
+        let level = 0.25
+            * release_level(age - 6, release)
+            * f64::from(pcm[(age % 8) as usize])
+            * (64.0 / 127.0);
+        [level, 2.0 * level]
+    };
     let mut released = [[0.0; 2]; 2];
     process(&mut candidate, &[off(0, 7)], &mut released, &resources);
-    assert_eq!(
-        released,
-        [
-            [velocity(1.75), velocity(3.5)],
-            [velocity(1.5), velocity(3.0)]
-        ]
-    );
+    assert_frames_near(&released, &[released_frame(6), released_frame(7)]);
     // Carry a releasing voice again: its original gate age6 remains fixed.
     let mut carried_release = pair(&target);
     carried_release
         .retarget_from(&candidate, proof.as_ref())
         .unwrap();
-    let mut tail = [[0.0; 2]; 4];
+    let mut tail = vec![[0.0; 2]; release as usize];
     process(&mut carried_release, &[], &mut tail, &resources);
-    assert_eq!(
-        tail,
-        [
-            [velocity(0.125), velocity(0.25)],
-            [velocity(0.125), velocity(0.25)],
-            [0.0; 2],
-            [0.0; 2],
-        ]
-    );
+    let expected: Vec<_> = (8..8 + release).map(released_frame).collect();
+    assert_frames_near(&tail, &expected);
     assert!(carried_release.committed_is_quiescent());
     let mut untouched = [[0.0; 2]; 2];
     process(&mut source, &[], &mut untouched, &resources);
@@ -991,7 +1057,8 @@ fn retarget_refuses_effective_coordinate_source_velocity_release_and_budget_chan
     };
     push("note mask", changed, source_view, 4, 259, &tuning);
     let mut changed = settings;
-    changed.envelope.release_seconds = 8.0 / 8_000.0;
+    // Far beyond any prepared declick floor, so the release frames differ.
+    changed.envelope.release_seconds = settings.envelope.release_seconds + 0.25;
     push("release", changed, source_view, 4, 259, &tuning);
     let mut changed = settings;
     changed.velocity_amount = 0.5;
@@ -1194,14 +1261,19 @@ fn releasing_gated_tuning_keeps_gate_age_velocity_and_new_onsets_start_at_zero()
     let mut next = pair(&target);
     next.retarget_from(&old, target_proof(&target).as_ref())
         .unwrap();
-    let velocity = |sample: f64| (sample * (64.0 / 127.0)) as f32;
-    let mut tail = [[0.0; 2]; 4];
+    let release = target.max_release_tail_frames();
+    assert!(release >= 4);
+    // Cursor5 and gate3 survive retuning at age5; only future steps double.
+    let mut tail = vec![[0.0; 2]; release as usize];
     process(&mut next, &[], &mut tail, &resources);
-    assert_eq!(
-        tail,
-        [[velocity(3.0); 2], [velocity(2.0); 2], [0.0; 2], [0.0; 2]],
-        "cursor5 and gate3 survive retuning at age5"
-    );
+    let expected: Vec<_> = (5..5 + release)
+        .map(|age| {
+            let cursor = (5 + 2 * (age - 5)) % 8;
+            let level = release_level(age - 3, release) * (64.0 / 127.0);
+            [f64::from(pcm[cursor as usize]) * level; 2]
+        })
+        .collect();
+    assert_frames_near(&tail, &expected);
     assert!(next.committed_is_quiescent());
     let mut onset = [[0.0; 2]; 4];
     process(&mut next, &[on(0, 8, 60)], &mut onset, &resources);
@@ -1283,6 +1355,7 @@ fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
     let mut runtime = SamplerRuntime {
         prepared,
         active: [None; MAX_SAMPLER_RUNTIME_VOICES],
+        fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
     };
     runtime.active[0] = Some(ActiveVoice {
         occurrence: 7,
@@ -1302,3 +1375,6 @@ fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
         (age, position, None)
     );
 }
+
+mod release_floor;
+mod steal;

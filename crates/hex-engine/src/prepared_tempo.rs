@@ -359,21 +359,17 @@ impl AnchoredSessionTempoView<'_> {
         AnchoredSessionTempoView { base, anchor }
     }
 
-    fn shift_raw(&self, raw: u128, old_side: bool) -> Result<u128, PreparedTempoError> {
-        let offset =
-            i128::from(self.anchor.old_beat.raw()) - i128::from(self.anchor.new_beat.raw());
-        let shift = if old_side { offset } else { -offset };
+    /// Translate a base-clock raw beat into the anchored performance clock.
+    /// The signed result may precede beat zero; callers decide whether that is
+    /// an error (a point conversion) or saturates (a lower bound).
+    fn shift_raw(&self, raw: u128) -> Result<i128, PreparedTempoError> {
+        let shift = i128::from(self.anchor.old_beat.raw()) - i128::from(self.anchor.new_beat.raw());
         let raw = i128::try_from(raw)
             .map_err(|_| PreparedTempoError::FrameToBeat("anchored beat conversion overflow"))?;
-        let shifted = raw
-            .checked_add(shift)
+        raw.checked_add(shift)
             .ok_or(PreparedTempoError::FrameToBeat(
                 "anchored beat conversion overflow",
-            ))?;
-        if shifted < 0 {
-            return Ok(0);
-        }
-        Ok((shifted as u128).min(TempoMap::BEAT_RANGE_SENTINEL))
+            ))
     }
 }
 
@@ -397,14 +393,28 @@ impl MidiTiming for AnchoredSessionTempoView<'_> {
     }
     fn frame_to_beat(&self, frame: u64) -> Result<BeatTime, PreparedTempoError> {
         let raw = self.base.frame_to_beat(frame)?.raw();
-        let raw = self.shift_raw(u128::from(raw), true)?;
+        // A frame whose anchored beat precedes zero has no beat; refuse it,
+        // as `beat_to_frame` refuses the inverse, instead of reporting beat 0.
+        let raw = self.shift_raw(u128::from(raw))?;
+        if raw < 0 {
+            return Err(PreparedTempoError::FrameToBeat(
+                "anchored frame precedes the beat domain",
+            ));
+        }
         let raw = u64::try_from(raw).map_err(|_| {
             PreparedTempoError::FrameToBeat("anchored beat exceeds the beat domain")
         })?;
         Ok(BeatTime::from_raw(raw))
     }
     fn beat_lower_bound_for_frame(&self, frame: u64) -> Result<u128, PreparedTempoError> {
-        self.shift_raw(self.base.beat_lower_bound_for_frame(frame)?, true)
+        // The anchored clock is the base clock translated, so it stays
+        // monotonic. A negative translated bound means every beat in the
+        // domain already reaches `frame`; beat zero is then the exact first
+        // such beat, not an approximation.
+        let raw = self.shift_raw(self.base.beat_lower_bound_for_frame(frame)?)?;
+        Ok(u128::try_from(raw)
+            .unwrap_or(0)
+            .min(TempoMap::BEAT_RANGE_SENTINEL))
     }
 }
 
@@ -1205,5 +1215,35 @@ mod tests {
             assert_eq!(i128::from(effective.raw()), expected_raw);
             assert_eq!(anchored.beat_to_frame(effective).unwrap(), frame);
         }
+    }
+
+    #[test]
+    fn anchored_clock_rejects_frames_before_its_beat_domain() {
+        let map = PreparedTempoMap::prepare(
+            TempoMap::constant(48_000, tempo(120_000_000)).unwrap(),
+            48_000,
+        )
+        .unwrap();
+        let anchored = super::AnchoredSessionTempoView::new(
+            super::SessionBaseTimingView::Canonical(&map),
+            super::SessionClockAnchor {
+                cut_frame: 24_000,
+                old_beat: BeatTime::ZERO,
+                new_beat: BeatTime::ONE,
+            },
+        );
+        // Frames before the cut precede anchored beat zero: both directions refuse.
+        assert!(anchored.frame_to_beat(0).is_err());
+        assert!(anchored.frame_to_beat(23_999).is_err());
+        assert_eq!(anchored.frame_to_beat(24_000).unwrap(), BeatTime::ZERO);
+        assert_eq!(anchored.beat_to_frame(BeatTime::ZERO).unwrap(), 24_000);
+        // The lower bound is the first domain beat reaching the frame. Beat
+        // zero reaches every frame up to the cut, so it is exact there.
+        assert_eq!(anchored.beat_lower_bound_for_frame(0).unwrap(), 0);
+        assert_eq!(anchored.beat_lower_bound_for_frame(24_000).unwrap(), 0);
+        let after_cut = anchored.beat_lower_bound_for_frame(24_001).unwrap();
+        assert!(after_cut > 0);
+        let after_cut = BeatTime::from_raw(u64::try_from(after_cut).unwrap());
+        assert!(anchored.beat_to_frame(after_cut).unwrap() >= 24_001);
     }
 }

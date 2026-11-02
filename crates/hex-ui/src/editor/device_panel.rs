@@ -167,6 +167,8 @@ pub(super) struct DevicePanelState {
         hex_audio::spectrum_worker::SpectrumTargetId,
         hex_audio::spectrum_worker::PublishedSpectra,
     >,
+    /// Retained per-tick read buffer for the latest spectrum pairs.
+    pub(super) spectrum_scratch: Vec<hex_audio::spectrum_worker::PublishedSpectra>,
     add_menu_open: bool,
     message: Option<String>,
 }

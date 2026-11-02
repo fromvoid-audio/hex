@@ -9,6 +9,7 @@
 use crate::device::{
     Opened, PreparedOutput, PreparedOutputKind, WorkerOutputProfile, WorkerPreparedOutput,
 };
+use crate::open_outcome::OutputOpenError;
 use crate::spectrum_worker::SpectrumReaper;
 use cpal::traits::StreamTrait;
 use std::{
@@ -295,11 +296,10 @@ impl RecoveryOpen {
     /// Poll once; `None` means the lifecycle worker is still preparing the output.
     pub fn try_take(
         &mut self,
-    ) -> Result<Option<Result<PreparedOutput, String>>, RecoveryOpenError> {
-        Ok(self
-            .waiter
-            .try_take()?
-            .map(|result| result.and_then(Opened::into_legacy)))
+    ) -> Result<Option<Result<PreparedOutput, OutputOpenError>>, RecoveryOpenError> {
+        Ok(self.waiter.try_take()?.map(|result| {
+            result.and_then(|opened| opened.into_legacy().map_err(OutputOpenError::from))
+        }))
     }
 }
 
@@ -311,11 +311,10 @@ pub struct WorkerRecoveryOpen {
 impl WorkerRecoveryOpen {
     pub fn try_take(
         &mut self,
-    ) -> Result<Option<Result<WorkerPreparedOutput, String>>, RecoveryOpenError> {
-        Ok(self
-            .waiter
-            .try_take()?
-            .map(|result| result.and_then(Opened::into_worker)))
+    ) -> Result<Option<Result<WorkerPreparedOutput, OutputOpenError>>, RecoveryOpenError> {
+        Ok(self.waiter.try_take()?.map(|result| {
+            result.and_then(|opened| opened.into_worker().map_err(OutputOpenError::from))
+        }))
     }
 }
 
@@ -425,7 +424,7 @@ fn state() -> &'static Arc<OpenState> {
 }
 
 struct OpenWaiter<T> {
-    receiver: Receiver<Result<T, String>>,
+    receiver: Receiver<Result<T, OutputOpenError>>,
     state: Arc<OpenState>,
     id: u64,
     canceled: Arc<AtomicBool>,
@@ -434,7 +433,7 @@ struct OpenWaiter<T> {
     released: bool,
 }
 impl<T> OpenWaiter<T> {
-    fn try_take(&mut self) -> Result<Option<Result<T, String>>, RecoveryOpenError> {
+    fn try_take(&mut self) -> Result<Option<Result<T, OutputOpenError>>, RecoveryOpenError> {
         match self.receiver.try_recv() {
             Ok(result) => {
                 self.consumed.store(true, Release);
@@ -553,7 +552,7 @@ struct OpenRequest<T> {
     id: u64,
     expected_sample_rate: Option<u32>,
     kind: PreparedOutputKind,
-    completion: SyncSender<Result<T, String>>,
+    completion: SyncSender<Result<T, OutputOpenError>>,
     canceled: Arc<AtomicBool>,
     consumed: Arc<AtomicBool>,
     abandoned: Arc<AtomicBool>,
@@ -574,7 +573,7 @@ enum LifecycleMessage<T, R> {
 fn run_lifecycle<T: Send + 'static, R: Send + 'static>(
     receiver: Receiver<LifecycleMessage<T, R>>,
     is_occupied: impl Fn() -> bool,
-    mut try_open: impl FnMut(Option<u32>) -> Option<Result<T, String>>,
+    mut try_open: impl FnMut(Option<u32>) -> Option<Result<T, OutputOpenError>>,
     retire: impl FnMut(R),
 ) {
     run_lifecycle_selected(receiver, is_occupied, |rate, _| try_open(rate), retire)
@@ -584,7 +583,7 @@ fn run_lifecycle<T: Send + 'static, R: Send + 'static>(
 fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
     receiver: Receiver<LifecycleMessage<T, R>>,
     is_occupied: impl Fn() -> bool,
-    try_open: impl FnMut(Option<u32>, PreparedOutputKind) -> Option<Result<T, String>>,
+    try_open: impl FnMut(Option<u32>, PreparedOutputKind) -> Option<Result<T, OutputOpenError>>,
     retire: impl FnMut(R),
 ) {
     run_lifecycle_observed(
@@ -599,7 +598,7 @@ fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
 fn run_lifecycle_observed<T: Send + 'static, R: Send + 'static>(
     receiver: Receiver<LifecycleMessage<T, R>>,
     is_occupied: impl Fn() -> bool,
-    mut try_open: impl FnMut(Option<u32>, PreparedOutputKind) -> Option<Result<T, String>>,
+    mut try_open: impl FnMut(Option<u32>, PreparedOutputKind) -> Option<Result<T, OutputOpenError>>,
     mut retire: impl FnMut(R),
     status: &LifecycleStatus,
 ) {
