@@ -591,6 +591,10 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
         .control
         .command(hex_engine::playback::PlaybackCommand::Stop)
         .unwrap();
+    // The queued Stop settles after its declick fade.
+    for _ in 0..super::FADE_BLOCKS {
+        h.render();
+    }
     assert_eq!(h.render(), [[0.0; 2]; 64]);
     assert!(
         !h.audio
@@ -833,6 +837,10 @@ fn loaded_resident_scalar_edits_reach_pcm_history_and_current_save_reopen() {
         .control
         .command(hex_engine::playback::PlaybackCommand::Stop)
         .unwrap();
+    // The queued Stop settles after its declick fade.
+    for _ in 0..super::FADE_BLOCKS {
+        h.render();
+    }
     assert_eq!(h.render(), [[0.0; 2]; 64]);
     scalar_pcm_at_cursor(&mut h, &redone, &mut applied, &mut request_id, 0.125, 6000);
 

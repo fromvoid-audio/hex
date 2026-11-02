@@ -500,7 +500,10 @@ fn paused_latency_change_then_new_instrument_track_applies_and_binds_live_input(
         h.render();
     }
     control(&mut h, PlaybackCommand::Pause);
-    h.render();
+    // The queued Pause settles after its declick fade.
+    for _ in 0..super::FADE_BLOCKS {
+        h.render();
+    }
     let status = h.audio.as_ref().unwrap().status().unwrap();
     let paused = status.position.load(Acquire);
     assert!(paused > 0 && !status.playing.load(Acquire));
