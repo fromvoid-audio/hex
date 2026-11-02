@@ -104,7 +104,16 @@ fn duration_independent_pages_preserve_more_than_65536_exact_applications() {
         for (offset, slot) in batch[..count].iter_mut().enumerate() {
             *slot = event(first + offset as u64);
         }
-        writer.append(&batch[..count]).unwrap();
+        // This test exercises large-draft paging, not per-batch crash durability.
+        // The real finish below syncs the entire file; the separate sync-failure
+        // and interrupted-process tests cover the append durability boundary.
+        writer
+            .append_with(
+                &batch[..count],
+                |file, bytes| file.write_all(bytes),
+                |_| Ok(()),
+            )
+            .unwrap();
     }
     let end = clock(event(COUNT));
     assert_eq!(
