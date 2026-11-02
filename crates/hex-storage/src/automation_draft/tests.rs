@@ -68,7 +68,10 @@ fn limits() -> DraftReadLimits {
 // opening. A retained descriptor still fails after the bound; production reader
 // admission remains nonblocking and its contention tests use it directly.
 #[cfg(unix)]
-fn wait_for_shared_lock(path: &Path, bound: std::time::Duration) -> std::io::Result<File> {
+pub(super) fn wait_for_shared_lock(
+    path: &Path,
+    bound: std::time::Duration,
+) -> std::io::Result<File> {
     let file = File::open(path)?;
     let start = std::time::Instant::now();
     loop {
