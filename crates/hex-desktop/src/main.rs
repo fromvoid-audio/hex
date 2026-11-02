@@ -14,11 +14,13 @@
 //! Does not implement project edits, codecs or musical DSP. Native source/publication adapters
 //! retain exact document and output identity; UI clients never acquire source owners.
 use gpui::{App, Application};
+use startup_failure::{Stage, StartupFailure};
 use std::io::Write;
 
 mod audio_policy;
 mod native_audio;
 mod native_sources;
+mod startup_failure;
 mod streamed_export;
 mod time_selection_profile;
 mod update_lease;
@@ -27,46 +29,39 @@ mod update_supervisor;
 fn main() {
     // Keep shared publication custody until every desktop worker has shut
     // down. Do not pass this file descriptor to any update helper.
-    let _update_lease = match update_lease::acquire_for_current_executable() {
-        Ok(lease) => lease,
-        Err(error) => {
-            let _ = writeln!(std::io::stderr().lock(), "{error}");
-            std::process::exit(1);
-        }
-    };
+    let update_lease = update_lease::acquire_for_current_executable()
+        .map_err(StartupFailure::at(Stage::UpdateCustody));
 
     let mut arguments = std::env::args_os().skip(1);
     if arguments
         .next()
         .is_some_and(|argument| argument == "--profile-time-selection")
     {
-        if let Err(error) = time_selection_profile::run(arguments) {
+        // A terminal-only profiling mode: errors stay on stderr.
+        let result = update_lease
+            .map_err(|failure| failure.to_string())
+            .and_then(|_lease| time_selection_profile::run(arguments));
+        if let Err(error) = result {
             let _ = writeln!(std::io::stderr().lock(), "{error}");
             std::process::exit(1);
         }
         return;
     }
 
-    let (audio_diagnostics, action_diagnostics) =
-        match diagnostic_options(std::env::args_os().skip(1)) {
-            Ok(flags) => flags,
-            Err(error) => {
-                let _ = writeln!(std::io::stderr().lock(), "{error}");
-                std::process::exit(1);
-            }
-        };
+    let options = diagnostic_options(std::env::args_os().skip(1))
+        .map_err(|error| StartupFailure::new(Stage::Arguments, error));
+    let (_update_lease, (audio_diagnostics, action_diagnostics)) = match (update_lease, options) {
+        (Ok(lease), Ok(options)) => (lease, options),
+        (Err(failure), _) | (Ok(_), Err(failure)) => {
+            // No worker has started; show the failure instead of vanishing.
+            report_before_editor(failure);
+            std::process::exit(1);
+        }
+    };
 
-    let mut session_log = hex_diagnostics::default_directory().and_then(|directory| {
-        hex_diagnostics::SessionLog::start_with_context(
-            directory,
-            &format!(
-                "build={} platform={}-{} audio={audio_diagnostics:?} actions={action_diagnostics}",
-                hex_ui::diagnostic_build_identity(),
-                std::env::consts::OS,
-                std::env::consts::ARCH
-            ),
-        )
-    });
+    let mut session_log = start_session_log(&format!(
+        "audio={audio_diagnostics:?} actions={action_diagnostics}"
+    ));
     let log_handle = session_log
         .as_ref()
         .map(|log| log.handle())
@@ -118,10 +113,14 @@ fn main() {
         let opened = hex_ui::open_or_report(cx, |cx| {
             if demo {
                 hex_ui::open(cx, hex_audio::AudioOutput::open())
+                    .map_err(StartupFailure::at(Stage::Editor))
             } else {
-                native_audio::backend(audio_diagnostics)
-                    .and_then(|backend| hex_ui::open_editor_backend(cx, backend))
+                native_audio::backend(audio_diagnostics).and_then(|backend| {
+                    hex_ui::open_editor_backend(cx, backend)
+                        .map_err(StartupFailure::at(Stage::Editor))
+                })
             }
+            .map_err(StartupFailure::into_report)
         });
         if opened {
             cx.activate(true);
@@ -131,6 +130,43 @@ fn main() {
         worker.shutdown();
     }
     // The UI/audio lifecycle has ended; joining file I/O is safe here.
+    if let Ok(log) = &mut session_log {
+        if let Err(error) = log.shutdown() {
+            eprintln!("session logging shutdown failed: {error}");
+        }
+    }
+}
+
+/// Starts the session log with the build/platform context plus `context`.
+fn start_session_log(context: &str) -> Result<hex_diagnostics::SessionLog, String> {
+    hex_diagnostics::default_directory().and_then(|directory| {
+        hex_diagnostics::SessionLog::start_with_context(
+            directory,
+            &format!(
+                "build={} platform={}-{} {context}",
+                hex_ui::diagnostic_build_identity(),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            ),
+        )
+    })
+}
+
+/// Logs a failure that precedes the editor and shows it in the native startup
+/// alert, returning once the alert is dismissed. Starts no worker.
+fn report_before_editor(failure: StartupFailure) {
+    let mut session_log = start_session_log("startup=failed");
+    let log_handle = session_log
+        .as_ref()
+        .map(|log| log.handle())
+        .map_err(Clone::clone);
+    let report = failure.into_report();
+    Application::new()
+        .with_assets(hex_ui::assets::HexAssets)
+        .run(move |cx: &mut App| {
+            hex_ui::install_session_log(cx, log_handle.clone());
+            hex_ui::open_or_report(cx, |_| Err(report));
+        });
     if let Ok(log) = &mut session_log {
         if let Err(error) = log.shutdown() {
             eprintln!("session logging shutdown failed: {error}");
