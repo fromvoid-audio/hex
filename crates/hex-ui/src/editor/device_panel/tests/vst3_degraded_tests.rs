@@ -1,0 +1,103 @@
+//! Degraded vst3 marker (#4569): the current output's notice reaches the
+//! device panel through the tick's audio-event step.
+use super::*;
+use crate::{EditorAudio, EditorAudioEvent};
+
+fn selector(status: &str, device: DeviceId) -> &'static str {
+    Box::leak(format!("device-vst3-{status}-{}", device.value()).into_boxed_str())
+}
+
+#[gpui::test]
+fn only_the_current_outputs_degraded_vst3_devices_show_the_marker(cx: &mut TestAppContext) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let identity = client.output_identity().unwrap();
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "plugins".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    for _ in 0..2 {
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: NativeDeviceState::new(
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.vst3"),
+                    1,
+                    vec![0],
+                )
+                .unwrap(),
+            })
+            .unwrap();
+    }
+    let devices: Vec<DeviceId> = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .devices()
+        .iter()
+        .map(|device| device.id())
+        .collect();
+    let (healthy, faulted) = (devices[0], devices[1]);
+    let (handle, view) = super::super::super::clip_drag_ui_test::editor_window(
+        cx,
+        editor.project().clone(),
+        Arc::default(),
+    );
+    let (events, receiver) = std::sync::mpsc::sync_channel(4);
+    view.update(cx, |view, cx| {
+        view.audio_events = receiver;
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "degraded fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.selected_track = Some(track);
+        view.device_panel_active = true;
+        view.clip_view_open = true;
+        view.mode = super::super::super::EditorMode::Session;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let deliver = |visual: &mut VisualTestContext, output_identity, devices, current: bool| {
+        events
+            .send(EditorAudioEvent::DegradedPlugins {
+                output_identity,
+                devices,
+            })
+            .unwrap();
+        view.update(visual, |view, cx| {
+            // The tick's audio-event step, without the unrelated service sync.
+            assert_eq!(view.poll_editor_audio_events(cx), current);
+            cx.notify();
+        });
+        visual.run_until_parked();
+    };
+    visual.run_until_parked();
+    for device in [healthy, faulted] {
+        assert!(visual.debug_bounds(selector("pending", device)).is_some());
+    }
+    // A notice from an output that is no longer current is ignored.
+    deliver(&mut visual, identity + 1, vec![faulted.value()], false);
+    assert!(visual.debug_bounds(selector("degraded", faulted)).is_none());
+    deliver(&mut visual, identity, vec![faulted.value()], true);
+    assert!(visual.debug_bounds(selector("degraded", faulted)).is_some());
+    assert!(visual.debug_bounds(selector("pending", faulted)).is_none());
+    assert!(visual.debug_bounds(selector("degraded", healthy)).is_none());
+    assert!(visual.debug_bounds(selector("pending", healthy)).is_some());
+    // An empty set clears the marker.
+    deliver(&mut visual, identity, Vec::new(), true);
+    assert!(visual.debug_bounds(selector("degraded", faulted)).is_none());
+    assert!(visual.debug_bounds(selector("pending", faulted)).is_some());
+    drop(backend);
+    output.publication.close();
+}

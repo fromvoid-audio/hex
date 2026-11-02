@@ -66,20 +66,25 @@ impl Plan {
             });
         }
         let inspect = match command.clip_scope() {
-            ClipCommandScope::Unrelated => matches!(
-                command,
-                Command::RemoveTrack(_)
-                    | Command::RemoveTracks(_)
-                    | Command::ImportPreparedAudioClipWithOverwrite { .. }
-                    | Command::ImportPreparedSessionAudioClip { .. }
-                    | Command::CommitArrangementBounce { .. }
-                    | Command::RemoveScene(_)
-                    | Command::ClearSessionCell { .. }
-                    | Command::SetSessionStopCell { .. }
-                    | Command::MoveSessionCell { .. }
-                    | Command::SetProjectTempo { .. }
-                    | Command::SetTempoPoint { .. }
-            ),
+            ClipCommandScope::Unrelated => {
+                matches!(
+                    command,
+                    Command::RemoveTrack(_)
+                        | Command::RemoveTracks(_)
+                        | Command::ImportPreparedAudioClipWithOverwrite { .. }
+                        | Command::ImportPreparedSessionAudioClip { .. }
+                        | Command::CommitArrangementBounce { .. }
+                        | Command::RemoveScene(_)
+                        | Command::ClearSessionCell { .. }
+                        | Command::SetSessionStopCell { .. }
+                        | Command::MoveSessionCell { .. }
+                        | Command::SetProjectTempo { .. }
+                        | Command::SetTempoPoint { .. }
+                ) || matches!(
+                    command,
+                    Command::ImportExistingAudio { placement, .. } if placement.may_replace_clips()
+                )
+            }
             ClipCommandScope::Property { edit, .. } => {
                 shared(&edit) || matches!(edit, ClipEdit::Delete)
             }

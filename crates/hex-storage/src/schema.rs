@@ -9,7 +9,9 @@ pub(crate) mod clip_activation;
 pub(crate) mod clip_aliases;
 pub(crate) mod clip_names;
 pub(crate) mod combined;
+pub(crate) mod content_view_resampler;
 pub(crate) mod content_views;
+pub(crate) mod conversion_v2;
 pub(crate) mod crossfades;
 pub(crate) mod device_assets;
 pub(crate) mod device_automation;
@@ -37,10 +39,12 @@ pub(crate) mod playable_routing;
 pub(crate) mod provenance;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
+pub(crate) mod sampler_crossfade;
 pub(crate) mod session_audio_loops;
 pub(crate) mod track_groups;
 pub(crate) mod track_name_origin;
 pub(crate) mod tuning;
+pub(crate) mod warp_resampler;
 use crate::StorageError;
 use hex_project::{
     AssetSnapshot, BeatTime, ClipFade, ClipSnapshot, DeviceSnapshot, IDENTITY_CONVERSION, Meter,

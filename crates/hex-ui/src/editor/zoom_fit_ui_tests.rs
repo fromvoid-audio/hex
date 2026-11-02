@@ -150,6 +150,8 @@ fn midi_ruler_selection_fit_back_geometry_ack_and_document_reset_are_view_only(
     visual.simulate_event(gpui::ScrollWheelEvent {
         position: roll.center(),
         delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(80.0))),
+        // Cmd zooms time; a plain wheel scrolls pitch.
+        modifiers: gpui::Modifiers::command(),
         ..Default::default()
     });
     visual.run_until_parked();

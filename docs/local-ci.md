@@ -132,12 +132,10 @@ with "changed modules ran no tests". Example targets (the device gallery) are
 skipped for module-scoped owners. Smaller, self-tested modules therefore mean
 faster merges; an untested module inherits its parent's often-large suite.
 
-A changed module *root* (for example `editor/mod.rs`, which declares many
-submodules) keeps its own tests and the submodules the change touches (another
-changed file) or names in its changed lines; the other submodules are skipped
-with `--skip module::child::`. If that would leave no test at all, the whole
-subtree runs. Module-scoped doctest steps run only when a changed file carries a
-doc example (a fenced block in `///` or `//!` comments). A reviewed runtime
+A changed module root (for example `editor/mod.rs`) runs its complete test
+subtree, including tests in child modules, regardless of which child names
+appear in the diff. Module-scoped doctest steps run only when a changed file
+carries a doc example (a fenced block in `///` or `//!` comments). A reviewed runtime
 consumer that is itself the changed owner (for example hex-storage) is
 module-scoped like any owner.
 
@@ -156,11 +154,12 @@ example or bench, so building and linking those targets was pure overhead
 
 **One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
 build phase, under 60 s. local-ci sums executed test steps (wall time minus the
-reported build phase; carried steps excluded) into `test_budget` in the summary
-and fails the run when the sum exceeds the limit. The fix is to narrow the owner
-boundary, split the change, or speed up the slowest suite. While a known-slow
-owner suite is being fixed, pass `--over-budget-reason "Pulse #N …"`. The reason
-is recorded in the summary and the run may qualify.
+reported build phase; carried steps excluded) into `test_budget` in the summary.
+Exceeding the limit prints a warning naming the slowest steps; it does not fail
+the run, and a run that is otherwise green qualifies (user decision,
+1 November 2026; overruns are investigated in Pulse #4100). Record a recurring
+slow owner suite in Pulse, and optionally pass `--over-budget-reason "Pulse #N …"`
+to keep the reason in the summary.
 Mixed tooling/Rust changes combine comprehensive Python checks with affected Rust
 configurations. Contributor prose, including AGENTS.md, gets link/path checks;
 executable selector/runner policy gets comprehensive tooling tests and guards.
