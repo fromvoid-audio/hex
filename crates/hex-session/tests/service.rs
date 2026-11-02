@@ -1170,7 +1170,7 @@ fn request_queue_is_bounded_and_dropping_service_is_nonblocking() {
                 break;
             }
             Err(SubmitError::Closed(_)) => panic!("worker exited unexpectedly"),
-            Err(SubmitError::Busy(_)) => panic!("non-export request was marked busy"),
+            Err(SubmitError::Busy(..)) => panic!("non-export request was marked busy"),
         }
     }
     assert!(matches!(

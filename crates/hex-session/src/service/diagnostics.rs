@@ -259,7 +259,7 @@ impl Hooks {
         let result = match result {
             Ok(()) => "enqueued",
             Err(SubmitError::Full(_)) => "full",
-            Err(SubmitError::Busy(_)) => "busy",
+            Err(SubmitError::Busy(..)) => "busy",
             Err(SubmitError::Closed(_)) => "closed",
         };
         self.emit(request, DiagnosticStage::SubmitReturned { result }, None);
@@ -736,7 +736,7 @@ mod tests {
                 name: "fixture".into(),
             })) {
                 Ok(()) => admitted += 1,
-                Err(SubmitError::Full(_)) | Err(SubmitError::Busy(_)) => crate::test_wait::pause(),
+                Err(SubmitError::Full(_)) | Err(SubmitError::Busy(..)) => crate::test_wait::pause(),
                 Err(SubmitError::Closed(_)) => panic!("service closed"),
             }
         }

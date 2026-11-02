@@ -773,8 +773,8 @@ impl EditorView {
             Err(hex_session::service::SubmitError::Closed(_)) => {
                 self.error = Some("arrangement seek worker is unavailable".into());
             }
-            Err(hex_session::service::SubmitError::Busy(_)) => {
-                self.error = Some("arrangement seek worker is busy".into());
+            Err(hex_session::service::SubmitError::Busy(_, reason)) => {
+                self.error = Some(super::user_errors::busy(reason).into());
             }
         }
     }
