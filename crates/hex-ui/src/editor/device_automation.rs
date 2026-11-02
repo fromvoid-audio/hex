@@ -3,9 +3,10 @@
 //! stamps and owns history; released curves retain their exact ordered receipt.
 //! Provider descriptors and typed host gains have separate value metadata;
 //! reserved widget keys are translated only by the shared binding edge.
-//! Point selection is transient view state within one lane. A blank click adds
-//! a point; a blank drag draws the shared `hex_widgets::Marquee` (shift adds,
-//! cmd toggles). Dragging a selected point moves the whole selection, and
+//! Point selection is transient view state within one lane. A blank press adds
+//! a point and drags it; a shift blank drag draws the shared
+//! `hex_widgets::Marquee` (shift+cmd toggles). Dragging a selected point moves
+//! the whole selection, and
 //! delete/shape act on every selected point; each is one whole-lane request,
 //! so one Undo reverts the group edit.
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -147,7 +148,7 @@ pub(super) struct Draft {
     origin: [f32; 2],
 }
 
-/// Held blank press: a click adds `click` on release; a drag becomes a marquee.
+/// Held shift blank press: a click adds `click` on release; a drag becomes a marquee.
 #[derive(Clone)]
 pub(super) struct MarqueeDraft {
     target: Target,
