@@ -28,7 +28,7 @@ fn current_source_inventory_preserves_original_kind_and_exact_expected_digest() 
         let project = project(original);
         let bytes = encode(&project).unwrap();
         let value: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+        assert_eq!(value["version"], hex_storage::schema_version_for(&project));
         let row = &value["asset_sources"][0];
         assert_eq!(row["asset"], project.assets().next().unwrap().id().value());
         if original {

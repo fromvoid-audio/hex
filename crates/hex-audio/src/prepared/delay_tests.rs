@@ -139,7 +139,8 @@ fn play_from_chases_vector_with_fresh_delay_without_callback_allocations() {
         control.command(PlaybackCommand::Pause).unwrap();
         let paused = control.status.position.load(Acquire);
         block(&mut callback, &mut output);
-        assert_eq!(control.status.position.load(Acquire), paused);
+        // The 128-frame queued Pause fade is still rendering (#4151).
+        assert_eq!(control.status.position.load(Acquire), paused + 127);
         // Pause releases clip gates while the same source and its effect tails
         // remain available to live input. Stop below still resets to silence.
         assert!(output.iter().flatten().all(|sample| sample.is_finite()));

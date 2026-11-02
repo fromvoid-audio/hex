@@ -793,7 +793,10 @@ fn arrangement_bounce_caps_actual_nonquiescent_tail_and_preserves_destinations()
     assert_eq!(report.frames, 320 + u64::from(RATE) * 30);
     assert_eq!(report.data_bytes, report.frames as u32 * 8);
     let bytes = fs::read(&path).unwrap();
-    assert_eq!(bytes.len(), 44 + report.frames as usize * 8);
+    assert_eq!(
+        bytes.len(),
+        hex_export::FLOAT32_WAV_HEADER_BYTES as usize + report.frames as usize * 8
+    );
     assert_eq!(
         u16::from_le_bytes(bytes[20..22].try_into().unwrap()),
         3,
@@ -855,7 +858,7 @@ fn arrangement_bounce_keeps_a_naturally_ending_tail_beyond_ten_seconds() {
     assert!(report.frames > u64::from(RATE) * 12);
     assert!(report.frames < u64::from(RATE) * 13);
     let bytes = fs::read(&path).unwrap();
-    let late = 44 + RATE as usize * 11 * 8;
+    let late = hex_export::FLOAT32_WAV_HEADER_BYTES as usize + RATE as usize * 11 * 8;
     assert!(
         bytes[late..late + 8]
             .chunks_exact(4)
@@ -906,8 +909,8 @@ fn arrangement_bounce_ignores_quiet_noise_without_trimming_selected_content() {
     assert_eq!(exact.frames, 1024);
     let bytes = fs::read(&path).unwrap();
     assert_eq!(
-        &bytes[44..],
-        &fs::read(exact_path).unwrap()[44..],
+        &bytes[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..],
+        &fs::read(exact_path).unwrap()[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..],
         "retained PCM is unchanged"
     );
     assert!(
@@ -945,7 +948,7 @@ fn arrangement_bounce_keeps_a_late_one_channel_echo_across_quiet_noise() {
         "retain fifty milliseconds after the late echo"
     );
     let bytes = fs::read(path).unwrap();
-    let sample_offset = 44 + echo_frame as usize * 8;
+    let sample_offset = hex_export::FLOAT32_WAV_HEADER_BYTES as usize + echo_frame as usize * 8;
     let left = f32::from_le_bytes(bytes[sample_offset..sample_offset + 4].try_into().unwrap());
     let right = f32::from_le_bytes(
         bytes[sample_offset + 4..sample_offset + 8]

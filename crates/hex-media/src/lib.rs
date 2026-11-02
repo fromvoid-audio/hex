@@ -17,6 +17,8 @@ use std::{
 };
 
 mod adpcm;
+mod file_identity;
+pub use file_identity::SourceFileIdentity;
 mod native_source;
 pub use native_source::{NativeDecodedAudio, NativeSourceRefusal};
 mod resample;
@@ -37,13 +39,19 @@ mod verified_stream_tests;
 #[cfg(test)]
 mod resample_plan_tests;
 
+#[cfg(test)]
+mod resample_quality_tests;
+
 const READ_CHUNK_BYTES: usize = 16 * 1024;
 
-pub use resample::{ResampleLimits, ResamplePlan, resample};
-pub use resample_kernel::{ResampleKernel, ResampleKernelDataLayout};
+pub use resample::{ResampleLimits, ResamplePlan, resample, resample_with_version};
+pub use resample_kernel::{
+    ResampleKernel, ResampleKernelDataLayout, ResampleVersion, V2_STOPBAND_DB,
+};
 pub use stream::{WavFrameReader, WavReaderLimits};
 pub use verified_stream::{
-    VERIFIED_WAV_PAGE_BYTES, VerifiedReaderDataLayout, VerifiedWavReader, VerifiedWavReaderLimits,
+    VERIFIED_WAV_PAGE_BYTES, VerifiedReaderDataLayout, VerifiedWavManifest, VerifiedWavReader,
+    VerifiedWavReaderLimits,
 };
 
 /// Caller-owned resource ceilings for a single import operation.
@@ -69,6 +77,7 @@ pub struct DecodedAudio {
     audio: Audio,
     sample_rate: u32,
     frames: usize,
+    file_identity: Option<SourceFileIdentity>,
 }
 
 impl DecodedAudio {
@@ -93,15 +102,36 @@ impl DecodedAudio {
         2
     }
 
+    /// Length and modification time of the file that was read, or `None` when
+    /// the platform reports no modification time. In-memory only; never saved.
+    pub const fn file_identity(&self) -> Option<SourceFileIdentity> {
+        self.file_identity
+    }
+
     pub fn into_audio(self) -> Audio {
         self.audio
     }
+}
+
+/// Readable extent of a WAV whose audio data is truncated or ends in a partial
+/// frame. Such files are refused by default; [`recover_wav_file`] imports the
+/// readable whole frames only after an explicit recovery choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WavTruncation {
+    /// Complete frames present in the file.
+    pub readable_frames: u64,
+    /// Declared data bytes absent before physical end of file.
+    pub missing_bytes: u64,
+    /// Bytes of a trailing incomplete frame that recovery discards.
+    pub partial_frame_bytes: u64,
 }
 
 #[derive(Debug)]
 pub enum ImportError {
     Io(io::Error),
     Invalid(&'static str),
+    /// Audio data is truncated or ends in a partial frame; readable frames remain.
+    Truncated(WavTruncation),
     LimitExceeded(&'static str),
     AllocationFailed,
     SourceChanged,
@@ -113,9 +143,17 @@ impl fmt::Display for ImportError {
         match self {
             Self::Io(error) => write!(f, "could not read media file: {error}"),
             Self::Invalid(reason) => write!(f, "invalid or unsupported media: {reason}"),
+            Self::Truncated(truncation) => write!(
+                f,
+                "wav audio data is incomplete ({} bytes missing, {} bytes of a partial frame); \
+                 recover readable frames to import its {} complete frames",
+                truncation.missing_bytes,
+                truncation.partial_frame_bytes,
+                truncation.readable_frames
+            ),
             Self::LimitExceeded(reason) => write!(f, "media limit exceeded: {reason}"),
             Self::AllocationFailed => f.write_str("could not allocate media buffer"),
-            Self::SourceChanged => f.write_str("source changed during verified media access"),
+            Self::SourceChanged => f.write_str("source file changed while it was being read"),
             Self::Cancelled => f.write_str("media verification cancelled"),
         }
     }
@@ -126,6 +164,7 @@ impl std::error::Error for ImportError {
         match self {
             Self::Io(error) => Some(error),
             Self::Invalid(_)
+            | Self::Truncated(_)
             | Self::LimitExceeded(_)
             | Self::AllocationFailed
             | Self::SourceChanged
@@ -142,20 +181,56 @@ impl From<io::Error> for ImportError {
 
 /// Read and decode a WAV file, rejecting input above the caller's byte limit.
 /// At most one sentinel byte beyond the limit is read to detect an oversized file.
+/// The open handle's length and modification time must be identical before and
+/// after the read, and match the bytes read, or the decode reports
+/// [`ImportError::SourceChanged`]; see [`DecodedAudio::file_identity`].
 pub fn decode_wav_file(
     path: impl AsRef<Path>,
     limits: Limits,
 ) -> Result<DecodedAudio, ImportError> {
     let path = path.as_ref().to_path_buf();
     let mut file = File::open(&path)?;
+    let before = file_identity::Observation::of(&file.metadata()?);
     let bytes = read_bounded(&mut file, limits.max_file_bytes)?;
+    let after = file_identity::Observation::of(&file.metadata()?);
+    let file_identity = file_identity::stable_identity(before, after, bytes.len())?;
     let (audio, sample_rate, frames) = decode_wav_inner(&bytes, limits.max_frames)?;
     Ok(DecodedAudio {
         path,
         audio,
         sample_rate,
         frames,
+        file_identity,
     })
+}
+
+/// Read and decode a WAV file, explicitly recovering the readable whole frames of
+/// truncated or partial-frame audio data. Returns the truncation report when
+/// frames were dropped so the caller can tell the user about the fidelity loss.
+/// Malformed headers and block-compressed (ADPCM) truncation are still refused,
+/// and the same file-identity check as [`decode_wav_file`] applies.
+pub fn recover_wav_file(
+    path: impl AsRef<Path>,
+    limits: Limits,
+) -> Result<(DecodedAudio, Option<WavTruncation>), ImportError> {
+    let path = path.as_ref().to_path_buf();
+    let mut file = File::open(&path)?;
+    let before = file_identity::Observation::of(&file.metadata()?);
+    let bytes = read_bounded(&mut file, limits.max_file_bytes)?;
+    let after = file_identity::Observation::of(&file.metadata()?);
+    let file_identity = file_identity::stable_identity(before, after, bytes.len())?;
+    let ((audio, sample_rate, frames), truncation) =
+        wav::decode_recoverable(&bytes, limits.max_frames)?;
+    Ok((
+        DecodedAudio {
+            path,
+            audio,
+            sample_rate,
+            frames,
+            file_identity,
+        },
+        truncation,
+    ))
 }
 
 /// Decode an in-memory RIFF/WAVE file under caller-provided byte and frame limits.

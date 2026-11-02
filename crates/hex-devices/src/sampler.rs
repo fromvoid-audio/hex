@@ -13,6 +13,7 @@ mod binding;
 pub mod catalog;
 pub mod control;
 mod envelope;
+mod interpolation;
 mod plan;
 mod runtime;
 pub mod state;
@@ -183,6 +184,8 @@ fn finite_range(value: f64, min: f64, max: f64) -> bool {
     value.is_finite() && (min..=max).contains(&value)
 }
 
+#[cfg(test)]
+mod interpolation_tests;
 #[cfg(test)]
 mod lifetime_tests;
 #[cfg(test)]

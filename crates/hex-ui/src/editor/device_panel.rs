@@ -167,6 +167,8 @@ pub(super) struct DevicePanelState {
         hex_audio::spectrum_worker::SpectrumTargetId,
         hex_audio::spectrum_worker::PublishedSpectra,
     >,
+    /// Retained per-tick read buffer for the latest spectrum pairs.
+    pub(super) spectrum_scratch: Vec<hex_audio::spectrum_worker::PublishedSpectra>,
     add_menu_open: bool,
     message: Option<String>,
 }
@@ -373,8 +375,10 @@ fn cache_device_metadata(
         .get(&device.id())
         .is_some_and(|(cached_class, state, _)| *cached_class == class && state == device.state());
     if !current {
-        let metadata = hex_engine::native_device_view_for_class(class, device.state())
-            .map_err(|error| error.to_string().to_lowercase());
+        let metadata =
+            hex_engine::native_device_view_for_class(class, device.state()).map_err(|error| {
+                hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
+            });
         panel
             .views
             .insert(device.id(), (class, device.state().clone(), metadata));
@@ -1033,14 +1037,16 @@ fn render_track(
 
     if view.device_panel.effect_catalog.is_none() {
         view.device_panel.effect_catalog = Some(
-            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect)
-                .map_err(|error| error.to_string().to_lowercase()),
+            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect).map_err(
+                |error| hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+            ),
         );
     }
     if view.device_panel.instrument_catalog.is_none() {
         view.device_panel.instrument_catalog = Some(
-            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Instrument)
-                .map_err(|error| error.to_string().to_lowercase()),
+            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Instrument).map_err(
+                |error| hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+            ),
         );
     }
     let effect_catalog = view
@@ -1783,6 +1789,9 @@ fn device_selection_listener(
 
 fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful<Div> {
     let device_id = device.id();
+    if view.degraded_plugins.contains(device_id.value()) {
+        return vst3_degraded_body(device_id);
+    }
     let foreign = view
         .audible_playback
         .as_ref()
@@ -1819,6 +1828,33 @@ fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful
         .debug_selector(move || format!("device-body-{}", device_id.value()))
 }
 
+/// A vst3 endpoint that faulted renders as an aligned pass-through while the
+/// other devices keep processing (#3977). Shows the shared unsupported-body
+/// display with an explanatory tooltip.
+fn vst3_degraded_body(device_id: DeviceId) -> Stateful<Div> {
+    let selector = format!("device-vst3-degraded-{}", device_id.value());
+    let content = crate::device_composition::unsupported_body(theme::text(
+        "vst3 stopped responding · audio passes through",
+    ))
+    .id(ElementId::Name(selector.clone().into()))
+    .debug_selector(move || selector.clone())
+    .tooltip(|_, cx| {
+        cx.new(|_| super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Help,
+            description: theme::text(
+                "the plugin missed its audio deadline · it is bypassed with its latency kept, and other devices keep playing",
+            ),
+        })
+        .into()
+    });
+    div()
+        .child(content)
+        .id(ElementId::Name(
+            format!("device-body-{}", device_id.value()).into(),
+        ))
+        .debug_selector(move || format!("device-body-{}", device_id.value()))
+}
+
 fn render_effect(
     view: &mut EditorView,
     window: Option<&Window>,
@@ -1838,7 +1874,9 @@ fn render_effect(
         .map(|(_, _, result)| result)
         .unwrap_or_else(|| {
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
-                .map_err(|error| error.to_string().to_lowercase())
+                .map_err(|error| {
+                    hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
+                })
         });
     let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
@@ -2444,7 +2482,9 @@ fn render_instrument(
         .map(|(_, _, result)| result);
     let device_view = cached.unwrap_or_else(|| {
         hex_engine::native_device_view_for_class(NativeDeviceClass::Instrument, device.state())
-            .map_err(|error| error.to_string().to_lowercase())
+            .map_err(|error| {
+                hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
+            })
     });
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
     let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");

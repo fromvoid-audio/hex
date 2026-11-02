@@ -178,7 +178,13 @@ fn sampler_gain_fence_observes_earlier_play_and_refuses_later_play_without_repla
     ));
     assert_eq!(h.render()[0], [0.125, -0.25]);
     let refused = h.next();
-    assert!(refused.error.as_ref().unwrap().contains("stop playback"));
+    assert!(
+        refused
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("sampler edit audio changed")
+    );
     unchanged(&before, &refused);
     h.audio.as_ref().unwrap().control.stop();
     h.render();
@@ -342,7 +348,7 @@ fn postcommit_open_failure(kind: FailedEdit) {
                 h.backend.lock().unwrap().take();
             }
             Ok(EditorAudioEvent::Unavailable { error, .. }) => {
-                assert!(error.contains("fixture hardware open failed"));
+                assert!(error.to_string().contains("fixture hardware open failed"));
                 h.audio = None;
                 h.backend.lock().unwrap().take();
                 break;

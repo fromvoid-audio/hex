@@ -21,6 +21,7 @@ mod arrangement_sections;
 mod arrangement_seek;
 mod audio_admission;
 mod audio_event_editor;
+mod audio_unavailable;
 mod automation_view;
 mod bounce;
 mod browser;
@@ -42,9 +43,11 @@ mod clip_selection;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
 mod device_automation;
+mod leftover_recovery;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod navigation_metrics;
 mod plugin_effect;
+mod truncated_import;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use plugin_effect::fixture_catalog as plugin_effect_fixture_catalog;
 #[cfg(feature = "ui-test-support")]
@@ -102,6 +105,7 @@ mod device_gesture;
 mod device_panel;
 mod device_preset;
 mod dialogs;
+mod disk_overload;
 mod display_error;
 mod drag;
 mod drag_autoscroll;
@@ -142,8 +146,12 @@ mod midi_pan;
 mod midi_pitch_zoom;
 mod midi_recording;
 mod missing_media;
+mod user_errors;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
+mod midi_loop_notes;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod midi_loop_profile;
 mod midi_ruler;
 mod midi_scene;
 mod midi_selection;
@@ -154,6 +162,7 @@ mod midi_thumbnail;
 mod midi_velocity;
 mod midi_velocity_randomize;
 mod midi_velocity_ui;
+mod midi_wheel;
 mod mixer;
 mod musical_audio_controls;
 mod musical_time;
@@ -162,6 +171,7 @@ mod output_meter_ui_test;
 mod overview;
 mod overview_waveform;
 mod play_intent;
+mod poll_cadence;
 mod project_directory;
 mod project_recovery;
 mod project_spectrum;
@@ -248,7 +258,7 @@ use hex_session::service::{Request, Service, ViewState};
 use recent_projects::RecentProjectsState;
 use recovery_state::RecoveryState;
 use refresh::RedrawGate;
-use std::{collections::VecDeque, rc::Rc, sync::Arc, time::Duration};
+use std::{collections::VecDeque, rc::Rc, sync::Arc};
 use viewport::Viewport;
 
 pub(super) const UI_REQUEST_CAPACITY: usize = 32;
@@ -305,7 +315,7 @@ enum PendingEditorAudioResult {
     Unavailable {
         project_generation: u64,
         restart_request: Option<u64>,
-        error: String,
+        error: hex_audio::OutputOpenError,
     },
 }
 
@@ -386,6 +396,7 @@ actions!(
         RecoverUntitledProject,
         RecoverSavedProject,
         RecoverPreviousSave,
+        RecoverKeptSession,
         OpenSettings,
         OpenTuning,
         CloseTuning,
@@ -459,7 +470,7 @@ fn configure_editor_app(cx: &mut App) -> Result<(), String> {
     dialogs::install_project_actions(cx);
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
-            cx.quit();
+            close::quit_confirmed(cx);
         }
     })
     .detach();
@@ -516,6 +527,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-z", Undo, Some("hex_editor")),
         KeyBinding::new("cmd-z", Undo, Some("hex_gain_numeric_editor")),
         KeyBinding::new("cmd-shift-z", Redo, Some("hex_editor")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("hex_gain_numeric_editor")),
         KeyBinding::new("left", MoveLeft, Some("hex_editor")),
         KeyBinding::new("right", MoveRight, Some("hex_editor")),
         KeyBinding::new("shift-left", TrimLeft, Some("hex_editor")),
@@ -655,6 +667,7 @@ fn install_close_guard(window: &mut Window, cx: &mut App, view: gpui::WeakEntity
 
 pub(super) fn open_backend(cx: &mut App, backend: crate::EditorBackend) -> Result<(), String> {
     configure_editor_app(cx)?;
+    close::install_quit_gate(cx);
     cx.open_window(editor_window_options(cx), move |window, cx| {
         let view = cx.new(|cx| EditorView::new_with_backend(window, cx, backend));
         install_close_guard(window, cx, view.downgrade());
@@ -746,12 +759,24 @@ pub(super) struct EditorView {
     restart_request_id: u64,
     pending_restart_request: Option<(u64, u64)>,
     pending_recovery_generation: Option<u64>,
+    /// Output whose default route changed and still awaits its recovery.
+    route_follow: Option<u64>,
+    /// Vst3 devices the current output reports as degraded.
+    degraded_plugins: crate::editor_backend::DegradedDevices,
     pending_audio_result: Option<PendingEditorAudioResult>,
     pending_publication_observation: Option<PendingEditorPublicationObservation>,
     document_audio_mode: hex_session::DocumentAudioMode,
     recovery: RecoveryState,
     stopped_playback_restore: Option<audio_admission::StoppedPlaybackRestore>,
     latency_rebuild: Option<audio_admission::LatencyRebuild>,
+    leftover_recovery: leftover_recovery::State,
+    truncated_import: truncated_import::State,
+    // Streamed documents replace their sampler output stopped; this frame
+    // resumes playback once that edit settles (Pulse #3784).
+    sampler_edit_resume: Option<u64>,
+    // Play requested while the stopped restore renews effects (for example
+    // vst3); it starts once that restore settles (Pulse #3784).
+    deferred_play: Option<(PlaybackAction, Option<u64>, u64)>,
     offline_cursor: u64,
     pub(in crate::editor) state: Option<Arc<ViewState>>,
     selected_track: Option<TrackId>,
@@ -807,6 +832,8 @@ pub(super) struct EditorView {
     piano_view_clip: Option<(u64, ClipId)>,
     piano_zoom_wheel_accum: f32,
     piano_pitch_wheel_accum: f32,
+    poll_cadence: poll_cadence::PollCadence,
+    piano_pitch_scroll_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
     pub(in crate::editor) piano_pitch_low: u8,
@@ -908,6 +935,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
     redraw_gate: RedrawGate,
     output_meter_frame: Option<refresh::AudioFrame>,
+    disk_overload: disk_overload::DiskOverload,
     pub(in crate::editor) project_generation: u64,
     clip_view_open: bool,
     device_panel_active: bool,
@@ -933,6 +961,8 @@ pub(super) struct EditorView {
     overview_waveform_cache: Rc<std::cell::RefCell<overview_waveform::Cache>>,
     pub(in crate::editor) waveform_geometry_cache:
         Rc<std::cell::RefCell<waveform_geometry::WaveformGeometryCache>>,
+    midi_visible_notes: std::cell::RefCell<midi_loop_notes::VisibleNotesCache>,
+    midi_tile_images: Rc<std::cell::RefCell<midi_loop_notes::TileImages>>,
     active_clip_drag: Option<drag::ClipDrag>,
     active_browser_audio_drag: Option<drag::BrowserAudioDrag>,
     arrangement_device_preview: Option<arrangement_device_drop::ArrangementDevicePreview>,
@@ -1028,6 +1058,8 @@ impl EditorView {
         view.audio_events = backend.audio_events;
         view.source_reservation = Some(backend.source_reservation);
         view.status = "preparing audio output".into();
+        // A session that ended unexpectedly may have left untitled work.
+        view.check_leftover_recovery(None);
         view
     }
 
@@ -1269,24 +1301,7 @@ impl EditorView {
                 ),
             ),
         };
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                if this
-                    .update(cx, |view, cx| {
-                        if view.tick(cx) {
-                            cx.notify();
-                        }
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .detach();
+        let poll_cadence = Self::spawn_poll(window, cx);
         let keyboard_window_id = window.window_handle().window_id();
         let keyboard_entity = cx.entity().downgrade();
         let computer_keyboard_keys = cx.intercept_keystrokes(move |event, window, cx| {
@@ -1294,6 +1309,9 @@ impl EditorView {
                 return;
             }
             crate::diagnostics::record_key(cx, event);
+            if let Some(entity) = keyboard_entity.upgrade() {
+                entity.update(cx, |view, _| view.wake_poll());
+            }
             // A key during the potentially slow helper handshake cancels the
             // pending quit before the key can alter a project or local draft.
             if let Some(entity) = keyboard_entity.upgrade()
@@ -1483,6 +1501,8 @@ impl EditorView {
             restart_request_id: 0,
             pending_restart_request: None,
             pending_recovery_generation: None,
+            route_follow: None,
+            degraded_plugins: Default::default(),
             pending_audio_result: None,
             pending_publication_observation: None,
             document_audio_mode: hex_session::DocumentAudioMode::Resident,
@@ -1490,6 +1510,10 @@ impl EditorView {
             recovery: RecoveryState::default(),
             stopped_playback_restore: None,
             latency_rebuild: None,
+            leftover_recovery: Default::default(),
+            truncated_import: Default::default(),
+            sampler_edit_resume: None,
+            deferred_play: None,
             offline_cursor: 0,
             selected_track: None,
             track_selection: selection::TrackSelection::default(),
@@ -1541,6 +1565,8 @@ impl EditorView {
             piano_view_clip: None,
             piano_zoom_wheel_accum: 0.0,
             piano_pitch_wheel_accum: 0.0,
+            poll_cadence,
+            piano_pitch_scroll_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
                 .unwrap_or(hex_project::BeatTime::ONE),
@@ -1639,6 +1665,7 @@ impl EditorView {
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
             redraw_gate: RedrawGate::default(),
             output_meter_frame: None,
+            disk_overload: disk_overload::DiskOverload::default(),
             project_generation: 0,
             clip_view_open: true,
             device_panel_active: false,
@@ -1667,6 +1694,8 @@ impl EditorView {
             waveform_geometry_cache: Rc::new(std::cell::RefCell::new(
                 waveform_geometry::WaveformGeometryCache::default(),
             )),
+            midi_visible_notes: Default::default(),
+            midi_tile_images: Default::default(),
             active_clip_drag: None,
             active_browser_audio_drag: None,
             active_native_device_drag: None,
