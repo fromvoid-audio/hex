@@ -12406,6 +12406,7 @@ mod service_tests {
                     frames,
                     data_bytes: u32::try_from(frames * 4).unwrap_or(u32::MAX),
                     recovery_path: None,
+                    stale_temporaries: Default::default(),
                 })
             })
         };
