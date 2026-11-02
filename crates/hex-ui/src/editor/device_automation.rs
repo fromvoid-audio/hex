@@ -10,8 +10,9 @@
 //! delete/shape act on every selected point; each is one whole-lane request,
 //! so one Undo reverts the group edit.
 #[cfg(all(test, feature = "ui-test-support"))]
-mod host_tests;
+pub(super) mod host_tests;
 mod paint;
+mod plot_geometry;
 mod read_selection;
 #[cfg(test)]
 mod tests;
@@ -486,6 +487,9 @@ impl Lanes {
     pub(super) fn pointer_active(&self) -> bool {
         self.draft.is_some() || self.marquee.is_some()
     }
+    pub(super) fn point_draft_active(&self) -> bool {
+        self.draft.is_some()
+    }
     pub(super) fn extra_height(&self, owner: Owner) -> f32 {
         self.extra
             .iter()
@@ -507,22 +511,24 @@ impl Lanes {
             .find(|entry| entry.target == target)
     }
     fn points(&self, state: &ViewState, target: Target) -> Vec<AutomationPoint> {
+        self.points_ref(&state.project, target).to_vec()
+    }
+    /// Displayed points (draft, then pending, then canonical) without copying.
+    fn points_ref<'a>(&'a self, project: &'a Project, target: Target) -> &'a [AutomationPoint] {
         if let Some(draft) = self.draft.as_ref().filter(|draft| draft.target == target) {
-            return draft.points.clone();
+            return &draft.points;
         }
         if let Some(pending) = self
             .pending
             .as_ref()
             .filter(|pending| pending.target == target)
         {
-            return pending.points.clone();
+            return &pending.points;
         }
-        state
-            .project
+        project
             .device(target.device)
             .and_then(|device| device.automation_target(target.kind))
-            .map(|lane| lane.points.clone())
-            .unwrap_or_default()
+            .map_or(&[], |lane| lane.points.as_slice())
     }
 }
 

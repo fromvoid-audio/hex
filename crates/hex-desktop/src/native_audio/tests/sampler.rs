@@ -13,6 +13,21 @@ use super::*;
 mod keyboard;
 use hex_project::{BeatTime, Command, Created};
 
+/// The sampler's prepared ~2 ms declick release floor at this fixture's
+/// 16 kHz output (#4087): no note-off releases in fewer frames.
+const RELEASE_FLOOR_FRAMES: usize = 32;
+
+/// Release level `steps` frames after a note-off whose prepared release is
+/// `max(authored, RELEASE_FLOOR_FRAMES)` frames.
+fn floored_release_level(steps: usize, authored: usize) -> f32 {
+    let release = authored.max(RELEASE_FLOOR_FRAMES);
+    if steps >= release {
+        0.0
+    } else {
+        1.0 - steps as f32 / release as f32
+    }
+}
+
 impl Harness {
     fn resident_sampler(frame_limit: u64) -> Self {
         Self::sampler_fixture(frame_limit, false)
@@ -244,17 +259,13 @@ fn service_sampler_original_wav_reaches_real_fresh_native_current_with_tuning_st
             .command(PlaybackCommand::Play)
             .unwrap();
         let output = h.render();
-        let left = if short_gate {
-            vec![0.125]
-        } else if tuned {
+        let left = if tuned {
             vec![0.125, 0.5, -0.125, 0.0]
         } else {
             vec![0.125, 0.3125, 0.5, 0.1875, -0.125, -0.0625, 0.0]
         };
         let right = if stereo {
-            if short_gate {
-                vec![-0.25]
-            } else if tuned {
+            if tuned {
                 vec![-0.25, 0.0, 0.25, 0.0]
             } else {
                 vec![-0.25, -0.125, 0.0, 0.125, 0.25, 0.125, 0.0]
@@ -264,7 +275,14 @@ fn service_sampler_original_wav_reaches_real_fresh_native_current_with_tuning_st
         };
         let mut expected = [[0.0; 2]; 64];
         for (index, (l, r)) in left.into_iter().zip(right).enumerate() {
-            expected[index] = [l, r];
+            // The short gate ends after frame 0; the prepared declick floor
+            // then ramps the rest of the one-shot down instead of cutting it.
+            let level = if short_gate && index > 0 {
+                floored_release_level(index - 1, 0)
+            } else {
+                1.0
+            };
+            expected[index] = [l * level, r * level];
         }
         for (a, b) in output.iter().zip(expected) {
             for i in 0..2 {

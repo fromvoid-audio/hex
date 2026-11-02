@@ -304,107 +304,114 @@ fn changing_existing_latency_while_playing_applies_without_stopping() {
     );
 }
 
-#[test]
-fn first_track_limiter_after_play_or_pause_publishes_and_parameter_edits_are_audible() {
+fn first_track_limiter_after_transport_state(paused: bool) {
     let _native = native_fixture();
-    for paused in [false, true] {
-        let files = Files::new();
-        let mut h = ResidentHarness::with_frame_limit(131_072);
-        let initial = h.next();
-        assert!(initial.error.is_none());
-        let (mut applied, _) = h.applied(0);
-        let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
-        let track = imported.state.project.tracks()[0].id();
-        (applied, _) = h.applied(applied);
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    let initial = h.next();
+    assert!(initial.error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    let track = imported.state.project.tracks()[0].id();
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    if paused {
         h.audio
             .as_mut()
             .unwrap()
             .control
-            .command(PlaybackCommand::Play)
+            .command(PlaybackCommand::Pause)
             .unwrap();
-        assert_eq!(h.render(), [[0.25; 2]; 64]);
-        if paused {
-            h.audio
-                .as_mut()
-                .unwrap()
-                .control
-                .command(PlaybackCommand::Pause)
-                .unwrap();
-            h.render();
-        }
-        let added = h.run(Request::AddNativeDevice {
-            track,
-            class: hex_engine::NativeDeviceClass::Effect,
-            type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
-            before: None,
-        });
-        let device = added.state.project.track(track).unwrap().devices()[0].id();
-        (applied, _) = h.applied(applied);
-        h.run(Request::SetDeviceParameter {
-            device,
-            parameter: ParameterId::from_static(2),
-            value: ParameterValue::Float(-18.0),
-        });
-        (applied, _) = h.applied(applied);
-        h.audio
-            .as_mut()
-            .unwrap()
-            .control
-            .command(PlaybackCommand::Play)
-            .unwrap();
-        for _ in 0..8 {
-            h.render();
-        }
-        let ceiling = 10.0_f32.powf(-18.0 / 20.0);
-        for frame in h.render() {
-            assert!(frame.into_iter().all(|v| (v - ceiling).abs() < 1e-5));
-        }
-        h.run(Request::SetDeviceParameter {
-            device,
-            parameter: ParameterId::from_static(1),
-            value: ParameterValue::Float(-18.0),
-        });
-        (applied, _) = h.applied(applied);
-        // Allow the documented input-gain ramp and limiter release to settle.
-        for _ in 0..600 {
-            h.render();
-        }
-        for frame in h.render() {
-            assert!(frame.into_iter().all(|v| v > 0.025 && v < 0.04));
-        }
-        let undone = h.run(Request::Undo);
-        assert_eq!(
-            hex_engine::native_device_parameter_for_class(
-                hex_engine::NativeDeviceClass::Effect,
-                undone.state.project.device(device).unwrap().state(),
-                ParameterId::from_static(1),
-            )
-            .unwrap(),
-            ParameterValue::Float(0.0)
-        );
-        (applied, _) = h.applied(applied);
-        // The exponential input ramp and lookahead precede this steady-state oracle.
-        for _ in 0..100 {
-            h.render();
-        }
-        let undo_output = h.render();
-        assert!(
-            undo_output
-                .iter()
-                .flatten()
-                .all(|v| (*v - ceiling).abs() < 1e-5),
-            "undo ceiling {ceiling}; first={:?}, last={:?}",
-            undo_output.first(),
-            undo_output.last()
-        );
-        h.run(Request::Redo);
-        h.applied(applied);
-        for _ in 0..600 {
-            h.render();
-        }
-        assert!(h.render().iter().flatten().all(|v| *v > 0.025 && *v < 0.04));
-        assert!(h.publication_refusals.is_empty());
+        h.render();
     }
+    let added = h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Effect,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.limiter")),
+        before: None,
+    });
+    let device = added.state.project.track(track).unwrap().devices()[0].id();
+    (applied, _) = h.applied(applied);
+    h.run(Request::SetDeviceParameter {
+        device,
+        parameter: ParameterId::from_static(2),
+        value: ParameterValue::Float(-18.0),
+    });
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..8 {
+        h.render();
+    }
+    let ceiling = 10.0_f32.powf(-18.0 / 20.0);
+    for frame in h.render() {
+        assert!(frame.into_iter().all(|v| (v - ceiling).abs() < 1e-5));
+    }
+    h.run(Request::SetDeviceParameter {
+        device,
+        parameter: ParameterId::from_static(1),
+        value: ParameterValue::Float(-18.0),
+    });
+    (applied, _) = h.applied(applied);
+    // Allow the documented input-gain ramp and limiter release to settle.
+    for _ in 0..600 {
+        h.render();
+    }
+    for frame in h.render() {
+        assert!(frame.into_iter().all(|v| v > 0.025 && v < 0.04));
+    }
+    let undone = h.run(Request::Undo);
+    assert_eq!(
+        hex_engine::native_device_parameter_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            undone.state.project.device(device).unwrap().state(),
+            ParameterId::from_static(1),
+        )
+        .unwrap(),
+        ParameterValue::Float(0.0)
+    );
+    (applied, _) = h.applied(applied);
+    // The exponential input ramp and lookahead precede this steady-state oracle.
+    for _ in 0..100 {
+        h.render();
+    }
+    let undo_output = h.render();
+    assert!(
+        undo_output
+            .iter()
+            .flatten()
+            .all(|v| (*v - ceiling).abs() < 1e-5),
+        "undo ceiling {ceiling}; first={:?}, last={:?}",
+        undo_output.first(),
+        undo_output.last()
+    );
+    h.run(Request::Redo);
+    h.applied(applied);
+    for _ in 0..600 {
+        h.render();
+    }
+    assert!(h.render().iter().flatten().all(|v| *v > 0.025 && *v < 0.04));
+    assert!(h.publication_refusals.is_empty());
+}
+
+#[test]
+fn first_track_limiter_after_play_publishes_and_parameter_edits_are_audible() {
+    first_track_limiter_after_transport_state(false);
+}
+
+#[test]
+fn first_track_limiter_after_pause_publishes_and_parameter_edits_are_audible() {
+    first_track_limiter_after_transport_state(true);
 }
 
 #[test]
@@ -493,7 +500,10 @@ fn paused_latency_change_then_new_instrument_track_applies_and_binds_live_input(
         h.render();
     }
     control(&mut h, PlaybackCommand::Pause);
-    h.render();
+    // The queued Pause settles after its declick fade.
+    for _ in 0..super::FADE_BLOCKS {
+        h.render();
+    }
     let status = h.audio.as_ref().unwrap().status().unwrap();
     let paused = status.position.load(Acquire);
     assert!(paused > 0 && !status.playing.load(Acquire));
