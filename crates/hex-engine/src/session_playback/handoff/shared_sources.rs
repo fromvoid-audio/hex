@@ -18,6 +18,7 @@ impl SharedSourceHandoff {
     pub(super) fn handles_new(&self, index: usize) -> bool {
         self.new_for_old.contains(&index) || self.retarget_for_old.contains(&index)
     }
+    #[allow(clippy::too_many_arguments)] // Explicit candidate/donor owners and timing facts.
     pub(super) fn prepare(
         revision: &PreparedRevision,
         runtimes: &[Option<MutableInstrumentTrackRuntime>],
@@ -25,6 +26,7 @@ impl SharedSourceHandoff {
         admission: Option<&crate::session_inventory::PreparedSessionMidiAdmission>,
         previous: &SessionPlayback,
         timing_changed: bool,
+        arrangement_tempo_remap: bool,
         spans: &mut MidiSpanBuffer,
     ) -> Result<Self, SessionPlaybackError> {
         let mut plan = Self {
@@ -104,7 +106,14 @@ impl SharedSourceHandoff {
                 }
                 continue;
             };
-            let exact = !timing_changed
+            // An edited base map cuts every held Arrangement gate at the cut
+            // (Pulse #4117); a proof from any other owner keeps stale frames.
+            let retimed = arrangement_tempo_remap
+                && super::arrangement_only_proofs(previous, old_runtime)
+                && routes
+                    .get(new_index)
+                    .is_some_and(|route| route.owner == RouteOwner::Arrangement);
+            let exact = (!timing_changed || retimed)
                 && previous
                     .revision
                     .retained_source_configuration_matches(revision, source);

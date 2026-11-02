@@ -62,17 +62,27 @@ pub const WARP_RESAMPLER_SCHEMA_VERSION: u32 = 65;
 /// Readers before schema66 refuse it as newer, so such a save needs consent.
 pub const CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION: u32 = 66;
 
+/// Schema written only for projects containing a saved native device state
+/// newer than schema66 readers decode (in practice a Sampler v3 state with a
+/// loop crossfade): the schema66-or-older layout, unchanged. See
+/// `schema::sampler_crossfade`. Readers before schema67 refuse it as newer, so
+/// such a save needs consent.
+pub const DEVICE_STATE_SCHEMA_VERSION: u32 = 67;
+
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = DEVICE_STATE_SCHEMA_VERSION;
 
 /// Schema [`encode`] writes for `project`:
-/// [`CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION`] when a directed view names an
+/// [`DEVICE_STATE_SCHEMA_VERSION`] when a device state is newer than schema66
+/// readers decode, [`CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION`] when a directed view names an
 /// explicit read law, [`WARP_RESAMPLER_SCHEMA_VERSION`]
 /// when content names an explicit warp resampler law,
 /// [`SINC_V2_SCHEMA_VERSION`] when it contains sinc v2 media, otherwise
 /// [`CURRENT_SCHEMA_VERSION`].
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::content_view_resampler::contains_explicit(project) {
+    if schema::sampler_crossfade::contains_newer_states(project) {
+        DEVICE_STATE_SCHEMA_VERSION
+    } else if schema::content_view_resampler::contains_explicit(project) {
         CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION
     } else if schema::warp_resampler::contains_explicit(project) {
         WARP_RESAMPLER_SCHEMA_VERSION
@@ -231,12 +241,15 @@ impl From<serde_json::Error> for StorageError {
 /// v2 media is written as schema64 (see [`schema_version_for`]); every other
 /// project stays schema63, byte-compatible with older readers. Only content
 /// naming an explicit warp resampler law makes a project schema65, and only a
-/// directed view naming an explicit read law makes it schema66.
+/// directed view naming an explicit read law makes it schema66, and only a
+/// device state newer than schema66 readers decode makes it schema67.
 /// Schema59 is reserved and explicitly refused.
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if schema::content_view_resampler::contains_explicit(project) {
+    if schema::sampler_crossfade::contains_newer_states(project) {
+        encode_document(&schema::sampler_crossfade::encode(project)?)
+    } else if schema::content_view_resampler::contains_explicit(project) {
         encode_document(&schema::content_view_resampler::encode(project)?)
     } else if schema::warp_resampler::contains_explicit(project) {
         encode_document(&schema::warp_resampler::encode(project)?)
@@ -260,6 +273,7 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    schema::sampler_crossfade::require_older_states(project)?;
     schema::content_view_resampler::require_implied(project)?;
     schema::warp_resampler::require_implied(project)?;
     schema::conversion_v2::require_v1_conversions(project)?;
@@ -422,6 +436,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
+        DEVICE_STATE_SCHEMA_VERSION => schema::sampler_crossfade::decode(bytes),
         CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION => schema::content_view_resampler::decode(bytes),
         WARP_RESAMPLER_SCHEMA_VERSION => schema::warp_resampler::decode(bytes),
         SINC_V2_SCHEMA_VERSION => schema::conversion_v2::decode(bytes),
@@ -465,6 +480,13 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
+    if header.version < DEVICE_STATE_SCHEMA_VERSION
+        && schema::sampler_crossfade::require_older_states(&project).is_err()
+    {
+        return Err(StorageError::Invalid(
+            "historical project schema contains a newer device state; original file unchanged",
+        ));
+    }
     if header.version < CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION
         && schema::content_view_resampler::require_implied(&project).is_err()
     {

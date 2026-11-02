@@ -340,10 +340,19 @@ pub fn default_native_device_state_for_class(
             .map_err(|_| Invalid("invalid built-in native device registry"))?
             .default_state(type_id)
             .map_err(|_| Invalid("native device default state is invalid")),
-        NativeDeviceClass::Instrument => hex_devices::native_instrument_registry()
-            .map_err(|_| Invalid("invalid built-in native instrument registry"))?
-            .default_state(type_id)
-            .map_err(|_| Invalid("native instrument default state is invalid")),
+        NativeDeviceClass::Instrument => {
+            let state = hex_devices::native_instrument_registry()
+                .map_err(|_| Invalid("invalid built-in native instrument registry"))?
+                .default_state(type_id)
+                .map_err(|_| Invalid("native instrument default state is invalid"))?;
+            // A new project sampler takes its older-reader saved form (v2), not
+            // the registry's in-memory current version (Pulse #4088).
+            if type_id == hex_devices::sampler::state::TYPE_ID {
+                return hex_devices::sampler::state::saved_form(&state)
+                    .map_err(|_| Invalid("native instrument default state is invalid"));
+            }
+            Ok(state)
+        }
     }
 }
 
@@ -3732,6 +3741,17 @@ impl InstrumentTrack {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// New project samplers take the older-reader saved form (Pulse #4088).
+    #[test]
+    fn default_sampler_instrument_is_the_saved_v2_empty_marker() {
+        use hex_devices::sampler::state;
+        let sampler =
+            default_native_device_state_for_class(NativeDeviceClass::Instrument, state::TYPE_ID)
+                .unwrap();
+        assert_eq!(sampler, state::empty_state().unwrap());
+        assert_eq!(sampler.state_version(), state::COMPATIBLE_STATE_VERSION);
+        assert!(is_empty_sampler_state_on_control(&sampler));
+    }
     #[test]
     fn automatic_tail_end_refuses_overflow_and_excessive_drain() {
         let project = Project::new(48_000, Vec::new()).unwrap();
