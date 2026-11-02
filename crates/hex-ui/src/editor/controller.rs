@@ -1007,9 +1007,10 @@ impl EditorView {
     pub(super) fn tick(&mut self, cx: &mut Context<Self>) -> bool {
         if crate::diagnostics::actions_enabled(cx) {
             let query_bytes = self.browser.search.read(cx).text().len();
-            crate::diagnostics::record_view(
-                cx,
-                format!(
+            crate::diagnostics::record_view(cx, |snapshot| {
+                use std::fmt::Write as _;
+                let _ = write!(
+                    snapshot,
                     " generation={} revision={:?} track={:?} clip={:?} scene={:?} mode={:?} viewport={:?} browser_open={} browser_query_bytes={} forced_time_selection={}",
                     self.project_generation,
                     self.state.as_ref().map(|s| s.revision),
@@ -1021,8 +1022,8 @@ impl EditorView {
                     self.browser.open,
                     query_bytes,
                     self.time_selection_key_held
-                ),
-            );
+                );
+            });
         }
         crate::diagnostics::record_audio(cx, self.audio.as_mut());
         let logging_failure =
@@ -1404,19 +1405,19 @@ impl EditorView {
         if let Some(audio) = self.audio.as_mut() {
             let _ = audio.control.spectrum_retry_pending();
             let _ = audio.control.audition_retry_pending();
-            let spectra = audio.control.spectrum_latest_pairs();
-            let changed = self.device_panel.spectrum_results.len() != spectra.len()
-                || spectra.iter().any(|result| {
-                    self.device_panel
-                        .spectrum_results
-                        .get(&result.output.stamp.target)
-                        != Some(result)
-                });
+            // Read into a retained buffer: a steady-state tick allocates nothing.
+            let spectra = &mut self.device_panel.spectrum_scratch;
+            audio.control.spectrum_latest_pairs_into(spectra);
+            let results = &mut self.device_panel.spectrum_results;
+            let changed = results.len() != spectra.len()
+                || spectra
+                    .iter()
+                    .any(|result| results.get(&result.output.stamp.target) != Some(result));
             if changed {
-                self.device_panel.spectrum_results.clear();
-                self.device_panel.spectrum_results.extend(
+                results.clear();
+                results.extend(
                     spectra
-                        .into_iter()
+                        .drain(..)
                         .map(|result| (result.output.stamp.target, result)),
                 );
                 visible_change = true;
