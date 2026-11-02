@@ -56,7 +56,9 @@ impl EditorView {
                         view.controller_input.preferences.unwritable = true;
                         view.controller_input.preferences.error = Some(format!(
                             "could not load midi input settings · {}",
-                            error.to_string().to_lowercase()
+                            hex_session::service::text::lowercase_outside_verbatim(
+                                &error.to_string()
+                            )
                         ));
                     }
                 }
@@ -97,7 +99,7 @@ impl EditorView {
                 view.controller_input.preferences.error = result.err().map(|error| {
                     format!(
                         "midi input changes are not saved · {}",
-                        error.to_string().to_lowercase()
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                     )
                 });
                 cx.notify();

@@ -1,12 +1,13 @@
-//! Explicit unreadable-slot replacement: preserve exact old bytes before publication.
+//! Preserve exact old journal bytes before replacing a captured slot.
 use super::*;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
 
-/// Bounded exact-byte observation, not permission to replace a journal. The caller
-/// must obtain explicit confirmation and validate its own working-project context.
+/// Bounded exact-byte observation, not permission to replace a journal. For an
+/// unreadable slot the caller must obtain explicit confirmation and validate its
+/// working-project context. A readable leftover may be preserved before a new edit.
 #[derive(Clone)]
 pub struct JournalRestartToken {
     path: PathBuf,
@@ -40,6 +41,19 @@ impl JournalRestartToken {
             bytes: bytes.into(),
         })
     }
+
+    /// Observe a readable leftover checkpoint for preservation before replacement.
+    /// The publication rechecks these exact bytes while holding the slot lock.
+    pub fn capture_readable(path: PathBuf) -> Result<Option<Self>, StorageError> {
+        let Some(bytes) = read(&path)? else {
+            return Ok(None);
+        };
+        decode(&path, &bytes)?;
+        Ok(Some(Self {
+            path,
+            bytes: bytes.into(),
+        }))
+    }
 }
 
 /// Publication and diagnostics are separate: after a visible replacement, retain
@@ -51,7 +65,8 @@ pub struct JournalRestartOutcome {
     pub result: Result<(), StorageError>,
 }
 
-/// Caller-confirmed fresh current-format checkpoint, under the existing slot lock.
+/// Fresh current-format checkpoint under the existing slot lock, preserving the
+/// captured bytes. Unreadable-slot callers must obtain explicit confirmation.
 /// The old journal's bytes and basename survive in a new private sibling directory;
 /// no legacy decoding/conversion, overwriting of preservation files, or cleanup.
 /// Cooperating writers serialize; as with checkpoint, a noncooperating writer
@@ -114,7 +129,7 @@ fn restart_with_hooks(
     outcome
 }
 
-fn preserve(path: &Path, bytes: &[u8]) -> Result<PathBuf, StorageError> {
+pub(super) fn preserve(path: &Path, bytes: &[u8]) -> Result<PathBuf, StorageError> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     for _ in 0..64 {
         let directory = parent(path).join(format!(
@@ -203,6 +218,31 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn readable_checkpoint_is_preserved_and_stale_observation_refuses_replacement() {
+        let fixture = Fixture::new();
+        let path = fixture.0.join("untitled.hex-journal");
+        let mut journal = Journal::open_empty(path.clone()).unwrap();
+        let original = Project::new(48_000).unwrap();
+        journal.checkpoint(&original).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let token = JournalRestartToken::capture_readable(path.clone())
+            .unwrap()
+            .unwrap();
+        let replacement = Project::new(44_100).unwrap();
+        let outcome = restart_journal(&token, &replacement);
+        outcome.result.unwrap();
+        let preserved = outcome.preserved_path.unwrap();
+        assert_eq!(fs::read(&preserved).unwrap(), bytes);
+        assert_eq!(load_journal(&preserved).unwrap(), original);
+        assert_eq!(load_journal(&path).unwrap(), replacement);
+        let stale = restart_journal(&token, &original);
+        assert!(matches!(stale.result, Err(StorageError::Conflict { .. })));
+        assert!(stale.preserved_path.is_none());
+        assert_eq!(load_journal(&path).unwrap(), replacement);
+        assert!(Journal::open_empty(path).is_err());
     }
 
     #[test]

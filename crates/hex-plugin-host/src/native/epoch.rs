@@ -106,10 +106,35 @@ impl Quiescent {
     /// Same exact capture with caller intent cancellation checked in the
     /// existing bounded socket loop. Cancellation retires this original lease;
     /// the predicate owns no helper/endpoint and starts no second waiter.
+    /// A capture refusal is terminal here, as for every failure;
+    /// callers that keep the plugin running use the refusal-aware capture.
     pub fn capture_state_retained_while_on_control(
+        self,
+        is_cancelled: impl FnMut() -> bool,
+    ) -> std::result::Result<(Self, NativeDeviceState), PreparationFailure> {
+        match self.capture_state_or_refusal_retained_while_on_control(is_cancelled)? {
+            (stopped, Ok(state)) => Ok((stopped, state)),
+            (stopped, Err(refusal)) => Err(stopped
+                .instance
+                .refuse_epoch_retained(Error::CaptureRefused(refusal))),
+        }
+    }
+
+    /// Same exact capture, except that a valid helper refusal (state exceeds
+    /// the saved profile, or edits kept arriving) is returned with this same
+    /// quiescent epoch: nothing was captured, and the caller may capture again,
+    /// flush or resume. A malformed or mismatched refusal and every other
+    /// failure keep the terminal retained-failure custody described above.
+    pub fn capture_state_or_refusal_retained_while_on_control(
         mut self,
         mut is_cancelled: impl FnMut() -> bool,
-    ) -> std::result::Result<(Self, NativeDeviceState), PreparationFailure> {
+    ) -> std::result::Result<
+        (
+            Self,
+            std::result::Result<NativeDeviceState, protocol::StateCaptureRefusal>,
+        ),
+        PreparationFailure,
+    > {
         let result = (|| {
             self.instance.require_live_epoch()?;
             let operation = self
@@ -145,15 +170,23 @@ impl Quiescent {
                     self.instance.config.binding,
                 )?));
             }
-            if self.instance.packet.magic() != b"HXVICS01" {
+            let state = if self.instance.packet.magic() == protocol::CAPTURE_REFUSAL_MAGIC {
+                Err(protocol::capture_refusal(
+                    self.instance.packet.body()?,
+                    &self.instance.config,
+                    self.instance.sequence,
+                    operation,
+                )?)
+            } else if self.instance.packet.magic() == b"HXVICS01" {
+                Ok(protocol::captured_state(
+                    self.instance.packet.body()?,
+                    &self.instance.config,
+                    self.instance.sequence,
+                    operation,
+                )?)
+            } else {
                 return Err(Error::Protocol("missing actual capture acknowledgement"));
-            }
-            let state = protocol::captured_state(
-                self.instance.packet.body()?,
-                &self.instance.config,
-                self.instance.sequence,
-                operation,
-            )?;
+            };
             self.instance.require_live_epoch()?;
             check()?;
             self.capture_sequence = operation;
