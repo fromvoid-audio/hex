@@ -167,6 +167,23 @@ pub trait PreparedMutableInstrumentRuntime: Send + Sync {
     fn supports_occurrence_gain(&self) -> bool {
         false
     }
+    /// Immutable opt-in that releasing (note-off'd) voices are stealable. A
+    /// note-on that finds all `max_active_occurrences` slots occupied then
+    /// takes the slot of the runtime's oldest releasing occurrence instead of
+    /// refusing; it still refuses with `EventCapacityExceeded` when every slot
+    /// is held or its fixed declick storage is exhausted, so a steal never
+    /// hard-cuts a sounding voice. The stolen occurrence leaves the active set at that frame:
+    /// `active_occurrence_ids` no longer reports it, it does not count toward
+    /// `max_active_occurrences`, it ignores later events, and hosts must not
+    /// send it occurrence gains (its gain is frozen at the steal frame). Its
+    /// audio continues in provider-owned fixed storage with a bounded declick
+    /// fade and never outlasts `max_release_tail_frames` after its note-off.
+    /// Hosts may therefore admit note density by held voices, but must keep
+    /// handling the refusal for steal bursts that exhaust the declick storage.
+    /// The default keeps the strict release-occupies-a-slot contract.
+    fn steals_releasing_voices(&self) -> bool {
+        false
+    }
     /// Opt-in declaration that the immutable factory owns only its inline Box payload, with no
     /// owned heap backing. The host cross-checks this against dynamic `size_of_val` for resource
     /// admission. Default unknown; twin-runtime storage never proves factory storage ownership.
@@ -450,6 +467,7 @@ impl std::error::Error for NativeInstrumentRuntimeError {}
 pub struct NativeInstrumentRuntimePair {
     active_occurrence_ids: bool,
     occurrence_gain: bool,
+    steals_releasing_voices: bool,
     runtime_version: u32,
     declared_pair_bytes: usize,
     max_events_per_block: usize,
@@ -474,6 +492,7 @@ impl NativeInstrumentRuntimePair {
         let max_release_tail_frames = prepared.max_release_tail_frames();
         let occurrence_gain = prepared.supports_occurrence_gain();
         let active_occurrence_ids = prepared.supports_active_occurrence_ids();
+        let steals_releasing_voices = prepared.steals_releasing_voices();
         let declared_pair_bytes = declared_twin_bytes
             .checked_mul(2)
             .ok_or(NativeInstrumentRuntimeError::RuntimeBudgetExceeded)?;
@@ -512,6 +531,7 @@ impl NativeInstrumentRuntimePair {
         Ok(Self {
             active_occurrence_ids,
             occurrence_gain,
+            steals_releasing_voices,
             runtime_version,
             declared_pair_bytes,
             max_events_per_block,
@@ -563,6 +583,11 @@ impl NativeInstrumentRuntimePair {
 
     pub const fn supports_occurrence_gain(&self) -> bool {
         self.occurrence_gain
+    }
+
+    /// The factory's `steals_releasing_voices` declaration, fixed at admission.
+    pub const fn steals_releasing_voices(&self) -> bool {
+        self.steals_releasing_voices
     }
 
     /// Checked combined declaration for both fixed runtime twins.
