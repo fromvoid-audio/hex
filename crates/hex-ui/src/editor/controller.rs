@@ -3316,6 +3316,13 @@ impl EditorView {
                 Some("finish or cancel the automation point gesture before editing".into());
             return false;
         }
+        if matches!(&request, Request::Edit(_))
+            && (self.gain_lane.numeric_draft_active()
+                || self.sampler_parameter.numeric_draft_active())
+        {
+            self.error = Some("finish or cancel the numeric draft before editing".into());
+            return false;
+        }
         #[cfg(test)]
         match &request {
             Request::CopyTimeRange(_) => self.last_time_request = Some(("copy", None)),
