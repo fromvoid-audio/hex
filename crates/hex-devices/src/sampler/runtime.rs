@@ -676,6 +676,23 @@ impl SamplerRuntime {
         let mut active = self.active;
         let mut fading = self.fading;
         let fade = self.prepared.steal_fade_frames() as f64;
+        // The gain slice is fixed for this block. A slot's occurrence can
+        // change only while applying events; retirement without an event can
+        // only make a cached index unused until the next event refresh.
+        let mut gain_indices = [None; MAX_SAMPLER_RUNTIME_VOICES];
+        let refresh_gains =
+            |active: &Active, indices: &mut [Option<usize>; MAX_SAMPLER_RUNTIME_VOICES]| {
+                for (index, voice) in indices.iter_mut().zip(active) {
+                    *index = voice.and_then(|voice| {
+                        gains
+                            .binary_search_by_key(&voice.occurrence, |gain| gain.occurrence_id())
+                            .ok()
+                    });
+                }
+            };
+        if !gains.is_empty() {
+            refresh_gains(&active, &mut gain_indices);
+        }
         let mut next = 0;
         for (offset, frame) in frames.iter_mut().enumerate() {
             let gain_at = |occurrence: u64| {
@@ -684,6 +701,7 @@ impl SamplerRuntime {
                     .ok()
                     .map_or(1.0, |index| gains[index].value_at_offset(offset as u64))
             };
+            let first_event = next;
             while events
                 .get(next)
                 .is_some_and(|event| event.frame_offset() == offset)
@@ -696,8 +714,21 @@ impl SamplerRuntime {
                 }
                 next += 1;
             }
-            for voice in active.iter().flatten() {
-                self.mix(frame, view.pcm, voice, gain_at(voice.occurrence));
+            if next != first_event && !gains.is_empty() {
+                refresh_gains(&active, &mut gain_indices);
+            }
+            if gains.is_empty() {
+                for voice in active.iter().flatten() {
+                    self.mix(frame, view.pcm, voice, 1.0);
+                }
+            } else {
+                for (entry, gain_index) in active.iter().zip(&gain_indices) {
+                    if let Some(voice) = entry {
+                        let gain = gain_index
+                            .map_or(1.0, |index| gains[index].value_at_offset(offset as u64));
+                        self.mix(frame, view.pcm, voice, gain);
+                    }
+                }
             }
             for fading in fading.iter().flatten() {
                 let declick = 1.0 - fading.voice.age.saturating_sub(fading.start) as f64 / fade;
