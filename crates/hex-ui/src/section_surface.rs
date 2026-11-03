@@ -1,7 +1,23 @@
 //! Shared section paint; owners retain input, selection and project custody.
 use crate::theme;
 use gpui::{Div, Styled, prelude::*, px, relative, rgb, rgba};
-use hex_project::ElementColor;
+use hex_project::{BeatTime, ElementColor, SectionId};
+
+/// The gesture owner retains this display state until its edit is acknowledged.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Hover {
+    pub held: [Option<SectionId>; 2],
+    pub pointer: Option<BeatTime>,
+}
+
+impl Hover {
+    pub(crate) fn contains(self, id: Option<SectionId>, start: BeatTime, end: BeatTime) -> bool {
+        id.is_some_and(|id| self.held.contains(&Some(id)))
+            || self
+                .pointer
+                .is_some_and(|beat| start <= beat && beat <= end)
+    }
+}
 
 /// Main's section body and its opaque header share identity and hover colors.
 pub(crate) fn surface(
