@@ -461,6 +461,7 @@ impl Render for Viewer {
                         Some(
                             div()
                                 .id(("log-line", index))
+                                .debug_selector(move || format!("log-row-{index}"))
                                 .h(px(22.0))
                                 .w_full()
                                 .flex()
@@ -480,7 +481,14 @@ impl Render for Viewer {
                                         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                                         .child(theme::text(time)),
                                 )
-                                .child(div().overflow_hidden().child(display))
+                                .child(
+                                    div()
+                                        .debug_selector(move || format!("log-message-{index}"))
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(display),
+                                )
                                 .on_mouse_down(
                                     gpui::MouseButton::Left,
                                     cx.listener(
@@ -737,6 +745,64 @@ mod tests {
     #[test]
     fn timestamp_is_utc_time_of_day() {
         assert_eq!(format_time(3_723_004_000_000), "01:02:03.004");
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn long_log_rows_stay_within_their_visual_bounds(cx: &mut gpui::TestAppContext) {
+        let dir =
+            std::env::temp_dir().join(format!("hex-viewer-row-geometry-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session-300-1.log");
+        let long = format!(
+            "event level=info category=ui unix_nanos=1 elapsed_nanos=1 sequence=1 truncated=false message=\"{}\"",
+            "long diagnostic message ".repeat(80)
+        );
+        std::fs::write(&path, format!("session_started log_schema=3 segment=0\n{long}\nevent level=info category=ui unix_nanos=2 elapsed_nanos=2 sequence=2 truncated=false message=\"next\"\n")).unwrap();
+        let handle = cx.add_window(|_, cx| Viewer::new(path.clone(), cx));
+        cx.run_until_parked();
+        let viewer = handle.root(cx).unwrap();
+        let visual = &mut gpui::VisualTestContext::from_window(*handle, cx);
+        for width in [850.0, 1200.0] {
+            visual.simulate_resize(gpui::size(px(width), px(600.0)));
+            visual.run_until_parked();
+            let row = visual
+                .debug_bounds("log-row-1")
+                .expect("long row is visible");
+            let next = visual
+                .debug_bounds("log-row-2")
+                .expect("next row is visible");
+            let message = visual
+                .debug_bounds("log-message-1")
+                .expect("message is visible");
+            assert!(
+                message.top() >= row.top() && message.bottom() <= row.bottom(),
+                "long message {message:?} must fit in row {row:?} at width {width}"
+            );
+            assert!(row.bottom() <= next.top(), "adjacent rows must not overlap");
+        }
+        let long_row = visual.debug_bounds("log-row-1").unwrap();
+        visual.simulate_click(long_row.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+        viewer.read_with(visual, |view, _| {
+            assert_eq!(view.selection, Some(1));
+            let snapshot = view.snapshot.as_ref().unwrap();
+            assert_eq!(snapshot.lines[1].text, long);
+            let excerpt = make_excerpt(
+                snapshot,
+                &view.rows,
+                &path,
+                "all",
+                "entire session",
+                "",
+                (1, 1),
+            );
+            assert!(
+                excerpt.contains(&long),
+                "copy preserves the complete record"
+            );
+        });
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
