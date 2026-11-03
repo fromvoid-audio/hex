@@ -483,7 +483,7 @@ impl RectangleDemo {
                     {
                         let anchor = (intent.origin_x - left) / width;
                         fixture.plan_marker_move(section.id(), anchor, position)
-                    } else {
+                    } else if intent.part == RectanglePart::Body {
                         fixture.plan(
                             section.id(),
                             intent.part,
@@ -491,6 +491,18 @@ impl RectangleDemo {
                             modifiers.alt,
                             self.section_marker_latched,
                         )
+                    } else {
+                        fixture
+                            .snapped_beat(intent.pointer_x, left, width, modifiers.control)
+                            .and_then(|beat| {
+                                fixture.plan_at_beat(
+                                    section.id(),
+                                    intent.part,
+                                    beat,
+                                    modifiers.alt,
+                                    self.section_marker_latched,
+                                )
+                            })
                     };
                     match plan {
                         Ok(Some(plan)) => {
@@ -1905,6 +1917,41 @@ mod tests {
                 }
             });
         }
+    }
+
+    #[gpui::test]
+    fn section_seam_drag_uses_adaptive_grid_and_live_control_inversion(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-grid".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-grid-area").unwrap();
+        let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
+        let control = Modifiers {
+            control: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(at(0.5), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.43), MouseButton::Left, Modifiers::default());
+        let (snapped, raw) = view.read_with(cx, |view, _| {
+            let fixture = view.section_fixture.as_ref().unwrap();
+            let width = f32::from(view.bounds.unwrap().size.width);
+            let pointer = f32::from(at(0.43).x);
+            let left = f32::from(view.bounds.unwrap().left());
+            (
+                fixture.snapped_beat(pointer, left, width, false).unwrap(),
+                fixture.snapped_beat(pointer, left, width, true).unwrap(),
+            )
+        });
+        assert_ne!(snapped, raw);
+        view.read_with(cx, |view, _| assert!(matches!(view.section_command, Some(Command::ResizeArrangementSectionBoundary { boundary, .. }) if boundary == snapped)));
+        visual.simulate_modifiers_change(control);
+        view.read_with(cx, |view, _| assert!(matches!(view.section_command, Some(Command::ResizeArrangementSectionBoundary { boundary, .. }) if boundary == raw)));
+        visual.simulate_mouse_up(at(0.43), MouseButton::Left, control);
+        view.read_with(cx, |view, _| assert!(matches!(view.pending.as_ref(), Some(Pending::Section { command, .. }) if matches!(command.as_ref(), Command::ResizeArrangementSectionBoundary { boundary, .. } if *boundary == raw))));
+        view.update(cx, |view, cx| view.settle(false, cx));
     }
 
     #[gpui::test]
