@@ -9,12 +9,12 @@ pub(crate) fn routes_to_time_range(
     top: f32,
     height: f32,
     minimum_header: f32,
-) -> bool {
-    if edge || !y.is_finite() || !top.is_finite() {
-        return false;
+) -> Option<bool> {
+    if !y.is_finite() || !top.is_finite() {
+        return None;
     }
-    RangeSelectionZones::new(height, minimum_header)
-        .is_some_and(|zones| y >= top + zones.handle_height())
+    let boundary = top + RangeSelectionZones::new(height, minimum_header)?.handle_height();
+    boundary.is_finite().then_some(!edge && y >= boundary)
 }
 
 #[cfg(test)]
@@ -23,16 +23,31 @@ mod tests {
 
     #[test]
     fn body_starts_at_the_header_boundary_and_edges_win() {
-        assert!(!routes_to_time_range(false, 33.9, 10.0, 72.0, 14.0));
-        assert!(routes_to_time_range(false, 34.0, 10.0, 72.0, 14.0));
-        assert!(!routes_to_time_range(true, 60.0, 10.0, 72.0, 14.0));
+        assert_eq!(
+            routes_to_time_range(false, 33.9, 10.0, 72.0, 14.0),
+            Some(false)
+        );
+        assert_eq!(
+            routes_to_time_range(false, 34.0, 10.0, 72.0, 14.0),
+            Some(true)
+        );
+        assert_eq!(
+            routes_to_time_range(true, 60.0, 10.0, 72.0, 14.0),
+            Some(false)
+        );
     }
 
     #[test]
     fn compact_minimum_and_invalid_geometry_are_explicit() {
-        assert!(!routes_to_time_range(false, 19.9, 5.0, 30.0, 15.0));
-        assert!(routes_to_time_range(false, 20.0, 5.0, 30.0, 15.0));
-        assert!(!routes_to_time_range(false, f32::NAN, 0.0, 30.0, 15.0));
-        assert!(!routes_to_time_range(false, 20.0, 0.0, 0.0, 15.0));
+        assert_eq!(
+            routes_to_time_range(false, 19.9, 5.0, 30.0, 15.0),
+            Some(false)
+        );
+        assert_eq!(
+            routes_to_time_range(false, 20.0, 5.0, 30.0, 15.0),
+            Some(true)
+        );
+        assert_eq!(routes_to_time_range(false, f32::NAN, 0.0, 30.0, 15.0), None);
+        assert_eq!(routes_to_time_range(false, 20.0, 0.0, 0.0, 15.0), None);
     }
 }

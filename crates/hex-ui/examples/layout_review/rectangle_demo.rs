@@ -180,6 +180,20 @@ impl RectangleDemo {
             RectangleSelectionPolicy::Range
         };
         let intent = policy.intent(modifiers);
+        let time_range = if self.kind == Kind::Section {
+            let Some(time_range) = crate::section_input::routes_to_time_range(
+                hit.is_some_and(|(_, part)| part != RectanglePart::Body),
+                y,
+                f32::from(bounds.top()),
+                f32::from(bounds.size.height),
+                44.0 * hex_widgets::RANGE_HANDLE_FRACTION,
+            ) else {
+                return false;
+            };
+            time_range
+        } else {
+            false
+        };
         if self.kind == Kind::Section
             && intent != RectangleSelection::Replace
             && let Some((index, _)) = hit
@@ -210,15 +224,7 @@ impl RectangleDemo {
             cx.notify();
             return true;
         }
-        if self.kind == Kind::Section
-            && crate::section_input::routes_to_time_range(
-                hit.is_some_and(|(_, part)| part != RectanglePart::Body),
-                y,
-                f32::from(bounds.top()),
-                f32::from(bounds.size.height),
-                44.0 * hex_widgets::RANGE_HANDLE_FRACTION,
-            )
-        {
+        if time_range {
             if !x.is_finite()
                 || !left.is_finite()
                 || !width.is_finite()

@@ -713,6 +713,15 @@ impl EditorView {
             Some(SectionEdge::Single(id, _)) | Some(SectionEdge::Shared(id, _)) => Some(id),
             None => self.section_hit(x, y),
         };
+        let Some(time_range) = section_input::routes_to_time_range(
+            edge.is_some(),
+            y,
+            top,
+            height,
+            super::clip_name::CLIP_NAME_HEIGHT,
+        ) else {
+            return false;
+        };
         // Section membership takes precedence over the lower-body range owner,
         // edge resizing and autoplay; Shift never creates a time rectangle here.
         if extend && let Some(id) = id {
@@ -733,13 +742,7 @@ impl EditorView {
             self.suppress_cursor_click = true;
             return true;
         }
-        if section_input::routes_to_time_range(
-            edge.is_some(),
-            y,
-            top,
-            height,
-            super::clip_name::CLIP_NAME_HEIGHT,
-        ) {
+        if time_range {
             // Do not start a competing capture. Main's existing range receiver
             // sees this same press next and keeps canonical all-track scope.
             self.retire_section_pointer_context_for_range();
