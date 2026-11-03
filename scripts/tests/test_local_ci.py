@@ -656,100 +656,160 @@ fi
         self.assertEqual(case.path.read_bytes(), original_bytes)
         local_ci.ci_checkpoint.validate_inheritance(case.root, resumed.summary)
 
-    def test_checkpoint_continuation_refuses_changed_inputs_before_any_stage_or_cleanup(self):
-        cases = ("source", "plan", "plan-order", "argv", "test-configuration", "toolchain", "environment", "dependency", "floor",
-                 "report", "report-metadata", "log", "missing-owner", "changed-owner", "foreign-owner", "recreated-target")
-        for change in cases:
-            with self.subTest(change=change):
-                case = self.checkpoint_fixture("checkpoint-drift-" + change)
-                kwargs = {}
-                rustc_bytes = (self.bin / "rustc").read_bytes()
-                if change == "source":
-                    (case.root / "source.rs").write_text("changed executable source\n")
-                elif change == "plan":
-                    kwargs["plan"] = {"qualifies_merge": False, "scope": "full"}
-                elif change == "plan-order":
-                    kwargs["steps"] = tuple(reversed(case.steps))
-                elif change in {"argv", "test-configuration"}:
-                    kwargs["steps"] = (case.steps[0], local_ci.Step("checkpoint-suffix",
-                        (*case.steps[1].argv, "changed") if change == "argv" else case.steps[1].argv,
-                        requires_tests=change != "test-configuration"))
-                elif change == "toolchain":
-                    (self.bin / "rustc").write_bytes(rustc_bytes + b"\n# changed compiler bytes\n")
-                elif change == "environment":
-                    kwargs["env"] = {**case.env, "RUSTFLAGS": "--cfg changed"}
-                elif change == "dependency":
-                    (case.dependency / "lib.rs").write_text("pub fn changed() {}\n")
-                elif change == "floor":
-                    kwargs["min_free_bytes"] = 1
-                elif change == "report":
-                    report = json.loads(case.path.read_text())
-                    report["steps"][0]["status"] = "failed"
-                    case.path.write_text(json.dumps(report))
-                elif change == "report-metadata":
-                    report = json.loads(case.path.read_text())
-                    report["duration_seconds"] += 1
-                    case.path.write_text(json.dumps(report))
-                elif change == "log":
-                    (case.root / case.report["steps"][0]["log"]).write_text("changed passed-stage evidence\n")
-                elif change == "missing-owner":
-                    case.owner.unlink()
-                elif change in {"changed-owner", "foreign-owner"}:
-                    owner = json.loads(case.owner.read_text())
-                    if change == "foreign-owner":
-                        owner["workspace_owner"]["git_common_dir"] = str(self.base / "foreign.git")
-                    else:
-                        owner["recorded_at"] = "changed receipt"
-                    case.owner.write_text(json.dumps(owner))
-                elif change == "recreated-target":
-                    case.target.rename(case.target.with_name("retained-original-target"))
-                    case.target.mkdir()
-                    (case.target / "preserve").write_bytes(b"foreign new target")
-                calls_before = self.call_log.read_text()
-                try:
-                    result, resumed = self.checkpoint_continue(case, **kwargs)
-                finally:
-                    (self.bin / "rustc").write_bytes(rustc_bytes)
-                self.assertNotEqual(result, 0)
-                self.assertIn("resume_error", resumed.summary)
-                calls = self.call_log.read_text()[len(calls_before):]
-                self.assertNotIn("cargo test checkpoint-", calls)
-                self.assertNotIn("cargo clean", calls)
-                self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
-                if change == "recreated-target":
-                    self.assertEqual((case.target / "preserve").read_bytes(), b"foreign new target")
+    def assert_checkpoint_drift_refused(self, change):
+        case = self.checkpoint_fixture("checkpoint-drift-" + change)
+        kwargs = {}
+        rustc_bytes = (self.bin / "rustc").read_bytes()
+        if change == "source":
+            (case.root / "source.rs").write_text("changed executable source\n")
+        elif change == "plan":
+            kwargs["plan"] = {"qualifies_merge": False, "scope": "full"}
+        elif change == "plan-order":
+            kwargs["steps"] = tuple(reversed(case.steps))
+        elif change in {"argv", "test-configuration"}:
+            kwargs["steps"] = (case.steps[0], local_ci.Step("checkpoint-suffix",
+                (*case.steps[1].argv, "changed") if change == "argv" else case.steps[1].argv,
+                requires_tests=change != "test-configuration"))
+        elif change == "toolchain":
+            (self.bin / "rustc").write_bytes(rustc_bytes + b"\n# changed compiler bytes\n")
+        elif change == "environment":
+            kwargs["env"] = {**case.env, "RUSTFLAGS": "--cfg changed"}
+        elif change == "dependency":
+            (case.dependency / "lib.rs").write_text("pub fn changed() {}\n")
+        elif change == "floor":
+            kwargs["min_free_bytes"] = 1
+        elif change == "report":
+            report = json.loads(case.path.read_text())
+            report["steps"][0]["status"] = "failed"
+            case.path.write_text(json.dumps(report))
+        elif change == "report-metadata":
+            report = json.loads(case.path.read_text())
+            report["duration_seconds"] += 1
+            case.path.write_text(json.dumps(report))
+        elif change == "log":
+            (case.root / case.report["steps"][0]["log"]).write_text("changed passed-stage evidence\n")
+        elif change == "missing-owner":
+            case.owner.unlink()
+        elif change in {"changed-owner", "foreign-owner"}:
+            owner = json.loads(case.owner.read_text())
+            if change == "foreign-owner":
+                owner["workspace_owner"]["git_common_dir"] = str(self.base / "foreign.git")
+            else:
+                owner["recorded_at"] = "changed receipt"
+            case.owner.write_text(json.dumps(owner))
+        elif change == "recreated-target":
+            case.target.rename(case.target.with_name("retained-original-target"))
+            case.target.mkdir()
+            (case.target / "preserve").write_bytes(b"foreign new target")
+        calls_before = self.call_log.read_text()
+        try:
+            result, resumed = self.checkpoint_continue(case, **kwargs)
+        finally:
+            (self.bin / "rustc").write_bytes(rustc_bytes)
+        self.assertNotEqual(result, 0)
+        self.assertIn("resume_error", resumed.summary)
+        calls = self.call_log.read_text()[len(calls_before):]
+        self.assertNotIn("cargo test checkpoint-", calls)
+        self.assertNotIn("cargo clean", calls)
+        self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
+        if change == "recreated-target":
+            self.assertEqual((case.target / "preserve").read_bytes(), b"foreign new target")
 
-    def test_checkpoint_malformed_resume_records_refuse_without_traceback_or_owner_changes(self):
-        for malformed in ("tree-list", "tree-null", "target-list", "counts-null", "checkpoint-scalar", "report-scalar"):
-            with self.subTest(malformed=malformed):
-                case = self.checkpoint_fixture("checkpoint-malformed-" + malformed)
-                report = json.loads(case.path.read_text())
-                if malformed in {"tree-list", "tree-null"}:
-                    report["start_tree"] = report["end_tree"] = [] if malformed == "tree-list" else None
-                elif malformed == "target-list":
-                    report["checkpoint"]["target"] = []
-                elif malformed == "counts-null":
-                    report["steps"][0]["test_results"] = None
-                elif malformed == "checkpoint-scalar":
-                    report["checkpoint"] = 42
-                else:
-                    report = 42
-                case.path.write_text(json.dumps(report))
-                malformed_bytes = case.path.read_bytes()
-                owner_bytes = case.owner.read_bytes()
-                calls_before = self.call_log.read_text()
-                console = io.StringIO()
-                with redirect_stdout(console), redirect_stderr(console):
-                    result, resumed = self.checkpoint_continue(case)
-                self.assertNotEqual(result, 0)
-                self.assertTrue(resumed.summary["resume_error"])
-                self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
-                self.assertNotIn("Traceback", console.getvalue())
-                calls = self.call_log.read_text()[len(calls_before):]
-                self.assertNotIn("cargo test checkpoint-", calls)
-                self.assertNotIn("cargo clean", calls)
-                self.assertEqual(case.owner.read_bytes(), owner_bytes)
-                self.assertEqual(case.path.read_bytes(), malformed_bytes)
+    def test_checkpoint_source_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("source")
+
+    def test_checkpoint_plan_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("plan")
+
+    def test_checkpoint_plan_order_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("plan-order")
+
+    def test_checkpoint_argv_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("argv")
+
+    def test_checkpoint_test_configuration_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("test-configuration")
+
+    def test_checkpoint_toolchain_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("toolchain")
+
+    def test_checkpoint_environment_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("environment")
+
+    def test_checkpoint_dependency_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("dependency")
+
+    def test_checkpoint_floor_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("floor")
+
+    def test_checkpoint_report_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("report")
+
+    def test_checkpoint_report_metadata_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("report-metadata")
+
+    def test_checkpoint_log_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("log")
+
+    def test_checkpoint_missing_owner_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("missing-owner")
+
+    def test_checkpoint_changed_owner_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("changed-owner")
+
+    def test_checkpoint_foreign_owner_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("foreign-owner")
+
+    def test_checkpoint_recreated_target_drift_is_refused(self):
+        self.assert_checkpoint_drift_refused("recreated-target")
+
+    def assert_malformed_resume_refused(self, malformed):
+        case = self.checkpoint_fixture("checkpoint-malformed-" + malformed)
+        report = json.loads(case.path.read_text())
+        if malformed in {"tree-list", "tree-null"}:
+            report["start_tree"] = report["end_tree"] = [] if malformed == "tree-list" else None
+        elif malformed == "target-list":
+            report["checkpoint"]["target"] = []
+        elif malformed == "counts-null":
+            report["steps"][0]["test_results"] = None
+        elif malformed == "checkpoint-scalar":
+            report["checkpoint"] = 42
+        else:
+            report = 42
+        case.path.write_text(json.dumps(report))
+        malformed_bytes = case.path.read_bytes()
+        owner_bytes = case.owner.read_bytes()
+        calls_before = self.call_log.read_text()
+        console = io.StringIO()
+        with redirect_stdout(console), redirect_stderr(console):
+            result, resumed = self.checkpoint_continue(case)
+        self.assertNotEqual(result, 0)
+        self.assertTrue(resumed.summary["resume_error"])
+        self.assertTrue(all(row["status"] == "not_run" for row in resumed.summary["steps"]))
+        self.assertNotIn("Traceback", console.getvalue())
+        calls = self.call_log.read_text()[len(calls_before):]
+        self.assertNotIn("cargo test checkpoint-", calls)
+        self.assertNotIn("cargo clean", calls)
+        self.assertEqual(case.owner.read_bytes(), owner_bytes)
+        self.assertEqual(case.path.read_bytes(), malformed_bytes)
+
+    def test_checkpoint_tree_list_resume_is_refused(self):
+        self.assert_malformed_resume_refused("tree-list")
+
+    def test_checkpoint_tree_null_resume_is_refused(self):
+        self.assert_malformed_resume_refused("tree-null")
+
+    def test_checkpoint_target_list_resume_is_refused(self):
+        self.assert_malformed_resume_refused("target-list")
+
+    def test_checkpoint_counts_null_resume_is_refused(self):
+        self.assert_malformed_resume_refused("counts-null")
+
+    def test_checkpoint_scalar_resume_is_refused(self):
+        self.assert_malformed_resume_refused("checkpoint-scalar")
+
+    def test_checkpoint_report_scalar_resume_is_refused(self):
+        self.assert_malformed_resume_refused("report-scalar")
 
     def test_checkpoint_continuation_rejects_failed_interrupted_zero_match_and_nonresource_runs(self):
         for stop in ("failed", "interrupted", "zero", None):
