@@ -146,6 +146,9 @@ Scripts without their own test module, config files and unknown inputs keep
 comprehensive discovery. Owner selections run through `scripts/python_shards.py`:
 one process per test from a shared work queue (up to 12 workers), which brings
 `test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
+Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
+run after the ordinary queue with at most two workers. Their output and timing
+remain included, and unmarked tests retain their normal worker count.
 
 Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,
@@ -282,6 +285,10 @@ paths add the Python self-tests; unknown or high-risk inputs test the
 workspace). It is a fast red-main signal, never merge qualification, so a pass
 reports `partial`. A failure prints the merge that turned main red: fix forward
 in a focused PR before merging anything else, and tell other active sessions.
+
+When health runs Python checks for exclusively reviewed tooling paths, it selects
+each changed owner's test module and the shared planner invariants. Mixed,
+unowned, unknown, or native-acceptance inputs retain comprehensive discovery.
 
 ## macOS target storage
 
