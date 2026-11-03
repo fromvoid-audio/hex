@@ -23,7 +23,7 @@ use super::{
 use crate::{
     context_menu::{MenuItem, PopupMenu},
     section_hit::{self, INNER_EDGE_WIDTH, SHARED_EDGE_RADIUS},
-    section_input, section_reorder, section_selection, theme,
+    section_input, section_reorder, section_resize, section_selection, theme,
 };
 #[cfg(all(test, feature = "ui-test-support"))]
 use gpui::rgba;
@@ -982,18 +982,18 @@ impl EditorView {
                 marker_only,
             } => {
                 if g.capture.displaced(4.0) {
-                    let command = Command::ResizeArrangementSectionBoundary {
+                    let edit = section_resize::Edit::Shared {
                         left,
                         right,
                         boundary: beat,
                         marker_only,
                     };
-                    match state.project.preview_arrangement_section_edit(&command) {
+                    match section_resize::preview(&state.project, edit) {
                         Ok(preview) => {
                             g.display.markers =
                                 preview.sections().iter().map(Marker::from).collect();
                             g.display.tempo = preview.tempo_map().clone();
-                            g.command = Some(command);
+                            g.command = Some(preview.command);
                         }
                         Err(error) => self.error = Some(error.to_string().into()),
                     }
@@ -1014,17 +1014,17 @@ impl EditorView {
                             hex_project::TrimEdge::Right => marker.end,
                         }
                     {
-                        let command = Command::ResizeArrangementSectionEdge {
+                        let edit = section_resize::Edit::Content {
                             section: id,
                             edge,
                             boundary: beat,
                         };
-                        match state.project.preview_arrangement_section_edit(&command) {
+                        match section_resize::preview(&state.project, edit) {
                             Ok(preview) => {
                                 g.display.markers =
                                     preview.sections().iter().map(Marker::from).collect();
                                 g.display.tempo = preview.tempo_map().clone();
-                                g.command = Some(command);
+                                g.command = Some(preview.command);
                             }
                             Err(error) => self.error = Some(error.to_string().into()),
                         }
@@ -1046,16 +1046,16 @@ impl EditorView {
                         marker.end
                     };
                     if beat != original_boundary {
-                        let command = Command::ResizeArrangementSectionMarker {
+                        let edit = section_resize::Edit::Marker {
                             section: id,
                             edge,
                             boundary: beat,
                         };
-                        match state.project.preview_arrangement_section_edit(&command) {
+                        match section_resize::preview(&state.project, edit) {
                             Ok(preview) => {
                                 g.display.markers =
                                     preview.sections().iter().map(Marker::from).collect();
-                                g.command = Some(command);
+                                g.command = Some(preview.command);
                             }
                             Err(error) => self.error = Some(error.to_string().into()),
                         }
