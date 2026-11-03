@@ -54,6 +54,7 @@ impl Fixture {
         section: SectionId,
         part: RectanglePart,
         position: f32,
+        copy: bool,
     ) -> Result<Option<Plan>, Invalid> {
         let project = self.project();
         let beat = position_to_beat(position, view_span(project.arrangement_sections()))?;
@@ -66,7 +67,7 @@ impl Fixture {
         };
         match part {
             RectanglePart::Body => Ok(crate::section_reorder::preview(
-                project, section, beat, false,
+                project, section, beat, copy,
             )?
             .map(|preview| Plan {
                 display: display(preview.sections()),
@@ -115,8 +116,8 @@ impl Fixture {
         }
     }
 
-    pub(super) fn commit(&mut self, command: Command) -> Result<(), Invalid> {
-        self.editor.execute(command).map(|_| ())
+    pub(super) fn commit(&mut self, command: Command) -> Result<Created, Invalid> {
+        self.editor.execute(command)
     }
 }
 
@@ -162,7 +163,7 @@ mod tests {
         let before = fixture.project().snapshot();
         let id = fixture.project().arrangement_sections()[0].id();
         let plan = fixture
-            .plan(id, RectanglePart::Seam, 0.55)
+            .plan(id, RectanglePart::Seam, 0.55, false)
             .unwrap()
             .unwrap();
         let expected = plan.display.clone();
@@ -170,7 +171,7 @@ mod tests {
         fixture.commit(plan.command).unwrap();
         assert_eq!(fixture.display(), expected);
         let committed = fixture.project().snapshot();
-        assert!(fixture.plan(id, RectanglePart::Seam, 0.99).is_err());
+        assert!(fixture.plan(id, RectanglePart::Seam, 0.99, false).is_err());
         assert_eq!(fixture.project().snapshot(), committed);
         assert!(fixture.editor.try_undo().unwrap());
         assert_eq!(fixture.project().snapshot(), before);
