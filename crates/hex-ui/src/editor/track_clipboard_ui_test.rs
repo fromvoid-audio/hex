@@ -19,6 +19,128 @@ fn snapshot(v: &VisualTestContext, e: &Entity<EditorView>) -> hex_project::Snaps
     e.read_with(v, |e, _| e.state.as_ref().unwrap().project.snapshot())
 }
 
+#[gpui::test]
+fn g_groups_focused_track_headers_with_undo_and_redo(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 2, false);
+    select(&mut visual, ids[0], false);
+    select(&mut visual, ids[1], true);
+    let before = snapshot(&visual, &editor);
+    visual.simulate_keystrokes("g");
+    editor.read_with(&visual, |view, _| {
+        assert!(matches!(
+            view.last_enqueued_edit,
+            Some(hex_project::Command::GroupTracks { .. })
+        ));
+    });
+    receive(&mut visual, &editor);
+    let after = snapshot(&visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let group = project
+            .tracks()
+            .iter()
+            .find(|track| track.is_group())
+            .unwrap();
+        for id in &ids {
+            assert_eq!(project.track(*id).unwrap().parent_group(), Some(group.id()));
+        }
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Undo))
+    });
+    receive(&mut visual, &editor);
+    let mut restored = snapshot(&visual, &editor);
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Redo))
+    });
+    receive(&mut visual, &editor);
+    assert_eq!(snapshot(&visual, &editor), after);
+}
+
+#[gpui::test]
+fn g_groups_session_track_headers(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 2, false);
+    select(&mut visual, ids[0], false);
+    select(&mut visual, ids[1], true);
+    editor.update(&mut visual, |view, cx| {
+        view.mode = super::EditorMode::Session;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let selector = Box::leak(format!("session-track-{}", ids[1].value()).into_boxed_str());
+    let at = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(
+        at,
+        Modifiers {
+            platform: true,
+            ..Default::default()
+        },
+    );
+    visual.simulate_click(
+        at,
+        Modifiers {
+            platform: true,
+            ..Default::default()
+        },
+    );
+    visual.simulate_keystrokes("g");
+    editor.read_with(&visual, |view, _| {
+        assert!(matches!(
+            view.last_enqueued_edit,
+            Some(hex_project::Command::GroupTracks { .. })
+        ));
+    });
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.state.as_ref().unwrap().project.has_group_tracks());
+    });
+}
+
+#[gpui::test]
+fn g_does_not_group_a_single_track_or_track_name_edit(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 2, false);
+    select(&mut visual, ids[0], false);
+    let before = snapshot(&visual, &editor);
+    visual.simulate_keystrokes("g");
+    assert_eq!(snapshot(&visual, &editor), before);
+    select(&mut visual, ids[1], true);
+    visual.simulate_keystrokes("cmd-r g");
+    editor.read_with(&visual, |view, _| {
+        assert!(view.track_name.is_editing());
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(!matches!(
+            view.last_enqueued_edit,
+            Some(hex_project::Command::GroupTracks { .. })
+        ));
+    });
+}
+
+#[gpui::test]
+fn g_refuses_tracks_with_different_parents_without_partial_group(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 3, false);
+    select(&mut visual, ids[0], false);
+    select(&mut visual, ids[1], true);
+    visual.simulate_keystrokes("g");
+    receive(&mut visual, &editor);
+    select(&mut visual, ids[0], false);
+    select(&mut visual, ids[2], true);
+    let before = snapshot(&visual, &editor);
+    visual.simulate_keystrokes("g");
+    editor.read_with(&visual, |view, _| {
+        assert!(view.worker_requests_pending > 0);
+    });
+    editor.update(&mut visual, |view, cx| {
+        let event = super::track_reorder_ui_test::next(&view.service);
+        assert!(event.error.is_some());
+        view.receive(event);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(snapshot(&visual, &editor), before);
+}
+
 fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
     let (mut visual, editor, ids) = live_tracks(cx, 2, false);
     select(&mut visual, ids[0], false);
