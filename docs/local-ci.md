@@ -32,9 +32,10 @@ first feedback.
    actual impact, a reviewed change-based check set may qualify instead under
    AGENTS.md, recorded in the PR as shown in the template below. Allocation-probe,
    persistence and Undo/Redo requirements of the touched boundaries still apply.
-4. After merging, run the [post-merge health check](#check-main-right-after-a-merge);
-   when the base moved during step 3, [carry](#continue-after-the-base-advances)
-   instead of rerunning everything.
+
+Complete verification before merging. When the base moves during step 3,
+[carry](#continue-after-the-base-advances) eligible evidence instead of
+rerunning everything. Do not run a routine post-merge check.
 
 When several sessions share the machine, run one Cargo-heavy command (test,
 clippy, build or runner) at a time. A session's own worktree target may need
@@ -269,10 +270,10 @@ commit and log that actually executed them, preserved through chained carries);
 the summary's `carry` lists each decision and its reason. A carried report is
 not a fresh full run and cannot feed `--reuse-report`.
 
-## Check main right after a merge
+## Investigate main on request
 
-After each standing-authorization merge, check the merge commit on an
-up-to-date main checkout before starting further merges:
+The health profile remains available when a specific investigation calls for
+checking a merge commit on an up-to-date main checkout:
 
 ```sh
 git switch main && git pull --ff-only
