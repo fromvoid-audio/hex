@@ -141,6 +141,36 @@ impl Fixture {
     pub(super) fn commit(&mut self, command: Command) -> Result<Created, Invalid> {
         self.editor.execute(command)
     }
+
+    pub(super) fn plan_marker_move(
+        &self,
+        section: SectionId,
+        anchor: f32,
+        position: f32,
+    ) -> Result<Option<Plan>, Invalid> {
+        let project = self.project();
+        let marker = project
+            .arrangement_section(section)
+            .ok_or(Invalid("arrangement section no longer exists"))?;
+        let span = view_span(project.arrangement_sections());
+        let anchor = position_to_beat(anchor, span)?;
+        let position = position_to_beat(position, span)?;
+        let start = i128::from(marker.start().raw()) + i128::from(position.raw())
+            - i128::from(anchor.raw());
+        let start =
+            u64::try_from(start).map_err(|_| Invalid("section marker movement out of range"))?;
+        let start = BeatTime::from_raw(start);
+        if start == marker.start() {
+            return Ok(None);
+        }
+        let command = Command::MoveArrangementSectionMarker { section, start };
+        let preview = project.preview_arrangement_section_edit(&command)?;
+        Ok(Some(Plan {
+            display: display(preview.sections()),
+            sections: preview.sections().to_vec(),
+            command,
+        }))
+    }
 }
 
 fn view_span(sections: &[ArrangementSection]) -> u64 {
@@ -227,6 +257,23 @@ mod tests {
             fixture.commit(plan.command).unwrap();
             assert_eq!(fixture.project().arrangement_sections(), expected);
         }
+    }
+
+    #[test]
+    fn marker_move_uses_pointer_offset_and_rejects_underflow() {
+        let mut fixture = Fixture::new().unwrap();
+        let before = fixture.project().snapshot();
+        let id = fixture.project().arrangement_sections()[0].id();
+        assert!(fixture.plan_marker_move(id, 0.5, 0.0).is_err());
+        assert_eq!(fixture.project().snapshot(), before);
+        let plan = fixture.plan_marker_move(id, 0.5, 0.45).unwrap().unwrap();
+        assert!(
+            matches!(plan.command, Command::MoveArrangementSectionMarker { section, .. } if section == id)
+        );
+        let expected = plan.sections;
+        fixture.commit(plan.command).unwrap();
+        assert_eq!(fixture.project().arrangement_sections(), expected);
+        assert!(fixture.project().arrangement_sections()[0].start() < BeatTime::ONE);
     }
 
     #[test]
