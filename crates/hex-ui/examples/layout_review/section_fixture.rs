@@ -57,8 +57,19 @@ impl Fixture {
         copy: bool,
         marker_only: bool,
     ) -> Result<Option<Plan>, Invalid> {
+        let beat = position_to_beat(position, view_span(self.project().arrangement_sections()))?;
+        self.plan_at_beat(section, part, beat, copy, marker_only)
+    }
+
+    pub(super) fn plan_at_beat(
+        &self,
+        section: SectionId,
+        part: RectanglePart,
+        beat: BeatTime,
+        copy: bool,
+        marker_only: bool,
+    ) -> Result<Option<Plan>, Invalid> {
         let project = self.project();
-        let beat = position_to_beat(position, view_span(project.arrangement_sections()))?;
         let Some(index) = project
             .arrangement_sections()
             .iter()
@@ -136,6 +147,40 @@ impl Fixture {
                 }))
             }
         }
+    }
+
+    /// Resolve this audio-free, fixed-tempo fixture's lane pointer to the
+    /// same frame viewport and adaptive grid used by arrangement input.
+    pub(super) fn snapped_beat(
+        &self,
+        pointer: f32,
+        left: f32,
+        width: f32,
+        free: bool,
+    ) -> Result<BeatTime, Invalid> {
+        if !pointer.is_finite() || !left.is_finite() || !width.is_finite() || width <= 0.0 {
+            return Err(Invalid("invalid section grid position"));
+        }
+        let project = self.project();
+        let span = BeatTime::from_raw(view_span(project.arrangement_sections()));
+        let length = project
+            .tempo_map()
+            .beat_to_frame(span)
+            .map_err(|_| Invalid("section grid viewport unavailable"))?;
+        if length == 0 {
+            return Err(Invalid("section grid viewport unavailable"));
+        }
+        let viewport = crate::viewport::Viewport::fit(length);
+        let frame = crate::seek::pointer_to_frame(pointer, left, width, viewport)
+            .ok_or(Invalid("section grid position unavailable"))?;
+        let beat = project
+            .tempo_map()
+            .frame_to_beat(frame)
+            .map_err(|_| Invalid("section grid position unavailable"))?;
+        crate::musical_time::SnapGrid::Adaptive
+            .with_platform_modifier(free)
+            .snap_beat(project, beat, viewport, width)
+            .ok_or(Invalid("section grid position unavailable"))
     }
 
     pub(super) fn commit(&mut self, command: Command) -> Result<Created, Invalid> {
@@ -296,6 +341,42 @@ mod tests {
             fixture.commit(plan.command).unwrap();
             assert_eq!(fixture.project().arrangement_sections(), expected);
         }
+    }
+
+    #[test]
+    fn edge_grid_uses_production_resolver_and_control_inversion() {
+        let fixture = Fixture::new().unwrap();
+        let project = fixture.project();
+        let id = project.arrangement_sections()[0].id();
+        let span = BeatTime::from_raw(view_span(project.arrangement_sections()));
+        let frames = project.tempo_map().beat_to_frame(span).unwrap();
+        let viewport = crate::viewport::Viewport::fit(frames);
+        let raw_frame = (0.4375_f64 * frames as f64).round() as u64;
+        let raw = project.tempo_map().frame_to_beat(raw_frame).unwrap();
+        for width in [160.0, 640.0, 1200.0] {
+            let expected = crate::musical_time::SnapGrid::Adaptive
+                .snap_beat(project, raw, viewport, width)
+                .unwrap();
+            let beat = fixture
+                .snapped_beat(0.4375 * width, 0.0, width, false)
+                .unwrap();
+            assert_eq!(beat, expected);
+            assert_eq!(
+                fixture
+                    .snapped_beat(0.4375 * width, 0.0, width, true)
+                    .unwrap(),
+                raw
+            );
+            let plan = fixture
+                .plan_at_beat(id, RectanglePart::Trailing, beat, false, true)
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(plan.command, Command::ResizeArrangementSectionMarker { boundary, .. } if boundary == expected)
+            );
+        }
+        assert!(fixture.snapped_beat(f32::NAN, 0.0, 640.0, false).is_err());
+        assert!(fixture.snapped_beat(0.5, 0.0, 0.0, false).is_err());
     }
 
     #[test]
