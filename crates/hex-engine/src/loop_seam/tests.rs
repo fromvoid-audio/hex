@@ -150,42 +150,41 @@ fn largest_step(output: &[Frame]) -> f32 {
         .fold(0.0, f32::max)
 }
 
-#[test]
-fn seam_crossfades_stepped_dc_identically_for_every_block_size_and_source() {
+fn stepped_dc_seam_case(dc_first: bool, use_stream: bool) {
     let (looped, asset) = project(Some((LOOP_START, LOOP_END)));
-    for dc_first in [true, false] {
-        let samples = stepped_dc(dc_first);
-        let reference = play(&mut resident(&looped, asset, &samples), 1, RENDERED, None);
-        let (at_end, at_start) = if dc_first {
-            ([0.0, 0.0], [1.0, -1.0])
-        } else {
-            ([1.0, -1.0], [0.0, 0.0])
-        };
-        let mut checked = 0;
-        for wrap in wraps() {
-            let step = largest_step(&reference[wrap - 2 * F..wrap + 2 * F]);
-            assert!(
-                step <= 1.0 / F as f32 + 1e-6,
-                "dc_first {dc_first}: step {step} at wrap {wrap}"
-            );
-            // The outgoing side runs on past the loop end at (F-1)/F while
-            // the loop start ramps in at 1/F; the pre-seam frame is untouched.
-            assert_eq!(reference[wrap - 1], at_end, "dc_first {dc_first}");
-            let first = 1.0 / F as f32;
-            let expected = [
-                at_start[0] * first + at_end[0] * (1.0 - first),
-                at_start[1] * first + at_end[1] * (1.0 - first),
-            ];
-            assert!(
-                (reference[wrap][0] - expected[0]).abs() < 1e-6
-                    && (reference[wrap][1] - expected[1]).abs() < 1e-6,
-                "dc_first {dc_first}: {:?} != {expected:?}",
-                reference[wrap]
-            );
-            assert_eq!(reference[wrap + F - 1], at_start, "dc_first {dc_first}");
-            checked += 1;
-        }
-        assert_eq!(checked, 3);
+    let samples = stepped_dc(dc_first);
+    let reference = play(&mut resident(&looped, asset, &samples), 1, RENDERED, None);
+    let (at_end, at_start) = if dc_first {
+        ([0.0, 0.0], [1.0, -1.0])
+    } else {
+        ([1.0, -1.0], [0.0, 0.0])
+    };
+    let mut checked = 0;
+    for wrap in wraps() {
+        let step = largest_step(&reference[wrap - 2 * F..wrap + 2 * F]);
+        assert!(
+            step <= 1.0 / F as f32 + 1e-6,
+            "dc_first {dc_first}: step {step} at wrap {wrap}"
+        );
+        // The outgoing side runs on past the loop end at (F-1)/F while
+        // the loop start ramps in at 1/F; the pre-seam frame is untouched.
+        assert_eq!(reference[wrap - 1], at_end, "dc_first {dc_first}");
+        let first = 1.0 / F as f32;
+        let expected = [
+            at_start[0] * first + at_end[0] * (1.0 - first),
+            at_start[1] * first + at_end[1] * (1.0 - first),
+        ];
+        assert!(
+            (reference[wrap][0] - expected[0]).abs() < 1e-6
+                && (reference[wrap][1] - expected[1]).abs() < 1e-6,
+            "dc_first {dc_first}: {:?} != {expected:?}",
+            reference[wrap]
+        );
+        assert_eq!(reference[wrap + F - 1], at_start, "dc_first {dc_first}");
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+    if !use_stream {
         for block in [64, 512] {
             let output = play(
                 &mut resident(&looped, asset, &samples),
@@ -195,6 +194,7 @@ fn seam_crossfades_stepped_dc_identically_for_every_block_size_and_source() {
             );
             assert_eq!(output, reference, "dc_first {dc_first}: block {block}");
         }
+    } else {
         for block in [1, 64, 512] {
             let mut pages = Pages {
                 key: StreamSourceKey::new(31, asset),
@@ -212,6 +212,24 @@ fn seam_crossfades_stepped_dc_identically_for_every_block_size_and_source() {
             );
         }
     }
+}
+
+macro_rules! stepped_dc_seam_tests {
+    ($($name:ident: $dc_first:expr, $streamed:expr;)*) => {
+        $(
+            #[test]
+            fn $name() {
+                stepped_dc_seam_case($dc_first, $streamed);
+            }
+        )*
+    };
+}
+
+stepped_dc_seam_tests! {
+    stepped_dc_seam_first_resident: true, false;
+    stepped_dc_seam_first_streamed: true, true;
+    stepped_dc_seam_last_resident: false, false;
+    stepped_dc_seam_last_streamed: false, true;
 }
 
 #[test]
