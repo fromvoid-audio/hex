@@ -1486,16 +1486,15 @@ fn rendered_midi_left_trim_keeps_source_note_timeline_position(cx: &mut TestAppC
             .expect("fixed source clip bounds"),
         original_bounds
     );
-    let note_bounds = visual
-        .debug_bounds("midi-trim-preview-note-72")
-        .expect("retained source note is painted in the trimmed preview");
+    let notes = super::midi_thumbnail::rendered_note_layer(&mut visual, "midi-trim-preview-notes");
     let note_frame = 72_000.0_f64; // beat 3 at the project's 120 bpm default
     let expected_note_x = f32::from(lane.origin.x)
         + (f64::from(lane.size.width) * note_frame / TIMELINE_FRAMES as f64) as f32;
     assert!(
-        (f32::from(note_bounds.origin.x) - expected_note_x).abs() < 2.0,
-        "advancing the source marker keeps the later note at its original timeline x: got {}, expected {expected_note_x}, preview={preview:?}",
-        f32::from(note_bounds.origin.x)
+        notes
+            .iter()
+            .any(|(bounds, _)| (f32::from(bounds.origin.x) - expected_note_x).abs() < 2.0),
+        "advancing the source marker keeps the later note at its original timeline x: got {notes:?}, expected {expected_note_x}, preview={preview:?}"
     );
     visual.simulate_mouse_up(target, MouseButton::Left, command);
     visual.run_until_parked();

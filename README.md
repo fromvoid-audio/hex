@@ -103,12 +103,12 @@ buttons, gauges and scrolling rows. Select a named entry; edit its local
 values, switch theme, disable supported controls, reset it or narrow the preview.
 Plots use editable fixture values; they do not process audio. No project, audio,
 file or preferences I/O occurs. The former `knob_review` app is included here.
-The launcher builds the optimized example from the current checkout, then opens
+The launcher builds the optimized sandbox from the current checkout, then opens
 it. It works from any directory and does not update Git or replace `hex.app`.
 Headless catalog/input checks use:
 
 ```sh
-cargo test -p hex-ui --features ui-test-support --locked --example layout_review
+cargo test -p hex-sandbox --features ui-test-support --locked
 ```
 
 ## Check

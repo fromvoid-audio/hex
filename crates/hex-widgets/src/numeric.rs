@@ -1,7 +1,9 @@
 use std::{fmt, sync::Arc};
 
 type NumericFormatter = Arc<dyn Fn(f64) -> String + Send + Sync>;
-type NumericParser = Arc<dyn Fn(&str) -> Option<f64> + Send + Sync>;
+/// Parses editor text; receives the control's current value when known so a
+/// codec can read a bare number in the unit it currently displays.
+type NumericParser = Arc<dyn Fn(&str, Option<f64>) -> Option<f64> + Send + Sync>;
 type NumericKeyboardStepper = Arc<dyn Fn(f64, f64) -> Option<f64> + Send + Sync>;
 
 /// How a normalized control position maps to a parameter value.
@@ -172,6 +174,19 @@ impl NumericSpec {
         mut self,
         formatter: impl Fn(f64) -> String + Send + Sync + 'static,
         parser: impl Fn(&str) -> Option<f64> + Send + Sync + 'static,
+    ) -> Self {
+        self.formatter = Some(Arc::new(formatter));
+        self.parser = Some(Arc::new(move |text, _| parser(text)));
+        self
+    }
+
+    /// Like [`Self::with_codec`], but the parser also receives the control's
+    /// current value (when known), so bare numbers can follow a readout whose
+    /// unit depends on that value, such as "250 ms" versus "2 s".
+    pub fn with_contextual_codec(
+        mut self,
+        formatter: impl Fn(f64) -> String + Send + Sync + 'static,
+        parser: impl Fn(&str, Option<f64>) -> Option<f64> + Send + Sync + 'static,
     ) -> Self {
         self.formatter = Some(Arc::new(formatter));
         self.parser = Some(Arc::new(parser));
@@ -375,19 +390,28 @@ impl NumericSpec {
             ));
         }
         let mut formatted = format!("{:.*}", usize::from(self.precision), value);
-        if let Some(unit) = &self.unit {
-            if !unit.is_empty() {
-                formatted.push(' ');
-                formatted.push_str(unit);
-            }
+        if let Some(unit) = &self.unit
+            && !unit.is_empty()
+        {
+            formatted.push(' ');
+            formatted.push_str(unit);
         }
         Ok(formatted)
     }
 
     /// Parse the displayed numeric value, accepting its optional unit suffix.
     pub fn parse(&self, text: &str) -> Result<f64, NumericError> {
+        self.parse_with_current(text, None)
+    }
+
+    /// Parse editor text for a control currently showing `current`.
+    pub fn parse_with_current(
+        &self,
+        text: &str,
+        current: Option<f64>,
+    ) -> Result<f64, NumericError> {
         if let Some(parser) = &self.parser {
-            return parser(text)
+            return parser(text, current)
                 .ok_or(NumericError::InvalidText)
                 .and_then(|value| self.validate(value).map_err(|_| NumericError::InvalidText));
         }
@@ -613,6 +637,15 @@ mod tests {
         assert_eq!(spec.parse(" 1.25 db ").unwrap(), 1.25);
         assert!(spec.parse("nan").is_err());
         assert!(spec.parse("2.01 db").is_err());
+    }
+
+    #[test]
+    fn absent_and_empty_units_do_not_add_a_separator() {
+        for unit in [None, Some("")] {
+            let spec = NumericSpec::new(0.0, 2.0, 1.25, NumericScale::Linear, 2, unit).unwrap();
+            assert_eq!(spec.format(1.25).unwrap(), "1.25");
+            assert_eq!(spec.parse("1.25").unwrap(), 1.25);
+        }
     }
 
     #[test]
@@ -997,5 +1030,18 @@ mod f32_domain_tests {
         for text in ["7 db", "nan db", "inf db", "-10000 db"] {
             assert!(spec.parse(text).is_err(), "{text}");
         }
+    }
+
+    #[test]
+    fn contextual_parser_receives_the_current_value_only_when_supplied() {
+        let spec = NumericSpec::new(0.0, 10.0, 0.0, NumericScale::Linear, 2, None::<&str>)
+            .unwrap()
+            .with_contextual_codec(
+                |value| value.to_string(),
+                |text, current| Some(text.parse::<f64>().ok()? + current.unwrap_or(0.0)),
+            );
+        assert_eq!(spec.parse("1").unwrap(), 1.0);
+        assert_eq!(spec.parse_with_current("1", Some(2.0)).unwrap(), 3.0);
+        assert!(spec.parse_with_current("1", Some(20.0)).is_err());
     }
 }

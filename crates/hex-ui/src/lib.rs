@@ -32,6 +32,8 @@ mod editor_backend;
 mod test_wait;
 pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
 mod layout;
+mod startup;
+pub use startup::open_or_report;
 pub mod output_meter;
 mod theme;
 mod tooltips;

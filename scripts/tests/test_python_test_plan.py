@@ -59,15 +59,33 @@ class SelectionTests(unittest.TestCase):
                 chosen = selection([path], modules=modules)
                 self.assertEqual(chosen["mode"], "shared")
                 self.assertEqual(chosen["test_selectors"], [*impact.SHARED_TESTS, "test_python_test_plan"])
+        # Tooling owner boundary: a script with its own test module selects that
+        # module plus shared invariants, never unrelated tooling suites.
+        for path, owner in (
+            ("scripts/check-architecture.py", "test_check_architecture"),
+            ("scripts/tests/test_architecture.py", "test_architecture"),
+            ("scripts/hex-update-entry.py", "test_hex_update_entry"),
+            ("scripts/pending_update_exit.py", "test_pending_update_exit"),
+            ("scripts/tests/test_hex_update_entry.py", "test_hex_update_entry"),
+            ("scripts/tests/test_pending_update_exit.py", "test_pending_update_exit"),
+            ("scripts/tests/test_vst3_macos_bootstrap.py", "test_vst3_macos_bootstrap"),
+        ):
+            with self.subTest(path=path):
+                chosen = selection([path], modules=modules)
+                if owner not in modules:  # no module of its own: comprehensive
+                    self.assertEqual(chosen["mode"], "comprehensive")
+                    continue
+                self.assertEqual(chosen["mode"], "shared")
+                self.assertIn(owner, chosen["test_selectors"])
+                self.assertIn("test_python_test_plan", chosen["test_selectors"])
+                self.assertNotIn(owner, chosen["excluded_groups"])
         for path in (
-            "scripts/check-architecture.py", "scripts/tests/test_architecture.py", "AGENTS.md",
-            "scripts/hex-update-entry.py", "scripts/pending_update_exit.py",
-            "scripts/tests/test_hex_update_entry.py", "scripts/tests/test_pending_update_exit.py",
+            "AGENTS.md",
             "crates/hex-plugin-scan/native/macos_bootstrap.py",
             "crates/hex-plugin-scan/native/macos_helper.mm",
             "crates/hex-plugin-scan/native/macos_fixture.cpp",
             "crates/hex-plugin-scan/native/build.py", "crates/hex-plugin-scan/build.rs",
-            "scripts/tests/test_vst3_macos_bootstrap.py", "Cargo.toml", ".cargo/config.toml",
+            "Cargo.toml", ".cargo/config.toml",
         ):
             with self.subTest(path=path):
                 chosen = selection([path], modules=modules)
@@ -124,11 +142,21 @@ assert unittest.defaultTestLoader.loadTestsFromTestCase(instance.NativeInstanceT
         self.assertEqual(impact.native_acceptance_inputs({"HEX_VST3_SDK_DIR": ""}), [])
 
     def test_tooling_configuration_vendor_and_unknown_inputs_stay_comprehensive(self):
+        modules = sorted(impact.REVIEWED_MODULES)
+        for path, owner in (
+            ("scripts/launch-restart.py", "test_launch_restart"), ("scripts/local-ci.py", "test_local_ci"),
+            ("scripts/ci_plan.py", "test_ci_plan"), ("scripts/python_test_plan.py", "test_python_test_plan"),
+            ("scripts/hex-test-build.py", "test_hex_test_build"), ("scripts/test_shards.py", "test_ci_plan"),
+            ("scripts/tests/test_ci_plan.py", "test_ci_plan"),
+        ):
+            with self.subTest(path=path):
+                result = selection([path], modules=modules)
+                self.assertEqual(result["mode"], "shared")
+                self.assertIn(owner, result["test_selectors"])
+                self.assertIn("test_architecture", result["excluded_groups"])
         for path in (
-            "launch", "scripts/launch-restart.py", "scripts/local-ci.py",
-            "scripts/ci_plan.py", "scripts/python_test_plan.py", "scripts/build_inputs.py",
-            "scripts/hex-test-build.py", "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
-            "scripts/tests/test_ci_plan.py", "scripts/new-helper.py", "Cargo.toml", "Cargo.lock",
+            "launch", "scripts/build_inputs.py", "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
+            "scripts/new-helper.py", "Cargo.toml", "Cargo.lock",
             ".cargo/config.toml", "rust-toolchain.toml", "AGENTS.md",
             "crates/hex-ui/Cargo.toml", "crates/hex-ui/build.rs",
             "crates/hex-ui/assets/not-source.rs", "third_party/gpui/src/lib.rs",
@@ -141,8 +169,9 @@ assert unittest.defaultTestLoader.loadTestsFromTestCase(instance.NativeInstanceT
                 self.assertEqual(result["excluded_groups"], [])
 
     def test_mixed_inputs_and_unregistered_rename_endpoint_cannot_take_fast_path(self):
+        # Mixed UI/core Rust inputs share the same invariants as either alone.
+        self.assertEqual(selection(["crates/hex-ui/src/a.rs", "crates/hex-engine/src/a.rs"])["mode"], "shared")
         for paths in (
-            ["crates/hex-ui/src/a.rs", "crates/hex-engine/src/a.rs"],
             ["crates/hex-ui/src/a.rs", "launch"],
             ["crates/hex-engine/src/a.rs", "unknown/renamed.rs"],
         ):

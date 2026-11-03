@@ -21,6 +21,7 @@ impl SessionPlayback {
         &mut self,
         performance_frame: u64,
         arrangement_frame: u64,
+        loop_pass: u64,
         frames: usize,
         eligible: &mut [bool; MAX_TRACKS],
         analytic: &mut [bool; MAX_TRACKS],
@@ -42,6 +43,7 @@ impl SessionPlayback {
         let batch_analytic = self.suppression_scratch.is_empty()
             && self.analytic_continuations.iter().all(Option::is_none);
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
+        let seam = self.loop_seam_at(arrangement_frame, loop_pass);
         for (index, (route, scratch)) in self
             .route_scratch
             .iter()
@@ -93,6 +95,7 @@ impl SessionPlayback {
                             raw: true,
                             timing: &timing,
                             table: self.revision.session().sine_table(),
+                            seam: None,
                         },
                         &self.route_scratch,
                         self.historical_floor,
@@ -142,11 +145,19 @@ impl SessionPlayback {
                         *analytic
                             .get_mut(index)
                             .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
-                    } else if track.clips.iter().all(|clip| !clip.is_streamed()) {
+                    } else if !track.has_streamed_clips {
                         if track.audio_content_enabled() {
                             track
                                 .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
                                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                            track.add_loop_seam_crossfade::<dyn MediaPages>(
+                                seam,
+                                arrangement_frame,
+                                output,
+                                None,
+                                None,
+                                crate::PreparedTrackMix::identity(),
+                            );
                         }
                         *eligible
                             .get_mut(index)
@@ -201,6 +212,7 @@ impl SessionPlayback {
                             raw: true,
                             timing: &timing,
                             table: self.revision.session().sine_table(),
+                            seam: None,
                         },
                         &mut self.spans,
                         performance_frame,
@@ -213,7 +225,10 @@ impl SessionPlayback {
                         .get_mut(index)
                         .ok_or(SessionPlaybackError::DeviceRuntime)? = true;
                 }
-                RouteOwner::SessionAudio { clip, launch_frame } if batch_session => {
+                // A fading outgoing clip renders on the per-frame route path.
+                RouteOwner::SessionAudio { clip, launch_frame }
+                    if batch_session && route.audio_release.is_none() =>
+                {
                     let track = self
                         .revision
                         .arrangement()
@@ -309,6 +324,7 @@ impl SessionPlayback {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
         self.push_compensated_stamp(performance_frame, arrangement_frame, loop_pass)?;
+        let seam = self.loop_seam_at(arrangement_frame, loop_pass);
         let grouped = self
             .compensation
             .as_ref()
@@ -387,6 +403,7 @@ impl SessionPlayback {
                                     raw: true,
                                     timing: &timing,
                                     table: self.revision.session().sine_table(),
+                                    seam,
                                 },
                                 &mut self.spans,
                                 performance_frame,
@@ -430,6 +447,7 @@ impl SessionPlayback {
                                     raw: true,
                                     timing: &timing,
                                     table: self.revision.session().sine_table(),
+                                    seam: None,
                                 },
                                 &self.route_scratch,
                                 self.historical_floor,

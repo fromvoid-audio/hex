@@ -1,4 +1,4 @@
-//! Linux-only standalone executable ownership; never imported by the library.
+//! Linux-only standalone executable ownership; never imported by a scan library.
 use rustix::process::{self, Pid, Signal, WaitId, WaitIdOptions, WaitOptions};
 use serde::Serialize;
 use std::{
@@ -69,6 +69,8 @@ impl Pending {
         }
     }
 }
+/// Magic plus little-endian length preceding every scanner protocol payload.
+const FRAME_HEADER: usize = 12;
 fn drain(reader: &mut impl Read, bytes: &mut Vec<u8>, limit: usize) -> Result<(), String> {
     let mut buffer = [0_u8; 4096];
     for _ in 0..4 {
@@ -106,14 +108,21 @@ fn cancellation() -> Result<bool, String> {
     let n = input.read(&mut buffer).map_err(|_| "cancel read failed")?;
     Ok(buffer[..n].starts_with(b"cancel"))
 }
+/// Run one controlled helper request to completion and reap its process group.
+/// `max_packet` is the caller format's protocol payload bound; the request and
+/// the captured reply may each add the 12-byte frame header to it.
 pub fn run(
     helper: &std::path::Path,
     module: &std::path::Path,
     request: u64,
     deadline: Duration,
     input: &[u8],
+    max_packet: usize,
 ) -> Result<(Output, Option<Pending>), String> {
-    if input.len() > hex_clap_scan::MAX_PACKET + 12 {
+    let frame_limit = max_packet
+        .checked_add(FRAME_HEADER)
+        .ok_or("packet bound overflow")?;
+    if input.len() > frame_limit {
         return Err("request capacity refused".into());
     }
     if deadline.is_zero() || deadline > Duration::from_secs(30) {
@@ -184,7 +193,7 @@ pub fn run(
             write_closed = true;
         }
         for result in [
-            drain(&mut protocol, &mut packet, hex_clap_scan::MAX_PACKET + 12),
+            drain(&mut protocol, &mut packet, frame_limit),
             drain(&mut stdout, &mut out, 64 * 1024),
             drain(&mut stderr, &mut err, 64 * 1024),
         ] {
@@ -261,7 +270,7 @@ pub fn run(
     // Group termination/reaping precedes final drain, including inherited pipes.
     for _ in 0..70 {
         for result in [
-            drain(&mut protocol, &mut packet, hex_clap_scan::MAX_PACKET + 12),
+            drain(&mut protocol, &mut packet, frame_limit),
             drain(&mut stdout, &mut out, 64 * 1024),
             drain(&mut stderr, &mut err, 64 * 1024),
         ] {

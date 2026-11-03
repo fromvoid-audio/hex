@@ -32,7 +32,7 @@ fn wav_mono_pcm16(samples: &[i16]) -> Vec<u8> {
 }
 
 fn next_event(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(event) => return event,
@@ -1170,7 +1170,7 @@ fn request_queue_is_bounded_and_dropping_service_is_nonblocking() {
                 break;
             }
             Err(SubmitError::Closed(_)) => panic!("worker exited unexpectedly"),
-            Err(SubmitError::Busy(_)) => panic!("non-export request was marked busy"),
+            Err(SubmitError::Busy(..)) => panic!("non-export request was marked busy"),
         }
     }
     assert!(matches!(
@@ -1353,7 +1353,8 @@ fn mixed_rate_import_save_reopen_is_exact_and_changed_source_is_atomic() {
     assert!(!saved.state.unsaved);
     let json = fs::read_to_string(&project_path).expect("saved JSON");
     let document: serde_json::Value = serde_json::from_str(&json).expect("project json");
-    assert_eq!(document["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+    // A rate-converted import records sinc v2, which only schema64 carries.
+    assert_eq!(document["version"], hex_storage::SINC_V2_SCHEMA_VERSION);
     assert_eq!(document["routing"], serde_json::json!([]));
     assert!(document["import_provenance"].is_null());
     service

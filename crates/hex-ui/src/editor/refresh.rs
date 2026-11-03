@@ -13,6 +13,8 @@ pub(super) struct AudioFrame {
     pub peak_right: u32,
     pub applied_revision: u64,
     pub deadline_misses: u64,
+    /// Callbacks that held streamed playback silent mid-play (disk overload).
+    pub stream_starved: u64,
     pub callback_us: u64,
     pub render_fault: bool,
     pub device_fault: bool,
@@ -30,6 +32,7 @@ impl AudioFrame {
             peak_right: status.peak_right.load(Relaxed),
             applied_revision: status.applied_revision.load(Relaxed),
             deadline_misses: status.deadline_misses.load(Relaxed),
+            stream_starved: status.stream_starved_callbacks.load(Relaxed),
             callback_us: status.callback_max_ns.load(Relaxed) / 1_000,
             render_fault: status.render_fault.load(Relaxed),
             device_fault: status.device_fault.load(Relaxed),
@@ -62,8 +65,14 @@ impl super::EditorView {
     ) -> bool {
         let availability_changed = self.output_meter_frame.is_some() != frame.is_some();
         self.output_meter_frame = frame;
-        self.redraw_gate
-            .should_redraw(visible_change || availability_changed, frame, now)
+        let overload_changed = self
+            .disk_overload
+            .observe(frame.map(|frame| frame.stream_starved), now);
+        self.redraw_gate.should_redraw(
+            visible_change || availability_changed || overload_changed,
+            frame,
+            now,
+        )
     }
 }
 
@@ -127,6 +136,7 @@ mod tests {
             peak_right: 0,
             applied_revision: 1,
             deadline_misses: 0,
+            stream_starved: 0,
             callback_us: 10,
             render_fault: false,
             device_fault: false,

@@ -111,6 +111,16 @@ def select(profile: str, paths: list[str], inventory: list[dict],
                              + ", ".join(native))
     if set(modules) != REVIEWED_MODULES:
         return comprehensive("new, missing or unregistered Python test module")
+    owned = tooling_owner_modules(paths, modules)
+    if owned:
+        # A shared case inside a selected module already runs with that module.
+        shared = [name for name in SHARED_TESTS if name.split(".")[0] not in owned]
+        selectors = sorted({*owned, "test_python_test_plan", *shared})
+        return {"mode": "shared", "selected_groups": sorted({"shared-invariants", "test_python_test_plan", *owned}),
+                "excluded_groups": [name for name in modules if name not in owned and name != "test_python_test_plan"],
+                "test_selectors": selectors,
+                "reasons": ["tooling owner boundary: each changed script's own test module plus shared "
+                            "invariants (user policy, 1 November 2026): " + ", ".join(owned)]}
     categories = set()
     for path in paths:
         if not path.endswith(".rs") or path.endswith("/build.rs"):
@@ -126,16 +136,44 @@ def select(profile: str, paths: list[str], inventory: list[dict],
         if not relative.startswith(("src/", "tests/", "examples/", "benches/")):
             return comprehensive("input is outside supported Cargo source directories: " + path)
         categories.add("ui" if name in ui_packages else "core")
-    if len(categories) != 1:
-        return comprehensive("mixed UI/core inputs retain comprehensive Python coverage")
+    # UI and core Rust inputs reach the same shared invariants; a change touching
+    # both needs no unrelated tooling suites either (owner policy, 1 November 2026).
     selectors = [*SHARED_TESTS, "test_python_test_plan"]
     return {"mode": "shared", "selected_groups": ["shared-invariants", "test_python_test_plan"],
             "excluded_groups": [*(name for name in modules
                                    if name not in {"test_ci_plan", "test_python_test_plan"}),
                                 "test_ci_plan:remaining-cases"],
             "test_selectors": selectors,
-            "reasons": ["ordinary app-only " + next(iter(categories))
+            "reasons": ["ordinary app-only " + "/".join(sorted(categories))
                         + " Rust inputs; shared invariants retained, unaffected tooling suites excluded"]}
+
+
+# Scripts whose tests live in another module than test_<stem>.
+OWNER_TEST_MODULES = {"scripts/test_shards.py": "test_ci_plan",
+                      "scripts/python_shards.py": "test_python_test_plan"}
+
+
+def tooling_owner_modules(paths: list[str], modules: list[str]) -> list[str]:
+    """Test modules owning every changed tooling path, or [] when any path is unowned.
+
+    `scripts/NAME.py` (or `scripts/NAME`) is owned by `test_NAME` with hyphens as
+    underscores; a changed `scripts/tests/test_X.py` owns itself. Any other
+    input, or a script without its own test module, keeps comprehensive discovery.
+    """
+    owned = set()
+    for path in paths:
+        if path in OWNER_TEST_MODULES:
+            module = OWNER_TEST_MODULES[path]
+        elif path.startswith("scripts/tests/test_") and path.endswith(".py") and path.count("/") == 2:
+            module = Path(path).stem
+        elif path.startswith("scripts/") and path.count("/") == 1 and Path(path).suffix in {".py", ""}:
+            module = "test_" + Path(path).stem.replace("-", "_")
+        else:
+            return []
+        if module not in modules:
+            return []
+        owned.add(module)
+    return sorted(owned)
 
 
 def argv(selection: dict) -> tuple[str, ...]:
@@ -147,4 +185,5 @@ def argv(selection: dict) -> tuple[str, ...]:
     if not isinstance(selectors, list) or not selectors or any(
             not isinstance(name, str) or not name for name in selectors):
         raise ValueError("Python test selection is empty or malformed")
-    return ("python3", "-c", UNITTEST_BOOTSTRAP, *selectors)
+    # Owner selections run as concurrent single-test processes (Pulse #4001).
+    return ("python3", "scripts/python_shards.py", "--", *selectors)

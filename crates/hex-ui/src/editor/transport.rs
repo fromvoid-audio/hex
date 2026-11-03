@@ -382,7 +382,7 @@ impl EditorView {
                     })
                     .child(theme::text(&output_label)),
             );
-        if self.state().is_none() {
+        if self.state().is_none() && self.service.startup_failure().is_none() {
             status = status.child(
                 div()
                     .debug_selector(|| "project loading".into())

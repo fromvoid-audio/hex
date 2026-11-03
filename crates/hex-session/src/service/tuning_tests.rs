@@ -1,6 +1,5 @@
 use super::*;
 use hex_tuning::{Audition, ProjectTuning};
-use std::time::{Duration, Instant};
 
 fn stale_library_write(export: bool) {
     let directory = library_scratch();
@@ -53,15 +52,10 @@ fn review_stale_tuning_export_creates_no_file_after_revision_or_generation_chang
 }
 
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match service.try_event() {
-            Ok(event) => return event,
-            Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
-                thread::sleep(Duration::from_millis(2))
-            }
-            Err(error) => panic!("worker did not reply: {error}"),
-        }
+    // Blocks on the event channel; bounded only against hangs.
+    match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("next: worker event absent: {error}"),
     }
 }
 fn tuning(hz: f64) -> ProjectTuning {

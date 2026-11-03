@@ -121,8 +121,11 @@ fn stopped_session_audio_drains_live_filter_without_callback_allocation_or_drop(
     assert!(control.status.rejected_action().is_none());
     control.command(PlaybackCommand::Stop).unwrap();
     let stopped = measure(|| {
-        callback.begin_block();
-        callback.render(&mut actual).unwrap();
+        // The first block is the queued Stop's 128-frame fade (#4151).
+        for _ in 0..2 {
+            callback.begin_block();
+            callback.render(&mut actual).unwrap();
+        }
     });
     assert_eq!(
         (

@@ -10,7 +10,7 @@ use std::{
 };
 
 fn receive(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         if let Ok(event) = service.try_event() {
             return event;

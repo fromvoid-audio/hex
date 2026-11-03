@@ -99,9 +99,67 @@ Ordering changes no required commands, configurations or qualification rules;
 quick/edit/custom probes remain partial. Preflight source/target checks still apply.
 
 `scripts/ci_plan.py` selects checks from both sides of changed Git paths, Cargo
-ownership and transitive normal/dev/build/optional/target dependencies. Rust,
-package manifests and package build scripts select owning packages and consumers,
-including reviewed runtime relationships such as opaque device state in storage.
+ownership and transitive normal/dev/build/optional/target dependencies.
+
+**Owner boundaries (policy since 1 November 2026).** A merge runs the test suites
+of the packages that own the changed source, in every configuration, plus reviewed
+runtime consumers with no Cargo edge (opaque device state in hex-storage). Every
+transitive Cargo consumer still compiles and lints, default and feature
+configurations, so an API break cannot reach main, but consumer suites are not
+rerun. The owner's boundary tests are what guarantee behaviour downstream. If a
+consumer later breaks, the defect is a missing owner boundary test: add it at the
+owner. Package manifests and build scripts can change how consumers build, so they
+keep the whole affected closure's suites.
+
+**Profile-only root manifest changes.** A root `Cargo.toml` change whose
+every changed table is `[profile.NAME.package.MEMBER]` (a workspace member, never
+`"*"`) using only `opt-level`, `debug`, `codegen-units`, `incremental`,
+`split-debuginfo` or `strip` selects those members as if their crate roots
+changed: their whole suites test, consumers lint. These keys change codegen, not
+program meaning. Any other root-manifest change, including `debug-assertions`,
+`overflow-checks`, `panic`, `lto`, dependencies or workspace members, keeps the
+comprehensive audit.
+
+**Module scope.** Inside an owner, a changed `src/` file runs only the tests of
+its own Rust module subtree. The planner resolves `mod`/`#[path]` from the crate
+root and runs `cargo test … -- module::path::` in each of the owner's test
+configurations, including sharded ones via `test_shards.py --filter`. A module
+with no tests of its own selects its nearest ancestor module that has tests.
+The crate root, `include!`, non-`src/` inputs and manifests keep whole-crate
+tests. One configuration may hold none of a module's tests, so module-scoped
+steps are checked together: a merge whose changed modules pass no test fails
+with "changed modules ran no tests". Example targets (the device gallery) are
+skipped for module-scoped owners. Smaller, self-tested modules therefore mean
+faster merges; an untested module inherits its parent's often-large suite.
+
+A changed module root (for example `editor/mod.rs`) runs its complete test
+subtree, including tests in child modules, regardless of which child names
+appear in the diff. Module-scoped doctest steps run only when a changed file
+carries a doc example (a fenced block in `///` or `//!` comments). A reviewed runtime
+consumer that is itself the changed owner (for example hex-storage) is
+module-scoped like any owner.
+
+Python tooling follows the same rule. A changed `scripts/NAME.py` (or
+`scripts/NAME`) runs its own `test_NAME` module, and a changed
+`scripts/tests/test_X.py` runs itself. Both add the shared planner invariants.
+Scripts without their own test module, config files and unknown inputs keep
+comprehensive discovery. Owner selections run through `scripts/python_shards.py`:
+one process per test from a shared work queue (up to 12 workers), which brings
+`test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
+
+Module-scoped test steps build only the library (or, for a binary-only crate,
+the binaries): a `module::path::` filter can never match an integration test,
+example or bench, so building and linking those targets was pure overhead
+(hex-session has 28 test and 7 example targets, hex-storage 34).
+
+**One-minute budget.** Merge runs keep test setup and execution, excluding Cargo's
+build phase, under 60 s. local-ci sums executed test steps (wall time minus the
+reported build phase; carried steps excluded) into `test_budget` in the summary.
+Exceeding the limit prints a warning naming the slowest steps; it does not fail
+the run, and a run that is otherwise green qualifies (user decision,
+1 November 2026; overruns are investigated in Pulse #4100). Record a recurring
+slow owner suite in Pulse, and optionally pass `--over-budget-reason "Pulse #N …"`
+to keep the reason in the summary.
 Mixed tooling/Rust changes combine comprehensive Python checks with affected Rust
 configurations. Contributor prose, including AGENTS.md, gets link/path checks;
 executable selector/runner policy gets comprehensive tooling tests and guards.
@@ -132,9 +190,14 @@ Packages whose only extra feature is reviewed as additive for tests (see
 `ADDITIVE_TEST_FEATURES` in `scripts/ci_plan.py`) run their tests once with the
 feature and keep a separate doctest run; default-feature Clippy still applies.
 
-Package plans retain default tests/lints, applicable allocation/UI/export feature
-configurations, gallery and desktop build checks, and independently declared
-additional features. Feature combinations need reviewed contract rules; individual
+Package plans run the owners' default tests and applicable allocation/UI/export
+feature tests. Consumers lint in two invocations: default features
+(`affected-clippy`, which keeps `cfg(not(feature))` branches compiling) and every
+reviewed feature configuration together (`affected-feature-clippy`). Separate
+per-feature lints recompiled the shared dependency chain each time (55–112 s
+against 38–42 s, measured 1 November 2026). Formatting checks only the changed
+owners' packages. The
+desktop build runs when hex-desktop owns the change. Feature combinations need reviewed contract rules; individual
 feature runs do not prove all combinations. Global manifests/lockfiles, toolchain,
 vendor, unowned resources and unknown inputs conservatively select the comprehensive
 audit with explicit input reasons. Review unknown effects rather than assuming
@@ -368,6 +431,38 @@ The runner may refuse insufficient disk headroom. Inspect and remove only known
 reproducible, inactive generated outputs. Do not delete projects, source, accepted
 artifacts or another worktree's target merely to get a run started. Do not edit
 ownership markers to claim a successful check.
+
+## Controlled macOS VST3 fixtures
+
+The opt-in native instance tests use a clean, pinned VST3 SDK checkout and
+original fixture bundles, not installed plug-ins. `build.py` owns the exact SDK
+and submodule pins; `macos_bootstrap.py` checks those revisions, tracked changes
+and MIT license files before building. Keep the checkout outside the repository
+and choose fresh output directories. Set `HEX_VST3_SDK` locally to its path.
+
+```sh
+test ! -e artifacts/vst3-local-controlled
+test ! -e artifacts/vst3-local-instance
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py build \
+  --sdk "$HEX_VST3_SDK" --output artifacts/vst3-local-controlled
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py build --instance-only \
+  --sdk "$HEX_VST3_SDK" --output artifacts/vst3-local-instance
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py verify \
+  --receipt artifacts/vst3-local-controlled/controlled-macos.json
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py verify \
+  --receipt artifacts/vst3-local-instance/controlled-macos.json
+HEX_VST3_MACOS_RECEIPT="$PWD/artifacts/vst3-local-controlled/controlled-macos.json" \
+HEX_VST3_INSTANCE_RECEIPT="$PWD/artifacts/vst3-local-instance/controlled-macos.json" \
+  cargo test -p hex-plugin-host --lib --locked \
+  native::tests::epoch::actual_current_capture_uses_same_quiescent_instance_and_keeps_startup_historical \
+  -- --ignored --exact
+```
+
+Receipts are bound to the native sources and SDK pins. Rebuild them after those
+inputs change. This controlled helper test does not establish installed plug-in,
+native UI, listening, device deadline or release acceptance. Keep SDK paths and
+local receipts out of Git; record the exact receipt hashes and result with the
+issue or PR being verified.
 
 ## Focused commands
 

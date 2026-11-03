@@ -45,6 +45,8 @@ struct SessionDiagnostics {
     audio_losses: Option<(u64, u64, u64)>,
     handle: Result<DiagnosticsHandle, String>,
     last_view: String,
+    /// Retained buffer for the next view snapshot; reused on every tick.
+    view_scratch: String,
     last_status: String,
     last_error: Option<String>,
     reported_failure: bool,
@@ -61,6 +63,7 @@ pub fn install_session_log(cx: &mut App, handle: Result<DiagnosticsHandle, Strin
         audio_losses: None,
         handle,
         last_view: String::new(),
+        view_scratch: String::new(),
         last_status: String::new(),
         last_error: None,
         reported_failure: false,
@@ -182,25 +185,41 @@ pub(crate) fn record_ui_install(cx: &App, revision: u64, install: std::time::Dur
     }
 }
 
+/// Selection counts and focus flags that route `g`; no names or project content.
+pub(crate) fn record_group_selection(cx: &App, route: &str) {
+    if let Some(Ok(handle)) = cx
+        .try_global::<SessionDiagnostics>()
+        .filter(|d| d.action_observer.is_some())
+        .map(|d| &d.handle)
+    {
+        let _ = handle.record(&format!("action_diag v=1 stage=group_selection {route}"));
+    }
+}
+
 pub(crate) fn actions_enabled(cx: &App) -> bool {
     cx.try_global::<SessionDiagnostics>()
         .is_some_and(|d| d.action_observer.is_some())
 }
 
-pub(crate) fn record_view(cx: &mut App, snapshot: String) {
-    let Some(config) = cx.try_global::<SessionDiagnostics>() else {
-        return;
-    };
-    if !actions_enabled(cx) || config.last_view == snapshot {
+/// Record the editor view snapshot when it changes. `write` fills a retained
+/// buffer, so an unchanged steady-state tick allocates nothing here.
+pub(crate) fn record_view(cx: &mut App, write: impl FnOnce(&mut String)) {
+    if !actions_enabled(cx) {
         return;
     }
-    if let Ok(handle) = &config.handle
+    let config = cx.global_mut::<SessionDiagnostics>();
+    let mut snapshot = std::mem::take(&mut config.view_scratch);
+    snapshot.clear();
+    write(&mut snapshot);
+    if config.last_view != snapshot
+        && let Ok(handle) = &config.handle
         && handle
             .record(&format!("action_diag v=1 stage=view_observed{snapshot}"))
             .is_ok()
     {
-        cx.global_mut::<SessionDiagnostics>().last_view = snapshot;
+        std::mem::swap(&mut config.last_view, &mut snapshot);
     }
+    config.view_scratch = snapshot;
 }
 
 pub(crate) fn record_pointer(
@@ -356,6 +375,13 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
             old_output_identity,
             target,
         } => format!("stage=output_relinquish output={old_output_identity} target={target:?}"),
+        E::OutputRouteChanged { output_identity } => {
+            format!("stage=output_route_changed output={output_identity}")
+        }
+        E::DegradedPlugins {
+            output_identity,
+            devices,
+        } => format!("stage=degraded_plugins output={output_identity} devices={devices:?}"),
         E::Publication {
             context,
             output_identity,
@@ -466,6 +492,15 @@ fn show_open_error(window: &mut Window, cx: &mut App, error: &str) {
     ));
 }
 
+/// The installed session log file, when logging started.
+pub(crate) fn log_path(cx: &App) -> Option<std::path::PathBuf> {
+    cx.try_global::<SessionDiagnostics>()?
+        .handle
+        .as_ref()
+        .ok()
+        .map(DiagnosticsHandle::path)
+}
+
 pub(crate) fn record_state(cx: &mut App, status: &str, error: Option<&str>) -> Option<String> {
     cx.try_global::<SessionDiagnostics>()?;
     cx.update_global::<SessionDiagnostics, _>(|diagnostics, _| {
@@ -494,6 +529,38 @@ pub(crate) fn record_state(cx: &mut App, status: &str, error: Option<&str>) -> O
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn view_snapshot_reuses_its_buffer_and_records_only_changes(cx: &mut gpui::TestAppContext) {
+        let directory = std::env::temp_dir().join(format!(
+            "hex-ui-view-diagnostic-test-{}",
+            std::process::id()
+        ));
+        let mut log = hex_diagnostics::SessionLog::start(directory).unwrap();
+        cx.update(|cx| {
+            install_session_log(cx, Ok(log.handle()));
+            install_action_diagnostics(cx, true);
+            let write = |text: &'static str| move |buffer: &mut String| buffer.push_str(text);
+            record_view(cx, write(" view=a"));
+            record_view(cx, write(" view=a"));
+            let warmed = cx.global::<SessionDiagnostics>().view_scratch.as_ptr();
+            for _ in 0..3 {
+                record_view(cx, write(" view=a"));
+            }
+            assert_eq!(
+                cx.global::<SessionDiagnostics>().view_scratch.as_ptr(),
+                warmed,
+                "unchanged snapshots fill the same retained buffer"
+            );
+            record_view(cx, write(" view=b"));
+            record_view(cx, write(" view=b"));
+            assert_eq!(cx.global::<SessionDiagnostics>().last_view, " view=b");
+        });
+        log.shutdown().unwrap();
+        let contents = std::fs::read_to_string(log.path()).unwrap();
+        assert_eq!(contents.matches("stage=view_observed view=a").count(), 1);
+        assert_eq!(contents.matches("stage=view_observed view=b").count(), 1);
+    }
 
     #[gpui::test]
     fn real_refused_gain_is_recorded_with_request_terminal_and_error(
@@ -550,10 +617,7 @@ mod tests {
         let error = refused.error.as_deref().expect("gain refusal");
         cx.update(|cx| assert!(record_state(cx, "gain edit refused", Some(error)).is_none()));
         let stats = log.handle().statistics();
-        assert_eq!(
-            (stats.queue_full, stats.producer_busy, stats.closed),
-            (0, 0, 0)
-        );
+        assert_eq!((stats.queue_full, stats.closed), (0, 0));
         log.shutdown().unwrap();
         let contents = std::fs::read_to_string(log.path()).unwrap();
         let action = contents

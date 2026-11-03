@@ -284,9 +284,10 @@ removes the drop. the drop shows as pending until rendering finishes. let go of 
 before releasing to move normally. a bounce drop that would overlap its own source, or
 that lands between tracks, is refused.
 
-stop playback and disable live midi input or audition before bouncing in place. hex keeps the stopped cursor and installs
-a fresh playback state so live release voices cannot duplicate the baked tails.
-undo and redo of an in-place bounce use the same stopped-edit rule.
+disable live midi input or audition before bouncing in place. bounce in place works while
+playing: the render runs while the song continues, then audio restarts at the cursor on the
+baked clips, so release voices and effect tails cannot duplicate the baked tails. when stopped,
+hex keeps the stopped cursor. undo and redo of an in-place bounce follow the same rule.
 
 bounce writes float audio before the track mixer. mixer automation, sends, returns
 and main processing remain live. only the track-header **bounce in place** action replaces material in place and
@@ -825,11 +826,16 @@ or the physical device is working correctly.
 
 select the intended time range and press **command+shift+e**. the **export output**
 dialog offers **main mix**, **selected tracks**, **shared returns**, and
-**selected stems and shared returns**. select the tracks needed for a stem export
-and choose a new destination in the native file dialog.
+**selected stems and shared returns**. the **export format** dialog then offers
+**16-bit pcm**, **24-bit pcm** and **32-bit float**. select the tracks needed for
+a stem export and choose a new destination in the native file dialog.
 
 exports are wav files. main mix produces the combined output; the stem choices
-keep the selected outputs separate. check the range and output choice before
+keep the selected outputs separate, each in the chosen format. 16-bit files are
+dithered and 24-bit files are rounded; both clamp samples above full scale, and
+the status line reports how many samples clipped. 32-bit float files keep levels
+above full scale and never clip. the format is chosen for each export and is not
+saved in the project. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 

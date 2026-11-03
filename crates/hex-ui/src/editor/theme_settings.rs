@@ -316,7 +316,7 @@ impl EditorView {
                 self.theme_settings.writable = false;
                 self.theme_settings.error = Some(format!(
                     "could not load theme settings · {}",
-                    error.to_string().to_lowercase()
+                    hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                 ));
             }
         }
@@ -810,7 +810,7 @@ impl EditorView {
             Err(error) => {
                 self.theme_settings.error = Some(format!(
                     "could not save theme settings · {}",
-                    error.to_string().to_lowercase()
+                    hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                 ));
             }
         }

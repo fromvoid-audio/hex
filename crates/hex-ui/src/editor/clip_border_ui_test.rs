@@ -77,6 +77,11 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
         cx.notify();
     });
     visual.run_until_parked();
+    // Inject after the editor loads its stored theme; a non-black role
+    // proves every unselected outline reads the palette.
+    let _outline = theme::inject_test_clip_outline(0x2a4b6c);
+    editor.update(&mut visual, |_, cx| cx.notify());
+    visual.run_until_parked();
     let selectors = clips
         .iter()
         .map(|(id, prefix)| {
@@ -144,7 +149,7 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
                 gpui::Hsla::from(gpui::rgb(if selected {
                     theme::color(theme::PaletteRole::Primary)
                 } else {
-                    0x000000
+                    theme::color(theme::PaletteRole::ClipOutline)
                 })),
                 "{id:?} selected border"
             );
@@ -350,6 +355,11 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.update(|window, _| window.activate_window());
     visual.run_until_parked();
+    // Inject after the editor loads its stored theme; a non-black role
+    // proves every unselected outline reads the palette.
+    let _outline = theme::inject_test_clip_outline(0x2a4b6c);
+    editor.update(&mut visual, |_, cx| cx.notify());
+    visual.run_until_parked();
     let original = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let lane_selector = Box::leak(format!("arrangement-lane-{}", track.value()).into_boxed_str());
     let separator_selector =
@@ -421,7 +431,7 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
                     gpui::rgb(if selected {
                         theme::color(theme::PaletteRole::Primary)
                     } else {
-                        0x000000
+                        theme::color(theme::PaletteRole::ClipOutline)
                     })
                     .into()
                 );

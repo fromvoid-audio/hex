@@ -25,6 +25,9 @@ pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParame
 mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use capture::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+/// Non-terminal helper refusal carried by [`NativeWorkerCaptureProgress::Refused`].
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use hex_plugin_host::protocol::StateCaptureRefusal;
 
 // Original completion allocation, shared only by joining control and worker.
 // The callback never sees the capture mailbox or takes its mutex.

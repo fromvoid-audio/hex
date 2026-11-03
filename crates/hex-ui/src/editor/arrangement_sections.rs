@@ -1609,6 +1609,46 @@ impl EditorView {
         if !self.section_has_focus(window) || self.sections.selected.is_none() {
             return false;
         }
+        self.merge_selected_sections();
+        true
+    }
+    /// Diagnostic projection of the inputs that route `g` (counts and flags only).
+    pub(super) fn group_selection_route(&self, window: &Window) -> String {
+        format!(
+            "mode={:?} focused={} section_focus={} event_focus={} midi_focus={} keyboard_g={} \
+             sections={} section_primary={} clips={} clip={} track={} time_range={} \
+             section_cursor={} main_selected={} return={} edit_pending={}",
+            self.mode,
+            self.focus.is_focused(window),
+            self.section_has_focus(window),
+            self.audio_event_focus.is_focused(window),
+            self.midi_focus.is_focused(window),
+            self.computer_keyboard.accepts_key("g"),
+            self.sections.selection.len(),
+            self.sections.selected.is_some(),
+            self.selected_clip_ids().len(),
+            self.selected_clip.is_some(),
+            self.selected_track.is_some(),
+            self.time_selection
+                .is_some_and(|range| range.anchor_frame != range.end_frame),
+            self.sections.cursor.is_some(),
+            self.device_panel.main_selected == Some(self.project_generation),
+            self.focused_return.is_some(),
+            self.edit_pending(),
+        )
+    }
+    /// `g` with a section span as the only grouping selection merges it, even
+    /// when the stricter section-focus test fails (Pulse #3812). False when
+    /// there is no such span, so the caller explains the empty selection.
+    pub(super) fn merge_section_span_selection(&mut self) -> bool {
+        if self.sections.selection.len() < 2 || self.selected_clip.is_some() {
+            return false;
+        }
+        self.merge_selected_sections();
+        true
+    }
+    /// Merge the current section selection, or explain why it cannot merge.
+    pub(super) fn merge_selected_sections(&mut self) {
         if self.sections.selection.len() < 2 {
             self.error = Some("shift-click another section to merge a span".into());
         } else if !self.section_input_open() {
@@ -1618,7 +1658,6 @@ impl EditorView {
                 self.sections.selection.clone(),
             ));
         }
-        true
     }
     fn section_metadata(&mut self, command: Command) {
         if !self.section_input_open() {
@@ -5342,5 +5381,108 @@ mod tests {
                 );
             });
         }
+    }
+    #[gpui::test]
+    fn g_merges_a_click_and_shift_click_section_span(cx: &mut TestAppContext) {
+        g_merge_case(cx, false, false);
+    }
+    #[gpui::test]
+    fn g_merges_a_leftward_shift_click_span(cx: &mut TestAppContext) {
+        g_merge_case(cx, false, true);
+    }
+    #[gpui::test]
+    fn g_merges_a_leftward_shift_click_span_under_section_focus(cx: &mut TestAppContext) {
+        g_merge_case(cx, true, true);
+    }
+    #[gpui::test]
+    fn g_merges_a_shift_click_span_under_section_focus(cx: &mut TestAppContext) {
+        g_merge_case(cx, true, false);
+    }
+    #[gpui::test]
+    fn g_merges_a_selected_span_outside_strict_section_focus_and_explains_empty(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        // Nothing selected: g explains instead of silently doing nothing.
+        visual.simulate_keystrokes("g");
+        editor.read_with(cx, |v, _| {
+            assert!(
+                v.error
+                    .as_ref()
+                    .is_some_and(|e| e.contains("select two or more clips, sections")),
+                "{:?}",
+                v.error
+            );
+        });
+        editor.update(cx, |v, _| {
+            v.error = None;
+            v.sections.selected = Some(ids[0]);
+            v.sections.selection = ids.to_vec();
+            // Main no longer owns the device view, so the strict section-focus
+            // test fails, yet the section span is the only grouping selection.
+            v.device_panel.main_selected = None;
+        });
+        visual.simulate_keystrokes("g");
+        editor.read_with(cx, |v, _| {
+            assert!(
+                matches!(
+                    v.sections.pending.as_ref().map(|p| &p.command),
+                    Some(Command::MergeArrangementSections(_))
+                ),
+                "{:?}",
+                v.error
+            );
+        });
+    }
+    fn g_merge_case(cx: &mut TestAppContext, focused: bool, leftward: bool) {
+        let (handle, editor, ids) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (mut a, mut b) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
+        if leftward {
+            std::mem::swap(&mut a, &mut b);
+        }
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        if focused {
+            visual.simulate_keystrokes("q");
+            visual.run_until_parked();
+            visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+        }
+        visual.simulate_mouse_down(b, MouseButton::Left, shift);
+        visual.simulate_mouse_up(b, MouseButton::Left, shift);
+        visual.run_until_parked();
+        editor.read_with(cx, |v, _| {
+            let mut selection = v.sections.selection.clone();
+            selection.sort();
+            let mut expected = ids.to_vec();
+            expected.sort();
+            assert_eq!(selection, expected, "error={:?}", v.error);
+        });
+        visual.simulate_keystrokes("g");
+        editor.read_with(cx, |v, _| {
+            assert!(
+                matches!(
+                    v.sections.pending.as_ref().map(|p| &p.command),
+                    Some(Command::MergeArrangementSections(_))
+                ),
+                "error={:?} status={:?} track={:?} clip={:?} time={:?} main={:?}",
+                v.error,
+                v.status,
+                v.selected_track,
+                v.selected_clip,
+                v.time_selection.map(|t| (t.anchor_frame, t.end_frame)),
+                v.device_panel.main_selected,
+            );
+        });
     }
 }
