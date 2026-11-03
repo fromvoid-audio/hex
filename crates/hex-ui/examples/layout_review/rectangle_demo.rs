@@ -24,6 +24,24 @@ enum Target {
     PaintRange,
     SectionRange,
 }
+
+enum Pending {
+    Local {
+        display: [[f32; 2]; 2],
+    },
+    Section {
+        display: [[f32; 2]; 2],
+        receipt: crate::pending_edit::Receipt,
+    },
+}
+impl Pending {
+    fn display(&self) -> [[f32; 2]; 2] {
+        match self {
+            Self::Local { display } | Self::Section { display, .. } => *display,
+        }
+    }
+}
+
 pub(super) struct RectangleDemo {
     kind: Kind,
     id: String,
@@ -33,7 +51,8 @@ pub(super) struct RectangleDemo {
     canonical: [[f32; 2]; 2],
     preview: [[f32; 2]; 2],
     capture: Option<RectangleCapture<Target>>,
-    pending: Option<[[f32; 2]; 2]>,
+    pending: Option<Pending>,
+    generation: u64,
     range: Option<[f32; 2]>,
     range_before: Option<[f32; 2]>,
     selected: Vec<usize>,
@@ -59,6 +78,7 @@ impl RectangleDemo {
             preview: canonical,
             capture: None,
             pending: None,
+            generation: 1,
             range: None,
             range_before: None,
             selected: if kind == Kind::TimeRange {
@@ -373,8 +393,17 @@ impl RectangleDemo {
             .is_some()
             && self.preview != self.canonical
         {
-            self.pending = Some(self.preview);
-            self.status = "pending · enter accepts · backspace refuses";
+            if self.kind == Kind::Section {
+                if !self.admit_section(self.preview, 1) {
+                    self.preview = self.canonical;
+                    self.status = "section edit refused";
+                }
+            } else {
+                self.pending = Some(Pending::Local {
+                    display: self.preview,
+                });
+                self.status = "pending · enter accepts · backspace refuses";
+            }
         } else {
             self.preview = self.canonical;
             self.status = "ready";
@@ -382,8 +411,54 @@ impl RectangleDemo {
         cx.notify();
         true
     }
+    /// The count includes this request and any earlier ordinary completions.
+    fn admit_section(&mut self, display: [[f32; 2]; 2], pending_count: usize) -> bool {
+        if self.kind != Kind::Section || self.pending.is_some() {
+            return false;
+        }
+        let mut receipt = crate::pending_edit::Receipt::new(self.generation);
+        if !receipt.submitted(pending_count) {
+            return false;
+        }
+        self.pending = Some(Pending::Section { display, receipt });
+        self.status = "pending · enter accepts · backspace refuses";
+        true
+    }
+
+    /// The local fixture supplies the current source and canonical display in
+    /// the same receive as each FIFO completion, just as the editor owner does.
+    fn receive_section(
+        &mut self,
+        generation: u64,
+        replaced: bool,
+        request_complete: bool,
+        canonical: [[f32; 2]; 2],
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Pending::Section { receipt, .. }) = self.pending.as_mut() else {
+            return;
+        };
+        let disposition = receipt.observe(generation, replaced, request_complete);
+        self.canonical = canonical;
+        if disposition != crate::pending_edit::Disposition::Waiting {
+            let display = self.pending.as_ref().map(Pending::display);
+            self.pending = None;
+            self.generation = generation;
+            self.preview = self.canonical;
+            self.status = match disposition {
+                crate::pending_edit::Disposition::Invalidated => "source replaced",
+                _ if display == Some(canonical) => "accepted",
+                _ => "refused",
+            };
+        }
+        cx.notify();
+    }
+
     fn settle(&mut self, accept: bool, cx: &mut Context<Self>) {
-        if let Some(display) = self.pending.take() {
+        if let Some(Pending::Section { display, .. }) = self.pending.as_ref() {
+            let canonical = if accept { *display } else { self.canonical };
+            self.receive_section(self.generation, false, true, canonical, cx);
+        } else if let Some(Pending::Local { display }) = self.pending.take() {
             if accept {
                 self.canonical = display;
             }
@@ -405,11 +480,15 @@ impl Render for RectangleDemo {
             self.blur = Some(cx.on_blur(&focus, window, |view, _, cx| view.cancel(cx)));
         }
         let style = theme::control_style();
-        let display = self.pending.unwrap_or(if self.capture.is_some() {
-            self.preview
-        } else {
-            self.canonical
-        });
+        let display =
+            self.pending
+                .as_ref()
+                .map(Pending::display)
+                .unwrap_or(if self.capture.is_some() {
+                    self.preview
+                } else {
+                    self.canonical
+                });
         let width = self
             .bounds
             .map_or(320.0, |bounds| f32::from(bounds.size.width));
@@ -681,7 +760,7 @@ mod tests {
                 visual.run_until_parked();
                 view.read_with(cx, |view, _| {
                     assert_eq!(view.canonical, baseline);
-                    let actual = view.pending.unwrap()[0];
+                    let actual = view.pending.as_ref().map(Pending::display).unwrap()[0];
                     for i in 0..2 {
                         assert!(
                             (actual[i] - expected[i]).abs() < 0.001,
@@ -931,6 +1010,119 @@ mod tests {
     }
 
     #[gpui::test]
+    fn section_receipt_retains_released_paint_until_its_terminal_receive(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-receipt".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        let before = view.read_with(cx, |view, _| view.canonical);
+        let released = [[0.15, 0.55], [0.55, 0.9]];
+        view.update(cx, |view, cx| {
+            assert!(view.admit_section(released, 2));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let frozen = visual.debug_bounds("section-receipt-rectangle-0").unwrap();
+        view.update(cx, |view, cx| {
+            view.receive_section(1, false, true, before, cx)
+        });
+        for _ in 0..3 {
+            view.update(cx, |_, cx| cx.notify());
+            visual.run_until_parked();
+            assert_eq!(
+                visual.debug_bounds("section-receipt-rectangle-0").unwrap(),
+                frozen
+            );
+            view.read_with(cx, |view, _| {
+                assert_eq!(view.pending.as_ref().map(Pending::display), Some(released));
+                assert_eq!(view.canonical, before);
+            });
+        }
+        view.update(cx, |view, cx| {
+            view.receive_section(1, false, true, released, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("section-receipt-rectangle-0").unwrap(),
+            frozen
+        );
+        view.read_with(cx, |view, _| {
+            assert!(view.pending.is_none());
+            assert_eq!(view.canonical, released);
+            assert_eq!(view.preview, released);
+        });
+    }
+
+    #[gpui::test]
+    fn section_receipt_refusal_and_source_replacement_install_canonical_state(
+        cx: &mut TestAppContext,
+    ) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-receipt-reset".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        let before = view.read_with(cx, |view, _| view.canonical);
+        let released = [[0.15, 0.55], [0.55, 0.9]];
+        visual.run_until_parked();
+        let original_bounds = visual
+            .debug_bounds("section-receipt-reset-rectangle-0")
+            .unwrap();
+        view.update(cx, |view, cx| {
+            assert!(view.admit_section(released, 1));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let frozen = visual
+            .debug_bounds("section-receipt-reset-rectangle-0")
+            .unwrap();
+        assert_ne!(frozen, original_bounds);
+        view.update(cx, |view, cx| {
+            view.receive_section(1, false, true, before, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual
+                .debug_bounds("section-receipt-reset-rectangle-0")
+                .unwrap(),
+            original_bounds
+        );
+        view.read_with(cx, |view, _| {
+            assert!(view.pending.is_none());
+            assert_eq!(view.preview, before);
+            assert_eq!(view.canonical, before);
+        });
+        let replacement = [[0.2, 0.4], [0.6, 0.8]];
+        view.update(cx, |view, cx| {
+            assert!(view.admit_section(released, 2));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual
+                .debug_bounds("section-receipt-reset-rectangle-0")
+                .unwrap(),
+            frozen
+        );
+        view.update(cx, |view, cx| {
+            view.receive_section(2, true, false, replacement, cx)
+        });
+        visual.run_until_parked();
+        assert_ne!(
+            visual
+                .debug_bounds("section-receipt-reset-rectangle-0")
+                .unwrap(),
+            frozen
+        );
+        view.read_with(cx, |view, _| {
+            assert!(view.pending.is_none());
+            assert_eq!(view.generation, 2);
+            assert_eq!(view.canonical, replacement);
+            assert_eq!(view.preview, replacement);
+        });
+    }
+
+    #[gpui::test]
     fn rectangle_fixtures_hold_pending_across_repaints_cancel_and_refuse(cx: &mut TestAppContext) {
         for section in [false, true] {
             let handle = cx.add_window(|_, cx| {
@@ -982,14 +1174,15 @@ mod tests {
                 );
             }
             if section {
-                let pending = view.read_with(cx, |view, _| view.pending);
+                let pending =
+                    view.read_with(cx, |view, _| view.pending.as_ref().map(Pending::display));
                 let body = point(
                     released.center().x,
                     released.top() + released.size.height * 0.75,
                 );
                 visual.simulate_mouse_down(body, MouseButton::Left, Modifiers::default());
                 view.read_with(cx, |view, _| {
-                    assert_eq!(view.pending, pending);
+                    assert_eq!(view.pending.as_ref().map(Pending::display), pending);
                     assert!(view.capture.is_none());
                     assert!(view.range.is_none());
                 });
@@ -1034,7 +1227,9 @@ mod tests {
             visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-            let pending = view.read_with(cx, |view, _| view.pending.unwrap());
+            let pending = view.read_with(cx, |view, _| {
+                view.pending.as_ref().map(Pending::display).unwrap()
+            });
             view.update(cx, |view, cx| view.settle(true, cx));
             visual.run_until_parked();
             view.read_with(cx, |view, _| {

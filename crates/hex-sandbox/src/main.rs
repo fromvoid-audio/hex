@@ -19,6 +19,8 @@ mod device_composition;
 mod gallery;
 #[path = "../../hex-ui/src/output_meter.rs"]
 mod output_meter;
+#[path = "../../hex-ui/src/editor/pending_edit.rs"]
+mod pending_edit;
 #[path = "../../hex-ui/examples/layout_review/sandbox.rs"]
 mod sandbox;
 #[path = "../../hex-ui/src/section_hit.rs"]
