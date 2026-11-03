@@ -1061,23 +1061,13 @@ fn event_graph(
             if !state.node(id).is_ok_and(|node| node.bank == local.bank) {
                 return Ok(());
             }
-            local.collapse = None;
-            if event.modifiers.shift {
-                if local.group.is_empty() {
-                    local.group.extend(local.selected);
-                }
-                if !local.group.contains(&id) {
-                    local.group.push(id);
-                }
-                if local.group.len() < 2 {
-                    local.group.clear();
-                }
-            } else if local.group.contains(&id) {
-                local.collapse = Some(id);
-            } else {
-                local.group.clear();
-            }
-            local.selected = Some(id);
+            selection::select_node(
+                &mut local.selected,
+                &mut local.group,
+                &mut local.collapse,
+                id,
+                event.modifiers.shift,
+            );
         }
         ResponseGraphPhase::Begin => {
             if event.node_id != 0 {
@@ -2833,6 +2823,47 @@ mod tests {
             shift: true,
             ..Modifiers::default()
         };
+        visual.simulate_click(at([0.25, 0.7]), Modifiers::default());
+        visual.simulate_click(at([0.75, 0.7]), shift);
+        visual.simulate_click(at([0.75, 0.7]), shift);
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                model(&view.fixtures[&Entry::Eq], cx)
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .filter(|node| node.selected)
+                    .count(),
+                2
+            );
+        });
+        visual.simulate_mouse_down(at([0.25, 0.7]), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                model(&view.fixtures[&Entry::Eq], cx)
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .filter(|node| node.selected)
+                    .count(),
+                2
+            );
+        });
+        visual.simulate_mouse_up(at([0.25, 0.7]), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                model(&view.fixtures[&Entry::Eq], cx)
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .filter(|node| node.selected)
+                    .count(),
+                1
+            );
+        });
         visual.simulate_mouse_down(at([0.15, 0.9]), MouseButton::Left, shift);
         visual.simulate_mouse_move(at([0.85, 0.4]), Some(MouseButton::Left), shift);
         visual.simulate_mouse_up(at([0.85, 0.4]), MouseButton::Left, shift);
