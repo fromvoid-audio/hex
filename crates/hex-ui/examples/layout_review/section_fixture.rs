@@ -55,6 +55,7 @@ impl Fixture {
         part: RectanglePart,
         position: f32,
         copy: bool,
+        marker_only: bool,
     ) -> Result<Option<Plan>, Invalid> {
         let project = self.project();
         let beat = position_to_beat(position, view_span(project.arrangement_sections()))?;
@@ -80,14 +81,20 @@ impl Fixture {
                 } else {
                     TrimEdge::Right
                 };
-                let preview = crate::section_resize::preview(
-                    project,
+                let edit = if marker_only {
+                    crate::section_resize::Edit::Marker {
+                        section,
+                        edge,
+                        boundary: beat,
+                    }
+                } else {
                     crate::section_resize::Edit::Content {
                         section,
                         edge,
                         boundary: beat,
-                    },
-                )?;
+                    }
+                };
+                let preview = crate::section_resize::preview(project, edit)?;
                 Ok(Some(Plan {
                     display: display(preview.sections()),
                     sections: preview.sections().to_vec(),
@@ -95,6 +102,21 @@ impl Fixture {
                 }))
             }
             RectanglePart::Seam => {
+                if marker_only {
+                    let preview = crate::section_resize::preview(
+                        project,
+                        crate::section_resize::Edit::Marker {
+                            section,
+                            edge: TrimEdge::Right,
+                            boundary: beat,
+                        },
+                    )?;
+                    return Ok(Some(Plan {
+                        display: display(preview.sections()),
+                        sections: preview.sections().to_vec(),
+                        command: preview.command,
+                    }));
+                }
                 let Some(right) = project.arrangement_sections().get(index + 1) else {
                     return Err(Invalid("section boundary no longer exists"));
                 };
@@ -163,7 +185,7 @@ mod tests {
         let before = fixture.project().snapshot();
         let id = fixture.project().arrangement_sections()[0].id();
         let plan = fixture
-            .plan(id, RectanglePart::Seam, 0.55, false)
+            .plan(id, RectanglePart::Seam, 0.55, false, false)
             .unwrap()
             .unwrap();
         let expected = plan.display.clone();
@@ -171,10 +193,40 @@ mod tests {
         fixture.commit(plan.command).unwrap();
         assert_eq!(fixture.display(), expected);
         let committed = fixture.project().snapshot();
-        assert!(fixture.plan(id, RectanglePart::Seam, 0.99, false).is_err());
+        assert!(
+            fixture
+                .plan(id, RectanglePart::Seam, 0.99, false, false)
+                .is_err()
+        );
         assert_eq!(fixture.project().snapshot(), committed);
         assert!(fixture.editor.try_undo().unwrap());
         assert_eq!(fixture.project().snapshot(), before);
+    }
+
+    #[test]
+    fn marker_edge_and_content_edge_use_distinct_project_commands() {
+        for marker_only in [false, true] {
+            let mut fixture = Fixture::new().unwrap();
+            let before = fixture.project().snapshot();
+            let id = fixture.project().arrangement_sections()[0].id();
+            let plan = fixture
+                .plan(id, RectanglePart::Leading, 0.2, false, marker_only)
+                .unwrap()
+                .unwrap();
+            if marker_only {
+                assert!(
+                    matches!(plan.command, Command::ResizeArrangementSectionMarker { section, edge: TrimEdge::Left, .. } if section == id)
+                );
+            } else {
+                assert!(
+                    matches!(plan.command, Command::ResizeArrangementSectionEdge { section, edge: TrimEdge::Left, .. } if section == id)
+                );
+            }
+            assert_eq!(fixture.project().snapshot(), before);
+            let expected = plan.sections;
+            fixture.commit(plan.command).unwrap();
+            assert_eq!(fixture.project().arrangement_sections(), expected);
+        }
     }
 
     #[test]
