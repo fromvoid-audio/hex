@@ -1439,3 +1439,154 @@ fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
 
 mod release_floor;
 mod steal;
+
+// The frame-major schedule is an independent behavioral oracle for the
+// optimized span schedule. It retains the same primitive voice/event laws.
+fn frame_major_oracle(
+    runtime: &mut SamplerRuntime,
+    events: &[NativeInstrumentEvent],
+    frames: &mut [StereoFrame],
+    gains: &[NativeInstrumentOccurrenceGain],
+    resources: &dyn DeviceResources,
+) {
+    let view = (0..resources.len())
+        .filter_map(|index| resources.get(index))
+        .find(|view| runtime.prepared.source.matches(*view))
+        .unwrap();
+    let mut active = runtime.active;
+    let mut fading = runtime.fading;
+    let fade = runtime.prepared.steal_fade_frames() as f64;
+    let mut next = 0;
+    for (offset, frame) in frames.iter_mut().enumerate() {
+        let gain_at = |id| {
+            gains
+                .binary_search_by_key(&id, |gain| gain.occurrence_id())
+                .ok()
+                .map_or(1.0, |index| gains[index].value_at_offset(offset as u64))
+        };
+        while events
+            .get(next)
+            .is_some_and(|event| event.frame_offset() == offset)
+        {
+            runtime
+                .event(&mut active, &mut fading, events[next], &gain_at)
+                .unwrap();
+            next += 1;
+        }
+        for voice in active.iter().flatten() {
+            runtime.mix(frame, view.pcm, voice, gain_at(voice.occurrence));
+        }
+        for item in fading.iter().flatten() {
+            let declick = 1.0 - item.voice.age.saturating_sub(item.start) as f64 / fade;
+            runtime.mix(frame, view.pcm, &item.voice, item.gain * declick);
+        }
+        runtime.advance(&mut active, &mut fading, 1).unwrap();
+    }
+    runtime.active = active;
+    runtime.fading = fading;
+}
+
+fn voice_signature(voice: ActiveVoice) -> (u64, u8, u64, u64, u128, Option<u64>) {
+    (
+        voice.occurrence,
+        voice.pitch,
+        voice.gain.to_bits(),
+        voice.age,
+        voice.position,
+        voice.gate,
+    )
+}
+
+#[test]
+fn event_spans_match_frame_major_pcm_and_voice_state() {
+    let pcm: Vec<_> = (0..24).map(|i| (i as f32 - 11.0) / 13.0).collect();
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    for (looping, pitch) in [(false, 60), (false, 72), (true, 48), (true, 60), (true, 72)] {
+        let mode = if looping {
+            Mode::Classic {
+                loop_region: Some(Region { start: 2, end: 20 }),
+            }
+        } else {
+            Mode::OneShot {
+                gate: GateMode::Trigger,
+            }
+        };
+        let prepared = prepare(views[0], mode, 2);
+        let mut actual = SamplerRuntime {
+            prepared: prepared.clone(),
+            active: [None; MAX_SAMPLER_RUNTIME_VOICES],
+            fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
+        };
+        let mut expected = SamplerRuntime {
+            prepared,
+            active: [None; MAX_SAMPLER_RUNTIME_VOICES],
+            fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
+        };
+        let batches: Vec<Vec<NativeInstrumentEvent>> = if looping {
+            vec![
+                vec![on(0, 1, pitch), on(1, 2, pitch), off(4, 1), on(5, 3, pitch)],
+                vec![off(0, 2), on(0, 4, pitch), off(7, 3)],
+                vec![],
+            ]
+        } else {
+            vec![
+                vec![on(0, 1, pitch), on(2, 2, pitch)],
+                vec![on(20, 3, pitch)],
+                vec![],
+            ]
+        };
+        for (batch_index, events) in batches.iter().enumerate() {
+            let length = [16, 24, 17][batch_index];
+            let mut ids: Vec<_> = actual
+                .active
+                .iter()
+                .flatten()
+                .map(|v| v.occurrence)
+                .collect();
+            ids.extend(events.iter().filter_map(|event| match event {
+                NativeInstrumentEvent::NoteOn { occurrence_id, .. } => Some(*occurrence_id),
+                _ => None,
+            }));
+            ids.sort_unstable();
+            ids.dedup();
+            let gains: Vec<_> = ids
+                .into_iter()
+                .filter(|id| id % 2 != 0)
+                .map(|id| {
+                    NativeInstrumentOccurrenceGain::new(id, 0.17, 0.83, length as u64, 0).unwrap()
+                })
+                .collect();
+            actual.preflight_events(events, length, &resources).unwrap();
+            actual.preflight_occurrence_gains(events, &gains).unwrap();
+            let mut out = vec![[-0.0, 0.125]; length];
+            let mut oracle = out.clone();
+            actual.process_with_gains(events, &mut out, &gains, &resources);
+            frame_major_oracle(&mut expected, events, &mut oracle, &gains, &resources);
+            assert_eq!(
+                out.iter().map(|f| f.map(f32::to_bits)).collect::<Vec<_>>(),
+                oracle
+                    .iter()
+                    .map(|f| f.map(f32::to_bits))
+                    .collect::<Vec<_>>(),
+                "looping={looping} pitch={pitch} batch={batch_index}"
+            );
+            assert_eq!(
+                actual.active.map(|v| v.map(voice_signature)),
+                expected.active.map(|v| v.map(voice_signature))
+            );
+            assert_eq!(
+                actual.fading.map(|v| v.map(|v| (
+                    voice_signature(v.voice),
+                    v.start,
+                    v.gain.to_bits()
+                ))),
+                expected.fading.map(|v| v.map(|v| (
+                    voice_signature(v.voice),
+                    v.start,
+                    v.gain.to_bits()
+                )))
+            );
+        }
+    }
+}

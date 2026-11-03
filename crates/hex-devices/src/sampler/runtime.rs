@@ -335,6 +335,54 @@ impl PreparedSamplerRuntime {
 }
 
 impl SamplerRuntime {
+    /// Frames this voice contributes before source, gate, or optional steal
+    /// fade retirement. Preflight has validated the entire enclosing span.
+    fn sounding_frames(
+        &self,
+        voice: &ActiveVoice,
+        limit: usize,
+        fade_start: Option<u64>,
+    ) -> Result<usize, Error> {
+        let Some(note) = self.prepared.notes[usize::from(voice.pitch)] else {
+            return Ok(0);
+        };
+        let mut count = limit as u128;
+        if note.loop_offsets.is_none() {
+            let end = (note.region.end - note.region.start) as u128 * ONE;
+            let remaining = end.saturating_sub(voice.position);
+            let step = u128::from(note.step);
+            let whole = remaining
+                .checked_div(step)
+                .ok_or(Error::InvalidEventBatch)?;
+            let partial = remaining
+                .checked_rem(step)
+                .ok_or(Error::InvalidEventBatch)?
+                != 0;
+            count = count.min(
+                whole
+                    .checked_add(u128::from(partial))
+                    .ok_or(Error::InvalidEventBatch)?,
+            );
+        }
+        if note.gate == GateMode::Gate
+            && let Some(gate) = voice.gate
+        {
+            count = count.min(u128::from(
+                note.release_frames()
+                    .saturating_sub(voice.age.saturating_sub(gate)),
+            ));
+        }
+        if let Some(start) = fade_start {
+            count = count.min(u128::from(
+                self.prepared
+                    .steal_fade_frames()
+                    .saturating_sub(voice.age.saturating_sub(start)),
+            ));
+        }
+        // count is bounded above by the original usize limit.
+        Ok(count as usize)
+    }
+
     /// Advance one voice by `frames`; `Ok(false)` means it has retired.
     fn advance_voice(&self, voice: &mut ActiveVoice, frames: u64) -> Result<bool, Error> {
         let Some(note) = self.prepared.notes[usize::from(voice.pitch)] else {
@@ -676,32 +724,15 @@ impl SamplerRuntime {
         let mut active = self.active;
         let mut fading = self.fading;
         let fade = self.prepared.steal_fade_frames() as f64;
-        // The gain slice is fixed for this block. A slot's occurrence can
-        // change only while applying events; retirement without an event can
-        // only make a cached index unused until the next event refresh.
-        let mut gain_indices = [None; MAX_SAMPLER_RUNTIME_VOICES];
-        let refresh_gains =
-            |active: &Active, indices: &mut [Option<usize>; MAX_SAMPLER_RUNTIME_VOICES]| {
-                for (index, voice) in indices.iter_mut().zip(active) {
-                    *index = voice.and_then(|voice| {
-                        gains
-                            .binary_search_by_key(&voice.occurrence, |gain| gain.occurrence_id())
-                            .ok()
-                    });
-                }
-            };
-        if !gains.is_empty() {
-            refresh_gains(&active, &mut gain_indices);
-        }
         let mut next = 0;
-        for (offset, frame) in frames.iter_mut().enumerate() {
+        let mut offset = 0;
+        while offset < frames.len() {
             let gain_at = |occurrence: u64| {
                 gains
                     .binary_search_by_key(&occurrence, |gain| gain.occurrence_id())
                     .ok()
                     .map_or(1.0, |index| gains[index].value_at_offset(offset as u64))
             };
-            let first_event = next;
             while events
                 .get(next)
                 .is_some_and(|event| event.frame_offset() == offset)
@@ -714,34 +745,80 @@ impl SamplerRuntime {
                 }
                 next += 1;
             }
-            if next != first_event && !gains.is_empty() {
-                refresh_gains(&active, &mut gain_indices);
-            }
-            if gains.is_empty() {
-                for voice in active.iter().flatten() {
-                    self.mix(frame, view.pcm, voice, 1.0);
-                }
-            } else {
-                for (entry, gain_index) in active.iter().zip(&gain_indices) {
-                    if let Some(voice) = entry {
-                        let gain = gain_index
-                            .map_or(1.0, |index| gains[index].value_at_offset(offset as u64));
-                        self.mix(frame, view.pcm, voice, gain);
-                    }
-                }
-            }
-            for fading in fading.iter().flatten() {
-                let declick = 1.0 - fading.voice.age.saturating_sub(fading.start) as f64 / fade;
-                self.mix(frame, view.pcm, &fading.voice, fading.gain * declick);
-            }
-            if self.advance(&mut active, &mut fading, 1).is_err() {
+            let end = events
+                .get(next)
+                .map_or(frames.len(), |event| event.frame_offset());
+            if end <= offset || end > frames.len() {
                 return;
             }
+            let span = end - offset;
+            for entry in &mut active {
+                let Some(voice) = *entry else { continue };
+                let Ok(count) = self.sounding_frames(&voice, span, None) else {
+                    return;
+                };
+                let Some(mut note) = self.prepared.notes[usize::from(voice.pitch)] else {
+                    *entry = None;
+                    continue;
+                };
+                for channel_gain in &mut note.channel_gain {
+                    *channel_gain *= voice.gain;
+                }
+                let mut final_voice = voice;
+                let Ok(alive) = self.advance_voice(&mut final_voice, span as u64) else {
+                    return;
+                };
+                let gain_index = gains
+                    .binary_search_by_key(&voice.occurrence, |gain| gain.occurrence_id())
+                    .ok();
+                let mut cursor = voice;
+                for (relative, frame) in frames[offset..offset + count].iter_mut().enumerate() {
+                    let gain = gain_index.map_or(1.0, |index| {
+                        gains[index].value_at_offset((offset + relative) as u64)
+                    });
+                    Self::mix_prepared(frame, view.pcm, &cursor, gain, &note);
+                    // Checked span advancement above proves these increments
+                    // cannot overflow during the rendered prefix.
+                    cursor.age = cursor.age.wrapping_add(1);
+                    cursor.position = cursor.position.wrapping_add(u128::from(note.step));
+                }
+                *entry = alive.then_some(final_voice);
+            }
+            for entry in &mut fading {
+                let Some(item) = *entry else { continue };
+                let Ok(count) = self.sounding_frames(&item.voice, span, Some(item.start)) else {
+                    return;
+                };
+                let Some(mut note) = self.prepared.notes[usize::from(item.voice.pitch)] else {
+                    *entry = None;
+                    continue;
+                };
+                for channel_gain in &mut note.channel_gain {
+                    *channel_gain *= item.voice.gain;
+                }
+                let mut final_item = item;
+                let Ok(alive) = self.advance_voice(&mut final_item.voice, span as u64) else {
+                    return;
+                };
+                let mut cursor = item.voice;
+                for frame in &mut frames[offset..offset + count] {
+                    let declick = 1.0 - cursor.age.saturating_sub(item.start) as f64 / fade;
+                    Self::mix_prepared(frame, view.pcm, &cursor, item.gain * declick, &note);
+                    cursor.age = cursor.age.wrapping_add(1);
+                    cursor.position = cursor.position.wrapping_add(u128::from(note.step));
+                }
+                *entry = (alive
+                    && final_item.voice.age.saturating_sub(item.start)
+                        < self.prepared.steal_fade_frames())
+                .then_some(final_item);
+            }
+            offset = end;
         }
         self.active = active;
         self.fading = fading;
     }
 
+    #[cfg(test)]
     fn mix(
         &self,
         frame: &mut StereoFrame,
@@ -755,6 +832,16 @@ impl SamplerRuntime {
         for channel_gain in &mut note.channel_gain {
             *channel_gain *= voice.gain;
         }
+        Self::mix_prepared(frame, pcm, voice, gain, &note);
+    }
+
+    fn mix_prepared(
+        frame: &mut StereoFrame,
+        pcm: hex_lattice::DeviceResourcePcm<'_>,
+        voice: &ActiveVoice,
+        gain: f64,
+        note: &VoiceCoefficients,
+    ) {
         let sample = note.sample_at_position(
             pcm,
             voice.age,
