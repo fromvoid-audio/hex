@@ -245,15 +245,10 @@ impl SessionPlayback {
             return Ok(window);
         }
         let region = self.active_loop_region_at(arrangement_frame);
-        let mut seam = None;
         if let Some(region) = region {
-            let pass;
-            (window.arrangement_frame, pass) =
+            (window.arrangement_frame, _) =
                 render::normalize_loop_cursor(window.arrangement_frame, region, loop_pass)
                     .map_err(|error| Invalid(error.diagnostic_message()))?;
-            seam =
-                crate::LoopSeam::for_pass(region, pass, self.revision.arrangement().sample_rate())
-                    .and_then(|seam| seam.overrun(window.arrangement_frame, usize::MAX));
             let until = if window.arrangement_frame < region.start() {
                 region.start() - window.arrangement_frame
             } else {
@@ -368,15 +363,6 @@ impl SessionPlayback {
                             window.frames,
                             &mut |extent| visit(extent.into()),
                         )?;
-                        // A wrapped pass's crossfade also reads past the loop
-                        // end (`crate::loop_seam`); pin that overrun with it.
-                        if let Some((overrun, count)) = seam {
-                            track.visit_stream_demand(
-                                overrun,
-                                count.min(window.frames),
-                                &mut |extent| visit(extent.into()),
-                            )?;
-                        }
                     }
                 }
                 RouteOwner::SessionAudio { clip, launch_frame } => {
