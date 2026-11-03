@@ -518,7 +518,6 @@ impl RectangleDemo {
             }
             if (intent.pointer_x - intent.origin_x).abs() >= 4.0 {
                 let left = f32::from(bounds.left());
-                let position = (intent.pointer_x - left) / width;
                 if let Some(fixture) = self.section_fixture.as_ref()
                     && let Some(section) = fixture.project().arrangement_sections().get(index)
                 {
@@ -534,13 +533,17 @@ impl RectangleDemo {
                                     })
                             })
                     } else if intent.part == RectanglePart::Body {
-                        fixture.plan(
-                            section.id(),
-                            intent.part,
-                            position,
-                            modifiers.alt,
-                            self.section_marker_latched,
-                        )
+                        fixture
+                            .snapped_beat(intent.pointer_x, left, width, true)
+                            .and_then(|beat| {
+                                fixture.plan_at_beat(
+                                    section.id(),
+                                    intent.part,
+                                    beat,
+                                    modifiers.alt,
+                                    self.section_marker_latched,
+                                )
+                            })
                     } else {
                         fixture
                             .snapped_beat(intent.pointer_x, left, width, modifiers.control)
@@ -1858,6 +1861,55 @@ mod tests {
         });
         visual.run_until_parked();
         assert!(visual.debug_bounds("section-rounded-gap-seam-0").is_none());
+    }
+
+    #[gpui::test]
+    fn reorder_uses_the_editor_pointer_frame_at_insertion_ties(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-reorder-pointer".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-reorder-pointer-area").unwrap();
+        let first = visual
+            .debug_bounds("section-reorder-pointer-rectangle-0")
+            .unwrap();
+        let left = f32::from(area.left());
+        let width = f32::from(area.size.width);
+        let midpoint = left + width * 0.7;
+        let (x, target, after) = view.read_with(cx, |view, _| {
+            let fixture = view.section_fixture.as_ref().unwrap();
+            let project = fixture.project();
+            let source = project.arrangement_sections()[0].id();
+            (0..256)
+                .find_map(|offset| {
+                    let x = f32::from_bits(midpoint.to_bits().checked_add(offset)?);
+                    let exact = fixture.snapped_beat(x, left, width, true).ok()?;
+                    let expected =
+                        crate::section_reorder::insertion_target(project, source, exact, true)?;
+                    let old = fixture
+                        .plan(source, RectanglePart::Body, (x - left) / width, true, false)
+                        .ok()??;
+                    let Command::DuplicateArrangementSectionAt { target, after, .. } = old.command
+                    else {
+                        return None;
+                    };
+                    ((target, after) != expected).then_some((x, expected.0, expected.1))
+                })
+                .expect("fixture exposes the old float conversion mismatch")
+        });
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        let down = point(first.center().x, first.top() + px(5.0));
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(point(px(x), down.y), MouseButton::Left, alt);
+        view.read_with(cx, |view, _| {
+            assert!(matches!(view.section_command, Some(Command::DuplicateArrangementSectionAt { target: actual, after: side, .. }) if actual == target && side == after));
+        });
     }
 
     #[gpui::test]
