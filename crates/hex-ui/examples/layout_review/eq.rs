@@ -1305,6 +1305,56 @@ mod tests {
     }
 
     #[gpui::test]
+    fn numeric_begin_event_can_arrive_after_the_control_has_changed(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, MouseButton, VisualTestContext, point, px, size};
+        use std::{cell::RefCell, rc::Rc};
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let capture = seen.clone();
+        let _subscription = view.update(cx, |view, cx| {
+            let number = view.fixtures[&Entry::Eq].numbers[2].entity.clone();
+            cx.subscribe(
+                &number,
+                move |_, control, event: &NumericControlEvent, cx| {
+                    capture
+                        .borrow_mut()
+                        .push((event.phase, event.value, control.read(cx).value()));
+                },
+            )
+        });
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let field = visual
+            .debug_bounds("fixture-eq-numeric-2-value")
+            .unwrap()
+            .center();
+        visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(field.x, field.y - px(20.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        let observed = seen.borrow();
+        let begin = observed
+            .iter()
+            .find(|(phase, _, _)| *phase == hex_widgets::NumericEventPhase::Begin)
+            .unwrap();
+        assert_eq!(begin.1, 6.0);
+        assert_ne!(
+            begin.2, begin.1,
+            "begin must use the event's before-value, not the live control"
+        );
+    }
+
+    #[gpui::test]
     fn draft_barrier_finishes_captured_numeric_drag_once(cx: &mut TestAppContext) {
         use gpui::{Modifiers, MouseButton, VisualTestContext, point, px, size};
         let window = cx.add_window(|_, cx| {
