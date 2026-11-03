@@ -28,7 +28,6 @@ impl CpuMeter {
         if source_changed {
             *self = Self {
                 source: Some(source),
-                baseline: misses,
                 ..Self::default()
             };
         }
@@ -142,6 +141,7 @@ mod tests {
         let now = Instant::now();
         let mut meter = CpuMeter::default();
         meter.observe(Some((1, sample(100, 100, 10_000), 3)), now);
+        assert!(meter.description().contains("3 callbacks over budget"));
         meter.observe(Some((1, sample(200, 200, 10_000), 4)), now + INTERVAL);
         meter.observe(Some((2, sample(5, 100, 500), 0)), now + INTERVAL * 2);
         assert_eq!(meter.label(), "cpu 5%");

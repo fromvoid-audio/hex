@@ -39,6 +39,7 @@ pub(super) fn title_bar(
     cpu_meter: impl IntoElement,
     on_control: impl Fn(TitlebarControl) -> Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
 ) -> Stateful<Div> {
+    let title_inset = crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET);
     let controls = [
         (TitlebarControl::Close, "close window", 0xe65c4f),
         (TitlebarControl::Minimize, "minimize window", 0xd8a63b),
@@ -109,9 +110,7 @@ pub(super) fn title_bar(
         .justify_center()
         // Equal padding on both sides keeps the title centered while protecting
         // the first row beneath macOS traffic lights.
-        .px(px(
-            (crate::build_info::HEADER_INSET + 68.0).max(theme::TITLEBAR_LEADING_INSET)
-        ))
+        .px(px(title_inset + 68.0))
         .border_b_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
@@ -132,7 +131,7 @@ pub(super) fn title_bar(
                 .h_full()
                 .flex()
                 .items_center()
-                .child(cpu_meter)
+                .children([cpu_meter])
                 .child(crate::build_info::editor_label()),
         )
         .child(
