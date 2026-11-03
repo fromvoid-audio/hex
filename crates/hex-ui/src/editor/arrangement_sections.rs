@@ -22,6 +22,7 @@ use super::{
 };
 use crate::{
     context_menu::{MenuItem, PopupMenu},
+    section_hit::{self, INNER_EDGE_WIDTH, SHARED_EDGE_RADIUS},
     theme,
 };
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -33,13 +34,9 @@ use gpui::{
 use hex_project::{ArrangementSection, BeatTime, Command, ElementColor, SectionId, TempoMap};
 use hex_session::service::{Event, Request};
 use hex_widgets::{
-    RectangleCapture, RectangleEdges, RectanglePart, RectangleSelection, RectangleSelectionPolicy,
-    TextInput,
+    RectangleCapture, RectanglePart, RectangleSelection, RectangleSelectionPolicy, TextInput,
 };
 use std::sync::Arc;
-
-const INNER_EDGE_WIDTH: f32 = 5.0;
-const SHARED_EDGE_RADIUS: f32 = 1.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SectionEdge {
@@ -650,36 +647,18 @@ impl EditorView {
                         * width
                 })
         };
-        let sections = state.project.arrangement_sections();
-        for pair in sections.windows(2) {
-            if pair[0].end() == pair[1].start()
-                && position(pair[0].end())
-                    .is_some_and(|edge| RectangleEdges::seam_hit(x, edge, SHARED_EDGE_RADIUS))
-            {
-                return Some(SectionEdge::Shared(pair[0].id(), pair[1].id()));
-            }
-        }
-        for section in sections {
-            let (Some(start), Some(end)) = (position(section.start()), position(section.end()))
-            else {
-                continue;
-            };
-            let part = RectangleEdges {
-                width: INNER_EDGE_WIDTH,
-                minimum_body: 0.0,
-            }
-            .hit(x, start, end);
-            let edge = match part {
-                Some(RectanglePart::Leading) => Some(hex_project::TrimEdge::Left),
-                Some(RectanglePart::Trailing) => Some(hex_project::TrimEdge::Right),
-                _ => None,
-            };
-            if let Some(edge) = edge {
-                return Some(SectionEdge::Single(section.id(), edge));
-            }
-        }
-        None
+        let sections = state
+            .project
+            .arrangement_sections()
+            .iter()
+            .map(|section| (section.id(), section.start(), section.end()));
+        section_hit::hit(sections, x, position).map(|hit| match hit {
+            section_hit::Hit::Leading(id) => SectionEdge::Single(id, hex_project::TrimEdge::Left),
+            section_hit::Hit::Trailing(id) => SectionEdge::Single(id, hex_project::TrimEdge::Right),
+            section_hit::Hit::Seam(left, right) => SectionEdge::Shared(left, right),
+        })
     }
+
     fn section_current(&self, g: &Gesture) -> bool {
         self.sections_available()
             && g.generation == self.project_generation
