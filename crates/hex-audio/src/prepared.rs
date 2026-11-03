@@ -93,6 +93,8 @@ mod delay_tests;
 mod device_resources_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod keyboard_activation_tests;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod loop_audio_tests;
 #[cfg(test)]
 mod project_spectrum_tests;
 mod runtime_view;
