@@ -437,12 +437,12 @@ impl Gallery {
     fn finish_drafts(&mut self, cx: &mut Context<Self>) -> bool {
         if let Some(fixture) = self.fixtures.get(&self.entry) {
             let mut prepared = Vec::new();
-            for number in &fixture.numbers {
+            for (index, number) in fixture.numbers.iter().enumerate() {
                 match number
                     .entity
                     .update(cx, |control, cx| control.prepare_finish_edit_for_owner(cx))
                 {
-                    Ok(Some(value)) => prepared.push((number.entity.clone(), value)),
+                    Ok(Some(value)) => prepared.push((index, number.entity.clone(), value)),
                     Ok(None) => {}
                     Err(error) => {
                         self.error = Some(format!("finish the fixture value · {error}"));
@@ -450,7 +450,23 @@ impl Gallery {
                     }
                 }
             }
-            for (entity, value) in prepared {
+            if self.entry == Entry::Eq && !eq::can_finish_numeric(fixture, prepared.len()) {
+                self.error = Some("too many pending eq edits; try again".into());
+                return false;
+            }
+            for (index, entity, value) in prepared {
+                if self.entry == Entry::Eq {
+                    if let Some(fixture) = self.fixtures.get_mut(&Entry::Eq) {
+                        eq::finish_numeric(
+                            fixture,
+                            index,
+                            value.previous,
+                            value.value,
+                            value.gesture.clone(),
+                            cx,
+                        );
+                    }
+                }
                 entity.update(cx, |control, cx| {
                     control.accept_finish_edit_for_owner(value, cx)
                 });
@@ -492,6 +508,27 @@ impl Gallery {
         cx.notify();
     }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.entry == Entry::Eq
+            && !self.disabled
+            && event.keystroke.key == "z"
+            && event.keystroke.modifiers.platform
+            && !event.keystroke.modifiers.alt
+            && !event.keystroke.modifiers.control
+        {
+            if self.finish_drafts(cx) {
+                if let Some(fixture) = self.fixtures.get_mut(&Entry::Eq) {
+                    if !eq::defer_history(fixture, event.keystroke.modifiers.shift)
+                        && let Err(error) =
+                            eq::history(fixture, event.keystroke.modifiers.shift, cx)
+                    {
+                        self.error = Some(error);
+                    }
+                }
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         match event.keystroke.key.as_str() {
             "tab" => {
                 if self.finish_drafts(cx) {
