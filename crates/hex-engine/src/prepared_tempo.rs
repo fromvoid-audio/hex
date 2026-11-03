@@ -977,8 +977,7 @@ mod tests {
         low
     }
 
-    #[test]
-    fn periodic_clock_matches_forward_binary_search_through_many_cycles() {
+    fn periodic_clock_fixture() -> (PreparedTempoMap, LoopRegion, PreparedPeriodicSessionTempo) {
         let canonical = TempoMap::new(
             48_000,
             vec![
@@ -990,9 +989,15 @@ mod tests {
             ],
         )
         .unwrap();
-        let prepared = PreparedTempoMap::prepare(canonical.clone(), 48_000).unwrap();
+        let prepared = PreparedTempoMap::prepare(canonical, 48_000).unwrap();
         let loop_region = LoopRegion::new(1_237, 91_111, true).unwrap();
         let cycle = PreparedPeriodicSessionTempo::prepare(&prepared, loop_region).unwrap();
+        (prepared, loop_region, cycle)
+    }
+
+    #[test]
+    fn periodic_clock_boundaries_match_canonical_tempo() {
+        let (prepared, _loop_region, cycle) = periodic_clock_fixture();
         let view = cycle.view(&prepared);
         // Admission covers a later absolute cursor too; the coordinate checks
         // below still prove that the 600 BPM marker never enters loop cycles.
@@ -1027,10 +1032,20 @@ mod tests {
                 assert_eq!(actual, expected);
             }
         }
+    }
 
+    // Partition the original exhaustive range without gaps or overlap. Each
+    // frame retains the independent full-range binary-search oracle.
+    fn check_periodic_clock_frame_partition(partition: u64) {
+        const PARTITIONS: u64 = 64;
+        let (prepared, loop_region, cycle) = periodic_clock_fixture();
+        let view = cycle.view(&prepared);
         let start = loop_region.start().saturating_sub(2);
-        let end = loop_region.start() + cycle.frame_period() * 9 + 2;
-        for frame in start..=end {
+        let end_exclusive = loop_region.start() + cycle.frame_period() * 9 + 3;
+        let count = end_exclusive - start;
+        let partition_start = start + count * partition / PARTITIONS;
+        let partition_end = start + count * (partition + 1) / PARTITIONS;
+        for frame in partition_start..partition_end {
             let actual = view.beat_lower_bound_for_frame(frame).unwrap();
             let expected = lower_bound_oracle(&view, frame);
             assert_eq!(actual, expected, "lower bound at frame {frame}");
@@ -1048,20 +1063,87 @@ mod tests {
                     let second_cycle_end =
                         u128::from(cycle.start_beat().raw()) + 2 * u128::from(cycle.beat_period());
                     assert!(u128::from(beat.raw()) < second_cycle_end);
+                    if frame < loop_region.end() {
+                        assert!(beat < cycle.end_beat());
+                    }
                 }
             }
         }
-
-        // Every representable interior loop frame has a center inverse that
-        // round-trips through the periodic forward map, including frames where
-        // canonical quantized tempo boundaries share a frame.
-        for frame in loop_region.start() + 1..loop_region.end() {
-            let center = view.frame_to_beat(frame).unwrap();
-            assert_eq!(view.beat_to_frame(center).unwrap(), frame);
-            assert!(center >= cycle.start_beat());
-            assert!(center < cycle.end_beat());
-        }
     }
+
+    macro_rules! periodic_clock_partition {
+        ($name:ident, $partition:expr) => {
+            #[test]
+            fn $name() {
+                check_periodic_clock_frame_partition($partition);
+            }
+        };
+    }
+
+    periodic_clock_partition!(periodic_clock_frames_00, 0);
+    periodic_clock_partition!(periodic_clock_frames_01, 1);
+    periodic_clock_partition!(periodic_clock_frames_02, 2);
+    periodic_clock_partition!(periodic_clock_frames_03, 3);
+    periodic_clock_partition!(periodic_clock_frames_04, 4);
+    periodic_clock_partition!(periodic_clock_frames_05, 5);
+    periodic_clock_partition!(periodic_clock_frames_06, 6);
+    periodic_clock_partition!(periodic_clock_frames_07, 7);
+    periodic_clock_partition!(periodic_clock_frames_08, 8);
+    periodic_clock_partition!(periodic_clock_frames_09, 9);
+    periodic_clock_partition!(periodic_clock_frames_10, 10);
+    periodic_clock_partition!(periodic_clock_frames_11, 11);
+    periodic_clock_partition!(periodic_clock_frames_12, 12);
+    periodic_clock_partition!(periodic_clock_frames_13, 13);
+    periodic_clock_partition!(periodic_clock_frames_14, 14);
+    periodic_clock_partition!(periodic_clock_frames_15, 15);
+    periodic_clock_partition!(periodic_clock_frames_16, 16);
+    periodic_clock_partition!(periodic_clock_frames_17, 17);
+    periodic_clock_partition!(periodic_clock_frames_18, 18);
+    periodic_clock_partition!(periodic_clock_frames_19, 19);
+    periodic_clock_partition!(periodic_clock_frames_20, 20);
+    periodic_clock_partition!(periodic_clock_frames_21, 21);
+    periodic_clock_partition!(periodic_clock_frames_22, 22);
+    periodic_clock_partition!(periodic_clock_frames_23, 23);
+    periodic_clock_partition!(periodic_clock_frames_24, 24);
+    periodic_clock_partition!(periodic_clock_frames_25, 25);
+    periodic_clock_partition!(periodic_clock_frames_26, 26);
+    periodic_clock_partition!(periodic_clock_frames_27, 27);
+    periodic_clock_partition!(periodic_clock_frames_28, 28);
+    periodic_clock_partition!(periodic_clock_frames_29, 29);
+    periodic_clock_partition!(periodic_clock_frames_30, 30);
+    periodic_clock_partition!(periodic_clock_frames_31, 31);
+    periodic_clock_partition!(periodic_clock_frames_32, 32);
+    periodic_clock_partition!(periodic_clock_frames_33, 33);
+    periodic_clock_partition!(periodic_clock_frames_34, 34);
+    periodic_clock_partition!(periodic_clock_frames_35, 35);
+    periodic_clock_partition!(periodic_clock_frames_36, 36);
+    periodic_clock_partition!(periodic_clock_frames_37, 37);
+    periodic_clock_partition!(periodic_clock_frames_38, 38);
+    periodic_clock_partition!(periodic_clock_frames_39, 39);
+    periodic_clock_partition!(periodic_clock_frames_40, 40);
+    periodic_clock_partition!(periodic_clock_frames_41, 41);
+    periodic_clock_partition!(periodic_clock_frames_42, 42);
+    periodic_clock_partition!(periodic_clock_frames_43, 43);
+    periodic_clock_partition!(periodic_clock_frames_44, 44);
+    periodic_clock_partition!(periodic_clock_frames_45, 45);
+    periodic_clock_partition!(periodic_clock_frames_46, 46);
+    periodic_clock_partition!(periodic_clock_frames_47, 47);
+    periodic_clock_partition!(periodic_clock_frames_48, 48);
+    periodic_clock_partition!(periodic_clock_frames_49, 49);
+    periodic_clock_partition!(periodic_clock_frames_50, 50);
+    periodic_clock_partition!(periodic_clock_frames_51, 51);
+    periodic_clock_partition!(periodic_clock_frames_52, 52);
+    periodic_clock_partition!(periodic_clock_frames_53, 53);
+    periodic_clock_partition!(periodic_clock_frames_54, 54);
+    periodic_clock_partition!(periodic_clock_frames_55, 55);
+    periodic_clock_partition!(periodic_clock_frames_56, 56);
+    periodic_clock_partition!(periodic_clock_frames_57, 57);
+    periodic_clock_partition!(periodic_clock_frames_58, 58);
+    periodic_clock_partition!(periodic_clock_frames_59, 59);
+    periodic_clock_partition!(periodic_clock_frames_60, 60);
+    periodic_clock_partition!(periodic_clock_frames_61, 61);
+    periodic_clock_partition!(periodic_clock_frames_62, 62);
+    periodic_clock_partition!(periodic_clock_frames_63, 63);
 
     #[test]
     fn periodic_lower_bound_seam_uses_previous_cycle_tail() {
