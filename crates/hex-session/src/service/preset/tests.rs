@@ -25,15 +25,10 @@ impl Drop for Directory {
     }
 }
 fn event(service: &Service) -> Event {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        match service.try_event() {
-            Ok(event) => return event,
-            Err(std::sync::mpsc::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(1))
-            }
-            Err(error) => panic!("preset worker: {error}"),
-        }
+    // Blocks on the event channel; bounded only against hangs.
+    match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("event: worker event absent: {error}"),
     }
 }
 fn owner(event: &Event, device: DeviceId, class: NativeDeviceClass) -> Owner {
@@ -436,7 +431,7 @@ fn device_preset_refusals_preserve_revision_history_and_audio() {
 }
 
 #[test]
-fn device_preset_valid_native_state_can_fail_live_admission_without_mutation() {
+fn device_preset_with_an_above_nyquist_fixed_tone_loads_and_compiles() {
     let dir = Directory::new();
     let path = dir.0.join("nyquist.hex-device-preset.json");
     let (service, added, device) =
@@ -511,10 +506,103 @@ fn device_preset_valid_native_state_can_fail_live_admission_without_mutation() {
             path,
         })
         .unwrap();
+    // A fixed tone at nyquist silences only that operator (Pulse #3957).
+    let loaded = event(&service);
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    assert_ne!(loaded.state.project, before.state.project);
+    let compiled = loaded.playback.expect("above-nyquist preset compiles");
+    assert!(!std::sync::Arc::ptr_eq(
+        &artifact,
+        compiled.prepared_revision().unwrap()
+    ));
+}
+
+#[test]
+fn device_preset_valid_native_state_can_fail_live_admission_without_mutation() {
+    let dir = Directory::new();
+    let path = dir.0.join("long-release.hex-device-preset.json");
+    let (service, added, device) =
+        fixture(NativeDeviceClass::Instrument, "hex.instrument.operator");
+    let track = added.state.project.tracks()[0].id();
+    service
+        .submit(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::from_quarters(12).unwrap(),
+        }))
+        .unwrap();
+    let placed = event(&service);
+    assert!(placed.error.is_none(), "{:?}", placed.error);
+    let clip = placed.state.project.tracks()[0].midi_clips()[0].id();
+    // 65 short notes an eighth of a beat apart fit the 64-voice track
+    // capacity with the default release tails.
+    for index in 0..65_u8 {
+        service
+            .submit(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: hex_project::BeatTime::from_ratio(u64::from(index), 8).unwrap(),
+                duration: hex_project::BeatTime::from_ratio(1, 32).unwrap(),
+                pitch: 36 + index % 48,
+                channel: 0,
+                velocity: 100,
+            }))
+            .unwrap();
+        let added = event(&service);
+        assert!(added.error.is_none(), "{:?}", added.error);
+    }
+    service
+        .submit(Request::Edit(Command::AddScene {
+            name: "redo guard".into(),
+        }))
+        .unwrap();
+    event(&service);
+    service.submit(Request::Undo).unwrap();
+    let before = event(&service);
+    assert!(before.state.can_redo);
+    let artifact = before
+        .playback
+        .as_ref()
+        .unwrap()
+        .prepared_revision()
+        .unwrap()
+        .clone();
+    // Maximum release tails overlap all 65 notes: valid state, refused density.
+    let mut state = before.state.project.device(device).unwrap().state().clone();
+    for release in [38, 44, 50, 56] {
+        // Operator 1-4 release, at its 60 s maximum.
+        state = hex_engine::patch_native_device_parameter_for_class(
+            NativeDeviceClass::Instrument,
+            &state,
+            ParameterId::from_static(release),
+            ParameterValue::Float(60.0),
+        )
+        .unwrap();
+    }
+    hex_engine::native_device_view_for_class(NativeDeviceClass::Instrument, &state)
+        .expect("valid native metadata; admission is stricter");
+    hex_storage::preset::save_new(
+        &path,
+        &Preset {
+            comparison: None,
+            class: DeviceClass::Instrument,
+            state,
+        },
+    )
+    .unwrap();
+    service
+        .submit(Request::LoadDevicePreset {
+            owner: owner(&before, device, NativeDeviceClass::Instrument),
+            path,
+        })
+        .unwrap();
     let refused = event(&service);
     assert!(
-        refused.error.is_some(),
-        "fixed frequency at nyquist must refuse"
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("voice density")),
+        "{:?}",
+        refused.error
     );
     assert_eq!(refused.state.project, before.state.project);
     assert_eq!(refused.state.revision, before.state.revision);

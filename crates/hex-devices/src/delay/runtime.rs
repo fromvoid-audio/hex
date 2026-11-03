@@ -73,6 +73,8 @@ struct Scalar {
     fade_left: u32,
     feedback: f64,
     mix: f64,
+    dry_gain: f64,
+    wet_gain: f64,
     filter_mix: f64,
     frequency: f64,
     width: f64,
@@ -85,6 +87,8 @@ struct Scalar {
 impl Scalar {
     fn new(s: Settings, rate: u32) -> Self {
         let times = times(s, rate, 120_000_000);
+        let mix = f64::from(s.value(DRY_WET));
+        let (dry_gain, wet_gain) = mix_gains(mix, s.flag(EQUAL_LOUDNESS));
         let mut filters = [BandPass::default(); 2];
         for f in &mut filters {
             f.tune(
@@ -101,7 +105,9 @@ impl Scalar {
             old_times: times,
             fade_left: 0,
             feedback: f64::from(s.value(FEEDBACK)),
-            mix: f64::from(s.value(DRY_WET)),
+            mix,
+            dry_gain,
+            wet_gain,
             filter_mix: f64::from(s.flag(FILTER)),
             frequency: f64::from(s.value(FREQUENCY)),
             width: f64::from(s.value(WIDTH)),
@@ -114,6 +120,14 @@ impl Scalar {
     }
     fn quiet(self, freeze: bool) -> bool {
         self.nonzero == 0 && (freeze || self.filters.iter().all(|f| f.quiet()))
+    }
+}
+fn mix_gains(mix: f64, equal_loudness: bool) -> (f64, f64) {
+    if equal_loudness {
+        let (wet, dry) = (mix * std::f64::consts::FRAC_PI_2).sin_cos();
+        (dry, wet)
+    } else {
+        (1.0 - mix, mix)
     }
 }
 pub(super) fn times(s: Settings, rate: u32, tempo: u32) -> [f64; 2] {
@@ -210,6 +224,8 @@ impl Runtime {
     }
     fn inherit_scalars(&mut self, old: Scalar, old_settings: Settings) {
         self.primary = old;
+        (self.primary.dry_gain, self.primary.wet_gain) =
+            mix_gains(self.primary.mix, self.settings.flag(EQUAL_LOUDNESS));
         if self.settings != old_settings {
             self.primary.ramp_left = self.rate.div_ceil(100);
         }
@@ -222,6 +238,7 @@ impl Runtime {
         &mut self,
         frames: &mut [StereoFrame],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        bypassed: bool,
     ) {
         if !self.open {
             self.begin_block();
@@ -300,6 +317,7 @@ impl Runtime {
                     s.frequency = f64::from(settings.value(FREQUENCY));
                     s.width = f64::from(settings.value(WIDTH));
                 }
+                (s.dry_gain, s.wet_gain) = mix_gains(s.mix, settings.flag(EQUAL_LOUDNESS));
             }
             let scalar = &*s;
             let mut wet = std::array::from_fn::<_, 2, _>(|lane| {
@@ -351,13 +369,11 @@ impl Runtime {
                     loop_input * (1.0 - s.filter_mix) + filtered * s.filter_mix
                 });
                 write[lane] = if value.abs() < 1e-12 { 0.0 } else { value };
-                let (dry_gain, wet_gain) = if settings.flag(EQUAL_LOUDNESS) {
-                    let (wet, dry) = (s.mix * std::f64::consts::FRAC_PI_2).sin_cos();
-                    (dry, wet)
-                } else {
-                    (1.0 - s.mix, s.mix)
-                };
-                frame[lane] = finite(dry[lane] * dry_gain + wet[lane] * wet_gain);
+            }
+            if !bypassed {
+                *frame = std::array::from_fn(|lane| {
+                    finite(dry[lane] * s.dry_gain + wet[lane] * s.wet_gain)
+                });
             }
             if s.valid == self.scratch.len() {
                 s.nonzero -= usize::from(self.scratch[s.next] != [0.0; 2]);
@@ -392,7 +408,7 @@ impl OwnedProcessorRuntime for Runtime {
         self.open = true;
     }
     fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
-        self.process(frames, None);
+        self.process(frames, None, false);
     }
     fn process_block_with_clock(
         &mut self,
@@ -400,7 +416,15 @@ impl OwnedProcessorRuntime for Runtime {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         _: &dyn hex_lattice::DeviceResources,
     ) {
-        self.process(frames, clock);
+        self.process(frames, clock, false);
+    }
+    fn process_bypassed_block_with_clock(
+        &mut self,
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        _: &dyn hex_lattice::DeviceResources,
+    ) {
+        self.process(frames, clock, true);
     }
     fn commit_block(&mut self) {
         if !self.open {

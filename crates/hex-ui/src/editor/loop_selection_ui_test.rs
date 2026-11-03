@@ -1716,3 +1716,140 @@ fn command_l_toggles_active_loop_preserves_bounds_and_keeps_selection_play_origi
         );
     });
 }
+
+#[gpui::test]
+fn enabling_the_loop_retires_a_point_cursor_until_a_new_click(cx: &mut TestAppContext) {
+    let (handle, editor, clip, _, _files) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::SetLoopRegion {
+            start: 24_000,
+            end: 48_000,
+            enabled: false
+        })))
+    });
+    pump(&editor, &mut visual);
+    let track = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    let line = Box::leak(format!("edit-cursor-line-{}", track.value()).into_boxed_str());
+    let lane = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-lane-{}", track.value()).into_boxed_str(),
+        ))
+        .expect("lane");
+    let place = |visual: &mut VisualTestContext, fraction: f32| {
+        let at = gpui::point(
+            lane.origin.x + lane.size.width * fraction,
+            lane.origin.y + gpui::px(22.0),
+        );
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&*visual, |view, _| {
+            let frame = view.edit_cursor.expect("click places cursor").frame;
+            assert_eq!(
+                view.playback_start_frame(),
+                frame,
+                "placed cursor owns play"
+            );
+            frame
+        })
+    };
+    let first = place(&mut visual, 0.6);
+    assert_ne!(first, 24_000);
+    assert!(visual.debug_bounds(line).is_some());
+
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .loop_region()
+                .unwrap()
+                .enabled()
+        );
+        assert!(view.edit_cursor.is_none(), "loop enable retires the cursor");
+        assert_eq!(view.playback_start_frame(), 24_000);
+    });
+    assert!(
+        visual.debug_bounds(line).is_none(),
+        "retired cursor is hidden"
+    );
+    visual.simulate_keystrokes("space");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::PlayFrom(24_000))
+        )
+    });
+    visual.simulate_keystrokes("space");
+    pump(&editor, &mut visual);
+
+    let second = place(&mut visual, 0.8);
+    assert!(visual.debug_bounds(line).is_some());
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .loop_region()
+                .unwrap()
+                .enabled()
+        );
+        assert_eq!(
+            view.playback_start_frame(),
+            second,
+            "disabling the loop keeps the new cursor"
+        );
+    });
+
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::ClearLoopRegion)))
+    });
+    pump(&editor, &mut visual);
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.state.as_ref().unwrap().project.loop_region().is_none());
+        assert_eq!(
+            view.edit_cursor.map(|cursor| cursor.frame),
+            Some(second),
+            "a refused toggle keeps the cursor"
+        );
+    });
+
+    // A cursor inside the selected clip outranks the clip start; once a loop
+    // enable retires it, the loop start (not the clip start) owns Play.
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::SetLoopRegion {
+            start: 24_000,
+            end: 48_000,
+            enabled: false
+        })))
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |view, _| {
+        view.time_selection = None;
+        view.selected_clip = Some(clip);
+        view.edit_cursor_in_selected_clip = Some(clip);
+        assert_eq!(view.playback_start_frame(), second);
+    });
+    visual.simulate_keystrokes("cmd-l");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.edit_cursor.is_none());
+        assert_eq!(view.selected_clip, Some(clip), "clip selection is kept");
+        assert_eq!(view.playback_start_frame(), 24_000);
+    });
+    let third = place(&mut visual, 0.7);
+    assert_ne!(third, 24_000);
+}

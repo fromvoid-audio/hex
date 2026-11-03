@@ -807,3 +807,100 @@ fn actual_stopped_flush_refusal_exception_shape_controller_and_retained_borrow_k
         );
     }
 }
+
+fn overflow_capture_recovers(variant: u32) {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(variant),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    instance
+        .exchange_on_worker(request(instance.configuration(), 0))
+        .unwrap();
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let (stopped, result) = stopped
+        .capture_state_or_refusal_retained_while_on_control(|| false)
+        .unwrap();
+    assert!(
+        matches!(result, Err(crate::protocol::StateCaptureRefusal::ExceedsLimit { observed_bytes }) if observed_bytes == if variant == 95 { 5000 } else { 5032 })
+    );
+    assert_eq!(stopped.child_id_on_control(), child);
+    let (stopped, result) = stopped
+        .capture_state_or_refusal_retained_while_on_control(|| false)
+        .unwrap();
+    assert!(decode(&result.unwrap()).unwrap().component.is_some());
+    let previous = stopped.configuration().binding;
+    let mut instance = stopped
+        .resume_retained_on_control(
+            Binding {
+                epoch: previous.epoch + 1,
+                ..previous
+            },
+            Some(options().presentation),
+        )
+        .unwrap();
+    assert_eq!(instance.child_id_on_control(), child);
+    instance
+        .exchange_on_worker(request(instance.configuration(), 1))
+        .unwrap();
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_component_overflow_stopped_capture_keeps_instance() {
+    overflow_capture_recovers(95);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_controller_overflow_stopped_capture_keeps_instance() {
+    overflow_capture_recovers(96);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_overflow_with_invalid_stream_use_is_still_terminal_when_stopped() {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(97),
+    )
+    .unwrap();
+    let probe = epoch_probe(&mut instance);
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let result = stopped.capture_state_retained_on_control();
+    epoch_refusal(result, Some(6), &probe);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_overflow_with_unrelated_sdk_error_is_still_terminal_when_stopped() {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(98),
+    )
+    .unwrap();
+    let probe = epoch_probe(&mut instance);
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let result = stopped.capture_state_retained_on_control();
+    epoch_refusal(result, Some(6), &probe);
+}

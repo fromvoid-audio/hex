@@ -426,6 +426,28 @@ fn receiver_none_preserves_authored_midi_without_any_generator() {
             .all(|track| track.midi_clips()[0].notes().len() == 1)
     );
 }
+/// Pulse #4188: delay history copies by typed endpoints. A graph maps from
+/// itself, but dropping a latent generator moves the arrivals behind it, so
+/// its history must not map in either direction.
+#[test]
+fn history_mapping_refuses_a_removed_latent_generator() {
+    let (mut f, source, _) = shared_fixture();
+    let bound = compile(&f);
+    let bound = bound.signal_graph.as_ref().unwrap();
+    assert!(bound.pre_main_history_maps_from(bound));
+    f.editor
+        .execute(Command::SetNativeSourceReceiver {
+            source,
+            track: None,
+        })
+        .unwrap();
+    let unbound = compile(&f);
+    let unbound = unbound.signal_graph.as_ref().unwrap();
+    assert!(unbound.tracks.iter().all(|track| track.generator.is_none()));
+    assert!(!unbound.pre_main_compatible(bound));
+    assert!(!unbound.pre_main_history_maps_from(bound));
+    assert!(!bound.pre_main_history_maps_from(unbound));
+}
 #[test]
 fn duplicate_selected_root_for_one_shared_source_is_refused() {
     let (mut f, _, _) = shared_fixture();

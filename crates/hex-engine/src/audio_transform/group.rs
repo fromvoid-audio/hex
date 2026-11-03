@@ -156,6 +156,12 @@ impl AudioTransformPreparation {
         } else {
             Some(self.reserve_with_eviction(bytes_for(clip.duration())?)?)
         };
+        // A plain container plays only its window. Freely placed events outside
+        // it stay silent, so preparation skips their per-sample composition.
+        let windowed = !root_only && edit.placement.is_none() && edit.content_view.is_none();
+        let audible = |event: &hex_project::AudioEvent| {
+            !windowed || (event.end > edit.view_start && event.start < edit.view_end)
+        };
         let mut root_pcm = Vec::new();
         root_pcm
             .try_reserve_exact(root_bytes / std::mem::size_of::<crate::Frame>())
@@ -193,7 +199,7 @@ impl AudioTransformPreparation {
             for event in events
                 .events
                 .iter()
-                .filter(|event| event.active && event.source == source.root.id)
+                .filter(|event| event.active && event.source == source.root.id && audible(event))
             {
                 let destination = root_pcm
                     .get_mut(event.start as usize..event.end as usize)

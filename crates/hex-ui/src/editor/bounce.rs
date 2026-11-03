@@ -164,16 +164,6 @@ impl EditorView {
         in_place: bool,
         adoption: BounceAdoption,
     ) {
-        if in_place
-            && self
-                .audio
-                .as_ref()
-                .and_then(|a| a.control.status())
-                .is_some_and(|s| s.playing.load(std::sync::atomic::Ordering::Acquire))
-        {
-            self.error = Some("stop playback before bouncing in place".into());
-            return;
-        }
         if self.edit_pending()
             || self.arrangement_pan.is_some()
             || self.time_range_move_gesture.is_some()

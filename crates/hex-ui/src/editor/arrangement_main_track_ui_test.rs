@@ -69,6 +69,7 @@ pub(super) fn completed_event(state: &ViewState) -> Event {
         bounce_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
+        import_truncation: None,
         save_complete: false,
         save_correlation: None,
         document_format_upgrade_required: false,

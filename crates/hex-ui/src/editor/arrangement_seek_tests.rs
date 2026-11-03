@@ -128,6 +128,69 @@ fn post_loop_cursor_survives_actual_seek_worker_and_fenced_callback_installation
     control.reclaim();
 }
 
+#[test]
+fn stateful_seek_beyond_the_linear_replay_ceiling_installs_at_its_destination() {
+    let project = stateful_project();
+    let graph = Arc::new(
+        PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
+            .unwrap(),
+    );
+    assert!(graph.arrangement_seek_requires_preroll());
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    let active = control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(&graph)).unwrap())
+        .unwrap();
+    let mut block = [[0.0; 2]; 128];
+    callback.begin_block();
+    callback.render(&mut block).unwrap();
+    let fence = capture_arrangement_fence(&control, &project, active).unwrap();
+    let service = Service::new(48_000, 8, 1 << 20).unwrap();
+    // About 11:39 at 48 kHz, past the 8_388_608-frame linear export replay budget.
+    let destination = hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES * 4 + 37;
+    let intent = SeekIntent {
+        section: None,
+        recovery_generation: None,
+        destination_frame: destination,
+        start_playing: true,
+        project_generation: 7,
+        project_revision: 3,
+        prepared_revision: Some(Arc::clone(&graph)),
+        device_preview_identity: None,
+    };
+    let spec = intent.spec().expect("long stateful seek is admitted");
+    assert_eq!(spec.destination_frame, destination);
+    let request = service.request_arrangement_seek(spec).unwrap();
+    let pending = PendingSeek::from_intent(request, &intent, fence);
+    let deadline = crate::test_wait::hang_deadline();
+    let result = loop {
+        if let Some(result) = service.try_arrangement_seek_result() {
+            break result;
+        }
+        assert!(Instant::now() < deadline, "actual seek worker timed out");
+        thread::yield_now();
+    };
+    assert!(pending.matches_result(&result));
+    let playback = result.result.expect("long stateful seek prepares");
+    assert_eq!(playback.position(), destination);
+    control
+        .publish_with_policy(
+            playback,
+            PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+        )
+        .unwrap();
+    callback.begin_block();
+    callback.render(&mut block).unwrap();
+    use std::sync::atomic::Ordering;
+    assert_eq!(
+        control.status.position.load(Ordering::Acquire),
+        destination + 128
+    );
+    control.request_shutdown();
+    callback.begin_block();
+    callback.render(&mut block).unwrap();
+    control.reclaim();
+}
+
 fn active_arrangement_control() -> (prepared::Control, prepared::Callback, Project, u64) {
     let project = one_track_project();
     let prepared = Arc::new(

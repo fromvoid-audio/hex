@@ -29,7 +29,7 @@ impl From<AudioBatchMemberFailure> for DisplayError {
             message: format!(
                 "audio batch refused at file {} · {}: {}",
                 failure.member,
-                failure.path.display(),
+                hex_session::service::text::verbatim(failure.path.display()),
                 failure.explanation
             ),
             batch_member: Some(failure),

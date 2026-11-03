@@ -1,8 +1,9 @@
 //! Sparse EQ editing. Opaque edits use atomic canonical state replacement;
 //! scalar graph drags use the existing paired-parameter gesture protocol.
 //! Selection is view state: `selected` drives the footer controls and a
-//! marquee `group` (shift adds, cmd toggles) holds a multi-selection. A blank
-//! click creates a node; a blank drag draws the marquee. Dragging a grouped
+//! marquee `group` holds a multi-selection. A blank press creates a node;
+//! shift-drag draws a marquee, and shift-cmd toggles its hits. Shift-press on
+//! a node adds it to the group. Dragging a grouped
 //! node moves the group as one parameter-snapshot gesture, and removal deletes
 //! the group in one atomic replacement, so one Undo reverts either.
 use super::*;
@@ -13,15 +14,22 @@ use hex_session::device_gesture::{
     EqNodeCreationSnapshot, GestureKey, GesturePhase, GestureTarget, ParameterPairValue,
 };
 use hex_widgets::{
-    ResponseGraph, ResponseGraphCreationHint, ResponseGraphEvent, ResponseGraphMarqueeEvent,
-    ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase,
+    ResponseGraph, ResponseGraphEvent, ResponseGraphMarqueeEvent, ResponseGraphModel,
+    ResponseGraphNode, ResponseGraphPhase,
 };
 
 mod axes;
 mod gestures;
+mod group_move;
+use group_move::{frequency_from_x, q_from_y};
+mod node_geometry;
+use node_geometry::{creation_kind, node_position};
 mod scroll_queue;
 pub(in crate::editor) use scroll_queue::after_worker_event as after_scroll_worker_event;
 mod response;
+mod sampling;
+mod selection;
+mod slope;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
 pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
@@ -29,10 +37,6 @@ pub(super) use spectrum::{
     is_eq as is_spectrum_eq, result as spectrum_result, sync_visible as sync_visible_spectra,
     toggle as spectrum_toggle,
 };
-
-// Outer five percent of the inset plot: side cuts precede bottom notches.
-// Existing node hits retain priority through the response graph owner.
-const CUT_CREATION_EDGE: f32 = 0.05;
 
 // Commands and latched settings share text geometry, retaining distinct paint.
 fn text_action_button(
@@ -156,6 +160,7 @@ pub(super) fn render_body(
         let entity = cx.new(|cx| {
             let mut graph =
                 ResponseGraph::new(cx, format!("eq-response-{}", device.value()), style);
+            graph.set_circular_nodes(true, cx);
             graph.set_editable(true, cx);
             graph.set_tab_navigation(true, cx);
             graph.set_creation_enabled(true);
@@ -273,7 +278,10 @@ pub(super) fn render_body(
     if let Some(model) = model {
         entity.update(cx, |graph, cx| {
             graph.set_creation_drag_enabled(true);
-            graph.set_creation_hint_resolver(show_creation_hint.then_some(creation_hint), cx);
+            graph.set_creation_hint_resolver(
+                show_creation_hint.then_some(node_geometry::creation_hint),
+                cx,
+            );
             let _ = graph.set_axes(Some(axes::frequency_axes(sample_rate)), cx);
             let _ = graph.set_analyzer_style(theme::device_analyzer_style(), cx);
             let _ = graph.set_scroll_nodes(scroll_nodes, cx);
@@ -432,7 +440,7 @@ pub(super) fn render_body(
         );
     } else {
         bottom = bottom.child(theme::text(
-            "click to add a node · option-drag to place and shape · drag to select",
+            "click to add a node · option-drag to place and shape · shift-drag to select",
         ));
     }
     let body = bottom;
@@ -852,24 +860,6 @@ fn audition(view: &mut EditorView, device: DeviceId, id: NodeId) {
         }
     }
 }
-/// Cut and notch nodes edit Q vertically; the other shapes edit gain.
-fn edits_q(kind: eq::NodeKind) -> bool {
-    matches!(
-        kind,
-        eq::NodeKind::LowCut | eq::NodeKind::HighCut | eq::NodeKind::Notch
-    )
-}
-/// Normalized graph position; the inverse of `frequency_from_x`/`q_from_y`/gain.
-fn node_position(node: &Node, rate: u32) -> [f32; 2] {
-    [
-        axes::x(node.frequency_hz, rate),
-        if edits_q(node.kind) {
-            (node.q / 0.1).ln() / (18.0_f32 / 0.1).ln()
-        } else {
-            (node.gain_db + 24.0) / 48.0
-        },
-    ]
-}
 /// Removes `ids` in one atomic replacement, so one Undo restores them all.
 fn remove_nodes(
     view: &mut EditorView,
@@ -894,84 +884,9 @@ fn marquee_event(
     let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
         return;
     };
-    let ids: Vec<NodeId> = event
-        .selected
-        .iter()
-        .filter_map(|id| NodeId::new(u64::from(*id)).ok())
-        .collect();
-    panel.selected = panel
-        .selected
-        .filter(|id| ids.contains(id))
-        .or_else(|| ids.last().copied());
-    panel.group = if ids.len() > 1 { ids } else { Vec::new() };
+    selection::apply_marquee(&mut panel.selected, &mut panel.group, &event.selected);
     panel.collapse = None;
     cx.notify();
-}
-fn frequency_from_x(x: f32, rate: u32) -> f32 {
-    let upper = (rate as f32 * 0.49).clamp(20.0, 20000.0);
-    (20.0 * ((upper / 20.0).ln() * x.clamp(0.0, 1.0)).exp()).clamp(20.0, upper)
-}
-fn q_from_y(y: f32) -> f32 {
-    (0.1 * ((18.0_f32 / 0.1).ln() * y.clamp(0.0, 1.0)).exp()).clamp(0.1, 18.0)
-}
-fn creation_kind([x, y]: [f32; 2]) -> eq::NodeKind {
-    if x <= CUT_CREATION_EDGE {
-        eq::NodeKind::LowCut
-    } else if x >= 1.0 - CUT_CREATION_EDGE {
-        eq::NodeKind::HighCut
-    } else if y <= CUT_CREATION_EDGE {
-        eq::NodeKind::Notch
-    } else {
-        eq::NodeKind::Bell
-    }
-}
-
-/// Caller-owned shapes let the generic widget indicate the exact same action
-/// as the canonical EQ creation resolver without depending on device/DSP types.
-fn creation_hint(position: [f32; 2]) -> ResponseGraphCreationHint {
-    let (id, points): (&'static str, &'static [[f32; 2]]) = match creation_kind(position) {
-        eq::NodeKind::LowCut => (
-            "low-cut",
-            &[
-                [0.0, 0.05],
-                [0.25, 0.1],
-                [0.5, 0.7],
-                [0.75, 0.8],
-                [1.0, 0.8],
-            ],
-        ),
-        eq::NodeKind::HighCut => (
-            "high-cut",
-            &[
-                [0.0, 0.8],
-                [0.25, 0.8],
-                [0.5, 0.7],
-                [0.75, 0.1],
-                [1.0, 0.05],
-            ],
-        ),
-        eq::NodeKind::Notch => (
-            "notch",
-            &[
-                [0.0, 0.8],
-                [0.25, 0.8],
-                [0.5, 0.05],
-                [0.75, 0.8],
-                [1.0, 0.8],
-            ],
-        ),
-        _ => (
-            "bell",
-            &[
-                [0.0, 0.3],
-                [0.25, 0.35],
-                [0.5, 0.95],
-                [0.75, 0.35],
-                [1.0, 0.3],
-            ],
-        ),
-    };
-    ResponseGraphCreationHint { id, points }
 }
 // Input cancellation is separate from admitted preview custody. The last
 // geometry stays with its key until the terminal/canonical installation event.
@@ -1279,24 +1194,13 @@ fn handle_event(
         ResponseGraphPhase::Select => {
             if finalize_controls(view, cx) {
                 if let Some(p) = view.device_panel.eq_panels.get_mut(&device) {
-                    p.collapse = None;
-                    if event.modifiers.shift {
-                        // Shift-press adds the node to the group and drags it.
-                        if p.group.is_empty() {
-                            p.group.extend(p.selected);
-                        }
-                        if !p.group.contains(&id) {
-                            p.group.push(id);
-                        }
-                        if p.group.len() < 2 {
-                            p.group.clear();
-                        }
-                    } else if p.group.contains(&id) {
-                        p.collapse = Some(id);
-                    } else {
-                        p.group.clear();
-                    }
-                    p.selected = Some(id);
+                    selection::select_node(
+                        &mut p.selected,
+                        &mut p.group,
+                        &mut p.collapse,
+                        id,
+                        event.modifiers.shift,
+                    );
                 }
             }
         }
@@ -1530,40 +1434,40 @@ mod tests {
     fn creation_zones_and_vertical_domains_have_explicit_boundaries() {
         assert_eq!(creation_kind([0.0, 0.5]), eq::NodeKind::LowCut);
         assert_eq!(
-            creation_kind([CUT_CREATION_EDGE, 0.5]),
+            creation_kind([node_geometry::CUT_CREATION_EDGE, 0.5]),
             eq::NodeKind::LowCut
         );
         assert_eq!(
-            creation_kind([CUT_CREATION_EDGE + 0.001, 0.5]),
+            creation_kind([node_geometry::CUT_CREATION_EDGE + 0.001, 0.5]),
             eq::NodeKind::Bell
         );
         assert_eq!(creation_kind([0.5, 0.5]), eq::NodeKind::Bell);
         assert_eq!(
-            creation_kind([1.0 - CUT_CREATION_EDGE - 0.001, 0.5]),
+            creation_kind([1.0 - node_geometry::CUT_CREATION_EDGE - 0.001, 0.5]),
             eq::NodeKind::Bell
         );
         assert_eq!(
-            creation_kind([1.0 - CUT_CREATION_EDGE, 0.5]),
+            creation_kind([1.0 - node_geometry::CUT_CREATION_EDGE, 0.5]),
             eq::NodeKind::HighCut
         );
         assert_eq!(creation_kind([1.0, 0.5]), eq::NodeKind::HighCut);
-        for x in [0.0, CUT_CREATION_EDGE] {
+        for x in [0.0, node_geometry::CUT_CREATION_EDGE] {
             assert_eq!(creation_kind([x, 0.0]), eq::NodeKind::LowCut);
         }
-        for x in [1.0 - CUT_CREATION_EDGE, 1.0] {
+        for x in [1.0 - node_geometry::CUT_CREATION_EDGE, 1.0] {
             assert_eq!(creation_kind([x, 0.0]), eq::NodeKind::HighCut);
         }
-        for y in [0.0, CUT_CREATION_EDGE] {
+        for y in [0.0, node_geometry::CUT_CREATION_EDGE] {
             assert_eq!(creation_kind([0.5, y]), eq::NodeKind::Notch);
-            assert_eq!(creation_hint([0.5, y]).id, "notch");
+            assert_eq!(node_geometry::creation_hint([0.5, y]).id, "notch");
         }
         assert_eq!(
-            creation_kind([0.5, CUT_CREATION_EDGE + 0.001]),
+            creation_kind([0.5, node_geometry::CUT_CREATION_EDGE + 0.001]),
             eq::NodeKind::Bell
         );
-        assert_eq!(creation_hint([0.0, 0.0]).id, "low-cut");
-        assert_eq!(creation_hint([1.0, 0.0]).id, "high-cut");
-        assert_eq!(creation_hint([0.5, 0.5]).id, "bell");
+        assert_eq!(node_geometry::creation_hint([0.0, 0.0]).id, "low-cut");
+        assert_eq!(node_geometry::creation_hint([1.0, 0.0]).id, "high-cut");
+        assert_eq!(node_geometry::creation_hint([0.5, 0.5]).id, "bell");
         assert_eq!(q_from_y(-1.0), 0.1);
         assert!((q_from_y(2.0) - 18.0).abs() < 0.0001);
     }

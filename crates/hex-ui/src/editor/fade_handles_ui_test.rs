@@ -304,6 +304,14 @@ fn f_exposes_editable_handles_for_a_split_whose_retained_fades_are_outside_the_c
             fade_out: 1000,
         })
         .unwrap();
+    // One-shot cuts reanchor fades into each part; a looped clip still keeps
+    // the retained split domain, as do legacy saved splits.
+    canonical
+        .execute(Command::SetClipLooping {
+            clip,
+            looping: true,
+        })
+        .unwrap();
     let hex_project::Created::Clip(middle) = canonical
         .execute(Command::SplitClip {
             clip,
@@ -789,26 +797,131 @@ fn two_axis_curve_drags_change_pcm_keep_endpoints_and_bound_vertical_travel(
     }
 }
 
+fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        let ready = editor.update(&mut *visual, |v, cx| {
+            if v.tick(cx) {
+                cx.notify();
+            }
+            v.state.is_some() && !v.edit_pending()
+        });
+        visual.run_until_parked();
+        if ready {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "real worker setup");
+        std::thread::yield_now();
+    }
+}
+// Imports one 2 s clip through the real worker and authors 0.5 s fades.
+fn real_faded_clip(
+    cx: &mut TestAppContext,
+) -> (
+    super::super::external_audio_drop_ui_test::BatchFiles,
+    gpui::Entity<EditorView>,
+    VisualTestContext,
+    ClipId,
+) {
+    let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
+    let path = files.wav("fade.wav", 48_000, 96_000);
+    let (window, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    let mut visual = VisualTestContext::from_window(window, cx);
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Import(path)))
+    });
+    pump(&editor, &mut visual);
+    let clip = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0].clips()[0].id()
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::SetClipFades {
+            clip,
+            fade_in: 24_000,
+            fade_out: 24_000
+        })))
+    });
+    pump(&editor, &mut visual);
+    (files, editor, visual, clip)
+}
+#[gpui::test]
+fn released_push_keeps_both_pushed_handles_painted_until_real_worker_ack(cx: &mut TestAppContext) {
+    let (_files, editor, mut visual, clip) = real_faded_clip(cx);
+    key(&mut visual, true, "f");
+    let in_top: &'static str = Box::leak(format!("fade-in-top-{}", clip.value()).into_boxed_str());
+    let out_top: &'static str =
+        Box::leak(format!("fade-out-top-{}", clip.value()).into_boxed_str());
+    let from = visual.debug_bounds(in_top).unwrap().center();
+    let before_out = visual.debug_bounds(out_top).unwrap();
+    // Drag the fade in past the fade out's start, then partway back: the fade
+    // out gives way and springs back without returning to its original length.
+    let past = point(before_out.center().x + px(40.0), from.y);
+    let to = point(before_out.center().x + px(20.0), from.y);
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(past, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let deeper = editor.read_with(&visual, |v, _| v.fade_preview(clip).unwrap());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let preview = editor.read_with(&visual, |v, _| v.fade_preview(clip).unwrap());
+    assert_eq!(deeper.fade_in() + deeper.fade_out(), 96_000);
+    assert_eq!(preview.fade_in() + preview.fade_out(), 96_000);
+    assert!(deeper.fade_out() < preview.fade_out() && preview.fade_out() < 24_000);
+    let held_out = visual.debug_bounds(out_top).unwrap();
+    let held_in = visual.debug_bounds(in_top).unwrap();
+    assert!(held_out.center().x > before_out.center().x);
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    let deadline = crate::test_wait::hang_deadline();
+    let event = loop {
+        if let Ok(event) = editor.read_with(&visual, |v, _| v.service.try_event()) {
+            if event.request_complete {
+                break event;
+            }
+            editor.update(&mut visual, |v, _| {
+                v.receive(event);
+            });
+        }
+        assert!(std::time::Instant::now() < deadline, "real fade terminal");
+        std::thread::yield_now();
+    };
+    assert!(event.error.is_none(), "{:?}", event.error);
+    assert_eq!(
+        event.state.project.clip(clip).unwrap().retained_fade(),
+        preview
+    );
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds(out_top), Some(held_out));
+        assert_eq!(visual.debug_bounds(in_top), Some(held_in));
+        editor.read_with(&visual, |v, _| {
+            assert!(v.pending_fade.is_some());
+            assert_eq!(v.fade_preview(clip), Some(preview));
+        });
+    }
+    editor.update(&mut visual, |v, cx| {
+        v.receive(event);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        let state = v.state.as_ref().unwrap();
+        assert!(v.pending_fade.is_none());
+        assert_eq!(state.project.clip(clip).unwrap().retained_fade(), preview);
+        assert!(state.can_undo);
+    });
+    assert_eq!(visual.debug_bounds(out_top), Some(held_out));
+    assert_eq!(visual.debug_bounds(in_top), Some(held_in));
+}
+
 #[gpui::test]
 fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppContext) {
     use std::time::Instant;
-    fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
-        let deadline = crate::test_wait::hang_deadline();
-        loop {
-            let ready = editor.update(&mut *visual, |v, cx| {
-                if v.tick(cx) {
-                    cx.notify();
-                }
-                v.state.is_some() && !v.edit_pending()
-            });
-            visual.run_until_parked();
-            if ready {
-                return;
-            }
-            assert!(Instant::now() < deadline, "real worker setup");
-            std::thread::yield_now();
-        }
-    }
     let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
     let path = files.wav("fade.wav", 48_000, 96_000);
     let (window, editor) = super::super::clip_drag_ui_test::editor_window(

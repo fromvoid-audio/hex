@@ -860,11 +860,22 @@ impl EditorView {
         let Some((track, frame)) = self.time_selection_paste_target() else {
             return;
         };
-        self.enqueue(if insert {
+        let request = if insert {
             Request::InsertTimeRange { track, frame }
         } else {
             Request::PasteTimeRange { track, frame }
-        });
+        };
+        // A clip-clipboard paste selects its acknowledged births.
+        let intent = super::group_copy::Pending::capture_paste(self, &request);
+        let before_pending = self.worker_requests_pending;
+        if self.enqueue(request)
+            && let Some(mut intent) = intent
+        {
+            if self.worker_requests_pending > before_pending {
+                intent.submitted(self.worker_requests_pending);
+            }
+            self.pending_group_copy = Some(intent);
+        }
     }
 
     pub(super) fn time_selection_paste_target(&self) -> Option<(TrackId, u64)> {

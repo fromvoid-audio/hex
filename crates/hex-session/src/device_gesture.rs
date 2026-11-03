@@ -1251,7 +1251,9 @@ impl GestureMachine {
         match result {
             Ok(()) => outcome.ack.accepted = true,
             Err(error) => {
-                outcome.ack.reason = Some(error.to_string().to_lowercase());
+                outcome.ack.reason = Some(hex_storage::text::lowercase_outside_verbatim(
+                    &error.to_string(),
+                ));
                 // Native terminal refusal keeps the actual accepted overlay. The legacy
                 // adapter retains its existing retirement behavior; stale keys own neither.
                 if retain_terminal
@@ -1876,7 +1878,9 @@ impl GestureMachine {
                     previous,
                     generation,
                 );
-                result.ack.reason = Some(error.to_string().to_lowercase());
+                result.ack.reason = Some(hex_storage::text::lowercase_outside_verbatim(
+                    &error.to_string(),
+                ));
                 Some(result)
             }
         }

@@ -45,6 +45,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         bounce_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
+        import_truncation: None,
         save_complete: false,
         save_correlation: None,
         document_format_upgrade_required: false,

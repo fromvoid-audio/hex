@@ -184,6 +184,32 @@ impl RuntimeOwnership {
             _ => false,
         }
     }
+    /// Whether this candidate must defer the handoff until `old`'s committed
+    /// live transitions drain (Pulse #4178). Legacy candidates answer for
+    /// both twins against the old committed (`primary`) runtime.
+    pub(super) fn transition_busy_from(&self, old: &Self) -> bool {
+        match (self, old) {
+            (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {
+                primary.transition_busy_from(old.as_ref())
+                    || scratch.transition_busy_from(old.as_ref())
+            }
+            (Self::Owned(new), Self::Owned(old)) => new.transition_busy_from(old.as_ref()),
+            _ => false,
+        }
+    }
+    /// Settle pending live transitions while the graph renders nothing
+    /// (Pulse #4558). Legacy settles both twins; the next `begin` copies the
+    /// committed one anyway.
+    pub(super) fn settle_idle_transitions(&mut self) {
+        match self {
+            Self::Legacy { primary, scratch } => {
+                primary.settle_idle_transitions();
+                scratch.settle_idle_transitions();
+            }
+            Self::Owned(v) => v.settle_idle_transitions(),
+            Self::Foreign(_) | Self::Memoryless => {}
+        }
+    }
     pub(super) fn inherit_from(&mut self, old: &Self) {
         match (self, old) {
             (Self::Foreign(new), Self::Foreign(old)) if new.prepared == old.prepared => {
