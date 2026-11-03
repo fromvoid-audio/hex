@@ -146,6 +146,9 @@ Scripts without their own test module, config files and unknown inputs keep
 comprehensive discovery. Owner selections run through `scripts/python_shards.py`:
 one process per test from a shared work queue (up to 12 workers), which brings
 `test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
+Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
+run after the ordinary queue with at most two workers. Their output and timing
+remain included, and unmarked tests retain their normal worker count.
 
 Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,
