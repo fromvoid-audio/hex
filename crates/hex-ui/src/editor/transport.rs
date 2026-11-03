@@ -414,7 +414,58 @@ impl EditorView {
             self.state()
                 .and_then(|state| state.document_path.as_deref()),
         );
-        header::title_bar(title, |control| match control {
+        let description = theme::text(self.cpu_meter.description());
+        let cpu_meter = div()
+            .id("editor-cpu-meter")
+            .debug_selector(|| "editor-cpu-meter".into())
+            .w(px(68.0))
+            .h_full()
+            .relative()
+            .flex()
+            .items_center()
+            .justify_end()
+            .flex_shrink_0()
+            .text_xs()
+            .text_right()
+            .cursor_pointer()
+            .text_color(rgb(theme::color(if self.cpu_meter.warning() {
+                theme::PaletteRole::Primary
+            } else {
+                theme::PaletteRole::Muted
+            })))
+            .tooltip(move |_, cx| {
+                cx.new(|_| MiniTooltip {
+                    kind: crate::tooltips::Kind::Identification,
+                    description: description.clone(),
+                })
+                .into()
+            })
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|view, _, _, cx| {
+                let misses = view.audio_status().map_or(0, |status| {
+                    status.cpu_meter.reset_peak();
+                    status
+                        .deadline_misses
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                });
+                view.cpu_meter.reset(misses);
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .h(px(2.0))
+                    .w(px(68.0 * self.cpu_meter.fraction()))
+                    .bg(rgb(theme::color(if self.cpu_meter.warning() {
+                        theme::PaletteRole::Primary
+                    } else {
+                        theme::PaletteRole::Secondary
+                    }))),
+            )
+            .child(theme::text(self.cpu_meter.label()));
+        header::title_bar(title, cpu_meter, |control| match control {
             header::TitlebarControl::Close => Box::new(cx.listener(|view, _, window, cx| {
                 if view.request_window_close(window, cx) {
                     window.remove_window();

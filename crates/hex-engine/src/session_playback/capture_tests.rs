@@ -1381,19 +1381,7 @@ fn live_project_taps_preserve_pcm_and_independent_tracks_across_loop_wraps() {
         for index in 0..1536 {
             let frame = if looping { index % 1024 } else { index };
             let sounding = (3..1027).contains(&frame);
-            // A wrapped pass crossfades its first F = 128 frames from the
-            // clip continuing past the loop end (`crate::loop_seam`).
-            let level = |at: usize| {
-                let gain = |sounds: bool| f32::from(u8::from(sounds));
-                let level = if looping && index >= 1024 && frame < 128 {
-                    let out = (127 - frame) as f32 / 128.0;
-                    let (start, past_end) = (gain(sounding), gain(frame + 1024 < 1027));
-                    start + out * (past_end - start)
-                } else {
-                    gain(sounding)
-                };
-                level * [0.1, 0.3][at]
-            };
+            let level = |at: usize| f32::from(u8::from(sounding)) * [0.1, 0.3][at];
             let a = [level(0), -level(0)];
             let b = [level(1), -level(1) * 0.25];
             for channel in 0..2 {
