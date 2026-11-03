@@ -25,6 +25,7 @@
 //! on its detached worker; it never blocks audio or owns project/media files.
 
 mod event;
+pub mod reader;
 mod rolling;
 
 use event::{Context, Record};
