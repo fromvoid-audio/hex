@@ -287,37 +287,68 @@ impl Render for RectangleDemo {
             if self.kind == Kind::TimeRange && index != 0 {
                 continue;
             }
-            let part = RectanglePart::Body;
             let selected = self.selected[index];
-            let mut rect = rectangle_surface(start, end - start, width * (end - start))
+            let pixel_width = (end - start) * width;
+            let identity = if index == 0 {
+                hex_project::ElementColor::Cyan
+            } else {
+                hex_project::ElementColor::Blue
+            };
+            let surface = if self.kind == Kind::Section {
+                crate::section_surface::surface(
+                    start,
+                    end - start,
+                    pixel_width,
+                    1.0 / window.scale_factor().max(1.0),
+                    identity,
+                    selected,
+                    false,
+                )
+                .cursor(RectanglePart::Body.cursor())
+                .child(
+                    crate::section_surface::header(
+                        identity,
+                        selected,
+                        false,
+                        44.0 * hex_widgets::RANGE_HANDLE_FRACTION,
+                    )
+                    .debug_selector({
+                        let id = self.id.clone();
+                        move || format!("{id}-section-header-{index}")
+                    })
+                    .child(theme::text(if selected {
+                        "✓ section"
+                    } else {
+                        "section"
+                    })),
+                )
+            } else {
+                rectangle_surface(start, end - start, pixel_width)
+                    .bg(rgb(if selected { style.accent } else { style.border }))
+                    .border_color(rgb(if self.focus.is_focused(window) {
+                        style.text
+                    } else {
+                        style.border
+                    }))
+                    .cursor(gpui::CursorStyle::Arrow)
+                    .text_color(rgb(if selected {
+                        style.accent_text
+                    } else {
+                        style.text
+                    }))
+                    .child(theme::text(if self.kind == Kind::Clip {
+                        "clip"
+                    } else {
+                        "time range"
+                    }))
+            };
+            let mut rect = surface
                 .id(("rectangle", index))
                 .debug_selector({
                     let id = self.id.clone();
                     move || format!("{id}-rectangle-{index}")
                 })
-                .bg(rgb(if selected { style.accent } else { style.border }))
-                .opacity(if self.enabled { 1.0 } else { 0.4 })
-                .border_color(rgb(if self.focus.is_focused(window) {
-                    style.text
-                } else {
-                    style.border
-                }))
-                .cursor(if self.kind == Kind::Section {
-                    part.cursor()
-                } else {
-                    gpui::CursorStyle::Arrow
-                })
-                .text_color(rgb(if selected {
-                    style.accent_text
-                } else {
-                    style.text
-                }))
-                .child(theme::text(match self.kind {
-                    Kind::Section => "section",
-                    Kind::Clip => "clip",
-                    Kind::TimeRange => "time range",
-                }));
-            let pixel_width = (end - start) * width;
+                .opacity(if self.enabled { 1.0 } else { 0.4 });
             let border = hex_widgets::rectangle_border_width(pixel_width);
             let handle = self.edges().handle_width(pixel_width);
             if self.kind == Kind::TimeRange
@@ -665,9 +696,29 @@ mod tests {
                 let mut visual = VisualTestContext::from_window(*handle, cx);
                 visual.update(|window, _| window.activate_window());
                 visual.simulate_resize(gpui::size(px(240.0), px(240.0)));
+                visual.simulate_mouse_move(point(px(1.0), px(1.0)), None, Modifiers::default());
                 visual.run_until_parked();
                 let a = visual.debug_bounds("rectangle-narrow-rectangle-0").unwrap();
                 let b = visual.debug_bounds("rectangle-narrow-rectangle-1").unwrap();
+                if section {
+                    let header = visual
+                        .debug_bounds("rectangle-narrow-section-header-0")
+                        .unwrap();
+                    assert!(
+                        (f32::from(header.size.height) * 3.0 - f32::from(a.size.height)).abs()
+                            <= 2.0
+                    );
+                    let (fill, _, _) =
+                        theme::section_colors(hex_project::ElementColor::Cyan, false, false);
+                    assert_eq!(
+                        visual.rendered_background("rectangle-narrow-section-header-0"),
+                        Some(gpui::rgb(fill).into())
+                    );
+                    assert_eq!(
+                        visual.rendered_background("rectangle-narrow-rectangle-0"),
+                        Some(gpui::rgba((fill << 8) | 0x38).into())
+                    );
+                }
                 let at = point(a.left() + px(2.0), a.top() + px(20.0));
                 visual.simulate_mouse_move(at, None, Modifiers::default());
                 visual.run_until_parked();

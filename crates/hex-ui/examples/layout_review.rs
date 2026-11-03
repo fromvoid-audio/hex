@@ -14,6 +14,9 @@ mod output_meter;
 #[allow(dead_code)]
 mod theme;
 
+#[path = "../src/section_surface.rs"]
+mod section_surface;
+
 #[path = "layout_review/sandbox.rs"]
 mod sandbox;
 
