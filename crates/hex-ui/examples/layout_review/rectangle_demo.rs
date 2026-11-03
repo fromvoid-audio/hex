@@ -331,7 +331,16 @@ impl RectangleDemo {
             let Some(fixture) = self.section_fixture.as_ref() else {
                 return false;
             };
+            let anchor = match fixture.snapped_beat(x, left, width, modifiers.control) {
+                Ok(anchor) => anchor,
+                Err(error) => {
+                    self.status = error.0;
+                    cx.notify();
+                    return true;
+                }
+            };
             self.section_paint = Some(crate::section_appearance::new_marker(fixture.project()));
+            self.section_anchor_beat = Some(anchor);
             self.capture =
                 RectangleCapture::begin(Target::SectionPaint, RectanglePart::Body, x, true);
             self.section_last_pointer = Some((x, y));
@@ -461,9 +470,21 @@ impl RectangleDemo {
             {
                 self.section_preview = fixture.project().arrangement_sections().to_vec();
                 let left = f32::from(bounds.left());
-                let anchor = (intent.origin_x - left) / width;
-                let position = (intent.pointer_x - left) / width;
-                match fixture.plan_paint(anchor, position, name, *color) {
+                let plan = self
+                    .section_anchor_beat
+                    .ok_or(hex_project::Invalid("section grid anchor unavailable"))
+                    .and_then(|anchor| {
+                        fixture
+                            .snapped_beat(intent.pointer_x, left, width, modifiers.control)
+                            .and_then(|position| {
+                                fixture
+                                    .paint_point_end(anchor, width, modifiers.control)
+                                    .and_then(|end| {
+                                        fixture.plan_paint(anchor, position, end, name, *color)
+                                    })
+                            })
+                    });
+                match plan {
                     Ok(plan) => {
                         self.preview = plan.display;
                         self.section_preview = plan.sections;
@@ -2350,6 +2371,69 @@ mod tests {
                 }
             });
         }
+    }
+
+    #[gpui::test]
+    fn paint_freezes_press_grid_and_uses_live_pointer_grid(cx: &mut TestAppContext) {
+        let handle = cx
+            .add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-paint-grid".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-paint-grid-area").unwrap();
+        let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
+        let control = Modifiers {
+            control: true,
+            ..Modifiers::default()
+        };
+        let (anchor, point_end, destination) = view.read_with(cx, |view, _| {
+            let fixture = view.section_fixture.as_ref().unwrap();
+            let bounds = view.bounds.unwrap();
+            let left = f32::from(bounds.left());
+            let width = f32::from(bounds.size.width);
+            let anchor = fixture
+                .snapped_beat(at(0.923).x.into(), left, width, true)
+                .unwrap();
+            (
+                anchor,
+                fixture.paint_point_end(anchor, width, true).unwrap(),
+                fixture
+                    .snapped_beat(at(0.965).x.into(), left, width, false)
+                    .unwrap(),
+            )
+        });
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: at(0.923),
+            button: MouseButton::Left,
+            modifiers: control,
+            click_count: 2,
+            first_mouse: false,
+        });
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.section_anchor_beat, Some(anchor));
+            assert!(matches!(view.section_command, Some(Command::AddArrangementSection { start, end, .. }) if start == anchor && end == point_end));
+        });
+        visual.simulate_mouse_move(at(0.965), MouseButton::Left, Modifiers::default());
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.section_anchor_beat, Some(anchor));
+            assert!(matches!(view.section_command, Some(Command::AddArrangementSection { start, end, .. }) if start == anchor.min(destination) && end == anchor.max(destination)));
+        });
+        visual.simulate_mouse_up(at(0.965), MouseButton::Left, Modifiers::default());
+        view.read_with(cx, |view, _| assert!(matches!(view.pending.as_ref(), Some(Pending::Section { command, .. }) if matches!(command.as_ref(), Command::AddArrangementSection { start, end, .. } if *start == anchor.min(destination) && *end == anchor.max(destination)))));
+        view.update(cx, |view, cx| view.settle(true, cx));
+        view.read_with(cx, |view, _| {
+            assert!(
+                view.section_fixture
+                    .as_ref()
+                    .unwrap()
+                    .project()
+                    .arrangement_sections()
+                    .iter()
+                    .any(|section| section.start() == anchor.min(destination)
+                        && section.end() == anchor.max(destination))
+            )
+        });
     }
 
     #[gpui::test]
