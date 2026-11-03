@@ -547,8 +547,20 @@ fn refusal_on_real_admitted_track_return_and_mutable_owners_preserves_next_pcm()
         mutable: Some((16, Instrument::Feedback)),
         instrument: Instrument::Analytic,
     };
-    let mut actual = inventory::handoff(&shape).unwrap();
-    let mut twin = inventory::handoff(&shape).unwrap();
+    // Independent playback owners may share immutable revision inputs.
+    let (previous, candidate) = std::thread::scope(|scope| {
+        let candidate = scope.spawn(|| inventory::revision(&shape, false, 100));
+        let previous = inventory::revision(&shape, true, 100_000);
+        (previous, candidate.join().unwrap())
+    });
+    let (mut actual, mut twin) = std::thread::scope(|scope| {
+        let twin = scope.spawn(|| {
+            inventory::handoff_prepared(&shape, previous.clone(), candidate.clone()).unwrap()
+        });
+        let actual =
+            inventory::handoff_prepared(&shape, previous.clone(), candidate.clone()).unwrap();
+        (actual, twin.join().unwrap())
+    });
     let projected = inventory::ownership(&actual, true);
     let mut input = projected.input(&[], payload::PoolCapacity::allocated());
     input.base = usize::MAX;
