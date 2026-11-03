@@ -22,6 +22,62 @@ pub(in crate::prepared) mod stream_fixture;
 #[cfg(feature = "allocation-probe")]
 mod utility_fixture;
 use crate::prepared::candidate_tests::{anchored, candidate, finish, recover, serial};
+
+/// Bound lifecycle waits so a broken handoff fails promptly; normal runs take milliseconds.
+const LIFECYCLE_BOUND: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The nonblocking usage query is None while a lifecycle pass holds the bank
+/// (#4029). Wait for an actual observation; never infer zero from None.
+fn observed_usage(control: &Control) -> crate::AudioCandidateDomainUsage {
+    let deadline = std::time::Instant::now() + LIFECYCLE_BOUND;
+    loop {
+        if let Some(usage) = control.audio_candidate_domain_usage() {
+            return usage;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "domain usage unavailable: {}",
+            control.candidate_root.test_status()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn usage_observation_waits_out_lifecycle_bank_contention() {
+    let _serial = serial();
+    let Some(mut owner) = candidate() else { return };
+    let limits = reservation(&mut owner);
+    let (mut control, data, errors, mut retirement) = anchored();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    let root = control.candidate_root.clone();
+    let (held, holding) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        root.with_domain_bank_held(|| {
+            held.send(()).unwrap();
+            released.recv().unwrap();
+        })
+    });
+    holding.recv().unwrap();
+    // The exact #4029 failure: a raw unwrap here observed contention as None.
+    assert!(control.audio_candidate_domain_usage().is_none());
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        release.send(()).unwrap();
+    });
+    let expected = observed_usage(&control);
+    holder.join().unwrap();
+    releaser.join().unwrap();
+    assert_eq!(control.audio_candidate_domain_usage(), Some(expected));
+    drop(owner);
+    drop(data);
+    drop(errors);
+    drop(control);
+    finish(&mut retirement);
+}
 fn reservation(
     owner: &mut hex_engine::AudioCandidateOwner,
 ) -> crate::AudioCandidatePublicationReservation {
@@ -567,13 +623,7 @@ fn actual_verified_domain_reuse_context_refusal_and_readiness_rejection_hold_pai
         .ok()
         .unwrap();
     assert_ne!(domain, wrong);
-    assert_eq!(
-        control
-            .audio_candidate_domain_usage()
-            .unwrap()
-            .occupied_domains,
-        2
-    );
+    assert_eq!(observed_usage(&control).occupied_domains, 2);
     let identity = a.identity();
     let wrong_tokens = vec![wrong];
     let ptr = wrong_tokens.as_ptr();
@@ -635,13 +685,7 @@ fn actual_verified_domain_reuse_context_refusal_and_readiness_rejection_hold_pai
         control.status.rejected_revision(),
         Some((2, PlaybackHandoffRejection::StreamedPagesNotReady))
     );
-    assert_eq!(
-        control
-            .audio_candidate_domain_usage()
-            .unwrap()
-            .occupied_domains,
-        2
-    ); // same actual pair reused, no N3
+    assert_eq!(observed_usage(&control).occupied_domains, 2); // same actual pair reused, no N3
     assert!(control.retire_audio_candidate_domain(domain));
     assert!(control.recover_audio_candidate_domain(domain).is_none());
     let a_bank = recover(&mut control, &a_ticket);
@@ -665,19 +709,7 @@ fn actual_verified_domain_reuse_context_refusal_and_readiness_rejection_hold_pai
         }
         assert!(control.recover_audio_candidate_domain(token).is_none());
     }
-    let usage = loop {
-        if let Some(usage) = control.audio_candidate_domain_usage() {
-            break usage;
-        }
-        // The lifecycle worker may still inspect the bank after the last
-        // report. Poll the nonblocking observation; never infer zero from None.
-        assert!(
-            std::time::Instant::now() < deadline,
-            "domain usage unavailable after complete reports: {}",
-            control.candidate_root.test_status()
-        );
-        std::thread::yield_now();
-    };
+    let usage = observed_usage(&control);
     assert_eq!(usage.occupied_domains, 0);
     drop(a_bank);
     drop(b_bank);

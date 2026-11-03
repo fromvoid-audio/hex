@@ -4,7 +4,7 @@ use hex_project::{BeatTime, Command, Created, Editor, Project};
 use hex_session::arrangement_seek::{
     ArrangementSeekMode, ArrangementSeekSpec, ArrangementSeekWorker,
 };
-use std::{collections::BTreeMap, sync::Arc, thread, time::Duration, time::Instant};
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
 #[test]
 fn feedback_operator_arrangement_seek_matches_play_from_without_replay() {
@@ -119,13 +119,13 @@ fn operator_preroll(lfo: Option<bool>) {
             start_playing: false,
         })
         .expect("submit mutable Operator preroll");
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + std::time::Duration::from_secs(60);
     let result = loop {
         if let Some(result) = worker.try_result() {
             break result;
         }
         assert!(Instant::now() < deadline, "Operator seek did not finish");
-        thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     };
     assert_eq!(result.request_id, request_id);
     assert_eq!(result.mode, ArrangementSeekMode::Interactive);

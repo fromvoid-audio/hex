@@ -15,6 +15,7 @@ class StateStream final : public Steinberg::IBStream,public Steinberg::ISizeable
     using int32=Steinberg::int32;using int64=Steinberg::int64;using uint32=Steinberg::uint32;
     std::atomic<uint32> references{1};
     std::atomic<bool> refused{false};
+    uint32_t overflow_bytes=0;
     size_t limit=0,position=0,length=0;
     bool read_only=false;
     bool control() { if ([NSThread isMainThread]) return true;refused.store(true);return false; }
@@ -53,10 +54,11 @@ public:
     }
     bool exclusive() const { return references.load()==1; }
     bool valid() const { return !refused.load(); }
+    uint32_t overflow() const { return overflow_bytes; }
     size_t size() const { return length; }
     bool reset_write_on_control(size_t maximum) {
         if (!control() || !valid() || !exclusive() || maximum>capacity) return false;
-        bytes.fill(0);limit=maximum;position=length=0;read_only=false;return true;
+        bytes.fill(0);limit=maximum;position=length=0;read_only=false;overflow_bytes=0;return true;
     }
     bool rewind_read_only_on_control() {
         if (!control() || !valid() || !exclusive()) return false;
@@ -77,7 +79,14 @@ public:
     }
     Steinberg::tresult PLUGIN_API write(void* buffer,int32 count,int32* done) override {
         if (done) *done=0;
-        if (!control() || read_only || count<0 || (count && !buffer) || static_cast<size_t>(count)>limit-position) return invalid();
+        if (!control() || read_only || count<0 || (count && !buffer)) return invalid();
+        if (static_cast<size_t>(count)>limit-position) {
+            // Include the component's reserved prefix for controller captures.
+            // This is a lower bound, not a claim that the SDK finished writing.
+            const auto observed=capacity-limit+position+static_cast<size_t>(count);
+            overflow_bytes=std::max(overflow_bytes,static_cast<uint32_t>(std::min(observed,static_cast<size_t>(std::numeric_limits<uint32_t>::max()))));
+            return Steinberg::kInvalidArgument;
+        }
         if (count) std::memcpy(bytes.data()+position,buffer,static_cast<size_t>(count));
         position+=static_cast<size_t>(count);length=std::max(length,position);
         if (done) *done=count;return Steinberg::kResultOk;

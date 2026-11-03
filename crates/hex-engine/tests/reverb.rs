@@ -199,15 +199,21 @@ fn reverb_host_loop_continues_tank_while_seek_and_stop_reset_it() {
             .unwrap()
             .unwrap();
         let mut provider = prepared.create_runtime();
+        // A wrapped pass ramps its loop-start impulse in from the silent
+        // material past the loop end: first crossfade frame, gain 1/F.
+        let impulse = |i: usize| {
+            let gain = if i == 0 { 1.0 } else { 1.0 / 128.0 };
+            [0.25 * gain, -0.5 * gain]
+        };
         let mut expected = vec![[0.0; 2]; 12_000];
         for i in [0, 5000, 10000] {
-            expected[i] = [0.25, -0.5];
+            expected[i] = impulse(i);
         }
         provider.process_block(&mut expected, &EMPTY_DEVICE_RESOURCES);
         if on_return {
             for i in [0, 5000, 10000] {
-                expected[i][0] += 0.25;
-                expected[i][1] -= 0.5;
+                expected[i][0] += impulse(i)[0];
+                expected[i][1] += impulse(i)[1];
             }
         }
         assert_eq!(actual, expected);

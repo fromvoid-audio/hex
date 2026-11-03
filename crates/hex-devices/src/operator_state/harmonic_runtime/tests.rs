@@ -455,10 +455,11 @@ fn tuning_retargets_held_and_released_voice_steps_without_resetting_phase_or_fee
                 (c.id, c.age, c.gate, c.phases, c.previous)
             );
         }
-        let invalid = make(settings, 30000.0);
-        let refused = invalid.create_runtime();
-        let proof = Target(invalid.configuration.configuration_id());
-        assert!(!refused.can_retarget_history_from(next.as_ref(), &proof));
+        // Oscillators above nyquist are silenced, not refused.
+        let silenced = make(settings, 30000.0);
+        let admitted = silenced.create_runtime();
+        let proof = Target(silenced.configuration.configuration_id());
+        assert!(admitted.can_retarget_history_from(next.as_ref(), &proof));
         let mut before = [[0.0; 2]; 137];
         let mut expected = before;
         let mut exact = last.create_runtime();

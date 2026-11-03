@@ -133,17 +133,23 @@ pub(super) fn edited_fade(
     let mut out_curve = fade.out_curve();
     let mut in_position = fade.in_position();
     let mut out_position = fade.out_position();
-    let shift = |value: u64, upper: u64| {
-        i128::from(value)
-            .saturating_add(whole_frames)
-            .clamp(0, i128::from(upper)) as u64
-    };
+    // The top handles push each other: the dragged ramp reaches the opposite
+    // silent endpoint and the other ramp gives way. Recomputing from the drag's
+    // original fade springs the pushed ramp back to, and no further than, its
+    // pre-drag length when the same gesture reverses.
+    let body = span.saturating_sub(start).saturating_sub(end_offset);
     match handle {
-        Handle::InTop => fade_in = shift(fade_in, span - start),
+        Handle::InTop => {
+            fade_in = i128::from(fade_in)
+                .saturating_add(whole_frames)
+                .clamp(0, i128::from(body)) as u64;
+            fade_out = fade_out.min(body - fade_in);
+        }
         Handle::OutTop => {
             fade_out = i128::from(fade_out)
                 .saturating_sub(whole_frames)
-                .clamp(0, i128::from(span - end_offset)) as u64
+                .clamp(0, i128::from(body)) as u64;
+            fade_in = fade_in.min(body - fade_out);
         }
         Handle::InBottom | Handle::OutBottom => return None,
         Handle::InCurve | Handle::OutCurve => {
@@ -781,18 +787,59 @@ mod tests {
             (10, 40, 30)
         );
         assert!(bent.gain_at(20) < fade.gain_at(20));
-        assert_eq!(
-            edited_fade(bent, Handle::InTop, (i128::MAX - 100) as f64, 0)
-                .unwrap()
-                .fade_in(),
-            90
-        );
-        assert_eq!(
-            edited_fade(bent, Handle::OutTop, i128::MIN as f64, 0)
-                .unwrap()
-                .fade_out(),
-            90
-        );
+        let pushed = edited_fade(bent, Handle::InTop, (i128::MAX - 100) as f64, 0).unwrap();
+        assert_eq!((pushed.fade_in(), pushed.fade_out()), (80, 0));
+        let pushed = edited_fade(bent, Handle::OutTop, i128::MIN as f64, 0).unwrap();
+        assert_eq!((pushed.fade_in(), pushed.fade_out()), (0, 80));
+    }
+
+    #[test]
+    fn top_handles_push_each_other_and_spring_back() {
+        let original = ClipFade::new(100, 0, 30, 40)
+            .unwrap()
+            .with_shape(5, 5, 300, -200)
+            .unwrap()
+            .with_curve_positions(400, 600)
+            .unwrap();
+        let lengths = |handle, frames| {
+            let fade = edited_fade(original, handle, frames, 0).unwrap();
+            assert_eq!(
+                (
+                    fade.in_start(),
+                    fade.out_end_offset(),
+                    fade.in_curve(),
+                    fade.out_curve(),
+                    fade.in_position(),
+                    fade.out_position()
+                ),
+                (5, 5, 300, -200, 400, 600)
+            );
+            (fade.fade_in(), fade.fade_out())
+        };
+        // Body is 90 frames; the fades meet once their lengths sum to 90.
+        assert_eq!(lengths(Handle::InTop, 20.0), (50, 40));
+        assert_eq!(lengths(Handle::InTop, 35.0), (65, 25));
+        // Reversing the same drag restores the pushed fade, and no further.
+        assert_eq!(lengths(Handle::InTop, 10.0), (40, 40));
+        assert_eq!(lengths(Handle::InTop, -30.0), (0, 40));
+        assert_eq!(lengths(Handle::InTop, 1e9), (90, 0));
+        assert_eq!(lengths(Handle::OutTop, -35.0), (15, 75));
+        assert_eq!(lengths(Handle::OutTop, -10.0), (30, 50));
+        assert_eq!(lengths(Handle::OutTop, 50.0), (30, 0));
+        assert_eq!(lengths(Handle::OutTop, -1e9), (0, 90));
+        // Opening an already-overlapping legacy fade only adjusts it once edited.
+        let legacy = ClipFade::new(100, 0, 70, 60).unwrap();
+        let fade = edited_fade(legacy, Handle::InTop, 0.0, 0).unwrap();
+        assert_eq!((fade.fade_in(), fade.fade_out()), (70, 30));
+        // Zero-length body leaves both fades empty.
+        let empty = ClipFade::new(10, 0, 0, 0)
+            .unwrap()
+            .with_shape(5, 5, 0, 0)
+            .unwrap();
+        for handle in [Handle::InTop, Handle::OutTop] {
+            let fade = edited_fade(empty, handle, 7.0, 0).unwrap();
+            assert_eq!((fade.fade_in(), fade.fade_out()), (0, 0));
+        }
     }
 }
 

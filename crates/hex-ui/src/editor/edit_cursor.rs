@@ -105,6 +105,7 @@ impl EditorView {
         self.select_lane_track(track);
         self.edit_cursor_in_selected_clip =
             self.selected_clip.filter(|_| selected_clip_under_pointer);
+        self.loop_start_over_clip = None;
         self.advance_selection_intent();
         if under_pointer.is_none() {
             self.focus_track_details(window);
@@ -115,6 +116,31 @@ impl EditorView {
         }
         self.focus.focus(window);
         cx.notify();
+    }
+
+    /// An acknowledged loop enable hands the next Play start to the loop start
+    /// by retiring a placed point cursor; a new click overrides it again. Ranges
+    /// keep precedence, and disabling the loop never restores the cursor.
+    pub(super) fn retire_point_cursor_on_loop_enable(&mut self, loop_was_enabled: bool) {
+        let loop_enabled = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.loop_region())
+            .is_some_and(|region| region.enabled());
+        if loop_was_enabled
+            || !loop_enabled
+            || self.edit_cursor.is_none()
+            || self.normalized_time_selection().is_some()
+            || self.time_selection_gesture.is_some()
+            || self.time_range_move_gesture.is_some()
+        {
+            return;
+        }
+        self.loop_start_over_clip = self.edit_cursor_in_selected_clip.take();
+        self.edit_cursor = None;
+        self.time_selection = None;
+        self.time_selection_project_scope = false;
+        self.suppress_cursor_click = false;
     }
 
     pub(super) fn tick_edit_cursor(&mut self, now: Instant) -> bool {

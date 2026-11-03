@@ -2119,3 +2119,63 @@ fn moving_and_duplicating_sections_preserve_a_single_global_tempo_clock() {
         }
     }
 }
+
+#[test]
+fn repeated_duplicates_at_a_fractional_tempo_keep_musical_audio_editable() {
+    // Reported on a saved 143 bpm project: after earlier section edits left a
+    // musical clip one residual sample before a section's end fence,
+    // duplicating that section refused with a rounding-residual error, and
+    // every splice added same-tempo points.
+    let mut e = Editor::new(Project::new(8_000).unwrap(), 64).unwrap();
+    let Created::Imported { clip, .. } = e
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "loop.wav".into(),
+            sample_rate: 8_000,
+            frames: 9_000,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    e.execute(Command::SetTempoPoint {
+        beat: b(0),
+        tempo: Tempo::new(143_000_000).unwrap(),
+    })
+    .unwrap();
+    e.execute(Command::SetAudioClipMusical {
+        clip,
+        enabled: true,
+    })
+    .unwrap();
+    let mut snapshot = e.project().snapshot();
+    let audio = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    audio.edit.as_mut().unwrap().timing = hex_project::AudioClipTiming::Musical(b(8));
+    audio.start = e.project().tempo_map().beat_to_frame(b(8)).unwrap();
+    let mut e = Editor::new(Project::from_snapshot(snapshot).unwrap(), 64).unwrap();
+    let first = section(&mut e, "a", 0, 3);
+    section(&mut e, "b", 3, 8);
+    for round in 0..12 {
+        e.execute(Command::DuplicateArrangementSection(first))
+            .unwrap_or_else(|error| panic!("round {round} first: {error:?}"));
+        let ending_at_clip = e
+            .project()
+            .arrangement_sections()
+            .iter()
+            .rev()
+            .find(|s| {
+                e.project().clip(clip).unwrap().audio_edit().unwrap().timing
+                    == hex_project::AudioClipTiming::Musical(s.end())
+            })
+            .map(|s| s.id());
+        if let Some(section) = ending_at_clip {
+            e.execute(Command::DuplicateArrangementSection(section))
+                .unwrap_or_else(|error| panic!("round {round} fence: {error:?}"));
+        }
+        assert_eq!(
+            e.project().tempo_map().points().len(),
+            1,
+            "a constant tempo stays one point"
+        );
+    }
+}

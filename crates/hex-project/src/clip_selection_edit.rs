@@ -605,6 +605,7 @@ impl Command {
             | Self::ImportPreparedAudioClip { .. }
             | Self::ImportPreparedAudioClipWithOverwrite { .. }
             | Self::ImportPreparedSessionAudioClip { .. }
+            | Self::ImportExistingAudio { .. }
             | Self::RemoveTrack(..)
             | Self::RemoveTracks(..)
             | Self::RenameTrack { .. }
@@ -625,6 +626,7 @@ impl Command {
             | Self::ImportDeviceAssetIntoEmptyInstrument { .. }
             | Self::ImportDeviceAssetReplacingInstrument { .. }
             | Self::RemoveAsset(..)
+            | Self::RelinkAssets(..)
             | Self::PlaceClip { .. }
             | Self::GainBy { .. }
             | Self::BalanceBy { .. }

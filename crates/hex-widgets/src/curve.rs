@@ -112,6 +112,8 @@ mod tests {
         focus_marker: 0xaaaaaa,
         dial_rail: 0x000000,
         hover: 0x404040,
+        selection: 0x3350a0,
+        invalid: 0xff554c,
         font_size: 8.0,
         text_case: crate::TextCase::Preserve,
     };

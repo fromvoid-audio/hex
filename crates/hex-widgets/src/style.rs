@@ -61,6 +61,10 @@ pub struct ControlStyle {
     /// Full unfilled knob rail color, independent of the parameter value fill.
     pub dial_rail: u32,
     pub hover: u32,
+    /// Opaque text-selection highlight behind `text` in editable fields.
+    pub selection: u32,
+    /// Outline for rejected/invalid typed values.
+    pub invalid: u32,
     pub font_size: f32,
     /// Presentation only; source drafts, parser inputs and clipboard stay unchanged.
     pub text_case: crate::TextCase,

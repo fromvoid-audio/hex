@@ -193,6 +193,52 @@ impl Project {
             .iter()
             .find(|section| section.id == id)
     }
+    /// True when `other` differs from `self` only in section markers and the
+    /// ID allocator they advance. No playback input reads either, so a prepared
+    /// audio graph for `self` also renders `other`. Every other field is compared
+    /// by an exhaustive destructure: adding a project field must decide here.
+    pub fn differs_only_in_arrangement_sections(&self, other: &Project) -> bool {
+        let Project {
+            aliases,
+            native_sources,
+            arrangement_sections: _,
+            tuning,
+            routing,
+            audio_feeds,
+            midi_routes,
+            import_provenance,
+            sample_rate,
+            next_id: _,
+            assets,
+            offline_assets,
+            tracks,
+            returns,
+            session,
+            loop_region,
+            master_gain,
+            main_devices,
+            tempo_map,
+            meter_map,
+        } = self;
+        *sample_rate == other.sample_rate
+            && master_gain.to_bits() == other.master_gain.to_bits()
+            && *loop_region == other.loop_region
+            && *tempo_map == other.tempo_map
+            && *meter_map == other.meter_map
+            && *tuning == other.tuning
+            && *aliases == other.aliases
+            && *native_sources == other.native_sources
+            && *routing == other.routing
+            && *audio_feeds == other.audio_feeds
+            && *midi_routes == other.midi_routes
+            && *import_provenance == other.import_provenance
+            && *assets == other.assets
+            && *offline_assets == other.offline_assets
+            && *returns == other.returns
+            && *session == other.session
+            && *main_devices == other.main_devices
+            && *tracks == other.tracks
+    }
     pub fn preview_section_reorder(
         &self,
         section: SectionId,

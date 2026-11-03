@@ -18,7 +18,10 @@ pub use parameter_page::{
     ParameterPageQuery, ParameterPlainValue, ParameterText, parameter_page, parameter_page_request,
 };
 mod flush;
-pub use capture::{capture_request, captured_state, live_capture_request, live_captured_state};
+pub use capture::{
+    CAPTURE_REFUSAL_MAGIC, StateCaptureRefusal, capture_refusal, capture_request, captured_state,
+    live_capture_reply, live_capture_request, live_captured_state,
+};
 pub use flush::{
     FlushDisposition, FlushedParameter, FlushedParameters, MAX_FLUSHED_PARAMETERS, flush_request,
     flushed_parameters,

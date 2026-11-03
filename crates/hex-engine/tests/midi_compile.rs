@@ -586,6 +586,46 @@ fn zero_frame_note_is_explicitly_refused() {
     );
 }
 
+#[test]
+fn loop_clamped_subframe_gate_is_skipped_without_rejecting_project() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, BeatTime::ONE);
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip,
+            source_length: beat(2, 1),
+            source_start: BeatTime::ZERO,
+            loop_start: BeatTime::ZERO,
+            loop_end: BeatTime::ONE,
+            looping: true,
+            length: BeatTime::ONE,
+        })
+        .unwrap();
+    for (start, duration, pitch) in [
+        (BeatTime::ZERO, beat(1, 2), 60),
+        (
+            BeatTime::from_raw(BeatTime::ONE.raw() - 1),
+            BeatTime::from_raw(100),
+            72,
+        ),
+    ] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration,
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    let events = midi_events(editor.project()).unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().all(|event| event.pitch == 60));
+    compile::project(editor.project(), &BTreeMap::new()).unwrap();
+}
+
 fn arrangement_source_window_editor(high_note_start: BeatTime) -> Editor {
     let mut editor = Editor::new(Project::new(8_000).unwrap(), 8).unwrap();
     let track = match editor
@@ -1180,7 +1220,7 @@ fn instrument_render_is_partition_seek_pause_and_stop_invariant() {
     playing_graph.apply(PlaybackCommand::Play);
     let replacement_project = compile::project(editor.project(), &BTreeMap::new()).unwrap();
     let mut replacement = Playback::new(replacement_project);
-    replacement.inherit_transport(&playing_graph);
+    replacement.inherit_transport(&playing_graph).unwrap();
     assert_eq!(replacement.position(), 5_000);
     assert!(replacement.playing());
     let mut replacement_output = [[0.0; 2]; 128];

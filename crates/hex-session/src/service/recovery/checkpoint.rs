@@ -81,7 +81,7 @@ impl RecoveryTracker {
         context: RecoveryContext<'_>,
         unsaved: bool,
         changed: bool,
-    ) -> Result<(), String> {
+    ) -> Result<Option<PathBuf>, String> {
         let path = checkpoint_path(context.document, context.untitled)?;
         if self
             .failure
@@ -99,12 +99,12 @@ impl RecoveryTracker {
             if result.is_ok() {
                 *context.journal = None;
             }
-            result
+            result.map(|()| None)
         } else if changed {
             if self.failure.as_ref().is_some_and(|f| f.can_restart()) {
                 // The UI retains the actionable failure. Re-decoding this exact
                 // unsupported slot for every successful edit cannot repair it.
-                return Ok(());
+                return Ok(None);
             }
             checkpoint_project(
                 context.session,
@@ -114,10 +114,10 @@ impl RecoveryTracker {
                 context.journal,
             )
         } else {
-            return Ok(());
+            return Ok(None);
         };
         match &result {
-            Ok(()) => self.clear(),
+            Ok(_) => self.clear(),
             Err(reason) => self.failed(path, context.generation, reason.clone(), None),
         }
         result
@@ -223,16 +223,10 @@ mod tests {
         }
     }
     fn next(service: &Service) -> Event {
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if let Ok(event) = service.try_event() {
-                return event;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "recovery worker completion"
-            );
-            std::thread::yield_now();
+        // Blocks on the event channel; bounded only against hangs.
+        match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+            Ok(event) => event,
+            Err(error) => panic!("next: worker event absent: {error}"),
         }
     }
     fn intent(event: &Event) -> RecoveryRestart {

@@ -366,6 +366,7 @@ mod tests {
             base_placement: edit.placement,
             base_start_delta: 0,
             window: crate::ContentWindow::new(0, 100, true).unwrap(),
+            read_resampler: crate::WarpResampler::default(),
         });
         edit.view_start = 0;
         edit.view_end = 100;

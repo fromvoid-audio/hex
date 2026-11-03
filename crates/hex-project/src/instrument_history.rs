@@ -78,8 +78,10 @@ impl Project {
             main_devices,
             tempo_map,
             meter_map,
+            offline_assets,
         } = self;
         if aliases != &target.aliases
+            || offline_assets != &target.offline_assets
             || native_sources.len() != target.native_sources.len()
             || arrangement_sections != &target.arrangement_sections
             || tuning != &target.tuning

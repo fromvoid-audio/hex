@@ -174,6 +174,9 @@ public:
     tresult PLUGIN_API getState(IBStream* stream) override {
         if (!control() || !context || !handler || !stream) return kResultFalse;
         ++restoration.controller_get;
+        if(fault==96 && restoration.controller_get==2) {
+            std::array<unsigned char,5000> huge{};return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+        }
         // Original sensitivity fixture: an edit admitted during a live SDK
         // state read must not let that pre-edit component snapshot escape.
         if(fault==90 && restoration.controller_get>1 && !edits_sent) {
@@ -345,6 +348,19 @@ public:
         ++restoration.component_get;
         // Original current-state capture fault controls leave startup valid.
         if(restoration.component_get>1) {
+            if(fault==95 && restoration.component_get==2) {
+                std::array<unsigned char,5000> huge{};return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+            }
+            if(fault==97 && restoration.component_get==2) {
+                std::array<unsigned char,5000> huge{};
+                stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+                stream->seek(-1,IBStream::kIBSeekSet,nullptr);return kResultOk;
+            }
+            if(fault==98 && restoration.component_get==2) {
+                std::array<unsigned char,5000> huge{};
+                stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+                return kInternalError;
+            }
             if(fault==69) return kResultFalse;
             if(fault==70) throw std::runtime_error("original SDK current capture exception");
             if(fault==71) fault_hang(22);
@@ -641,7 +657,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>2) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>94) return false;next_fault=value;
+        if (value>98) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

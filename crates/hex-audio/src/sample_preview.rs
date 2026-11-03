@@ -719,7 +719,11 @@ mod tests {
         let (mut control, mut callback) = crate::prepared::channel(48_000).unwrap();
         control.publish(Playback::from_shared(project)).unwrap();
         let token = control.sample_preview.request().unwrap();
-        control.sample_preview.publish(token, pcm(0.5, 20)).unwrap();
+        // Long enough to outlast the 128-frame Pause fade below.
+        control
+            .sample_preview
+            .publish(token, pcm(0.5, 200))
+            .unwrap();
         let mut output = [[0.0; 2]; 2];
         callback.begin_block();
         callback.render(&mut output).unwrap();
@@ -732,10 +736,15 @@ mod tests {
         assert_eq!(output, [[0.75, -0.25]; 2]);
         assert_eq!(control.status.position.load(Acquire), 2);
         control.command(PlaybackCommand::Pause).unwrap();
+        // The queued Pause fades the project out over 128 frames (#4151).
+        let mut fade = [[0.0; 2]; 128];
+        callback.begin_block();
+        callback.render(&mut fade).unwrap();
+        assert!(!control.status.playing.load(Acquire));
         callback.begin_block();
         callback.render(&mut output).unwrap();
         assert_eq!(output, [[0.5, -0.5]; 2]);
-        assert_eq!(control.status.position.load(Acquire), 2);
+        assert_eq!(control.status.position.load(Acquire), 130);
         control.stop();
         callback.begin_block();
         callback.render(&mut output).unwrap();

@@ -17,15 +17,17 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 3
+POLICY_VERSION = 8
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
 RUNTIME_CONSUMERS = {"hex-devices": {"hex-storage"}}
+RUNTIME_CONSUMER_NAMES = {name for names in RUNTIME_CONSUMERS.values() for name in names}
 TOOLING = {
     "launch", "scripts/launch-restart.py", "scripts/hex-test-build.py",
     "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
     "scripts/ci_plan.py", "scripts/local-ci.py", "scripts/python_test_plan.py", "scripts/ci_checkpoint.py", "scripts/ci_target_storage.py",
+    "scripts/test_shards.py", "scripts/python_shards.py",
 }
 
 
@@ -151,6 +153,233 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
     return scope, sorted(affected), reasons
 
 
+# Reviewed test-only features that add APIs/tests without changing default behavior,
+# so a package's default `cargo test` is a subset of its feature run (doctests
+# excepted; --all-targets omits them, so plans keep a --doc run). Default-feature
+# compilation stays proven by affected clippy. Reviewed 31 October 2026:
+# - hex-ui ui-test-support: enables gpui/test-support (test executor/platform and
+#   debug selectors only) and hex-session's overview hooks; no cfg(not) gates.
+# - hex-session source-overview-test-support: an optional observer hook, None by default.
+# - hex-engine/hex-export instrument-test-support: probe/fixture modules only.
+# allocation-probe installs a counting global allocator and has cfg(not) gates;
+# it is deliberately absent and keeps both runs.
+ADDITIVE_TEST_FEATURES = {
+    "hex-ui": "ui-test-support",
+    "hex-session": "source-overview-test-support",
+    "hex-engine": "instrument-test-support",
+    "hex-export": "instrument-test-support",
+}
+
+
+def single_run_packages(root: Path, affected: list[str], inventory: list[dict]) -> dict[str, str]:
+    """Affected packages whose only extra feature is reviewed additive.
+
+    Any line combining `not(` with that feature in the package's Rust sources is a
+    tripwire: the package keeps both default and feature test runs.
+    """
+    selected = {}
+    for package in inventory:
+        feature = ADDITIVE_TEST_FEATURES.get(package["name"])
+        if package["name"] not in affected or not feature:
+            continue
+        if set(package["features"]) - {"default"} != {feature}:
+            continue
+        directory = root / Path(package["manifest"]).parent
+        needle = f'feature = "{feature}"'
+        gated = any("not(" in line and needle in line
+                    for source in directory.rglob("*.rs") if source.is_file()
+                    for line in source.read_text(errors="replace").splitlines())
+        if not gated:
+            selected[package["name"]] = feature
+    return selected
+
+
+TEST_CFG = re.compile(r"#\[cfg\((test|all\(test\b[^()]*(\([^()]*\)[^()]*)*\))\)\]")
+
+
+def module_declarations(source_root: Path) -> dict[Path, list[tuple[Path, list[str]]]]:
+    """Map each declared module file to (declaring file, attributes) pairs.
+
+    Only top-level `mod NAME;` lines (no indentation) are indexed; `#[path]` is
+    resolved relative to the declaring file's directory, as rustc does outside
+    inline modules. Declarations nested in inline modules are not indexed, so
+    their files stay unproven rather than misattributed.
+    """
+    declaration = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
+    path_attribute = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
+    found: dict[Path, list[tuple[Path, list[str]]]] = {}
+    for parent in sorted(f for f in source_root.rglob("*.rs") if f.is_file()):
+        lines = parent.read_text(errors="replace").splitlines()
+        for index, line in enumerate(lines):
+            match = declaration.fullmatch(line.rstrip())
+            if not match:
+                continue
+            attributes = []
+            cursor = index - 1
+            while cursor >= 0 and lines[cursor].startswith(("#[", "//")):
+                attributes.append(lines[cursor].strip())
+                cursor -= 1
+            name = match.group(3)
+            explicit = next((path_attribute.fullmatch(a).group(1) for a in attributes
+                             if path_attribute.fullmatch(a)), None)
+            if explicit:
+                targets = [parent.parent / explicit]
+            else:
+                base = parent.parent if parent.name in {"mod.rs", "lib.rs", "main.rs"} else parent.with_suffix("")
+                targets = [base / f"{name}.rs", base / name / "mod.rs"]
+            for target in targets:
+                found.setdefault(target.resolve(), []).append((parent.resolve(), attributes))
+    return found
+
+
+TEST_ATTRIBUTE = re.compile(r"#\[(?:gpui::)?test\b")
+MOD_LINE = re.compile(r"(pub(\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;")
+PATH_ATTRIBUTE = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
+
+
+def module_paths(source_root: Path) -> dict[Path, str] | None:
+    """Rust module path of every file reachable from the crate root.
+
+    Walks top-level `mod NAME;` declarations from lib.rs (or main.rs), resolving
+    `#[path]` as rustc does. Returns None when the crate includes source text
+    (`include!`), so a module filter can never miss included tests.
+    """
+    root_file = next((source_root / name for name in ("lib.rs", "main.rs")
+                      if (source_root / name).is_file()), None)
+    if root_file is None:
+        return None
+    paths: dict[Path, str] = {root_file.resolve(): ""}
+    pending = [root_file.resolve()]
+    while pending:
+        parent = pending.pop()
+        text = parent.read_text(errors="replace")
+        if "include!(" in text:
+            return None
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            match = MOD_LINE.fullmatch(line.rstrip())
+            if not match:
+                continue
+            attributes, cursor = [], index - 1
+            while cursor >= 0 and lines[cursor].startswith(("#[", "//")):
+                attributes.append(lines[cursor].strip())
+                cursor -= 1
+            name = match.group(3)
+            explicit = next((PATH_ATTRIBUTE.fullmatch(a).group(1) for a in attributes
+                             if PATH_ATTRIBUTE.fullmatch(a)), None)
+            base = parent.parent if parent.name in {"mod.rs", "lib.rs", "main.rs"} else parent.with_suffix("")
+            targets = [parent.parent / explicit] if explicit else [base / f"{name}.rs", base / name / "mod.rs"]
+            target = next((t.resolve() for t in targets if t.is_file()), None)
+            if target is None or target in paths:
+                continue
+            prefix = paths[parent]
+            paths[target] = f"{prefix}::{name}" if prefix else name
+            pending.append(target)
+    return paths
+
+
+def doc_example_owners(root: Path, paths: list[str], inventory: list[dict]) -> list[str]:
+    """Owners whose changed Rust files carry doc examples (fenced code in doc comments)."""
+    owners = set()
+    for path in paths:
+        file = root / path
+        if not path.endswith(".rs") or not file.is_file():
+            continue
+        if any(line.lstrip().startswith(("///", "//!")) and "```" in line
+               for line in file.read_text(errors="replace").splitlines()):
+            owner = owner_package(path, inventory)
+            if owner:
+                owners.add(owner)
+    return sorted(owners)
+
+
+def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
+                        tested: list[str]) -> dict[str, list[str]]:
+    """Per-owner libtest filters for module-scoped merges (user policy, 1 November 2026).
+
+    A changed `src/` file selects the tests of its own module subtree, named
+    `module::path::`. When that subtree declares no tests, the nearest ancestor
+    module with tests is selected instead, so a change never merges untested.
+    A crate root, an unresolved file, an `include!`, a non-`src/` input or a
+    reviewed runtime consumer keeps the whole package (absent from the result).
+    """
+    filters: dict[str, set[str]] = {}
+    whole: set[str] = set()
+    resolved: dict[str, dict[Path, str] | None] = {}
+    executable = [p for p in paths if not metadata_path(p)]
+    for path in executable:
+        owner = owner_package(path, inventory)
+        if owner not in tested:
+            continue
+        package = next(p for p in inventory if p["name"] == owner)
+        directory = (root / Path(package["manifest"]).parent).resolve()
+        file = (root / path).resolve()
+        if not path.endswith(".rs") or not file.is_file() or file.relative_to(directory).parts[0] != "src":
+            whole.add(owner)
+            continue
+        if owner not in resolved:
+            resolved[owner] = module_paths(directory / "src")
+        modules = resolved[owner]
+        module = None if modules is None else modules.get(file)
+        if not module:
+            whole.add(owner)
+            continue
+        def has_tests(candidate: str) -> bool:
+            return any(TEST_ATTRIBUTE.search(f.read_text(errors="replace"))
+                       for f, name in modules.items()
+                       if name == candidate or name.startswith(candidate + "::"))
+        while module and not has_tests(module):
+            module = module.rpartition("::")[0]
+        if not module:
+            whole.add(owner)
+        else:
+            filters.setdefault(owner, set()).add(module + "::")
+    selected = {}
+    for owner, names in filters.items():
+        if owner in whole:
+            continue
+        # A filter already covered by a broader selected module is redundant.
+        selected[owner] = sorted(n for n in names if not any(n != o and n.startswith(o) for o in names))
+    return selected
+
+
+def test_only_owner(root: Path, path: str, inventory: list[dict]) -> str | None:
+    """Owner of a Rust file no other package can observe, or None when unproven.
+
+    Integration tests, benches and examples are owner-only targets. A `src/`
+    file qualifies only when every declaration of it is directly preceded by
+    `#[cfg(test)]` or `#[cfg(all(test, …))]`, or lives in a file that itself
+    qualifies. `any(`/`not(` conditions, `include!(` in the package, missing,
+    undeclared or inline-nested files are not proven and keep consumers.
+    """
+    owner = owner_package(path, inventory)
+    package = next((p for p in inventory if p["name"] == owner), None)
+    if package is None or not path.endswith(".rs") or path.endswith("/build.rs"):
+        return None
+    directory = root / Path(package["manifest"]).parent
+    file = (root / path).resolve()
+    if not file.is_file():
+        return None
+    relative = file.relative_to(directory.resolve())
+    if relative.parts[0] in {"tests", "benches", "examples"}:
+        return owner
+    if relative.parts[0] != "src":
+        return None
+    source_root = directory / "src"
+    if any("include!(" in f.read_text(errors="replace") for f in source_root.rglob("*.rs") if f.is_file()):
+        return None
+    declarations = module_declarations(source_root)
+
+    def gated(module: Path, seen: frozenset) -> bool:
+        uses = declarations.get(module, [])
+        if not uses or module in seen:
+            return False
+        return all(any(TEST_CFG.fullmatch(a) and "any(" not in a and "not(" not in a for a in attributes)
+                   or gated(parent, seen | {module}) for parent, attributes in uses)
+
+    return owner if gated(file, frozenset()) else None
+
+
 def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affected: list[str]) -> dict:
     """Narrow only reviewed runtime relationships; Cargo closure remains the lint boundary.
 
@@ -166,14 +395,18 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
     if missing:
         raise ValueError("reviewed runtime consumers missing from Cargo inventory: " + ", ".join(sorted(missing)))
     compressor = {"crates/hex-devices/src/compressor.rs", "crates/hex-devices/src/compressor/tests.rs"}
+    # hex-sandbox (design tool over hex-engine/hex-widgets) has no compressor
+    # code, fixtures or tests; it is linted with every other Cargo consumer.
     known_consumers = {"hex-devices", "hex-engine", "hex-audio", "hex-ui", "hex-storage",
-                       "hex-desktop", "hex-cli", "hex-export", "hex-session", "hex-media", "hex-stream"}
+                       "hex-desktop", "hex-cli", "hex-export", "hex-session", "hex-media", "hex-stream",
+                       "hex-sandbox"}
     reviewed_features = {"hex-engine": {"instrument-test-support"}, "hex-export": {"instrument-test-support"},
                          # Stream test hooks gate no compressor code or tests; compressor
                          # plans still lint those configurations (local-ci boundary_steps).
                          "hex-audio": {"allocation-probe", "stream-test-support"}, "hex-desktop": {"allocation-probe"},
                          "hex-ui": {"ui-test-support"}, "hex-session": {"source-overview-test-support"},
-                         "hex-stream": {"allocation-probe", "test-support"}}
+                         "hex-stream": {"allocation-probe", "test-support"},
+                         "hex-sandbox": {"ui-test-support"}}
     narrow = bool(executable) and set(executable) <= compressor and set(affected) <= known_consumers
     narrow = narrow and all(set(p["features"]) <= reviewed_features.get(p["name"], set())
                             for p in inventory if p["name"] in affected)
@@ -195,14 +428,40 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
             {"package": "hex-audio", "test": "allocation_probe_calibration", "filter": "", "features": "allocation-probe"},
             {"package": "hex-ui", "lib": True, "filter": "compressor", "features": "ui-test-support"},
         ]
+    tested = owner_test_packages(paths, inventory, affected)
+    # Only owners of changed files get module filters; a runtime consumer tested
+    # on another owner's behalf has no changed file and keeps its whole suite.
+    module_filters = {} if narrow else module_test_filters(root, paths, inventory, tested)
     return {"kind": "compressor" if narrow else "packages", "tests": tests,
-            "test_packages": [] if narrow else affected,
+            "module_filters": module_filters,
+            "doc_example_owners": doc_example_owners(root, paths, inventory),
+            "test_packages": [] if narrow else tested,
+            "single_run": {} if narrow else single_run_packages(root, tested, inventory),
             "lint_packages": affected,
             "excluded_behavior_packages": sorted(set(affected) - {t["package"] for t in tests}) if narrow else [],
             "excluded_configurations": (["unrelated instrument/export and whole UI/audio suites: compressor-only implementation; unchanged shared host/registration/build inputs"] if narrow else []),
             "excluded_packages": sorted({p["name"] for p in inventory} - set(affected)),
             "rationale": ("unchanged host interfaces/registration; real compressor host, history, allocation, save/reopen and UI consumers; other device behavior omitted; all Cargo consumers linted"
-                          if narrow else "owner plus transitive normal/dev/build/optional/target and reviewed runtime consumers; full package tests and relevant feature configurations; no module isolation assumed")}
+                          if narrow else "owner packages and reviewed runtime consumers test in every configuration; every transitive Cargo consumer compiles and lints; consumer suites rely on the owner's boundary tests")}
+
+
+def owner_test_packages(paths: list[str], inventory: list[dict], affected: list[str]) -> list[str]:
+    """Packages whose test suites a merge runs: the boundary owners.
+
+    The owning crate's tests guard its public contract. Cargo consumers still
+    compile and lint against it, but their suites are not rerun: a consumer
+    regression is a missing owner boundary test, fixed there (user policy,
+    1 November 2026). Reviewed runtime consumers without a Cargo edge test too.
+    A manifest or build-script change can alter how consumers build, so it keeps
+    the whole affected closure.
+    """
+    executable = [p for p in paths if not metadata_path(p)]
+    if any(p.endswith(("Cargo.toml", "/build.rs")) for p in executable):
+        return sorted(affected)
+    owners = {owner for p in executable if (owner := owner_package(p, inventory))}
+    owners |= {consumer for owner in set(owners) for consumer in RUNTIME_CONSUMERS.get(owner, set())}
+    tested = sorted(owners & set(affected))
+    return tested or sorted(affected)
 
 
 def health_selection(paths: list[str], inventory: list[dict]) -> dict:
@@ -224,6 +483,83 @@ def health_selection(paths: list[str], inventory: list[dict]) -> dict:
         else:
             workspace.append(path)
     return {"packages": sorted(owners), "python": python, "workspace_inputs": workspace}
+
+
+# Build-speed and debug-info profile keys: they change codegen, never program
+# semantics. debug-assertions, overflow-checks, panic, lto and rpath stay unreviewed.
+PROFILE_SAFE_KEYS = {"opt-level", "debug", "codegen-units", "incremental", "split-debuginfo", "strip"}
+PROFILE_PACKAGE = re.compile(r'profile\.[A-Za-z0-9_-]+\.package\."?([A-Za-z0-9_-]+)"?')
+
+
+def strip_toml_comment(line: str) -> str:
+    quote = None
+    for index, char in enumerate(line):
+        if quote:
+            quote = None if char == quote else quote
+        elif char in "\"'":
+            quote = char
+        elif char == "#":
+            return line[:index]
+    return line
+
+
+def manifest_sections(text: str) -> dict[str, list[str]] | None:
+    """Root-manifest tables to their meaningful lines; None when not plainly parseable."""
+    sections: dict[str, list[str]] = {"": []}
+    current = ""
+    for raw in text.splitlines():
+        line = strip_toml_comment(raw).strip()
+        if not line:
+            continue
+        if line.startswith("["):
+            if not line.endswith("]") or line.startswith("[["):
+                return None
+            current = line.strip("[] ")
+            if current in sections:
+                return None
+            sections[current] = []
+        else:
+            sections[current].append(line)
+    return sections
+
+
+def profile_only_packages(root: Path, base: str, source: str, inventory: list[dict]) -> list[str] | None:
+    """Workspace packages named by a root-manifest change that only retunes their profiles.
+
+    Every changed table must be `[profile.NAME.package.MEMBER]` (never `"*"`) using
+    only PROFILE_SAFE_KEYS. Such a change alters how those packages compile, not
+    what they mean, so their own suites verify it (user policy, 1 November 2026).
+    Anything else returns None and keeps the comprehensive audit.
+    """
+    def read(revision: str) -> str | None:
+        result = subprocess.run(["git", "show", f"{revision}:Cargo.toml"], cwd=root, capture_output=True)
+        return result.stdout.decode(errors="replace") if result.returncode == 0 else None
+
+    old_text, new_text = read(base), read(source)
+    old = None if old_text is None else manifest_sections(old_text)
+    new = None if new_text is None else manifest_sections(new_text)
+    if old is None or new is None:
+        return None
+    names = {package["name"] for package in inventory}
+    packages = set()
+    for header in sorted(set(old) | set(new)):
+        if old.get(header) == new.get(header):
+            continue
+        match = PROFILE_PACKAGE.fullmatch(header)
+        if not match or match.group(1) not in names:
+            return None
+        for line in [*old.get(header, []), *new.get(header, [])]:
+            key = line.split("=", 1)[0].strip().strip('"') if "=" in line else None
+            if key not in PROFILE_SAFE_KEYS:
+                return None
+        packages.add(match.group(1))
+    return sorted(packages) or None
+
+
+def crate_root_path(package: str, inventory: list[dict], root: Path) -> str | None:
+    directory = Path(next(p for p in inventory if p["name"] == package)["manifest"]).parent
+    return next((str(directory / "src" / name) for name in ("lib.rs", "main.rs")
+                 if (root / directory / "src" / name).is_file()), None)
 
 
 def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
@@ -252,7 +588,25 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
         require_qualifying_inputs(inputs)
     if profile == "health" and git(root, "rev-parse", "--verify", source_sha + "^1").decode().strip() != base_sha:
         raise ValueError("health checks a merge commit against its first parent: use --base SOURCE^1")
-    scope, affected, reasons = classify(paths, inventory)
+    # A profile-only root-manifest change selects the retuned packages as if
+    # their crate roots changed: their whole suites test, consumers lint.
+    selection_paths = paths
+    profile_packages = profile_only_packages(root, base_sha, source_sha, inventory) if "Cargo.toml" in paths else None
+    profile_roots = [crate_root_path(p, inventory, root) for p in profile_packages or []]
+    if profile_packages and all(profile_roots):
+        selection_paths = [p for p in paths if p != "Cargo.toml"] + profile_roots
+    scope, affected, reasons = classify(selection_paths, inventory)
+    if selection_paths is not paths:
+        reasons.append("profile-only root manifest change: owner suites of " + ", ".join(profile_packages)
+                       + " (codegen keys only; semantics unchanged)")
+    executable = [p for p in selection_paths if not metadata_path(p)]
+    if profile == "merge" and scope in {"rust", "ui"} and executable:
+        owners = [test_only_owner(root, p, inventory) for p in executable]
+        if all(owners):
+            excluded = sorted(set(affected) - set(owners))
+            scope, affected = "rust", sorted(set(owners))
+            reasons.append("test-only inputs (cfg(test) modules or owner test targets): owner packages "
+                           "only; consumers cannot observe them: " + ", ".join(excluded))
     if profile in {"full", "release"}:
         scope = "full"
         reasons.append("explicit full audit/release request")
@@ -263,13 +617,13 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
               "affected_packages": affected, "cargo_inventory": inventory,
               "runtime_inputs": inputs,
               "python_tests": python_tests.select(
-                  profile, [path for path in paths if not metadata_path(path)],
+                  profile, [path for path in selection_paths if not metadata_path(path)],
                   inventory, UI_PACKAGES, python_tests.available_modules(root)),
               "qualifies_merge": profile in {"merge", "full", "release"}}
-    if scope == "rust":
-        result["boundary"] = boundary_selection(root, paths, inventory, affected)
+    if scope in {"rust", "ui"}:
+        result["boundary"] = boundary_selection(root, selection_paths, inventory, affected)
     if profile == "health":
-        result["health"] = health_selection(paths, inventory)
+        result["health"] = health_selection(selection_paths, inventory)
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
     return result
 
