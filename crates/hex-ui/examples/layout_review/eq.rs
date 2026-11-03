@@ -1,5 +1,9 @@
-//! Functional view-local EQ catalog: shared production geometry/widgets/axes.
-//! Registered control-side response only; never fabricates a live analyzer.
+//! Audio-free EQ catalog using the production response graph and its shared
+//! axes, sampling, selection, node geometry, group movement and slope rules.
+//! The fixture owns disposable EQ state and local history; it never writes a
+//! project or acquires audio resources. Spectrum layers are labeled static
+//! fixtures, and audition is unavailable. The fixture does not model live
+//! audio or production worker acknowledgments.
 use super::*;
 use hex_devices::eq::{self, EqState, Node, NodeId, NodeKind};
 use hex_widgets::{
