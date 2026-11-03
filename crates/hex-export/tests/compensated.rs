@@ -20,6 +20,252 @@ fn compensated_export_skips_startup_and_publishes_exact_first_and_final_source_f
         assert_default_export_final_frame(track_delay, main_delay);
     }
 }
+
+#[test]
+fn arrangement_bounce_aligns_short_and_long_latency_for_ranges_and_tails() {
+    struct CancelDuringDiscard {
+        calls: usize,
+    }
+    impl hex_engine::MediaPages for CancelDuringDiscard {
+        fn page(
+            &mut self,
+            _: hex_engine::StreamSourceKey,
+            _: u64,
+        ) -> Option<hex_engine::BorrowedMediaPage<'_>> {
+            None
+        }
+        fn request_page(&mut self, _: hex_engine::StreamSourceKey, _: u64) {}
+    }
+    impl hex_export::PreparedExportPages for CancelDuringDiscard {
+        fn prepare_chunk(
+            &mut self,
+            _: &hex_engine::SessionPlayback,
+            _: usize,
+            control: &hex_export::ExportControl,
+        ) -> Result<(), hex_export::ExportError> {
+            self.calls += 1;
+            assert!(control.cancel());
+            Err(hex_export::ExportError::Cancelled)
+        }
+        fn complete_chunk(&mut self) -> Result<(), hex_export::ExportError> {
+            Ok(())
+        }
+        fn finish(&mut self, _: &hex_export::ExportControl) -> Result<(), hex_export::ExportError> {
+            Ok(())
+        }
+    }
+    const SOURCE: usize = 557;
+    let samples: Vec<_> = (0..SOURCE)
+        .map(|frame| {
+            let value = ((frame % 37) as f32 - 18.0) / 64.0;
+            [value, -value]
+        })
+        .collect();
+    let directory = std::env::temp_dir().join(format!(
+        "hex-latency-bounce-{}-{}",
+        std::process::id(),
+        NEXT_RETURN.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    for devices in [0, 1, 40] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 128).unwrap();
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "source".into(),
+                path: "memory.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: SOURCE as u64,
+                playback_frames: SOURCE as u64,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        for _ in 0..devices {
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: Definition.default_state().unwrap(),
+                })
+                .unwrap();
+        }
+        let media = BTreeMap::from([(asset, Audio::new(48_000, samples.clone()).unwrap())]);
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [&Definition];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare_with_test_registries(
+                editor.project(),
+                &media,
+                Arc::new(SineTable::new()),
+                None,
+                &registry,
+                &hex_engine_instruments(),
+            )
+            .unwrap(),
+        );
+        assert_eq!(revision.arrangement().main_latency_frames(), devices * 7);
+        // The selected lengths force both partial and full render blocks; the
+        // 40-device path has 280 frames of latency, crossing a block boundary.
+        for (start, frames, tails) in [(0, 17, false), (29, 310, false), (0, SOURCE, true)] {
+            let path = directory.join(format!("{devices}-{start}-{frames}-{tails}.wav"));
+            let report = hex_export::render_arrangement_bounce_new(
+                &path,
+                Arc::clone(&revision),
+                None,
+                start as u64,
+                frames as u64,
+                tails,
+                &hex_export::ExportControl::default(),
+            )
+            .expect("aligned bounce");
+            assert_eq!(report.frames, frames as u64);
+            let bytes = std::fs::read(path).unwrap();
+            let actual: Vec<_> = bytes[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..]
+                .chunks_exact(4)
+                .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect();
+            let expected: Vec<_> = samples[start..start + frames]
+                .iter()
+                .flatten()
+                .copied()
+                .collect();
+            assert_eq!(
+                actual, expected,
+                "devices={devices}, start={start}, tails={tails}"
+            );
+        }
+        if devices == 1 {
+            let mut pages = CancelDuringDiscard { calls: 0 };
+            let path = directory.join("cancelled.wav");
+            let result = hex_export::render_arrangement_bounce_with_pages(
+                &path,
+                Arc::clone(&revision),
+                None,
+                0,
+                17,
+                false,
+                &hex_export::ExportControl::default(),
+                Some(&mut pages),
+            );
+            assert!(matches!(result, Err(hex_export::ExportError::Cancelled)));
+            assert_eq!(pages.calls, 1);
+            assert!(!path.exists());
+        }
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn latent_bounce_keeps_the_same_musical_tail_as_the_uncompensated_path() {
+    use hex_lattice::conformance::owned_delay;
+    let directory = std::env::temp_dir().join(format!(
+        "hex-latency-bounce-tail-{}-{}",
+        std::process::id(),
+        NEXT_RETURN.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let mut outputs = Vec::new();
+    for mode in ["reference", "serial", "parallel"] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "source".into(),
+                path: "memory.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: 32,
+                playback_frames: 32,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        if mode == "serial" {
+            editor
+                .execute(Command::InsertDevice {
+                    track,
+                    before: None,
+                    state: Definition.default_state().unwrap(),
+                })
+                .unwrap();
+        }
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: owned_delay::state(37).unwrap(),
+            })
+            .unwrap();
+        let mut samples = vec![[0.0; 2]; 32];
+        samples[31] = [0.5, -0.5];
+        let mut media = BTreeMap::from([(asset, Audio::new(48_000, samples).unwrap())]);
+        if mode == "parallel" {
+            let Created::Imported {
+                track: other,
+                asset,
+                ..
+            } = editor
+                .execute(Command::ImportPreparedAudioTrack {
+                    name: "silent".into(),
+                    path: "silent.wav".into(),
+                    source_sample_rate: 48_000,
+                    source_frames: 32,
+                    playback_frames: 32,
+                    conversion_version: hex_project::IDENTITY_CONVERSION,
+                })
+                .unwrap()
+            else {
+                panic!("import")
+            };
+            editor
+                .execute(Command::InsertDevice {
+                    track: other,
+                    before: None,
+                    state: Definition.default_state().unwrap(),
+                })
+                .unwrap();
+            media.insert(asset, Audio::new(48_000, vec![[0.0; 2]; 32]).unwrap());
+        }
+        let effects: [&dyn NativeDeviceDefinition; 2] = [&Definition, &owned_delay::DEFINITION];
+        let registry = NativeDeviceRegistry::new(&effects).unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare_with_test_registries(
+                editor.project(),
+                &media,
+                Arc::new(SineTable::new()),
+                None,
+                &registry,
+                &hex_engine_instruments(),
+            )
+            .unwrap(),
+        );
+        let path = directory.join(format!("tail-{mode}.wav"));
+        let report = hex_export::render_arrangement_bounce_new(
+            &path,
+            revision,
+            None,
+            0,
+            32,
+            true,
+            &hex_export::ExportControl::default(),
+        )
+        .expect("bounce with finite musical tail");
+        let bytes = std::fs::read(path).unwrap();
+        let samples: Vec<_> = bytes[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..]
+            .chunks_exact(4)
+            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        assert_eq!(&samples[68 * 2..68 * 2 + 2], &[0.5, -0.5]);
+        outputs.push((report.frames, samples));
+    }
+    for output in &outputs[1..] {
+        assert_eq!(outputs[0].0, output.0);
+        assert_eq!(outputs[0].1, output.1);
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
 fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
     let Created::Imported { track, asset, .. } = editor
@@ -98,9 +344,9 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir(&directory).unwrap();
-    let refused_bounce = directory.join("latency-bounce.wav");
+    let bounce_path = directory.join("latency-bounce.wav");
     let bounce = hex_export::render_arrangement_bounce_new(
-        &refused_bounce,
+        &bounce_path,
         Arc::clone(&prepared),
         None,
         0,
@@ -108,12 +354,17 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
         false,
         &hex_export::ExportControl::default(),
     );
-    if track_delay || main_delay {
-        assert!(bounce.unwrap_err().to_string().contains("zero-latency"));
-        assert!(!refused_bounce.exists());
-    } else {
-        assert!(bounce.is_ok());
-    }
+    assert_eq!(bounce.expect("latency-compensated bounce").frames, 17);
+    let bytes = std::fs::read(&bounce_path).unwrap();
+    let actual: Vec<_> = bytes[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..]
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+        .collect();
+    let expected: Vec<_> = samples.iter().flatten().copied().collect();
+    assert_eq!(
+        actual, expected,
+        "bounce must preserve both range endpoints"
+    );
     let legacy = directory.join("legacy.wav");
     let shared = directory.join("prepared.wav");
     let a = hex_export::render_new(&legacy, &compiled, 0, default_end).unwrap();
