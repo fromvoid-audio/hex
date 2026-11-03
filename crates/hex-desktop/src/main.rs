@@ -68,11 +68,7 @@ fn main() -> ExitCode {
     )));
     let log_handle = exit.log_handle();
     if let Ok(handle) = &log_handle {
-        let _ = handle.record(&format!(
-            "hex version={}; executable={:?}",
-            option_env!("HEX_RELEASE_LABEL").unwrap_or(env!("CARGO_PKG_VERSION")),
-            std::env::current_exe()
-        ));
+        record_startup_identity(handle);
     }
     let midi_worker = hex_midi::Worker::start();
     let midi_handle = midi_worker.as_ref().ok().map(hex_midi::Worker::handle);
@@ -136,6 +132,18 @@ fn main() -> ExitCode {
     // The UI/audio lifecycle has ended; joining file I/O is safe here.
     exit.shutdown_log();
     ExitCode::from(exit.code())
+}
+
+fn record_startup_identity(handle: &hex_diagnostics::DiagnosticsHandle) {
+    let _ = handle.record_typed(
+        hex_diagnostics::Level::Info,
+        hex_diagnostics::Category::Startup,
+        &format!(
+            "hex version={}; executable={:?}",
+            option_env!("HEX_RELEASE_LABEL").unwrap_or(env!("CARGO_PKG_VERSION")),
+            std::env::current_exe()
+        ),
+    );
 }
 
 /// Startup exit status and session-log custody.
@@ -266,7 +274,24 @@ fn diagnostic_options(
 
 #[cfg(test)]
 mod startup_exit_tests {
-    use super::StartupExit;
+    use super::{StartupExit, record_startup_identity};
+
+    #[test]
+    fn startup_identity_is_classified_in_the_session_log() {
+        let dir =
+            std::env::temp_dir().join(format!("hex-startup-classification-{}", std::process::id()));
+        let mut log = hex_diagnostics::SessionLog::start(dir.clone()).unwrap();
+        record_startup_identity(&log.handle());
+        log.shutdown().unwrap();
+        let contents = std::fs::read_to_string(log.path()).unwrap();
+        assert!(
+            contents
+                .lines()
+                .any(|line| line.contains("level=info category=startup")
+                    && line.contains("hex version="))
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn startup_exits_nonzero_unless_the_editor_opened() {
