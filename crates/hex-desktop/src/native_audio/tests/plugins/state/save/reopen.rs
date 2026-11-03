@@ -88,7 +88,7 @@ fn native_effect_save_reopens_component_and_controller_into_independent_instance
         assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed"));
         return;
     }
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let fixture = nondefault_fixture();
     let wave = fs::read(fixture.files.0.join("mixed-rate.wav")).unwrap();
     let mut writer = open_saved(&fixture);

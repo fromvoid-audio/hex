@@ -44,6 +44,12 @@ impl EditorView {
         }
         let clips = self.selected_clip_ids();
         if clips.len() < 2 {
+            // A section span is the only grouping selection: merge it rather
+            // than dropping `g` when the stricter section-focus test fails.
+            if !self.merge_section_span_selection() {
+                self.error =
+                    Some("select two or more clips, sections or a time range to group".into());
+            }
             return;
         }
         let Some(revision) = self.state.as_ref().map(|state| state.revision) else {

@@ -211,13 +211,12 @@ impl PreparedSessionAudioClip {
     /// Constant-work source mapping; loops reduce elapsed before addition so a
     /// long-running cell cannot overflow or walk every intervening cycle.
     pub(crate) fn source_frame(&self, elapsed: u64) -> Option<u64> {
-        match self.loop_range {
-            Some(range) => range.frame_at(self.source_start, elapsed),
-            None => self
-                .source_start
-                .checked_add(elapsed)
-                .filter(|frame| *frame < self.source_end),
-        }
+        hex_project::session_audio_source_frame(
+            self.source_start,
+            self.source_end,
+            self.loop_range,
+            elapsed,
+        )
     }
     pub(crate) fn playback_end(&self) -> u64 {
         self.loop_range.map_or(self.source_end, |range| range.end())

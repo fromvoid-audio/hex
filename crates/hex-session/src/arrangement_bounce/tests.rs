@@ -269,6 +269,7 @@ fn bounce_failure_case(whole_track: bool) {
     let result = session.adopt_arrangement_bounce_using(
         target.clone(),
         whole_track,
+        hex_project::BounceAdoption::NewTracks,
         vec![BounceFile {
             source: hex_project::BounceSource::Arrangement,
             track: item.track,
@@ -711,6 +712,7 @@ fn nonreceiver_audio_bounce_case(shared: bool) {
         waveform: waveform::summarize(&source_audio, 1024).unwrap(),
         source_audio: source_audio.clone(),
         audio: source_audio.clone(),
+        file_identity: None,
     };
     let Created::Imported {
         track: contributor,
@@ -824,6 +826,7 @@ fn directed_audio_and_midi_bounces_preserve_accepted_content_pcm() {
                     waveform: waveform::summarize(&audio, 1_024).unwrap(),
                     source_audio: audio.clone(),
                     audio,
+                    file_identity: None,
                 };
                 let Created::Imported { track, clip, .. } = session.import(prepared).unwrap()
                 else {
@@ -876,6 +879,8 @@ fn directed_audio_and_midi_bounces_preserve_accepted_content_pcm() {
 
 #[path = "tests/grouping.rs"]
 mod grouping;
+#[path = "tests/streamed.rs"]
+mod streamed;
 
 #[test]
 fn clipped_thirty_second_delay_tail_adopts_media_and_undo_redo_as_one_edit() {
@@ -1358,9 +1363,15 @@ fn whole_track_console_second_output_cancel_and_final_publication_fail_without_p
             },
             |session, prepared, files| {
                 session
-                    .adopt_arrangement_bounce_using(target, true, files, prepared, None, |_| {
-                        Err::<(), _>(SessionError::Invalid("final publication refused"))
-                    })
+                    .adopt_arrangement_bounce_using(
+                        target,
+                        true,
+                        hex_project::BounceAdoption::NewTracks,
+                        files,
+                        prepared,
+                        None,
+                        |_| Err::<(), _>(SessionError::Invalid("final publication refused")),
+                    )
                     .map_err(|e| e.to_string())
             },
         );
@@ -1483,4 +1494,27 @@ fn retired_clip_and_range_in_place_intents_refuse_before_render_or_media_work() 
         assert_eq!((session.can_undo(), session.can_redo()), history);
         assert_eq!(std::fs::read_dir(&folder.0).unwrap().count(), 0);
     }
+}
+
+#[test]
+fn isolated_bounce_admits_projects_with_automatic_names_on_dropped_tracks() {
+    let (mut session, track, clip) = fixture();
+    let Created::Track(other) = session
+        .command(Command::InsertDefaultTrack { before_track: None })
+        .unwrap()
+    else {
+        panic!("default track")
+    };
+    let original = session.project().clone();
+    assert!(original.track(other).unwrap().name_is_automatic());
+    for target in [
+        BounceTarget::Clips(vec![clip]),
+        BounceTarget::Range(hex_project::TimeRange::new(vec![track], 30_013, 50_007).unwrap()),
+    ] {
+        let plan = original.plan_arrangement_bounce(&target, false).unwrap();
+        let projected = isolated(&original, &target, &plan[0]).unwrap();
+        assert!(projected.track(other).is_none());
+        assert!(projected.snapshot().automatic_track_names.is_empty());
+    }
+    assert_eq!(session.project(), &original);
 }

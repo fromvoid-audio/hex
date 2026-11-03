@@ -121,7 +121,8 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
         .expect("gain edit");
     assert!(editor.undo());
     let before = editor.project().clone();
-    for frame in [9, 10, 15, 22, 23] {
+    // Frame 15 lies in the silent tail and is a valid cut; edges and outside refuse.
+    for frame in [9, 10, 22, 23] {
         assert!(editor.execute(Command::SplitClip { clip, frame }).is_err());
         assert_eq!(editor.project(), &before);
         assert!(editor.can_redo());
@@ -145,6 +146,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
     assert_eq!(looping.project().clip(right).unwrap().source_phase(), 4);
 
     let full_project = Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
@@ -248,6 +250,7 @@ fn missing_clip_split_is_transactional() {
 #[test]
 fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
     let project = Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),

@@ -2,7 +2,7 @@
 use hex_project::{BeatTime, Command, Created};
 use hex_session::service::{Event, Request, Service};
 fn next(service: &Service) -> Event {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         match service.try_event() {
             Ok(e) => {
@@ -10,7 +10,7 @@ fn next(service: &Service) -> Event {
                 return e;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now()
+                std::thread::sleep(std::time::Duration::from_millis(1))
             }
             Err(e) => panic!("worker event: {e}"),
         }

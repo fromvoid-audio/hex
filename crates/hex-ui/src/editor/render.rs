@@ -4,10 +4,10 @@ use super::{
     FitTimeline, GroupSelection, ImportAudio, InsertTimeSelection, LoopSelection, MidiOctaveDown,
     MidiOctaveUp, MoveLeft, MoveRight, NewProject, NewStreamingProject, NextTrack, OpenProject,
     OpenRecentProject, OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft,
-    PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave,
-    RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject,
-    SelectAllMidiNotes, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
-    TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
+    PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverKeptSession,
+    RecoverPreviousSave, RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack,
+    SaveAsProject, SaveProject, SelectAllMidiNotes, SplitClip, Stop, ToggleLoop,
+    ToggleMidiDrawMode, TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
@@ -16,7 +16,22 @@ use hex_project::Command;
 use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
 
+/// Status-bar disk-overload slot; fits the four-character `disk` label.
+pub(super) const DISK_OVERLOAD_WIDTH: f32 = 32.0;
+
 impl EditorView {
+    pub(super) fn history_action(&mut self, request: SessionRequest, cx: &mut Context<Self>) {
+        if !self.cancel_sampler_drafts(cx)
+            && !self.cancel_gain_draft(cx)
+            && super::device_panel::finalize_controls(self, cx)
+        {
+            self.cancel_duplicate_chain();
+            self.cancel_queued_section();
+            self.enqueue_device_barrier(request);
+        }
+        cx.notify();
+    }
+
     fn duplicate_key(
         &mut self,
         kind: super::duplicate::DuplicateKind,
@@ -202,6 +217,33 @@ impl EditorView {
                     .child(theme::text(&self.status)),
             );
         }
+        let offline = self
+            .state
+            .as_ref()
+            .map_or(0, |state| state.project.offline_assets().count());
+        if offline > 0 {
+            bar = bar.child(
+                div()
+                    .id("missing-media-indicator")
+                    .debug_selector(|| "missing-media-indicator".into())
+                    .px_1()
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .on_click(cx.listener(|view, _, _, cx| view.missing_media_show_offline(cx)))
+                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| super::transport::MiniTooltip {
+                            kind: crate::tooltips::Kind::Identification,
+                            description: theme::text(
+                                "these files were missing when the project opened; \
+                                 their clips play silence. click to relink them",
+                            ),
+                        })
+                        .into()
+                    })
+                    .child(theme::text(format!("missing files: {offline}"))),
+            );
+        }
         if let Some(label) = self.update_label() {
             bar = bar.child(
                 div()
@@ -346,6 +388,7 @@ impl EditorView {
                 .into()
             }),
         );
+        bar = bar.child(disk_overload_slot(&self.disk_overload));
         if let Some(status) = self.audio_status() {
             let applied_audio = status.applied_revision.load(Relaxed);
             let misses = status.deadline_misses.load(Relaxed);
@@ -404,6 +447,36 @@ impl EditorView {
     }
 }
 
+/// Fixed-width disk-overload slot, so lighting it never shifts the bar. Its
+/// label and tooltip are lowercase app text through `theme::text`.
+fn disk_overload_slot(state: &super::disk_overload::DiskOverload) -> gpui::Stateful<gpui::Div> {
+    let slot = div()
+        .id("editor-disk-overload")
+        .debug_selector(|| "editor-disk-overload".into())
+        .w(px(DISK_OVERLOAD_WIDTH))
+        .h_full()
+        .flex_none()
+        .truncate()
+        .text_center();
+    if !state.shown() {
+        return slot;
+    }
+    let description = super::disk_overload::description(state.count());
+    slot.tooltip(move |_, cx| {
+        cx.new(|_| super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Identification,
+            description: description.clone().into(),
+        })
+        .into()
+    })
+    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+    .child(
+        div()
+            .debug_selector(|| "editor-disk-overload-lit".into())
+            .child(theme::text("disk")),
+    )
+}
+
 fn status_slot(
     id: &'static str,
     width: f32,
@@ -436,6 +509,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.wake_poll_if_busy();
         self.reconcile_update_ready(window, cx);
         #[cfg(all(test, feature = "ui-test-support"))]
         let _navigation_timer =
@@ -445,6 +519,8 @@ impl Render for EditorView {
         self.restore_sampler_parameter_focus(window);
         self.reconcile_project_open(window, cx);
         self.reconcile_format_upgrade_prompt(window, cx);
+        self.reconcile_leftover_recovery(window, cx);
+        self.reconcile_truncated_import_offer(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
         super::browser_input::restyle(&self.browser.search, cx);
@@ -465,6 +541,7 @@ impl Render for EditorView {
         self.sync_tuning(cx);
         self.tick_tuning_midi_activity();
         self.reconcile_clip_selection();
+        self.reconcile_detail_context();
         self.reconcile_track_name(window, cx);
         self.reconcile_fade_gesture();
         self.reconcile_clip_gain();
@@ -526,6 +603,8 @@ impl Render for EditorView {
         let trim_pointer_entity = cx.entity();
         let midi_trim_pointer_entity = cx.entity();
         div()
+            // Pointer presses leave the idle poll cadence before any handler runs.
+            .capture_any_mouse_down(cx.listener(|view, _, _, _| view.wake_poll()))
             .when(crate::diagnostics::actions_enabled(cx), |root| {
                 root.capture_any_mouse_down(|event, _, cx| {
                     crate::diagnostics::record_pointer(
@@ -647,6 +726,10 @@ impl Render for EditorView {
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
                     view.tuning.shift = event.modifiers.shift;
+                    if view.option_held != event.modifiers.alt {
+                        view.option_held = event.modifiers.alt;
+                        cx.notify();
+                    }
                     if view.active_native_device_drag.as_ref().is_some_and(|drag| {
                         matches!(
                             drag.source,
@@ -762,6 +845,9 @@ impl Render for EditorView {
                 }
             }))
             .capture_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, window, cx| {
+                if view.drag_bounce_key_up(event) {
+                    cx.notify();
+                }
                 if view.time_selection_key_up(event, cx) {
                     cx.stop_propagation();
                 }
@@ -1086,6 +1172,9 @@ impl Render for EditorView {
                     cx,
                 )
             }))
+            .on_action(cx.trace(|view, _: &RecoverKeptSession, window, cx| {
+                view.project_recovery_dialog(super::project_recovery::OpenKind::Kept, window, cx)
+            }))
             .on_action(cx.trace(|view, _: &RecoverPreviousSave, window, cx| {
                 view.project_recovery_dialog(
                     super::project_recovery::OpenKind::PreviousSave,
@@ -1108,23 +1197,10 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &Undo, _, cx| {
-                if !view.cancel_sampler_drafts(cx)
-                    && !view.cancel_gain_draft(cx)
-                    && super::device_panel::finalize_controls(view, cx)
-                {
-                    view.cancel_duplicate_chain();
-                    view.enqueue_device_barrier(SessionRequest::Undo);
-                }
-                cx.notify();
+                view.history_action(SessionRequest::Undo, cx);
             }))
             .on_action(cx.trace(|view, _: &Redo, _, cx| {
-                if !view.cancel_sampler_drafts(cx)
-                    && super::device_panel::finalize_controls(view, cx)
-                {
-                    view.cancel_duplicate_chain();
-                    view.enqueue_device_barrier(SessionRequest::Redo);
-                }
-                cx.notify();
+                view.history_action(SessionRequest::Redo, cx);
             }))
             .on_action(cx.trace(|view, _: &MoveLeft, window, cx| {
                 view.cancel_duplicate_chain();
@@ -1271,6 +1347,12 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &GroupSelection, window, cx| {
+                if crate::diagnostics::actions_enabled(cx) {
+                    crate::diagnostics::record_group_selection(
+                        cx,
+                        &view.group_selection_route(window),
+                    );
+                }
                 if view.audio_event_focus.is_focused(window) {
                     view.event_group_selected();
                 } else if view.section_has_focus(window) {
@@ -1331,6 +1413,10 @@ impl Render for EditorView {
                             view.midi_selection.clear();
                         }
                     }
+                    // A focused track header owns Delete; a clip selection
+                    // retained beside it is never its target.
+                    Some(super::session_grid::DeleteTarget::ArrangementClip(_))
+                        if view.track_header_focused(window) => {}
                     Some(super::session_grid::DeleteTarget::ArrangementClip(clip)) => {
                         let command = if view.selected_midi_clip_data().is_some() {
                             Command::RemoveMidiClip(clip)
@@ -1411,9 +1497,17 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &super::BounceToNewTracks, window, cx| {
-                view.bounce_arrangement_selection(window);
+                if !view.arm_drag_bounce() {
+                    view.bounce_arrangement_selection(window, false);
+                }
                 cx.notify();
             }))
+            .on_action(
+                cx.trace(|view, _: &super::BounceAndMuteSources, window, cx| {
+                    view.bounce_arrangement_selection(window, true);
+                    cx.notify();
+                }),
+            )
             .on_action(cx.trace(|view, _: &LoopSelection, window, cx| {
                 view.loop_selection_key(window, cx);
                 cx.notify();
@@ -1577,6 +1671,7 @@ impl Render for EditorView {
             .children(super::theme_settings::overlay(self, cx))
             .children(self.tuning_overlay(cx))
             .children(self.changelog_overlay(cx))
+            .children(self.missing_media_overlay(cx))
             .when(self.update_preparing(), |root| {
                 root.child(
                     div()
@@ -1609,5 +1704,30 @@ impl Render for EditorView {
                         ),
                 )
             })
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tests {
+    use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
+
+    #[gpui::test]
+    fn redo_cancels_gain_draft_without_submitting_history(cx: &mut TestAppContext) {
+        let (handle, entity, _) = crate::editor::gain_lane::tests::native::window(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("gain-point-value-value").unwrap();
+        visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-shift-z");
+        visual.run_until_parked();
+        entity.update(&mut visual, |view, cx| {
+            assert!(view.gain_lane.draft.is_none());
+            assert!(!view.gain_numeric_editing(cx));
+            assert_eq!(view.worker_requests_pending, 0);
+        });
     }
 }

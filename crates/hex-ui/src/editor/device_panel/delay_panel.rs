@@ -238,6 +238,7 @@ pub(super) fn render_body(
                 secondary: points,
                 analyzer: None,
                 input_analyzer: None,
+                analyzer_peak: None,
                 nodes: vec![ResponseGraphNode {
                     id: 1,
                     position: preview.position,

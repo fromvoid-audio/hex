@@ -1781,11 +1781,23 @@ fn prepared_audio_domain_gate(retire_while_held: bool) {
     measured_render(&mut data, &mut output);
     assert!(control.status.stream_buffering.load(Acquire));
     assert_eq!(output, [[0.0; 2]; 256]);
+    // The held page starved audible playback: the published count rises (#4074).
+    let starved = control.status.stream_starved_callbacks.load(Relaxed);
+    assert!(starved > 0, "mid-play page hold was not counted");
+    measured_render(&mut data, &mut output);
+    assert!(control.status.stream_starved_callbacks.load(Relaxed) > starved);
     if retire_while_held {
         control.stop();
         measured_render(&mut data, &mut output);
         assert!(!control.status.playing.load(Acquire));
         assert_eq!(output, [[0.0; 2]; 256]);
+        // Stopped holds are not audible starvation.
+        let stopped = control.status.stream_starved_callbacks.load(Relaxed);
+        measured_render(&mut data, &mut output);
+        assert_eq!(
+            control.status.stream_starved_callbacks.load(Relaxed),
+            stopped
+        );
     } else {
         release.send(()).unwrap();
         loop {

@@ -1,6 +1,13 @@
 //! Browser sample drops onto a sampler card load into that card's track.
 use super::*;
 
+/// Marks a browser preview as playing on output generation 1.
+fn start_preview(view: &mut EditorView, path: &std::path::Path) {
+    view.browser.playback_phase = hex_audio::sample_preview::Phase::Playing;
+    view.browser.playback_output = Some((1, 1));
+    view.browser.playback_path = Some(path.to_path_buf());
+}
+
 fn sample_drag(view: &EditorView, path: std::path::PathBuf) -> BrowserAudioDrag {
     let state = view.state.as_ref().expect("project state");
     let viewport = view.visible_viewport(state.timeline_frames);
@@ -66,7 +73,9 @@ fn browser_sample_drop_loads_the_target_sampler_not_the_selected_track(cx: &mut 
             view.selected_track = Some(tracks[0]);
 
             // A drop naming a device that is no longer the card's instrument
-            // retires the payload without enqueueing a load.
+            // retires the payload without enqueueing a load, and like any
+            // cancelled drop leaves the preview playing.
+            start_preview(view, &path);
             let stale = sample_drag(view, path.clone());
             view.begin_browser_audio_drag(&stale);
             let pending = view.worker_requests_pending;
@@ -74,12 +83,21 @@ fn browser_sample_drop_loads_the_target_sampler_not_the_selected_track(cx: &mut 
             assert_eq!(view.worker_requests_pending, pending);
             assert!(view.active_browser_audio_drag.is_none());
             assert!(!view.first_sampler_pending_matches(1));
+            assert_eq!(view.browser.playback_output, Some((1, 1)));
 
             let drag = sample_drag(view, path.clone());
             view.begin_browser_audio_drag(&drag);
+            let preview_generation = view.browser.playback_generation;
             view.drop_browser_sample_on_sampler(&drag, tracks[1], sampler, cx);
             assert!(view.active_browser_audio_drag.is_none());
             assert!(view.first_sampler_pending_matches(1));
+            // The admitted load stops the preview through its ordinary cancel.
+            assert!(view.browser.playback_output.is_none());
+            assert_eq!(
+                view.browser.playback_phase,
+                hex_audio::sample_preview::Phase::Idle
+            );
+            assert_eq!(view.browser.playback_generation, preview_generation + 1);
             assert_eq!(view.selected_track, Some(tracks[0]), "drop does not select");
 
             // The pending load belongs to the dropped-on track.

@@ -287,13 +287,21 @@ fn shared_source_callback(analytic: bool) -> Result<(), Box<dyn Error>> {
             (0, 0, 0, 0),
             "step {step}: {stats:?}"
         );
-        if step < 4 {
+        // Step 3 unbinds the source under a held live key. Its history cannot
+        // transfer, so the live handoff restarts audio (Pulse #3784) and the
+        // held voice is cut until the key is pressed again; it must still be
+        // applied, not refused, and allocate nothing.
+        if step < 3 {
             assert!(
                 output
                     .iter()
                     .flatten()
-                    .any(|sample| sample.abs() > 0.000_001)
+                    .any(|sample| sample.abs() > 0.000_001),
+                "step {step}"
             );
+        }
+        if step == 3 {
+            assert!(control.status.rejected_revision().is_none());
         }
         if step == 5 {
             assert_eq!(output, [[0.0; 2]; 257]);

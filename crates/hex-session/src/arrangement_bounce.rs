@@ -9,6 +9,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 mod console;
+pub(crate) mod streamed;
+pub use streamed::{StreamedBounceRequest, StreamedBouncer};
 static NEXT_JOB: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn isolated(
@@ -218,7 +220,16 @@ pub(crate) fn isolated(
     snapshot.loop_region = None;
     snapshot.master_gain = 1.0;
     snapshot.retain_clip_aliases_after_projection();
-    Project::from_snapshot(snapshot).map_err(|e| e.to_string())
+    snapshot.retain_automatic_track_names_after_projection();
+    // Snapshots exclude runtime availability; offline clips stay silent here too.
+    let isolated = Project::from_snapshot(snapshot).map_err(|e| e.to_string())?;
+    let offline: Vec<_> = project
+        .offline_assets()
+        .filter(|id| isolated.asset(*id).is_some())
+        .collect();
+    isolated
+        .with_offline_assets(offline)
+        .map_err(|e| e.to_string())
 }
 
 impl Session {
@@ -350,10 +361,12 @@ impl Session {
 
     /// Reserved complete media adoption. The caller's last preparation hook
     /// rechecks cancellation and seals/enqueues only as its last fallible action.
+    #[allow(clippy::too_many_arguments)] // One captured adoption intent per field.
     pub(crate) fn adopt_arrangement_bounce_using<T>(
         &mut self,
         target: BounceTarget,
         in_place: bool,
+        adoption: hex_project::BounceAdoption,
         files: Vec<BounceFile>,
         prepared: Vec<PreparedImport>,
         previous: Option<&hex_engine::PreparedRevision>,
@@ -414,6 +427,7 @@ impl Session {
                 audio: member.audio,
                 waveform: Arc::new(member.waveform),
                 frames: file.frames,
+                file_identity: member.file_identity,
             });
         }
         let mut media = self.media_bank();
@@ -434,6 +448,7 @@ impl Session {
             Command::CommitArrangementBounce {
                 target,
                 in_place,
+                adoption,
                 files,
             },
             |candidate| {
@@ -489,6 +504,47 @@ impl Session {
         control: &hex_export::ExportControl,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
+        self.bounce_arrangement_adopting(
+            target,
+            in_place,
+            hex_project::BounceAdoption::NewTracks,
+            directory,
+            control,
+            previous,
+        )
+    }
+
+    /// As [`Self::bounce_arrangement`] with an explicit new-track adoption:
+    /// optionally muting the sources or landing at a clip drop, in the same
+    /// adoption edit and Undo step.
+    pub fn bounce_arrangement_adopting(
+        &mut self,
+        target: BounceTarget,
+        in_place: bool,
+        adoption: hex_project::BounceAdoption,
+        directory: &Path,
+        control: &hex_export::ExportControl,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
+        self.bounce_arrangement_adopting_with(
+            target, in_place, adoption, directory, control, previous, None,
+        )
+    }
+
+    /// As [`Self::bounce_arrangement_adopting`]; items with file-backed sources
+    /// render through `streamed`, the host's offline page provider. Without one
+    /// they refuse explicitly before adoption.
+    #[allow(clippy::too_many_arguments)] // The adopting contract plus one host capability.
+    pub fn bounce_arrangement_adopting_with(
+        &mut self,
+        target: BounceTarget,
+        in_place: bool,
+        adoption: hex_project::BounceAdoption,
+        directory: &Path,
+        control: &hex_export::ExportControl,
+        previous: Option<&hex_engine::PreparedRevision>,
+        streamed: Option<StreamedBouncer>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
         let captured = target.clone();
         self.bounce_arrangement_using(
             target,
@@ -507,11 +563,13 @@ impl Session {
                     &session.audio_transforms,
                     &waveforms,
                 )
-                .map(Arc::new)
+                .map(|prepared| {
+                    streamed::BounceRevision::capture(Arc::new(prepared), &session.verified_sources)
+                })
                 .map_err(|e| e.to_string())
             },
             |path, revision, item, tails, control| {
-                hex_export::render_arrangement_bounce_new(
+                streamed::render(
                     path,
                     revision,
                     None,
@@ -519,15 +577,15 @@ impl Session {
                     item.end - item.start,
                     tails,
                     control,
+                    streamed,
                 )
-                .map(|r| r.frames)
-                .map_err(|e| e.to_string())
             },
             |session, prepared, files| {
                 session
                     .adopt_arrangement_bounce_using(
                         captured,
                         in_place,
+                        adoption,
                         files,
                         prepared,
                         previous,

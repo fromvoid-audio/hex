@@ -2540,7 +2540,7 @@ mod pitch_domain_tests {
     }
 
     #[test]
-    fn computer_keyboard_mutable_nyquist_refusal_keeps_audio_render_usable() {
+    fn computer_keyboard_mutable_nyquist_note_is_silenced_and_audio_stays_usable() {
         let (source, track) = super::tests::fixture();
         let mut snapshot = source.snapshot();
         snapshot.sample_rate = 8000;
@@ -2582,7 +2582,8 @@ mod pitch_domain_tests {
             .unwrap();
         let mut frames = [[1.0; 2]; 256];
         playback.render(&mut frames).unwrap();
-        assert!(input.rejected());
+        // Every operator is above 4 kHz nyquist: silenced, not refused (Pulse #3957).
+        assert!(!input.rejected());
         assert_eq!(frames, [[0.0; 2]; 256]);
         input.set_key(0, Some((60, 100, 2))).unwrap();
         playback.render(&mut frames).unwrap();

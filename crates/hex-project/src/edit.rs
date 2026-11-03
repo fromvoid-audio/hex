@@ -71,9 +71,12 @@ pub enum Command {
         without_clips: bool,
     },
     /// Adopt all prepared track bounces as one reversible edit. No file I/O.
+    /// `adoption` deactivates the bounced clip/range sources in that same
+    /// edit with the contextual activation commands; new-track adoption only.
     CommitArrangementBounce {
         target: crate::BounceTarget,
         in_place: bool,
+        adoption: crate::BounceAdoption,
         files: Vec<crate::BounceFile>,
     },
     /// Set one authored clip's activation across Arrangement or Session.
@@ -220,6 +223,14 @@ pub enum Command {
         slot: TrackDeviceSlot,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Like `InsertTrackWithDevice`, with an automatic name: `device_name` for an
+    /// instrument slot, otherwise the model-owned default name.
+    InsertDefaultTrackWithDevice {
+        before_track: Option<TrackId>,
+        slot: TrackDeviceSlot,
+        state: hex_lattice_contract::NativeDeviceState,
+        device_name: String,
+    },
     /// Atomically splice a bounded touch span, preserving the underlying base curve.
     SpliceGainTouch {
         track: TrackId,
@@ -292,6 +303,15 @@ pub enum Command {
     InsertInstrument {
         track: TrackId,
         state: hex_lattice_contract::NativeDeviceState,
+    },
+    /// Browser instrument load: fill the empty slot (`replacing: None`) or replace
+    /// the captured current instrument, and rename an automatic-named track to
+    /// `device_name` in the same edit. See `track_name` for the naming policy.
+    LoadInstrument {
+        track: TrackId,
+        replacing: Option<DeviceId>,
+        state: hex_lattice_contract::NativeDeviceState,
+        device_name: String,
     },
     RemoveInstrument {
         track: TrackId,
@@ -466,6 +486,11 @@ pub enum Command {
         name: String,
         before_track: Option<TrackId>,
     },
+    /// Insert an ordinary track named by the model (`track N`); the name stays
+    /// automatic until the user renames it.
+    InsertDefaultTrack {
+        before_track: Option<TrackId>,
+    },
     /// Atomically create one track, its source asset and a full-length one-shot clip.
     ImportAudioTrack {
         name: String,
@@ -527,6 +552,13 @@ pub enum Command {
         conversion_version: u32,
         source_start: u64,
         source_end: u64,
+    },
+    /// Place an existing ordinary, online project asset as one import member,
+    /// following the same placement law as the new-asset import commands
+    /// without adding an asset. See `crate::import_existing`.
+    ImportExistingAudio {
+        asset: AssetId,
+        placement: crate::ExistingAudioPlacement,
     },
     /// Move a complete ordinary track before a stable anchor, or to the end
     /// with None. Already adjacent, self, and already-last drops are no-ops.
@@ -636,6 +668,11 @@ pub enum Command {
         source_slot: hex_lattice_contract::DeviceAssetSlot,
     },
     RemoveAsset(AssetId),
+    /// Point offline assets at found files as one history step, bringing them
+    /// back online. Undo returns them to offline at their old paths. Paths must
+    /// be absolute; only offline, non-device assets can be relinked, and callers
+    /// must have prepared media matching the saved rate and frame count.
+    RelinkAssets(Vec<(AssetId, PathBuf)>),
     /// Place audio as one atomic hybrid overwrite, retaining old outer fragments.
     PlaceClip {
         track: TrackId,
@@ -1227,6 +1264,7 @@ pub(crate) fn new_track(
         gain_lane: crate::GainLane::default(),
         id,
         name,
+        automatic_name: false,
         gain: 1.0,
         balance: 0.0,
         muted: false,
@@ -1363,11 +1401,9 @@ pub(crate) fn preview_edge_trim(
             let media_remaining = asset_playback_frames - source_end;
             let timeline_remaining = u64::MAX - end;
             let extension = media_remaining.min(timeline_remaining);
-            let minimum_reduction = clip
-                .duration
-                .saturating_sub(1)
-                .min(clip.source_length.saturating_sub(1));
-            let minimum_end = end - minimum_reduction;
+            // A one-shot may outlive its source with a silent tail. Shortening
+            // consumes that silence first and only then the audible source.
+            let minimum_end = end - clip.duration.saturating_sub(1);
             let maximum_end = end + extension;
             let new_end = frame.clamp(minimum_end, maximum_end);
             if new_end >= end {
@@ -1380,12 +1416,12 @@ pub(crate) fn preview_edge_trim(
                     0,
                 )
             } else {
-                let reduction = end - new_end;
+                let duration = clip.duration - (end - new_end);
                 (
                     clip.start,
-                    clip.duration - reduction,
+                    duration,
                     clip.source_offset,
-                    clip.source_length - reduction,
+                    clip.source_length.min(duration),
                     0,
                 )
             }
@@ -1402,21 +1438,16 @@ pub(crate) fn preview_edge_trim(
     } else {
         clip.fade
     };
+    // Trim changes geometry only: activation, name, flavor, gain and edit
+    // settings come from the original so trimming never reactivates a clip.
     Ok(Clip {
-        active: true,
-        name: clip.name.clone(),
-        flavor: clip.flavor,
-        gain: clip.gain,
-        edit: clip.edit.clone(),
-        id: clip.id,
-        asset: clip.asset,
         start,
         duration,
         source_offset,
         source_length,
-        looping: clip.looping,
         source_phase,
         fade,
+        ..clip.clone()
     })
 }
 
@@ -1477,20 +1508,15 @@ pub(crate) fn split_clip_at(
         left.source_phase = 0;
     }
     let right = Clip {
-        active: original.active,
-        name: original.name.clone(),
-        flavor: original.flavor,
         id: right_id,
-        asset: original.asset,
         start: frame,
         duration: right_duration,
         source_offset: right_source_offset,
         source_length: right_source_length,
-        looping: original.looping,
         source_phase: right_phase,
-        gain: original.gain,
         edit: None,
         fade: right_fade,
+        ..original.clone()
     };
     Ok((left, right))
 }
@@ -1502,6 +1528,13 @@ pub(crate) fn split_clip_at_tempo(
     tempo: &crate::TempoMap,
 ) -> Result<(Clip, Clip), Invalid> {
     let Some(edit) = &original.edit else {
+        if cuts_silent_tail(original, frame) {
+            // A raw source offset cannot advance past the audible interval, so
+            // crop a captured retained domain, as `retained_audio_fragment` does.
+            let mut captured = original.clone();
+            captured.edit = Some(crate::AudioClipEdit::capture(original).into());
+            return split_clip_at_tempo(&captured, frame, right_id, tempo);
+        }
         return split_clip_at(original, frame, right_id);
     };
     let end = original
@@ -1550,6 +1583,15 @@ pub(crate) fn split_clip_at_tempo(
     crate::audio_edit::project_clip(&mut left, tempo)?;
     crate::audio_edit::project_clip(&mut right, tempo)?;
     Ok((left, right))
+}
+
+/// Whether `frame` falls inside a raw one-shot's silent tail, past its source.
+pub(crate) fn cuts_silent_tail(clip: &Clip, frame: u64) -> bool {
+    clip.edit.is_none()
+        && !clip.looping
+        && frame
+            .checked_sub(clip.start)
+            .is_some_and(|offset| offset >= clip.source_length && offset < clip.duration)
 }
 
 /// Crop one retained interval through the existing typed split law.
@@ -1614,15 +1656,7 @@ impl Project {
             .try_reserve_exact(count)
             .map_err(|_| Invalid("could not reserve imported owners"))?;
         for command in commands {
-            let (
-                track,
-                start,
-                path,
-                source_sample_rate,
-                source_frames,
-                playback_frames,
-                conversion_version,
-            ) = match command {
+            let (track, start, asset, playback_frames) = match command {
                 Command::ImportPreparedAudioTrackAt {
                     name,
                     before_track,
@@ -1634,15 +1668,15 @@ impl Project {
                     conversion_version,
                 } => {
                     let track = insert_track_before(self, name, before_track)?;
-                    (
+                    let asset = self.add_import_asset(
                         track,
-                        start,
                         path,
                         source_sample_rate,
                         source_frames,
                         playback_frames,
                         conversion_version,
-                    )
+                    )?;
+                    (track, start, asset, playback_frames)
                 }
                 Command::ImportPreparedAudioClip {
                     track,
@@ -1661,32 +1695,37 @@ impl Project {
                     source_frames,
                     playback_frames,
                     conversion_version,
-                } => (
-                    track,
-                    start,
-                    path,
-                    source_sample_rate,
-                    source_frames,
-                    playback_frames,
-                    conversion_version,
-                ),
+                } => {
+                    let asset = self.add_import_asset(
+                        track,
+                        path,
+                        source_sample_rate,
+                        source_frames,
+                        playback_frames,
+                        conversion_version,
+                    )?;
+                    (track, start, asset, playback_frames)
+                }
+                Command::ImportExistingAudio { asset, placement } => {
+                    let playback_frames = self.existing_import_frames(asset)?;
+                    let (track, start) = match placement {
+                        crate::ExistingAudioPlacement::NewTrack {
+                            name,
+                            before_track,
+                            start,
+                        } => (insert_track_before(self, name, before_track)?, start),
+                        crate::ExistingAudioPlacement::Clip { track, start, .. } => {
+                            self.track(track).ok_or(Invalid("track no longer exists"))?;
+                            (track, start)
+                        }
+                        crate::ExistingAudioPlacement::Session { .. } => {
+                            return Err(Invalid("unsupported arrangement audio import command"));
+                        }
+                    };
+                    (track, start, asset, playback_frames)
+                }
                 _ => return Err(Invalid("unsupported arrangement audio import command")),
             };
-            self.track(track).ok_or(Invalid("track no longer exists"))?;
-            validate_conversion_metadata(
-                source_frames,
-                source_sample_rate,
-                playback_frames,
-                self.sample_rate,
-                conversion_version,
-            )?;
-            let asset = self.add_prepared_asset(
-                path,
-                source_sample_rate,
-                source_frames,
-                playback_frames,
-                conversion_version,
-            )?;
             interval_valid(
                 start,
                 playback_frames,
@@ -1778,8 +1817,9 @@ impl Project {
             Command::CommitArrangementBounce {
                 target,
                 in_place,
+                adoption,
                 files,
-            } => crate::bounce::commit(self, target, in_place, files),
+            } => crate::bounce::commit(self, target, in_place, adoption, files),
             command @ (Command::AddArrangementSection { .. }
             | Command::SetArrangementSectionRange { .. }
             | Command::MoveArrangementSectionMarker { .. }
@@ -2108,7 +2148,7 @@ impl Project {
                     .map_err(|_| Invalid("could not reserve clip storage"))?;
                 let right_id = ClipId(self.allocate_id()?);
                 let (left, right) =
-                    split_clip_at_tempo(&original, frame, right_id, self.tempo_map())?;
+                    crate::clip_fade_split::split(&original, frame, right_id, self.tempo_map())?;
                 self.audio_clips_mut(self.tracks[track_index].id)?[clip_index] = left;
                 self.audio_clips_mut(self.tracks[track_index].id)?
                     .insert(clip_index + 1, right);
@@ -2246,6 +2286,27 @@ impl Project {
                 }
                 Ok(Created::Track(track))
             }
+            Command::InsertDefaultTrack { before_track } => Ok(Created::Track(
+                crate::track_name::insert_default_track(self, before_track)?,
+            )),
+            Command::InsertDefaultTrackWithDevice {
+                before_track,
+                slot,
+                state,
+                device_name,
+            } => crate::track_name::insert_default_track_with_device(
+                self,
+                before_track,
+                slot,
+                state,
+                device_name,
+            ),
+            Command::LoadInstrument {
+                track,
+                replacing,
+                state,
+                device_name,
+            } => crate::track_name::load_instrument(self, track, replacing, state, device_name),
             Command::AddTrack { name } => {
                 Ok(Created::Track(insert_track_before(self, name, None)?))
             }
@@ -2413,6 +2474,9 @@ impl Project {
                     source_end,
                 })
             }
+            Command::ImportExistingAudio { asset, placement } => {
+                self.apply_existing_audio_import(asset, placement)
+            }
             Command::MoveTrackBefore { track, before } => self.move_track_before(track, before),
             Command::MoveTracksBefore { tracks, before } => {
                 self.move_tracks_before(&tracks, before)
@@ -2439,7 +2503,9 @@ impl Project {
             Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
             Command::RenameTrack { track, name } => {
                 name_valid(&name)?;
-                self.track_mut(track)?.name = name;
+                let target = self.track_mut(track)?;
+                target.name = name;
+                target.automatic_name = false;
                 Ok(Created::None)
             }
             Command::Gain { track, gain } => {
@@ -2483,31 +2549,7 @@ impl Project {
                 Ok(Created::None)
             }
             Command::SetTempoPoint { beat, tempo } => {
-                let mut candidate = self.clone();
-                candidate.tempo_map = candidate
-                    .tempo_map
-                    .replace_point(TempoPoint::new(beat, tempo))?;
-                // A structural reorder retains complete processing roots from
-                // their original tempo context. Rebase is not yet supported;
-                // silently projecting a new length would trim/pad their PCM.
-                if candidate.tempo_map != self.tempo_map
-                    && self.tracks.iter().flat_map(|t| t.clips()).any(|clip| {
-                        clip.audio_edit()
-                            .is_some_and(|edit| edit.processing_projection.is_some())
-                    })
-                {
-                    return Err(Invalid(
-                        "tempo changes after audio section reorder require an unsupported processing rebase; undo the reorder first",
-                    ));
-                }
-                let map = candidate.tempo_map.clone();
-                for track in &mut candidate.tracks {
-                    for clip in &mut track.content.audio_clips {
-                        crate::audio_edit::project_clip(clip, &map)?;
-                    }
-                }
-                crate::Project::from_snapshot(candidate.snapshot())?;
-                *self = candidate;
+                self.set_tempo_point(TempoPoint::new(beat, tempo))?;
                 Ok(Created::None)
             }
             Command::SetMeterPoint { beat, meter } => {
@@ -2595,11 +2637,7 @@ impl Project {
                 frames,
             } => {
                 let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
-                let conversion = if sample_rate == self.sample_rate {
-                    IDENTITY_CONVERSION
-                } else {
-                    crate::SINC_CONVERSION_V1
-                };
+                let conversion = crate::import_conversion_version(sample_rate, self.sample_rate);
                 self.add_prepared_asset(path, sample_rate, frames, playback, conversion)
                     .map(Created::Asset)
             }
@@ -2620,11 +2658,7 @@ impl Project {
                     ));
                 }
                 let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
-                let conversion = if sample_rate == self.sample_rate {
-                    IDENTITY_CONVERSION
-                } else {
-                    crate::SINC_CONVERSION_V1
-                };
+                let conversion = crate::import_conversion_version(sample_rate, self.sample_rate);
                 let asset =
                     self.add_prepared_asset(path, sample_rate, frames, playback, conversion)?;
                 let state = state
@@ -2671,11 +2705,7 @@ impl Project {
                     ));
                 }
                 let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
-                let conversion = if sample_rate == self.sample_rate {
-                    IDENTITY_CONVERSION
-                } else {
-                    crate::SINC_CONVERSION_V1
-                };
+                let conversion = crate::import_conversion_version(sample_rate, self.sample_rate);
                 let asset =
                     self.add_prepared_asset(path, sample_rate, frames, playback, conversion)?;
                 let key = hex_lattice_contract::DeviceAssetKey::new(asset.value())
@@ -2705,6 +2735,39 @@ impl Project {
                 self.apply(Command::ReplaceDeviceState { device, state })?;
                 Ok(Created::Asset(asset))
             }
+            Command::RelinkAssets(relinks) => {
+                if relinks.is_empty() || relinks.len() > crate::MAX_ASSETS {
+                    return Err(Invalid(
+                        "relink needs between one and the asset limit of files",
+                    ));
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for (id, path) in &relinks {
+                    if !seen.insert(*id) {
+                        return Err(Invalid("relink names an asset twice"));
+                    }
+                    if !self.asset_offline(*id) {
+                        return Err(Invalid("only missing media can be relinked"));
+                    }
+                    if !path.is_absolute() {
+                        return Err(Invalid("relinked media path must be absolute"));
+                    }
+                    let asset = self
+                        .assets
+                        .get(id)
+                        .ok_or(Invalid("media no longer exists"))?;
+                    if asset.original_source().is_some() {
+                        return Err(Invalid("device media cannot be relinked in place"));
+                    }
+                }
+                for (id, path) in relinks {
+                    if let Some(asset) = self.assets.get_mut(&id) {
+                        asset.path = path;
+                    }
+                    self.offline_assets.remove(&id);
+                }
+                Ok(Created::None)
+            }
             Command::RemoveAsset(id) => {
                 if self.device_uses_asset(id) {
                     return Err(Invalid("media is still referenced by a device"));
@@ -2721,6 +2784,7 @@ impl Project {
                 self.assets
                     .remove(&id)
                     .ok_or(Invalid("media no longer exists"))?;
+                self.offline_assets.remove(&id);
                 Ok(Created::None)
             }
             Command::PlaceClip {
@@ -3002,7 +3066,27 @@ impl Project {
 }
 
 impl Project {
-    fn add_prepared_asset(
+    /// Validate a new import member's track and metadata, then add its asset.
+    fn add_import_asset(
+        &mut self,
+        track: TrackId,
+        path: PathBuf,
+        source_sample_rate: u32,
+        source_frames: u64,
+        playback_frames: u64,
+        conversion_version: u32,
+    ) -> Result<AssetId, Invalid> {
+        self.track(track).ok_or(Invalid("track no longer exists"))?;
+        self.add_prepared_asset(
+            path,
+            source_sample_rate,
+            source_frames,
+            playback_frames,
+            conversion_version,
+        )
+    }
+
+    pub(crate) fn add_prepared_asset(
         &mut self,
         path: PathBuf,
         source_sample_rate: u32,

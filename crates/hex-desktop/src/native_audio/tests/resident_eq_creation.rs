@@ -28,7 +28,7 @@ fn level(h: &ResidentHarness) -> f32 {
 
 #[test]
 fn held_eq_creation_reaches_track_return_and_main_pcm_before_commit_with_atomic_history() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for owner in 0..3 {
         for kind in [NodeKind::Bell, NodeKind::LowCut, NodeKind::Notch] {
             let files = Files::new();
@@ -390,7 +390,7 @@ fn assert_runtime_loop(h: &ResidentHarness) {
 #[test]
 fn held_sampler_note_survives_eq_creation_commit_and_history_inside_a_launched_loop() {
     use hex_project::BeatTime;
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(8_000_000);
     assert!(h.next().error.is_none());

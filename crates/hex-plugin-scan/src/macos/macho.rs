@@ -70,7 +70,8 @@ fn thin(bytes: &[u8], role: Role) -> Result<(u32, u32), &'static str> {
     let mut offset = 32_usize;
     for _ in 0..count {
         let length = word(bytes, offset + 4, false)? as usize;
-        if length < 8 || length % 8 != 0 {
+        // Mach-O command sizes are aligned to eight bytes.
+        if length < 8 || length & 7 != 0 {
             return Err("invalid mach-o load command");
         }
         offset = offset.checked_add(length).ok_or("load-command overflow")?;
@@ -218,6 +219,11 @@ mod tests {
         let mut bytes = image(ARM64, 0, 8);
         bytes[36..40].copy_from_slice(&16_u32.to_le_bytes());
         assert!(inspect(&bytes, Role::Module).is_err());
+        bytes[36..40].copy_from_slice(&9_u32.to_le_bytes());
+        assert_eq!(
+            inspect(&bytes, Role::Module),
+            Err("invalid mach-o load command")
+        );
         for end in [0, 4, 8, 31, 32, 39] {
             assert!(inspect(&bytes[..end], Role::Module).is_err());
         }

@@ -324,6 +324,13 @@ fn previous_event_activation_schema_migrates_without_nested_sources() {
         value.as_object_mut().unwrap().remove("midi_clip_gains"),
         Some(serde_json::json!([]))
     );
+    assert_eq!(
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("automatic_track_names"),
+        Some(serde_json::json!([]))
+    );
     value["version"] = 57.into();
     assert_eq!(decode(&bytes(&value)).unwrap(), *editor.project());
 }
@@ -594,7 +601,8 @@ fn grouped_and_retained_child_fades_roundtrip_with_independent_captured_tempo() 
     .unwrap();
     let data = encode(e.project()).unwrap();
     let value: Value = serde_json::from_slice(&data).unwrap();
-    assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+    // Its retained musical roots render with the v2 warp resampler.
+    assert_eq!(value["version"], hex_storage::WARP_RESAMPLER_SCHEMA_VERSION);
     assert_eq!(
         value["grouped_audio"][0]["group"]["sources"][0]["document"]["version"],
         42

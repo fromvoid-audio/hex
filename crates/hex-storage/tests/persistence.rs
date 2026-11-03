@@ -790,7 +790,7 @@ fn malformed_unknown_future_and_large_invalid_documents_refused() {
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     let mut future = json.clone();
-    future["version"] = (json["version"].as_u64().unwrap() + 1).into();
+    future["version"] = (hex_storage::NEWEST_SCHEMA_VERSION + 1).into();
     assert!(decode(&serde_json::to_vec(&future).unwrap()).is_err());
     let mut unknown = json.clone();
     unknown["unrecognized"] = true.into();

@@ -112,6 +112,7 @@ pub fn project_with_operators(
     }
 
     let project = Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),

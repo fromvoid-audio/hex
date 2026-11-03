@@ -48,6 +48,7 @@ pub(super) fn numeric(view: &mut EditorView, cx: &mut Context<EditorView>) -> Di
             }
         };
         let entity = cx.new(|cx| NumericControl::from_config(cx, config));
+        let edit_state = entity.read(cx).edit_state();
         let subscription =
             cx.subscribe(&entity, move |view, _, event: &NumericControlEvent, cx| {
                 if view.project_generation != generation
@@ -85,6 +86,7 @@ pub(super) fn numeric(view: &mut EditorView, cx: &mut Context<EditorView>) -> Di
             });
         *slot = Some(NumericBinding {
             entity,
+            edit_state,
             _subscription: subscription,
             key,
         });
