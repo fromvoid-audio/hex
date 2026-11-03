@@ -25,6 +25,9 @@ use std::collections::VecDeque;
 
 const HISTORY_CAPACITY: usize = 100;
 const PENDING_ACTION_CAPACITY: usize = 256;
+const SPECTRUM_TOGGLE: usize = 6;
+const INPUT_TOGGLE: usize = 7;
+pub(super) const AUDITION_TOGGLE: usize = 8;
 
 /// Ephemeral catalog state; it never owns a project or audio resource.
 pub(super) struct Local {
@@ -1218,12 +1221,16 @@ pub(super) fn model(fixture: &Fixture, cx: &gpui::App) -> Option<ResponseGraphMo
         curves.swap(0, 1);
     }
     let [primary, secondary] = curves;
+    let (analyzer, input_analyzer, analyzer_peak) = super::eq_spectrum::layers(
+        fixture.toggles[SPECTRUM_TOGGLE].read(cx).checked(),
+        fixture.toggles[INPUT_TOGGLE].read(cx).checked(),
+    );
     let model = ResponseGraphModel {
         primary,
         secondary,
-        analyzer: None,
-        input_analyzer: None,
-        analyzer_peak: None,
+        analyzer,
+        input_analyzer,
+        analyzer_peak,
         nodes: state
             .nodes
             .iter()
@@ -1369,6 +1376,68 @@ mod tests {
             position,
             modifiers: gpui::Modifiers::default(),
         }
+    }
+
+    #[gpui::test]
+    fn fixture_spectrum_controls_update_layers_and_audition_is_unavailable(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui::{Modifiers, VisualTestContext, px, size};
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let root = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1200.0), px(700.0)));
+        visual.run_until_parked();
+        let check = |spectrum: bool, input: bool, cx: &mut TestAppContext| {
+            root.read_with(cx, |view, cx| {
+                let fixture = &view.fixtures[&Entry::Eq];
+                let graph = model(fixture, cx).unwrap();
+                assert_eq!(graph.analyzer.is_some(), spectrum);
+                assert_eq!(graph.analyzer_peak.is_some(), spectrum);
+                assert_eq!(graph.input_analyzer.is_some(), spectrum && input);
+                assert!(!fixture.toggles[8].read(cx).checked());
+            });
+        };
+        check(true, true, cx);
+        for (id, spectrum, input) in [
+            ("fixture-eq-toggle-7", true, false),
+            ("fixture-eq-toggle-6", false, false),
+            ("fixture-eq-toggle-7", false, true),
+            ("fixture-eq-toggle-6", true, true),
+            ("fixture-eq-toggle-8", true, true),
+        ] {
+            let bounds = visual.debug_bounds(id).unwrap();
+            visual.simulate_click(bounds.center(), Modifiers::default());
+            visual.run_until_parked();
+            check(spectrum, input, cx);
+        }
+        visual.update(|_, cx| {
+            root.update(cx, |view, cx| {
+                view.disabled = true;
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        let spectrum = visual.debug_bounds("fixture-eq-toggle-6").unwrap();
+        visual.simulate_click(spectrum.center(), Modifiers::default());
+        visual.run_until_parked();
+        check(true, true, cx);
+        visual.update(|_, cx| {
+            root.update(cx, |view, cx| {
+                view.disabled = false;
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        let audition = visual.debug_bounds("fixture-eq-toggle-8").unwrap();
+        visual.simulate_click(audition.center(), Modifiers::default());
+        visual.run_until_parked();
+        check(true, true, cx);
     }
 
     #[gpui::test]
