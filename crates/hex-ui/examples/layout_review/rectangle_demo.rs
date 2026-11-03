@@ -26,6 +26,7 @@ enum Target {
     Rectangle(usize),
     PaintRange,
     SectionRange,
+    SectionPaint,
 }
 
 enum Pending {
@@ -64,6 +65,7 @@ pub(super) struct RectangleDemo {
     section_error: Option<&'static str>,
     section_marker_latched: bool,
     section_last_pointer: Option<(f32, f32)>,
+    section_paint: Option<(String, hex_project::ElementColor)>,
     generation: u64,
     range: Option<[f32; 2]>,
     range_before: Option<[f32; 2]>,
@@ -110,6 +112,7 @@ impl RectangleDemo {
             section_error: None,
             section_marker_latched: false,
             section_last_pointer: None,
+            section_paint: None,
             generation: 1,
             range: None,
             range_before: None,
@@ -142,6 +145,7 @@ impl RectangleDemo {
             self.section_error = None;
             self.section_marker_latched = false;
             self.section_last_pointer = None;
+            self.section_paint = None;
             self.status = "canceled held input";
             cx.notify();
         }
@@ -155,6 +159,7 @@ impl RectangleDemo {
         &mut self,
         x: f32,
         y: f32,
+        double: bool,
         modifiers: Modifiers,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -310,7 +315,29 @@ impl RectangleDemo {
             return true;
         }
         let Some((index, part)) = hit else {
-            return false;
+            if self.kind != Kind::Section
+                || !double
+                || !x.is_finite()
+                || !width.is_finite()
+                || width <= 0.0
+                || x < left
+                || x > left + width
+            {
+                return false;
+            }
+            let Some(fixture) = self.section_fixture.as_ref() else {
+                return false;
+            };
+            self.section_paint = Some(crate::section_appearance::new_marker(fixture.project()));
+            self.capture =
+                RectangleCapture::begin(Target::SectionPaint, RectanglePart::Body, x, true);
+            self.section_last_pointer = Some((x, y));
+            self.selected.clear();
+            self.selection_primary = None;
+            self.selection_anchor = None;
+            self.focus.focus(window);
+            self.change(x, y, modifiers, cx);
+            return true;
         };
         match intent {
             RectangleSelection::Toggle => {
@@ -353,9 +380,9 @@ impl RectangleDemo {
     }
     fn change(&mut self, x: f32, y: f32, modifiers: Modifiers, cx: &mut Context<Self>) -> bool {
         let section_rectangle = self.kind == Kind::Section
-            && self
-                .capture
-                .is_some_and(|capture| matches!(capture.key, Target::Rectangle(_)));
+            && self.capture.is_some_and(|capture| {
+                matches!(capture.key, Target::Rectangle(_) | Target::SectionPaint)
+            });
         let x = if section_rectangle {
             let Some(bounds) = self.bounds else {
                 return true;
@@ -404,6 +431,32 @@ impl RectangleDemo {
             let anchor = ((intent.origin_x - left) / width).clamp(0.0, 1.0);
             let end = ((intent.pointer_x - left) / width).clamp(0.0, 1.0);
             self.preview[0] = [anchor.min(end), anchor.max(end)];
+            cx.notify();
+            return true;
+        }
+        if intent.key == Target::SectionPaint {
+            self.section_command = None;
+            self.section_error = None;
+            self.preview = self.canonical.clone();
+            if let (Some(fixture), Some((name, color))) =
+                (&self.section_fixture, &self.section_paint)
+            {
+                self.section_preview = fixture.project().arrangement_sections().to_vec();
+                let left = f32::from(bounds.left());
+                let anchor = (intent.origin_x - left) / width;
+                let position = (intent.pointer_x - left) / width;
+                match fixture.plan_paint(anchor, position, name, *color) {
+                    Ok(plan) => {
+                        self.preview = plan.display;
+                        self.section_preview = plan.sections;
+                        self.section_command = Some(plan.command);
+                    }
+                    Err(error) => {
+                        self.section_error = Some(error.0);
+                        self.status = error.0;
+                    }
+                }
+            }
             cx.notify();
             return true;
         }
@@ -485,15 +538,15 @@ impl RectangleDemo {
         }
         self.change(x, y, modifiers, cx);
         let x = if self.kind == Kind::Section
-            && self
-                .capture
-                .is_some_and(|capture| matches!(capture.key, Target::Rectangle(_)))
-        {
+            && self.capture.is_some_and(|capture| {
+                matches!(capture.key, Target::Rectangle(_) | Target::SectionPaint)
+            }) {
             self.section_last_pointer.map_or(x, |(last_x, _)| last_x)
         } else {
             x
         };
         self.section_last_pointer = None;
+        self.section_paint = None;
         self.section_marker_latched = false;
         if self
             .capture
@@ -929,6 +982,7 @@ impl Render for RectangleDemo {
                                     view.begin(
                                         event.position.x.into(),
                                         event.position.y.into(),
+                                        event.click_count >= 2,
                                         event.modifiers,
                                         window,
                                         cx,
@@ -2057,6 +2111,93 @@ mod tests {
                 preview
             )
         });
+    }
+
+    #[gpui::test]
+    fn double_click_paint_retains_real_preview_until_terminal(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-paint".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-paint-area").unwrap();
+        let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
+        let outside = point(area.right() + px(20.0), area.top() - px(10.0));
+        let double_down = |visual: &mut VisualTestContext| {
+            visual.simulate_event(gpui::MouseDownEvent {
+                position: at(0.92),
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count: 2,
+                first_mouse: false,
+            })
+        };
+        let before = view.read_with(cx, |view, _| {
+            view.section_fixture.as_ref().unwrap().project().snapshot()
+        });
+        visual.simulate_mouse_down(at(0.92), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(at(0.92), MouseButton::Left, Modifiers::default());
+        view.read_with(cx, |view, _| {
+            assert!(view.capture.is_none() && view.pending.is_none())
+        });
+        double_down(&mut visual);
+        visual.simulate_mouse_up(at(0.92), MouseButton::Left, Modifiers::default());
+        view.read_with(cx, |view, _| assert!(matches!(view.pending.as_ref(), Some(Pending::Section { command, .. }) if matches!(command.as_ref(), Command::AddArrangementSection { .. }))));
+        view.update(cx, |view, cx| view.settle(false, cx));
+        double_down(&mut visual);
+        visual.simulate_mouse_move(at(0.5), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(at(0.5), MouseButton::Left, Modifiers::default());
+        view.read_with(cx, |view, _| {
+            assert!(view.pending.is_none());
+            assert_eq!(
+                view.section_fixture.as_ref().unwrap().project().snapshot(),
+                before
+            );
+        });
+        double_down(&mut visual);
+        visual.simulate_mouse_move(at(0.96), MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("escape");
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.section_fixture.as_ref().unwrap().project().snapshot(),
+                before
+            )
+        });
+        for accept in [false, true] {
+            double_down(&mut visual);
+            let appearance = view.read_with(cx, |view, _| view.section_paint.clone().unwrap());
+            visual.simulate_mouse_move(at(0.96), MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+            let released = view.update(cx, |view, _| {
+                let Some(Pending::Section { sections, command, receipt, .. }) = view.pending.as_mut() else { panic!("paint should be pending"); };
+                assert!(matches!(command.as_ref(), Command::AddArrangementSection { name, color, .. } if *name == appearance.0 && *color == appearance.1));
+                *receipt = crate::pending_edit::Receipt::new(1);
+                assert!(receipt.submitted(2));
+                sections.clone()
+            });
+            view.update(cx, |view, cx| {
+                view.receive_section(1, false, true, accept, None, cx)
+            });
+            visual.run_until_parked();
+            view.read_with(cx, |view, _| {
+                assert!(matches!(view.pending.as_ref(), Some(Pending::Section { sections, .. }) if *sections == released));
+                assert_eq!(view.section_fixture.as_ref().unwrap().project().snapshot(), before);
+            });
+            view.update(cx, |view, cx| {
+                view.receive_section(1, false, true, accept, None, cx)
+            });
+            visual.run_until_parked();
+            view.read_with(cx, |view, _| {
+                let project = view.section_fixture.as_ref().unwrap().project();
+                if accept {
+                    assert_eq!(project.arrangement_sections(), released);
+                } else {
+                    assert_eq!(project.snapshot(), before);
+                }
+            });
+        }
     }
 
     #[gpui::test]

@@ -23,6 +23,8 @@ mod output_meter;
 mod pending_edit;
 #[path = "../../hex-ui/examples/layout_review/sandbox.rs"]
 mod sandbox;
+#[path = "../../hex-ui/src/section_appearance.rs"]
+mod section_appearance;
 #[path = "../../hex-ui/src/section_hit.rs"]
 mod section_hit;
 #[path = "../../hex-ui/src/section_input.rs"]

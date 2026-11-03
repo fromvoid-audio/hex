@@ -142,6 +142,45 @@ impl Fixture {
         self.editor.execute(command)
     }
 
+    pub(super) fn plan_paint(
+        &self,
+        anchor: f32,
+        position: f32,
+        name: &str,
+        color: ElementColor,
+    ) -> Result<Plan, Invalid> {
+        let span = view_span(self.project().arrangement_sections());
+        let anchor = position_to_beat(anchor, span)?;
+        let position = position_to_beat(position, span)?;
+        let start = anchor.min(position);
+        let end = if anchor == position {
+            BeatTime::from_raw(
+                anchor
+                    .raw()
+                    .checked_add(BeatTime::ONE.raw())
+                    .ok_or(Invalid("section paint end overflow"))?,
+            )
+        } else {
+            anchor.max(position)
+        };
+        let command = Command::AddArrangementSection {
+            name: name.into(),
+            color,
+            start,
+            end,
+        };
+        // This fixture contains no audio resources. A disposable editor validates
+        // the exact project command without changing the live fixture or history.
+        let mut candidate = Editor::new(self.project().clone(), 1)?;
+        candidate.execute(command.clone())?;
+        let sections = candidate.project().arrangement_sections().to_vec();
+        Ok(Plan {
+            display: display(&sections),
+            sections,
+            command,
+        })
+    }
+
     pub(super) fn plan_marker_move(
         &self,
         section: SectionId,
@@ -274,6 +313,31 @@ mod tests {
         fixture.commit(plan.command).unwrap();
         assert_eq!(fixture.project().arrangement_sections(), expected);
         assert!(fixture.project().arrangement_sections()[0].start() < BeatTime::ONE);
+    }
+
+    #[test]
+    fn paint_preview_validates_without_mutating_and_matches_commit() {
+        let fixture = Fixture::new().unwrap();
+        let before = fixture.project().snapshot();
+        assert!(
+            fixture
+                .plan_paint(0.2, 0.8, "new section", ElementColor::Cyan)
+                .is_err()
+        );
+        assert_eq!(fixture.project().snapshot(), before);
+        for (anchor, position) in [(0.98, 0.92), (0.92, 0.92)] {
+            let mut fixture = Fixture::new().unwrap();
+            let sections_before = fixture.project().arrangement_sections().to_vec();
+            let plan = fixture
+                .plan_paint(anchor, position, "new section", ElementColor::Cyan)
+                .unwrap();
+            let expected = plan.sections;
+            assert_eq!(fixture.project().snapshot(), before);
+            fixture.commit(plan.command).unwrap();
+            assert_eq!(fixture.project().arrangement_sections(), expected);
+            assert!(fixture.editor.try_undo().unwrap());
+            assert_eq!(fixture.project().arrangement_sections(), sections_before);
+        }
     }
 
     #[test]
