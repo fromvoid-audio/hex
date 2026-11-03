@@ -994,12 +994,12 @@ impl Project {
                     clip.one_shot_boundary,
                 )?;
                 let alias_content = project.aliases.midi_content(ClipId(clip.id))?;
-                if let Some(content) = &alias_content {
-                    if !clip.notes.is_empty() || content.source_length != source_length {
-                        return Err(Invalid(
-                            "alias midi member contains inline notes or wrong extent",
-                        ));
-                    }
+                if let Some(content) = &alias_content
+                    && (!clip.notes.is_empty() || content.source_length != source_length)
+                {
+                    return Err(Invalid(
+                        "alias midi member contains inline notes or wrong extent",
+                    ));
                 }
                 total_notes = total_notes
                     .checked_add(clip.notes.len())
@@ -1035,10 +1035,10 @@ impl Project {
                 clip.playback_offset_raw
                     .checked_add(length.raw())
                     .ok_or(Invalid("midi playback window end overflow"))?;
-                if let Some(view) = clip.content_view {
-                    if view.length()? != length.raw() {
-                        return Err(Invalid("midi content window differs from placement"));
-                    }
+                if let Some(view) = clip.content_view
+                    && view.length()? != length.raw()
+                {
+                    return Err(Invalid("midi content window differs from placement"));
                 }
                 compiled_midi.push(MidiClip {
                     content_view: clip.content_view,
@@ -1171,12 +1171,12 @@ impl Project {
                         clip.source.one_shot_boundary,
                     )?;
                     let alias_content = project.aliases.midi_content(ClipId(clip.id))?;
-                    if let Some(content) = &alias_content {
-                        if !clip.source.notes.is_empty() || content.source_length != source_length {
-                            return Err(Invalid(
-                                "alias midi member contains inline notes or wrong extent",
-                            ));
-                        }
+                    if let Some(content) = &alias_content
+                        && (!clip.source.notes.is_empty() || content.source_length != source_length)
+                    {
+                        return Err(Invalid(
+                            "alias midi member contains inline notes or wrong extent",
+                        ));
                     }
                     total_notes = total_notes
                         .checked_add(clip.source.notes.len())
