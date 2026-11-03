@@ -1,5 +1,32 @@
 //! Shared extended section selection; hosts own focus, gestures and projects.
 
+use hex_project::BeatTime;
+
+/// Return the inclusive range in song order, retaining exact canonical starts.
+pub(crate) fn range<K, I>(sections: I, anchor: K, clicked: K) -> Vec<K>
+where
+    K: Copy + Eq,
+    I: IntoIterator<Item = (K, BeatTime)>,
+    I::IntoIter: Clone,
+{
+    let sections = sections.into_iter();
+    let start = |key| {
+        sections
+            .clone()
+            .find(|(id, _)| *id == key)
+            .map(|(_, beat)| beat)
+    };
+    let (Some(a), Some(b)) = (start(anchor), start(clicked)) else {
+        return vec![clicked];
+    };
+    let (low, high) = (a.min(b), a.max(b));
+    let mut sections: Vec<_> = sections
+        .filter(|(_, beat)| low <= *beat && *beat <= high)
+        .collect();
+    sections.sort_by_key(|(_, beat)| *beat);
+    sections.into_iter().map(|(id, _)| id).collect()
+}
+
 pub(crate) struct Extended<K> {
     pub(crate) selected: Option<K>,
     pub(crate) members: Vec<K>,
@@ -45,6 +72,20 @@ pub(crate) fn extend<K: Copy + Eq>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_range_is_inclusive_ordered_and_handles_missing_endpoints() {
+        let a = BeatTime::ONE;
+        let b = BeatTime::from_raw(a.raw() + 1);
+        let c = BeatTime::from_raw(a.raw() + 2);
+        assert_eq!(a.raw() as f32, b.raw() as f32);
+        let items = [(3, c), (1, a), (2, b)];
+        assert_eq!(range(items, 2, 3), [2, 3]);
+        assert_eq!(range(items, 3, 2), [2, 3]);
+        assert_eq!(range(items, 2, 2), [2]);
+        assert_eq!(range(items, 9, 2), [2]);
+        assert_eq!(range(items, 2, 9), [9]);
+    }
 
     #[test]
     fn range_uses_retained_anchor_and_caller_song_order() {

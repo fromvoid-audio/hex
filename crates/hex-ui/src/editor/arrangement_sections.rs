@@ -620,18 +620,14 @@ impl EditorView {
         let Some(project) = self.state.as_ref().map(|state| &state.project) else {
             return vec![clicked];
         };
-        let start = |id| project.arrangement_section(id).map(|s| s.start());
-        let (Some(a), Some(b)) = (start(anchor), start(clicked)) else {
-            return vec![clicked];
-        };
-        let (low, high) = (a.min(b), a.max(b));
-        let mut range: Vec<_> = project
-            .arrangement_sections()
-            .iter()
-            .filter(|s| low <= s.start() && s.start() <= high)
-            .collect();
-        range.sort_by_key(|s| s.start());
-        range.into_iter().map(|s| s.id()).collect()
+        crate::section_selection::range(
+            project
+                .arrangement_sections()
+                .iter()
+                .map(|section| (section.id(), section.start())),
+            anchor,
+            clicked,
+        )
     }
     fn section_edge_hit(&self, x: f32) -> Option<SectionEdge> {
         let state = self.state.as_ref()?;
