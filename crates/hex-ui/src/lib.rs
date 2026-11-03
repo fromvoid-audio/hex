@@ -32,6 +32,7 @@ mod editor_backend;
 mod test_wait;
 pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
 mod layout;
+mod log_viewer;
 mod section_appearance;
 mod section_hit;
 mod section_input;
