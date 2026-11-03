@@ -62,6 +62,7 @@ pub(super) struct RectangleDemo {
     section_preview: Vec<ArrangementSection>,
     section_command: Option<Command>,
     section_error: Option<&'static str>,
+    section_marker_latched: bool,
     generation: u64,
     range: Option<[f32; 2]>,
     range_before: Option<[f32; 2]>,
@@ -106,6 +107,7 @@ impl RectangleDemo {
             section_preview,
             section_command: None,
             section_error: None,
+            section_marker_latched: false,
             generation: 1,
             range: None,
             range_before: None,
@@ -136,6 +138,7 @@ impl RectangleDemo {
             let _ = capture.cancel();
             self.section_command = None;
             self.section_error = None;
+            self.section_marker_latched = false;
             self.status = "canceled held input";
             cx.notify();
         }
@@ -334,6 +337,8 @@ impl RectangleDemo {
             self.selection_anchor = Some(index);
         }
         self.capture = RectangleCapture::begin(Target::Rectangle(index), part, x, true);
+        self.section_marker_latched =
+            self.kind == Kind::Section && part != RectanglePart::Body && modifiers.platform;
         self.preview = self.canonical.clone();
         if let Some(fixture) = self.section_fixture.as_ref() {
             self.section_preview = fixture.project().arrangement_sections().to_vec();
@@ -378,6 +383,9 @@ impl RectangleDemo {
             return true;
         };
         if self.kind == Kind::Section {
+            if intent.part != RectanglePart::Body && modifiers.platform {
+                self.section_marker_latched = true;
+            }
             self.section_command = None;
             self.section_error = None;
             self.preview = self.canonical.clone();
@@ -390,7 +398,13 @@ impl RectangleDemo {
                 if let Some(fixture) = self.section_fixture.as_ref()
                     && let Some(section) = fixture.project().arrangement_sections().get(index)
                 {
-                    match fixture.plan(section.id(), intent.part, position, modifiers.alt) {
+                    match fixture.plan(
+                        section.id(),
+                        intent.part,
+                        position,
+                        modifiers.alt,
+                        self.section_marker_latched,
+                    ) {
                         Ok(Some(plan)) => {
                             self.preview = plan.display;
                             self.section_preview = plan.sections;
@@ -435,6 +449,7 @@ impl RectangleDemo {
             return false;
         }
         self.change(x, modifiers, cx);
+        self.section_marker_latched = false;
         if self
             .capture
             .is_some_and(|capture| capture.key == Target::SectionRange)
@@ -1241,7 +1256,7 @@ mod tests {
         let fixture = view.section_fixture.as_ref().unwrap();
         let section = fixture.project().arrangement_sections()[0].id();
         fixture
-            .plan(section, RectanglePart::Seam, position, false)
+            .plan(section, RectanglePart::Seam, position, false, false)
             .unwrap()
             .unwrap()
     }
@@ -1351,7 +1366,7 @@ mod tests {
         let mut replacement = section_fixture::Fixture::new().unwrap();
         let id = replacement.project().arrangement_sections()[0].id();
         let replacement_plan = replacement
-            .plan(id, RectanglePart::Seam, 0.6, false)
+            .plan(id, RectanglePart::Seam, 0.6, false, false)
             .unwrap()
             .unwrap();
         replacement.commit(replacement_plan.command).unwrap();
@@ -1489,7 +1504,7 @@ mod tests {
             assert!(view.admit_section(pending.display, pending.sections, pending.command, 1));
             let fixture = view.section_fixture.as_mut().unwrap();
             let newer = fixture
-                .plan(id, RectanglePart::Body, 0.95, false)
+                .plan(id, RectanglePart::Body, 0.95, false, false)
                 .unwrap()
                 .unwrap();
             fixture.commit(newer.command).unwrap();
@@ -1532,7 +1547,7 @@ mod tests {
             assert!(view.admit_section(pending.display, pending.sections, pending.command, 1));
             let fixture = view.section_fixture.as_mut().unwrap();
             let newer = fixture
-                .plan(id, RectanglePart::Body, 0.95, false)
+                .plan(id, RectanglePart::Body, 0.95, false, false)
                 .unwrap()
                 .unwrap();
             fixture.commit(newer.command).unwrap();
@@ -1693,6 +1708,88 @@ mod tests {
                     let selected = view.selection_primary.unwrap();
                     assert_eq!(view.selected, [selected]);
                     assert!(!original_ids.contains(&project.arrangement_sections()[selected].id()));
+                } else {
+                    assert_eq!(project.snapshot(), original);
+                }
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn command_seam_drag_latches_marker_only_until_terminal(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-marker-edge".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-marker-edge-area").unwrap();
+        let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
+        let command = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        let original = view.read_with(cx, |view, _| {
+            view.section_fixture.as_ref().unwrap().project().snapshot()
+        });
+        let right_start = view.read_with(cx, |view, _| {
+            view.section_fixture
+                .as_ref()
+                .unwrap()
+                .project()
+                .arrangement_sections()[1]
+                .start()
+        });
+        visual.simulate_mouse_down(at(0.5), MouseButton::Left, command);
+        visual.simulate_mouse_move(at(0.45), MouseButton::Left, command);
+        view.read_with(cx, |view, _| {
+            assert!(matches!(
+                view.section_command,
+                Some(Command::ResizeArrangementSectionMarker { .. })
+            ));
+        });
+        visual.simulate_keystrokes("escape");
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.section_fixture.as_ref().unwrap().project().snapshot(),
+                original
+            );
+        });
+        for accept in [false, true] {
+            visual.simulate_mouse_down(at(0.5), MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(at(0.45), MouseButton::Left, Modifiers::default());
+            view.read_with(cx, |view, _| {
+                assert!(matches!(
+                    view.section_command,
+                    Some(Command::ResizeArrangementSectionBoundary { .. })
+                ))
+            });
+            visual.simulate_modifiers_change(command);
+            visual.simulate_modifiers_change(Modifiers::default());
+            view.read_with(cx, |view, _| {
+                assert!(matches!(
+                    view.section_command,
+                    Some(Command::ResizeArrangementSectionMarker {
+                        edge: hex_project::TrimEdge::Right,
+                        ..
+                    })
+                ))
+            });
+            visual.simulate_mouse_up(at(0.45), MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            view.read_with(cx, |view, _| {
+                assert!(matches!(view.pending.as_ref(), Some(Pending::Section { command, .. }) if matches!(command.as_ref(), Command::ResizeArrangementSectionMarker { .. })));
+                assert_eq!(view.section_fixture.as_ref().unwrap().project().snapshot(), original);
+            });
+            view.update(cx, |view, cx| view.settle(accept, cx));
+            visual.run_until_parked();
+            view.read_with(cx, |view, _| {
+                let project = view.section_fixture.as_ref().unwrap().project();
+                assert_eq!(project.arrangement_sections()[1].start(), right_start);
+                if accept {
+                    assert_ne!(project.snapshot(), original);
+                    assert!(project.arrangement_sections()[0].end() < right_start);
                 } else {
                     assert_eq!(project.snapshot(), original);
                 }
