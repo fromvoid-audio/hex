@@ -33,7 +33,9 @@ pub(super) struct RectangleDemo {
     preview: [[f32; 2]; 2],
     capture: Option<RectangleCapture<Target>>,
     pending: Option<[[f32; 2]; 2]>,
-    selected: [bool; 2],
+    selected: Vec<usize>,
+    selection_primary: Option<usize>,
+    selection_anchor: Option<usize>,
     enabled: bool,
     status: &'static str,
 }
@@ -54,7 +56,13 @@ impl RectangleDemo {
             preview: canonical,
             capture: None,
             pending: None,
-            selected: [kind == Kind::TimeRange, false],
+            selected: if kind == Kind::TimeRange {
+                vec![0]
+            } else {
+                Vec::new()
+            },
+            selection_primary: None,
+            selection_anchor: None,
             enabled: true,
             status: "ready",
         }
@@ -116,7 +124,7 @@ impl RectangleDemo {
             };
             self.capture = RectangleCapture::begin(target, RectanglePart::Body, x, true);
             self.preview = self.canonical;
-            self.selected = [true, false];
+            self.selected = vec![0];
             self.status = "held range preview";
             self.focus.focus(window);
             cx.notify();
@@ -165,18 +173,60 @@ impl RectangleDemo {
         } else {
             RectangleSelectionPolicy::Range
         };
-        match policy.intent(modifiers) {
-            RectangleSelection::Toggle => self.selected[index] = !self.selected[index],
+        let intent = policy.intent(modifiers);
+        if self.kind == Kind::Section && intent != RectangleSelection::Replace {
+            let canonical = self.canonical;
+            let selection = crate::section_selection::extend(
+                std::mem::take(&mut self.selected),
+                self.selection_primary,
+                self.selection_anchor,
+                index,
+                intent == RectangleSelection::Toggle,
+                |anchor, clicked| {
+                    let low = canonical[anchor][0].min(canonical[clicked][0]);
+                    let high = canonical[anchor][0].max(canonical[clicked][0]);
+                    let mut order = [0, 1];
+                    order.sort_by(|a, b| canonical[*a][0].total_cmp(&canonical[*b][0]));
+                    order
+                        .into_iter()
+                        .filter(|i| low <= canonical[*i][0] && canonical[*i][0] <= high)
+                        .collect()
+                },
+            );
+            self.selected = selection.members;
+            self.selection_primary = selection.selected;
+            self.selection_anchor = Some(selection.anchor);
+            self.status = "selected";
+            self.focus.focus(window);
+            cx.notify();
+            return true;
+        }
+        match intent {
+            RectangleSelection::Toggle => {
+                if self.selected.contains(&index) {
+                    self.selected.retain(|id| *id != index);
+                } else {
+                    self.selected.push(index);
+                }
+            }
             RectangleSelection::Range { additive } => {
                 if !additive {
-                    self.selected = [false; 2];
+                    self.selected.clear();
                 }
-                self.selected.fill(true);
+                for id in [0, 1] {
+                    if !self.selected.contains(&id) {
+                        self.selected.push(id);
+                    }
+                }
             }
             RectangleSelection::Replace => {
-                self.selected = [false; 2];
-                self.selected[index] = true;
+                self.selected.clear();
+                self.selected.push(index);
             }
+        }
+        if self.kind == Kind::Section {
+            self.selection_primary = Some(index);
+            self.selection_anchor = Some(index);
         }
         self.capture = RectangleCapture::begin(Target::Rectangle(index), part, x, true);
         self.preview = self.canonical;
@@ -299,7 +349,7 @@ impl Render for RectangleDemo {
             if self.kind == Kind::TimeRange && index != 0 {
                 continue;
             }
-            let selected = self.selected[index];
+            let selected = self.selected.contains(&index);
             let pixel_width = (end - start) * width;
             let identity = if index == 0 {
                 hex_project::ElementColor::Cyan
@@ -574,6 +624,90 @@ mod tests {
         visual.simulate_mouse_down(at(0.3, 0.1), MouseButton::Left, Modifiers::default());
         view.read_with(cx, |view, _| assert!(view.capture.is_none()));
     }
+    #[gpui::test]
+    fn shift_click_same_section_keeps_only_that_section_and_never_starts_drag(
+        cx: &mut TestAppContext,
+    ) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-shift".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let first = visual.debug_bounds("section-shift-rectangle-0").unwrap();
+        let at = point(first.center().x, first.top() + px(5.0));
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let other_before = visual.rendered_background("section-shift-rectangle-1");
+        visual.simulate_mouse_down(
+            at,
+            MouseButton::Left,
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+        visual.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert!(
+                view.capture.is_none(),
+                "shift selection must not start a drag"
+            )
+        });
+        assert_eq!(
+            visual.rendered_background("section-shift-rectangle-1"),
+            other_before,
+            "same-section range must not select the other section"
+        );
+    }
+
+    #[gpui::test]
+    fn extended_section_selection_keeps_anchor_and_never_captures_a_drag(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-range".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let first = visual.debug_bounds("section-range-rectangle-0").unwrap();
+        let second = visual.debug_bounds("section-range-rectangle-1").unwrap();
+        let a = point(first.center().x, first.top() + px(5.0));
+        let b = point(second.center().x, second.top() + px(5.0));
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let toggle = Modifiers {
+            shift: true,
+            platform: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(b, MouseButton::Left, shift);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.selected, [0, 1]);
+            assert_eq!(view.selection_anchor, Some(0));
+            assert!(view.capture.is_none());
+        });
+        visual.simulate_mouse_up(b, MouseButton::Left, shift);
+        visual.simulate_mouse_down(a, MouseButton::Left, toggle);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.selected, [1]);
+            assert_eq!(view.selection_primary, Some(1));
+            assert_eq!(view.selection_anchor, Some(0));
+            assert!(view.capture.is_none());
+        });
+        visual.simulate_mouse_up(a, MouseButton::Left, toggle);
+        visual.simulate_mouse_down(b, MouseButton::Left, shift);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.selected, [1]);
+            assert_eq!(view.selection_anchor, Some(1));
+            assert!(view.capture.is_none());
+        });
+    }
+
     #[gpui::test]
     fn overlapping_section_edge_takes_priority_over_another_section_body(cx: &mut TestAppContext) {
         let handle =

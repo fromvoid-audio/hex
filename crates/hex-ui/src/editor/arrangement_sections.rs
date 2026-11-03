@@ -23,7 +23,7 @@ use super::{
 use crate::{
     context_menu::{MenuItem, PopupMenu},
     section_hit::{self, INNER_EDGE_WIDTH, SHARED_EDGE_RADIUS},
-    theme,
+    section_selection, theme,
 };
 #[cfg(all(test, feature = "ui-test-support"))]
 use gpui::rgba;
@@ -716,32 +716,18 @@ impl EditorView {
         // Section membership takes precedence over the lower-body range owner,
         // edge resizing and autoplay; Shift never creates a time rectangle here.
         if extend && let Some(id) = id {
-            let previous = self.sections.selected_ids().to_vec();
-            let anchor = self
-                .sections
-                .anchor
-                .filter(|anchor| previous.contains(anchor))
-                .or(self.sections.selected)
-                .unwrap_or(id);
+            let selection = section_selection::extend(
+                self.sections.selected_ids().to_vec(),
+                self.sections.selected,
+                self.sections.anchor,
+                id,
+                intent == RectangleSelection::Toggle,
+                |anchor, clicked| self.section_range(anchor, clicked),
+            );
             self.select_section_metadata(Some(id));
-            let (selection, anchor) = if intent == RectangleSelection::Toggle {
-                let mut selection = previous;
-                if selection.contains(&id) {
-                    selection.retain(|old| *old != id);
-                } else {
-                    selection.push(id);
-                }
-                (selection, id)
-            } else {
-                (self.section_range(anchor, id), anchor)
-            };
-            self.sections.selected = if selection.contains(&id) {
-                Some(id)
-            } else {
-                selection.last().copied()
-            };
-            self.sections.selection = selection;
-            self.sections.anchor = Some(anchor);
+            self.sections.selected = selection.selected;
+            self.sections.selection = selection.members;
+            self.sections.anchor = Some(selection.anchor);
             self.sections.cursor = None;
             self.cancel_section_pointer();
             self.suppress_cursor_click = true;
