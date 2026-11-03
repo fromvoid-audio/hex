@@ -24,9 +24,11 @@ use crate::{
     context_menu::{MenuItem, PopupMenu},
     theme,
 };
+#[cfg(all(test, feature = "ui-test-support"))]
+use gpui::rgba;
 use gpui::{
     AnyElement, AppContext, Context, Entity, Subscription, Window, div, prelude::*, px, relative,
-    rgb, rgba,
+    rgb,
 };
 use hex_project::{ArrangementSection, BeatTime, Command, ElementColor, SectionId, TempoMap};
 use hex_session::service::{Event, Request};
@@ -1943,9 +1945,10 @@ impl EditorView {
             });
             let stroke = 1.0 / scale.max(1.0);
             let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
-            let mut element = hex_widgets::rectangle_surface(
+            let mut element = crate::section_surface::surface(
                 (start - viewport.start) as f32 / viewport.length as f32,
-                (end - start) as f32 / viewport.length as f32, pixel_width,
+                (end - start) as f32 / viewport.length as f32,
+                pixel_width, stroke, m.color, selected, owned_hover,
             )
                 .id(("arrangement-section", index))
                 .debug_selector(move || format!("arrangement-section-{index}"))
@@ -1953,14 +1956,6 @@ impl EditorView {
                 .bottom_0()
                 .left_0()
                 .w_full()
-                .border_l(px(if has_border { stroke } else { 0.0 }))
-                .border_r(px(0.0))
-                .cursor(gpui::CursorStyle::Arrow)
-                .border_color(rgb(border))
-                .bg(section_fill(colors.0))
-                .text_color(rgb(colors.1))
-                .hover(move |style| style.bg(section_fill(hover.0)).text_color(rgb(hover.1)).border_color(rgb(hover.2)))
-                .text_xs()
                 .tooltip(|_, cx| {
                     cx.new(|_| super::waveform::ClipTooltip { kind: crate::tooltips::Kind::Help,
                         name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: copy · command: markers only · control: snap · shift-click: select range · cmd-shift-click: toggle · g: merge · cmd-d: duplicate · e: split"
@@ -1968,21 +1963,14 @@ impl EditorView {
                     })
                     .into()
                 });
-            let mut header = hex_widgets::rectangle_body(-1.0, super::clip_name::CLIP_NAME_HEIGHT)
-                // Resolve against this layout, including a single H/resize frame.
-                // Previous lane measurements still own pointer geometry, not paint height.
-                .h(relative(super::time_selection::SELECTION_HANDLE_FRACTION))
-                .min_h(px(super::clip_name::CLIP_NAME_HEIGHT))
-                .max_h(relative(1.0))
-                .id(("arrangement-section-header", index))
-                .debug_selector(move || format!("arrangement-section-header-{index}"))
-                .bg(rgb(colors.0))
-                .text_color(rgb(colors.1))
-                .text_xs()
-                .line_height(px(14.0))
-                .px_1()
-                .overflow_hidden()
-                .hover(move |style| style.bg(rgb(hover.0)).text_color(rgb(hover.1)));
+            let mut header = crate::section_surface::header(
+                m.color,
+                selected,
+                owned_hover,
+                super::clip_name::CLIP_NAME_HEIGHT,
+            )
+            .id(("arrangement-section-header", index))
+            .debug_selector(move || format!("arrangement-section-header-{index}"));
             if let Some(id) = m.id {
                 element = element.on_mouse_down(
                     gpui::MouseButton::Right,
@@ -2099,11 +2087,6 @@ impl EditorView {
         }
         elements
     }
-}
-/// Body tint leaves the existing Main grid and range overlay visible. The
-/// header paints its own opaque fill; label and border never inherit opacity.
-fn section_fill(color: u32) -> gpui::Rgba {
-    rgba((color << 8) | 0x38)
 }
 fn insertion_target(
     project: &hex_project::Project,
