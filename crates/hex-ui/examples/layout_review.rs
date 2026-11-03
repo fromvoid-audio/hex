@@ -35,6 +35,9 @@ mod section_resize;
 mod section_selection;
 #[path = "../src/section_surface.rs"]
 mod section_surface;
+#[path = "../src/editor/seek.rs"]
+#[allow(dead_code)] // The editor also uses transport seek acknowledgement.
+mod seek;
 #[path = "../src/editor/viewport.rs"]
 #[allow(dead_code)] // The editor also uses zoom and scrolling operations.
 mod viewport;

@@ -42,6 +42,9 @@ mod section_resize;
 mod section_selection;
 #[path = "../../hex-ui/src/section_surface.rs"]
 mod section_surface;
+#[path = "../../hex-ui/src/editor/seek.rs"]
+#[allow(dead_code)] // The editor also uses transport seek acknowledgement.
+mod seek;
 #[path = "../../hex-ui/src/theme.rs"]
 #[allow(dead_code)]
 mod theme;
