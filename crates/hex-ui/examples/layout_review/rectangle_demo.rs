@@ -22,7 +22,26 @@ pub(super) enum Kind {
 enum Target {
     Rectangle(usize),
     PaintRange,
+    SectionRange,
 }
+
+enum Pending {
+    Local {
+        display: [[f32; 2]; 2],
+    },
+    Section {
+        display: [[f32; 2]; 2],
+        receipt: crate::pending_edit::Receipt,
+    },
+}
+impl Pending {
+    fn display(&self) -> [[f32; 2]; 2] {
+        match self {
+            Self::Local { display } | Self::Section { display, .. } => *display,
+        }
+    }
+}
+
 pub(super) struct RectangleDemo {
     kind: Kind,
     id: String,
@@ -32,8 +51,13 @@ pub(super) struct RectangleDemo {
     canonical: [[f32; 2]; 2],
     preview: [[f32; 2]; 2],
     capture: Option<RectangleCapture<Target>>,
-    pending: Option<[[f32; 2]; 2]>,
-    selected: [bool; 2],
+    pending: Option<Pending>,
+    generation: u64,
+    range: Option<[f32; 2]>,
+    range_before: Option<[f32; 2]>,
+    selected: Vec<usize>,
+    selection_primary: Option<usize>,
+    selection_anchor: Option<usize>,
     enabled: bool,
     status: &'static str,
 }
@@ -54,7 +78,16 @@ impl RectangleDemo {
             preview: canonical,
             capture: None,
             pending: None,
-            selected: [kind == Kind::TimeRange, false],
+            generation: 1,
+            range: None,
+            range_before: None,
+            selected: if kind == Kind::TimeRange {
+                vec![0]
+            } else {
+                Vec::new()
+            },
+            selection_primary: None,
+            selection_anchor: None,
             enabled: true,
             status: "ready",
         }
@@ -67,8 +100,12 @@ impl RectangleDemo {
     }
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         if let Some(capture) = self.capture.take() {
+            if capture.key == Target::SectionRange {
+                self.range = self.range_before.take();
+            } else {
+                self.preview = self.canonical;
+            }
             let _ = capture.cancel();
-            self.preview = self.canonical;
             self.status = "canceled held input";
             cx.notify();
         }
@@ -116,24 +153,36 @@ impl RectangleDemo {
             };
             self.capture = RectangleCapture::begin(target, RectanglePart::Body, x, true);
             self.preview = self.canonical;
-            self.selected = [true, false];
+            self.selected = vec![0];
             self.status = "held range preview";
             self.focus.focus(window);
             cx.notify();
             return true;
         }
-        let mut hit = None;
-        if self.kind == Kind::Section
-            && self.canonical[0][1] == self.canonical[1][0]
-            && RectangleEdges::seam_hit(x, left + width * self.canonical[0][1], 1.0)
-        {
-            hit = Some((0, RectanglePart::Seam));
-        }
+        let mut hit = if self.kind == Kind::Section {
+            let sections = self
+                .canonical
+                .iter()
+                .enumerate()
+                .map(|(index, &[start, end])| (index, start, end));
+            crate::section_hit::hit(sections, x, |position| Some(left + width * position)).map(
+                |hit| match hit {
+                    crate::section_hit::Hit::Leading(index) => (index, RectanglePart::Leading),
+                    crate::section_hit::Hit::Trailing(index) => (index, RectanglePart::Trailing),
+                    crate::section_hit::Hit::Seam(left, _) => (left, RectanglePart::Seam),
+                },
+            )
+        } else {
+            None
+        };
         if hit.is_none() {
             for (index, [start, end]) in self.canonical.into_iter().enumerate() {
                 let start = left + start * width;
                 let end = left + end * width;
                 if let Some(part) = self.edges().hit(x, start, end) {
+                    if self.kind == Kind::Section && part != RectanglePart::Body {
+                        continue;
+                    }
                     if self.kind == Kind::Clip
                         && part == RectanglePart::Body
                         && y > f32::from(bounds.top()) + 14.0
@@ -145,26 +194,107 @@ impl RectangleDemo {
                 }
             }
         }
-        let Some((index, part)) = hit else {
-            return false;
-        };
         let policy = if self.kind == Kind::Section {
             RectangleSelectionPolicy::Section
         } else {
             RectangleSelectionPolicy::Range
         };
-        match policy.intent(modifiers) {
-            RectangleSelection::Toggle => self.selected[index] = !self.selected[index],
+        let intent = policy.intent(modifiers);
+        let time_range = if self.kind == Kind::Section {
+            let Some(time_range) = crate::section_input::routes_to_time_range(
+                hit.is_some_and(|(_, part)| part != RectanglePart::Body),
+                y,
+                f32::from(bounds.top()),
+                f32::from(bounds.size.height),
+                44.0 * hex_widgets::RANGE_HANDLE_FRACTION,
+            ) else {
+                return false;
+            };
+            time_range
+        } else {
+            false
+        };
+        if self.kind == Kind::Section
+            && intent != RectangleSelection::Replace
+            && let Some((index, _)) = hit
+        {
+            let canonical = self.canonical;
+            let selection = crate::section_selection::extend(
+                std::mem::take(&mut self.selected),
+                self.selection_primary,
+                self.selection_anchor,
+                index,
+                intent == RectangleSelection::Toggle,
+                |anchor, clicked| {
+                    let low = canonical[anchor][0].min(canonical[clicked][0]);
+                    let high = canonical[anchor][0].max(canonical[clicked][0]);
+                    let mut order = [0, 1];
+                    order.sort_by(|a, b| canonical[*a][0].total_cmp(&canonical[*b][0]));
+                    order
+                        .into_iter()
+                        .filter(|i| low <= canonical[*i][0] && canonical[*i][0] <= high)
+                        .collect()
+                },
+            );
+            self.selected = selection.members;
+            self.selection_primary = selection.selected;
+            self.selection_anchor = Some(selection.anchor);
+            self.status = "selected";
+            self.focus.focus(window);
+            cx.notify();
+            return true;
+        }
+        if time_range {
+            if !x.is_finite()
+                || !left.is_finite()
+                || !width.is_finite()
+                || width <= 0.0
+                || x < left
+                || x >= left + width
+            {
+                return false;
+            }
+            let anchor = ((x - left) / width).clamp(0.0, 1.0);
+            self.capture =
+                RectangleCapture::begin(Target::SectionRange, RectanglePart::Body, x, true);
+            self.range_before = self.range;
+            self.range = Some([anchor, anchor]);
+            self.selected.clear();
+            self.selection_primary = None;
+            self.status = "held range preview";
+            self.focus.focus(window);
+            cx.notify();
+            return true;
+        }
+        let Some((index, part)) = hit else {
+            return false;
+        };
+        match intent {
+            RectangleSelection::Toggle => {
+                if self.selected.contains(&index) {
+                    self.selected.retain(|id| *id != index);
+                } else {
+                    self.selected.push(index);
+                }
+            }
             RectangleSelection::Range { additive } => {
                 if !additive {
-                    self.selected = [false; 2];
+                    self.selected.clear();
                 }
-                self.selected.fill(true);
+                for id in [0, 1] {
+                    if !self.selected.contains(&id) {
+                        self.selected.push(id);
+                    }
+                }
             }
             RectangleSelection::Replace => {
-                self.selected = [false; 2];
-                self.selected[index] = true;
+                self.selected.clear();
+                self.selected.push(index);
             }
+        }
+        if self.kind == Kind::Section {
+            self.selection_primary = Some(index);
+            self.selection_anchor = Some(index);
         }
         self.capture = RectangleCapture::begin(Target::Rectangle(index), part, x, true);
         self.preview = self.canonical;
@@ -188,6 +318,14 @@ impl RectangleDemo {
             return true;
         }
         let delta = intent.delta_x / width;
+        if intent.key == Target::SectionRange {
+            let left = f32::from(bounds.left());
+            let anchor = ((intent.origin_x - left) / width).clamp(0.0, 1.0);
+            let end = ((intent.pointer_x - left) / width).clamp(0.0, 1.0);
+            self.range = Some([anchor.min(end), anchor.max(end)]);
+            cx.notify();
+            return true;
+        }
         if intent.key == Target::PaintRange {
             let left = f32::from(bounds.left());
             let anchor = ((intent.origin_x - left) / width).clamp(0.0, 1.0);
@@ -229,13 +367,43 @@ impl RectangleDemo {
         self.change(x, cx);
         if self
             .capture
+            .is_some_and(|capture| capture.key == Target::SectionRange)
+        {
+            let completed = self
+                .capture
+                .take()
+                .and_then(|capture| capture.finish(x))
+                .is_some();
+            if !completed {
+                self.range = self.range_before;
+            }
+            self.range_before = None;
+            self.status = if completed {
+                "range selected"
+            } else {
+                "range canceled"
+            };
+            cx.notify();
+            return true;
+        }
+        if self
+            .capture
             .take()
             .and_then(|capture| capture.finish(x))
             .is_some()
             && self.preview != self.canonical
         {
-            self.pending = Some(self.preview);
-            self.status = "pending · enter accepts · backspace refuses";
+            if self.kind == Kind::Section {
+                if !self.admit_section(self.preview, 1) {
+                    self.preview = self.canonical;
+                    self.status = "section edit refused";
+                }
+            } else {
+                self.pending = Some(Pending::Local {
+                    display: self.preview,
+                });
+                self.status = "pending · enter accepts · backspace refuses";
+            }
         } else {
             self.preview = self.canonical;
             self.status = "ready";
@@ -243,8 +411,54 @@ impl RectangleDemo {
         cx.notify();
         true
     }
+    /// The count includes this request and any earlier ordinary completions.
+    fn admit_section(&mut self, display: [[f32; 2]; 2], pending_count: usize) -> bool {
+        if self.kind != Kind::Section || self.pending.is_some() {
+            return false;
+        }
+        let mut receipt = crate::pending_edit::Receipt::new(self.generation);
+        if !receipt.submitted(pending_count) {
+            return false;
+        }
+        self.pending = Some(Pending::Section { display, receipt });
+        self.status = "pending · enter accepts · backspace refuses";
+        true
+    }
+
+    /// The local fixture supplies the current source and canonical display in
+    /// the same receive as each FIFO completion, just as the editor owner does.
+    fn receive_section(
+        &mut self,
+        generation: u64,
+        replaced: bool,
+        request_complete: bool,
+        canonical: [[f32; 2]; 2],
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Pending::Section { receipt, .. }) = self.pending.as_mut() else {
+            return;
+        };
+        let disposition = receipt.observe(generation, replaced, request_complete);
+        self.canonical = canonical;
+        if disposition != crate::pending_edit::Disposition::Waiting {
+            let display = self.pending.as_ref().map(Pending::display);
+            self.pending = None;
+            self.generation = generation;
+            self.preview = self.canonical;
+            self.status = match disposition {
+                crate::pending_edit::Disposition::Invalidated => "source replaced",
+                _ if display == Some(canonical) => "accepted",
+                _ => "refused",
+            };
+        }
+        cx.notify();
+    }
+
     fn settle(&mut self, accept: bool, cx: &mut Context<Self>) {
-        if let Some(display) = self.pending.take() {
+        if let Some(Pending::Section { display, .. }) = self.pending.as_ref() {
+            let canonical = if accept { *display } else { self.canonical };
+            self.receive_section(self.generation, false, true, canonical, cx);
+        } else if let Some(Pending::Local { display }) = self.pending.take() {
             if accept {
                 self.canonical = display;
             }
@@ -266,11 +480,15 @@ impl Render for RectangleDemo {
             self.blur = Some(cx.on_blur(&focus, window, |view, _, cx| view.cancel(cx)));
         }
         let style = theme::control_style();
-        let display = self.pending.unwrap_or(if self.capture.is_some() {
-            self.preview
-        } else {
-            self.canonical
-        });
+        let display =
+            self.pending
+                .as_ref()
+                .map(Pending::display)
+                .unwrap_or(if self.capture.is_some() {
+                    self.preview
+                } else {
+                    self.canonical
+                });
         let width = self
             .bounds
             .map_or(320.0, |bounds| f32::from(bounds.size.width));
@@ -287,37 +505,68 @@ impl Render for RectangleDemo {
             if self.kind == Kind::TimeRange && index != 0 {
                 continue;
             }
-            let part = RectanglePart::Body;
-            let selected = self.selected[index];
-            let mut rect = rectangle_surface(start, end - start, width * (end - start))
+            let selected = self.selected.contains(&index);
+            let pixel_width = (end - start) * width;
+            let identity = if index == 0 {
+                hex_project::ElementColor::Cyan
+            } else {
+                hex_project::ElementColor::Blue
+            };
+            let surface = if self.kind == Kind::Section {
+                crate::section_surface::surface(
+                    start,
+                    end - start,
+                    pixel_width,
+                    1.0 / window.scale_factor().max(1.0),
+                    identity,
+                    selected,
+                    false,
+                )
+                .cursor(RectanglePart::Body.cursor())
+                .child(
+                    crate::section_surface::header(
+                        identity,
+                        selected,
+                        false,
+                        44.0 * hex_widgets::RANGE_HANDLE_FRACTION,
+                    )
+                    .debug_selector({
+                        let id = self.id.clone();
+                        move || format!("{id}-section-header-{index}")
+                    })
+                    .child(theme::text(if selected {
+                        "✓ section"
+                    } else {
+                        "section"
+                    })),
+                )
+            } else {
+                rectangle_surface(start, end - start, pixel_width)
+                    .bg(rgb(if selected { style.accent } else { style.border }))
+                    .border_color(rgb(if self.focus.is_focused(window) {
+                        style.text
+                    } else {
+                        style.border
+                    }))
+                    .cursor(gpui::CursorStyle::Arrow)
+                    .text_color(rgb(if selected {
+                        style.accent_text
+                    } else {
+                        style.text
+                    }))
+                    .child(theme::text(if self.kind == Kind::Clip {
+                        "clip"
+                    } else {
+                        "time range"
+                    }))
+            };
+            let mut rect = surface
                 .id(("rectangle", index))
                 .debug_selector({
                     let id = self.id.clone();
                     move || format!("{id}-rectangle-{index}")
                 })
-                .bg(rgb(if selected { style.accent } else { style.border }))
-                .opacity(if self.enabled { 1.0 } else { 0.4 })
-                .border_color(rgb(if self.focus.is_focused(window) {
-                    style.text
-                } else {
-                    style.border
-                }))
-                .cursor(if self.kind == Kind::Section {
-                    part.cursor()
-                } else {
-                    gpui::CursorStyle::Arrow
-                })
-                .text_color(rgb(if selected {
-                    style.accent_text
-                } else {
-                    style.text
-                }))
-                .child(theme::text(match self.kind {
-                    Kind::Section => "section",
-                    Kind::Clip => "clip",
-                    Kind::TimeRange => "time range",
-                }));
-            let pixel_width = (end - start) * width;
+                .opacity(if self.enabled { 1.0 } else { 0.4 });
             let border = hex_widgets::rectangle_border_width(pixel_width);
             let handle = self.edges().handle_width(pixel_width);
             if self.kind == Kind::TimeRange
@@ -338,6 +587,17 @@ impl Render for RectangleDemo {
                 }
             }
             area = area.child(rect);
+        }
+        if self.kind == Kind::Section
+            && let Some([start, end]) = self.range
+            && end > start
+        {
+            area = area.child(
+                rectangle_surface(start, end - start, width * (end - start))
+                    .debug_selector(|| "section-time-range".into())
+                    .bg(rgb(style.accent))
+                    .opacity(0.25),
+            );
         }
         if self.kind == Kind::Section && display[0][1] == display[1][0] {
             area = area.child(
@@ -500,7 +760,7 @@ mod tests {
                 visual.run_until_parked();
                 view.read_with(cx, |view, _| {
                     assert_eq!(view.canonical, baseline);
-                    let actual = view.pending.unwrap()[0];
+                    let actual = view.pending.as_ref().map(Pending::display).unwrap()[0];
                     for i in 0..2 {
                         assert!(
                             (actual[i] - expected[i]).abs() < 0.001,
@@ -531,6 +791,337 @@ mod tests {
         visual.simulate_mouse_down(at(0.3, 0.1), MouseButton::Left, Modifiers::default());
         view.read_with(cx, |view, _| assert!(view.capture.is_none()));
     }
+    #[gpui::test]
+    fn section_lower_body_drag_never_moves_section_geometry(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-body".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let first = visual.debug_bounds("section-body-rectangle-0").unwrap();
+        let at = point(first.center().x, first.top() + first.size.height * 0.75);
+        let before = view.read_with(cx, |view, _| view.canonical);
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(at.x + px(24.0), at.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.canonical, before);
+            assert_eq!(
+                view.preview, before,
+                "lower body must not preview a section move"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn section_body_range_commits_and_cancel_restores_previous_range(cx: &mut TestAppContext) {
+        let handle = cx
+            .add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-range-body".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-range-body-area").unwrap();
+        let at = |fraction: f32| {
+            point(
+                area.left() + area.size.width * fraction,
+                area.top() + area.size.height * 0.75,
+            )
+        };
+        let before = view.read_with(cx, |view, _| view.canonical);
+        visual.simulate_mouse_down(at(0.2), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.35), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(at(0.35), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let committed = view.read_with(cx, |view, _| {
+            assert_eq!(view.canonical, before);
+            assert_eq!(view.preview, before);
+            assert!(view.pending.is_none());
+            view.range.expect("committed time range")
+        });
+        assert!(committed[1] > committed[0]);
+        assert!(visual.debug_bounds("section-time-range").is_some());
+        visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.4), MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("escape");
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.range, Some(committed));
+            assert_eq!(view.canonical, before);
+            assert!(view.capture.is_none());
+        });
+        visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.4), MouseButton::Left, Modifiers::default());
+        view.update(cx, |view, cx| assert!(view.finish(f32::NAN, cx)));
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.range, Some(committed));
+            assert!(view.capture.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn section_edges_and_extended_selection_win_over_lower_body_range(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-priority".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let first = visual.debug_bounds("section-priority-rectangle-0").unwrap();
+        let edge = point(
+            first.left() + px(2.0),
+            first.top() + first.size.height * 0.75,
+        );
+        visual.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
+        view.read_with(cx, |view, _| {
+            let capture = view.capture.expect("edge capture");
+            assert_eq!(capture.key, Target::Rectangle(0));
+            assert_eq!(capture.part, RectanglePart::Leading);
+            assert!(view.range.is_none());
+        });
+        visual.simulate_keystrokes("escape");
+        let body = point(first.center().x, first.top() + first.size.height * 0.75);
+        visual.simulate_mouse_down(
+            body,
+            MouseButton::Left,
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+        view.read_with(cx, |view, _| {
+            assert!(view.capture.is_none());
+            assert!(view.range.is_none());
+            assert_eq!(view.selected, [0]);
+        });
+    }
+
+    #[gpui::test]
+    fn shift_click_same_section_keeps_only_that_section_and_never_starts_drag(
+        cx: &mut TestAppContext,
+    ) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-shift".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let first = visual.debug_bounds("section-shift-rectangle-0").unwrap();
+        let at = point(first.center().x, first.top() + px(5.0));
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let other_before = visual.rendered_background("section-shift-rectangle-1");
+        visual.simulate_mouse_down(
+            at,
+            MouseButton::Left,
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+        visual.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert!(
+                view.capture.is_none(),
+                "shift selection must not start a drag"
+            )
+        });
+        assert_eq!(
+            visual.rendered_background("section-shift-rectangle-1"),
+            other_before,
+            "same-section range must not select the other section"
+        );
+    }
+
+    #[gpui::test]
+    fn extended_section_selection_keeps_anchor_and_never_captures_a_drag(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-range".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let first = visual.debug_bounds("section-range-rectangle-0").unwrap();
+        let second = visual.debug_bounds("section-range-rectangle-1").unwrap();
+        let a = point(first.center().x, first.top() + px(5.0));
+        let b = point(second.center().x, second.top() + px(5.0));
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let toggle = Modifiers {
+            shift: true,
+            platform: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_down(b, MouseButton::Left, shift);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.selected, [0, 1]);
+            assert_eq!(view.selection_anchor, Some(0));
+            assert!(view.capture.is_none());
+        });
+        visual.simulate_mouse_up(b, MouseButton::Left, shift);
+        visual.simulate_mouse_down(a, MouseButton::Left, toggle);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.selected, [1]);
+            assert_eq!(view.selection_primary, Some(1));
+            assert_eq!(view.selection_anchor, Some(0));
+            assert!(view.capture.is_none());
+        });
+        visual.simulate_mouse_up(a, MouseButton::Left, toggle);
+        visual.simulate_mouse_down(b, MouseButton::Left, shift);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.selected, [1]);
+            assert_eq!(view.selection_anchor, Some(1));
+            assert!(view.capture.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn overlapping_section_edge_takes_priority_over_another_section_body(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-overlap".into(), cx));
+        let view = handle.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            view.canonical = [[0.1, 0.8], [0.5, 0.9]];
+            view.preview = view.canonical;
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-overlap-area").unwrap();
+        let edge = point(
+            area.left() + area.size.width * 0.5 + px(2.0),
+            area.top() + px(20.0),
+        );
+        visual.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
+        view.read_with(cx, |view, _| {
+            let capture = view.capture.expect("section edge capture");
+            assert_eq!(capture.key, Target::Rectangle(1));
+            assert_eq!(capture.part, RectanglePart::Leading);
+        });
+    }
+
+    #[gpui::test]
+    fn section_receipt_retains_released_paint_until_its_terminal_receive(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-receipt".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        let before = view.read_with(cx, |view, _| view.canonical);
+        let released = [[0.15, 0.55], [0.55, 0.9]];
+        view.update(cx, |view, cx| {
+            assert!(view.admit_section(released, 2));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let frozen = visual.debug_bounds("section-receipt-rectangle-0").unwrap();
+        view.update(cx, |view, cx| {
+            view.receive_section(1, false, true, before, cx)
+        });
+        for _ in 0..3 {
+            view.update(cx, |_, cx| cx.notify());
+            visual.run_until_parked();
+            assert_eq!(
+                visual.debug_bounds("section-receipt-rectangle-0").unwrap(),
+                frozen
+            );
+            view.read_with(cx, |view, _| {
+                assert_eq!(view.pending.as_ref().map(Pending::display), Some(released));
+                assert_eq!(view.canonical, before);
+            });
+        }
+        view.update(cx, |view, cx| {
+            view.receive_section(1, false, true, released, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("section-receipt-rectangle-0").unwrap(),
+            frozen
+        );
+        view.read_with(cx, |view, _| {
+            assert!(view.pending.is_none());
+            assert_eq!(view.canonical, released);
+            assert_eq!(view.preview, released);
+        });
+    }
+
+    #[gpui::test]
+    fn section_receipt_refusal_and_source_replacement_install_canonical_state(
+        cx: &mut TestAppContext,
+    ) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-receipt-reset".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        let before = view.read_with(cx, |view, _| view.canonical);
+        let released = [[0.15, 0.55], [0.55, 0.9]];
+        visual.run_until_parked();
+        let original_bounds = visual
+            .debug_bounds("section-receipt-reset-rectangle-0")
+            .unwrap();
+        view.update(cx, |view, cx| {
+            assert!(view.admit_section(released, 1));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let frozen = visual
+            .debug_bounds("section-receipt-reset-rectangle-0")
+            .unwrap();
+        assert_ne!(frozen, original_bounds);
+        view.update(cx, |view, cx| {
+            view.receive_section(1, false, true, before, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual
+                .debug_bounds("section-receipt-reset-rectangle-0")
+                .unwrap(),
+            original_bounds
+        );
+        view.read_with(cx, |view, _| {
+            assert!(view.pending.is_none());
+            assert_eq!(view.preview, before);
+            assert_eq!(view.canonical, before);
+        });
+        let replacement = [[0.2, 0.4], [0.6, 0.8]];
+        view.update(cx, |view, cx| {
+            assert!(view.admit_section(released, 2));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual
+                .debug_bounds("section-receipt-reset-rectangle-0")
+                .unwrap(),
+            frozen
+        );
+        view.update(cx, |view, cx| {
+            view.receive_section(2, true, false, replacement, cx)
+        });
+        visual.run_until_parked();
+        assert_ne!(
+            visual
+                .debug_bounds("section-receipt-reset-rectangle-0")
+                .unwrap(),
+            frozen
+        );
+        view.read_with(cx, |view, _| {
+            assert!(view.pending.is_none());
+            assert_eq!(view.generation, 2);
+            assert_eq!(view.canonical, replacement);
+            assert_eq!(view.preview, replacement);
+        });
+    }
+
     #[gpui::test]
     fn rectangle_fixtures_hold_pending_across_repaints_cancel_and_refuse(cx: &mut TestAppContext) {
         for section in [false, true] {
@@ -582,6 +1173,20 @@ mod tests {
                     released
                 );
             }
+            if section {
+                let pending =
+                    view.read_with(cx, |view, _| view.pending.as_ref().map(Pending::display));
+                let body = point(
+                    released.center().x,
+                    released.top() + released.size.height * 0.75,
+                );
+                visual.simulate_mouse_down(body, MouseButton::Left, Modifiers::default());
+                view.read_with(cx, |view, _| {
+                    assert_eq!(view.pending.as_ref().map(Pending::display), pending);
+                    assert!(view.capture.is_none());
+                    assert!(view.range.is_none());
+                });
+            }
             visual.simulate_keystrokes("escape");
             view.update(cx, |view, cx| view.set_enabled(false, cx));
             visual.run_until_parked();
@@ -622,7 +1227,9 @@ mod tests {
             visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-            let pending = view.read_with(cx, |view, _| view.pending.unwrap());
+            let pending = view.read_with(cx, |view, _| {
+                view.pending.as_ref().map(Pending::display).unwrap()
+            });
             view.update(cx, |view, cx| view.settle(true, cx));
             visual.run_until_parked();
             view.read_with(cx, |view, _| {
@@ -665,9 +1272,29 @@ mod tests {
                 let mut visual = VisualTestContext::from_window(*handle, cx);
                 visual.update(|window, _| window.activate_window());
                 visual.simulate_resize(gpui::size(px(240.0), px(240.0)));
+                visual.simulate_mouse_move(point(px(1.0), px(1.0)), None, Modifiers::default());
                 visual.run_until_parked();
                 let a = visual.debug_bounds("rectangle-narrow-rectangle-0").unwrap();
                 let b = visual.debug_bounds("rectangle-narrow-rectangle-1").unwrap();
+                if section {
+                    let header = visual
+                        .debug_bounds("rectangle-narrow-section-header-0")
+                        .unwrap();
+                    assert!(
+                        (f32::from(header.size.height) * 3.0 - f32::from(a.size.height)).abs()
+                            <= 2.0
+                    );
+                    let (fill, _, _) =
+                        theme::section_colors(hex_project::ElementColor::Cyan, false, false);
+                    assert_eq!(
+                        visual.rendered_background("rectangle-narrow-section-header-0"),
+                        Some(gpui::rgb(fill).into())
+                    );
+                    assert_eq!(
+                        visual.rendered_background("rectangle-narrow-rectangle-0"),
+                        Some(gpui::rgba((fill << 8) | 0x38).into())
+                    );
+                }
                 let at = point(a.left() + px(2.0), a.top() + px(20.0));
                 visual.simulate_mouse_move(at, None, Modifiers::default());
                 visual.run_until_parked();

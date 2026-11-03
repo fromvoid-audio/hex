@@ -60,3 +60,8 @@ opt-level = 2
 # overflow checks remain enabled; release builds are unchanged (Pulse #4172).
 [profile.dev.package.hex-session]
 opt-level = 1
+
+# Keep full-rate warp regressions practical without weakening their fixtures.
+# Debug assertions and overflow checks remain enabled (Pulse #4636).
+[profile.dev.package.hex-warp]
+opt-level = 1

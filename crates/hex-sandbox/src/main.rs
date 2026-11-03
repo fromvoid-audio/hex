@@ -19,8 +19,18 @@ mod device_composition;
 mod gallery;
 #[path = "../../hex-ui/src/output_meter.rs"]
 mod output_meter;
+#[path = "../../hex-ui/src/editor/pending_edit.rs"]
+mod pending_edit;
 #[path = "../../hex-ui/examples/layout_review/sandbox.rs"]
 mod sandbox;
+#[path = "../../hex-ui/src/section_hit.rs"]
+mod section_hit;
+#[path = "../../hex-ui/src/section_input.rs"]
+mod section_input;
+#[path = "../../hex-ui/src/section_selection.rs"]
+mod section_selection;
+#[path = "../../hex-ui/src/section_surface.rs"]
+mod section_surface;
 #[path = "../../hex-ui/src/theme.rs"]
 #[allow(dead_code)]
 mod theme;

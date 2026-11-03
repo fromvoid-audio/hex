@@ -401,7 +401,7 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
         health = plan["health"]
         steps = [next(s for s in QUICK_STEPS if s.step_id == "format")]
         if health["python"]:
-            steps.append(Step("health-runner-tests", ci_plan.python_tests.COMPREHENSIVE_ARGV, True, True))
+            steps.append(Step("health-runner-tests", ci_plan.python_tests.argv(plan["python_tests"]), True, True))
         if health["workspace_inputs"]:
             steps.append(Step("health-tests", ("cargo", "test", "--workspace", "--locked"), requires_tests=True))
         elif health["packages"]:

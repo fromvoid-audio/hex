@@ -129,7 +129,9 @@ pub(super) fn paired_event(
             PairMode::Q => q_from_y(event.position[1]),
             // Use displacement from the pressed node, rather than mapping its
             // gain coordinate to an unrelated absolute Q at the drag threshold.
-            PairMode::OptionQ => option_q(plan.node.q, event.position[1] - plan.origin_y),
+            PairMode::OptionQ => {
+                group_move::option_q(plan.node.q, event.position[1] - plan.origin_y)
+            }
         }),
     };
     let result = if event.phase == ResponseGraphPhase::Commit {
@@ -273,10 +275,6 @@ pub(super) fn group_event(
     if let Err(error) = result {
         view.device_panel.message = Some(error.into());
     }
-}
-
-fn option_q(initial: f32, displacement: f32) -> f32 {
-    (initial * ((18.0_f32 / 0.1).ln() * displacement).exp()).clamp(0.1, 18.0)
 }
 
 #[derive(Clone, Copy)]
@@ -439,7 +437,7 @@ pub(super) fn scroll_event_core(
         return;
     }
     let delta = event.steps.saturating_sub(scroll.last_steps);
-    scroll.value = (i64::from(scroll.value) + i64::from(delta)).clamp(0, 3) as u32;
+    scroll.value = slope::advance(scroll.value, delta);
     scroll.last_steps = event.steps;
     let value = ParameterValue::Choice(scroll.value);
     let result = if event.phase == Phase::Commit {
@@ -499,10 +497,10 @@ mod tests {
     #[test]
     fn option_displacement_keeps_initial_q_and_bounds_without_gain_coordinate_jump() {
         for initial in [0.1, 0.707, 1.0, 18.0] {
-            assert_eq!(option_q(initial, 0.0), initial);
-            assert_eq!(option_q(initial, -2.0), 0.1);
-            assert_eq!(option_q(initial, 2.0), 18.0);
-            assert!(option_q(initial, 0.1) >= initial);
+            assert_eq!(group_move::option_q(initial, 0.0), initial);
+            assert_eq!(group_move::option_q(initial, -2.0), 0.1);
+            assert_eq!(group_move::option_q(initial, 2.0), 18.0);
+            assert!(group_move::option_q(initial, 0.1) >= initial);
         }
     }
 }

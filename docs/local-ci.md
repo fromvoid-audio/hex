@@ -146,6 +146,9 @@ Scripts without their own test module, config files and unknown inputs keep
 comprehensive discovery. Owner selections run through `scripts/python_shards.py`:
 one process per test from a shared work queue (up to 12 workers), which brings
 `test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
+Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
+run after the ordinary queue with at most two workers. Their output and timing
+remain included, and unmarked tests retain their normal worker count.
 
 Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,
@@ -282,6 +285,10 @@ paths add the Python self-tests; unknown or high-risk inputs test the
 workspace). It is a fast red-main signal, never merge qualification, so a pass
 reports `partial`. A failure prints the merge that turned main red: fix forward
 in a focused PR before merging anything else, and tell other active sessions.
+
+When health runs Python checks for exclusively reviewed tooling paths, it selects
+each changed owner's test module and the shared planner invariants. Mixed,
+unowned, unknown, or native-acceptance inputs retain comprehensive discovery.
 
 ## macOS target storage
 
@@ -431,6 +438,38 @@ The runner may refuse insufficient disk headroom. Inspect and remove only known
 reproducible, inactive generated outputs. Do not delete projects, source, accepted
 artifacts or another worktree's target merely to get a run started. Do not edit
 ownership markers to claim a successful check.
+
+## Controlled macOS VST3 fixtures
+
+The opt-in native instance tests use a clean, pinned VST3 SDK checkout and
+original fixture bundles, not installed plug-ins. `build.py` owns the exact SDK
+and submodule pins; `macos_bootstrap.py` checks those revisions, tracked changes
+and MIT license files before building. Keep the checkout outside the repository
+and choose fresh output directories. Set `HEX_VST3_SDK` locally to its path.
+
+```sh
+test ! -e artifacts/vst3-local-controlled
+test ! -e artifacts/vst3-local-instance
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py build \
+  --sdk "$HEX_VST3_SDK" --output artifacts/vst3-local-controlled
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py build --instance-only \
+  --sdk "$HEX_VST3_SDK" --output artifacts/vst3-local-instance
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py verify \
+  --receipt artifacts/vst3-local-controlled/controlled-macos.json
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py verify \
+  --receipt artifacts/vst3-local-instance/controlled-macos.json
+HEX_VST3_MACOS_RECEIPT="$PWD/artifacts/vst3-local-controlled/controlled-macos.json" \
+HEX_VST3_INSTANCE_RECEIPT="$PWD/artifacts/vst3-local-instance/controlled-macos.json" \
+  cargo test -p hex-plugin-host --lib --locked \
+  native::tests::epoch::actual_current_capture_uses_same_quiescent_instance_and_keeps_startup_historical \
+  -- --ignored --exact
+```
+
+Receipts are bound to the native sources and SDK pins. Rebuild them after those
+inputs change. This controlled helper test does not establish installed plug-in,
+native UI, listening, device deadline or release acceptance. Keep SDK paths and
+local receipts out of Git; record the exact receipt hashes and result with the
+issue or PR being verified.
 
 ## Focused commands
 

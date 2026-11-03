@@ -232,11 +232,7 @@ pub(super) fn render_return(id: ReturnId, peak: f32, height: f32) -> Div {
 fn render_meter(id: String, peak: f32, height: f32) -> Div {
     let colors = theme::meter_colors();
     let level = hex_widgets::MeterLevel::from_amplitude(peak, false);
-    let fraction = if peak > 0.0 && peak.is_finite() {
-        ((20.0 * peak.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
+    let fraction = hex_widgets::MeterLevel::fraction_from_amplitude(peak);
     hex_widgets::level_meter(
         id.into(),
         fraction,

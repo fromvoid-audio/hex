@@ -199,13 +199,12 @@ impl Project {
         id: SourceId,
         receiver: Option<TrackId>,
     ) -> Result<(), Invalid> {
-        if let Some(track) = receiver {
-            if self
+        if let Some(track) = receiver
+            && self
                 .track(track)
                 .is_none_or(|track| track.source_id() != Some(id))
-            {
-                return Err(Invalid("source receiver must be a bound track"));
-            }
+        {
+            return Err(Invalid("source receiver must be a bound track"));
         }
         self.edit_native_source(id, |definition| {
             definition.receiver = receiver;

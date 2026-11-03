@@ -6357,31 +6357,24 @@ fn run_worker(
                         (Some(_), Ok(_)) if stale_consent => {
                             error = Some("project changed · format upgrade cancelled".into());
                         }
+                        (Some(handle), Ok(project))
+                            if !consent && handle.token.requires_schema_upgrade_for(&project) =>
+                        {
+                            save_confirmation_required = true;
+                            error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
+                        }
                         (Some(handle), Ok(project)) => {
-                            if !consent {
-                                match handle.token.requires_save_confirmation_within(
-                                    &project,
-                                    events.legacy_reader_limit(),
-                                ) {
-                                    Ok(true) => {
-                                        save_confirmation_required = true;
-                                        error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
-                                    }
-                                    Ok(false) => {}
-                                    Err(reason) => {
-                                        error = Some(hex_storage::text::lowercase_outside_verbatim(
-                                            &reason.to_string(),
-                                        ))
-                                    }
+                            match hex_storage::prepare_replacement_within(
+                                &handle.path,
+                                &handle.token,
+                                &project,
+                                events.legacy_reader_limit(),
+                            ) {
+                                Ok(prepared) if !consent && prepared.requires_confirmation() => {
+                                    save_confirmation_required = true;
+                                    error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
                                 }
-                            }
-                            // Preflight has not touched the original, recovery or token.
-                            if error.is_none() {
-                                match hex_storage::replace_existing(
-                                    &handle.path,
-                                    &handle.token,
-                                    &project,
-                                ) {
+                                Ok(prepared) => match prepared.publish() {
                                     Ok(outcome) => {
                                         let commit = apply_current_save_outcome(handle, outcome);
                                         unsaved = commit.dirty;
@@ -6404,6 +6397,11 @@ fn run_worker(
                                             &reason.to_string(),
                                         ))
                                     }
+                                },
+                                Err(reason) => {
+                                    error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                        &reason.to_string(),
+                                    ))
                                 }
                             }
                         }
@@ -7135,14 +7133,16 @@ fn run_worker(
             }
             revision = revision.saturating_add(1);
             midi_preview = Arc::clone(prepared.midi_preview());
-            state = view_state(
-                &session,
-                Arc::clone(&midi_preview),
-                revision,
-                project_generation,
-                unsaved,
-                document.as_ref().map(|handle| handle.path.as_path()),
-            );
+            state = events.measure_section_view(|| {
+                view_state(
+                    &session,
+                    Arc::clone(&midi_preview),
+                    revision,
+                    project_generation,
+                    unsaved,
+                    document.as_ref().map(|handle| handle.path.as_path()),
+                )
+            });
             compiled = Some((revision, Arc::clone(&prepared)));
             Some(prepared)
         } else {

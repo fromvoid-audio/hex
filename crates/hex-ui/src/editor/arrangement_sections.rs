@@ -22,22 +22,21 @@ use super::{
 };
 use crate::{
     context_menu::{MenuItem, PopupMenu},
-    theme,
+    section_hit::{self, INNER_EDGE_WIDTH, SHARED_EDGE_RADIUS},
+    section_input, section_selection, theme,
 };
+#[cfg(all(test, feature = "ui-test-support"))]
+use gpui::rgba;
 use gpui::{
     AnyElement, AppContext, Context, Entity, Subscription, Window, div, prelude::*, px, relative,
-    rgb, rgba,
+    rgb,
 };
 use hex_project::{ArrangementSection, BeatTime, Command, ElementColor, SectionId, TempoMap};
 use hex_session::service::{Event, Request};
 use hex_widgets::{
-    RectangleCapture, RectangleEdges, RectanglePart, RectangleSelection, RectangleSelectionPolicy,
-    TextInput,
+    RectangleCapture, RectanglePart, RectangleSelection, RectangleSelectionPolicy, TextInput,
 };
 use std::sync::Arc;
-
-const INNER_EDGE_WIDTH: f32 = 5.0;
-const SHARED_EDGE_RADIUS: f32 = 1.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SectionEdge {
@@ -648,36 +647,18 @@ impl EditorView {
                         * width
                 })
         };
-        let sections = state.project.arrangement_sections();
-        for pair in sections.windows(2) {
-            if pair[0].end() == pair[1].start()
-                && position(pair[0].end())
-                    .is_some_and(|edge| RectangleEdges::seam_hit(x, edge, SHARED_EDGE_RADIUS))
-            {
-                return Some(SectionEdge::Shared(pair[0].id(), pair[1].id()));
-            }
-        }
-        for section in sections {
-            let (Some(start), Some(end)) = (position(section.start()), position(section.end()))
-            else {
-                continue;
-            };
-            let part = RectangleEdges {
-                width: INNER_EDGE_WIDTH,
-                minimum_body: 0.0,
-            }
-            .hit(x, start, end);
-            let edge = match part {
-                Some(RectanglePart::Leading) => Some(hex_project::TrimEdge::Left),
-                Some(RectanglePart::Trailing) => Some(hex_project::TrimEdge::Right),
-                _ => None,
-            };
-            if let Some(edge) = edge {
-                return Some(SectionEdge::Single(section.id(), edge));
-            }
-        }
-        None
+        let sections = state
+            .project
+            .arrangement_sections()
+            .iter()
+            .map(|section| (section.id(), section.start(), section.end()));
+        section_hit::hit(sections, x, position).map(|hit| match hit {
+            section_hit::Hit::Leading(id) => SectionEdge::Single(id, hex_project::TrimEdge::Left),
+            section_hit::Hit::Trailing(id) => SectionEdge::Single(id, hex_project::TrimEdge::Right),
+            section_hit::Hit::Seam(left, right) => SectionEdge::Shared(left, right),
+        })
     }
+
     fn section_current(&self, g: &Gesture) -> bool {
         self.sections_available()
             && g.generation == self.project_generation
@@ -732,41 +713,36 @@ impl EditorView {
             Some(SectionEdge::Single(id, _)) | Some(SectionEdge::Shared(id, _)) => Some(id),
             None => self.section_hit(x, y),
         };
+        let Some(time_range) = section_input::routes_to_time_range(
+            edge.is_some(),
+            y,
+            top,
+            height,
+            super::clip_name::CLIP_NAME_HEIGHT,
+        ) else {
+            return false;
+        };
         // Section membership takes precedence over the lower-body range owner,
         // edge resizing and autoplay; Shift never creates a time rectangle here.
         if extend && let Some(id) = id {
-            let previous = self.sections.selected_ids().to_vec();
-            let anchor = self
-                .sections
-                .anchor
-                .filter(|anchor| previous.contains(anchor))
-                .or(self.sections.selected)
-                .unwrap_or(id);
+            let selection = section_selection::extend(
+                self.sections.selected_ids().to_vec(),
+                self.sections.selected,
+                self.sections.anchor,
+                id,
+                intent == RectangleSelection::Toggle,
+                |anchor, clicked| self.section_range(anchor, clicked),
+            );
             self.select_section_metadata(Some(id));
-            let (selection, anchor) = if intent == RectangleSelection::Toggle {
-                let mut selection = previous;
-                if selection.contains(&id) {
-                    selection.retain(|old| *old != id);
-                } else {
-                    selection.push(id);
-                }
-                (selection, id)
-            } else {
-                (self.section_range(anchor, id), anchor)
-            };
-            self.sections.selected = if selection.contains(&id) {
-                Some(id)
-            } else {
-                selection.last().copied()
-            };
-            self.sections.selection = selection;
-            self.sections.anchor = Some(anchor);
+            self.sections.selected = selection.selected;
+            self.sections.selection = selection.members;
+            self.sections.anchor = Some(selection.anchor);
             self.sections.cursor = None;
             self.cancel_section_pointer();
             self.suppress_cursor_click = true;
             return true;
         }
-        if edge.is_none() && y >= top + super::time_selection::header_hit_height(height) {
+        if time_range {
             // Do not start a competing capture. Main's existing range receiver
             // sees this same press next and keeps canonical all-track scope.
             self.retire_section_pointer_context_for_range();
@@ -1943,9 +1919,10 @@ impl EditorView {
             });
             let stroke = 1.0 / scale.max(1.0);
             let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
-            let mut element = hex_widgets::rectangle_surface(
+            let mut element = crate::section_surface::surface(
                 (start - viewport.start) as f32 / viewport.length as f32,
-                (end - start) as f32 / viewport.length as f32, pixel_width,
+                (end - start) as f32 / viewport.length as f32,
+                pixel_width, stroke, m.color, selected, owned_hover,
             )
                 .id(("arrangement-section", index))
                 .debug_selector(move || format!("arrangement-section-{index}"))
@@ -1953,14 +1930,6 @@ impl EditorView {
                 .bottom_0()
                 .left_0()
                 .w_full()
-                .border_l(px(if has_border { stroke } else { 0.0 }))
-                .border_r(px(0.0))
-                .cursor(gpui::CursorStyle::Arrow)
-                .border_color(rgb(border))
-                .bg(section_fill(colors.0))
-                .text_color(rgb(colors.1))
-                .hover(move |style| style.bg(section_fill(hover.0)).text_color(rgb(hover.1)).border_color(rgb(hover.2)))
-                .text_xs()
                 .tooltip(|_, cx| {
                     cx.new(|_| super::waveform::ClipTooltip { kind: crate::tooltips::Kind::Help,
                         name: "header: select/reorder · body: time selection · inner edge: resize one · seam: resize both · option: copy · command: markers only · control: snap · shift-click: select range · cmd-shift-click: toggle · g: merge · cmd-d: duplicate · e: split"
@@ -1968,21 +1937,14 @@ impl EditorView {
                     })
                     .into()
                 });
-            let mut header = hex_widgets::rectangle_body(-1.0, super::clip_name::CLIP_NAME_HEIGHT)
-                // Resolve against this layout, including a single H/resize frame.
-                // Previous lane measurements still own pointer geometry, not paint height.
-                .h(relative(super::time_selection::SELECTION_HANDLE_FRACTION))
-                .min_h(px(super::clip_name::CLIP_NAME_HEIGHT))
-                .max_h(relative(1.0))
-                .id(("arrangement-section-header", index))
-                .debug_selector(move || format!("arrangement-section-header-{index}"))
-                .bg(rgb(colors.0))
-                .text_color(rgb(colors.1))
-                .text_xs()
-                .line_height(px(14.0))
-                .px_1()
-                .overflow_hidden()
-                .hover(move |style| style.bg(rgb(hover.0)).text_color(rgb(hover.1)));
+            let mut header = crate::section_surface::header(
+                m.color,
+                selected,
+                owned_hover,
+                super::clip_name::CLIP_NAME_HEIGHT,
+            )
+            .id(("arrangement-section-header", index))
+            .debug_selector(move || format!("arrangement-section-header-{index}"));
             if let Some(id) = m.id {
                 element = element.on_mouse_down(
                     gpui::MouseButton::Right,
@@ -2099,11 +2061,6 @@ impl EditorView {
         }
         elements
     }
-}
-/// Body tint leaves the existing Main grid and range overlay visible. The
-/// header paints its own opaque fill; label and border never inherit opacity.
-fn section_fill(color: u32) -> gpui::Rgba {
-    rgba((color << 8) | 0x38)
 }
 fn insertion_target(
     project: &hex_project::Project,
@@ -2498,13 +2455,14 @@ mod tests {
             assert_eq!(
                 selected_fill,
                 Some(
-                    section_fill(
-                        theme::section_colors(
+                    rgba(
+                        (theme::section_colors(
                             before.arrangement_section(ids[0]).unwrap().color(),
                             true,
                             true,
                         )
-                        .0
+                        .0 << 8)
+                            | 0x38,
                     )
                     .into()
                 ),
