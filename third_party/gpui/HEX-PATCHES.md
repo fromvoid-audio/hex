@@ -422,5 +422,5 @@ loop's common modes and wake it instead; this retains the deferred App-borrow
 and one-reply contracts. Core Foundation copies the block before returning.
 The noninteractive `native_quit_probe` exercises the actual GPUI/AppKit path
 for acceptance and cancellation followed by acceptance; run it with
-`scripts/tests/native_quit_test.py` after building the example. This uses the
+`crates/hex-ui/tests/native_quit_test.py` after building the example. This uses the
 existing native dependency boundary and adds no unsafe Hex workspace code.

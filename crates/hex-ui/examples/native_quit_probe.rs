@@ -1,5 +1,5 @@
 //! Noninteractive native GPUI quit-handshake regression fixture.
-//! Run through `scripts/tests/native_quit_test.py` on macOS.
+//! Run through `crates/hex-ui/tests/native_quit_test.py` on macOS.
 
 #[cfg(target_os = "macos")]
 fn main() {

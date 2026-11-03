@@ -2,7 +2,7 @@
 """Test the real GPUI/AppKit quit handshake without opening any windows.
 
 Build first: cargo build -p hex-ui --example native_quit_probe --locked
-Then run: python3 scripts/tests/native_quit_test.py
+Then run: python3 crates/hex-ui/tests/native_quit_test.py
 Set CARGO_TARGET_DIR if the fixture was built into a non-default target directory.
 """
 
@@ -12,7 +12,7 @@ import subprocess
 import sys
 import unittest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 TARGET = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target"))
 PROBE = TARGET / "debug" / "examples" / "native_quit_probe"
 
