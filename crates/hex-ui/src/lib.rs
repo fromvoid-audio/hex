@@ -33,6 +33,7 @@ mod test_wait;
 pub use editor_backend::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
 mod layout;
 mod section_hit;
+mod section_selection;
 mod section_surface;
 mod startup;
 pub use startup::open_or_report;
