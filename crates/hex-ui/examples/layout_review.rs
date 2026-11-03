@@ -16,6 +16,8 @@ mod theme;
 
 #[path = "../src/editor/pending_edit.rs"]
 mod pending_edit;
+#[path = "../src/section_appearance.rs"]
+mod section_appearance;
 #[path = "../src/section_hit.rs"]
 mod section_hit;
 #[path = "../src/section_input.rs"]
