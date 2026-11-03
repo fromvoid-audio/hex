@@ -273,7 +273,9 @@ impl RectangleDemo {
             && intent != RectangleSelection::Replace
             && let Some((index, _)) = hit
         {
-            let canonical = &self.canonical;
+            let Some(fixture) = self.section_fixture.as_ref() else {
+                return false;
+            };
             let selection = crate::section_selection::extend(
                 std::mem::take(&mut self.selected),
                 self.selection_primary,
@@ -281,14 +283,16 @@ impl RectangleDemo {
                 index,
                 intent == RectangleSelection::Toggle,
                 |anchor, clicked| {
-                    let low = canonical[anchor][0].min(canonical[clicked][0]);
-                    let high = canonical[anchor][0].max(canonical[clicked][0]);
-                    let mut order: Vec<_> = (0..canonical.len()).collect();
-                    order.sort_by(|a, b| canonical[*a][0].total_cmp(&canonical[*b][0]));
-                    order
-                        .into_iter()
-                        .filter(|i| low <= canonical[*i][0] && canonical[*i][0] <= high)
-                        .collect()
+                    crate::section_selection::range(
+                        fixture
+                            .project()
+                            .arrangement_sections()
+                            .iter()
+                            .enumerate()
+                            .map(|(index, section)| (index, section.start())),
+                        anchor,
+                        clicked,
+                    )
                 },
             );
             self.selected = selection.members;
@@ -2584,6 +2588,72 @@ mod tests {
                         && section.end() == anchor.max(destination))
             )
         });
+    }
+
+    #[gpui::test]
+    fn shift_selection_uses_exact_section_starts_not_display_floats(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-exact-selection".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.section_fixture.as_mut().unwrap();
+            let ids: Vec<_> = fixture
+                .project()
+                .arrangement_sections()
+                .iter()
+                .map(|s| s.id())
+                .collect();
+            for id in ids {
+                fixture
+                    .commit(Command::RemoveArrangementSection(id))
+                    .unwrap();
+            }
+            let first = BeatTime::ONE;
+            let second = BeatTime::from_raw(first.raw() + 1);
+            for (name, start, end) in [
+                ("a", first, second),
+                ("b", second, BeatTime::from_quarters(2).unwrap()),
+                (
+                    "c",
+                    BeatTime::from_quarters(5).unwrap(),
+                    BeatTime::from_quarters(9).unwrap(),
+                ),
+            ] {
+                fixture
+                    .commit(Command::AddArrangementSection {
+                        name: name.into(),
+                        color: hex_project::ElementColor::Cyan,
+                        start,
+                        end,
+                    })
+                    .unwrap();
+            }
+            view.canonical = fixture.display();
+            assert_eq!(view.canonical[0][0], view.canonical[1][0]);
+            view.preview = view.canonical.clone();
+            view.section_preview = fixture.project().arrangement_sections().to_vec();
+            view.selected = vec![1];
+            view.selection_primary = Some(1);
+            view.selection_anchor = Some(1);
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let last = visual
+            .debug_bounds("section-exact-selection-rectangle-2")
+            .unwrap();
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(
+            point(last.center().x, last.top() + px(5.0)),
+            MouseButton::Left,
+            shift,
+        );
+        view.read_with(cx, |view, _| assert_eq!(view.selected, [1, 2]));
     }
 
     #[gpui::test]
