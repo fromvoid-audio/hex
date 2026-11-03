@@ -92,6 +92,8 @@ def select(profile: str, paths: list[str], inventory: list[dict],
     retains ordinary Rust classification and all its reverse-dependency checks.
     Native opt-ins come from the invoking environment (or an explicit test map);
     their presence and comprehensive selection are recorded in the resolved plan.
+    Health narrows only exclusively owned tooling; mixed or unowned inputs
+    retain comprehensive Python coverage.
     """
     modules = sorted(set(modules))
 
@@ -100,7 +102,7 @@ def select(profile: str, paths: list[str], inventory: list[dict],
                 "excluded_groups": [], "test_selectors": modules,
                 "reasons": [reason]}
 
-    if profile != "merge":
+    if profile not in {"merge", "health"}:
         return comprehensive("explicit audit/release or non-merge profile retains full Python coverage")
     if not paths:
         return {"mode": "none", "selected_groups": [], "excluded_groups": modules,
@@ -121,6 +123,8 @@ def select(profile: str, paths: list[str], inventory: list[dict],
                 "test_selectors": selectors,
                 "reasons": ["tooling owner boundary: each changed script's own test module plus shared "
                             "invariants (user policy, 1 November 2026): " + ", ".join(owned)]}
+    if profile == "health":
+        return comprehensive("health inputs are not exclusively reviewed tooling owners")
     categories = set()
     for path in paths:
         if not path.endswith(".rs") or path.endswith("/build.rs"):

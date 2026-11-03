@@ -1250,7 +1250,36 @@ class MainHealthTests(unittest.TestCase):
     def steps(self, paths):
         health = plan.health_selection(paths, self.INVENTORY)
         return [(s.step_id, s.argv) for s in ci.planned_steps(
-            {"health": health, "base": "b", "source": "s", "scope": "rust"})]
+            {"health": health, "base": "b", "source": "s", "scope": "rust",
+             "python_tests": {"mode": "comprehensive"}})]
+
+    def test_health_owned_tooling_resolves_to_selected_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git = BaseAdvanceCarryTests.repository(self, root)
+            (root / "scripts").mkdir()
+            script = root / "scripts/ci_plan.py"
+            script.write_text("# base\n")
+            git("add", ".")
+            git("commit", "-qm", "tool base")
+            script.write_text("# change\n")
+            git("commit", "-qam", "tool change")
+            source = git("rev-parse", "HEAD")
+            with patch.object(plan.python_tests, "available_modules",
+                              return_value=sorted(plan.python_tests.REVIEWED_MODULES)):
+                resolved = plan.resolve(root, profile="health", base=source + "^1", source=source,
+                                        metadata=BaseAdvanceCarryTests.metadata(self, root))
+            selection = resolved["python_tests"]
+            self.assertEqual(selection["mode"], "shared")
+            steps = {s.step_id: s for s in ci.planned_steps(resolved)}
+            self.assertEqual(steps["health-runner-tests"].argv, plan.python_tests.argv(selection))
+            self.assertTrue(steps["health-runner-tests"].requires_tests)
+
+    def test_health_tooling_refuses_empty_python_selection(self):
+        health = plan.health_selection(["scripts/ci_plan.py"], self.INVENTORY)
+        with self.assertRaises(ValueError):
+            ci.planned_steps({"health": health, "base": "b", "source": "s", "scope": "tooling",
+                              "python_tests": {"mode": "none"}})
 
     def test_health_tests_only_the_merged_owners_and_widens_for_unknown_inputs(self):
         fmt = ("format", ("cargo", "fmt", "--all", "--check"))
