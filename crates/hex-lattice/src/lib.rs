@@ -9,8 +9,10 @@
 //! # Does not own
 //! Does not own canonical edits, device I/O, host source leases or foreign-code containment. A
 //! resource view or declaration never grants host publication or lifetime authority.
+mod aux_input;
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
+pub use aux_input::{AuxiliaryBlockError, StereoAuxiliaryBlock};
 mod foreign_processor;
 mod matrix_ramp;
 mod meter;
@@ -227,6 +229,22 @@ pub enum OutputTail {
 /// admission. Prepared automation normally succeeds; malformed borrowed delivery
 /// or a derived-control failure returns through the host's existing rollback.
 pub trait NativeProcessorRuntime: StdAny + Send {
+    /// Process an admitted stereo auxiliary block. `automation == None` uses
+    /// the immutable prepared parameters. When `bypassed`, advance the same
+    /// private history while leaving the main signal dry. The clock, automation,
+    /// resources and block are borrowed for this call and must not be retained.
+    /// Providers that declare an auxiliary input must implement this bounded,
+    /// allocation-free entry; the default explicitly refuses it.
+    fn process_block_with_auxiliary(
+        &mut self,
+        _block: StereoAuxiliaryBlock<'_>,
+        _clock: Option<&dyn NativeInstrumentClock>,
+        _automation: Option<&dyn NativeParameterAutomation>,
+        _bypassed: bool,
+        _resources: &dyn DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
     fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
         false
     }

@@ -34,8 +34,8 @@ pub use files::{
 };
 use hex_project::Project;
 pub use replacement::{
-    RecoveryDocument, ReplaceOutcome, ReplaceWarning, load_recovery, recovery_path,
-    replace_confirmed, replace_existing,
+    PreparedReplacement, RecoveryDocument, ReplaceOutcome, ReplaceWarning, load_recovery,
+    prepare_replacement_within, recovery_path, replace_confirmed, replace_existing,
 };
 use std::{fmt, io, path::PathBuf};
 
