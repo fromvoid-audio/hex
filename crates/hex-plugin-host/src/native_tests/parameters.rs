@@ -728,23 +728,16 @@ fn actual_sdk_edit_during_stopped_capture_refuses_incoherent_snapshot() {
     )
     .unwrap();
     let initial = instance.ready().initial_state.clone();
+    let child = instance.child_id_on_control();
     let stopped = instance.quiesce_retained_on_control().unwrap();
-    let mut failure = match stopped.capture_state_retained_on_control() {
-        Ok(_) => panic!("stopped capture changed during SDK read must refuse its snapshot"),
-        Err(failure) => failure,
-    };
-    assert!(matches!(failure.cause(), Error::Worker(6)));
-    let until = Instant::now() + Duration::from_secs(3);
-    loop {
-        if let Some(PreparationDisposal::Reaped(retired)) =
-            failure.poll_disposal_on_control().unwrap()
-        {
-            assert!(!retired.status.success());
-            break;
-        }
-        assert!(Instant::now() < until);
-        thread::yield_now();
-    }
+    let (stopped, result) = stopped
+        .capture_state_or_refusal_retained_while_on_control(|| false)
+        .unwrap();
+    assert!(matches!(
+        result,
+        Err(protocol::StateCaptureRefusal::StillChanging)
+    ));
+    assert_eq!(stopped.child_id_on_control(), child);
     assert_eq!(
         &decode(&initial).unwrap().component.unwrap()[8..12],
         &1.0_f32.to_le_bytes()
@@ -754,5 +747,26 @@ fn actual_sdk_edit_during_stopped_capture_refuses_incoherent_snapshot() {
         (observed[10], observed[11]),
         (0, 0),
         "capture must not invent PCM or flush work"
+    );
+    let previous = stopped.configuration().binding;
+    let mut instance = stopped
+        .resume_retained_on_control(
+            Binding {
+                epoch: previous.epoch + 1,
+                ..previous
+            },
+            Some(options().presentation),
+        )
+        .unwrap();
+    instance
+        .exchange_on_worker(request(instance.configuration(), 0))
+        .unwrap();
+    assert_eq!(instance.child_id_on_control(), child);
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
     );
 }

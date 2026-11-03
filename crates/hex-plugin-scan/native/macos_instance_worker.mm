@@ -37,6 +37,12 @@ bool send_still_changing(int channel,const wire::Config& config,uint64_t blocks,
     wire::number(body,refusal_still_changing,1);
     return wire::send(channel,"HXVICR02",body);
 }
+bool send_state_overflow(int channel,const wire::Config& config,uint64_t blocks,uint64_t frames,uint64_t operation,uint32_t observed) {
+    wire::Bytes body;config.stamp(body);
+    wire::number(body,blocks,8);wire::number(body,frames,8);wire::number(body,operation,8);
+    wire::number(body,1,1);wire::number(body,observed,4);
+    return wire::send(channel,"HXVICR02",body);
+}
 bool wait_for_peer_close(int channel) {
     pollfd descriptor{channel,POLLIN,0};
     const int ready=::poll(&descriptor,1,failed_main_wait_ms);
@@ -264,9 +270,10 @@ int main(int argc,char** argv) {
             // after Requested/acquire, then Complete/release transfers it back
             // to the original processing reader. No SDK wait, extra reader or
             // concurrent socket writer is added to the PCM path.
-            enum LiveCaptureStage { LiveIdle,LiveFeedbackPending,LiveRequested,LiveComplete,LiveFailed };
+            enum LiveCaptureStage { LiveIdle,LiveFeedbackPending,LiveRequested,LiveComplete,LiveOverflow,LiveFailed };
             std::atomic<LiveCaptureStage> live_stage{LiveIdle};
             hex_instance::CapturedState live_state{};
+            uint32_t live_overflow=0;
             uint32_t live_failure=0;
             // One main-produced copied page. Processing only publishes/polls
             // this request and never waits for the SDK getter or shares a
@@ -432,6 +439,11 @@ int main(int argc,char** argv) {
                                 worker_failure.store(ProtocolFailure);break;
                             }
                             if(received==7 && stage==LiveFailed) { worker_failure.store(live_failure);break; }
+                            if(received==7 && stage==LiveOverflow) {
+                                if(!send_state_overflow(channel,*config,blocks,frames,live_operation,live_overflow)) std::_Exit(Cancelled);
+                                live_stage.store(LiveIdle,std::memory_order_release);
+                                continue;
+                            }
                             // Only this worker leaves FeedbackPending, and main
                             // never touches it, so retiring here cannot race a capture.
                             auto pending=LiveFeedbackPending;
@@ -682,13 +694,20 @@ int main(int argc,char** argv) {
                         } else {
                             const auto admission_revision=instance.host_callback_revision_on_control();
                             try {
-                                const bool captured=instance.synchronize_parameter_feedback_on_control() && instance.capture_current_state_on_control(live_state);
+                                const auto captured=instance.synchronize_parameter_feedback_on_control()?
+                                    instance.capture_current_state_on_control(live_state,live_overflow):hex_instance::Instance::CaptureResult::Refused;
                                 instance.dispatch_host_callbacks();
-                                live_failure=captured && !instance.host_refusals()?0:Capture;
+                                live_failure=captured!=hex_instance::Instance::CaptureResult::Refused && !instance.host_refusals()?0:Capture;
+                                if(!live_failure && captured==hex_instance::Instance::CaptureResult::Overflow &&
+                                    !instance.pending_parameter_edits() && instance.host_callback_revision_on_control()==admission_revision) {
+                                    live_stage.store(LiveOverflow,std::memory_order_release);
+                                } else {
+                                    live_stage.store(live_failure?LiveFailed:
+                                        (instance.pending_parameter_edits() || instance.host_callback_revision_on_control()!=admission_revision?
+                                            LiveFeedbackPending:LiveComplete),std::memory_order_release);
+                                }
                             } catch(...) { live_failure=Unexpected; }
-                            live_stage.store(live_failure?LiveFailed:
-                                (instance.pending_parameter_edits() || instance.host_callback_revision_on_control()!=admission_revision?
-                                    LiveFeedbackPending:LiveComplete),std::memory_order_release);
+                            if(live_failure) live_stage.store(LiveFailed,std::memory_order_release);
                         }
                         if(live_failure) {
                             // Refusal/exception cannot admit another DSP call.
@@ -750,7 +769,10 @@ int main(int argc,char** argv) {
                         // cut. Edits that keep arriving refuse only this capture
                         // (still changing); the stopped epoch stays usable.
                         bool changing=instance.pending_parameter_edits();
-                        if(!changing && !instance.capture_current_state_on_control(current)) { error(channel,&*config,Capture);std::_Exit(Capture); }
+                        uint32_t observed=0;
+                        auto captured=hex_instance::Instance::CaptureResult::Captured;
+                        if(!changing) captured=instance.capture_current_state_on_control(current,observed);
+                        if(captured==hex_instance::Instance::CaptureResult::Refused) { error(channel,&*config,Capture);std::_Exit(Capture); }
                         instance.dispatch_host_callbacks();
                         const auto current_latency=instance.reported_latency_on_control();
                         const auto current_tail=instance.reported_tail_on_control();
@@ -760,6 +782,12 @@ int main(int argc,char** argv) {
                         changing=changing || instance.pending_parameter_edits() || instance.host_callback_revision_on_control()!=admission_revision;
                         if(changing) {
                             if(!send_still_changing(channel,*config,blocks,frames,capture_operation)) std::_Exit(Cancelled);
+                            std::lock_guard<std::mutex> lock(startup_mutex);
+                            epoch_stage=CaptureSent;startup_changed.notify_all();
+                            continue;
+                        }
+                        if(captured==hex_instance::Instance::CaptureResult::Overflow) {
+                            if(!send_state_overflow(channel,*config,blocks,frames,capture_operation,observed)) std::_Exit(Cancelled);
                             std::lock_guard<std::mutex> lock(startup_mutex);
                             epoch_stage=CaptureSent;startup_changed.notify_all();
                             continue;
