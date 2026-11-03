@@ -63,6 +63,7 @@ pub(super) struct RectangleDemo {
     section_command: Option<Command>,
     section_error: Option<&'static str>,
     section_marker_latched: bool,
+    section_last_pointer: Option<(f32, f32)>,
     generation: u64,
     range: Option<[f32; 2]>,
     range_before: Option<[f32; 2]>,
@@ -108,6 +109,7 @@ impl RectangleDemo {
             section_command: None,
             section_error: None,
             section_marker_latched: false,
+            section_last_pointer: None,
             generation: 1,
             range: None,
             range_before: None,
@@ -139,6 +141,7 @@ impl RectangleDemo {
             self.section_command = None;
             self.section_error = None;
             self.section_marker_latched = false;
+            self.section_last_pointer = None;
             self.status = "canceled held input";
             cx.notify();
         }
@@ -338,6 +341,7 @@ impl RectangleDemo {
         }
         self.capture = RectangleCapture::begin(Target::Rectangle(index), part, x, true);
         self.section_marker_latched = self.kind == Kind::Section && modifiers.platform;
+        self.section_last_pointer = (self.kind == Kind::Section).then_some((x, y));
         self.preview = self.canonical.clone();
         if let Some(fixture) = self.section_fixture.as_ref() {
             self.section_preview = fixture.project().arrangement_sections().to_vec();
@@ -347,7 +351,32 @@ impl RectangleDemo {
         cx.notify();
         true
     }
-    fn change(&mut self, x: f32, modifiers: Modifiers, cx: &mut Context<Self>) -> bool {
+    fn change(&mut self, x: f32, y: f32, modifiers: Modifiers, cx: &mut Context<Self>) -> bool {
+        let section_rectangle = self.kind == Kind::Section
+            && self
+                .capture
+                .is_some_and(|capture| matches!(capture.key, Target::Rectangle(_)));
+        let x = if section_rectangle {
+            let Some(bounds) = self.bounds else {
+                return true;
+            };
+            let (left, right, top, bottom) = (
+                f32::from(bounds.left()),
+                f32::from(bounds.right()),
+                f32::from(bounds.top()),
+                f32::from(bounds.bottom()),
+            );
+            if x.is_finite() && y.is_finite() && left <= x && x <= right && top <= y && y <= bottom
+            {
+                self.section_last_pointer = Some((x, y));
+            }
+            let Some((last_x, _)) = self.section_last_pointer else {
+                return true;
+            };
+            last_x
+        } else {
+            x
+        };
         let Some(capture) = self.capture.as_mut() else {
             return false;
         };
@@ -450,11 +479,21 @@ impl RectangleDemo {
         cx.notify();
         true
     }
-    fn finish(&mut self, x: f32, modifiers: Modifiers, cx: &mut Context<Self>) -> bool {
+    fn finish(&mut self, x: f32, y: f32, modifiers: Modifiers, cx: &mut Context<Self>) -> bool {
         if self.capture.is_none() {
             return false;
         }
-        self.change(x, modifiers, cx);
+        self.change(x, y, modifiers, cx);
+        let x = if self.kind == Kind::Section
+            && self
+                .capture
+                .is_some_and(|capture| matches!(capture.key, Target::Rectangle(_)))
+        {
+            self.section_last_pointer.map_or(x, |(last_x, _)| last_x)
+        } else {
+            x
+        };
+        self.section_last_pointer = None;
         self.section_marker_latched = false;
         if self
             .capture
@@ -907,7 +946,12 @@ impl Render for RectangleDemo {
                         }
                         let held = moved.update(cx, |view, cx| {
                             if event.pressed_button == Some(MouseButton::Left) {
-                                view.change(event.position.x.into(), event.modifiers, cx)
+                                view.change(
+                                    event.position.x.into(),
+                                    event.position.y.into(),
+                                    event.modifiers,
+                                    cx,
+                                )
                             } else {
                                 let held = view.capture.is_some();
                                 view.cancel(cx);
@@ -923,7 +967,12 @@ impl Render for RectangleDemo {
                         if phase.capture()
                             && event.button == MouseButton::Left
                             && up.update(cx, |view, cx| {
-                                view.finish(event.position.x.into(), event.modifiers, cx)
+                                view.finish(
+                                    event.position.x.into(),
+                                    event.position.y.into(),
+                                    event.modifiers,
+                                    cx,
+                                )
                             })
                         {
                             cx.stop_propagation();
@@ -944,7 +993,8 @@ impl Render for RectangleDemo {
             .on_modifiers_changed(cx.listener(
                 |view, event: &gpui::ModifiersChangedEvent, window, cx| {
                     if view.kind == Kind::Section && view.capture.is_some() {
-                        view.change(window.mouse_position().x.into(), event.modifiers, cx);
+                        let position = window.mouse_position();
+                        view.change(position.x.into(), position.y.into(), event.modifiers, cx);
                     }
                 },
             ))
@@ -1129,7 +1179,7 @@ mod tests {
         visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(at(0.4), MouseButton::Left, Modifiers::default());
         view.update(cx, |view, cx| {
-            assert!(view.finish(f32::NAN, Modifiers::default(), cx))
+            assert!(view.finish(f32::NAN, 0.0, Modifiers::default(), cx))
         });
         view.read_with(cx, |view, _| {
             assert_eq!(view.range, Some(committed));
@@ -1888,6 +1938,125 @@ mod tests {
                 }
             });
         }
+    }
+
+    #[gpui::test]
+    fn outside_release_uses_last_valid_section_location_and_live_copy_modifier(
+        cx: &mut TestAppContext,
+    ) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-outside-copy".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-outside-copy-area").unwrap();
+        let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
+        let outside = point(area.right() + px(50.0), area.top() - px(10.0));
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        let original = view.read_with(cx, |view, _| {
+            view.section_fixture.as_ref().unwrap().project().snapshot()
+        });
+        visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.95), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(outside, MouseButton::Left, alt);
+        visual.simulate_keystrokes("escape");
+        view.read_with(cx, |view, _| {
+            assert!(view.capture.is_none());
+            assert!(view.pending.is_none());
+            assert_eq!(
+                view.section_fixture.as_ref().unwrap().project().snapshot(),
+                original
+            );
+        });
+        for accept in [false, true] {
+            visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(at(0.95), MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
+            visual.simulate_modifiers_change(alt);
+            let expected = view.read_with(cx, |view, _| {
+                let fixture = view.section_fixture.as_ref().unwrap();
+                let id = fixture.project().arrangement_sections()[0].id();
+                let bounds = view.bounds.unwrap();
+                let position = (f32::from(at(0.95).x) - f32::from(bounds.left()))
+                    / f32::from(bounds.size.width);
+                fixture
+                    .plan(id, RectanglePart::Body, position, true, false)
+                    .unwrap()
+                    .unwrap()
+                    .sections
+            });
+            view.read_with(cx, |view, _| {
+                assert_eq!(view.section_preview, expected);
+                assert!(matches!(
+                    view.section_command,
+                    Some(Command::DuplicateArrangementSectionAt { .. })
+                ));
+            });
+            visual.simulate_mouse_up(outside, MouseButton::Left, alt);
+            visual.run_until_parked();
+            view.read_with(cx, |view, _| {
+                assert!(matches!(view.pending.as_ref(), Some(Pending::Section { sections, .. }) if *sections == expected));
+                assert_eq!(view.section_fixture.as_ref().unwrap().project().snapshot(), original);
+            });
+            view.update(cx, |view, cx| view.settle(accept, cx));
+            visual.run_until_parked();
+            view.read_with(cx, |view, _| {
+                let project = view.section_fixture.as_ref().unwrap().project();
+                if accept {
+                    assert_eq!(project.arrangement_sections().len(), 3);
+                } else {
+                    assert_eq!(project.snapshot(), original);
+                }
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn outside_modifier_change_latches_marker_move_at_last_valid_position(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-outside-marker".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-outside-marker-area").unwrap();
+        let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
+        let outside = point(area.right() + px(50.0), area.top() - px(10.0));
+        let command = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.25), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
+        visual.simulate_modifiers_change(command);
+        let preview = view.read_with(cx, |view, _| {
+            assert!(matches!(
+                view.section_command,
+                Some(Command::MoveArrangementSectionMarker { .. })
+            ));
+            view.section_preview.clone()
+        });
+        visual.simulate_modifiers_change(Modifiers::default());
+        visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+        view.read_with(cx, |view, _| assert!(matches!(view.pending.as_ref(), Some(Pending::Section { sections, command, .. }) if *sections == preview && matches!(command.as_ref(), Command::MoveArrangementSectionMarker { .. }))));
+        view.update(cx, |view, cx| view.settle(true, cx));
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.section_fixture
+                    .as_ref()
+                    .unwrap()
+                    .project()
+                    .arrangement_sections(),
+                preview
+            )
+        });
     }
 
     #[gpui::test]
