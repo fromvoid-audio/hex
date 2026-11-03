@@ -2481,13 +2481,14 @@ mod tests {
             assert_eq!(
                 selected_fill,
                 Some(
-                    section_fill(
-                        theme::section_colors(
+                    rgba(
+                        (theme::section_colors(
                             before.arrangement_section(ids[0]).unwrap().color(),
                             true,
                             true,
                         )
-                        .0
+                        .0 << 8)
+                            | 0x38,
                     )
                     .into()
                 ),
