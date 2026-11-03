@@ -1,5 +1,6 @@
 """Scope boundaries, input freshness, and zero-match qualification regressions."""
 import importlib.util
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -1073,7 +1074,8 @@ class BaseAdvanceCarryTests(unittest.TestCase):
                 "steps": [{"step_id": "affected-tests", "argv": ["cargo", "test", "-p", "ui"], "status": "passed",
                            "test_results": {"rust_passed_by_binary": [1]}}]}
 
-    def test_carry_basis_accepts_only_verbatim_disjoint_ordinary_base_advances(self):
+    @contextmanager
+    def carry_fixture(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             git = self.repository(root)
@@ -1104,18 +1106,39 @@ class BaseAdvanceCarryTests(unittest.TestCase):
                                         source=git("rev-parse", "HEAD"), metadata=self.metadata(root))
                 return plan.carry_basis(root, resolved, evidence, env={})
 
+            yield root, base, candidate, evidence, advance
+
+    def test_carry_basis_accepts_disjoint_ordinary_advance(self):
+        with self.carry_fixture() as (_, _, candidate, _, advance):
             basis = advance({"crates/core/src/lib.rs": "// advanced\n", "docs/a.md": "prose"})
             self.assertEqual(basis["delta_owners"], ["core"])
             self.assertEqual(basis["report_commit"], candidate)
-            for paths, then, message in (
-                    ({"crates/core/src/lib.rs": "// advanced\n"}, "crates/core/src/lib.rs", "verbatim"),
-                    ({"crates/core/src/lib.rs": "// advanced\n"}, "crates/ui/src/a.rs", "own path"),
-                    ({"rust-toolchain.toml": "[toolchain]\n"}, None, "toolchain"),
-                    ({"crates/core/Cargo.toml": "[package]\nname='core'\nversion='2'\n"}, None, "dependency"),
-                    ({"scripts/ci_plan.py": "# tool\n"}, None, "tooling")):
-                with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
-                    advance(paths, then=then)
-            git("checkout", "-q", "--detach", candidate)
+
+    def assert_carry_advance_refused(self, paths, then, message):
+        with self.carry_fixture() as (_, _, _, _, advance):
+            with self.assertRaisesRegex(ValueError, message):
+                advance(paths, then=then)
+
+    def test_carry_basis_rejects_nonverbatim_advance(self):
+        self.assert_carry_advance_refused({"crates/core/src/lib.rs": "// advanced\n"},
+                                          "crates/core/src/lib.rs", "verbatim")
+
+    def test_carry_basis_rejects_candidate_own_path_change(self):
+        self.assert_carry_advance_refused({"crates/core/src/lib.rs": "// advanced\n"},
+                                          "crates/ui/src/a.rs", "own path")
+
+    def test_carry_basis_rejects_toolchain_change(self):
+        self.assert_carry_advance_refused({"rust-toolchain.toml": "[toolchain]\n"}, None, "toolchain")
+
+    def test_carry_basis_rejects_dependency_change(self):
+        self.assert_carry_advance_refused({"crates/core/Cargo.toml": "[package]\nname='core'\nversion='2'\n"},
+                                          None, "dependency")
+
+    def test_carry_basis_rejects_tooling_change(self):
+        self.assert_carry_advance_refused({"scripts/ci_plan.py": "# tool\n"}, None, "tooling")
+
+    def test_carry_basis_rejects_invalid_report_and_native_inputs(self):
+        with self.carry_fixture() as (root, base, candidate, evidence, _):
             current = plan.resolve(root, profile="merge", base=base, source=candidate, metadata=self.metadata(root))
             for field, value in (("status", "failed"), ("stale", True), ("mode", "full"),
                                  ("native_acceptance_opt_in", None), ("steps", [])):
