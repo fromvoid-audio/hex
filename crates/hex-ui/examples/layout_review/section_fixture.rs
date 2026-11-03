@@ -162,15 +162,7 @@ impl Fixture {
             return Err(Invalid("invalid section grid position"));
         }
         let project = self.project();
-        let span = BeatTime::from_raw(view_span(project.arrangement_sections()));
-        let length = project
-            .tempo_map()
-            .beat_to_frame(span)
-            .map_err(|_| Invalid("section grid viewport unavailable"))?;
-        if length == 0 {
-            return Err(Invalid("section grid viewport unavailable"));
-        }
-        let viewport = crate::viewport::Viewport::fit(length);
+        let viewport = self.grid_viewport()?;
         let frame = crate::seek::pointer_to_frame(pointer, left, width, viewport)
             .ok_or(Invalid("section grid position unavailable"))?;
         let beat = project
@@ -183,28 +175,56 @@ impl Fixture {
             .ok_or(Invalid("section grid position unavailable"))
     }
 
+    fn grid_viewport(&self) -> Result<crate::viewport::Viewport, Invalid> {
+        let project = self.project();
+        let span = BeatTime::from_raw(view_span(project.arrangement_sections()));
+        let length = project
+            .tempo_map()
+            .beat_to_frame(span)
+            .map_err(|_| Invalid("section grid viewport unavailable"))?;
+        if length == 0 {
+            return Err(Invalid("section grid viewport unavailable"));
+        }
+        Ok(crate::viewport::Viewport::fit(length))
+    }
+
+    pub(super) fn paint_point_end(
+        &self,
+        anchor: BeatTime,
+        width: f32,
+        free: bool,
+    ) -> Result<BeatTime, Invalid> {
+        if !width.is_finite() || width <= 0.0 {
+            return Err(Invalid("invalid section grid position"));
+        }
+        let viewport = self.grid_viewport()?;
+        crate::musical_time::SnapGrid::Adaptive
+            .with_platform_modifier(free)
+            .adjacent_beat(self.project(), anchor, viewport, width, true)
+            .or_else(|| {
+                anchor
+                    .raw()
+                    .checked_add(BeatTime::ONE.raw())
+                    .map(BeatTime::from_raw)
+            })
+            .ok_or(Invalid("section paint end overflow"))
+    }
+
     pub(super) fn commit(&mut self, command: Command) -> Result<Created, Invalid> {
         self.editor.execute(command)
     }
 
     pub(super) fn plan_paint(
         &self,
-        anchor: f32,
-        position: f32,
+        anchor: BeatTime,
+        position: BeatTime,
+        point_end: BeatTime,
         name: &str,
         color: ElementColor,
     ) -> Result<Plan, Invalid> {
-        let span = view_span(self.project().arrangement_sections());
-        let anchor = position_to_beat(anchor, span)?;
-        let position = position_to_beat(position, span)?;
         let start = anchor.min(position);
         let end = if anchor == position {
-            BeatTime::from_raw(
-                anchor
-                    .raw()
-                    .checked_add(BeatTime::ONE.raw())
-                    .ok_or(Invalid("section paint end overflow"))?,
-            )
+            point_end
         } else {
             anchor.max(position)
         };
@@ -408,15 +428,31 @@ mod tests {
         let before = fixture.project().snapshot();
         assert!(
             fixture
-                .plan_paint(0.2, 0.8, "new section", ElementColor::Cyan)
+                .plan_paint(
+                    BeatTime::from_quarters(2).unwrap(),
+                    BeatTime::from_quarters(8).unwrap(),
+                    BeatTime::from_quarters(3).unwrap(),
+                    "new section",
+                    ElementColor::Cyan
+                )
                 .is_err()
         );
         assert_eq!(fixture.project().snapshot(), before);
         for (anchor, position) in [(0.98, 0.92), (0.92, 0.92)] {
             let mut fixture = Fixture::new().unwrap();
             let sections_before = fixture.project().arrangement_sections().to_vec();
+            let span = view_span(fixture.project().arrangement_sections());
+            let anchor = position_to_beat(anchor, span).unwrap();
+            let position = position_to_beat(position, span).unwrap();
+            let point_end = fixture.paint_point_end(anchor, 640.0, false).unwrap();
             let plan = fixture
-                .plan_paint(anchor, position, "new section", ElementColor::Cyan)
+                .plan_paint(
+                    anchor,
+                    position,
+                    point_end,
+                    "new section",
+                    ElementColor::Cyan,
+                )
                 .unwrap();
             let expected = plan.sections;
             assert_eq!(fixture.project().snapshot(), before);
@@ -425,6 +461,37 @@ mod tests {
             assert!(fixture.editor.try_undo().unwrap());
             assert_eq!(fixture.project().arrangement_sections(), sections_before);
         }
+    }
+
+    #[test]
+    fn point_paint_uses_the_shared_next_grid_landmark() {
+        let fixture = Fixture::new().unwrap();
+        let project = fixture.project();
+        let viewport = fixture.grid_viewport().unwrap();
+        for width in [160.0, 640.0, 1200.0] {
+            for free in [false, true] {
+                let anchor = fixture
+                    .snapped_beat(0.92 * width, 0.0, width, free)
+                    .unwrap();
+                let expected = crate::musical_time::SnapGrid::Adaptive
+                    .with_platform_modifier(free)
+                    .adjacent_beat(project, anchor, viewport, width, true)
+                    .unwrap_or_else(|| BeatTime::from_raw(anchor.raw() + BeatTime::ONE.raw()));
+                let point_end = fixture.paint_point_end(anchor, width, free).unwrap();
+                assert_eq!(point_end, expected);
+                let plan = fixture
+                    .plan_paint(anchor, anchor, point_end, "new section", ElementColor::Cyan)
+                    .unwrap();
+                assert!(
+                    matches!(plan.command, Command::AddArrangementSection { start, end, .. } if start == anchor && end == expected)
+                );
+            }
+        }
+        assert!(
+            fixture
+                .paint_point_end(BeatTime::ZERO, f32::NAN, false)
+                .is_err()
+        );
     }
 
     #[test]
