@@ -5,7 +5,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window,
     WindowBounds, WindowOptions, div, prelude::*, px, rgb, size, uniform_list,
 };
-use hex_diagnostics::reader::{LogFilter, LogSnapshot, read_session};
+use hex_diagnostics::reader::{LogFilter, LogSnapshot, read_session_page};
 use hex_widgets::{TextInput, TextInputChanged, TextInputConfig, TextInputKind};
 use std::{
     path::{Path, PathBuf},
@@ -65,6 +65,9 @@ struct Viewer {
     path: PathBuf,
     sessions: Vec<PathBuf>,
     snapshot: Option<Arc<LogSnapshot>>,
+    page: usize,
+    has_older: bool,
+    has_newer: bool,
     rows: Arc<Vec<usize>>,
     query: Entity<TextInput>,
     _query_subscription: Subscription,
@@ -106,6 +109,9 @@ impl Viewer {
             path,
             sessions: Vec::new(),
             snapshot: None,
+            page: 0,
+            has_older: false,
+            has_newer: false,
             rows: Arc::new(Vec::new()),
             query,
             _query_subscription: subscription,
@@ -129,6 +135,7 @@ impl Viewer {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         let path = self.path.clone();
+        let requested_page = self.page;
         self.snapshot = None;
         self.rows = Arc::new(Vec::new());
         self.anchor = None;
@@ -142,7 +149,7 @@ impl Viewer {
         self.loading = true;
         let task = cx.background_executor().spawn(async move {
             let sessions = list_sessions(&path);
-            let snapshot = read_session(&path).map_err(|e| e.to_string());
+            let snapshot = read_session_page(&path, requested_page).map_err(|e| e.to_string());
             (sessions, snapshot)
         });
         cx.spawn(async move |this, cx| {
@@ -158,17 +165,20 @@ impl Viewer {
                     return;
                 }
                 match snapshot {
-                    Ok(mut snapshot) => {
+                    Ok(mut page) => {
                         match sessions {
                             Ok(sessions) => view.sessions = sessions,
                             Err(error) => {
                                 view.sessions = vec![view.path.clone()];
-                                snapshot
+                                page.snapshot
                                     .warnings
                                     .push(format!("could not list sessions: {error}"));
                             }
                         }
-                        view.snapshot = Some(Arc::new(snapshot));
+                        view.page = page.page;
+                        view.has_older = page.has_older;
+                        view.has_newer = page.has_newer;
+                        view.snapshot = Some(Arc::new(page.snapshot));
                         view.filter(cx);
                     }
                     Err(error) => {
@@ -238,9 +248,9 @@ impl Viewer {
                     return;
                 }
                 view.status = if snapshot.warnings.is_empty() {
-                    format!("{} lines · click then shift-click to select", rows.len())
+                    format!("page {} · {} lines · filters apply to this page · history may shift between pages", view.page.saturating_add(1), rows.len())
                 } else {
-                    format!("{} lines · {}", rows.len(), snapshot.warnings.join(" · "))
+                    format!("page {} · {} lines · filters apply to this page · {}", view.page.saturating_add(1), rows.len(), snapshot.warnings.join(" · "))
                 };
                 view.rows = Arc::new(rows);
                 view.anchor = None;
@@ -266,7 +276,19 @@ impl Viewer {
             return;
         };
         self.path = next.clone();
+        self.page = 0;
         self.reload(cx);
+    }
+    fn shift_page(&mut self, older: bool, cx: &mut Context<Self>) {
+        if older && self.has_older {
+            if let Some(page) = self.page.checked_add(1) {
+                self.page = page;
+                self.reload(cx);
+            }
+        } else if !older && self.has_newer {
+            self.page = self.page.saturating_sub(1);
+            self.reload(cx);
+        }
     }
     fn copy_selection(&mut self, cx: &mut Context<Self>) {
         if self.copying {
@@ -282,7 +304,11 @@ impl Viewer {
         let rows = self.rows.clone();
         let path = self.path.clone();
         let category = CATEGORIES[self.category].to_owned();
-        let time = WINDOWS[self.window].0.to_owned();
+        let time = format!(
+            "{} (page {})",
+            WINDOWS[self.window].0,
+            self.page.saturating_add(1)
+        );
         let query = self.query.read(cx).text().to_owned();
         self.copying = true;
         let task = cx.background_executor().spawn(async move {
@@ -328,16 +354,8 @@ fn make_excerpt(
         "hex log excerpt\nsession: {}\ncategory: {category}; time: {time}; search: {query}\n",
         path.display()
     );
-    if let Some(header) = snapshot
-        .lines
-        .iter()
-        .find(|line| line.text.starts_with("session_started "))
-    {
-        let context: String = header.text.chars().take(4096).collect();
-        result.push_str(&context);
-        if context.len() < header.text.len() {
-            result.push_str(" [header clipped]");
-        }
+    if let Some(header) = &snapshot.header {
+        result.push_str(header);
         result.push('\n');
     } else {
         result.push_str("warning: session header unavailable\n");
@@ -561,12 +579,32 @@ impl Render for Viewer {
                         control("copy selection")
                             .on_click(cx.listener(|view, _, _, cx| view.copy_selection(cx))),
                     )
-                    .child(control("latest").on_click(cx.listener(|view, _, _, _cx| {
+                    .child(control("bottom").on_click(cx.listener(|view, _, _, _cx| {
                         if !view.rows.is_empty() {
                             view.scroll
                                 .scroll_to_item(view.rows.len() - 1, gpui::ScrollStrategy::Bottom);
                         }
                     }))),
+            )
+            .child(
+                div()
+                    .h(px(28.0))
+                    .px(px(8.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        control("older lines")
+                            .on_click(cx.listener(|view, _, _, cx| view.shift_page(true, cx))),
+                    )
+                    .child(
+                        control("newer lines")
+                            .on_click(cx.listener(|view, _, _, cx| view.shift_page(false, cx))),
+                    )
+                    .child(theme::text(format!(
+                        "page {} · filters apply to this page",
+                        self.page.saturating_add(1)
+                    ))),
             )
             .child(div().flex_1().min_h_0().child(list))
             .child(
@@ -636,6 +674,7 @@ mod tests {
                 },
             ],
             warnings: vec!["records were lost".into()],
+            header: Some("session_started hex_version=1".into()),
         };
         let result = make_excerpt(
             &snapshot,
@@ -660,6 +699,7 @@ mod tests {
                 event: None,
             }],
             warnings: Vec::new(),
+            header: None,
         };
         let result = make_excerpt(
             &snapshot,
@@ -679,6 +719,7 @@ mod tests {
         let snapshot = LogSnapshot {
             lines: Vec::new(),
             warnings: vec!["é".repeat(COPY_LIMIT)],
+            header: None,
         };
         let result = make_excerpt(
             &snapshot,
@@ -748,6 +789,45 @@ mod tests {
                 .collect();
             assert_eq!(selected, ["ui"]);
             assert!(!view.filtering);
+        });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn viewer_navigates_older_and_newer_pages(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("hex-viewer-pages-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session-200-1.log");
+        let mut content =
+            "session_started log_schema=3 segment=0 build=fixture\noldest\n".to_owned();
+        content.push_str(&"newer\n".repeat(100_000));
+        std::fs::write(&path, content).unwrap();
+        let handle = cx.add_window(|_, cx| Viewer::new(path.clone(), cx));
+        cx.run_until_parked();
+        let viewer = handle.root(cx).unwrap();
+        viewer.update(cx, |view, cx| {
+            assert!(view.has_older);
+            view.shift_page(true, cx);
+        });
+        cx.run_until_parked();
+        viewer.update(cx, |view, cx| {
+            assert_eq!(view.page, 1);
+            assert!(
+                view.snapshot
+                    .as_ref()
+                    .unwrap()
+                    .lines
+                    .iter()
+                    .any(|line| line.text == "oldest")
+            );
+            assert!(view.has_newer);
+            view.shift_page(false, cx);
+        });
+        cx.run_until_parked();
+        viewer.read_with(cx, |view, _| {
+            assert_eq!(view.page, 0);
+            assert!(view.has_older);
         });
         std::fs::remove_dir_all(dir).unwrap();
     }

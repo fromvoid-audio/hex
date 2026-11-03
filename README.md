@@ -50,8 +50,9 @@ When a failure occurs, note what you heard and the approximate time. Keep the
 session's current log and its `.1.log` through `.3.log` siblings together; the
 header repeats source/build/flags and segment metadata. The log button opens a
 native viewer. Use the session, category and time controls or search to narrow
-the list; click a row to inspect it, then shift-click another to select a range
-and copy it.
+the list. Use older and newer lines to move through large sessions; filters
+apply to the displayed page and live history may shift on refresh. Click a row
+to inspect it, then shift-click another to select a range and copy it.
 Times shown in the viewer are UTC. Refresh reads new records; the copied excerpt
 is limited to 1 MiB and includes available session context and loss warnings.
 Check loss counters before interpreting a missing event. New action

@@ -1,7 +1,6 @@
 //! Bounded, control-side reading of the writer's rolling session files.
 //! Callers run filesystem access and filtering off the UI and audio threads.
 use std::{
-    collections::VecDeque,
     fs::File,
     io::{self, Read},
     path::Path,
@@ -36,6 +35,8 @@ pub struct LogEvent {
 pub struct LogSnapshot {
     pub lines: Vec<LogLine>,
     pub warnings: Vec<String>,
+    /// Session header when present, even if it falls outside the page.
+    pub header: Option<String>,
 }
 
 /// Composable event filters. Non-event context and loss lines are retained.
@@ -65,19 +66,38 @@ impl LogFilter<'_> {
     }
 }
 
-/// Read at most four bounded segments of one session. `active` is the stable
-/// `.log` path; `.1.log` through `.3.log` are its increasingly older siblings.
-/// Missing archives are normal; a missing active file or other I/O error is
-/// returned to the caller. Concurrent rotation can change the snapshot; the
-/// segment headers remain visible for inspection.
+/// One bounded page, numbered from the newest retained lines (page zero).
+#[derive(Debug)]
+pub struct LogPage {
+    pub snapshot: LogSnapshot,
+    pub page: usize,
+    pub has_older: bool,
+    pub has_newer: bool,
+}
+
+/// Read the newest page. Older retained lines are reported as omitted; use
+/// [`read_session_page`] to navigate them.
 pub fn read_session(active: &Path) -> io::Result<LogSnapshot> {
+    let mut page = read_session_page(active, 0)?;
+    if page.has_older {
+        page.snapshot
+            .warnings
+            .push("older lines omitted at viewer limit".into());
+    }
+    Ok(page.snapshot)
+}
+
+/// Read one page of at most 100,000 lines, in oldest-to-newest order. The
+/// function buffers at most four bounded segment texts, counts their complete
+/// lines, then retains only the requested page. Missing archives are normal;
+/// missing active files and other I/O failures are returned. A page request
+/// beyond the available history is clamped and reported. Concurrent rotation
+/// may change the snapshot; segment and sequence discontinuities are reported.
+/// Page numbers can shift as a live session grows, so callers should tell users
+/// that paging and refresh use a new snapshot.
+pub fn read_session_page(active: &Path, requested_page: usize) -> io::Result<LogPage> {
     let mut snapshot = LogSnapshot::default();
-    let mut lines = VecDeque::new();
-    let mut dropped = 0usize;
-    let mut previous_sequence: Option<u64> = None;
-    let mut previous_segment: Option<u64> = None;
-    let mut sequence_discontinuity = false;
-    let mut truncated = false;
+    let mut segments = Vec::new();
     for index in (0..RETAINED_SEGMENTS).rev() {
         let path = if index == 0 {
             active.to_owned()
@@ -122,6 +142,38 @@ pub fn read_session(active: &Path) -> io::Result<LogSnapshot> {
                 String::from_utf8_lossy(error.as_bytes()).into_owned()
             }
         };
+        segments.push((path, text));
+    }
+    let total: usize = segments.iter().map(|(_, text)| text.lines().count()).sum();
+    let last_page = total.saturating_sub(1) / MAX_LINES;
+    let page = requested_page.min(last_page);
+    if page != requested_page {
+        snapshot
+            .warnings
+            .push("requested page is no longer available".into());
+    }
+    let end = total.saturating_sub(page.saturating_mul(MAX_LINES));
+    let start = end.saturating_sub(MAX_LINES);
+    let mut position = 0usize;
+    let mut previous_sequence: Option<u64> = None;
+    let mut previous_segment: Option<u64> = None;
+    let mut sequence_discontinuity = false;
+    let mut truncated = false;
+    for (path, text) in segments {
+        if snapshot.header.is_none() {
+            if let Some(line) = text
+                .lines()
+                .next()
+                .filter(|line| line.starts_with("session_started "))
+            {
+                let clipped: String = line.chars().take(4096).collect();
+                snapshot.header = Some(if clipped.len() < line.len() {
+                    format!("{clipped} [header clipped]")
+                } else {
+                    clipped
+                });
+            }
+        }
         if let Some(segment) = text
             .lines()
             .next()
@@ -167,25 +219,19 @@ pub fn read_session(active: &Path) -> io::Result<LogSnapshot> {
                         .any(|field| field == "truncated=true")
                 });
             }
-            if lines.len() == MAX_LINES {
-                lines.pop_front();
-                dropped += 1;
+            if (start..end).contains(&position) {
+                snapshot.lines.push(LogLine {
+                    text: line.to_owned(),
+                    event: event.map(ParsedEvent::into_log_event),
+                });
             }
-            lines.push_back(LogLine {
-                text: line.to_owned(),
-                event,
-            });
+            position += 1;
         }
         if malformed {
             snapshot
                 .warnings
                 .push(format!("{}: malformed events retained", path.display()));
         }
-    }
-    if dropped > 0 {
-        snapshot
-            .warnings
-            .push(format!("{dropped} older lines omitted at viewer limit"));
     }
     if sequence_discontinuity {
         snapshot.warnings.push("event sequence has a gap or out-of-order records; loss or concurrent rotation may have occurred".into());
@@ -195,11 +241,34 @@ pub fn read_session(active: &Path) -> io::Result<LogSnapshot> {
             .warnings
             .push("one or more event messages were truncated by the logger".into());
     }
-    snapshot.lines = lines.into_iter().collect();
-    Ok(snapshot)
+    Ok(LogPage {
+        snapshot,
+        page,
+        has_older: start > 0,
+        has_newer: page > 0,
+    })
 }
 
-fn parse_event(line: &str) -> Option<LogEvent> {
+struct ParsedEvent<'a> {
+    unix_nanos: u128,
+    elapsed_nanos: u128,
+    sequence: u64,
+    level: &'a str,
+    category: &'a str,
+}
+impl ParsedEvent<'_> {
+    fn into_log_event(self) -> LogEvent {
+        LogEvent {
+            unix_nanos: self.unix_nanos,
+            elapsed_nanos: self.elapsed_nanos,
+            sequence: self.sequence,
+            level: self.level.to_owned(),
+            category: self.category.to_owned(),
+        }
+    }
+}
+
+fn parse_event(line: &str) -> Option<ParsedEvent<'_>> {
     // Only inspect the prefix, never parse fields from a quoted message.
     let prefix = line.split_once(" message=")?.0;
     let field = |name: &str| {
@@ -207,12 +276,12 @@ fn parse_event(line: &str) -> Option<LogEvent> {
             .split_ascii_whitespace()
             .find_map(|part| part.strip_prefix(name))
     };
-    Some(LogEvent {
+    Some(ParsedEvent {
         unix_nanos: field("unix_nanos=")?.parse().ok()?,
         elapsed_nanos: field("elapsed_nanos=")?.parse().ok()?,
         sequence: field("sequence=")?.parse().ok()?,
-        level: field("level=").unwrap_or("info").to_owned(),
-        category: field("category=").unwrap_or("uncategorised").to_owned(),
+        level: field("level=").unwrap_or("info"),
+        category: field("category=").unwrap_or("uncategorised"),
     })
 }
 
@@ -327,7 +396,7 @@ mod tests {
             snapshot
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("1 older lines"))
+                .any(|warning| warning.contains("older lines omitted"))
         );
         fs::remove_dir_all(dir).unwrap();
     }
@@ -344,6 +413,44 @@ mod tests {
         fs::write(&path, "session_started log_schema=3 segment=4\n").unwrap();
         let snapshot = read_session(&path).unwrap();
         assert!(!snapshot.warnings.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn pages_reach_older_segments_without_overlap_and_keep_header() {
+        let dir = crate::tests::fixture();
+        let path = dir.join("session.log");
+        let mut older = "session_started log_schema=3 segment=0 build=fixture\nfirst\n".to_owned();
+        older.push_str(&"old\n".repeat(MAX_LINES - 1));
+        fs::write(path.with_extension("1.log"), older).unwrap();
+        fs::write(&path, "session_started log_schema=3 segment=1\nnew\n").unwrap();
+        let newest = read_session_page(&path, 0).unwrap();
+        assert!(newest.has_older);
+        assert!(!newest.has_newer);
+        assert_eq!(newest.snapshot.lines.len(), MAX_LINES);
+        assert_eq!(newest.snapshot.lines.last().unwrap().text, "new");
+        assert!(
+            newest
+                .snapshot
+                .header
+                .as_deref()
+                .unwrap()
+                .contains("build=fixture")
+        );
+        let previous = read_session_page(&path, 1).unwrap();
+        assert!(!previous.has_older);
+        assert!(previous.has_newer);
+        assert_eq!(previous.snapshot.lines.len(), 3);
+        assert_eq!(previous.snapshot.lines[1].text, "first");
+        let missing = read_session_page(&path, usize::MAX).unwrap();
+        assert_eq!(missing.page, 1);
+        assert!(
+            missing
+                .snapshot
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("no longer available"))
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 }
