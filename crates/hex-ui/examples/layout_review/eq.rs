@@ -18,7 +18,13 @@ mod sampling;
 mod selection;
 #[path = "../../src/editor/device_panel/eq_panel/slope.rs"]
 mod slope;
-use hex_widgets::{NumericControlEvent, SelectorChanged, ToggleChanged};
+use hex_widgets::{
+    NumericControlEvent, NumericEventPhase, NumericGestureId, SelectorChanged, ToggleChanged,
+};
+use std::collections::VecDeque;
+
+const HISTORY_CAPACITY: usize = 100;
+const PENDING_ACTION_CAPACITY: usize = 256;
 
 /// Ephemeral catalog state; it never owns a project or audio resource.
 pub(super) struct Local {
@@ -32,6 +38,35 @@ pub(super) struct Local {
     option_drag: Option<(Node, f32)>,
     scroll: Option<LocalScroll>,
     created: Option<NodeId>,
+    undo: VecDeque<HistoryEntry>,
+    redo: Vec<HistoryEntry>,
+    numeric_before: Option<(usize, Option<NumericGestureId>, HistorySnapshot)>,
+    finalized_numeric: Vec<NumericGestureId>,
+    pending_numeric: Vec<(usize, f64, f64)>,
+    pending_actions: Vec<PendingAction>,
+    pending_overflow: bool,
+    flush_scheduled: bool,
+}
+
+enum PendingAction {
+    Graph(ResponseGraphEvent),
+    Marquee(ResponseGraphMarqueeEvent),
+    Scroll(ResponseGraphScrollEvent),
+    Bank(usize, bool),
+    History(bool),
+}
+
+#[derive(Clone)]
+struct HistorySnapshot {
+    state: EqState,
+    selected: Option<NodeId>,
+    group: Vec<NodeId>,
+    bank: u8,
+}
+
+struct HistoryEntry {
+    before: HistorySnapshot,
+    after: HistorySnapshot,
 }
 
 struct Snapshot {
@@ -71,7 +106,36 @@ impl Local {
             option_drag: None,
             scroll: None,
             created: None,
+            undo: VecDeque::new(),
+            redo: Vec::new(),
+            numeric_before: None,
+            finalized_numeric: Vec::new(),
+            pending_numeric: Vec::new(),
+            pending_actions: Vec::new(),
+            pending_overflow: false,
+            flush_scheduled: false,
         })
+    }
+
+    fn history_snapshot(&self) -> HistorySnapshot {
+        HistorySnapshot {
+            state: self.state.clone(),
+            selected: self.selected,
+            group: self.group.clone(),
+            bank: self.bank,
+        }
+    }
+
+    fn record(&mut self, before: HistorySnapshot) {
+        let after = self.history_snapshot();
+        if before.state == after.state {
+            return;
+        }
+        if self.undo.len() == HISTORY_CAPACITY {
+            self.undo.pop_front();
+        }
+        self.undo.push_back(HistoryEntry { before, after });
+        self.redo.clear();
     }
 }
 
@@ -124,7 +188,15 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
             control.set_tab_navigation(true, cx);
             control
         });
-        subscriptions.push(cx.subscribe(&entity, |_, _, _: &NumericControlEvent, cx| cx.notify()));
+        subscriptions.push(cx.subscribe(
+            &entity,
+            move |view, _, event: &NumericControlEvent, cx| {
+                if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
+                    numeric_event(fixture, index, event.clone());
+                }
+                cx.notify();
+            },
+        ));
         numbers.push(Number {
             entity,
             role: theme::DeviceStyleRole::Readout,
@@ -150,6 +222,11 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
         let entity = cx.new(|cx| Toggle::from_config(cx, config));
         subscriptions.push(
             cx.subscribe(&entity, move |view, _, event: &ToggleChanged, cx| {
+                if index == 0 {
+                    if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
+                        discrete_event(fixture, DiscreteEdit::Enabled(event.checked));
+                    }
+                }
                 if (1..=5).contains(&index) && event.checked && !view.finish_drafts(cx) {
                     if let Some(fixture) = view.fixtures.get(&Entry::Eq) {
                         let bank = fixture
@@ -163,6 +240,14 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
                     }
                     cx.notify();
                     return;
+                }
+                if (1..=5).contains(&index) {
+                    if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
+                        if defer_action(fixture, PendingAction::Bank(index, event.checked)) {
+                            cx.notify();
+                            return;
+                        }
+                    }
                 }
                 if (1..=5).contains(&index) {
                     if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
@@ -227,7 +312,14 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
         .map_err(str::to_owned)?
         .with_appearance(SelectorAppearance::CompactSelector);
         let entity = cx.new(|cx| Selector::from_config(cx, config));
-        subscriptions.push(cx.subscribe(&entity, |_, _, _: &SelectorChanged, cx| cx.notify()));
+        subscriptions.push(
+            cx.subscribe(&entity, move |view, _, event: &SelectorChanged, cx| {
+                if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
+                    discrete_event(fixture, DiscreteEdit::Selector(index, event.index));
+                }
+                cx.notify();
+            }),
+        );
         selectors.push(entity);
     }
     let graph = cx.new(|cx| {
@@ -263,6 +355,9 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
                 return;
             }
             if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
+                if defer_action(fixture, PendingAction::Graph(*event)) {
+                    return;
+                }
                 if let Err(error) = event_graph(fixture, *event, cx) {
                     fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
                     view.error = Some(error);
@@ -285,6 +380,9 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
                 return;
             }
             if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
+                if defer_action(fixture, PendingAction::Marquee(event.clone())) {
+                    return;
+                }
                 if let Err(error) = marquee(fixture, event, cx) {
                     view.error = Some(error);
                 }
@@ -306,6 +404,9 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
                 return;
             }
             if let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) {
+                if defer_action(fixture, PendingAction::Scroll(*event)) {
+                    return;
+                }
                 if let Err(error) = scroll(fixture, *event, cx) {
                     fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
                     view.error = Some(error);
@@ -314,7 +415,7 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
             cx.notify();
         }),
     );
-    Ok(Fixture {
+    let mut fixture = Fixture {
         entry: Entry::Eq,
         _subscriptions: subscriptions,
         numbers,
@@ -323,7 +424,13 @@ pub(super) fn fixture(cx: &mut Context<Gallery>) -> Result<Fixture, String> {
         graph,
         eq_local: Some(Local::new()?),
         discrete_height: 14.0,
-    })
+    };
+    if let Some(state) = current(&fixture, cx) {
+        if let Some(local) = fixture.eq_local.as_mut() {
+            local.state = state;
+        }
+    }
+    Ok(fixture)
 }
 
 fn current(fixture: &Fixture, cx: &gpui::App) -> Option<EqState> {
@@ -351,6 +458,343 @@ fn current(fixture: &Fixture, cx: &gpui::App) -> Option<EqState> {
         ][fixture.selectors[1].read(cx).selected()];
     }
     Some(state)
+}
+
+fn set_numeric(state: &mut EqState, selected: Option<NodeId>, index: usize, value: f64) {
+    let value = value as f32;
+    if index == 0 {
+        state.output_gain = value;
+    } else if let Some(node) = selected.and_then(|id| state.nodes.iter_mut().find(|n| n.id == id)) {
+        match index {
+            1 => node.frequency_hz = value,
+            2 => node.gain_db = value,
+            3 => node.q = value,
+            _ => {}
+        }
+    }
+}
+
+fn numeric_event(fixture: &mut Fixture, index: usize, event: NumericControlEvent) {
+    let Some(local) = fixture.eq_local.as_mut() else {
+        return;
+    };
+    if event
+        .gesture
+        .as_ref()
+        .is_some_and(|gesture| local.finalized_numeric.contains(gesture))
+    {
+        return;
+    }
+    match event.phase {
+        NumericEventPhase::Begin => {
+            // A keyboard step delivered during this control's captured drag
+            // belongs to that still-active edit; keep its original snapshot.
+            if event.gesture.is_none()
+                && local
+                    .numeric_before
+                    .as_ref()
+                    .is_some_and(|(owner, gesture, _)| *owner == index && gesture.is_some())
+            {
+                return;
+            }
+            let mut before = local.history_snapshot();
+            set_numeric(&mut before.state, before.selected, index, event.value);
+            local.numeric_before = Some((index, event.gesture, before));
+        }
+        NumericEventPhase::Change => {
+            set_numeric(&mut local.state, local.selected, index, event.value);
+        }
+        NumericEventPhase::Commit => {
+            set_numeric(&mut local.state, local.selected, index, event.value);
+            if let Some((owner, gesture, before)) = local.numeric_before.take() {
+                if owner == index && gesture == event.gesture {
+                    local.record(before);
+                } else {
+                    local.numeric_before = Some((owner, gesture, before));
+                }
+            }
+        }
+        NumericEventPhase::Cancel => {
+            set_numeric(&mut local.state, local.selected, index, event.value);
+            if local
+                .numeric_before
+                .as_ref()
+                .is_some_and(|(owner, gesture, _)| *owner == index && *gesture == event.gesture)
+            {
+                local.numeric_before = None;
+            }
+        }
+    }
+}
+
+enum DiscreteEdit {
+    Enabled(bool),
+    Selector(usize, usize),
+}
+
+fn discrete_event(fixture: &mut Fixture, edit: DiscreteEdit) {
+    let Some(local) = fixture.eq_local.as_mut() else {
+        return;
+    };
+    let before = local.history_snapshot();
+    match edit {
+        DiscreteEdit::Selector(0, value) if value <= 2 => local.state.mode = value as u8,
+        edit => {
+            let Some(node) = local
+                .selected
+                .and_then(|id| local.state.nodes.iter_mut().find(|n| n.id == id))
+            else {
+                return;
+            };
+            match edit {
+                DiscreteEdit::Enabled(value) => node.enabled = value,
+                DiscreteEdit::Selector(1, value) => {
+                    let kinds = [
+                        NodeKind::Bell,
+                        NodeKind::LowShelf,
+                        NodeKind::HighShelf,
+                        NodeKind::LowCut,
+                        NodeKind::HighCut,
+                        NodeKind::Notch,
+                    ];
+                    let Some(kind) = kinds.get(value) else { return };
+                    node.kind = *kind;
+                }
+                DiscreteEdit::Selector(2, value) if value <= 3 => node.slope = value as u8,
+                _ => return,
+            }
+        }
+    }
+    local.record(before);
+}
+
+pub(super) fn finish_numeric(
+    fixture: &mut Fixture,
+    index: usize,
+    previous: f64,
+    value: f64,
+    gesture: Option<NumericGestureId>,
+    cx: &mut Context<Gallery>,
+) {
+    let Some(local) = fixture.eq_local.as_mut() else {
+        return;
+    };
+    if let Some(gesture) = gesture {
+        local.finalized_numeric.push(gesture);
+    }
+    local.pending_numeric.push((index, previous, value));
+    if local.flush_scheduled {
+        return;
+    }
+    local.flush_scheduled = true;
+    let view = cx.weak_entity();
+    cx.defer(move |cx| {
+        let _ = view.update(cx, flush_pending);
+    });
+}
+
+pub(super) fn can_finish_numeric(fixture: &Fixture, additional: usize) -> bool {
+    fixture.eq_local.as_ref().is_some_and(|local| {
+        local
+            .pending_numeric
+            .len()
+            .checked_add(additional)
+            .is_some_and(|count| count <= HISTORY_CAPACITY)
+    })
+}
+
+fn flush_pending(view: &mut Gallery, cx: &mut Context<Gallery>) {
+    let Some(fixture) = view.fixtures.get_mut(&Entry::Eq) else {
+        return;
+    };
+    let Some(local) = fixture.eq_local.as_mut() else {
+        return;
+    };
+    let pending = std::mem::take(&mut local.pending_numeric);
+    for (index, previous, value) in pending {
+        let mut before = local.history_snapshot();
+        set_numeric(&mut before.state, before.selected, index, previous);
+        set_numeric(&mut local.state, local.selected, index, value);
+        if local
+            .numeric_before
+            .as_ref()
+            .is_some_and(|(owner, _, _)| *owner == index)
+        {
+            local.numeric_before = None;
+        }
+        local.record(before);
+    }
+    let actions = std::mem::take(&mut local.pending_actions);
+    let overflow = std::mem::take(&mut local.pending_overflow);
+    local.finalized_numeric.clear();
+    local.flush_scheduled = false;
+    if overflow {
+        fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
+        let bank = fixture
+            .eq_local
+            .as_ref()
+            .map_or(0, |local| usize::from(local.bank));
+        for index in 1..=5 {
+            fixture.toggles[index]
+                .update(cx, |toggle, cx| toggle.set_checked(index == bank + 1, cx));
+        }
+        view.error = Some("too many pending eq actions; edit cancelled".into());
+        return;
+    }
+    for action in actions {
+        if view.entry != Entry::Eq || view.disabled {
+            let cancellation = match &action {
+                PendingAction::Graph(event) => event.phase == ResponseGraphPhase::Cancel,
+                PendingAction::Marquee(event) => event.phase == ResponseGraphMarqueePhase::Cancel,
+                PendingAction::Scroll(event) => event.phase == ResponseGraphScrollPhase::Cancel,
+                PendingAction::Bank(..) | PendingAction::History(..) => false,
+            };
+            if !cancellation {
+                continue;
+            }
+        }
+        let result = match action {
+            PendingAction::Graph(event) => event_graph(fixture, event, cx),
+            PendingAction::Marquee(event) => marquee(fixture, &event, cx),
+            PendingAction::Scroll(event) => scroll(fixture, event, cx),
+            PendingAction::Bank(index, checked) => {
+                let result = if checked {
+                    select_bank(fixture, (index - 1) as u8, cx)
+                } else {
+                    Ok(())
+                };
+                let bank = fixture
+                    .eq_local
+                    .as_ref()
+                    .map_or(0, |local| usize::from(local.bank));
+                for other in 1..=5 {
+                    fixture.toggles[other]
+                        .update(cx, |toggle, cx| toggle.set_checked(other == bank + 1, cx));
+                }
+                result
+            }
+            PendingAction::History(redo) => history(fixture, redo, cx),
+        };
+        if let Err(error) = result {
+            fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
+            view.error = Some(error);
+            break;
+        }
+    }
+    cx.notify();
+}
+
+fn defer_action(fixture: &mut Fixture, action: PendingAction) -> bool {
+    let Some(local) = fixture.eq_local.as_mut() else {
+        return false;
+    };
+    if !local.flush_scheduled {
+        return false;
+    }
+    if local.pending_actions.len() == PENDING_ACTION_CAPACITY {
+        local.pending_actions.clear();
+        local.pending_overflow = true;
+    }
+    if !local.pending_overflow {
+        local.pending_actions.push(action);
+    }
+    true
+}
+
+pub(super) fn defer_history(fixture: &mut Fixture, redo: bool) -> bool {
+    defer_action(fixture, PendingAction::History(redo))
+}
+
+pub(super) fn history(
+    fixture: &mut Fixture,
+    redo: bool,
+    cx: &mut Context<Gallery>,
+) -> Result<(), String> {
+    let local = fixture.eq_local.as_ref().ok_or("eq fixture unavailable")?;
+    if local.before.is_some() || local.scroll.is_some() || local.numeric_before.is_some() {
+        return Err("finish the current eq edit first".into());
+    }
+    if fixture
+        .numbers
+        .iter()
+        .any(|number| number.entity.read(cx).is_interacting())
+    {
+        return Err("finish the current eq edit first".into());
+    }
+    let target = if redo {
+        local.redo.last().map(|entry| &entry.after)
+    } else {
+        local.undo.back().map(|entry| &entry.before)
+    };
+    let Some(target) = target else { return Ok(()) };
+    if target.state.mode > 2 || target.bank > 4 {
+        return Err("eq history contains an invalid selection".into());
+    }
+    fixture.numbers[0]
+        .entity
+        .read(cx)
+        .accessibility_value(f64::from(target.state.output_gain))
+        .map_err(|error| error.to_string())?;
+    if let Some(id) = target.selected {
+        let node = target.state.node(id).map_err(|error| error.to_string())?;
+        if node.bank != target.bank || node.slope > 3 {
+            return Err("eq history contains an invalid selection".into());
+        }
+        for (index, value) in [(1, node.frequency_hz), (2, node.gain_db), (3, node.q)] {
+            fixture.numbers[index]
+                .entity
+                .read(cx)
+                .accessibility_value(f64::from(value))
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    let local = fixture.eq_local.as_mut().ok_or("eq fixture unavailable")?;
+    let entry = if redo {
+        local.redo.pop()
+    } else {
+        local.undo.pop_back()
+    };
+    let Some(entry) = entry else { return Ok(()) };
+    let target = if redo { &entry.after } else { &entry.before };
+    local.state = target.state.clone();
+    local.selected = target.selected;
+    local.group = target.group.clone();
+    local.bank = target.bank;
+    local.collapse = None;
+    local.created = None;
+    local.group_drag = None;
+    local.option_drag = None;
+    let node = local
+        .selected
+        .and_then(|id| local.state.node(id).ok().copied());
+    let output = local.state.output_gain;
+    let mode = local.state.mode;
+    let bank = local.bank;
+    if redo {
+        local.undo.push_back(entry);
+    } else {
+        local.redo.push(entry);
+    }
+    fixture.numbers[0]
+        .entity
+        .update(cx, |control, cx| {
+            control.set_external_value(f64::from(output), cx)
+        })
+        .map_err(|error| error.to_string())?;
+    fixture.selectors[0]
+        .update(cx, |selector, cx| {
+            selector.set_selected(usize::from(mode), cx)
+        })
+        .map_err(str::to_owned)?;
+    for index in 1..=5 {
+        fixture.toggles[index].update(cx, |toggle, cx| {
+            toggle.set_checked(index == usize::from(bank) + 1, cx)
+        });
+    }
+    if let Some(node) = node {
+        set_controls(fixture, node, cx)?;
+    }
+    Ok(())
 }
 
 fn select_bank(fixture: &mut Fixture, bank: u8, cx: &mut Context<Gallery>) -> Result<(), String> {
@@ -423,6 +867,7 @@ fn scroll(
     }
     let mut state = current(fixture, cx).ok_or("eq fixture unavailable")?;
     let local = fixture.eq_local.as_mut().ok_or("eq fixture unavailable")?;
+    let mut completed = None;
     if event.phase == ResponseGraphScrollPhase::Begin {
         if local.before.is_some() || local.scroll.is_some() {
             return Err("finish the current eq edit first".into());
@@ -471,12 +916,22 @@ fn scroll(
             scroll.value = slope::advance(scroll.value, delta);
             scroll.last_steps = event.steps;
             node.slope = scroll.value as u8;
-            if event.phase != ResponseGraphScrollPhase::Commit {
+            if event.phase == ResponseGraphScrollPhase::Commit {
+                completed = Some(HistorySnapshot {
+                    state: scroll.before.state,
+                    selected: scroll.before.selected,
+                    group: scroll.before.group,
+                    bank: local.bank,
+                });
+            } else {
                 local.scroll = Some(scroll);
             }
         }
     }
     local.state = state;
+    if let Some(before) = completed {
+        local.record(before);
+    }
     let selected = local
         .selected
         .and_then(|id| local.state.node(id).ok().copied());
@@ -537,6 +992,7 @@ fn event_graph(
     }
     let mut state = current(fixture, cx).ok_or("eq fixture unavailable")?;
     let local = fixture.eq_local.as_mut().ok_or("eq fixture unavailable")?;
+    let mut completed = None;
     let id = if event.node_id == 0 {
         local.created
     } else {
@@ -572,6 +1028,9 @@ fn event_graph(
             {
                 return Err("eq removal node unavailable in this bank".into());
             }
+            let mut before = local.history_snapshot();
+            before.state = state.clone();
+            completed = Some(before);
             for id in removed {
                 state.remove(id).map_err(|e| e.to_string())?;
             }
@@ -702,7 +1161,12 @@ fn event_graph(
                 }
             }
             if event.phase == ResponseGraphPhase::Commit {
-                local.before = None;
+                completed = local.before.take().map(|before| HistorySnapshot {
+                    state: before.state,
+                    selected: before.selected,
+                    group: before.group,
+                    bank: local.bank,
+                });
                 local.group_drag = None;
                 local.option_drag = None;
             }
@@ -726,7 +1190,12 @@ fn event_graph(
                 local.group.clear();
             }
             local.collapse = None;
-            local.before = None;
+            completed = local.before.take().map(|before| HistorySnapshot {
+                state: before.state,
+                selected: before.selected,
+                group: before.group,
+                bank: local.bank,
+            });
             local.group_drag = None;
             local.option_drag = None;
             local.created = None;
@@ -734,6 +1203,9 @@ fn event_graph(
         _ => {}
     }
     local.state = state;
+    if let Some(before) = completed {
+        local.record(before);
+    }
     let selected = local
         .selected
         .and_then(|id| local.state.node(id).ok().copied());
@@ -907,6 +1379,583 @@ mod tests {
             position,
             modifiers: gpui::Modifiers::default(),
         }
+    }
+
+    #[gpui::test]
+    fn history_restores_created_and_removed_nodes_and_clears_redo_on_new_edit(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            let initial = current(fixture, cx).unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Create, 0, [0.3, 0.7]),
+                cx,
+            )
+            .unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Release, 0, [0.3, 0.7]),
+                cx,
+            )
+            .unwrap();
+            let created = current(fixture, cx).unwrap();
+            assert_eq!(created.nodes.len(), 2);
+            history(fixture, false, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), initial);
+            assert_eq!(
+                fixture.eq_local.as_ref().unwrap().selected.unwrap().value(),
+                1
+            );
+            history(fixture, true, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), created);
+            assert_eq!(
+                fixture.eq_local.as_ref().unwrap().selected.unwrap().value(),
+                2
+            );
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Remove, 2, [0.3, 0.7]),
+                cx,
+            )
+            .unwrap();
+            assert_eq!(current(fixture, cx).unwrap().nodes.len(), 1);
+            history(fixture, false, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), created);
+            history(fixture, false, cx).unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Create, 0, [0.6, 0.4]),
+                cx,
+            )
+            .unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Release, 0, [0.6, 0.4]),
+                cx,
+            )
+            .unwrap();
+            let replacement = current(fixture, cx).unwrap();
+            history(fixture, true, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), replacement);
+        });
+    }
+
+    #[gpui::test]
+    fn numeric_drag_is_one_undoable_edit_and_cancel_does_not_add_history(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, MouseButton, VisualTestContext, point, px, size};
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let field = visual
+            .debug_bounds("fixture-eq-numeric-2-value")
+            .unwrap()
+            .center();
+        let end = point(field.x, field.y - px(20.0));
+        visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let edited = view.read_with(cx, |view, cx| {
+            current(&view.fixtures[&Entry::Eq], cx).unwrap()
+        });
+        assert_ne!(edited.nodes[0].gain_db, 6.0);
+        visual.simulate_keystrokes("cmd-z");
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                current(&view.fixtures[&Entry::Eq], cx).unwrap().nodes[0].gain_db,
+                6.0
+            )
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            assert_eq!(current(&view.fixtures[&Entry::Eq], cx).unwrap(), edited)
+        });
+        visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.fixtures[&Entry::Eq].numbers[2]
+                    .entity
+                    .update(cx, |number, cx| number.cancel(cx));
+            })
+        });
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let fixture = &view.fixtures[&Entry::Eq];
+            assert_eq!(current(fixture, cx).unwrap(), edited);
+            assert_eq!(fixture.eq_local.as_ref().unwrap().undo.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn keyboard_step_during_pointer_drag_does_not_lose_the_drag_history(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, MouseButton, VisualTestContext, point, px, size};
+        cx.update(hex_widgets::bind_numeric_control_keys);
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let field = visual
+            .debug_bounds("fixture-eq-numeric-2-value")
+            .unwrap()
+            .center();
+        let end = point(field.x, field.y - px(20.0));
+        visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("up");
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_keystrokes("cmd-z");
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            assert_eq!(
+                current(&view.fixtures[&Entry::Eq], cx).unwrap().nodes[0].gain_db,
+                6.0
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn synchronous_barrier_does_not_readmit_queued_numeric_gesture(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, MouseButton, VisualTestContext, point, px, size};
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let field = visual
+            .debug_bounds("fixture-eq-numeric-2-value")
+            .unwrap()
+            .center();
+        visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(field.x, field.y - px(20.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                let entity = view.fixtures[&Entry::Eq].numbers[2].entity.clone();
+                let finalized = entity.update(cx, |number, cx| {
+                    number.prepare_finish_edit_for_owner(cx).unwrap().unwrap()
+                });
+                entity.update(cx, |_, cx| {
+                    cx.emit(NumericControlEvent {
+                        phase: NumericEventPhase::Begin,
+                        value: finalized.previous,
+                        gesture: finalized.gesture.clone(),
+                    });
+                    cx.emit(NumericControlEvent {
+                        phase: NumericEventPhase::Change,
+                        value: finalized.value,
+                        gesture: finalized.gesture.clone(),
+                    });
+                });
+                assert!(view.finish_drafts(cx));
+            })
+        });
+        visual.run_until_parked();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            assert_ne!(current(fixture, cx).unwrap().nodes[0].gain_db, 6.0);
+            assert_eq!(fixture.eq_local.as_ref().unwrap().undo.len(), 1);
+            history(fixture, false, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap().nodes[0].gain_db, 6.0);
+            assert!(fixture.eq_local.as_ref().unwrap().undo.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn queued_earlier_control_edit_precedes_synchronously_finalized_drag(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, MouseButton, VisualTestContext, point, px, size};
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                view.fixtures[&Entry::Eq].numbers[0]
+                    .entity
+                    .update(cx, |control, cx| {
+                        control.set_external_value(2.0, cx).unwrap()
+                    });
+            })
+        });
+        let field = visual
+            .debug_bounds("fixture-eq-numeric-2-value")
+            .unwrap()
+            .center();
+        visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(field.x, field.y - px(20.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            view.update(cx, |view, cx| {
+                let entity = view.fixtures[&Entry::Eq].numbers[0].entity.clone();
+                entity.update(cx, |_, cx| {
+                    for (phase, value) in [
+                        (NumericEventPhase::Begin, 1.0),
+                        (NumericEventPhase::Change, 2.0),
+                        (NumericEventPhase::Commit, 2.0),
+                    ] {
+                        cx.emit(NumericControlEvent {
+                            phase,
+                            value,
+                            gesture: None,
+                        });
+                    }
+                });
+                assert!(view.finish_drafts(cx));
+            })
+        });
+        visual.run_until_parked();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            history(fixture, false, cx).unwrap();
+            let state = current(fixture, cx).unwrap();
+            assert_eq!(state.output_gain, 2.0);
+            assert_eq!(state.nodes[0].gain_db, 6.0);
+            history(fixture, false, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap().output_gain, 1.0);
+        });
+    }
+
+    #[gpui::test]
+    fn discrete_control_edits_are_independent_and_undoable(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            let initial = current(fixture, cx).unwrap();
+            discrete_event(fixture, DiscreteEdit::Enabled(false));
+            fixture.toggles[0].update(cx, |toggle, cx| toggle.set_checked(false, cx));
+            discrete_event(fixture, DiscreteEdit::Selector(1, 3));
+            fixture.selectors[1].update(cx, |control, cx| control.set_selected(3, cx).unwrap());
+            assert_eq!(
+                current(fixture, cx).unwrap().nodes[0].kind,
+                NodeKind::LowCut
+            );
+            history(fixture, false, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap().nodes[0].kind, NodeKind::Bell);
+            assert!(!current(fixture, cx).unwrap().nodes[0].enabled);
+            history(fixture, false, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), initial);
+        });
+    }
+
+    #[gpui::test]
+    fn actual_toggle_and_selector_changes_undo_in_order(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, VisualTestContext, px, size};
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let toggle = visual.debug_bounds("fixture-eq-toggle-0").unwrap().center();
+        visual.simulate_click(toggle, Modifiers::default());
+        let selector = visual
+            .debug_bounds("fixture-eq-selector-1")
+            .unwrap()
+            .center();
+        visual.simulate_click(selector, Modifiers::default());
+        visual.run_until_parked();
+        let option = visual
+            .debug_bounds("fixture-eq-selector-1-option-3")
+            .unwrap()
+            .center();
+        visual.simulate_click(option, Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let state = current(&view.fixtures[&Entry::Eq], cx).unwrap();
+            assert!(!state.nodes[0].enabled);
+            assert_eq!(state.nodes[0].kind, NodeKind::LowCut);
+        });
+        visual.simulate_keystrokes("cmd-z");
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let state = current(&view.fixtures[&Entry::Eq], cx).unwrap();
+            assert!(!state.nodes[0].enabled);
+            assert_eq!(state.nodes[0].kind, NodeKind::Bell);
+        });
+        visual.simulate_keystrokes("cmd-z");
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            assert!(current(&view.fixtures[&Entry::Eq], cx).unwrap().nodes[0].enabled)
+        });
+    }
+
+    #[gpui::test]
+    fn accepted_text_draft_and_following_graph_creation_undo_separately(cx: &mut TestAppContext) {
+        use gpui::{Modifiers, VisualTestContext, point, px, size};
+        cx.update(hex_widgets::bind_numeric_control_keys);
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*window, cx);
+        visual.simulate_resize(size(px(1040.0), px(720.0)));
+        visual.run_until_parked();
+        let field = visual
+            .debug_bounds("fixture-eq-numeric-2-value")
+            .unwrap()
+            .center();
+        visual.simulate_click(field, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("-12");
+        let graph = view.read_with(cx, |view, _| view.fixtures[&Entry::Eq].graph.clone());
+        let plot = graph.read_with(&visual, |graph, _| graph.plot_bounds().unwrap());
+        let position = point(
+            plot.left() + plot.size.width * 0.3,
+            plot.top() + plot.size.height * 0.3,
+        );
+        visual.simulate_click(position, Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let state = current(&view.fixtures[&Entry::Eq], cx).unwrap();
+            assert_eq!(state.nodes.len(), 2);
+            assert_eq!(state.nodes[0].gain_db, -12.0);
+        });
+        visual.simulate_keystrokes("cmd-z");
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let state = current(&view.fixtures[&Entry::Eq], cx).unwrap();
+            assert_eq!(state.nodes.len(), 1);
+            assert_eq!(state.nodes[0].gain_db, -12.0);
+        });
+        visual.simulate_keystrokes("cmd-z");
+        visual.run_until_parked();
+        view.read_with(cx, |view, cx| {
+            let state = current(&view.fixtures[&Entry::Eq], cx).unwrap();
+            assert_eq!(state.nodes.len(), 1);
+            assert_eq!(state.nodes[0].gain_db, 6.0);
+        });
+    }
+
+    #[gpui::test]
+    fn grouped_move_and_slope_stream_each_record_one_history_entry(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Create, 0, [0.3, 0.7]),
+                cx,
+            )
+            .unwrap();
+            event_graph(
+                fixture,
+                event(ResponseGraphPhase::Release, 0, [0.3, 0.7]),
+                cx,
+            )
+            .unwrap();
+            marquee(
+                fixture,
+                &ResponseGraphMarqueeEvent {
+                    phase: ResponseGraphMarqueePhase::Commit,
+                    selected: vec![1, 2],
+                    modifiers: gpui::Modifiers::default(),
+                },
+                cx,
+            )
+            .unwrap();
+            let before = current(fixture, cx).unwrap();
+            let start = node_geometry::node_position(&before.nodes[1], 48_000);
+            let end = [start[0] + 0.05, start[1] + 0.1];
+            event_graph(fixture, event(ResponseGraphPhase::Begin, 2, start), cx).unwrap();
+            event_graph(fixture, event(ResponseGraphPhase::Change, 2, end), cx).unwrap();
+            event_graph(fixture, event(ResponseGraphPhase::Commit, 2, end), cx).unwrap();
+            let moved = current(fixture, cx).unwrap();
+            assert_ne!(before, moved);
+            history(fixture, false, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), before);
+            assert_eq!(fixture.eq_local.as_ref().unwrap().group.len(), 2);
+            history(fixture, true, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), moved);
+            event_graph(fixture, event(ResponseGraphPhase::Remove, 2, end), cx).unwrap();
+            assert!(current(fixture, cx).unwrap().nodes.is_empty());
+            history(fixture, false, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), moved);
+            assert_eq!(fixture.eq_local.as_ref().unwrap().group.len(), 2);
+
+            discrete_event(fixture, DiscreteEdit::Selector(1, 3));
+            fixture.selectors[1].update(cx, |control, cx| control.set_selected(3, cx).unwrap());
+            let before_scroll = current(fixture, cx).unwrap();
+            let ev = |phase, steps| ResponseGraphScrollEvent {
+                phase,
+                node_id: 2,
+                gesture_id: 7,
+                steps,
+            };
+            scroll(fixture, ev(ResponseGraphScrollPhase::Begin, 0), cx).unwrap();
+            scroll(fixture, ev(ResponseGraphScrollPhase::Change, 1), cx).unwrap();
+            scroll(fixture, ev(ResponseGraphScrollPhase::Commit, 2), cx).unwrap();
+            let after_scroll = current(fixture, cx).unwrap();
+            assert_ne!(before_scroll.nodes[1].slope, after_scroll.nodes[1].slope);
+            history(fixture, false, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), before_scroll);
+            history(fixture, true, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), after_scroll);
+        });
+    }
+
+    #[test]
+    fn history_capacity_is_bounded_and_noop_does_not_clear_redo() {
+        let mut local = Local::new().unwrap();
+        for index in 0..(HISTORY_CAPACITY + 1) {
+            let before = local.history_snapshot();
+            local.state.output_gain = if index % 2 == 0 { 0.5 } else { 1.0 };
+            local.record(before);
+        }
+        assert_eq!(local.undo.len(), HISTORY_CAPACITY);
+        let entry = local.undo.pop_back().unwrap();
+        local.state = entry.before.state.clone();
+        local.redo.push(entry);
+        let before = local.history_snapshot();
+        local.record(before);
+        assert_eq!(local.redo.len(), 1);
+        let before = local.history_snapshot();
+        local.state.output_gain = 0.25;
+        local.record(before);
+        assert!(local.redo.is_empty());
+    }
+
+    #[gpui::test]
+    fn single_node_move_is_one_undoable_gesture(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            let before = current(fixture, cx).unwrap();
+            let start = node_geometry::node_position(&before.nodes[0], 48_000);
+            let end = [start[0] + 0.05, start[1] + 0.05];
+            event_graph(fixture, event(ResponseGraphPhase::Begin, 1, start), cx).unwrap();
+            event_graph(fixture, event(ResponseGraphPhase::Change, 1, end), cx).unwrap();
+            event_graph(fixture, event(ResponseGraphPhase::Commit, 1, end), cx).unwrap();
+            let after = current(fixture, cx).unwrap();
+            assert_ne!(after, before);
+            history(fixture, false, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), before);
+            history(fixture, true, cx).unwrap();
+            assert_eq!(current(fixture, cx).unwrap(), after);
+        });
+    }
+
+    #[gpui::test]
+    fn invalid_history_target_is_refused_before_state_or_stacks_change(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            let local = fixture.eq_local.as_mut().unwrap();
+            let before = local.history_snapshot();
+            local.state.output_gain = 0.5;
+            local.record(before);
+            local.undo.back_mut().unwrap().before.state.nodes[0].q = f32::NAN;
+            let prior = local.state.clone();
+            assert!(history(fixture, false, cx).is_err());
+            let local = fixture.eq_local.as_ref().unwrap();
+            assert_eq!(local.state, prior);
+            assert_eq!(local.undo.len(), 1);
+            assert!(local.redo.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn pending_action_overflow_refuses_graph_edits_without_losing_prior_state(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.add_window(|_, cx| {
+            let mut view = Gallery::new(cx);
+            view.entry = Entry::Eq;
+            view.ensure_fixture(cx);
+            view
+        });
+        let view = window.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.fixtures.get_mut(&Entry::Eq).unwrap();
+            let before = current(fixture, cx).unwrap();
+            fixture.eq_local.as_mut().unwrap().flush_scheduled = true;
+            for _ in 0..=PENDING_ACTION_CAPACITY {
+                assert!(defer_action(
+                    fixture,
+                    PendingAction::Graph(event(ResponseGraphPhase::Create, 0, [0.3, 0.7]))
+                ));
+            }
+            flush_pending(view, cx);
+            let fixture = &view.fixtures[&Entry::Eq];
+            assert_eq!(current(fixture, cx).unwrap(), before);
+            assert!(fixture.eq_local.as_ref().unwrap().undo.is_empty());
+            assert!(view.error.is_some());
+        });
     }
 
     #[gpui::test]
@@ -1212,6 +2261,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(current(fixture, cx).unwrap(), before);
+            assert!(fixture.eq_local.as_ref().unwrap().undo.is_empty());
             assert_eq!(
                 fixture.eq_local.as_ref().unwrap().selected.unwrap().value(),
                 1
