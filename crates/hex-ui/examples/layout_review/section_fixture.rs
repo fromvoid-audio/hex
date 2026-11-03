@@ -229,16 +229,13 @@ impl Fixture {
     pub(super) fn plan_marker_move(
         &self,
         section: SectionId,
-        anchor: f32,
-        position: f32,
+        anchor: BeatTime,
+        position: BeatTime,
     ) -> Result<Option<Plan>, Invalid> {
         let project = self.project();
         let marker = project
             .arrangement_section(section)
             .ok_or(Invalid("arrangement section no longer exists"))?;
-        let span = view_span(project.arrangement_sections());
-        let anchor = position_to_beat(anchor, span)?;
-        let position = position_to_beat(position, span)?;
         let start = i128::from(marker.start().raw()) + i128::from(position.raw())
             - i128::from(anchor.raw());
         let start =
@@ -384,9 +381,18 @@ mod tests {
         let mut fixture = Fixture::new().unwrap();
         let before = fixture.project().snapshot();
         let id = fixture.project().arrangement_sections()[0].id();
-        assert!(fixture.plan_marker_move(id, 0.5, 0.0).is_err());
+        let anchor = BeatTime::from_quarters(5).unwrap();
+        assert!(
+            fixture
+                .plan_marker_move(id, anchor, BeatTime::ZERO)
+                .is_err()
+        );
         assert_eq!(fixture.project().snapshot(), before);
-        let plan = fixture.plan_marker_move(id, 0.5, 0.45).unwrap().unwrap();
+        let position = BeatTime::from_ratio(9, 2).unwrap();
+        let plan = fixture
+            .plan_marker_move(id, anchor, position)
+            .unwrap()
+            .unwrap();
         assert!(
             matches!(plan.command, Command::MoveArrangementSectionMarker { section, .. } if section == id)
         );

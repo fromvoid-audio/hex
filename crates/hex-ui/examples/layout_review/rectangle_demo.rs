@@ -8,7 +8,7 @@ use gpui::{
     Bounds, Context, FocusHandle, Focusable, Modifiers, MouseButton, Pixels, Render, Subscription,
     Window, div, prelude::*, px, rgb,
 };
-use hex_project::{ArrangementSection, Command, Project};
+use hex_project::{ArrangementSection, BeatTime, Command, Project};
 use hex_widgets::{
     RangeSelectionTarget, RangeSelectionZones, RectangleCapture, RectangleEdges, RectanglePart,
     RectangleSelection, RectangleSelectionPolicy, rectangle_body, rectangle_edge,
@@ -64,6 +64,7 @@ pub(super) struct RectangleDemo {
     section_command: Option<Command>,
     section_error: Option<&'static str>,
     section_marker_latched: bool,
+    section_anchor_beat: Option<BeatTime>,
     section_last_pointer: Option<(f32, f32)>,
     section_paint: Option<(String, hex_project::ElementColor)>,
     generation: u64,
@@ -111,6 +112,7 @@ impl RectangleDemo {
             section_command: None,
             section_error: None,
             section_marker_latched: false,
+            section_anchor_beat: None,
             section_last_pointer: None,
             section_paint: None,
             generation: 1,
@@ -144,6 +146,7 @@ impl RectangleDemo {
             self.section_command = None;
             self.section_error = None;
             self.section_marker_latched = false;
+            self.section_anchor_beat = None;
             self.section_last_pointer = None;
             self.section_paint = None;
             self.status = "canceled held input";
@@ -366,6 +369,21 @@ impl RectangleDemo {
             self.selection_primary = Some(index);
             self.selection_anchor = Some(index);
         }
+        self.section_anchor_beat = if self.kind == Kind::Section && part == RectanglePart::Body {
+            let Some(fixture) = self.section_fixture.as_ref() else {
+                return false;
+            };
+            match fixture.snapped_beat(x, left, width, modifiers.control) {
+                Ok(anchor) => Some(anchor),
+                Err(error) => {
+                    self.status = error.0;
+                    cx.notify();
+                    return true;
+                }
+            }
+        } else {
+            None
+        };
         self.capture = RectangleCapture::begin(Target::Rectangle(index), part, x, true);
         self.section_marker_latched = self.kind == Kind::Section && modifiers.platform;
         self.section_last_pointer = (self.kind == Kind::Section).then_some((x, y));
@@ -481,8 +499,15 @@ impl RectangleDemo {
                 {
                     let plan = if intent.part == RectanglePart::Body && self.section_marker_latched
                     {
-                        let anchor = (intent.origin_x - left) / width;
-                        fixture.plan_marker_move(section.id(), anchor, position)
+                        self.section_anchor_beat
+                            .ok_or(hex_project::Invalid("section grid anchor unavailable"))
+                            .and_then(|anchor| {
+                                fixture
+                                    .snapped_beat(intent.pointer_x, left, width, modifiers.control)
+                                    .and_then(|beat| {
+                                        fixture.plan_marker_move(section.id(), anchor, beat)
+                                    })
+                            })
                     } else if intent.part == RectanglePart::Body {
                         fixture.plan(
                             section.id(),
@@ -558,6 +583,7 @@ impl RectangleDemo {
             x
         };
         self.section_last_pointer = None;
+        self.section_anchor_beat = None;
         self.section_paint = None;
         self.section_marker_latched = false;
         if self
@@ -2039,6 +2065,85 @@ mod tests {
                 }
             });
         }
+    }
+
+    #[gpui::test]
+    fn marker_move_freezes_press_grid_and_inverts_current_pointer_live(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-marker-grid".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-marker-grid-area").unwrap();
+        let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
+        let both = Modifiers {
+            platform: true,
+            control: true,
+            ..Modifiers::default()
+        };
+        let command = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        let control = Modifiers {
+            control: true,
+            ..Modifiers::default()
+        };
+        let (anchor, snapped, free, original_start) = view.read_with(cx, |view, _| {
+            let fixture = view.section_fixture.as_ref().unwrap();
+            let bounds = view.bounds.unwrap();
+            let left = f32::from(bounds.left());
+            let width = f32::from(bounds.size.width);
+            (
+                fixture
+                    .snapped_beat(at(0.33).x.into(), left, width, true)
+                    .unwrap(),
+                fixture
+                    .snapped_beat(at(0.263).x.into(), left, width, false)
+                    .unwrap(),
+                fixture
+                    .snapped_beat(at(0.263).x.into(), left, width, true)
+                    .unwrap(),
+                fixture.project().arrangement_sections()[0].start(),
+            )
+        });
+        assert_ne!(snapped, free);
+        let expected_start = |position: BeatTime| {
+            BeatTime::from_raw(
+                u64::try_from(
+                    i128::from(original_start.raw()) + i128::from(position.raw())
+                        - i128::from(anchor.raw()),
+                )
+                .unwrap(),
+            )
+        };
+        visual.simulate_mouse_down(at(0.33), MouseButton::Left, both);
+        visual.simulate_mouse_move(at(0.263), MouseButton::Left, command);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.section_anchor_beat, Some(anchor));
+            assert!(matches!(view.section_command, Some(Command::MoveArrangementSectionMarker { start, .. }) if start == expected_start(snapped)));
+        });
+        visual.simulate_modifiers_change(control);
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.section_anchor_beat, Some(anchor));
+            assert!(matches!(view.section_command, Some(Command::MoveArrangementSectionMarker { start, .. }) if start == expected_start(free)));
+        });
+        visual.simulate_mouse_up(at(0.263), MouseButton::Left, control);
+        view.read_with(cx, |view, _| assert!(matches!(view.pending.as_ref(), Some(Pending::Section { command, .. }) if matches!(command.as_ref(), Command::MoveArrangementSectionMarker { start, .. } if *start == expected_start(free)))));
+        view.update(cx, |view, cx| view.settle(true, cx));
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.section_fixture
+                    .as_ref()
+                    .unwrap()
+                    .project()
+                    .arrangement_sections()[0]
+                    .start(),
+                expected_start(free)
+            )
+        });
     }
 
     #[gpui::test]
