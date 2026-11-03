@@ -635,6 +635,24 @@ impl RectangleDemo {
             cx.notify();
         }
     }
+
+    fn section_selected(&self, painted: &ArrangementSection) -> bool {
+        let project = match self.pending.as_ref() {
+            Some(Pending::Section { source, .. }) => Some(source.as_ref()),
+            _ => self
+                .section_fixture
+                .as_ref()
+                .map(|fixture| fixture.project()),
+        };
+        project.is_some_and(|project| {
+            self.selected.iter().any(|index| {
+                project
+                    .arrangement_sections()
+                    .get(*index)
+                    .is_some_and(|section| section.id() == painted.id())
+            })
+        })
+    }
 }
 impl Focusable for RectangleDemo {
     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
@@ -686,17 +704,9 @@ impl Render for RectangleDemo {
                 continue;
             }
             let selected = if self.kind == Kind::Section {
-                section_paint.get(index).is_some_and(|painted| {
-                    self.section_fixture.as_ref().is_some_and(|fixture| {
-                        self.selected.iter().any(|selected| {
-                            fixture
-                                .project()
-                                .arrangement_sections()
-                                .get(*selected)
-                                .is_some_and(|section| section.id() == painted.id())
-                        })
-                    })
-                })
+                section_paint
+                    .get(index)
+                    .is_some_and(|painted| self.section_selected(painted))
             } else {
                 self.selected.contains(&index)
             };
@@ -797,10 +807,16 @@ impl Render for RectangleDemo {
             );
         }
         if self.kind == Kind::Section {
-            for pair in display.windows(2) {
-                if pair[0][1] == pair[1][0] {
+            for (index, (pair, sections)) in
+                display.windows(2).zip(section_paint.windows(2)).enumerate()
+            {
+                if sections[0].end() == sections[1].start() {
                     area = area.child(
                         rectangle_edge(RectanglePart::Seam, 2.0, 0.0)
+                            .debug_selector({
+                                let id = self.id.clone();
+                                move || format!("{id}-seam-{index}")
+                            })
                             .left(gpui::relative(pair[0][1]))
                             .ml(px(-1.0)),
                     );
@@ -1458,6 +1474,77 @@ mod tests {
             assert!(view.pending.is_none());
             assert_eq!(view.status, "section project changed");
         });
+    }
+
+    #[gpui::test]
+    fn pending_repaints_keep_selection_identity_after_reorder(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-pending-selection".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        let id = view.update(cx, |view, cx| {
+            let id = view
+                .section_fixture
+                .as_ref()
+                .unwrap()
+                .project()
+                .arrangement_sections()[0]
+                .id();
+            view.selected = vec![0];
+            let pending = seam_plan(view, 0.55);
+            assert!(view.admit_section(pending.display, pending.sections, pending.command, 1));
+            let fixture = view.section_fixture.as_mut().unwrap();
+            let newer = fixture
+                .plan(id, RectanglePart::Body, 0.95)
+                .unwrap()
+                .unwrap();
+            fixture.commit(newer.command).unwrap();
+            cx.notify();
+            id
+        });
+        let visual = VisualTestContext::from_window(*handle, cx);
+        for _ in 0..3 {
+            view.update(cx, |_, cx| cx.notify());
+            visual.run_until_parked();
+            view.read_with(cx, |view, _| {
+                let Some(Pending::Section { sections, .. }) = view.pending.as_ref() else {
+                    panic!("section edit should remain pending");
+                };
+                for section in sections {
+                    assert_eq!(view.section_selected(section), section.id() == id);
+                }
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn rounded_gap_does_not_draw_a_shared_seam(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-rounded-gap".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("section-rounded-gap-seam-0").is_some());
+        view.update(cx, |view, cx| {
+            let fixture = view.section_fixture.as_mut().unwrap();
+            let second = fixture.project().arrangement_sections()[1].id();
+            fixture
+                .commit(Command::SetArrangementSectionRange {
+                    section: second,
+                    start: hex_project::BeatTime::from_raw(
+                        5 * hex_project::BeatTime::ONE.raw() + 1,
+                    ),
+                    end: hex_project::BeatTime::from_quarters(9).unwrap(),
+                })
+                .unwrap();
+            view.canonical = fixture.display();
+            view.preview = view.canonical.clone();
+            assert_eq!(view.canonical[0][1], view.canonical[1][0]);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("section-rounded-gap-seam-0").is_none());
     }
 
     #[gpui::test]
