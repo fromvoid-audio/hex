@@ -461,7 +461,7 @@ impl Render for Viewer {
                                         .w(px(92.0))
                                         .flex_shrink_0()
                                         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                                        .child(time),
+                                        .child(theme::text(time)),
                                 )
                                 .child(div().overflow_hidden().child(display))
                                 .on_mouse_down(
@@ -493,6 +493,7 @@ impl Render for Viewer {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let status = self.status.clone();
         let detail = self
             .selection
             .and_then(|selection| self.rows.get(selection))
@@ -585,9 +586,7 @@ impl Render for Viewer {
                     .px(px(8.0))
                     .overflow_hidden()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                    .child(theme::text(hex_session::service::text::verbatim(
-                        &self.status,
-                    ))),
+                    .child(status),
             )
     }
 }
