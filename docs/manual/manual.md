@@ -932,6 +932,28 @@ happen. include the displayed error and whether the issue survives a normal quit
 and reopen. keep original projects and media; share only material you have the
 right to share.
 
+## inspect diagnostic logs
+
+select the log button beside the version to open the diagnostic log window.
+the current session opens first. use previous session and next session to browse
+retained sessions, and refresh to read records written since the last refresh.
+the time column is in utc.
+
+use the category and time controls and the search field to narrow the visible
+records. the time window is measured back from the latest event on the displayed
+page; search for `level=error` to find error records. older unclassified records
+appear under uncategorised. in a large session, use older lines and newer lines
+to move between pages. filters apply to the displayed page, and live history can
+shift between page reads.
+
+click a row to inspect it below the list. unusually long rows are clipped in
+the detail view. to share a section, click its first row, shift-click its last
+row, and select copy selection. the copied excerpt includes the original rows,
+available session context and warnings, and is limited to 1 mib. the viewer
+reports missing, truncated or unreadable data; oversized legacy segments may
+be clipped. logs and excerpts can contain paths or other private information,
+so review them before sharing.
+
 `TESTING.md` is the finite checklist for this specific package. record actual
 results against that version. passing automated checks does not replace native
 interaction, listening, controller/device tests or physical audio deadline checks.
