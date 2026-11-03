@@ -1164,6 +1164,66 @@ class BaseAdvanceCarryTests(unittest.TestCase):
 class MainHealthTests(unittest.TestCase):
     INVENTORY = BaseAdvanceCarryTests.INVENTORY
 
+    def profile_steps(self, profile, extra=None, workspace_change=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git = BaseAdvanceCarryTests.repository(self, root)
+            manifest = root / "Cargo.toml"
+            manifest.write_text('[workspace]\nmembers = ["crates/*"]\n')
+            git("add", "Cargo.toml")
+            git("commit", "-qm", "manifest base")
+            git("checkout", "-qb", "profile")
+            content = manifest.read_text()
+            if workspace_change:
+                content = content.replace('["crates/*"]', '["crates/*", "tools"]')
+            manifest.write_text(content + "\n" + profile)
+            if extra:
+                (root / extra).write_text("changed\n")
+            git("add", ".")
+            git("commit", "-qm", "profile change")
+            git("checkout", "-q", "main")
+            git("merge", "-q", "--no-ff", "--no-edit", "profile")
+            source = git("rev-parse", "HEAD")
+            resolved = plan.resolve(root, profile="health", base=source + "^1", source=source,
+                                    metadata=BaseAdvanceCarryTests.metadata(self, root))
+            return [(step.step_id, step.argv) for step in ci.planned_steps(resolved)]
+
+    def test_health_profile_codegen_selects_retuned_owner(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n')
+        self.assertIn(("health-tests", ("cargo", "test", "-p", "core", "--locked")), steps)
+
+    def test_health_profile_codegen_and_other_owner_select_both(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n',
+                                   "crates/ui/src/lib.rs")
+        self.assertIn(("health-tests", ("cargo", "test", "-p", "core", "-p", "ui", "--locked")), steps)
+
+    def test_health_two_retuned_profiles_select_both_owners(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n'
+                                   '[profile.dev.package.ui]\nopt-level = 1\n')
+        self.assertIn(("health-tests", ("cargo", "test", "-p", "core", "-p", "ui", "--locked")), steps)
+
+    def assert_workspace_profile(self, profile):
+        steps = self.profile_steps(profile)
+        self.assertIn(("health-tests", ("cargo", "test", "--workspace", "--locked")), steps)
+
+    def test_health_unsafe_package_profile_keeps_workspace(self):
+        self.assert_workspace_profile('[profile.dev.package.core]\ndebug-assertions = false\n')
+
+    def test_health_unknown_package_profile_keeps_workspace(self):
+        self.assert_workspace_profile('[profile.dev.package.unknown]\nopt-level = 1\n')
+
+    def test_health_workspace_profile_keeps_workspace(self):
+        self.assert_workspace_profile('[profile.release]\nlto = true\n')
+
+    def test_health_profile_with_lockfile_keeps_workspace(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n', "Cargo.lock")
+        self.assertIn(("health-tests", ("cargo", "test", "--workspace", "--locked")), steps)
+
+    def test_health_profile_with_workspace_change_keeps_workspace(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n',
+                                   workspace_change=True)
+        self.assertIn(("health-tests", ("cargo", "test", "--workspace", "--locked")), steps)
+
     def steps(self, paths):
         health = plan.health_selection(paths, self.INVENTORY)
         return [(s.step_id, s.argv) for s in ci.planned_steps(
