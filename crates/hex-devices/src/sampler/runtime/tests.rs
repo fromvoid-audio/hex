@@ -699,6 +699,45 @@ fn occurrence_gain_scales_actual_gated_release_without_touching_the_other_voice(
 }
 
 #[test]
+fn occurrence_gain_follows_retired_slot_reuse_and_unlisted_voices() {
+    let pcm = [1.0; 2];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(
+        views[0],
+        Mode::OneShot {
+            gate: GateMode::Trigger,
+        },
+        1,
+    );
+    let mut runtime = pair(&prepared);
+    let gains = [
+        NativeInstrumentOccurrenceGain::new(1, 0.25, 0.25, 6, 0).unwrap(),
+        NativeInstrumentOccurrenceGain::new(2, 0.75, 0.75, 6, 0).unwrap(),
+    ];
+    let events = [on(0, 1, 60), on(2, 2, 60), on(4, 3, 60)];
+    let mut output = [[0.0; 2]; 6];
+    runtime.begin_block();
+    runtime
+        .process_block_with_clock_and_occurrence_gains(
+            &events,
+            &mut output,
+            None,
+            &gains,
+            &resources,
+        )
+        .unwrap();
+    runtime.commit_block();
+    assert_eq!(
+        output,
+        [
+            [0.25; 2], [0.25; 2], [0.75; 2], [0.75; 2], [1.0; 2], [1.0; 2]
+        ]
+    );
+    assert!(runtime.committed_is_quiescent());
+}
+
+#[test]
 fn gain_batch_can_cover_more_incoming_identities_than_simultaneously_active_voices() {
     let pcm = [1.0; 32];
     let views = [view(&pcm)];
