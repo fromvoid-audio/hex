@@ -310,6 +310,7 @@ fn retained_tuning_preview_declines_new_numeric_drag_without_adopting_its_events
             NumericControlEvent {
                 phase: NumericEventPhase::Begin,
                 value: 480.0,
+                gesture: None,
             },
             cx,
         );
@@ -331,6 +332,7 @@ fn retained_tuning_preview_declines_new_numeric_drag_without_adopting_its_events
                 NumericControlEvent {
                     phase,
                     value: 480.0,
+                    gesture: None,
                 },
                 cx,
             );
@@ -345,6 +347,7 @@ fn retained_tuning_preview_declines_new_numeric_drag_without_adopting_its_events
             NumericControlEvent {
                 phase: NumericEventPhase::Begin,
                 value: 440.0,
+                gesture: None,
             },
             cx,
         );
