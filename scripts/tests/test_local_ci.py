@@ -60,6 +60,12 @@ echo "completed $tool $*"
 """
 
 
+def bounded_checkpoint_case(function):
+    """Keep subprocess-heavy checkpoint fixtures within the shard budget."""
+    function.__hex_shard_bounded__ = True
+    return function
+
+
 class LocalCiRunnerTests(unittest.TestCase):
     def test_log_timing_estimates_label_unknown_and_overlapping_durations(self):
         text = ("    Finished `test` profile target(s) in 1m 2.50s\n"
@@ -715,51 +721,67 @@ fi
         if change == "recreated-target":
             self.assertEqual((case.target / "preserve").read_bytes(), b"foreign new target")
 
+    @bounded_checkpoint_case
     def test_checkpoint_source_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("source")
 
+    @bounded_checkpoint_case
     def test_checkpoint_plan_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("plan")
 
+    @bounded_checkpoint_case
     def test_checkpoint_plan_order_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("plan-order")
 
+    @bounded_checkpoint_case
     def test_checkpoint_argv_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("argv")
 
+    @bounded_checkpoint_case
     def test_checkpoint_test_configuration_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("test-configuration")
 
+    @bounded_checkpoint_case
     def test_checkpoint_toolchain_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("toolchain")
 
+    @bounded_checkpoint_case
     def test_checkpoint_environment_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("environment")
 
+    @bounded_checkpoint_case
     def test_checkpoint_dependency_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("dependency")
 
+    @bounded_checkpoint_case
     def test_checkpoint_floor_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("floor")
 
+    @bounded_checkpoint_case
     def test_checkpoint_report_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("report")
 
+    @bounded_checkpoint_case
     def test_checkpoint_report_metadata_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("report-metadata")
 
+    @bounded_checkpoint_case
     def test_checkpoint_log_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("log")
 
+    @bounded_checkpoint_case
     def test_checkpoint_missing_owner_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("missing-owner")
 
+    @bounded_checkpoint_case
     def test_checkpoint_changed_owner_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("changed-owner")
 
+    @bounded_checkpoint_case
     def test_checkpoint_foreign_owner_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("foreign-owner")
 
+    @bounded_checkpoint_case
     def test_checkpoint_recreated_target_drift_is_refused(self):
         self.assert_checkpoint_drift_refused("recreated-target")
 
@@ -793,21 +815,27 @@ fi
         self.assertEqual(case.owner.read_bytes(), owner_bytes)
         self.assertEqual(case.path.read_bytes(), malformed_bytes)
 
+    @bounded_checkpoint_case
     def test_checkpoint_tree_list_resume_is_refused(self):
         self.assert_malformed_resume_refused("tree-list")
 
+    @bounded_checkpoint_case
     def test_checkpoint_tree_null_resume_is_refused(self):
         self.assert_malformed_resume_refused("tree-null")
 
+    @bounded_checkpoint_case
     def test_checkpoint_target_list_resume_is_refused(self):
         self.assert_malformed_resume_refused("target-list")
 
+    @bounded_checkpoint_case
     def test_checkpoint_counts_null_resume_is_refused(self):
         self.assert_malformed_resume_refused("counts-null")
 
+    @bounded_checkpoint_case
     def test_checkpoint_scalar_resume_is_refused(self):
         self.assert_malformed_resume_refused("checkpoint-scalar")
 
+    @bounded_checkpoint_case
     def test_checkpoint_report_scalar_resume_is_refused(self):
         self.assert_malformed_resume_refused("report-scalar")
 
