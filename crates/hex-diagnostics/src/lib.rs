@@ -11,7 +11,11 @@
 //! No audio/project authority, action replay, source admission or musical ACK.
 //! Enqueue success is not durable delivery. Producer wall/monotonic times and
 //! sequence precede writing; loss and truncation are explicit. Sequence orders
-//! enqueue attempts, not independent actions on different threads. Recent files
+//! enqueue attempts, not independent actions on different threads. New files
+//! use schema 3: event rows include fixed lowercase `level` and `category`
+//! tokens before the schema-2 timestamp, sequence, truncation and quoted message
+//! fields. The legacy `record` entry point assigns info/uncategorised; older
+//! schema-2 files have no classification and are not rewritten. Recent files
 //! roll at 8 MiB with four segments/session and ten retained sessions (320 MiB
 //! for new-format files, plus a bounded rollover header per session); older
 //! unbounded logs expire through normal retention.
@@ -41,6 +45,56 @@ pub const MAX_EVENT_BYTES: usize = 4096;
 pub const RETAINED_SESSIONS: usize = 10;
 pub const MAX_SEGMENT_BYTES: u64 = 8 * 1024 * 1024;
 pub const RETAINED_SEGMENTS: usize = 4;
+
+/// Severity of a control-side diagnostic event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+impl Level {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+}
+
+/// Stable, bounded subsystem names for diagnostic filtering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Category {
+    Uncategorised,
+    Startup,
+    Ui,
+    Session,
+    Audio,
+    Transport,
+    Persistence,
+    Plugin,
+    Media,
+}
+impl Category {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Uncategorised => "uncategorised",
+            Self::Startup => "startup",
+            Self::Ui => "ui",
+            Self::Session => "session",
+            Self::Audio => "audio",
+            Self::Transport => "transport",
+            Self::Persistence => "persistence",
+            Self::Plugin => "plugin",
+            Self::Media => "media",
+        }
+    }
+}
 const RECEIVE_INTERVAL: Duration = Duration::from_millis(50);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -147,7 +201,18 @@ pub struct DiagnosticsHandle {
     path: Arc<PathBuf>,
 }
 impl DiagnosticsHandle {
+    /// Record a legacy unclassified message. This is control-side only.
     pub fn record(&self, message: &str) -> Result<(), PublishError> {
+        self.record_typed(Level::Info, Category::Uncategorised, message)
+    }
+
+    /// Record an explicitly classified message. Never call from the audio thread.
+    pub fn record_typed(
+        &self,
+        level: Level,
+        category: Category,
+        message: &str,
+    ) -> Result<(), PublishError> {
         if self.shared.closing.load(Ordering::Acquire) {
             self.shared.closed.fetch_add(1, Ordering::Relaxed);
             return Err(PublishError::Closed);
@@ -174,6 +239,8 @@ impl DiagnosticsHandle {
             self.shared.truncated.fetch_add(1, Ordering::Relaxed);
         }
         let record = Record {
+            level,
+            category,
             sequence,
             unix_nanos: unix_nanos(),
             elapsed_nanos: self.shared.started.elapsed().as_nanos(),
