@@ -18,6 +18,7 @@
 //! remain effective under queue pressure; final graph, source and endpoint destruction belongs on
 //! control.
 pub mod audio_diagnostics;
+pub mod cpu_meter;
 mod device;
 mod open_outcome;
 mod output_route;

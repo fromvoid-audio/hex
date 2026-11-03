@@ -1942,7 +1942,11 @@ impl EditorView {
         } else {
             self.session_routes.clear();
         }
-        let frame = audio.control.status().map(AudioFrame::capture);
+        let frame = audio.control.status().map(|status| {
+            let mut frame = AudioFrame::capture(status);
+            frame.source = audio.control.output_identity().unwrap_or_default();
+            frame
+        });
         let pending_after = self
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
