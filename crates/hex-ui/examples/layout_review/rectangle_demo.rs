@@ -35,8 +35,8 @@ enum Pending {
     Section {
         display: Vec<[f32; 2]>,
         sections: Vec<ArrangementSection>,
-        command: Command,
-        source: Project,
+        command: Box<Command>,
+        source: Box<Project>,
         receipt: crate::pending_edit::Receipt,
     },
 }
@@ -520,8 +520,8 @@ impl RectangleDemo {
         self.pending = Some(Pending::Section {
             display,
             sections,
-            command,
-            source,
+            command: Box::new(command),
+            source: Box::new(source),
             receipt,
         });
         self.status = "pending · enter accepts · backspace refuses";
@@ -551,27 +551,21 @@ impl RectangleDemo {
         if disposition == crate::pending_edit::Disposition::Waiting {
             return;
         }
+        // Selection indices belong to the source captured when this edit was
+        // admitted, even if the installed project has since changed order.
+        let Some(Pending::Section { source, .. }) = self.pending.as_ref() else {
+            return;
+        };
+        let source_sections = source.arrangement_sections();
         let selected_ids: Vec<_> = self
-            .section_fixture
-            .as_ref()
-            .map_or_else(Vec::new, |fixture| {
-                self.selected
-                    .iter()
-                    .filter_map(|index| {
-                        fixture
-                            .project()
-                            .arrangement_sections()
-                            .get(*index)
-                            .map(|section| section.id())
-                    })
-                    .collect()
-            });
+            .selected
+            .iter()
+            .filter_map(|index| source_sections.get(*index).map(|section| section.id()))
+            .collect();
         let selected_id = |index: Option<usize>| {
-            self.section_fixture.as_ref().and_then(|fixture| {
-                index
-                    .and_then(|index| fixture.project().arrangement_sections().get(index))
-                    .map(|section| section.id())
-            })
+            index
+                .and_then(|index| source_sections.get(index))
+                .map(|section| section.id())
         };
         let primary_id = selected_id(self.selection_primary);
         let anchor_id = selected_id(self.selection_anchor);
@@ -585,7 +579,7 @@ impl RectangleDemo {
             Some(Pending::Section {
                 command, source, ..
             }) if disposition == crate::pending_edit::Disposition::Terminal && accept => {
-                Some((command.clone(), source))
+                Some(((**command).clone(), source.as_ref()))
             }
             _ => None,
         };
@@ -1416,6 +1410,51 @@ mod tests {
                 view.canonical,
                 view.section_fixture.as_ref().unwrap().display()
             );
+            assert!(view.pending.is_none());
+            assert_eq!(view.status, "section project changed");
+        });
+    }
+
+    #[gpui::test]
+    fn stale_section_terminal_keeps_selection_identity_after_reorder(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-stale-selection".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let id = view
+                .section_fixture
+                .as_ref()
+                .unwrap()
+                .project()
+                .arrangement_sections()[0]
+                .id();
+            view.selected = vec![0];
+            view.selection_primary = Some(0);
+            view.selection_anchor = Some(0);
+            let pending = seam_plan(view, 0.55);
+            assert!(view.admit_section(pending.display, pending.sections, pending.command, 1));
+            let fixture = view.section_fixture.as_mut().unwrap();
+            let newer = fixture
+                .plan(id, RectanglePart::Body, 0.95)
+                .unwrap()
+                .unwrap();
+            fixture.commit(newer.command).unwrap();
+            let current = fixture.project().snapshot();
+            assert_eq!(fixture.project().arrangement_sections()[1].id(), id);
+            view.receive_section(1, false, true, true, None, cx);
+            assert_eq!(
+                view.section_fixture.as_ref().unwrap().project().snapshot(),
+                current
+            );
+            assert_eq!(view.selected, [1]);
+            assert_eq!(view.selection_primary, Some(1));
+            assert_eq!(view.selection_anchor, Some(1));
+            assert_eq!(
+                view.canonical,
+                view.section_fixture.as_ref().unwrap().display()
+            );
+            assert_eq!(view.preview, view.canonical);
             assert!(view.pending.is_none());
             assert_eq!(view.status, "section project changed");
         });
