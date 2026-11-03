@@ -49,6 +49,7 @@ impl Fixture {
         (beat.raw() as f64 / view_span(self.project().arrangement_sections()) as f64) as f32
     }
 
+    #[cfg(test)]
     pub(super) fn plan(
         &self,
         section: SectionId,
@@ -296,6 +297,7 @@ fn display(sections: &[ArrangementSection]) -> Vec<[f32; 2]> {
         .collect()
 }
 
+#[cfg(test)]
 fn position_to_beat(position: f32, span: u64) -> Result<BeatTime, Invalid> {
     if !position.is_finite() {
         return Err(Invalid("invalid section position"));
