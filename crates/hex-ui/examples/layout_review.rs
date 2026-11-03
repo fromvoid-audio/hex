@@ -14,6 +14,9 @@ mod output_meter;
 #[allow(dead_code)]
 mod theme;
 
+#[path = "../src/editor/musical_time.rs"]
+#[allow(dead_code)] // The editor also consumes ruler, band and input-grid queries.
+mod musical_time;
 #[path = "../src/editor/pending_edit.rs"]
 mod pending_edit;
 #[path = "../src/section_appearance.rs"]
@@ -32,6 +35,9 @@ mod section_resize;
 mod section_selection;
 #[path = "../src/section_surface.rs"]
 mod section_surface;
+#[path = "../src/editor/viewport.rs"]
+#[allow(dead_code)] // The editor also uses zoom and scrolling operations.
+mod viewport;
 
 #[path = "layout_review/sandbox.rs"]
 mod sandbox;

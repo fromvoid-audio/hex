@@ -1248,11 +1248,11 @@ impl SnapGrid {
 
 #[cfg(test)]
 mod tests {
+    use super::Viewport;
     use super::{
         LandmarkDensity, MAX_GRID_BANDS, MAX_GRID_LINES, MAX_METER_MAP_POINTS, MAX_RULER_TICKS,
         SnapGrid, adaptive_grid_bands, grid_lines, ruler_candidates, ruler_ticks,
     };
-    use crate::editor::viewport::Viewport;
     use hex_project::{BeatTime, Command, Editor, Meter, Project, Tempo};
 
     #[test]
