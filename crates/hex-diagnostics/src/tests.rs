@@ -57,6 +57,28 @@ fn field(line: &str, name: &str) -> u128 {
 }
 
 #[test]
+fn typed_and_legacy_events_keep_classification_in_written_records() {
+    let (handle, receiver) = pair();
+    handle
+        .record_typed(Level::Error, Category::Audio, "device failed")
+        .unwrap();
+    handle.record("old producer").unwrap();
+    let output = Arc::new(Mutex::new(String::new()));
+    let mut log = memory_worker(&handle, receiver, MemoryWriter(Arc::clone(&output)));
+    log.shutdown().unwrap();
+    let text = output.lock().unwrap();
+    let events: Vec<_> = text
+        .lines()
+        .filter(|line| line.starts_with("event "))
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert!(events[0].contains("level=error category=audio "));
+    assert!(events[0].ends_with("message=\"device failed\""));
+    assert!(events[1].contains("level=info category=uncategorised "));
+    assert!(events[1].ends_with("message=\"old producer\""));
+}
+
+#[test]
 fn delayed_writer_preserves_producer_time_sequence_and_reports_lost_attempts() {
     let (handle, receiver) = pair();
     handle.record("earlier").unwrap();
@@ -184,6 +206,8 @@ fn closing_waits_for_previously_admitted_producer_before_final_drain() {
         producer
             .sender
             .try_send(Record {
+                level: Level::Info,
+                category: Category::Uncategorised,
                 sequence: 1,
                 unix_nanos: 123,
                 elapsed_nanos: 456,
