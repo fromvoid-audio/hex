@@ -2238,7 +2238,9 @@ impl SessionPlayback {
 
     /// Offline bounce completion after the isolated source's final gate. Checks
     /// actual analytic releases and mutable processor state, never output silence.
-    /// The caller must exclude future source events and nonzero latency paths.
+    /// The caller must exclude future source events. This does not inspect
+    /// compensation delay buffers: after an idle observation, callers must
+    /// render at least the full output-path latency and recheck before stopping.
     pub fn arrangement_bounce_is_quiescent(&self) -> bool {
         !self.has_active_arrangement_voices()
             && self.releases.is_empty()
