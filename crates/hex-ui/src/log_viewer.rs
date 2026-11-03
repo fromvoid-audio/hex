@@ -293,7 +293,7 @@ impl Viewer {
                 &category,
                 &time,
                 &query,
-                anchor..=end,
+                (anchor, end),
             )
         });
         cx.spawn(async move |this, cx| {
@@ -322,7 +322,7 @@ fn make_excerpt(
     category: &str,
     time: &str,
     query: &str,
-    selection: std::ops::RangeInclusive<usize>,
+    selection: (usize, usize),
 ) -> String {
     let mut result = format!(
         "hex log excerpt\nsession: {}\ncategory: {category}; time: {time}; search: {query}\n",
@@ -355,8 +355,7 @@ fn make_excerpt(
         result.push_str(COPY_CLIPPED);
         return result;
     }
-    let start = *selection.start();
-    let end = *selection.end();
+    let (start, end) = selection;
     for index in start.min(end)..=start.max(end) {
         let Some(line) = rows.get(index).and_then(|i| snapshot.lines.get(*i)) else {
             continue;
@@ -645,7 +644,7 @@ mod tests {
             "audio",
             "last 1 min",
             "error",
-            1..=0,
+            (1, 0),
         );
         assert!(result.contains("session_started hex_version=1"));
         assert!(result.contains("warning: records were lost"));
@@ -669,7 +668,7 @@ mod tests {
             "all",
             "entire session",
             "",
-            0..=0,
+            (0, 0),
         );
         assert!(result.contains("excerpt clipped"));
         assert!(result.len() < COPY_LIMIT);
@@ -688,7 +687,7 @@ mod tests {
             "all",
             "entire session",
             "",
-            0..=0,
+            (0, 0),
         );
         assert!(result.len() <= COPY_LIMIT);
         assert!(result.ends_with(COPY_CLIPPED));
