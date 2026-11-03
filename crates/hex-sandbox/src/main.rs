@@ -17,6 +17,9 @@ mod context_menu;
 mod device_composition;
 #[path = "../../hex-ui/examples/layout_review/gallery.rs"]
 mod gallery;
+#[path = "../../hex-ui/src/editor/musical_time.rs"]
+#[allow(dead_code)] // The editor also consumes ruler, band and input-grid queries.
+mod musical_time;
 #[path = "../../hex-ui/src/output_meter.rs"]
 mod output_meter;
 #[path = "../../hex-ui/src/editor/pending_edit.rs"]
@@ -42,6 +45,9 @@ mod section_surface;
 #[path = "../../hex-ui/src/theme.rs"]
 #[allow(dead_code)]
 mod theme;
+#[path = "../../hex-ui/src/editor/viewport.rs"]
+#[allow(dead_code)] // The editor also uses zoom and scrolling operations.
+mod viewport;
 
 #[path = "../../hex-ui/examples/layout_review/launch.rs"]
 mod launch;
