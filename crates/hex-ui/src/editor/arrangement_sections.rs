@@ -23,7 +23,7 @@ use super::{
 use crate::{
     context_menu::{MenuItem, PopupMenu},
     section_hit::{self, INNER_EDGE_WIDTH, SHARED_EDGE_RADIUS},
-    section_input, section_selection, theme,
+    section_input, section_reorder, section_selection, theme,
 };
 #[cfg(all(test, feature = "ui-test-support"))]
 use gpui::rgba;
@@ -939,51 +939,16 @@ impl EditorView {
                 let raw_beat = self
                     .section_pointer(g.last_pointer.0, g.last_pointer.1, true)
                     .unwrap_or(beat);
-                if g.capture.displaced(4.0)
-                    && let Some((target, after)) =
-                        insertion_target(&state.project, id, raw_beat, modifiers.alt)
-                {
-                    if modifiers.alt {
-                        let command = Command::DuplicateArrangementSectionAt {
-                            section: id,
-                            target,
-                            after,
-                        };
-                        match state.project.preview_arrangement_section_edit(&command) {
-                            Ok(preview) => {
-                                g.display.markers =
-                                    preview.sections().iter().map(Marker::from).collect();
-                                g.display.tempo = preview.tempo_map().clone();
-                                g.command = Some(command);
-                            }
-                            Err(error) => self.error = Some(error.to_string().into()),
+                if g.capture.displaced(4.0) {
+                    match section_reorder::preview(&state.project, id, raw_beat, modifiers.alt) {
+                        Ok(Some(preview)) => {
+                            g.display.markers =
+                                preview.sections().iter().map(Marker::from).collect();
+                            g.display.tempo = preview.tempo_map().clone();
+                            g.command = Some(preview.command);
                         }
-                    } else {
-                        let preview = if after {
-                            state.project.preview_section_reorder_after(id, target)
-                        } else {
-                            state.project.preview_section_reorder(id, target)
-                        };
-                        match preview {
-                            Ok(preview) if !preview.is_noop() => {
-                                g.display.markers =
-                                    preview.sections().iter().map(Marker::from).collect();
-                                g.display.tempo = preview.tempo_map().clone();
-                                g.command = Some(if after {
-                                    Command::ReorderSectionAfter {
-                                        section: id,
-                                        after: target,
-                                    }
-                                } else {
-                                    Command::ReorderSectionBefore {
-                                        section: id,
-                                        before: target,
-                                    }
-                                });
-                            }
-                            Ok(_) => {}
-                            Err(error) => self.error = Some(error.to_string().into()),
-                        }
+                        Ok(None) => {}
+                        Err(error) => self.error = Some(error.to_string().into()),
                     }
                 }
             }
@@ -2062,27 +2027,6 @@ impl EditorView {
         elements
     }
 }
-fn insertion_target(
-    project: &hex_project::Project,
-    source: SectionId,
-    beat: BeatTime,
-    copy: bool,
-) -> Option<(SectionId, bool)> {
-    if !copy
-        && project
-            .arrangement_section(source)
-            .is_some_and(|s| s.start() <= beat && beat < s.end())
-    {
-        return None;
-    }
-    project
-        .arrangement_sections()
-        .iter()
-        .filter(|s| copy || s.id() != source)
-        .flat_map(|s| [(s.id(), false, s.start()), (s.id(), true, s.end())])
-        .min_by_key(|(_, _, at)| at.raw().abs_diff(beat.raw()))
-        .map(|(id, after, _)| (id, after))
-}
 fn new_marker_appearance(project: &hex_project::Project) -> (String, ElementColor) {
     use std::hash::BuildHasher;
     // Pick once at capture; preview/release and saved history retain that choice.
@@ -2969,23 +2913,38 @@ mod tests {
         }
         let p = e.project();
         assert_eq!(
-            insertion_target(p, ids[0], BeatTime::from_quarters(2).unwrap(), false),
+            section_reorder::insertion_target(
+                p,
+                ids[0],
+                BeatTime::from_quarters(2).unwrap(),
+                false
+            ),
             None
         );
         assert_eq!(
-            insertion_target(p, ids[0], BeatTime::from_quarters(9).unwrap(), false),
+            section_reorder::insertion_target(
+                p,
+                ids[0],
+                BeatTime::from_quarters(9).unwrap(),
+                false
+            ),
             Some((ids[1], false))
         );
         assert_eq!(
-            insertion_target(p, ids[0], BeatTime::from_quarters(13).unwrap(), false),
+            section_reorder::insertion_target(
+                p,
+                ids[0],
+                BeatTime::from_quarters(13).unwrap(),
+                false
+            ),
             Some((ids[1], true))
         );
         assert_eq!(
-            insertion_target(p, ids[0], BeatTime::from_quarters(1).unwrap(), true),
+            section_reorder::insertion_target(p, ids[0], BeatTime::from_quarters(1).unwrap(), true),
             Some((ids[0], false))
         );
         assert_eq!(
-            insertion_target(p, ids[0], BeatTime::from_quarters(3).unwrap(), true),
+            section_reorder::insertion_target(p, ids[0], BeatTime::from_quarters(3).unwrap(), true),
             Some((ids[0], true))
         );
         let (name, color) = new_marker_appearance(p);
