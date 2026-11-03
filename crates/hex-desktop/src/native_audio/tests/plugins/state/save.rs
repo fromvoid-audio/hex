@@ -6,7 +6,7 @@ mod reopen;
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_save_keeps_pending_mix_publication_and_metadata_alias() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let (mut h, files, _) = fixture(Start::Saved);
     let (applied, _) = h.applied(0);
     let added = same_source_edit(
@@ -83,7 +83,7 @@ fn native_effect_save_keeps_pending_mix_publication_and_metadata_alias() {
 #[test]
 #[ignore = "explicit original SDK helper/source receipts required"]
 fn native_effect_save_after_stop_preserves_original_source_for_later_playback() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let (mut h, files, before) = fixture(Start::Saved);
     let (applied, _) = h.applied(0);
     h.audio
@@ -174,7 +174,7 @@ fn native_effect_save_delayed_capture_keeps_pcm_and_drains_cancelled_request() {
         }
         return;
     };
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let cancel = cancel == "1";
     let (mut h, files, before) = fixture(Start::Unsaved);
     let path = files.0.join("captured.hex");

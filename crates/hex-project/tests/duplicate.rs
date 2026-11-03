@@ -175,6 +175,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         })
         .collect();
     let full = Project::from_legacy_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),

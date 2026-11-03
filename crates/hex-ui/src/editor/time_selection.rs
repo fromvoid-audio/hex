@@ -450,6 +450,11 @@ impl EditorView {
             last_tick: Instant::now(),
         });
         self.select_lane_span(selection.anchor_track, track);
+        // The pressed clip stays the clip editor subject, not an object selection.
+        let pressed = self.arrangement_clip_at(track, frame, self.detail_clip_id());
+        if anchor.is_none() {
+            self.set_detail_context(pressed);
+        }
         self.selected_clip = None;
         self.cancel_midi_note_gesture();
         true
@@ -855,11 +860,22 @@ impl EditorView {
         let Some((track, frame)) = self.time_selection_paste_target() else {
             return;
         };
-        self.enqueue(if insert {
+        let request = if insert {
             Request::InsertTimeRange { track, frame }
         } else {
             Request::PasteTimeRange { track, frame }
-        });
+        };
+        // A clip-clipboard paste selects its acknowledged births.
+        let intent = super::group_copy::Pending::capture_paste(self, &request);
+        let before_pending = self.worker_requests_pending;
+        if self.enqueue(request)
+            && let Some(mut intent) = intent
+        {
+            if self.worker_requests_pending > before_pending {
+                intent.submitted(self.worker_requests_pending);
+            }
+            self.pending_group_copy = Some(intent);
+        }
     }
 
     pub(super) fn time_selection_paste_target(&self) -> Option<(TrackId, u64)> {
@@ -1030,6 +1046,9 @@ impl EditorView {
             return false;
         };
         self.suppress_cursor_click = gesture.moved;
+        if gesture.moved {
+            self.fit_clip_editor_to_time_selection();
+        }
         true
     }
 
@@ -1152,11 +1171,14 @@ impl EditorView {
             if x < left || x >= left + width {
                 return None;
             }
+            // Edge trim strips only cover the header rail (the whole row when
+            // it is header-only); below that the edge is ordinary body.
             let edge = super::trim::handle_width(width);
+            let on_edge = (visible_start == start && x < left + edge)
+                || (visible_end == end && x >= left + width - edge);
             Some(
                 y < lane.top + header_hit_height(lane.height)
-                    || (visible_start == start && x < left + edge)
-                    || (visible_end == end && x >= left + width - edge),
+                    || (on_edge && y < lane.top + super::trim::edge_trim_height(lane.height)),
             )
         };
         // MIDI is drawn after audio; later clips cover earlier clips of each kind.
@@ -1192,7 +1214,7 @@ impl EditorView {
                     handle_hit(clip.start(), end).map(|ordinary| {
                         (
                             ordinary,
-                            self.fade_handle_hit(state, track.id(), clip, x, y, viewport)
+                            self.fade_handle_hit(track.id(), clip, x, y, viewport)
                                 || super::trim::loop_handles::audio_controls(
                                     clip,
                                     &state.project,
@@ -1316,7 +1338,7 @@ impl EditorView {
                     div()
                         .absolute()
                         .inset_0()
-                        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                        .bg(rgb(theme::time_selection_fill()))
                         .opacity(theme::TIME_SELECTION_OPACITY)
                         .child(
                             div()
@@ -1404,7 +1426,7 @@ impl EditorView {
                     div()
                         .absolute()
                         .inset_0()
-                        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                        .bg(rgb(theme::time_selection_fill()))
                         .opacity(theme::TIME_SELECTION_OPACITY)
                         .child(
                             div()
@@ -1456,8 +1478,8 @@ impl EditorView {
                 .bottom_0()
                 .left(relative(left as f32))
                 .w(relative(width as f32))
-                .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(0.12)
+                .bg(rgb(theme::time_selection_fill()))
+                .opacity(theme::TIME_SELECTION_PREVIEW_OPACITY)
                 .cursor(if preview.copy_modifier {
                     CursorStyle::DragCopy
                 } else {

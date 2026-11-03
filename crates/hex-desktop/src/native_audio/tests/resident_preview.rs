@@ -138,6 +138,9 @@ impl WorkerAudioSink for ResidentSink {
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         self.inner.streamed_exporter()
     }
+    fn streamed_bouncer(&self) -> Option<hex_session::StreamedBouncer> {
+        self.inner.streamed_bouncer()
+    }
     fn resident_file_seek_preparer(
         &self,
     ) -> Option<hex_session::service::ResidentFileSeekPreparer> {
@@ -437,7 +440,7 @@ impl ResidentHarness {
                     Err(error) if error == "audio output is open or still shutting down" => {
                         return Ok(None);
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(error.into()),
                 };
             *target.lock().unwrap() = Some(backend);
             Ok(Some(output))
@@ -549,7 +552,7 @@ impl ResidentHarness {
                 }
                 EditorAudioEvent::Unavailable { error, .. } => {
                     assert!(self.allow_unavailable, "{error}");
-                    self.unavailable.push(error);
+                    self.unavailable.push(error.to_string());
                 }
                 EditorAudioEvent::Publication {
                     context,
@@ -810,7 +813,7 @@ impl ResidentHarness {
 
 #[test]
 fn default_audio_policy_admits_the_actual_stream_workspace_on_startup() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::new();
     assert!(h.next().error.is_none());
     let (revision, _) = h.applied(0);
@@ -822,7 +825,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
     use hex_project::{Command, Created};
     use hex_session::device_gesture::ParameterValue;
     use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget};
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::new();
     let initial = h.next();
@@ -1051,7 +1054,7 @@ impl ResidentHarness {
 
 #[test]
 fn resident_seek_refuses_fault_epoch_changed_after_capture() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::new();
     let initial = h.next();
     assert!(initial.error.is_none());
@@ -1084,7 +1087,7 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     use hex_project::{BeatTime, Command, Created};
     use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
     use hex_session::tuning_gesture::{TuningGestureKey, TuningGestureRequest};
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::new();
     assert!(h.next().error.is_none());
@@ -1221,6 +1224,10 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         "seek attaches the same live monitor only after historical preroll"
     );
     input.set_key(0, None).unwrap();
+    // Drain the released monitor voice's declick tail (the prepared ~2 ms
+    // floor, 96 frames at 48 kHz) so the refusals below compare the settled
+    // authored overlay alone.
+    h.render();
     h.render();
 
     let mut stale = identity;
@@ -1433,7 +1440,7 @@ fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history
     use hex_engine::midi_capture::MidiCaptureBinding;
     use hex_project::{BeatTime, Command};
     use hex_session::midi_recording::{MidiTake, MidiTakeBinding};
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::new();
     assert!(h.next().error.is_none());
     let (mut applied, _) = h.applied(0);

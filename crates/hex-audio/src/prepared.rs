@@ -62,6 +62,7 @@ impl Callback {
     }
 }
 mod action_outcomes;
+mod audible_clock;
 pub use action_outcomes::{
     ACTION_OUTCOME_CAPACITY, Failure as ActionOutcomeFailure, Outcome as ActionOutcome,
     Reader as ActionOutcomeReader, Receipt as ActionOutcomeReceipt,
@@ -110,6 +111,7 @@ mod ordinary_streaming;
 use spectrum_stages::SpectrumStage;
 use spectrum_stages::SpectrumStages;
 mod streaming;
+mod transport_fade;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
 pub(crate) mod candidate_tests;
@@ -147,6 +149,9 @@ pub struct SessionRouteEntry {
     pub owner: SessionRouteOwner,
     /// Accepted source origin, published with the route snapshot sequence.
     pub active_origin: Option<hex_engine::SessionMidiOrigin>,
+    /// Accepted Session audio launch on the performance clock, published with
+    /// the same sequence. Elapsed source time is `performance_frame - launch`.
+    pub audio_launch_frame: Option<u64>,
     pub pending: Option<SessionPendingRoute>,
 }
 
@@ -156,6 +161,7 @@ impl Default for SessionRouteEntry {
             track_id: 0,
             owner: SessionRouteOwner::Silence,
             active_origin: None,
+            audio_launch_frame: None,
             pending: None,
         }
     }
@@ -181,6 +187,8 @@ struct AtomicRouteSlot {
     active_origin_tag: AtomicU32,
     active_performance_anchor_raw: AtomicU64,
     active_elapsed_at_anchor_raw: AtomicU64,
+    audio_launch_tag: AtomicU32,
+    audio_launch_frame: AtomicU64,
     pending_tag: AtomicU32,
     pending_target_tag: AtomicU32,
     pending_clip_id: AtomicU64,
@@ -197,6 +205,8 @@ impl AtomicRouteSlot {
             active_origin_tag: AtomicU32::new(0),
             active_performance_anchor_raw: AtomicU64::new(0),
             active_elapsed_at_anchor_raw: AtomicU64::new(0),
+            audio_launch_tag: AtomicU32::new(0),
+            audio_launch_frame: AtomicU64::new(0),
             pending_tag: AtomicU32::new(0),
             pending_target_tag: AtomicU32::new(0),
             pending_clip_id: AtomicU64::new(0),
@@ -212,6 +222,8 @@ impl AtomicRouteSlot {
         self.active_origin_tag.store(0, SeqCst);
         self.active_performance_anchor_raw.store(0, SeqCst);
         self.active_elapsed_at_anchor_raw.store(0, SeqCst);
+        self.audio_launch_tag.store(0, SeqCst);
+        self.audio_launch_frame.store(0, SeqCst);
         self.pending_tag.store(0, SeqCst);
         self.pending_target_tag.store(0, SeqCst);
         self.pending_clip_id.store(0, SeqCst);
@@ -562,6 +574,11 @@ pub struct Status {
     pub stream_applied_command_prefix: AtomicU64,
     /// Best-effort render telemetry, never a readiness/ownership receipt.
     pub stream_buffering: AtomicBool,
+    /// Monotonic count of callbacks that held streamed playback silent while
+    /// the transport was already playing with no Play/action pre-roll pending:
+    /// disk pages arrived too late for audible output. Counted per output;
+    /// a replacement output starts from zero. Best-effort telemetry.
+    pub stream_starved_callbacks: AtomicU64,
     /// Latest streamed launch accepted into actual PendingRoute scheduling.
     pub stream_scheduled_command: AtomicU64,
     /// Latest scheduled launch whose actual due route/render chunk committed.
@@ -585,7 +602,13 @@ pub struct Status {
     rejected_revision: AtomicU64,
     rejected_revision_reason: AtomicU32,
     rejected_revision_sequence: AtomicU64,
+    /// Scheduled Arrangement cursor: the next content frame the graph renders.
+    /// Recording, scheduling and edits use this position.
     pub position: AtomicU64,
+    /// Arrangement frame now leaving Main output: `position` delayed by the
+    /// graph's Main output latency, mapped back across loop wraps. Use it only
+    /// to display the playhead; see `prepared::audible_clock`.
+    pub audible_position: AtomicU64,
     // Last callback-published cursor, frozen before fault Stop rewinds the graph.
     recovery_position: AtomicU64,
     pub performance_frame: AtomicU64,
@@ -770,6 +793,7 @@ impl Status {
             consumed_command: AtomicU64::new(0),
             stream_applied_command_prefix: AtomicU64::new(0),
             stream_buffering: AtomicBool::new(false),
+            stream_starved_callbacks: AtomicU64::new(0),
             stream_scheduled_command: AtomicU64::new(0),
             stream_activated_command: AtomicU64::new(0),
             stream_invalidated_schedule: AtomicU64::new(0),
@@ -783,6 +807,7 @@ impl Status {
             rejected_revision_reason: AtomicU32::new(0),
             rejected_revision_sequence: AtomicU64::new(0),
             position: AtomicU64::new(0),
+            audible_position: AtomicU64::new(0),
             recovery_position: AtomicU64::new(0),
             performance_frame: AtomicU64::new(0),
             transport_epoch: AtomicU64::new(1),
@@ -887,6 +912,8 @@ impl Status {
                 let active_origin_tag = slot.active_origin_tag.load(SeqCst);
                 let active_performance_anchor_raw = slot.active_performance_anchor_raw.load(SeqCst);
                 let active_elapsed_at_anchor_raw = slot.active_elapsed_at_anchor_raw.load(SeqCst);
+                let audio_launch_tag = slot.audio_launch_tag.load(SeqCst);
+                let audio_launch_frame = slot.audio_launch_frame.load(SeqCst);
                 let pending_tag = slot.pending_tag.load(SeqCst);
                 let pending_target_tag = slot.pending_target_tag.load(SeqCst);
                 let pending_clip_id = slot.pending_clip_id.load(SeqCst);
@@ -906,6 +933,11 @@ impl Status {
                         active_performance_anchor_raw,
                         active_elapsed_at_anchor_raw,
                     )),
+                    _ => return None,
+                };
+                let audio_launch_frame = match audio_launch_tag {
+                    0 => None,
+                    1 => Some(audio_launch_frame),
                     _ => return None,
                 };
                 let pending = match pending_tag {
@@ -931,6 +963,7 @@ impl Status {
                     track_id,
                     owner,
                     active_origin,
+                    audio_launch_frame,
                     pending,
                 };
             }
@@ -1029,6 +1062,13 @@ impl Status {
             slot.active_performance_anchor_raw.store(0, SeqCst);
             slot.active_elapsed_at_anchor_raw.store(0, SeqCst);
             slot.active_origin_tag.store(0, SeqCst);
+        }
+        if let Some(launch) = route.audio_launch_frame {
+            slot.audio_launch_frame.store(launch, SeqCst);
+            slot.audio_launch_tag.store(1, SeqCst);
+        } else {
+            slot.audio_launch_frame.store(0, SeqCst);
+            slot.audio_launch_tag.store(0, SeqCst);
         }
         if let Some(pending) = route.pending {
             let (tag, clip_id) = match pending.target {
@@ -1291,6 +1331,7 @@ pub struct Callback {
     candidate_root: crate::candidate_custody::CandidateRoot,
     commands: Consumer<QueuedCommand>,
     status: Arc<Status>,
+    audible_clock: audible_clock::AudibleClock,
     recovery_position_frozen: bool,
     recovery_seek_pending: Option<u64>,
     device_fault_stopped: bool,
@@ -1316,6 +1357,7 @@ pub struct Callback {
     // capacity can accumulate before this callback publishes and flushes them.
     stream_outcomes: [Option<(u64, action_outcomes::Outcome)>; ACTION_OUTCOME_CAPACITY],
     stream_outcome_count: usize,
+    transport_fade: Option<transport_fade::PendingFade>,
     yield_stream_successor_once: bool,
     stream_prefix: u64,
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
@@ -1437,6 +1479,7 @@ pub fn channel_with_spectrum(
             retired: returning,
             commands: events,
             status,
+            audible_clock: audible_clock::AudibleClock::new(),
             recovery_position_frozen: false,
             recovery_seek_pending: None,
             device_fault_stopped: false,
@@ -1460,6 +1503,7 @@ pub fn channel_with_spectrum(
             stream_pending_play: None,
             stream_outcomes: [None; ACTION_OUTCOME_CAPACITY],
             stream_outcome_count: 0,
+            transport_fade: None,
             yield_stream_successor_once: false,
             stream_prefix: 0,
             held_retirement: None,
@@ -3783,6 +3827,10 @@ impl Callback {
         // A publication can complete a streamed terminal before handing the
         // same block to resident consumption. Preserve completion order.
         self.flush_stream_outcomes();
+        if cut.stop_through.is_some() {
+            // The immediate priority Stop follows an interrupted fade's effects.
+            self.settle_transport_fade();
+        }
         if let Some(through_ticket) = cut.stop_through {
             if !fault && !self.status.closing.load(Acquire) {
                 self.recovery_position_frozen = false;
@@ -3832,6 +3880,8 @@ impl Callback {
             if !fault {
                 self.trace_command_dequeued(queued, cut);
             }
+            // Each command follows the audible end of an earlier fade.
+            self.settle_transport_fade();
             if fault && sampler_edit::is_stop(queued.action) {
                 self.status.recovery_position.store(0, Release);
                 *staged = Some((queued.ticket, action_outcomes::Outcome::Applied));
@@ -3889,21 +3939,24 @@ impl Callback {
             {
                 #[cfg(all(test, feature = "allocation-probe"))]
                 self.apply_candidate_action(queued.action);
-                if matches!(
-                    queued.action,
-                    PlaybackAction::Transport(PlaybackCommand::Stop)
-                ) {
-                    self.revoke_current_sampler_keyboard();
-                }
                 let mut invalidate_audition = false;
+                let mut fading = false;
                 let outcome;
+                let closing = self.status.closing.load(Acquire);
                 if let Some(mut active) = self
                     .active
                     .as_mut()
                     .and_then(ActivePublication::current_mut)
                 {
-                    match active.playback.try_apply_action(queued.action) {
+                    let applied = if closing {
+                        active.playback.try_apply_action(queued.action)
+                    } else {
+                        active.playback.try_apply_declicked_action(queued.action)
+                    };
+                    match applied {
                         Ok(()) => {
+                            fading =
+                                active.playback.pending_transport_fade() == Some(queued.action);
                             outcome = action_outcomes::Outcome::Applied;
                             if recovery_cursor_action(queued.action) {
                                 self.recovery_position_frozen = false;
@@ -3927,6 +3980,17 @@ impl Callback {
                     );
                 }
                 *staged = Some((queued.ticket, outcome));
+                let stop = matches!(
+                    queued.action,
+                    PlaybackAction::Transport(PlaybackCommand::Stop)
+                );
+                if fading {
+                    // The output transport, epoch and sampler keyboard stay
+                    // live until the fade's audible end.
+                    self.begin_transport_fade(queued.ticket, stop, false);
+                } else if stop {
+                    self.revoke_current_sampler_keyboard();
+                }
                 if invalidate_audition
                     || matches!(
                         queued.action,
@@ -3937,9 +4001,15 @@ impl Callback {
                     self.invalidate_midi_recording(
                         crate::midi_recording::AbortReason::TransportChanged,
                     );
-                    self.invalidate_gain_recording(
-                        crate::gain_recording::AbortReason::TransportChanged,
-                    );
+                    if fading {
+                        self.abort_transport_inputs(
+                            crate::gain_recording::AbortReason::TransportChanged,
+                        );
+                    } else {
+                        self.invalidate_gain_recording(
+                            crate::gain_recording::AbortReason::TransportChanged,
+                        );
+                    }
                 }
                 if invalidate_audition {
                     self.invalidate_processor_audition_request();
@@ -3978,6 +4048,8 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        // The fault Stop below revokes every transport effect immediately.
+        self.transport_fade = None;
         self.recovery_position_frozen = true;
         if self.streamed_transport_mode() {
             self.cancel_stream_for_fault();
@@ -4057,9 +4129,59 @@ impl Callback {
         }
     }
     pub fn render(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        let block = self.scheduled_transport();
         let result = self.render_inner(output);
+        if self.transport_fade.is_some() && !self.transport_fade_pending() {
+            self.settle_transport_fade();
+        }
+        if let Some((position, performance, true)) = block
+            && result.is_ok()
+            && !output.is_empty()
+        {
+            // A declicked Pause/Stop can end inside the block; only the frames
+            // its performance clock advanced were played (#4151).
+            let frames = match self.scheduled_transport() {
+                Some((_, after, false)) => usize::try_from(after.saturating_sub(performance))
+                    .map_or(output.len(), |played| played.min(output.len())),
+                _ => output.len(),
+            };
+            if frames > 0 {
+                self.audible_clock.push(position, performance, frames);
+            }
+        }
+        self.publish_audible_position();
         self.flush_stream_outcomes();
         result
+    }
+
+    /// Scheduled position, performance frame and playing state of the current graph.
+    fn scheduled_transport(&self) -> Option<(u64, u64, bool)> {
+        self.active
+            .as_ref()
+            .and_then(ActivePublication::current)
+            .map(|active| {
+                (
+                    active.playback.position(),
+                    active.playback.performance_frame(),
+                    active.playback.playing(),
+                )
+            })
+    }
+
+    fn publish_audible_position(&self) {
+        if let Some(active) = self.active.as_ref().and_then(ActivePublication::current) {
+            let playback = &active.playback;
+            let (latency, region) = playback.audible_timing();
+            self.status.audible_position.store(
+                self.audible_clock.audible(
+                    playback.position(),
+                    playback.performance_frame(),
+                    latency,
+                    region,
+                ),
+                Relaxed,
+            );
+        }
     }
     fn render_inner(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
         if self.status.device_fault.load(Acquire) {
@@ -4231,6 +4353,12 @@ impl Callback {
             );
             let action_pending = active.has_stream_action();
             let capacity_conflict = active.capacity_conflict();
+            streaming::count_starvation(
+                &self.status,
+                self.stream_pending_play.is_some(),
+                action_pending,
+                &outcome,
+            );
             self.resolve_recovery_seek(action_pending, outcome.action_rejection);
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
@@ -4306,6 +4434,12 @@ impl Callback {
             );
             let action_pending = active.has_stream_action();
             let capacity_conflict = active.capacity_conflict();
+            streaming::count_starvation(
+                &self.status,
+                self.stream_pending_play.is_some(),
+                action_pending,
+                &outcome,
+            );
             self.resolve_recovery_seek(action_pending, outcome.action_rejection);
             if capacity_conflict && self.yield_pending_stream_successor() {
                 outcome.readiness_refused = false;
@@ -4538,6 +4672,25 @@ impl Callback {
         // Reuse the existing transport-discontinuity owner/epoch; asynchronous
         // output must not expose pre-seek/pause/stop buffers in a new context.
         self.revoke_output_transport();
+        self.abort_transport_inputs(reason);
+        let prior_epoch = self
+            .status
+            .transport_epoch
+            .fetch_update(AcqRel, Acquire, |epoch| epoch.checked_add(1));
+        if matches!(reason, crate::gain_recording::AbortReason::OutputFailed) {
+            self.status
+                .last_output_fault_epoch
+                .store(prior_epoch.unwrap_or_else(|epoch| epoch), Release);
+        }
+        if prior_epoch.is_err() {
+            self.status.gain_recording_fault.store(true, Release);
+        }
+    }
+    /// Abort the gain take and native parameter gesture without revoking the
+    /// output transport or advancing its epoch. A declicked Pause/Stop does
+    /// this when consumed; the rest of `invalidate_gain_recording` follows at
+    /// its fade end.
+    fn abort_transport_inputs(&mut self, reason: crate::gain_recording::AbortReason) {
         self.gain_recording.abort(reason);
         self.invalidate_native_parameter_input(match reason {
             crate::gain_recording::AbortReason::SourceChanged => {
@@ -4562,18 +4715,6 @@ impl Callback {
             .and_then(ActivePublication::current_mut)
         {
             active.playback.clear_gain_recording_override();
-        }
-        let prior_epoch = self
-            .status
-            .transport_epoch
-            .fetch_update(AcqRel, Acquire, |epoch| epoch.checked_add(1));
-        if matches!(reason, crate::gain_recording::AbortReason::OutputFailed) {
-            self.status
-                .last_output_fault_epoch
-                .store(prior_epoch.unwrap_or_else(|epoch| epoch), Release);
-        }
-        if prior_epoch.is_err() {
-            self.status.gain_recording_fault.store(true, Release);
         }
     }
     fn invalidate_native_parameter_input(
@@ -4853,6 +4994,7 @@ impl Callback {
         if let Some(active) = self.active.as_ref().and_then(ActivePublication::current) {
             let position = active.playback.position();
             self.status.position.store(position, Relaxed);
+            self.publish_audible_position();
             if !self.recovery_position_frozen {
                 self.status.recovery_position.store(position, Relaxed);
             }
@@ -5078,6 +5220,7 @@ mod tests {
             return_state = state.clone();
         }
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            automatic_track_names: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5252,6 +5395,7 @@ mod tests {
         const FRAMES: u64 = 512;
         let make_state = || state.clone();
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            automatic_track_names: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5385,6 +5529,7 @@ mod tests {
             .expect("compressor threshold")
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            automatic_track_names: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5537,6 +5682,7 @@ mod tests {
         const RETURN_DEVICE_ID: u64 = 8;
         const FRAMES: u64 = 512;
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            automatic_track_names: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5905,7 +6051,9 @@ mod tests {
             );
             assert!(control.status.metronome_enabled.load(Relaxed));
             assert_eq!(control.status.position.load(Relaxed), 37);
-            assert_eq!(control.status.playing.load(Relaxed), cancelled);
+            // A queued Pause is Applied when consumed but keeps playing
+            // through its fade until a render reaches its audible end (#4151).
+            assert!(control.status.playing.load(Relaxed));
             control.request_shutdown();
             callback.begin_block();
             control.reclaim();
@@ -6052,11 +6200,16 @@ mod tests {
             ),
             (0, 0, 0, 0)
         );
-        assert_eq!(output[0], [0.16; 2]);
+        // The Seek applies after its 21-frame fade at 8 kHz, where the
+        // undamped metronome click at frame zero follows (#4140).
+        assert_eq!(output[21], [0.16; 2]);
         control.command(PlaybackCommand::Pause).unwrap();
         let allocations = allocation_counter::measure(|| {
-            callback.begin_block();
-            callback.render(&mut output).unwrap();
+            // The first block is the queued Pause's 128-frame fade (#4151).
+            for _ in 0..2 {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            }
         });
         assert_eq!(
             (
@@ -6085,8 +6238,34 @@ mod tests {
         callback
             .render(&mut original_output)
             .expect("initial callback render");
+        // Each oversampled Saturator answers a step with exact DC once its
+        // declared latency and finite tail have elapsed. Main waits for the
+        // return path, two Saturators deep; pre-epoch output is silent.
+        let saturator = hex_devices::saturator::SaturatorDefinition::prepare_owned(
+            &hex_lattice_contract::NativeDeviceMetadata::default_state(
+                &hex_devices::saturator::SATURATOR_DEFINITION,
+            )
+            .expect("default saturator"),
+            48_000,
+            &[],
+        )
+        .expect("standalone saturator");
+        let latency = hex_lattice::PreparedNativeProcessor::algorithmic_latency_frames(&saturator)
+            .expect("declared latency") as usize;
+        let hex_lattice::OutputTail::Finite { max_tail_frames } =
+            hex_lattice::PreparedNativeProcessor::output_tail(&saturator)
+        else {
+            panic!("finite saturator tail");
+        };
+        let settled = 2 * (latency + max_tail_frames as usize);
+        assert_eq!((latency, settled), (11, 72));
         assert!(
-            original_output.iter().all(|frame| {
+            original_output[..2 * latency]
+                .iter()
+                .all(|frame| *frame == [0.0; 2])
+        );
+        assert!(
+            original_output[settled..].iter().all(|frame| {
                 (frame[0] - 1.75).abs() < 1.0e-6 && (frame[1] + 1.75).abs() < 1.0e-6
             })
         );
@@ -6098,6 +6277,14 @@ mod tests {
         let allocations = allocation_counter::measure(|| {
             callback.begin_block();
             callback.render(&mut output).expect("callback render");
+            callback.begin_block();
+            callback
+                .render(&mut output)
+                .expect("callback render during ramp");
+            callback.begin_block();
+            callback
+                .render(&mut output)
+                .expect("callback render after ramp");
         });
         assert_eq!(
             (
@@ -6109,8 +6296,16 @@ mod tests {
             (0, 0, 0, 0),
         );
         assert_ne!(output, original_output);
-        assert!(output.iter().all(|frame| {
+        // At 48 kHz the 5 ms ramp from the edit at frame 128 ends at input
+        // frame 368; Main settles on the exact target `settled` frames later,
+        // inside the third 128-frame block (frames 384..512).
+        let target = 128 + 240 + settled - 384;
+        assert_eq!(target, 56);
+        assert!(output[target..].iter().all(|frame| {
             (frame[0] - 0.34375).abs() < 1.0e-6 && (frame[1] + 0.55).abs() < 1.0e-6
+        }));
+        assert!(output[..target].iter().any(|frame| {
+            (frame[0] - 0.34375).abs() >= 1.0e-6 || (frame[1] + 0.55).abs() >= 1.0e-6
         }));
         control.request_shutdown();
         callback.begin_block();
@@ -6140,6 +6335,49 @@ mod tests {
         let allocations = allocation_counter::measure(|| {
             callback.begin_block();
             callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                allocations.count_total,
+                allocations.bytes_total,
+                allocations.count_current,
+                allocations.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(output.iter().flatten().all(|sample| sample.is_finite()));
+        assert!(output.iter().flatten().any(|sample| *sample != 0.0));
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn rattle_track_return_handoff_and_render_allocate_nothing() {
+        use hex_devices::rattle::{RATTLE_DEFINITION as d, parameter};
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let original = d.default_state().unwrap();
+        control
+            .publish(native_effect_track_and_return_graph(original.clone()))
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut output = [[0.0; 2]; 128];
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        // The edited revision inherits oversampler/noise history and glides drive.
+        let changed = d
+            .patch_parameter(&original, parameter::DRIVE, ParameterValue::Float(1.0))
+            .unwrap();
+        control
+            .publish(native_effect_track_and_return_graph(changed))
+            .unwrap();
+        let allocations = allocation_counter::measure(|| {
+            for _ in 0..4 {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            }
         });
         assert_eq!(
             (
@@ -6293,8 +6531,11 @@ mod tests {
         for command in [PlaybackCommand::Seek(0), PlaybackCommand::Stop] {
             control.command(command).unwrap();
             let counts = allocation_counter::measure(|| {
-                callback.begin_block();
-                callback.render(&mut block).unwrap();
+                // A queued Stop fades over 128 frames, past one block (#4151).
+                for _ in 0..1 + usize::from(command == PlaybackCommand::Stop) {
+                    callback.begin_block();
+                    callback.render(&mut block).unwrap();
+                }
             });
             assert_eq!(
                 (
@@ -8455,11 +8696,16 @@ mod tests {
         callback.begin_block();
         assert_eq!(control.status.applied_revision.load(Acquire), revision - 1);
         assert_eq!(control.status.consumed_command.load(Acquire), ticket);
-        assert_eq!(control.status.position.load(Acquire), 13);
+        // A Seek while playing fades out, jumps and ramps in (#4140).
+        assert_eq!(control.status.position.load(Acquire), 0);
         assert!(control.status.publication_pending.load(Acquire));
+        let mut fade_out = [[0.0; 2]; 128];
+        callback.render(&mut fade_out).unwrap();
+        assert_eq!(control.status.position.load(Acquire), 13);
+        let ramp = |frame: usize| [0.25 * (frame + 1) as f32 / 128.0; 2];
         let mut before_retry = [[0.0; 2]; 8];
         callback.render(&mut before_retry).unwrap();
-        assert_eq!(before_retry, [[0.25; 2]; 8]);
+        assert_eq!(before_retry, std::array::from_fn(ramp));
         assert_eq!(control.status.position.load(Acquire), 21);
         assert_eq!(control.reclaim(), RETIRED);
         callback.begin_block();
@@ -8467,7 +8713,7 @@ mod tests {
         assert_fresh_fence_rejection(&mut control, revision);
         let mut after_retry = [[0.0; 2]; 8];
         callback.render(&mut after_retry).unwrap();
-        assert_eq!(after_retry, [[0.25; 2]; 8]);
+        assert_eq!(after_retry, std::array::from_fn(|frame| ramp(frame + 8)));
         assert_eq!(control.status.position.load(Acquire), 29);
         assert_eq!(control.reclaim(), 1);
         control.request_shutdown();
@@ -9925,6 +10171,7 @@ mod tests {
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            automatic_track_names: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -10642,6 +10889,7 @@ mod tests {
             TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
+            automatic_track_names: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -10759,6 +11007,7 @@ mod tests {
                 track_id: 0,
                 owner: SessionRouteOwner::Silence,
                 active_origin: None,
+                audio_launch_frame: None,
                 pending: None,
             }; 1];
             let mut observed = 0;

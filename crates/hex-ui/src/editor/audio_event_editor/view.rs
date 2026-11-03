@@ -403,7 +403,7 @@ pub(in crate::editor) fn view(
                     .bottom_0()
                     .left(relative(frame_to_x(a)))
                     .w(relative((b - a) as f32 / local.length.max(1) as f32))
-                    .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                    .bg(rgb(theme::time_selection_fill()))
                     .opacity(theme::TIME_SELECTION_OPACITY)
                     .child(
                         div()

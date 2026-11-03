@@ -84,6 +84,7 @@ fn render_action(
         request.start(),
         request.frames(),
         request.signal().clone(),
+        request.format(),
         request.control(),
         request.publication(),
         &mut pages,

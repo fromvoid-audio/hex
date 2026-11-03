@@ -263,6 +263,13 @@ impl EditorView {
             ) => *clip == p.clip && looping == actual,
             (
                 Preview::Midi(v),
+                Request::Edit(Command::ResizeMidiClipView {
+                    clip,
+                    operation: hex_project::MidiViewResizeOperation::PlayStart { source_start },
+                }),
+            ) => *clip == p.clip && source_start.raw() == v.source_start,
+            (
+                Preview::Midi(v),
                 Request::Edit(Command::SetMidiClipSource {
                     clip,
                     source_length,

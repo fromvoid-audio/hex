@@ -576,10 +576,9 @@ fn lane_at(
     )
 }
 fn painted_time_in_lane(visual: &mut VisualTestContext) {
-    let color: gpui::Background =
-        gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
-            .opacity(theme::TIME_SELECTION_OPACITY)
-            .into();
+    let color: gpui::Background = gpui::Hsla::from(rgb(theme::time_selection_fill()))
+        .opacity(theme::TIME_SELECTION_OPACITY)
+        .into();
     assert!(
         visual
             .rendered_filled_quads("midi-velocity-lane")

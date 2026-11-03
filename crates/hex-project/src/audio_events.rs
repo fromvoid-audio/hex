@@ -119,6 +119,13 @@ pub enum AudioEventEdit {
         length: u64,
         events: Vec<AudioEvent>,
     },
+    /// Place one event anywhere on its clip's free event timeline. `start` is a
+    /// signed root-clock position relative to the current root origin; a frame
+    /// one-shot root first becomes a grouped timeline, then grows to fit.
+    Place {
+        event: u64,
+        start: i64,
+    },
 }
 impl AudioEvents {
     /// Re-express frame events in Q32.32 beats using the retained root origin.
@@ -312,6 +319,11 @@ impl AudioEvents {
         if self.events.len() > MAX_AUDIO_EVENTS + 2 {
             return Err(Invalid("audio event view limit reached"));
         }
+        if matches!(operation, AudioEventEdit::Place { .. }) {
+            return Err(Invalid(
+                "free audio event placement edits the clip's whole timeline",
+            ));
+        }
         let next = self.edited_inner(operation, length)?;
         next.validate(length)?;
         Ok(next)
@@ -337,6 +349,11 @@ impl AudioEvents {
         self.validate_geometry(length)?;
         let mut next = self.clone();
         match operation {
+            AudioEventEdit::Place { .. } => {
+                return Err(Invalid(
+                    "free audio event placement edits the clip's whole timeline",
+                ));
+            }
             AudioEventEdit::SetRetainedPathActive {
                 sources,
                 events,
@@ -688,6 +705,9 @@ pub(crate) fn apply(
             Invalid("clip no longer exists")
         }
     })?;
+    if let AudioEventEdit::Place { event, start } = operation {
+        return crate::audio_event_timeline::place(project, clip, event, start);
+    }
     let mut edit = original
         .audio_edit()
         .cloned()

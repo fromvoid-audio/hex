@@ -41,7 +41,7 @@ fn set_loop(h: &mut ResidentHarness, applied: u64, start: u64, end: u64) -> u64 
 
 #[test]
 fn loop_edits_while_playing_a_compensated_track_follow_the_playhead() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(131_072);
     assert!(h.next().error.is_none());

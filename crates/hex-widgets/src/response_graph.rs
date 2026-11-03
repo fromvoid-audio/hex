@@ -1,6 +1,7 @@
 //! Bounded response graph with reusable node hit targets and pointer capture.
 use crate::ControlStyle;
 use crate::focus_marker::corner_markers;
+use crate::marquee::{Marquee, MarqueeMode};
 use crate::spectrum_painter::{self, Layer as SpectrumLayer, Pass as SpectrumPass};
 use gpui::{
     App, Bounds, Context, CursorStyle, Element, ElementId, Entity, EventEmitter, FocusHandle,
@@ -48,7 +49,9 @@ pub enum ResponseGraphPhase {
     /// With creation dragging enabled, its pointer stream keeps node_id zero.
     Create,
     Select,
-    /// Owner-opted-in Backspace on an idle, focused selected node.
+    /// Owner-opted-in Backspace on an idle, focused selected node. It names the
+    /// first selected node; owners holding a marquee multi-selection remove
+    /// their whole selection as one edit.
     Remove,
     /// Physical pointer press on a node; does not start a parameter edit.
     Press,
@@ -72,6 +75,27 @@ pub struct ResponseGraphEvent {
     pub modifiers: Modifiers,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResponseGraphMarqueePhase {
+    /// Live membership while the band is held; emitted only when it changes.
+    Change,
+    /// Final membership on release, or an empty set for a plain blank click
+    /// that clears the selection.
+    Commit,
+    /// Escape, blur or capture loss: restores the press-time selection.
+    Cancel,
+}
+
+/// Opt-in marquee selection result. `selected` is the complete resulting node
+/// set (sorted), already combined with the press-time selection per
+/// [`MarqueeMode`]. Owners replace their view-state selection with it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResponseGraphMarqueeEvent {
+    pub phase: ResponseGraphMarqueePhase,
+    pub selected: Vec<u32>,
+    pub modifiers: Modifiers,
+}
+
 #[derive(Clone, Debug)]
 pub struct ResponseGraphModel {
     pub primary: Vec<[f32; 2]>,
@@ -80,6 +104,8 @@ pub struct ResponseGraphModel {
     pub analyzer: Option<Vec<[f32; 2]>>,
     /// Optional aligned input spectrum, independently hidden by its owner.
     pub input_analyzer: Option<Vec<[f32; 2]>>,
+    /// Optional held-peak curve for the output analyzer, drawn as a thin line.
+    pub analyzer_peak: Option<Vec<[f32; 2]>>,
     pub nodes: Vec<ResponseGraphNode>,
 }
 
@@ -92,6 +118,9 @@ impl ResponseGraphModel {
                 curve.len() < 2 || curve.len() > MAX_ANALYZER_POINTS || !valid_curve(curve)
             })
             || self.input_analyzer.as_ref().is_some_and(|curve| {
+                curve.len() < 2 || curve.len() > MAX_ANALYZER_POINTS || !valid_curve(curve)
+            })
+            || self.analyzer_peak.as_ref().is_some_and(|curve| {
                 curve.len() < 2 || curve.len() > MAX_ANALYZER_POINTS || !valid_curve(curve)
             })
             || self.nodes.len() > MAX_NODES
@@ -153,6 +182,8 @@ pub struct ResponseGraph {
     editable: bool,
     creation_enabled: bool,
     creation_drag_enabled: bool,
+    marquee_enabled: bool,
+    marquee: Option<MarqueePress>,
     creation_hint_resolver: Option<fn([f32; 2]) -> ResponseGraphCreationHint>,
     creation_hover: Option<creation_hint::Hover>,
     creation_hint_was_focused: bool,
@@ -172,6 +203,21 @@ struct Drag {
     relative_option_y: bool,
 }
 
+#[derive(Clone)]
+struct MarqueePress {
+    band: Marquee,
+    /// Press-time selection, restored on cancel and combined with hits.
+    base: Vec<u32>,
+    /// Last emitted membership, so unchanged movement emits nothing.
+    last: Vec<u32>,
+    mode: MarqueeMode,
+    modifiers: Modifiers,
+    /// Normalized press position for a click that creates a point.
+    position: [f32; 2],
+    click_count: usize,
+    active: bool,
+}
+
 #[derive(Clone, Copy)]
 struct Press {
     node_id: u32,
@@ -188,6 +234,7 @@ impl ResponseGraph {
             secondary: vec![[0.0, 0.5], [1.0, 0.5]],
             analyzer: None,
             input_analyzer: None,
+            analyzer_peak: None,
             nodes: Vec::new(),
         };
         Self {
@@ -203,6 +250,8 @@ impl ResponseGraph {
             editable: false,
             creation_enabled: false,
             creation_drag_enabled: false,
+            marquee_enabled: false,
+            marquee: None,
             creation_hint_resolver: None,
             creation_hover: None,
             creation_hint_was_focused: false,
@@ -252,6 +301,23 @@ impl ResponseGraph {
     /// Disabled by default so existing click-only owners retain their behavior.
     pub fn set_creation_drag_enabled(&mut self, enabled: bool) {
         self.creation_drag_enabled = enabled;
+    }
+
+    /// Opt into marquee selection from Shift blank presses (see
+    /// [`crate::marquee`]). Plain blank presses keep the ordinary creation
+    /// stream. A Shift blank press that crosses the drag threshold draws a band
+    /// and emits [`ResponseGraphMarqueeEvent`]s; without movement it emits
+    /// Create on release when creation is enabled (closed by a node-zero
+    /// Release for creation-drag owners), otherwise a Commit with an empty set
+    /// so the owner clears its selection. Option Shift blank presses on
+    /// creation-drag owners keep the held creation stream. Node presses keep
+    /// their select/drag stream: owners moving a multi-selection apply the
+    /// dragged node's delta to the other selected nodes in one edit.
+    pub fn set_marquee_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if !enabled && self.marquee.is_some() {
+            self.cancel(cx);
+        }
+        self.marquee_enabled = enabled;
     }
 
     /// Opt existing nodes into relative vertical Option drags, independent of
@@ -323,6 +389,7 @@ impl ResponseGraph {
             || self.model.secondary != model.secondary
             || self.model.analyzer != model.analyzer
             || self.model.input_analyzer != model.input_analyzer
+            || self.model.analyzer_peak != model.analyzer_peak
             || self.model.nodes != model.nodes
             || self.style != style
         {
@@ -384,6 +451,16 @@ impl ResponseGraph {
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         self.clear_creation_hint(cx);
         self.finish_scroll(true, cx);
+        if let Some(press) = self.marquee.take() {
+            if press.active {
+                cx.emit(ResponseGraphMarqueeEvent {
+                    phase: ResponseGraphMarqueePhase::Cancel,
+                    selected: press.base,
+                    modifiers: press.modifiers,
+                });
+            }
+            cx.notify();
+        }
         if let Some(drag) = self.drag.take() {
             let position = self
                 .model
@@ -427,7 +504,11 @@ impl ResponseGraph {
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_creation_hint(cx);
-        if event.button != MouseButton::Left || self.drag.is_some() || self.press.is_some() {
+        if event.button != MouseButton::Left
+            || self.drag.is_some()
+            || self.press.is_some()
+            || self.marquee.is_some()
+        {
             return;
         }
         self.finish_scroll(false, cx);
@@ -440,6 +521,15 @@ impl ResponseGraph {
             if self.axes.is_some()
                 && !matches!(hit, creation_hint::Hit::Blank { inside_plot: true })
             {
+                return;
+            }
+            // Adding nodes comes first: only Shift starts a marquee, and
+            // creation-drag owners keep their held create-and-shape on Option.
+            if self.marquee_enabled
+                && MarqueeMode::starts(event.modifiers)
+                && !(self.creation_drag_enabled && event.modifiers.alt)
+            {
+                self.begin_marquee(event, position, window, cx);
                 return;
             }
             if self.creation_enabled && event.click_count == 1 {
@@ -508,6 +598,135 @@ impl ResponseGraph {
         cx.notify();
     }
 
+    fn begin_marquee(
+        &mut self,
+        event: &MouseDownEvent,
+        position: [f32; 2],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(band) = Marquee::new([f32::from(event.position.x), f32::from(event.position.y)])
+        else {
+            return;
+        };
+        if !self.capture_pointer(window, cx) {
+            return;
+        }
+        let base: Vec<u32> = self
+            .model
+            .nodes
+            .iter()
+            .filter(|node| node.selected)
+            .map(|node| node.id)
+            .collect();
+        self.marquee = Some(MarqueePress {
+            band,
+            last: base.clone(),
+            base,
+            mode: MarqueeMode::from_modifiers(event.modifiers),
+            modifiers: event.modifiers,
+            position,
+            click_count: event.click_count,
+            active: false,
+        });
+        self.focus.focus(window);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// Nodes whose painted centers lie inside `band`, in model order.
+    fn marquee_hits(&self, band: &Marquee) -> Vec<u32> {
+        let Some(plot) = self.plot_bounds() else {
+            return Vec::new();
+        };
+        let (left, top) = (f32::from(plot.left()), f32::from(plot.top()));
+        let (width, height) = (f32::from(plot.size.width), f32::from(plot.size.height));
+        band.hits(self.model.nodes.iter().map(|node| {
+            (
+                node.id,
+                [
+                    left + node.position[0] * width,
+                    top + (1.0 - node.position[1]) * height,
+                ],
+            )
+        }))
+    }
+
+    fn marquee_move(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) -> bool {
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.cancel(cx);
+            return true;
+        }
+        let Some(mut press) = self.marquee.take() else {
+            return false;
+        };
+        press
+            .band
+            .update([f32::from(event.position.x), f32::from(event.position.y)]);
+        press.active |= press.band.crossed_threshold();
+        if press.active {
+            let selected = press
+                .mode
+                .combine(&press.base, &self.marquee_hits(&press.band));
+            if selected != press.last {
+                press.last = selected.clone();
+                cx.emit(ResponseGraphMarqueeEvent {
+                    phase: ResponseGraphMarqueePhase::Change,
+                    selected,
+                    modifiers: press.modifiers,
+                });
+            }
+            cx.notify();
+        }
+        self.marquee = Some(press);
+        true
+    }
+
+    fn marquee_up(
+        &mut self,
+        mut press: MarqueePress,
+        event: &MouseUpEvent,
+        cx: &mut Context<Self>,
+    ) {
+        press
+            .band
+            .update([f32::from(event.position.x), f32::from(event.position.y)]);
+        press.active |= press.band.crossed_threshold();
+        if press.active {
+            cx.emit(ResponseGraphMarqueeEvent {
+                phase: ResponseGraphMarqueePhase::Commit,
+                selected: press
+                    .mode
+                    .combine(&press.base, &self.marquee_hits(&press.band)),
+                modifiers: press.modifiers,
+            });
+        } else if self.creation_enabled && press.click_count == 1 {
+            // Live: a blank click adds a point; only a drag draws a marquee.
+            cx.emit(ResponseGraphEvent {
+                phase: ResponseGraphPhase::Create,
+                node_id: 0,
+                position: press.position,
+                modifiers: press.modifiers,
+            });
+            if self.creation_drag_enabled {
+                // Close the node-zero stream that creation-drag owners expect.
+                cx.emit(ResponseGraphEvent {
+                    phase: ResponseGraphPhase::Release,
+                    node_id: 0,
+                    position: press.position,
+                    modifiers: press.modifiers,
+                });
+            }
+        } else if press.mode == MarqueeMode::Replace && !press.base.is_empty() {
+            cx.emit(ResponseGraphMarqueeEvent {
+                phase: ResponseGraphMarqueePhase::Commit,
+                selected: Vec::new(),
+                modifiers: press.modifiers,
+            });
+        }
+        cx.notify();
+    }
+
     fn capture_pointer(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let owner = cx.entity().downgrade();
         let cancelled = owner.clone();
@@ -563,6 +782,9 @@ impl ResponseGraph {
         }
         if self.cancel_unfocused_creation(window, cx) {
             return true;
+        }
+        if self.marquee.is_some() {
+            return self.marquee_move(event, cx);
         }
         let relative_option_y = self.drag.map_or_else(
             || self.press.is_some_and(|press| press.relative_option_y),
@@ -641,6 +863,10 @@ impl ResponseGraph {
         if self.cancel_unfocused_creation(window, cx) {
             return true;
         }
+        if let Some(press) = self.marquee.take() {
+            self.marquee_up(press, event, cx);
+            return true;
+        }
         let Some(drag) = self.drag.take() else {
             let Some(press) = self.press.take() else {
                 return false;
@@ -693,7 +919,10 @@ impl ResponseGraph {
     fn cancel_pointer(&mut self, _: &CancelPointer, window: &mut Window, cx: &mut Context<Self>) {
         if self.backspace_removal
             && self.focus.is_focused(window)
-            && (self.drag.is_some() || self.press.is_some() || self.scroll.active())
+            && (self.drag.is_some()
+                || self.press.is_some()
+                || self.marquee.is_some()
+                || self.scroll.active())
         {
             cx.stop_propagation();
             self.cancel(cx);
@@ -710,6 +939,7 @@ impl ResponseGraph {
         if self.editable
             && self.drag.is_none()
             && self.press.is_none()
+            && self.marquee.is_none()
             && !self.scroll.active()
             && let Some(node) = self.model.nodes.iter().find(|node| node.selected)
         {
@@ -746,7 +976,10 @@ impl ResponseGraph {
             self.clear_creation_hint(cx);
         }
         if event.keystroke.key == "escape"
-            && (self.drag.is_some() || self.press.is_some() || self.scroll.active())
+            && (self.drag.is_some()
+                || self.press.is_some()
+                || self.marquee.is_some()
+                || self.scroll.active())
         {
             cx.stop_propagation();
             self.cancel(cx);
@@ -760,6 +993,7 @@ impl ResponseGraph {
                 !modifiers.control
             });
         if !self.editable
+            || self.marquee.is_some()
             || modifiers.platform
             || modifiers.alt
             || (modifiers.control && !node_cycle)
@@ -893,6 +1127,7 @@ fn cycle_node(selected: Option<usize>, count: usize, reverse: bool) -> Option<us
 }
 
 impl EventEmitter<ResponseGraphEvent> for ResponseGraph {}
+impl EventEmitter<ResponseGraphMarqueeEvent> for ResponseGraph {}
 
 impl Focusable for ResponseGraph {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -915,6 +1150,7 @@ impl gpui::Render for ResponseGraph {
         let secondary = self.model.secondary.clone();
         let analyzer = self.model.analyzer.clone();
         let input_analyzer = self.model.input_analyzer.clone();
+        let analyzer_peak = self.model.analyzer_peak.clone();
         let analyzer_style = self.analyzer_style.unwrap_or(ResponseGraphAnalyzerStyle {
             input: self.style.muted,
             output: self.style.muted,
@@ -926,6 +1162,11 @@ impl gpui::Render for ResponseGraph {
             .axes
             .as_ref()
             .map(|axes| axes.labels(&self.id, style, self.bounds, window));
+        let band = self
+            .marquee
+            .as_ref()
+            .filter(|press| press.active)
+            .map(|press| press.band);
         let bounds_entity = cx.entity();
         if self.focus_blur.is_none() {
             let focus = self.focus.clone();
@@ -947,7 +1188,7 @@ impl gpui::Render for ResponseGraph {
             .on_key_down(cx.listener(Self::key_down))
             .cursor(if self.drag.is_some() {
                 CursorStyle::ResizeColumn
-            } else if self.creation_hover.is_some() {
+            } else if self.creation_hover.is_some() || self.marquee.is_some() {
                 CursorStyle::Crosshair
             } else {
                 CursorStyle::PointingHand
@@ -987,11 +1228,19 @@ impl gpui::Render for ResponseGraph {
                             &secondary,
                             analyzer.as_deref(),
                             input_analyzer.as_deref(),
+                            analyzer_peak.as_deref(),
                             analyzer_style,
                             &nodes,
                             style,
                             window,
                         );
+                        if let Some(band) = band {
+                            band.paint(
+                                axes::plot_bounds(bounds, axes.is_some()),
+                                style.accent,
+                                window,
+                            );
+                        }
                     },
                 )
                 .absolute()
@@ -1018,6 +1267,7 @@ fn paint_graph(
     secondary: &[[f32; 2]],
     analyzer: Option<&[[f32; 2]]>,
     input_analyzer: Option<&[[f32; 2]]>,
+    analyzer_peak: Option<&[[f32; 2]]>,
     analyzer_style: ResponseGraphAnalyzerStyle,
     nodes: &[ResponseGraphNode],
     style: ControlStyle,
@@ -1034,13 +1284,15 @@ fn paint_graph(
     let spectra = [
         input_analyzer.map(|points| SpectrumLayer {
             points,
+            peak: None,
             color: analyzer_style.input,
-            stroke_width: px(0.7),
+            stroke_width: spectrum_painter::SECONDARY_TRACE_WIDTH,
         }),
         analyzer.map(|points| SpectrumLayer {
             points,
+            peak: analyzer_peak,
             color: analyzer_style.output,
-            stroke_width: px(0.9),
+            stroke_width: spectrum_painter::PRIMARY_TRACE_WIDTH,
         }),
     ]
     .into_iter()
@@ -1073,6 +1325,7 @@ fn paint_graph(
     if let Ok(grid) = grid.build() {
         window.paint_path(grid, rgb(style.rail));
     }
+    spectrum_painter::paint(plot, spectra.clone(), SpectrumPass::Peak, window);
     spectrum_painter::paint(plot, spectra, SpectrumPass::Trace, window);
     paint_curve(
         origin,
@@ -1200,11 +1453,15 @@ impl Element for ResponseGraphCaptureElement {
             }
         });
         let graph = self.entity.read(cx);
-        if (graph.press.is_some() || graph.drag.is_some()) && graph.focus.is_focused(window) {
+        if (graph.press.is_some() || graph.drag.is_some() || graph.marquee.is_some())
+            && graph.focus.is_focused(window)
+        {
             window.renew_pointer_capture(
                 self.entity.entity_id(),
                 if graph.drag.is_some() {
                     CursorStyle::ResizeColumn
+                } else if graph.marquee.is_some() {
+                    CursorStyle::Crosshair
                 } else {
                     CursorStyle::PointingHand
                 },
@@ -1258,6 +1515,7 @@ mod tests {
             secondary: vec![[0.0, 0.1], [0.5, 0.5], [1.0, 0.1]],
             analyzer: None,
             input_analyzer: None,
+            analyzer_peak: None,
             nodes: vec![ResponseGraphNode {
                 id: 3,
                 position: [0.5, 0.5],
@@ -1427,3 +1685,7 @@ mod tests {
 #[cfg(test)]
 #[path = "response_graph/capture_tests.rs"]
 mod capture_tests;
+
+#[cfg(test)]
+#[path = "response_graph/marquee_tests.rs"]
+mod marquee_tests;

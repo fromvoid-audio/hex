@@ -212,11 +212,26 @@ fn selected_bounce_case(inplace: bool, whole_track: bool) {
         session.project().tracks()[1].id()
     };
     let audio = &session.project().track(destination).unwrap().clips()[0];
-    assert!(
-        audio.duration() > 24_000,
-        "clip release must extend past original end"
-    );
+    let span = original
+        .plan_arrangement_bounce(&BounceTarget::Clips(vec![clip]), false)
+        .ok()
+        .map(|plan| (plan[0].start, plan[0].end));
     let samples = session.audio(audio.asset()).unwrap().frames();
+    if inplace {
+        assert!(
+            audio.duration() > 24_000,
+            "clip release must extend past original end"
+        );
+    } else {
+        // The view keeps the original span; the release stays in the file.
+        let (start, end) = span.unwrap();
+        assert_eq!((audio.start(), audio.duration()), (start, end - start));
+        assert!(
+            samples.len() as u64 > end - start,
+            "rendered file retains the release beyond the view"
+        );
+    }
+    let rendered_frames = samples.len() as u64;
     assert!(
         samples.iter().flatten().any(|s| s.abs() > 1.0),
         "float PCM retains headroom above full scale"
@@ -320,4 +335,35 @@ fn selected_bounce_case(inplace: bool, whole_track: bool) {
     );
     assert!(session.redo());
     assert_eq!(session.project().snapshot().tracks, after.snapshot().tracks);
+    if !inplace {
+        // With the source muted, only extending the bounced clip's right edge
+        // makes the rendered release audible past the original end.
+        let (_, end) = span.unwrap();
+        let tail = |session: &Session| {
+            let rendered = pcm(
+                session.compile_prepared_revision(None).unwrap(),
+                total_frames,
+            );
+            rendered[usize::try_from(end).unwrap()..]
+                .iter()
+                .flatten()
+                .fold(0.0_f32, |peak, s| peak.max(s.abs()))
+        };
+        session
+            .command(Command::SetClipActive {
+                clip,
+                active: false,
+            })
+            .unwrap();
+        assert!(tail(&session) < 1e-6, "view end hides the tail");
+        let bounced = session.project().track(destination).unwrap().clips()[0].clone();
+        session
+            .command(Command::TrimClipEdge {
+                clip: bounced.id(),
+                edge: hex_project::TrimEdge::Right,
+                frame: bounced.start() + rendered_frames,
+            })
+            .unwrap();
+        assert!(tail(&session) > 1e-3, "extended edge plays the tail");
+    }
 }

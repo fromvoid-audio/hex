@@ -450,3 +450,8 @@ mod tests;
 /// Registered original fixture for owned-effect host proofs, never a browser device.
 pub mod owned_delay;
 pub mod resource_pcm;
+/// Original pass-through fixture for bounded live-transition admission.
+pub mod transition_fixture;
+
+/// Small original aux-key runtime for host contract and allocation probes.
+pub mod auxiliary;

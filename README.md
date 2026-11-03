@@ -48,8 +48,14 @@ same options after `--`.
 
 When a failure occurs, note what you heard and the approximate time. Keep the
 session's current log and its `.1.log` through `.3.log` siblings together; the
-header repeats source/build/flags and segment metadata. The log button opens the
-current file. Check loss counters before interpreting a missing event. New action
+header repeats source/build/flags and segment metadata. The log button opens a
+native viewer. Use the session, category and time controls or search to narrow
+the list. Use older and newer lines to move through large sessions; filters
+apply to the displayed page and live history may shift on refresh. Click a row
+to inspect it, then shift-click another to select a range and copy it.
+Times shown in the viewer are UTC. Refresh reads new records; the copied excerpt
+is limited to 1 MiB and includes available session context and loss warnings.
+Check loss counters before interpreting a missing event. New action
 records redact typed names/search contents and paths, with counts, IDs and numeric
 values retained. Existing status/error messages may contain paths or source text;
 review a capture before sharing it. Input tracing is not complete replay: rapid
@@ -103,12 +109,12 @@ buttons, gauges and scrolling rows. Select a named entry; edit its local
 values, switch theme, disable supported controls, reset it or narrow the preview.
 Plots use editable fixture values; they do not process audio. No project, audio,
 file or preferences I/O occurs. The former `knob_review` app is included here.
-The launcher builds the optimized example from the current checkout, then opens
+The launcher builds the optimized sandbox from the current checkout, then opens
 it. It works from any directory and does not update Git or replace `hex.app`.
 Headless catalog/input checks use:
 
 ```sh
-cargo test -p hex-ui --features ui-test-support --locked --example layout_review
+cargo test -p hex-sandbox --features ui-test-support --locked
 ```
 
 ## Check

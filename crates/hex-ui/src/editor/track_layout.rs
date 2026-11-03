@@ -219,6 +219,7 @@ impl EditorView {
             || self.send_menu_track.is_some()
             || self.project_tempo_editing(cx)
             || self.gain_numeric_editing(cx)
+            || self.sampler_parameter.numeric_draft_active()
             || self.track_gain_controls.has_pending_draft(cx)
             || self.gain_lane.pointer_is_active()
             || self.automation_view.devices.pointer_active()
@@ -891,5 +892,140 @@ impl EditorView {
         )
         .absolute()
         .inset_0()
+    }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tests {
+    use crate::editor::device_automation::host_tests::{
+        CMD, Slot, TestWave, header_assign, lane_point, lane_points, pump, window_with_gain,
+    };
+    use gpui::{Modifiers, MouseButton, TestAppContext, px, size};
+    use hex_lattice_contract::DeviceAutomationTarget;
+
+    #[gpui::test]
+    fn held_gain_point_prevents_new_sampler_text_draft(cx: &mut TestAppContext) {
+        let source = TestWave::new();
+        let (mut visual, editor, _, track, _) =
+            window_with_gain(cx, "hex.utility", Slot::Track, false, Some(&source.0));
+        let sampler = editor.read_with(&visual, |view, _| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id()
+        });
+        visual.simulate_resize(size(px(1600.0), px(800.0)));
+        visual.run_until_parked();
+        let toggle = visual
+            .debug_bounds("automation-view-toggle")
+            .unwrap()
+            .center();
+        visual.simulate_click(toggle, gpui::Modifiers::default());
+        editor.update(&mut visual, |view, cx| {
+            view.gain_lane.track = Some(track);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let sampler_selector =
+            Box::leak(format!("sampler-attack-{}-value", sampler.value()).into_boxed_str());
+        let sampler_at = visual.debug_bounds(sampler_selector).unwrap().center();
+        let plot_selector =
+            Box::leak(format!("arrangement-automation-plot-{}", track.value()).into_boxed_str());
+        let plot = visual.debug_bounds(plot_selector).unwrap();
+        let at = gpui::point(plot.center().x, plot.top() + plot.size.height * 0.25);
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| assert!(view.gain_lane.draft.is_some()));
+        visual.simulate_click(sampler_at, Modifiers::default());
+        editor.read_with(&visual, |view, _| assert!(view.gain_lane.pending.is_some()));
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                !view.sampler_parameter.numeric_draft_active(),
+                "sampler draft began while gain point was held"
+            );
+        });
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+        pump(&mut visual, &editor);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.gain_lane.pending.is_none());
+            assert!(view.error.as_ref().is_some_and(|error| {
+                error
+                    .to_string()
+                    .contains("sampler supports private offline export")
+            }));
+        });
+        visual.run_until_parked();
+        visual.simulate_click(sampler_at, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        editor.read_with(&visual, |view, _| {
+            assert!(view.sampler_parameter.numeric_draft_active())
+        });
+    }
+
+    #[gpui::test]
+    fn invalid_sampler_text_blocks_starting_an_automation_gesture(cx: &mut TestAppContext) {
+        let source = TestWave::new();
+        let (mut visual, editor, owner, track, device) =
+            window_with_gain(cx, "hex.utility", Slot::Track, false, Some(&source.0));
+        let sampler = editor.read_with(&visual, |view, _| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id()
+        });
+        let target =
+            DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
+        header_assign(&mut visual, &editor, owner, target);
+        visual.simulate_resize(size(px(1600.0), px(800.0)));
+        visual.run_until_parked();
+        let selector =
+            Box::leak(format!("sampler-attack-{}-value", sampler.value()).into_boxed_str());
+        let position = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_click(position, Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input("invalid");
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.sampler_parameter.numeric_draft_active(),
+                "sampler text must be active before the automation press"
+            )
+        });
+        let at = lane_point(&mut visual, device, target, [0.6, 0.5]);
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                view.sampler_parameter.numeric_draft_active(),
+                "sampler text must survive a repaint"
+            )
+        });
+        visual.simulate_mouse_down(at, MouseButton::Left, CMD);
+        editor.read_with(&visual, |view, cx| {
+            assert!(view.sampler_parameter.numeric_draft_active());
+            assert_eq!(
+                crate::editor::sampler_parameter::tests::sampler_text(view, cx),
+                "invalid"
+            );
+            assert!(!view.automation_view.devices.point_draft_active());
+        });
+        visual.simulate_mouse_up(at, MouseButton::Left, CMD);
+        editor.update(&mut visual, |view, cx| {
+            assert!(view.cancel_sampler_drafts(cx));
+        });
+        visual.simulate_mouse_down(at, MouseButton::Left, CMD);
+        visual.simulate_mouse_up(at, MouseButton::Left, CMD);
+        visual.run_until_parked();
+        pump(&mut visual, &editor);
+        assert_eq!(lane_points(&visual, &editor, device, target).len(), 1);
     }
 }

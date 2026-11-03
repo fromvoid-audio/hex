@@ -4,7 +4,7 @@
 //! report counts, with at most eight IDs where the typed selection allows it.
 use super::{Description, FirstIds, Parameter, Snapshot};
 use crate::service::Request;
-use hex_project::Command;
+use hex_project::{Command, ExistingAudioPlacement};
 macro_rules! describe {
     ($kind:literal; [$($key:literal => $value:expr),*]; omitted=$omitted:literal) => {{
         let mut description = Description::new($kind);
@@ -258,9 +258,12 @@ pub(super) fn command(value: &Command) -> Description {
             describe!("duplicate_tracks"; ["tracks_count" => tracks.ids().len(), "tracks_first_ids" => FirstIds(tracks.ids()), "without_clips" => without_clips]; omitted="")
         }
         Command::CommitArrangementBounce {
-            in_place, files, ..
+            in_place,
+            adoption,
+            files,
+            ..
         } => {
-            describe!("commit_arrangement_bounce"; ["in_place" => in_place, "files_count" => files.len()]; omitted="target")
+            describe!("commit_arrangement_bounce"; ["in_place" => in_place, "adoption" => adoption, "files_count" => files.len()]; omitted="target")
         }
         Command::SetClipActive { clip, active } => {
             describe!("set_clip_active"; ["clip" => clip.value(), "active" => active]; omitted="")
@@ -373,6 +376,14 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("insert_track_with_device"; ["name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="slot")
         }
+        Command::InsertDefaultTrackWithDevice {
+            before_track,
+            state,
+            device_name,
+            ..
+        } => {
+            describe!("insert_default_track_with_device"; ["before_track" => before_track.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len(), "device_name_redacted_bytes" => device_name.len()]; omitted="slot")
+        }
         Command::SpliceGainTouch {
             track,
             expected_epoch,
@@ -435,6 +446,14 @@ pub(super) fn command(value: &Command) -> Description {
             state,
         } => {
             describe!("insert_device"; ["track" => track.value(), "before" => before.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
+        Command::LoadInstrument {
+            track,
+            replacing,
+            state,
+            device_name,
+        } => {
+            describe!("load_instrument"; ["track" => track.value(), "replacing" => replacing.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len(), "device_name_redacted_bytes" => device_name.len()]; omitted="")
         }
         Command::InsertInstrument { track, state } => {
             describe!("insert_instrument"; ["track" => track.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
@@ -588,6 +607,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::AddTrack { name } => {
             describe!("add_track"; ["name_redacted_bytes" => name.len()]; omitted="")
         }
+        Command::InsertDefaultTrack { before_track } => {
+            describe!("insert_default_track"; ["before_track" => before_track.map(|id| id.value())]; omitted="")
+        }
         Command::InsertTrack { name, before_track } => {
             describe!("insert_track"; ["name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value())]; omitted="")
         }
@@ -657,6 +679,31 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("import_prepared_session_audio_clip"; ["track" => track.value(), "scene" => scene.value(), "name_redacted_bytes" => name.len(), "path_redacted_bytes" => path.as_os_str().len(), "source_sample_rate" => source_sample_rate, "source_frames" => source_frames, "playback_frames" => playback_frames, "conversion_version" => conversion_version, "source_start" => source_start, "source_end" => source_end]; omitted="")
         }
+        Command::ImportExistingAudio { asset, placement } => match placement {
+            ExistingAudioPlacement::NewTrack {
+                name,
+                before_track,
+                start,
+            } => {
+                describe!("import_existing_audio_track_at"; ["asset" => asset.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start" => start]; omitted="")
+            }
+            ExistingAudioPlacement::Clip {
+                track,
+                start,
+                overwrite,
+            } => {
+                describe!("import_existing_audio_clip"; ["asset" => asset.value(), "track" => track.value(), "start" => start, "overwrite" => overwrite]; omitted="")
+            }
+            ExistingAudioPlacement::Session {
+                track,
+                scene,
+                name,
+                source_start,
+                source_end,
+            } => {
+                describe!("import_existing_session_audio_clip"; ["asset" => asset.value(), "track" => track.value(), "scene" => scene.value(), "name_redacted_bytes" => name.len(), "source_start" => source_start, "source_end" => source_end]; omitted="")
+            }
+        },
         Command::MoveTrackBefore { track, before } => {
             describe!("move_track_before"; ["track" => track.value(), "before" => before.map(|id| id.value())]; omitted="")
         }
@@ -739,6 +786,9 @@ pub(super) fn command(value: &Command) -> Description {
             ..
         } => {
             describe!("import_device_asset_replacing_instrument"; ["track" => track.value(), "device" => device.value(), "expected_state_type" => expected_state.type_id().as_str(), "expected_state_state_version" => expected_state.state_version(), "expected_state_payload_bytes" => expected_state.payload().len(), "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
+        }
+        Command::RelinkAssets(relinks) => {
+            describe!("relink_assets"; ["count" => relinks.len()]; omitted="paths")
         }
         Command::RemoveAsset(value0) => {
             describe!("remove_asset"; ["value0" => value0.value()]; omitted="")
@@ -1453,6 +1503,12 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("set_device_parameter"; ["device" => device.value(), "parameter" => parameter.value(), "value" => Parameter(value)]; omitted="")
         }
+        Request::RelinkMedia(relinks) => {
+            describe!("relink_media"; ["count" => relinks.len()]; omitted="paths")
+        }
+        Request::RecoverTruncatedImport(_) => {
+            describe!("recover_truncated_import"; []; omitted="request")
+        }
         Request::Import(value0) => {
             describe!("import"; ["value0_redacted_bytes" => value0.as_os_str().len()]; omitted="")
         }
@@ -1511,9 +1567,10 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             in_place,
+            adoption,
             ..
         } => {
-            describe!("bounce_arrangement"; ["project_generation" => project_generation, "revision" => revision, "in_place" => in_place]; omitted="target,control")
+            describe!("bounce_arrangement"; ["project_generation" => project_generation, "revision" => revision, "in_place" => in_place, "adoption" => adoption]; omitted="target,control")
         }
         Request::ConvertClip {
             project_generation,
@@ -1549,6 +1606,7 @@ pub(super) fn request(value: &Request) -> Description {
         Request::RestorePlayback { generation } => {
             describe!("restore_playback"; ["generation" => generation]; omitted="")
         }
+        Request::RepublishPausedPlayback => describe!("republish_paused_playback"; []; omitted=""),
         Request::RestoreStoppedPlayback => describe!("restore_stopped_playback"; []; omitted=""),
         Request::ContinueStoppedPlaybackRestore => {
             describe!("continue_stopped_playback_restore"; []; omitted="")
@@ -1560,10 +1618,11 @@ pub(super) fn request(value: &Request) -> Description {
             path,
             start,
             frames,
+            format,
             overwrite,
             ..
         } => {
-            describe!("export_range"; ["path_redacted_bytes" => path.as_os_str().len(), "start" => start, "frames" => frames, "overwrite" => overwrite]; omitted="signal,control")
+            describe!("export_range"; ["path_redacted_bytes" => path.as_os_str().len(), "start" => start, "frames" => frames, "format" => format, "overwrite" => overwrite]; omitted="signal,control")
         }
     }
 }

@@ -423,7 +423,7 @@ impl EditorView {
                                 point(bounds.origin.x + px(left), bounds.origin.y),
                                 size(px(right - left), bounds.size.height),
                             ),
-                            gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            gpui::Hsla::from(rgb(theme::time_selection_fill()))
                                 .opacity(theme::TIME_SELECTION_OPACITY),
                         ));
                     }
@@ -867,24 +867,29 @@ impl EditorView {
                     if !phase.capture() || !bounds.contains(&event.position) {
                         return;
                     }
-                    let delta = -f32::from(event.physical_delta().pixel_delta(px(80.0)).y);
-                    if !delta.is_finite() || delta == 0.0 {
+                    let Some(nav) = super::midi_wheel::resolve(
+                        event.modifiers,
+                        event.delta,
+                        event.physical_delta(),
+                    ) else {
                         return;
-                    }
+                    };
                     cx.stop_propagation();
                     wheel_entity.update(cx, |view, cx| {
-                        let changed = if event.modifiers.alt {
-                            view.zoom_piano_pitch_wheel_at(
-                                gesture_bounds_from(bounds),
-                                f32::from(event.position.y),
-                                delta,
-                            )
-                        } else {
-                            view.zoom_piano_wheel_at(
-                                gesture_bounds_from(bounds),
-                                f32::from(event.position.x),
-                                delta,
-                            )
+                        let canvas = gesture_bounds_from(bounds);
+                        let changed = match nav {
+                            super::midi_wheel::WheelNav::Scroll { pitch, time } => {
+                                view.scroll_piano_wheel(canvas, pitch, time)
+                            }
+                            super::midi_wheel::WheelNav::ZoomTime(delta) => {
+                                view.zoom_piano_wheel_at(canvas, f32::from(event.position.x), delta)
+                            }
+                            super::midi_wheel::WheelNav::ZoomPitch(delta) => view
+                                .zoom_piano_pitch_wheel_at(
+                                    canvas,
+                                    f32::from(event.position.y),
+                                    delta,
+                                ),
                         };
                         if changed {
                             cx.notify();
@@ -1434,9 +1439,9 @@ impl EditorView {
             .children([self.midi_button(
                 grid.label(),
                 if cfg!(target_os = "macos") {
-                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold cmd to invert snapping"
+                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold cmd to invert snapping · note ends drag free, hold cmd to snap"
                 } else {
-                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold control to invert snapping"
+                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold control to invert snapping · note ends drag free, hold control to snap"
                 },
                 cx.listener(|v, _, _, cx| {
                     v.cycle_midi_grid();
@@ -2039,23 +2044,37 @@ impl EditorView {
                 move |bounds, _, window, _| {
                     let wheel_entity = entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
-                        if !phase.capture()
-                            || !event.modifiers.alt
-                            || !bounds.contains(&event.position)
-                        {
+                        if !phase.capture() || !bounds.contains(&event.position) {
                             return;
                         }
-                        let delta = -f32::from(event.physical_delta().pixel_delta(px(80.0)).y);
-                        if !delta.is_finite() || delta == 0.0 {
-                            return;
-                        }
+                        // The keyboard owns only the pitch axis: Alt zooms it and a
+                        // plain wheel scrolls it; time pan and Cmd zoom are ignored.
+                        let (zoom, delta) = match super::midi_wheel::resolve(
+                            event.modifiers,
+                            event.delta,
+                            event.physical_delta(),
+                        ) {
+                            Some(super::midi_wheel::WheelNav::ZoomPitch(delta)) => (true, delta),
+                            Some(super::midi_wheel::WheelNav::Scroll { pitch, .. })
+                                if pitch != 0.0 =>
+                            {
+                                (false, pitch)
+                            }
+                            _ => return,
+                        };
                         cx.stop_propagation();
                         wheel_entity.update(cx, |view, cx| {
-                            if view.zoom_piano_pitch_wheel_at(
-                                gesture_bounds_from(bounds),
-                                f32::from(event.position.y),
-                                delta,
-                            ) {
+                            let canvas = gesture_bounds_from(bounds);
+                            let changed = if zoom {
+                                view.zoom_piano_pitch_wheel_at(
+                                    canvas,
+                                    f32::from(event.position.y),
+                                    delta,
+                                )
+                            } else {
+                                view.scroll_piano_wheel(canvas, delta, 0.0)
+                            };
+                            if changed {
                                 cx.notify();
                             }
                         });

@@ -809,18 +809,27 @@ fn host_trim_is_post_device_and_meters_preserve_serial_signal_boundaries() {
     assert!((output[0][1] + 0.5 * gain * input_gain).abs() < 1e-6);
     assert_eq!(
         first_meter.take_peaks(),
-        [0.5 * input_gain, gain * input_gain]
+        hex_engine::DevicePeaks {
+            input: 0.5 * input_gain,
+            output: [0.5 * gain * input_gain, gain * input_gain],
+        }
     );
     assert_eq!(
         second_meter.take_peaks(),
-        [gain * input_gain, gain * input_gain * 0.5]
+        hex_engine::DevicePeaks {
+            input: gain * input_gain,
+            output: [0.25 * gain * input_gain, gain * input_gain * 0.5],
+        }
     );
     // A renderer sharing prepared data cannot contaminate native UI readings.
     let mut export = Playback::try_from_prepared_with_session(prepared).unwrap();
     export.apply(PlaybackCommand::Play);
     export.render(&mut output).unwrap();
-    assert_eq!(first_meter.take_peaks(), [0.0; 2]);
-    assert_eq!(second_meter.take_peaks(), [0.0; 2]);
+    assert_eq!(first_meter.take_peaks(), hex_engine::DevicePeaks::default());
+    assert_eq!(
+        second_meter.take_peaks(),
+        hex_engine::DevicePeaks::default()
+    );
     editor
         .execute(Command::SetDeviceBypass {
             device: first,

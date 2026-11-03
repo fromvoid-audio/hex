@@ -12,9 +12,9 @@
 //! Existing general status/error logs may include source-provided text/paths;
 //! the new action projections exclude them. Loss counters and bounded retention
 //! apply to every category; handlers never wait for file I/O.
-use gpui::{App, AppContext, BorrowAppContext, Global, PromptLevel, Window};
+use gpui::{App, BorrowAppContext, Global, PromptLevel, Window};
 use hex_audio::audio_diagnostics::{AudioDiagnosticsFlags, MAX_DRAIN_PER_POLL};
-use hex_diagnostics::DiagnosticsHandle;
+use hex_diagnostics::{Category, DiagnosticsHandle, Level};
 use hex_session::service::diagnostics::DiagnosticObserver;
 use std::sync::{
     Arc,
@@ -45,10 +45,11 @@ struct SessionDiagnostics {
     audio_losses: Option<(u64, u64, u64)>,
     handle: Result<DiagnosticsHandle, String>,
     last_view: String,
+    /// Retained buffer for the next view snapshot; reused on every tick.
+    view_scratch: String,
     last_status: String,
     last_error: Option<String>,
     reported_failure: bool,
-    opening_log: bool,
 }
 impl Global for SessionDiagnostics {}
 
@@ -61,10 +62,10 @@ pub fn install_session_log(cx: &mut App, handle: Result<DiagnosticsHandle, Strin
         audio_losses: None,
         handle,
         last_view: String::new(),
+        view_scratch: String::new(),
         last_status: String::new(),
         last_error: None,
         reported_failure: false,
-        opening_log: false,
     });
 }
 
@@ -80,7 +81,7 @@ pub fn install_audio_diagnostics(cx: &mut App, flags: AudioDiagnosticsFlags) {
     if flags.enabled()
         && let Ok(handle) = &diagnostics.handle
     {
-        let _ = handle.record(&format!("audio_diag v=1 stage=configuration build={:?} flags={flags:?} capacity={} drain_budget={} receipt_time=control", crate::build_info::LABEL,
+        let _ = handle.record_typed(Level::Info, Category::Audio, &format!("audio_diag v=1 stage=configuration build={:?} flags={flags:?} capacity={} drain_budget={} receipt_time=control", crate::build_info::LABEL,
             hex_audio::audio_diagnostics::TRACE_CAPACITY, MAX_DRAIN_PER_POLL));
     }
 }
@@ -94,7 +95,7 @@ pub fn install_action_diagnostics(cx: &mut App, enabled: bool) {
     };
     let observer = enabled.then(|| config.handle.as_ref().ok().cloned()).flatten().map(|handle| {
         Arc::new(DiagnosticObserver::new(move |event| {
-            let _ = handle.record(&format!("action_diag v=1 stage=session service={} request={:?} observation={:?} details_truncated={}{}",
+            let _ = handle.record_typed(Level::Debug, Category::Session, &format!("action_diag v=1 stage=session service={} request={:?} observation={:?} details_truncated={}{}",
                 event.service_id, event.request, event.stage, event.details_truncated, event.details));
         }))
     });
@@ -139,9 +140,11 @@ pub(crate) fn action_scope(
         .ok()?
         .checked_add(1)?;
     if let Ok(handle) = &config.handle {
-        let _ = handle.record(&format!(
-            "action_diag v=1 stage=handler action_id={id} action={name:?}"
-        ));
+        let _ = handle.record_typed(
+            Level::Debug,
+            Category::Ui,
+            &format!("action_diag v=1 stage=handler action_id={id} action={name:?}"),
+        );
     }
     Some(observer.enter_ui_action(id))
 }
@@ -161,8 +164,43 @@ pub(crate) fn record_key(cx: &App, event: &gpui::KeystrokeEvent) {
             | "up" | "down" => event.keystroke.key.as_str(),
             _ => "redacted",
         };
-        let _ = handle.record(&format!("action_diag v=1 stage=key key={key:?} key_bytes={} modifiers={:?} resolved_action={:?} context_depth={}",
+        let _ = handle.record_typed(Level::Debug, Category::Ui, &format!("action_diag v=1 stage=key key={key:?} key_bytes={} modifiers={:?} resolved_action={:?} context_depth={}",
             event.keystroke.key.len(), event.keystroke.modifiers, event.action.as_ref().map(|a| a.name()), event.context_stack.len()));
+    }
+}
+
+/// Control-thread time to install one received session outcome into the view
+/// (`Editor::receive`), logged after that event's `ClientReceived` line. Paint
+/// and present are not included.
+pub(crate) fn record_ui_install(cx: &App, revision: u64, install: std::time::Duration) {
+    if let Some(Ok(handle)) = cx
+        .try_global::<SessionDiagnostics>()
+        .filter(|d| d.action_observer.is_some())
+        .map(|d| &d.handle)
+    {
+        let _ = handle.record_typed(
+            Level::Debug,
+            Category::Ui,
+            &format!(
+                "action_diag v=1 stage=ui_installed revision={revision} install_us={}",
+                install.as_micros()
+            ),
+        );
+    }
+}
+
+/// Selection counts and focus flags that route `g`; no names or project content.
+pub(crate) fn record_group_selection(cx: &App, route: &str) {
+    if let Some(Ok(handle)) = cx
+        .try_global::<SessionDiagnostics>()
+        .filter(|d| d.action_observer.is_some())
+        .map(|d| &d.handle)
+    {
+        let _ = handle.record_typed(
+            Level::Debug,
+            Category::Ui,
+            &format!("action_diag v=1 stage=group_selection {route}"),
+        );
     }
 }
 
@@ -171,20 +209,29 @@ pub(crate) fn actions_enabled(cx: &App) -> bool {
         .is_some_and(|d| d.action_observer.is_some())
 }
 
-pub(crate) fn record_view(cx: &mut App, snapshot: String) {
-    let Some(config) = cx.try_global::<SessionDiagnostics>() else {
-        return;
-    };
-    if !actions_enabled(cx) || config.last_view == snapshot {
+/// Record the editor view snapshot when it changes. `write` fills a retained
+/// buffer, so an unchanged steady-state tick allocates nothing here.
+pub(crate) fn record_view(cx: &mut App, write: impl FnOnce(&mut String)) {
+    if !actions_enabled(cx) {
         return;
     }
-    if let Ok(handle) = &config.handle
+    let config = cx.global_mut::<SessionDiagnostics>();
+    let mut snapshot = std::mem::take(&mut config.view_scratch);
+    snapshot.clear();
+    write(&mut snapshot);
+    if config.last_view != snapshot
+        && let Ok(handle) = &config.handle
         && handle
-            .record(&format!("action_diag v=1 stage=view_observed{snapshot}"))
+            .record_typed(
+                Level::Debug,
+                Category::Ui,
+                &format!("action_diag v=1 stage=view_observed{snapshot}"),
+            )
             .is_ok()
     {
-        cx.global_mut::<SessionDiagnostics>().last_view = snapshot;
+        std::mem::swap(&mut config.last_view, &mut snapshot);
     }
+    config.view_scratch = snapshot;
 }
 
 pub(crate) fn record_pointer(
@@ -200,7 +247,7 @@ pub(crate) fn record_pointer(
     if let Some(config) = cx.try_global::<SessionDiagnostics>()
         && let Ok(handle) = &config.handle
     {
-        let _ = handle.record(&format!("action_diag v=1 stage={stage} button={button:?} position={position:?} modifiers={modifiers:?}"));
+        let _ = handle.record_typed(Level::Debug, Category::Ui, &format!("action_diag v=1 stage={stage} button={button:?} position={position:?} modifiers={modifiers:?}"));
     }
 }
 
@@ -223,15 +270,19 @@ impl TransportTrace {
         action: hex_engine::PlaybackAction,
     ) -> Result<u64, hex_engine::PlaybackAction> {
         let result = audio.control.action_with_ticket(action);
-        let _ = self.0.record(&format!("action_diag v=1 stage=transport_attempt ui_action_id={:?} output={:?} action={action:?} ticket={:?} accepted={}", self.1.current_ui_action(), audio.control.output_identity(), result.as_ref().ok(), result.is_ok()));
+        let _ = self.0.record_typed(if result.is_ok() { Level::Debug } else { Level::Warn }, Category::Transport, &format!("action_diag v=1 stage=transport_attempt ui_action_id={:?} output={:?} action={action:?} ticket={:?} accepted={}", self.1.current_ui_action(), audio.control.output_identity(), result.as_ref().ok(), result.is_ok()));
         result
     }
     pub(crate) fn stop(&self, audio: &crate::EditorAudio) {
-        let _ = self.0.record(&format!(
-            "action_diag v=1 stage=priority_stop_requested ui_action_id={:?} output={:?}",
-            self.1.current_ui_action(),
-            audio.control.output_identity()
-        ));
+        let _ = self.0.record_typed(
+            Level::Debug,
+            Category::Transport,
+            &format!(
+                "action_diag v=1 stage=priority_stop_requested ui_action_id={:?} output={:?}",
+                self.1.current_ui_action(),
+                audio.control.output_identity()
+            ),
+        );
     }
 }
 
@@ -278,13 +329,19 @@ pub(crate) fn record_audio(cx: &mut App, audio: Option<&mut crate::EditorAudio>)
         let Some(event) = audio.control.take_audio_diagnostic() else {
             break;
         };
-        let _ = handle.record(&format!("audio_diag v=1 stage=callback event={event:?}"));
+        let _ = handle.record_typed(
+            Level::Debug,
+            Category::Audio,
+            &format!("audio_diag v=1 stage=callback event={event:?}"),
+        );
     }
     if diagnostics.audio_snapshot != Some(snapshot)
         && handle
-            .record(&format!(
-                "audio_diag v=1 stage=observed_status snapshot={snapshot:?}"
-            ))
+            .record_typed(
+                Level::Debug,
+                Category::Audio,
+                &format!("audio_diag v=1 stage=observed_status snapshot={snapshot:?}"),
+            )
             .is_ok()
     {
         diagnostics.audio_snapshot = Some(snapshot);
@@ -292,7 +349,7 @@ pub(crate) fn record_audio(cx: &mut App, audio: Option<&mut crate::EditorAudio>)
     let lost = (output, losses, handle.overflow_count());
     if diagnostics.audio_losses != Some(lost)
         && handle
-            .record(&format!(
+            .record_typed(if lost.1 > 0 || lost.2 > 0 { Level::Warn } else { Level::Debug }, Category::Audio, &format!(
                 "audio_diag v=1 stage=loss output={output} callback_dropped={} logger_dropped={}",
                 lost.1, lost.2
             ))
@@ -318,6 +375,18 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
     let Ok(handle) = &diagnostics.handle else {
         return;
     };
+    let level = match event {
+        E::Unavailable { .. }
+        | E::Publication {
+            state: P::Fault(_), ..
+        } => Level::Error,
+        E::DegradedPlugins { .. }
+        | E::Publication {
+            state: P::Refused(_) | P::Busy,
+            ..
+        } => Level::Warn,
+        _ => Level::Info,
+    };
     let details = match event {
         E::Opened {
             project_generation,
@@ -340,6 +409,13 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
             old_output_identity,
             target,
         } => format!("stage=output_relinquish output={old_output_identity} target={target:?}"),
+        E::OutputRouteChanged { output_identity } => {
+            format!("stage=output_route_changed output={output_identity}")
+        }
+        E::DegradedPlugins {
+            output_identity,
+            devices,
+        } => format!("stage=degraded_plugins output={output_identity} devices={devices:?}"),
         E::Publication {
             context,
             output_identity,
@@ -376,18 +452,15 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
             )
         }
     };
-    let _ = handle.record(&format!("audio_diag v=1 {details}"));
+    let _ = handle.record_typed(level, Category::Audio, &format!("audio_diag v=1 {details}"));
 }
 
-/// Open the active session's latest log without filesystem/process work on the UI thread.
+/// Open the active session in the native, control-side log viewer.
 pub(crate) fn open_session_log(window: &mut Window, cx: &mut App) {
     let Some(diagnostics) = cx.try_global::<SessionDiagnostics>() else {
         show_open_error(window, cx, "session logging is unavailable");
         return;
     };
-    if diagnostics.opening_log {
-        return;
-    }
     let path = match &diagnostics.handle {
         Ok(handle) => handle.path(),
         Err(error) => {
@@ -396,46 +469,9 @@ pub(crate) fn open_session_log(window: &mut Window, cx: &mut App) {
             return;
         }
     };
-    cx.global_mut::<SessionDiagnostics>().opening_log = true;
-    let window_handle = window.window_handle();
-    cx.spawn(async move |cx| {
-        let result = cx
-            .background_executor()
-            .spawn(async move {
-                let mut command = std::process::Command::new(if cfg!(target_os = "macos") {
-                    "/usr/bin/open"
-                } else {
-                    "xdg-open"
-                });
-                if cfg!(target_os = "macos") {
-                    // Select the default text editor rather than the .log file association.
-                    command.arg("-t");
-                }
-                let output = command
-                    .arg(&path)
-                    .output()
-                    .map_err(|error| error.to_string())?;
-                if output.status.success() {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "text editor could not open the log ({}): {}",
-                        output.status,
-                        String::from_utf8_lossy(&output.stderr).trim()
-                    ))
-                }
-            })
-            .await;
-        let _ = cx.update(|cx| {
-            cx.global_mut::<SessionDiagnostics>().opening_log = false;
-        });
-        if let Err(error) = result {
-            let _ = cx.update_window(window_handle, |_, window, cx| {
-                show_open_error(window, cx, &error);
-            });
-        }
-    })
-    .detach();
+    if let Err(error) = crate::log_viewer::open(path, cx) {
+        show_open_error(window, cx, &error);
+    }
 }
 
 fn show_open_error(window: &mut Window, cx: &mut App, error: &str) {
@@ -450,6 +486,15 @@ fn show_open_error(window: &mut Window, cx: &mut App, error: &str) {
     ));
 }
 
+/// The installed session log file, when logging started.
+pub(crate) fn log_path(cx: &App) -> Option<std::path::PathBuf> {
+    cx.try_global::<SessionDiagnostics>()?
+        .handle
+        .as_ref()
+        .ok()
+        .map(DiagnosticsHandle::path)
+}
+
 pub(crate) fn record_state(cx: &mut App, status: &str, error: Option<&str>) -> Option<String> {
     cx.try_global::<SessionDiagnostics>()?;
     cx.update_global::<SessionDiagnostics, _>(|diagnostics, _| {
@@ -457,7 +502,18 @@ pub(crate) fn record_state(cx: &mut App, status: &str, error: Option<&str>) -> O
             Ok(handle) => {
                 if status != diagnostics.last_status || error != diagnostics.last_error.as_deref() {
                     let event = format!("status={status}; error={}", error.unwrap_or("none"));
-                    if handle.record(&event).is_ok() {
+                    if handle
+                        .record_typed(
+                            if error.is_some() {
+                                Level::Error
+                            } else {
+                                Level::Info
+                            },
+                            Category::Ui,
+                            &event,
+                        )
+                        .is_ok()
+                    {
                         diagnostics.last_status = status.to_owned();
                         diagnostics.last_error = error.map(str::to_owned);
                     }
@@ -478,6 +534,38 @@ pub(crate) fn record_state(cx: &mut App, status: &str, error: Option<&str>) -> O
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn view_snapshot_reuses_its_buffer_and_records_only_changes(cx: &mut gpui::TestAppContext) {
+        let directory = std::env::temp_dir().join(format!(
+            "hex-ui-view-diagnostic-test-{}",
+            std::process::id()
+        ));
+        let mut log = hex_diagnostics::SessionLog::start(directory).unwrap();
+        cx.update(|cx| {
+            install_session_log(cx, Ok(log.handle()));
+            install_action_diagnostics(cx, true);
+            let write = |text: &'static str| move |buffer: &mut String| buffer.push_str(text);
+            record_view(cx, write(" view=a"));
+            record_view(cx, write(" view=a"));
+            let warmed = cx.global::<SessionDiagnostics>().view_scratch.as_ptr();
+            for _ in 0..3 {
+                record_view(cx, write(" view=a"));
+            }
+            assert_eq!(
+                cx.global::<SessionDiagnostics>().view_scratch.as_ptr(),
+                warmed,
+                "unchanged snapshots fill the same retained buffer"
+            );
+            record_view(cx, write(" view=b"));
+            record_view(cx, write(" view=b"));
+            assert_eq!(cx.global::<SessionDiagnostics>().last_view, " view=b");
+        });
+        log.shutdown().unwrap();
+        let contents = std::fs::read_to_string(log.path()).unwrap();
+        assert_eq!(contents.matches("stage=view_observed view=a").count(), 1);
+        assert_eq!(contents.matches("stage=view_observed view=b").count(), 1);
+    }
 
     #[gpui::test]
     fn real_refused_gain_is_recorded_with_request_terminal_and_error(
@@ -534,10 +622,7 @@ mod tests {
         let error = refused.error.as_deref().expect("gain refusal");
         cx.update(|cx| assert!(record_state(cx, "gain edit refused", Some(error)).is_none()));
         let stats = log.handle().statistics();
-        assert_eq!(
-            (stats.queue_full, stats.producer_busy, stats.closed),
-            (0, 0, 0)
-        );
+        assert_eq!((stats.queue_full, stats.closed), (0, 0));
         log.shutdown().unwrap();
         let contents = std::fs::read_to_string(log.path()).unwrap();
         let action = contents
@@ -555,6 +640,24 @@ mod tests {
         assert!(contents.contains("error: true"));
         assert!(contents.contains(error));
         assert!(contents.contains("gain edit refused"));
+        assert!(
+            contents
+                .lines()
+                .any(|line| line.contains("level=debug category=session")
+                    && line.contains("stage=session"))
+        );
+        assert!(
+            contents
+                .lines()
+                .any(|line| line.contains("level=debug category=ui")
+                    && line.contains("stage=handler"))
+        );
+        assert!(
+            contents
+                .lines()
+                .any(|line| line.contains("level=error category=ui")
+                    && line.contains("gain edit refused"))
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -635,6 +738,18 @@ mod tests {
         assert!(contents.contains("project_generation: 7, editor_revision: 42"));
         assert!(contents.contains("audio_revision=Some(315)"));
         assert!(contents.contains("stage=worker_refused"));
+        assert!(
+            contents
+                .lines()
+                .any(|line| line.contains("level=info category=audio")
+                    && line.contains("stage=worker_submitted"))
+        );
+        assert!(
+            contents
+                .lines()
+                .any(|line| line.contains("level=warn category=audio")
+                    && line.contains("stage=worker_refused"))
+        );
         assert!(!contents.contains("private fixture path"));
         std::fs::remove_dir_all(directory).unwrap();
     }
