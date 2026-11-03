@@ -93,6 +93,8 @@ mod delay_tests;
 mod device_resources_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod keyboard_activation_tests;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod loop_audio_tests;
 #[cfg(test)]
 mod project_spectrum_tests;
 mod runtime_view;
@@ -561,6 +563,7 @@ pub struct Status {
     pub device_fault: AtomicBool,
     pub render_fault: AtomicBool,
     render_fault_record: crate::render_fault::RenderFaultRecord,
+    pub cpu_meter: crate::cpu_meter::CpuMeter,
     pub callback_max_ns: AtomicU64,
     pub deadline_misses: AtomicU64,
     pub peak_left: AtomicU32,
@@ -785,6 +788,7 @@ impl Status {
             render_fault_record: crate::render_fault::RenderFaultRecord::default(),
             diagnostics_flags: AtomicU32::new(0),
             diagnostics_dropped: AtomicU64::new(0),
+            cpu_meter: crate::cpu_meter::CpuMeter::default(),
             callback_max_ns: AtomicU64::new(0),
             deadline_misses: AtomicU64::new(0),
             peak_left: AtomicU32::new(0),

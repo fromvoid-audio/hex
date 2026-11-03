@@ -445,6 +445,9 @@ where
                 status.peak_left.store(peaks[0].to_bits(), Relaxed);
                 status.peak_right.store(peaks[1].to_bits(), Relaxed);
                 let elapsed = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+                status
+                    .cpu_meter
+                    .record(elapsed, data.len() / channels, rate);
                 status.callback_max_ns.fetch_max(elapsed, Relaxed);
                 let deadline = (data.len() / channels) as u64 * 1_000_000_000 / u64::from(rate);
                 if elapsed > deadline {

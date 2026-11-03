@@ -796,7 +796,6 @@ impl SessionPlayback {
                 self.prepare_resident_sources(
                     performance_frame,
                     arrangement_frame,
-                    arrangement_loop_pass,
                     count,
                     &mut resident_source_eligible,
                     &mut resident_analytic_eligible,
@@ -1260,7 +1259,6 @@ impl SessionPlayback {
         external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let region = self.active_loop_region();
-        let seam = self.loop_seam_at(arrangement_frame, arrangement_loop_pass);
         let revision = Arc::clone(&self.revision);
         let tracks = revision.arrangement().tracks();
         for scratch in &mut self.return_scratch {
@@ -1372,7 +1370,6 @@ impl SessionPlayback {
                             raw: live_target || shared_source,
                             timing: &timing,
                             table,
-                            seam,
                         },
                         &mut self.spans,
                         performance_frame,
@@ -1435,7 +1432,6 @@ impl SessionPlayback {
                             raw: live_target || shared_source,
                             timing: &timing,
                             table,
-                            seam,
                         },
                         &self.route_scratch,
                         self.historical_floor,
@@ -1598,7 +1594,6 @@ impl SessionPlayback {
                                 raw: false,
                                 timing: &timing,
                                 table,
-                                seam,
                             },
                             &mut self.spans,
                             performance_frame,
@@ -1628,7 +1623,6 @@ impl SessionPlayback {
                             raw: false,
                             timing: &timing,
                             table,
-                            seam,
                         },
                         &mut self.spans,
                         performance_frame,
@@ -1748,16 +1742,6 @@ impl SessionPlayback {
                             Some(self.revision.session().timing()),
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                    if !track.source_mix().muted() {
-                        track.add_loop_seam_crossfade(
-                            seam,
-                            arrangement_frame,
-                            output,
-                            pages.as_deref_mut(),
-                            Some(&mut captured[..output.len()]),
-                            track.source_mix(),
-                        );
-                    }
                     if let Some(capture) = capture.as_mut() {
                         capture.add(capture_id, frame_offset, &captured[..output.len()])?;
                     }
@@ -1793,7 +1777,6 @@ impl SessionPlayback {
                         raw: false,
                         timing: &timing,
                         table,
-                        seam,
                     },
                     &mut self.spans,
                     performance_frame,
@@ -2745,8 +2728,6 @@ struct RouteSourceContext<'a, T> {
     raw: bool,
     timing: &'a T,
     table: &'a hex_devices::SineTable,
-    /// The transport loop seam of a wrapped pass, for Arrangement audio.
-    seam: Option<crate::LoopSeam>,
 }
 
 #[derive(Clone, Copy)]
@@ -2890,7 +2871,6 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
         raw,
         timing,
         table,
-        seam,
     } = context;
     let track = revision
         .arrangement()
@@ -2911,14 +2891,6 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
                 track
                     .render_raw_audio(arrangement_frame, output, pages.as_deref_mut())
                     .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                track.add_loop_seam_crossfade(
-                    seam,
-                    arrangement_frame,
-                    output,
-                    pages,
-                    None,
-                    crate::PreparedTrackMix::identity(),
-                );
                 return Ok(());
             }
             if raw && matches!(stage, SourceStage::Instrument) {
@@ -2988,22 +2960,6 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
                 ),
             }
             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-            // Whole skips a muted source mix; the audio stage renders it.
-            let audible = match stage {
-                SourceStage::Whole => !track.source_mix().muted(),
-                SourceStage::Audio => true,
-                SourceStage::Instrument => false,
-            };
-            if audible {
-                track.add_loop_seam_crossfade(
-                    seam,
-                    arrangement_frame,
-                    output,
-                    pages,
-                    None,
-                    track.source_mix(),
-                );
-            }
         }
         RouteOwner::Silence => {}
         RouteOwner::Session { clip, origin } => {

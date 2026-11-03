@@ -121,8 +121,8 @@ pub use gain_envelope::{
     MAX_PREPARED_GAIN_BYTES, MAX_PREPARED_GAIN_KNOTS,
 };
 mod clip_index;
+#[cfg(test)]
 mod loop_seam;
-pub(crate) use loop_seam::LoopSeam;
 mod stream_miss_fade;
 pub use stream_miss_fade::{STREAM_MISS_FADE_VOICES, StreamMissFades};
 mod return_feed_plan;
