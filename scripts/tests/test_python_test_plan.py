@@ -165,6 +165,8 @@ class SelectionTests(unittest.TestCase):
 
     def test_current_repository_inventory_retains_scoped_feedback_and_impact_fallbacks(self):
         modules = impact.available_modules(ROOT)
+        self.assertIn("test_ui_style_log_viewer", modules)
+        self.assertEqual(selection(["scripts/check-ui-style.py"], modules=modules)["mode"], "comprehensive")
         for path in ("crates/hex-ui/src/editor.rs", "crates/hex-engine/src/lib.rs"):
             with self.subTest(path=path):
                 chosen = selection([path], modules=modules)
