@@ -337,8 +337,7 @@ impl RectangleDemo {
             self.selection_anchor = Some(index);
         }
         self.capture = RectangleCapture::begin(Target::Rectangle(index), part, x, true);
-        self.section_marker_latched =
-            self.kind == Kind::Section && part != RectanglePart::Body && modifiers.platform;
+        self.section_marker_latched = self.kind == Kind::Section && modifiers.platform;
         self.preview = self.canonical.clone();
         if let Some(fixture) = self.section_fixture.as_ref() {
             self.section_preview = fixture.project().arrangement_sections().to_vec();
@@ -383,7 +382,7 @@ impl RectangleDemo {
             return true;
         };
         if self.kind == Kind::Section {
-            if intent.part != RectanglePart::Body && modifiers.platform {
+            if modifiers.platform {
                 self.section_marker_latched = true;
             }
             self.section_command = None;
@@ -398,13 +397,20 @@ impl RectangleDemo {
                 if let Some(fixture) = self.section_fixture.as_ref()
                     && let Some(section) = fixture.project().arrangement_sections().get(index)
                 {
-                    match fixture.plan(
-                        section.id(),
-                        intent.part,
-                        position,
-                        modifiers.alt,
-                        self.section_marker_latched,
-                    ) {
+                    let plan = if intent.part == RectanglePart::Body && self.section_marker_latched
+                    {
+                        let anchor = (intent.origin_x - left) / width;
+                        fixture.plan_marker_move(section.id(), anchor, position)
+                    } else {
+                        fixture.plan(
+                            section.id(),
+                            intent.part,
+                            position,
+                            modifiers.alt,
+                            self.section_marker_latched,
+                        )
+                    };
+                    match plan {
                         Ok(Some(plan)) => {
                             self.preview = plan.display;
                             self.section_preview = plan.sections;
@@ -1792,6 +1798,93 @@ mod tests {
                     assert!(project.arrangement_sections()[0].end() < right_start);
                 } else {
                     assert_eq!(project.snapshot(), original);
+                }
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn command_header_drag_latches_marker_movement_until_terminal(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-marker-move".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-marker-move-area").unwrap();
+        let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
+        let command = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        let (before, original_start, original_end, other) = view.read_with(cx, |view, _| {
+            let project = view.section_fixture.as_ref().unwrap().project();
+            (
+                project.snapshot(),
+                project.arrangement_sections()[0].start(),
+                project.arrangement_sections()[0].end(),
+                project.arrangement_sections()[1].clone(),
+            )
+        });
+        visual.simulate_mouse_down(at(0.3), MouseButton::Left, command);
+        visual.simulate_mouse_move(at(0.25), MouseButton::Left, command);
+        visual.simulate_keystrokes("escape");
+        view.read_with(cx, |view, _| {
+            assert_eq!(
+                view.section_fixture.as_ref().unwrap().project().snapshot(),
+                before
+            )
+        });
+        for (at_press, accept) in [(true, false), (false, true)] {
+            visual.simulate_mouse_down(
+                at(0.3),
+                MouseButton::Left,
+                if at_press {
+                    command
+                } else {
+                    Modifiers::default()
+                },
+            );
+            visual.simulate_mouse_move(
+                at(0.25),
+                MouseButton::Left,
+                if at_press {
+                    command
+                } else {
+                    Modifiers::default()
+                },
+            );
+            if !at_press {
+                visual.simulate_modifiers_change(command);
+            }
+            visual.simulate_modifiers_change(Modifiers::default());
+            view.read_with(cx, |view, _| {
+                assert!(matches!(
+                    view.section_command,
+                    Some(Command::MoveArrangementSectionMarker { .. })
+                ))
+            });
+            visual.simulate_mouse_up(at(0.25), MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            view.read_with(cx, |view, _| {
+                assert!(matches!(view.pending.as_ref(), Some(Pending::Section { command, .. }) if matches!(command.as_ref(), Command::MoveArrangementSectionMarker { .. })));
+                assert_eq!(view.section_fixture.as_ref().unwrap().project().snapshot(), before);
+            });
+            view.update(cx, |view, cx| view.settle(accept, cx));
+            visual.run_until_parked();
+            view.read_with(cx, |view, _| {
+                let project = view.section_fixture.as_ref().unwrap().project();
+                assert_eq!(project.arrangement_sections()[1], other);
+                if accept {
+                    let moved = &project.arrangement_sections()[0];
+                    assert!(moved.start() < original_start);
+                    assert_eq!(
+                        moved.end().raw() - moved.start().raw(),
+                        original_end.raw() - original_start.raw()
+                    );
+                } else {
+                    assert_eq!(project.snapshot(), before);
                 }
             });
         }
