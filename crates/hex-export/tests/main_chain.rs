@@ -358,11 +358,11 @@ fn main_bypass_and_remove_restore_raw_sum_with_exact_undo_redo() {
         let mut frames = [[0.0; 2]; 64];
         session.render(&mut frames).unwrap();
         assert_eq!(frames, [[0.6, -0.6]; 64]);
-        assert!(f.editor.undo());
+        assert!(f.editor.try_undo().unwrap());
         assert_eq!(f.editor.project().snapshot(), original);
-        assert!(f.editor.redo());
+        assert!(f.editor.try_redo().unwrap());
         assert_eq!(f.editor.project().snapshot(), changed);
-        assert!(f.editor.undo());
+        assert!(f.editor.try_undo().unwrap());
     }
 }
 
