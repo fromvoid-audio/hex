@@ -40,6 +40,28 @@ def cases(suite):
 
 
 class SelectionTests(unittest.TestCase):
+    def test_health_owned_tooling_uses_owner_and_shared_checks(self):
+        chosen = selection(["scripts/ci_plan.py"], profile="health")
+        self.assertEqual(chosen["mode"], "shared")
+        self.assertIn("test_ci_plan", chosen["test_selectors"])
+        self.assertIn("test_python_test_plan", chosen["test_selectors"])
+        self.assertIn("test_architecture", chosen["excluded_groups"])
+        self.assertEqual(impact.argv(chosen)[:3], ("python3", "scripts/python_shards.py", "--"))
+
+    def test_health_mixed_and_unknown_inputs_remain_comprehensive(self):
+        for paths in (["scripts/ci_plan.py", "crates/hex-engine/src/lib.rs"],
+                      ["scripts/ci_plan.py", "Cargo.lock"],
+                      ["scripts/unknown-helper.py"]):
+            with self.subTest(paths=paths):
+                self.assertEqual(selection(paths, profile="health")["mode"], "comprehensive")
+
+    def test_health_native_or_unregistered_inputs_remain_comprehensive(self):
+        paths = ["scripts/ci_plan.py"]
+        self.assertEqual(selection(paths, profile="health", env={"HEX_VST3_SDK_DIR": "fixture"})["mode"],
+                         "comprehensive")
+        modules = sorted(impact.REVIEWED_MODULES) + ["test_unknown"]
+        self.assertEqual(selection(paths, profile="health", modules=modules)["mode"], "comprehensive")
+
     def test_ui_and_core_app_edits_have_the_same_reviewed_shared_checks(self):
         ui = selection(["crates/hex-ui/src/editor.rs"])
         core = selection(["crates/hex-engine/src/lib.rs"])

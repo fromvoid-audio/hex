@@ -283,6 +283,10 @@ workspace). It is a fast red-main signal, never merge qualification, so a pass
 reports `partial`. A failure prints the merge that turned main red: fix forward
 in a focused PR before merging anything else, and tell other active sessions.
 
+When health runs Python checks for exclusively reviewed tooling paths, it selects
+each changed owner's test module and the shared planner invariants. Mixed,
+unowned, unknown, or native-acceptance inputs retain comprehensive discovery.
+
 ## macOS target storage
 
 Use a persistent Cargo target on APFS. Set `CARGO_TARGET_DIR` to a fresh directory
