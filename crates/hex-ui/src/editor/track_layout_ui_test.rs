@@ -201,6 +201,56 @@ fn header_width_edges_align_every_timeline_layer_and_preserve_frame_coordinates(
 }
 
 #[gpui::test]
+fn tall_track_header_keeps_controls_at_default_offset_and_fills_with_track_color(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, tracks) = fixture(cx, 2);
+    let track = tracks[0];
+    let header = bounds(&mut visual, "arrangement-track-header", track);
+    let controls = bounds(&mut visual, "track-controls", track);
+    let top_offset = controls.top() - header.top();
+    let handle = bounds(&mut visual, "track-height-resize", track).center();
+    drag(&mut visual, handle, point(handle.x, handle.y + px(88.0)));
+    let tall = bounds(&mut visual, "arrangement-track-header", track);
+    let tall_controls = bounds(&mut visual, "track-controls", track);
+    assert_eq!(tall.size.height, header.size.height + px(88.0));
+    assert_eq!(tall_controls.top() - tall.top(), top_offset);
+    let header_selector: &'static str =
+        Box::leak(format!("arrangement-track-header-{}", track.value()).into_boxed_str());
+    let name_selector: &'static str =
+        Box::leak(format!("track-name-area-{}", track.value()).into_boxed_str());
+    assert_eq!(
+        visual.rendered_background(header_selector),
+        visual.rendered_background(name_selector)
+    );
+    let other_name = bounds(&mut visual, "track-name", tracks[1]).center();
+    visual.simulate_click(other_name, Modifiers::default());
+    visual.run_until_parked();
+    let blank = point(tall.left() + px(24.0), tall.bottom() - px(12.0));
+    visual.simulate_click(blank, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selected_track, Some(track))
+    });
+    assert_eq!(
+        visual.rendered_background(header_selector),
+        visual.rendered_background(name_selector)
+    );
+    // A narrow header must still leave a readable label beside the mixer.
+    let width_handle = bounds(&mut visual, "track-width-resize", track).center();
+    drag(
+        &mut visual,
+        width_handle,
+        point(px(2_000.0), width_handle.y),
+    );
+    let label = bounds(&mut visual, "track-name-area", track);
+    let meter = bounds(&mut visual, "track-output-meter", track);
+    let header = bounds(&mut visual, "arrangement-track-header", track);
+    assert!(label.size.width >= px(110.0), "label too narrow: {label:?}");
+    assert!(meter.right() <= header.right());
+}
+
+#[gpui::test]
 fn bottom_edge_resizes_only_its_row_with_controls_and_lane_aligned(cx: &mut TestAppContext) {
     let (mut visual, editor, tracks) = fixture(cx, 2);
     let track = tracks[0];
