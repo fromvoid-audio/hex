@@ -35,6 +35,7 @@ mod layout;
 mod section_hit;
 mod section_input;
 mod section_reorder;
+mod section_resize;
 mod section_selection;
 mod section_surface;
 mod startup;
