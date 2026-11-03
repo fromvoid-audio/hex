@@ -39,6 +39,7 @@ enum Pending {
         command: Box<Command>,
         source: Box<Project>,
         receipt: crate::pending_edit::Receipt,
+        hover: crate::section_surface::Hover,
     },
 }
 impl Pending {
@@ -66,6 +67,7 @@ pub(super) struct RectangleDemo {
     section_marker_latched: bool,
     section_anchor_beat: Option<BeatTime>,
     section_last_pointer: Option<(f32, f32)>,
+    section_released_hover: crate::section_surface::Hover,
     section_paint: Option<(String, hex_project::ElementColor)>,
     generation: u64,
     range: Option<[f32; 2]>,
@@ -114,6 +116,7 @@ impl RectangleDemo {
             section_marker_latched: false,
             section_anchor_beat: None,
             section_last_pointer: None,
+            section_released_hover: crate::section_surface::Hover::default(),
             section_paint: None,
             generation: 1,
             range: None,
@@ -148,6 +151,7 @@ impl RectangleDemo {
             self.section_marker_latched = false;
             self.section_anchor_beat = None;
             self.section_last_pointer = None;
+            self.section_released_hover = crate::section_surface::Hover::default();
             self.section_paint = None;
             self.status = "canceled held input";
             cx.notify();
@@ -590,6 +594,35 @@ impl RectangleDemo {
         cx.notify();
         true
     }
+    fn section_hover(&self) -> crate::section_surface::Hover {
+        let mut hover = crate::section_surface::Hover::default();
+        let (Some(capture), Some(fixture), Some(bounds)) =
+            (self.capture, self.section_fixture.as_ref(), self.bounds)
+        else {
+            return hover;
+        };
+        if let Target::Rectangle(index) = capture.key {
+            let sections = fixture.project().arrangement_sections();
+            hover.held[0] = sections.get(index).map(ArrangementSection::id);
+            if capture.part == RectanglePart::Seam && !self.section_marker_latched {
+                hover.held[1] = index
+                    .checked_add(1)
+                    .and_then(|next| sections.get(next))
+                    .map(ArrangementSection::id);
+            }
+        }
+        if let Some((x, _)) = self.section_last_pointer {
+            hover.pointer = fixture
+                .snapped_beat(
+                    x,
+                    f32::from(bounds.left()),
+                    f32::from(bounds.size.width),
+                    true,
+                )
+                .ok();
+        }
+        hover
+    }
     fn finish(&mut self, x: f32, y: f32, modifiers: Modifiers, cx: &mut Context<Self>) -> bool {
         if self.capture.is_none() {
             return false;
@@ -603,6 +636,7 @@ impl RectangleDemo {
         } else {
             x
         };
+        self.section_released_hover = self.section_hover();
         self.section_last_pointer = None;
         self.section_anchor_beat = None;
         self.section_paint = None;
@@ -664,6 +698,7 @@ impl RectangleDemo {
             self.preview = self.canonical.clone();
             self.status = self.section_error.take().unwrap_or("ready");
         }
+        self.section_released_hover = crate::section_surface::Hover::default();
         cx.notify();
         true
     }
@@ -695,6 +730,7 @@ impl RectangleDemo {
             command: Box::new(command),
             source: Box::new(source),
             receipt,
+            hover: std::mem::take(&mut self.section_released_hover),
         });
         self.status = "pending · enter accepts · backspace refuses";
         true
@@ -897,6 +933,15 @@ impl Render for RectangleDemo {
                 let id = self.id.clone();
                 move || format!("{id}-area")
             });
+        let (section_hover, section_source) = match self.pending.as_ref() {
+            Some(Pending::Section { hover, source, .. }) => (*hover, Some(source.as_ref())),
+            _ => (
+                self.section_hover(),
+                self.section_fixture
+                    .as_ref()
+                    .map(|fixture| fixture.project()),
+            ),
+        };
         for (index, [start, end]) in display.iter().copied().enumerate() {
             if self.kind == Kind::TimeRange && index != 0 {
                 continue;
@@ -912,6 +957,16 @@ impl Render for RectangleDemo {
             let identity = section_paint
                 .get(index)
                 .map_or(hex_project::ElementColor::Cyan, ArrangementSection::color);
+            let hovered = section_paint.get(index).is_some_and(|section| {
+                let id = section_source.and_then(|project| {
+                    project
+                        .arrangement_sections()
+                        .iter()
+                        .find(|candidate| candidate.id() == section.id())
+                        .map(ArrangementSection::id)
+                });
+                section_hover.contains(id, section.start(), section.end())
+            });
             let surface = if self.kind == Kind::Section {
                 crate::section_surface::surface(
                     start,
@@ -920,14 +975,14 @@ impl Render for RectangleDemo {
                     1.0 / window.scale_factor().max(1.0),
                     identity,
                     selected,
-                    false,
+                    hovered,
                 )
                 .cursor(RectanglePart::Body.cursor())
                 .child(
                     crate::section_surface::header(
                         identity,
                         selected,
-                        false,
+                        hovered,
                         44.0 * hex_widgets::RANGE_HANDLE_FRACTION,
                     )
                     .debug_selector({
@@ -1482,6 +1537,43 @@ mod tests {
     }
 
     #[gpui::test]
+    fn shared_seam_highlight_stays_visible_through_pending_repaints(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-held-highlight".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-held-highlight-area").unwrap();
+        let at = |x: f32| point(area.left() + area.size.width * x, area.top() + px(5.0));
+        let outside = point(area.right() + px(50.0), area.top() - px(10.0));
+        let baseline = visual.rendered_background("section-held-highlight-section-header-1");
+        visual.simulate_mouse_down(at(0.5), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.43), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        view.read_with(cx, |view, _| assert!(view.pending.is_some()));
+        for _ in 0..3 {
+            view.update(cx, |_, cx| cx.notify());
+            visual.run_until_parked();
+            assert_ne!(
+                visual.rendered_background("section-held-highlight-section-header-1"),
+                baseline
+            );
+        }
+        view.update(cx, |view, cx| {
+            view.receive_section(1, false, true, false, None, cx)
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual.rendered_background("section-held-highlight-section-header-1"),
+            baseline
+        );
+    }
+
+    #[gpui::test]
     fn section_receipt_refusal_and_source_replacement_install_canonical_state(
         cx: &mut TestAppContext,
     ) {
@@ -1948,6 +2040,10 @@ mod tests {
             visual.simulate_mouse_up(at(0.45), MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
             view.read_with(cx, |view, _| {
+                let sections = view.section_fixture.as_ref().unwrap().project().arrangement_sections();
+                let Some(Pending::Section { hover, .. }) = view.pending.as_ref() else { panic!("marker edit should be pending") };
+                assert_eq!(hover.held, [Some(sections[0].id()), None]);
+                assert!(hover.pointer.is_some());
                 assert!(matches!(view.pending.as_ref(), Some(Pending::Section { command, .. }) if matches!(command.as_ref(), Command::ResizeArrangementSectionMarker { .. })));
                 assert_eq!(view.section_fixture.as_ref().unwrap().project().snapshot(), original);
             });
@@ -2344,7 +2440,9 @@ mod tests {
             visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
             let released = view.update(cx, |view, _| {
-                let Some(Pending::Section { sections, command, receipt, .. }) = view.pending.as_mut() else { panic!("paint should be pending"); };
+                let Some(Pending::Section { sections, command, receipt, hover, .. }) = view.pending.as_mut() else { panic!("paint should be pending"); };
+                assert_eq!(hover.held, [None, None]);
+                assert!(hover.pointer.is_some());
                 assert!(matches!(command.as_ref(), Command::AddArrangementSection { name, color, .. } if *name == appearance.0 && *color == appearance.1));
                 *receipt = crate::pending_edit::Receipt::new(1);
                 assert!(receipt.submitted(2));

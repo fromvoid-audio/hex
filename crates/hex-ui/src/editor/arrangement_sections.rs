@@ -1873,10 +1873,11 @@ impl EditorView {
                     && m.id.is_some_and(|id| {
                         self.sections.selection.contains(&id) || self.sections.selected == Some(id)
                     }));
-            let owned_hover = m.id.is_some_and(|id| display.held.contains(&Some(id)))
-                || display
-                    .pointer_hover
-                    .is_some_and(|beat| m.start <= beat && beat <= m.end);
+            let owned_hover = crate::section_surface::Hover {
+                held: display.held,
+                pointer: display.pointer_hover,
+            }
+            .contains(m.id, m.start, m.end);
             let colors = theme::section_colors(m.color, selected, owned_hover);
             let hover = theme::section_colors(m.color, selected, true);
             let border = colors.2;
