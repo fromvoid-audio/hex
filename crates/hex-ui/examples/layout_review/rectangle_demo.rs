@@ -1,11 +1,14 @@
-//! Bounded local owner for production rectangle and time-range policies. Two rectangles or one range,
-//! no musical model, worker, timer or resource lifecycle. Pending paint advances
-//! only through an explicit accept/refuse action, so repaints are inspectable.
+//! Disposable rectangle and time-range samples with an in-memory section project.
+//! The section fixture uses project-owned edits and shared previews without audio
+//! services. Pending paint advances only through an explicit terminal action.
+#[path = "section_fixture.rs"]
+mod section_fixture;
 use crate::theme;
 use gpui::{
     Bounds, Context, FocusHandle, Focusable, Modifiers, MouseButton, Pixels, Render, Subscription,
     Window, div, prelude::*, px, rgb,
 };
+use hex_project::{ArrangementSection, Command, Project};
 use hex_widgets::{
     RangeSelectionTarget, RangeSelectionZones, RectangleCapture, RectangleEdges, RectanglePart,
     RectangleSelection, RectangleSelectionPolicy, rectangle_body, rectangle_edge,
@@ -27,17 +30,20 @@ enum Target {
 
 enum Pending {
     Local {
-        display: [[f32; 2]; 2],
+        display: Vec<[f32; 2]>,
     },
     Section {
-        display: [[f32; 2]; 2],
+        display: Vec<[f32; 2]>,
+        sections: Vec<ArrangementSection>,
+        command: Box<Command>,
+        source: Box<Project>,
         receipt: crate::pending_edit::Receipt,
     },
 }
 impl Pending {
-    fn display(&self) -> [[f32; 2]; 2] {
+    fn display(&self) -> Vec<[f32; 2]> {
         match self {
-            Self::Local { display } | Self::Section { display, .. } => *display,
+            Self::Local { display } | Self::Section { display, .. } => display.clone(),
         }
     }
 }
@@ -48,10 +54,14 @@ pub(super) struct RectangleDemo {
     focus: FocusHandle,
     blur: Option<Subscription>,
     bounds: Option<Bounds<Pixels>>,
-    canonical: [[f32; 2]; 2],
-    preview: [[f32; 2]; 2],
+    canonical: Vec<[f32; 2]>,
+    preview: Vec<[f32; 2]>,
     capture: Option<RectangleCapture<Target>>,
     pending: Option<Pending>,
+    section_fixture: Option<section_fixture::Fixture>,
+    section_preview: Vec<ArrangementSection>,
+    section_command: Option<Command>,
+    section_error: Option<&'static str>,
     generation: u64,
     range: Option<[f32; 2]>,
     range_before: Option<[f32; 2]>,
@@ -63,21 +73,39 @@ pub(super) struct RectangleDemo {
 }
 impl RectangleDemo {
     pub fn new(kind: Kind, id: String, cx: &Context<Self>) -> Self {
-        let canonical = if kind == Kind::Section {
-            [[0.1, 0.5], [0.5, 0.9]]
+        let (section_fixture, initial_error) = if kind == Kind::Section {
+            match section_fixture::Fixture::new() {
+                Ok(fixture) => (Some(fixture), None),
+                Err(error) => (None, Some(error.0)),
+            }
         } else {
-            [[0.1, 0.5], [0.7, 0.71]]
+            (None, None)
         };
+        let canonical = if kind == Kind::Section {
+            section_fixture
+                .as_ref()
+                .map_or_else(Vec::new, section_fixture::Fixture::display)
+        } else {
+            vec![[0.1, 0.5], [0.7, 0.71]]
+        };
+        let section_preview = section_fixture.as_ref().map_or_else(Vec::new, |fixture| {
+            fixture.project().arrangement_sections().to_vec()
+        });
+        let status = initial_error.unwrap_or("ready");
         Self {
             kind,
             id,
             focus: cx.focus_handle(),
             blur: None,
             bounds: None,
-            canonical,
-            preview: canonical,
+            canonical: canonical.clone(),
+            preview: canonical.clone(),
             capture: None,
             pending: None,
+            section_fixture,
+            section_preview,
+            section_command: None,
+            section_error: None,
             generation: 1,
             range: None,
             range_before: None,
@@ -89,7 +117,7 @@ impl RectangleDemo {
             selection_primary: None,
             selection_anchor: None,
             enabled: true,
-            status: "ready",
+            status,
         }
     }
     fn edges(&self) -> RectangleEdges {
@@ -103,9 +131,11 @@ impl RectangleDemo {
             if capture.key == Target::SectionRange {
                 self.range = self.range_before.take();
             } else {
-                self.preview = self.canonical;
+                self.preview = self.canonical.clone();
             }
             let _ = capture.cancel();
+            self.section_command = None;
+            self.section_error = None;
             self.status = "canceled held input";
             cx.notify();
         }
@@ -123,7 +153,10 @@ impl RectangleDemo {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !self.enabled || self.pending.is_some() {
+        if !self.enabled
+            || self.pending.is_some()
+            || (self.kind == Kind::Section && self.section_fixture.is_none())
+        {
             return false;
         }
         let Some(bounds) = self.bounds else {
@@ -152,7 +185,7 @@ impl RectangleDemo {
                 RangeSelectionTarget::Paint => Target::PaintRange,
             };
             self.capture = RectangleCapture::begin(target, RectanglePart::Body, x, true);
-            self.preview = self.canonical;
+            self.preview = self.canonical.clone();
             self.selected = vec![0];
             self.status = "held range preview";
             self.focus.focus(window);
@@ -160,23 +193,27 @@ impl RectangleDemo {
             return true;
         }
         let mut hit = if self.kind == Kind::Section {
-            let sections = self
-                .canonical
-                .iter()
-                .enumerate()
-                .map(|(index, &[start, end])| (index, start, end));
-            crate::section_hit::hit(sections, x, |position| Some(left + width * position)).map(
-                |hit| match hit {
+            self.section_fixture.as_ref().and_then(|fixture| {
+                let sections = fixture
+                    .project()
+                    .arrangement_sections()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, section)| (index, section.start(), section.end()));
+                crate::section_hit::hit(sections, x, |beat| {
+                    Some(left + width * fixture.position(beat))
+                })
+                .map(|hit| match hit {
                     crate::section_hit::Hit::Leading(index) => (index, RectanglePart::Leading),
                     crate::section_hit::Hit::Trailing(index) => (index, RectanglePart::Trailing),
                     crate::section_hit::Hit::Seam(left, _) => (left, RectanglePart::Seam),
-                },
-            )
+                })
+            })
         } else {
             None
         };
         if hit.is_none() {
-            for (index, [start, end]) in self.canonical.into_iter().enumerate() {
+            for (index, [start, end]) in self.canonical.iter().copied().enumerate() {
                 let start = left + start * width;
                 let end = left + end * width;
                 if let Some(part) = self.edges().hit(x, start, end) {
@@ -218,7 +255,7 @@ impl RectangleDemo {
             && intent != RectangleSelection::Replace
             && let Some((index, _)) = hit
         {
-            let canonical = self.canonical;
+            let canonical = &self.canonical;
             let selection = crate::section_selection::extend(
                 std::mem::take(&mut self.selected),
                 self.selection_primary,
@@ -228,7 +265,7 @@ impl RectangleDemo {
                 |anchor, clicked| {
                     let low = canonical[anchor][0].min(canonical[clicked][0]);
                     let high = canonical[anchor][0].max(canonical[clicked][0]);
-                    let mut order = [0, 1];
+                    let mut order: Vec<_> = (0..canonical.len()).collect();
                     order.sort_by(|a, b| canonical[*a][0].total_cmp(&canonical[*b][0]));
                     order
                         .into_iter()
@@ -281,7 +318,7 @@ impl RectangleDemo {
                 if !additive {
                     self.selected.clear();
                 }
-                for id in [0, 1] {
+                for id in 0..self.canonical.len() {
                     if !self.selected.contains(&id) {
                         self.selected.push(id);
                     }
@@ -297,7 +334,10 @@ impl RectangleDemo {
             self.selection_anchor = Some(index);
         }
         self.capture = RectangleCapture::begin(Target::Rectangle(index), part, x, true);
-        self.preview = self.canonical;
+        self.preview = self.canonical.clone();
+        if let Some(fixture) = self.section_fixture.as_ref() {
+            self.section_preview = fixture.project().arrangement_sections().to_vec();
+        }
         self.status = "held preview";
         self.focus.focus(window);
         cx.notify();
@@ -337,9 +377,39 @@ impl RectangleDemo {
         let Target::Rectangle(index) = intent.key else {
             return true;
         };
+        if self.kind == Kind::Section {
+            self.section_command = None;
+            self.section_error = None;
+            self.preview = self.canonical.clone();
+            if let Some(fixture) = self.section_fixture.as_ref() {
+                self.section_preview = fixture.project().arrangement_sections().to_vec();
+            }
+            if (intent.pointer_x - intent.origin_x).abs() >= 4.0 {
+                let left = f32::from(bounds.left());
+                let position = (intent.pointer_x - left) / width;
+                if let Some(fixture) = self.section_fixture.as_ref()
+                    && let Some(section) = fixture.project().arrangement_sections().get(index)
+                {
+                    match fixture.plan(section.id(), intent.part, position) {
+                        Ok(Some(plan)) => {
+                            self.preview = plan.display;
+                            self.section_preview = plan.sections;
+                            self.section_command = Some(plan.command);
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            self.section_error = Some(error.0);
+                            self.status = error.0;
+                        }
+                    }
+                }
+            }
+            cx.notify();
+            return true;
+        }
         let [start, end] = self.canonical[index];
         let minimum = (1.0 / width).min(end - start);
-        self.preview = self.canonical;
+        self.preview = self.canonical.clone();
         match intent.part {
             RectanglePart::Body => {
                 let delta = delta.clamp(-start, 1.0 - end);
@@ -391,81 +461,197 @@ impl RectangleDemo {
             .take()
             .and_then(|capture| capture.finish(x))
             .is_some()
-            && self.preview != self.canonical
+            && if self.kind == Kind::Section {
+                self.section_command.is_some()
+            } else {
+                self.preview != self.canonical
+            }
         {
             if self.kind == Kind::Section {
-                if !self.admit_section(self.preview, 1) {
-                    self.preview = self.canonical;
+                if let Some(command) = self.section_command.take() {
+                    if !self.admit_section(
+                        self.preview.clone(),
+                        self.section_preview.clone(),
+                        command,
+                        1,
+                    ) {
+                        self.preview = self.canonical.clone();
+                        self.status = "section edit refused";
+                    }
+                } else {
+                    self.preview = self.canonical.clone();
                     self.status = "section edit refused";
                 }
             } else {
                 self.pending = Some(Pending::Local {
-                    display: self.preview,
+                    display: self.preview.clone(),
                 });
                 self.status = "pending · enter accepts · backspace refuses";
             }
         } else {
-            self.preview = self.canonical;
-            self.status = "ready";
+            self.preview = self.canonical.clone();
+            self.status = self.section_error.take().unwrap_or("ready");
         }
         cx.notify();
         true
     }
     /// The count includes this request and any earlier ordinary completions.
-    fn admit_section(&mut self, display: [[f32; 2]; 2], pending_count: usize) -> bool {
+    fn admit_section(
+        &mut self,
+        display: Vec<[f32; 2]>,
+        sections: Vec<ArrangementSection>,
+        command: Command,
+        pending_count: usize,
+    ) -> bool {
         if self.kind != Kind::Section || self.pending.is_some() {
             return false;
         }
+        let Some(source) = self
+            .section_fixture
+            .as_ref()
+            .map(|fixture| fixture.project().clone())
+        else {
+            return false;
+        };
         let mut receipt = crate::pending_edit::Receipt::new(self.generation);
         if !receipt.submitted(pending_count) {
             return false;
         }
-        self.pending = Some(Pending::Section { display, receipt });
+        self.pending = Some(Pending::Section {
+            display,
+            sections,
+            command: Box::new(command),
+            source: Box::new(source),
+            receipt,
+        });
         self.status = "pending · enter accepts · backspace refuses";
         true
     }
 
-    /// The local fixture supplies the current source and canonical display in
-    /// the same receive as each FIFO completion, just as the editor owner does.
+    /// Install a terminal command or a replacement project in the same receive
+    /// that retires its frozen preview. Earlier FIFO completions retain custody.
     fn receive_section(
         &mut self,
         generation: u64,
         replaced: bool,
         request_complete: bool,
-        canonical: [[f32; 2]; 2],
+        accept: bool,
+        replacement: Option<section_fixture::Fixture>,
         cx: &mut Context<Self>,
     ) {
+        if (replaced || generation != self.generation) && replacement.is_none() {
+            self.status = "section replacement unavailable";
+            cx.notify();
+            return;
+        }
         let Some(Pending::Section { receipt, .. }) = self.pending.as_mut() else {
             return;
         };
         let disposition = receipt.observe(generation, replaced, request_complete);
-        self.canonical = canonical;
-        if disposition != crate::pending_edit::Disposition::Waiting {
-            let display = self.pending.as_ref().map(Pending::display);
-            self.pending = None;
-            self.generation = generation;
-            self.preview = self.canonical;
-            self.status = match disposition {
-                crate::pending_edit::Disposition::Invalidated => "source replaced",
-                _ if display == Some(canonical) => "accepted",
-                _ => "refused",
-            };
+        if disposition == crate::pending_edit::Disposition::Waiting {
+            return;
         }
+        // Selection indices belong to the source captured when this edit was
+        // admitted, even if the installed project has since changed order.
+        let Some(Pending::Section { source, .. }) = self.pending.as_ref() else {
+            return;
+        };
+        let source_sections = source.arrangement_sections();
+        let selected_ids: Vec<_> = self
+            .selected
+            .iter()
+            .filter_map(|index| source_sections.get(*index).map(|section| section.id()))
+            .collect();
+        let selected_id = |index: Option<usize>| {
+            index
+                .and_then(|index| source_sections.get(index))
+                .map(|section| section.id())
+        };
+        let primary_id = selected_id(self.selection_primary);
+        let anchor_id = selected_id(self.selection_anchor);
+        if let Some(replacement) = replacement {
+            self.section_fixture = Some(replacement);
+            self.selected.clear();
+            self.selection_primary = None;
+            self.selection_anchor = None;
+        }
+        let pending_edit = match self.pending.as_ref() {
+            Some(Pending::Section {
+                command, source, ..
+            }) if disposition == crate::pending_edit::Disposition::Terminal && accept => {
+                Some(((**command).clone(), source.as_ref()))
+            }
+            _ => None,
+        };
+        let mut commit_error = None;
+        if let Some(fixture) = self.section_fixture.as_mut() {
+            if let Some((command, source)) = pending_edit {
+                if fixture.project() != source {
+                    commit_error = Some("section project changed");
+                } else {
+                    commit_error = fixture.commit(command).err().map(|error| error.0);
+                }
+            }
+            let sections = fixture.project().arrangement_sections();
+            if disposition != crate::pending_edit::Disposition::Invalidated {
+                self.selected = selected_ids
+                    .iter()
+                    .filter_map(|id| sections.iter().position(|section| section.id() == *id))
+                    .collect();
+                self.selection_primary = primary_id
+                    .and_then(|id| sections.iter().position(|section| section.id() == id));
+                self.selection_anchor =
+                    anchor_id.and_then(|id| sections.iter().position(|section| section.id() == id));
+            }
+            self.canonical = fixture.display();
+            self.section_preview = sections.to_vec();
+        }
+        let display = self.pending.as_ref().map(Pending::display);
+        self.pending = None;
+        self.section_command = None;
+        self.generation = generation;
+        self.preview = self.canonical.clone();
+        self.status = if let Some(error) = commit_error {
+            error
+        } else {
+            match disposition {
+                crate::pending_edit::Disposition::Invalidated => "source replaced",
+                _ if accept && display.as_ref() == Some(&self.canonical) => "accepted",
+                _ => "refused",
+            }
+        };
         cx.notify();
     }
 
     fn settle(&mut self, accept: bool, cx: &mut Context<Self>) {
-        if let Some(Pending::Section { display, .. }) = self.pending.as_ref() {
-            let canonical = if accept { *display } else { self.canonical };
-            self.receive_section(self.generation, false, true, canonical, cx);
+        if matches!(self.pending, Some(Pending::Section { .. })) {
+            self.receive_section(self.generation, false, true, accept, None, cx);
         } else if let Some(Pending::Local { display }) = self.pending.take() {
             if accept {
                 self.canonical = display;
             }
-            self.preview = self.canonical;
+            self.preview = self.canonical.clone();
             self.status = if accept { "accepted" } else { "refused" };
             cx.notify();
         }
+    }
+
+    fn section_selected(&self, painted: &ArrangementSection) -> bool {
+        let project = match self.pending.as_ref() {
+            Some(Pending::Section { source, .. }) => Some(source.as_ref()),
+            _ => self
+                .section_fixture
+                .as_ref()
+                .map(|fixture| fixture.project()),
+        };
+        project.is_some_and(|project| {
+            self.selected.iter().any(|index| {
+                project
+                    .arrangement_sections()
+                    .get(*index)
+                    .is_some_and(|section| section.id() == painted.id())
+            })
+        })
     }
 }
 impl Focusable for RectangleDemo {
@@ -480,15 +666,27 @@ impl Render for RectangleDemo {
             self.blur = Some(cx.on_blur(&focus, window, |view, _, cx| view.cancel(cx)));
         }
         let style = theme::control_style();
-        let display =
-            self.pending
-                .as_ref()
-                .map(Pending::display)
-                .unwrap_or(if self.capture.is_some() {
-                    self.preview
+        let display = self
+            .pending
+            .as_ref()
+            .map(Pending::display)
+            .unwrap_or_else(|| {
+                if self.capture.is_some() {
+                    self.preview.clone()
                 } else {
-                    self.canonical
-                });
+                    self.canonical.clone()
+                }
+            });
+        let section_paint = match self.pending.as_ref() {
+            Some(Pending::Section { sections, .. }) => sections.clone(),
+            _ if self.capture.is_some() => self.section_preview.clone(),
+            _ => self
+                .section_fixture
+                .as_ref()
+                .map_or_else(Vec::new, |fixture| {
+                    fixture.project().arrangement_sections().to_vec()
+                }),
+        };
         let width = self
             .bounds
             .map_or(320.0, |bounds| f32::from(bounds.size.width));
@@ -501,17 +699,21 @@ impl Render for RectangleDemo {
                 let id = self.id.clone();
                 move || format!("{id}-area")
             });
-        for (index, [start, end]) in display.into_iter().enumerate() {
+        for (index, [start, end]) in display.iter().copied().enumerate() {
             if self.kind == Kind::TimeRange && index != 0 {
                 continue;
             }
-            let selected = self.selected.contains(&index);
-            let pixel_width = (end - start) * width;
-            let identity = if index == 0 {
-                hex_project::ElementColor::Cyan
+            let selected = if self.kind == Kind::Section {
+                section_paint
+                    .get(index)
+                    .is_some_and(|painted| self.section_selected(painted))
             } else {
-                hex_project::ElementColor::Blue
+                self.selected.contains(&index)
             };
+            let pixel_width = (end - start) * width;
+            let identity = section_paint
+                .get(index)
+                .map_or(hex_project::ElementColor::Cyan, ArrangementSection::color);
             let surface = if self.kind == Kind::Section {
                 crate::section_surface::surface(
                     start,
@@ -534,11 +736,16 @@ impl Render for RectangleDemo {
                         let id = self.id.clone();
                         move || format!("{id}-section-header-{index}")
                     })
-                    .child(theme::text(if selected {
-                        "✓ section"
-                    } else {
-                        "section"
-                    })),
+                    .child(theme::text(section_paint.get(index).map_or_else(
+                        || "section".to_owned(),
+                        |section| {
+                            if selected {
+                                format!("✓ {}", section.name())
+                            } else {
+                                section.name().to_owned()
+                            }
+                        },
+                    ))),
                 )
             } else {
                 rectangle_surface(start, end - start, pixel_width)
@@ -599,12 +806,22 @@ impl Render for RectangleDemo {
                     .opacity(0.25),
             );
         }
-        if self.kind == Kind::Section && display[0][1] == display[1][0] {
-            area = area.child(
-                rectangle_edge(RectanglePart::Seam, 2.0, 0.0)
-                    .left(gpui::relative(display[0][1]))
-                    .ml(px(-1.0)),
-            );
+        if self.kind == Kind::Section {
+            for (index, (pair, sections)) in
+                display.windows(2).zip(section_paint.windows(2)).enumerate()
+            {
+                if sections[0].end() == sections[1].start() {
+                    area = area.child(
+                        rectangle_edge(RectanglePart::Seam, 2.0, 0.0)
+                            .debug_selector({
+                                let id = self.id.clone();
+                                move || format!("{id}-seam-{index}")
+                            })
+                            .left(gpui::relative(pair[0][1]))
+                            .ml(px(-1.0)),
+                    );
+                }
+            }
         }
         let entity = cx.entity();
         area = area.child(
@@ -733,7 +950,7 @@ mod tests {
                 area.top() + area.size.height * y,
             )
         };
-        let baseline = view.read_with(cx, |view, _| view.canonical);
+        let baseline = view.read_with(cx, |view, _| view.canonical.clone());
         for (down, up, modifiers, expected) in [
             (
                 at(0.4, 0.75),
@@ -801,7 +1018,7 @@ mod tests {
         visual.run_until_parked();
         let first = visual.debug_bounds("section-body-rectangle-0").unwrap();
         let at = point(first.center().x, first.top() + first.size.height * 0.75);
-        let before = view.read_with(cx, |view, _| view.canonical);
+        let before = view.read_with(cx, |view, _| view.canonical.clone());
         visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(
             point(at.x + px(24.0), at.y),
@@ -832,7 +1049,7 @@ mod tests {
                 area.top() + area.size.height * 0.75,
             )
         };
-        let before = view.read_with(cx, |view, _| view.canonical);
+        let before = view.read_with(cx, |view, _| view.canonical.clone());
         visual.simulate_mouse_down(at(0.2), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(at(0.35), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(at(0.35), MouseButton::Left, Modifiers::default());
@@ -983,30 +1200,13 @@ mod tests {
         });
     }
 
-    #[gpui::test]
-    fn overlapping_section_edge_takes_priority_over_another_section_body(cx: &mut TestAppContext) {
-        let handle =
-            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-overlap".into(), cx));
-        let view = handle.root(cx).unwrap();
-        view.update(cx, |view, cx| {
-            view.canonical = [[0.1, 0.8], [0.5, 0.9]];
-            view.preview = view.canonical;
-            cx.notify();
-        });
-        let mut visual = VisualTestContext::from_window(*handle, cx);
-        visual.update(|window, _| window.activate_window());
-        visual.run_until_parked();
-        let area = visual.debug_bounds("section-overlap-area").unwrap();
-        let edge = point(
-            area.left() + area.size.width * 0.5 + px(2.0),
-            area.top() + px(20.0),
-        );
-        visual.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
-        view.read_with(cx, |view, _| {
-            let capture = view.capture.expect("section edge capture");
-            assert_eq!(capture.key, Target::Rectangle(1));
-            assert_eq!(capture.part, RectanglePart::Leading);
-        });
+    fn seam_plan(view: &RectangleDemo, position: f32) -> section_fixture::Plan {
+        let fixture = view.section_fixture.as_ref().unwrap();
+        let section = fixture.project().arrangement_sections()[0].id();
+        fixture
+            .plan(section, RectanglePart::Seam, position)
+            .unwrap()
+            .unwrap()
     }
 
     #[gpui::test]
@@ -1015,16 +1215,18 @@ mod tests {
             cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-receipt".into(), cx));
         let view = handle.root(cx).unwrap();
         let mut visual = VisualTestContext::from_window(*handle, cx);
-        let before = view.read_with(cx, |view, _| view.canonical);
-        let released = [[0.15, 0.55], [0.55, 0.9]];
-        view.update(cx, |view, cx| {
-            assert!(view.admit_section(released, 2));
+        let before = view.read_with(cx, |view, _| view.canonical.clone());
+        let released = view.update(cx, |view, cx| {
+            let plan = seam_plan(view, 0.55);
+            let released = plan.display.clone();
+            assert!(view.admit_section(plan.display, plan.sections, plan.command, 2));
             cx.notify();
+            released
         });
         visual.run_until_parked();
         let frozen = visual.debug_bounds("section-receipt-rectangle-0").unwrap();
         view.update(cx, |view, cx| {
-            view.receive_section(1, false, true, before, cx)
+            view.receive_section(1, false, true, true, None, cx)
         });
         for _ in 0..3 {
             view.update(cx, |_, cx| cx.notify());
@@ -1034,12 +1236,16 @@ mod tests {
                 frozen
             );
             view.read_with(cx, |view, _| {
-                assert_eq!(view.pending.as_ref().map(Pending::display), Some(released));
+                assert_eq!(
+                    view.pending.as_ref().map(Pending::display),
+                    Some(released.clone())
+                );
                 assert_eq!(view.canonical, before);
+                assert_eq!(view.section_fixture.as_ref().unwrap().display(), before);
             });
         }
         view.update(cx, |view, cx| {
-            view.receive_section(1, false, true, released, cx)
+            view.receive_section(1, false, true, true, None, cx)
         });
         visual.run_until_parked();
         assert_eq!(
@@ -1049,6 +1255,7 @@ mod tests {
         view.read_with(cx, |view, _| {
             assert!(view.pending.is_none());
             assert_eq!(view.canonical, released);
+            assert_eq!(view.section_fixture.as_ref().unwrap().display(), released);
             assert_eq!(view.preview, released);
         });
     }
@@ -1062,14 +1269,14 @@ mod tests {
         });
         let view = handle.root(cx).unwrap();
         let mut visual = VisualTestContext::from_window(*handle, cx);
-        let before = view.read_with(cx, |view, _| view.canonical);
-        let released = [[0.15, 0.55], [0.55, 0.9]];
+        let before = view.read_with(cx, |view, _| view.canonical.clone());
         visual.run_until_parked();
         let original_bounds = visual
             .debug_bounds("section-receipt-reset-rectangle-0")
             .unwrap();
         view.update(cx, |view, cx| {
-            assert!(view.admit_section(released, 1));
+            let plan = seam_plan(view, 0.55);
+            assert!(view.admit_section(plan.display, plan.sections, plan.command, 1));
             cx.notify();
         });
         visual.run_until_parked();
@@ -1078,7 +1285,7 @@ mod tests {
             .unwrap();
         assert_ne!(frozen, original_bounds);
         view.update(cx, |view, cx| {
-            view.receive_section(1, false, true, before, cx)
+            view.receive_section(1, false, true, false, None, cx)
         });
         visual.run_until_parked();
         assert_eq!(
@@ -1090,11 +1297,11 @@ mod tests {
         view.read_with(cx, |view, _| {
             assert!(view.pending.is_none());
             assert_eq!(view.preview, before);
-            assert_eq!(view.canonical, before);
+            assert_eq!(view.section_fixture.as_ref().unwrap().display(), before);
         });
-        let replacement = [[0.2, 0.4], [0.6, 0.8]];
         view.update(cx, |view, cx| {
-            assert!(view.admit_section(released, 2));
+            let plan = seam_plan(view, 0.55);
+            assert!(view.admit_section(plan.display, plan.sections, plan.command, 2));
             cx.notify();
         });
         visual.run_until_parked();
@@ -1104,8 +1311,16 @@ mod tests {
                 .unwrap(),
             frozen
         );
+        let mut replacement = section_fixture::Fixture::new().unwrap();
+        let id = replacement.project().arrangement_sections()[0].id();
+        let replacement_plan = replacement
+            .plan(id, RectanglePart::Seam, 0.6)
+            .unwrap()
+            .unwrap();
+        replacement.commit(replacement_plan.command).unwrap();
+        let replacement_display = replacement.display();
         view.update(cx, |view, cx| {
-            view.receive_section(2, true, false, replacement, cx)
+            view.receive_section(2, true, false, false, Some(replacement), cx)
         });
         visual.run_until_parked();
         assert_ne!(
@@ -1117,9 +1332,251 @@ mod tests {
         view.read_with(cx, |view, _| {
             assert!(view.pending.is_none());
             assert_eq!(view.generation, 2);
-            assert_eq!(view.canonical, replacement);
-            assert_eq!(view.preview, replacement);
+            assert_eq!(view.canonical, replacement_display);
+            assert_eq!(view.preview, replacement_display);
+            assert_eq!(
+                view.section_fixture.as_ref().unwrap().display(),
+                replacement_display
+            );
         });
+    }
+
+    #[gpui::test]
+    fn section_seam_gesture_commits_real_project_only_after_terminal(cx: &mut TestAppContext) {
+        let handle = cx
+            .add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-real-seam".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let first = visual
+            .debug_bounds("section-real-seam-rectangle-0")
+            .unwrap();
+        let down = point(first.right(), first.top() + px(5.0));
+        let target = point(down.x + px(12.0), down.y);
+        let before = view.read_with(cx, |view, _| {
+            view.section_fixture.as_ref().unwrap().project().snapshot()
+        });
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let frozen = visual
+            .debug_bounds("section-real-seam-rectangle-0")
+            .unwrap();
+        view.read_with(cx, |view, _| {
+            assert!(view.pending.is_some());
+            assert_eq!(
+                view.section_fixture.as_ref().unwrap().project().snapshot(),
+                before
+            );
+        });
+        for _ in 0..3 {
+            view.update(cx, |_, cx| cx.notify());
+            visual.run_until_parked();
+            assert_eq!(
+                visual
+                    .debug_bounds("section-real-seam-rectangle-0")
+                    .unwrap(),
+                frozen
+            );
+        }
+        view.update(cx, |view, cx| view.settle(true, cx));
+        visual.run_until_parked();
+        assert_eq!(
+            visual
+                .debug_bounds("section-real-seam-rectangle-0")
+                .unwrap(),
+            frozen
+        );
+        view.read_with(cx, |view, _| {
+            assert!(view.pending.is_none());
+            assert_ne!(
+                view.section_fixture.as_ref().unwrap().project().snapshot(),
+                before
+            );
+            assert_eq!(
+                view.canonical,
+                view.section_fixture.as_ref().unwrap().display()
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn stale_section_terminal_refuses_without_overwriting_new_project(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-stale".into(), cx));
+        let view = handle.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let pending = seam_plan(view, 0.55);
+            assert!(view.admit_section(pending.display, pending.sections, pending.command, 1));
+            let newer = seam_plan(view, 0.6);
+            view.section_fixture
+                .as_mut()
+                .unwrap()
+                .commit(newer.command)
+                .unwrap();
+            let current = view.section_fixture.as_ref().unwrap().project().snapshot();
+            view.receive_section(1, false, true, true, None, cx);
+            assert_eq!(
+                view.section_fixture.as_ref().unwrap().project().snapshot(),
+                current
+            );
+            assert_eq!(
+                view.canonical,
+                view.section_fixture.as_ref().unwrap().display()
+            );
+            assert!(view.pending.is_none());
+            assert_eq!(view.status, "section project changed");
+        });
+    }
+
+    #[gpui::test]
+    fn stale_section_terminal_keeps_selection_identity_after_reorder(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-stale-selection".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let id = view
+                .section_fixture
+                .as_ref()
+                .unwrap()
+                .project()
+                .arrangement_sections()[0]
+                .id();
+            view.selected = vec![0];
+            view.selection_primary = Some(0);
+            view.selection_anchor = Some(0);
+            let pending = seam_plan(view, 0.55);
+            assert!(view.admit_section(pending.display, pending.sections, pending.command, 1));
+            let fixture = view.section_fixture.as_mut().unwrap();
+            let newer = fixture
+                .plan(id, RectanglePart::Body, 0.95)
+                .unwrap()
+                .unwrap();
+            fixture.commit(newer.command).unwrap();
+            let current = fixture.project().snapshot();
+            assert_eq!(fixture.project().arrangement_sections()[1].id(), id);
+            view.receive_section(1, false, true, true, None, cx);
+            assert_eq!(
+                view.section_fixture.as_ref().unwrap().project().snapshot(),
+                current
+            );
+            assert_eq!(view.selected, [1]);
+            assert_eq!(view.selection_primary, Some(1));
+            assert_eq!(view.selection_anchor, Some(1));
+            assert_eq!(
+                view.canonical,
+                view.section_fixture.as_ref().unwrap().display()
+            );
+            assert_eq!(view.preview, view.canonical);
+            assert!(view.pending.is_none());
+            assert_eq!(view.status, "section project changed");
+        });
+    }
+
+    #[gpui::test]
+    fn pending_repaints_keep_selection_identity_after_reorder(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-pending-selection".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        let id = view.update(cx, |view, cx| {
+            let id = view
+                .section_fixture
+                .as_ref()
+                .unwrap()
+                .project()
+                .arrangement_sections()[0]
+                .id();
+            view.selected = vec![0];
+            let pending = seam_plan(view, 0.55);
+            assert!(view.admit_section(pending.display, pending.sections, pending.command, 1));
+            let fixture = view.section_fixture.as_mut().unwrap();
+            let newer = fixture
+                .plan(id, RectanglePart::Body, 0.95)
+                .unwrap()
+                .unwrap();
+            fixture.commit(newer.command).unwrap();
+            cx.notify();
+            id
+        });
+        let visual = VisualTestContext::from_window(*handle, cx);
+        for _ in 0..3 {
+            view.update(cx, |_, cx| cx.notify());
+            visual.run_until_parked();
+            view.read_with(cx, |view, _| {
+                let Some(Pending::Section { sections, .. }) = view.pending.as_ref() else {
+                    panic!("section edit should remain pending");
+                };
+                for section in sections {
+                    assert_eq!(view.section_selected(section), section.id() == id);
+                }
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn rounded_gap_does_not_draw_a_shared_seam(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| {
+            RectangleDemo::new(Kind::Section, "section-rounded-gap".into(), cx)
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("section-rounded-gap-seam-0").is_some());
+        view.update(cx, |view, cx| {
+            let fixture = view.section_fixture.as_mut().unwrap();
+            let second = fixture.project().arrangement_sections()[1].id();
+            fixture
+                .commit(Command::SetArrangementSectionRange {
+                    section: second,
+                    start: hex_project::BeatTime::from_raw(
+                        5 * hex_project::BeatTime::ONE.raw() + 1,
+                    ),
+                    end: hex_project::BeatTime::from_quarters(9).unwrap(),
+                })
+                .unwrap();
+            view.canonical = fixture.display();
+            view.preview = view.canonical.clone();
+            assert_eq!(view.canonical[0][1], view.canonical[1][0]);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("section-rounded-gap-seam-0").is_none());
+    }
+
+    #[gpui::test]
+    fn section_fixture_renders_and_selects_a_third_real_section(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-third".into(), cx));
+        let view = handle.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            let fixture = view.section_fixture.as_mut().unwrap();
+            let id = fixture.project().arrangement_sections()[0].id();
+            fixture
+                .commit(Command::DuplicateArrangementSectionAt {
+                    section: id,
+                    target: id,
+                    after: true,
+                })
+                .unwrap();
+            view.canonical = fixture.display();
+            view.preview = view.canonical.clone();
+            view.section_preview = fixture.project().arrangement_sections().to_vec();
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("section-third-rectangle-2").unwrap();
+        visual.simulate_mouse_down(
+            point(bounds.center().x, bounds.top() + px(5.0)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        view.read_with(cx, |view, _| assert_eq!(view.selected, [2]));
     }
 
     #[gpui::test]
@@ -1143,14 +1600,37 @@ mod tests {
                 bounds.left() + bounds.size.width * 0.5,
                 bounds.top() + px(5.0),
             );
-            let target = point(down.x + px(20.0), down.y);
-            let before = view.read_with(cx, |view, _| view.canonical);
+            let target = if section {
+                let area = visual.debug_bounds("rectangle-fixture-area").unwrap();
+                point(area.left() + area.size.width * 0.95, down.y)
+            } else {
+                point(down.x + px(20.0), down.y)
+            };
+            let before = view.read_with(cx, |view, _| view.canonical.clone());
+            let before_project = view.read_with(cx, |view, _| {
+                view.section_fixture
+                    .as_ref()
+                    .map(|fixture| fixture.project().snapshot())
+            });
             visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
             view.read_with(cx, |view, _| {
                 assert!(view.capture.is_some());
-                assert_ne!(view.preview, before);
+                if section {
+                    assert!(view.section_command.is_some());
+                    assert_ne!(
+                        view.section_preview[0].id(),
+                        view.section_fixture
+                            .as_ref()
+                            .unwrap()
+                            .project()
+                            .arrangement_sections()[0]
+                            .id()
+                    );
+                } else {
+                    assert_ne!(view.preview, before);
+                }
                 assert_eq!(view.canonical, before);
             });
             visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
@@ -1234,6 +1714,14 @@ mod tests {
             visual.run_until_parked();
             view.read_with(cx, |view, _| {
                 assert_eq!(view.canonical, pending);
+                if section {
+                    assert_ne!(
+                        view.section_fixture
+                            .as_ref()
+                            .map(|fixture| fixture.project().snapshot()),
+                        before_project
+                    );
+                }
                 assert!(view.pending.is_none());
             });
         }

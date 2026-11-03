@@ -27,6 +27,12 @@ mod sandbox;
 mod section_hit;
 #[path = "../../hex-ui/src/section_input.rs"]
 mod section_input;
+#[path = "../../hex-ui/src/section_reorder.rs"]
+#[allow(dead_code)] // Main also consumes the tempo preview.
+mod section_reorder;
+#[path = "../../hex-ui/src/section_resize.rs"]
+#[allow(dead_code)] // Main also consumes tempo and marker-only variants.
+mod section_resize;
 #[path = "../../hex-ui/src/section_selection.rs"]
 mod section_selection;
 #[path = "../../hex-ui/src/section_surface.rs"]
