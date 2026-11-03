@@ -39,6 +39,21 @@ pub trait PreparedOwnedProcessorRuntime: Send + Sync {
 /// an explicit immutable-base fallback, never an error.
 /// Host render failure invokes rollback after all earlier speculative segments.
 pub trait OwnedProcessorRuntime: Any + Send {
+    /// Owned-transaction counterpart of the borrowed native auxiliary entry.
+    /// The provider honors the supplied bypass/automation semantics and never
+    /// retains any borrowed input; unsupported providers refuse explicitly.
+    /// Processing advances speculative history between `begin_block` and
+    /// commit or rollback, just like the other owned processing entries.
+    fn process_block_with_auxiliary(
+        &mut self,
+        _block: crate::StereoAuxiliaryBlock<'_>,
+        _clock: Option<&dyn NativeInstrumentClock>,
+        _automation: Option<&dyn crate::NativeParameterAutomation>,
+        _bypassed: bool,
+        _resources: &dyn crate::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
     fn supports_parameter_automation(&self, _parameter: hex_lattice_contract::ParameterId) -> bool {
         false
     }
@@ -389,6 +404,28 @@ mod tests {
             self
         }
     }
+    #[test]
+    fn default_owned_auxiliary_entry_refuses_without_touching_audio() {
+        let mut probe = Probe::default();
+        let mut main = [[0.25, -0.5]; 2];
+        let key = [[0.5; 2]; 2];
+        let mut silence = [[7.0; 2]; 2];
+        let block =
+            crate::StereoAuxiliaryBlock::new(&mut main, Some(&key), &mut silence, 2).unwrap();
+        assert!(matches!(
+            probe.process_block_with_auxiliary(
+                block,
+                None,
+                None,
+                false,
+                &crate::EMPTY_DEVICE_RESOURCES
+            ),
+            Err(DeviceContractError::UnsupportedProcessingClass)
+        ));
+        assert_eq!(main, [[0.25, -0.5]; 2]);
+        assert_eq!(silence, [[7.0; 2]; 2]);
+    }
+
     #[test]
     fn default_owned_bypass_preserves_dry_and_every_shifted_clock_observation() {
         let mut probe = Probe::default();
