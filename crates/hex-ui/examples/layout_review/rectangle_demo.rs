@@ -22,6 +22,7 @@ pub(super) enum Kind {
 enum Target {
     Rectangle(usize),
     PaintRange,
+    SectionRange,
 }
 pub(super) struct RectangleDemo {
     kind: Kind,
@@ -33,6 +34,8 @@ pub(super) struct RectangleDemo {
     preview: [[f32; 2]; 2],
     capture: Option<RectangleCapture<Target>>,
     pending: Option<[[f32; 2]; 2]>,
+    range: Option<[f32; 2]>,
+    range_before: Option<[f32; 2]>,
     selected: Vec<usize>,
     selection_primary: Option<usize>,
     selection_anchor: Option<usize>,
@@ -56,6 +59,8 @@ impl RectangleDemo {
             preview: canonical,
             capture: None,
             pending: None,
+            range: None,
+            range_before: None,
             selected: if kind == Kind::TimeRange {
                 vec![0]
             } else {
@@ -75,8 +80,12 @@ impl RectangleDemo {
     }
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         if let Some(capture) = self.capture.take() {
+            if capture.key == Target::SectionRange {
+                self.range = self.range_before.take();
+            } else {
+                self.preview = self.canonical;
+            }
             let _ = capture.cancel();
-            self.preview = self.canonical;
             self.status = "canceled held input";
             cx.notify();
         }
@@ -165,16 +174,16 @@ impl RectangleDemo {
                 }
             }
         }
-        let Some((index, part)) = hit else {
-            return false;
-        };
         let policy = if self.kind == Kind::Section {
             RectangleSelectionPolicy::Section
         } else {
             RectangleSelectionPolicy::Range
         };
         let intent = policy.intent(modifiers);
-        if self.kind == Kind::Section && intent != RectangleSelection::Replace {
+        if self.kind == Kind::Section
+            && intent != RectangleSelection::Replace
+            && let Some((index, _)) = hit
+        {
             let canonical = self.canonical;
             let selection = crate::section_selection::extend(
                 std::mem::take(&mut self.selected),
@@ -201,6 +210,39 @@ impl RectangleDemo {
             cx.notify();
             return true;
         }
+        if self.kind == Kind::Section
+            && crate::section_input::routes_to_time_range(
+                hit.is_some_and(|(_, part)| part != RectanglePart::Body),
+                y,
+                f32::from(bounds.top()),
+                f32::from(bounds.size.height),
+                44.0 * hex_widgets::RANGE_HANDLE_FRACTION,
+            )
+        {
+            if !x.is_finite()
+                || !left.is_finite()
+                || !width.is_finite()
+                || width <= 0.0
+                || x < left
+                || x >= left + width
+            {
+                return false;
+            }
+            let anchor = ((x - left) / width).clamp(0.0, 1.0);
+            self.capture =
+                RectangleCapture::begin(Target::SectionRange, RectanglePart::Body, x, true);
+            self.range_before = self.range;
+            self.range = Some([anchor, anchor]);
+            self.selected.clear();
+            self.selection_primary = None;
+            self.status = "held range preview";
+            self.focus.focus(window);
+            cx.notify();
+            return true;
+        }
+        let Some((index, part)) = hit else {
+            return false;
+        };
         match intent {
             RectangleSelection::Toggle => {
                 if self.selected.contains(&index) {
@@ -250,6 +292,14 @@ impl RectangleDemo {
             return true;
         }
         let delta = intent.delta_x / width;
+        if intent.key == Target::SectionRange {
+            let left = f32::from(bounds.left());
+            let anchor = ((intent.origin_x - left) / width).clamp(0.0, 1.0);
+            let end = ((intent.pointer_x - left) / width).clamp(0.0, 1.0);
+            self.range = Some([anchor.min(end), anchor.max(end)]);
+            cx.notify();
+            return true;
+        }
         if intent.key == Target::PaintRange {
             let left = f32::from(bounds.left());
             let anchor = ((intent.origin_x - left) / width).clamp(0.0, 1.0);
@@ -289,6 +339,27 @@ impl RectangleDemo {
             return false;
         }
         self.change(x, cx);
+        if self
+            .capture
+            .is_some_and(|capture| capture.key == Target::SectionRange)
+        {
+            let completed = self
+                .capture
+                .take()
+                .and_then(|capture| capture.finish(x))
+                .is_some();
+            if !completed {
+                self.range = self.range_before;
+            }
+            self.range_before = None;
+            self.status = if completed {
+                "range selected"
+            } else {
+                "range canceled"
+            };
+            cx.notify();
+            return true;
+        }
         if self
             .capture
             .take()
@@ -431,6 +502,17 @@ impl Render for RectangleDemo {
                 }
             }
             area = area.child(rect);
+        }
+        if self.kind == Kind::Section
+            && let Some([start, end]) = self.range
+            && end > start
+        {
+            area = area.child(
+                rectangle_surface(start, end - start, width * (end - start))
+                    .debug_selector(|| "section-time-range".into())
+                    .bg(rgb(style.accent))
+                    .opacity(0.25),
+            );
         }
         if self.kind == Kind::Section && display[0][1] == display[1][0] {
             area = area.child(
@@ -625,6 +707,114 @@ mod tests {
         view.read_with(cx, |view, _| assert!(view.capture.is_none()));
     }
     #[gpui::test]
+    fn section_lower_body_drag_never_moves_section_geometry(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-body".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let first = visual.debug_bounds("section-body-rectangle-0").unwrap();
+        let at = point(first.center().x, first.top() + first.size.height * 0.75);
+        let before = view.read_with(cx, |view, _| view.canonical);
+        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(at.x + px(24.0), at.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.canonical, before);
+            assert_eq!(
+                view.preview, before,
+                "lower body must not preview a section move"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn section_body_range_commits_and_cancel_restores_previous_range(cx: &mut TestAppContext) {
+        let handle = cx
+            .add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-range-body".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-range-body-area").unwrap();
+        let at = |fraction: f32| {
+            point(
+                area.left() + area.size.width * fraction,
+                area.top() + area.size.height * 0.75,
+            )
+        };
+        let before = view.read_with(cx, |view, _| view.canonical);
+        visual.simulate_mouse_down(at(0.2), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.35), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(at(0.35), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let committed = view.read_with(cx, |view, _| {
+            assert_eq!(view.canonical, before);
+            assert_eq!(view.preview, before);
+            assert!(view.pending.is_none());
+            view.range.expect("committed time range")
+        });
+        assert!(committed[1] > committed[0]);
+        assert!(visual.debug_bounds("section-time-range").is_some());
+        visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.4), MouseButton::Left, Modifiers::default());
+        visual.simulate_keystrokes("escape");
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.range, Some(committed));
+            assert_eq!(view.canonical, before);
+            assert!(view.capture.is_none());
+        });
+        visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(at(0.4), MouseButton::Left, Modifiers::default());
+        view.update(cx, |view, cx| assert!(view.finish(f32::NAN, cx)));
+        view.read_with(cx, |view, _| {
+            assert_eq!(view.range, Some(committed));
+            assert!(view.capture.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn section_edges_and_extended_selection_win_over_lower_body_range(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-priority".into(), cx));
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let first = visual.debug_bounds("section-priority-rectangle-0").unwrap();
+        let edge = point(
+            first.left() + px(2.0),
+            first.top() + first.size.height * 0.75,
+        );
+        visual.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
+        view.read_with(cx, |view, _| {
+            let capture = view.capture.expect("edge capture");
+            assert_eq!(capture.key, Target::Rectangle(0));
+            assert_eq!(capture.part, RectanglePart::Leading);
+            assert!(view.range.is_none());
+        });
+        visual.simulate_keystrokes("escape");
+        let body = point(first.center().x, first.top() + first.size.height * 0.75);
+        visual.simulate_mouse_down(
+            body,
+            MouseButton::Left,
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+        view.read_with(cx, |view, _| {
+            assert!(view.capture.is_none());
+            assert!(view.range.is_none());
+            assert_eq!(view.selected, [0]);
+        });
+    }
+
+    #[gpui::test]
     fn shift_click_same_section_keeps_only_that_section_and_never_starts_drag(
         cx: &mut TestAppContext,
     ) {
@@ -784,6 +974,19 @@ mod tests {
                         .unwrap(),
                     released
                 );
+            }
+            if section {
+                let pending = view.read_with(cx, |view, _| view.pending);
+                let body = point(
+                    released.center().x,
+                    released.top() + released.size.height * 0.75,
+                );
+                visual.simulate_mouse_down(body, MouseButton::Left, Modifiers::default());
+                view.read_with(cx, |view, _| {
+                    assert_eq!(view.pending, pending);
+                    assert!(view.capture.is_none());
+                    assert!(view.range.is_none());
+                });
             }
             visual.simulate_keystrokes("escape");
             view.update(cx, |view, cx| view.set_enabled(false, cx));

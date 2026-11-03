@@ -16,6 +16,8 @@ mod theme;
 
 #[path = "../src/section_hit.rs"]
 mod section_hit;
+#[path = "../src/section_input.rs"]
+mod section_input;
 #[path = "../src/section_selection.rs"]
 mod section_selection;
 #[path = "../src/section_surface.rs"]
