@@ -29,8 +29,8 @@
 //! anything else starts a fresh voice at full gain with a silent held sample.
 //! Seek, transport loop wrap, clip loop wrap, scene launch and any other
 //! source discontinuity therefore reset by construction, with no command
-//! hook, and leave their own declick (transport fade, loop seam crossfade,
-//! Session audio release) in charge of the edge. A graph replacement keeps
+//! hook. Transport action fades and Session audio releases own their edges;
+//! Arrangement loop wraps retain authored discontinuities. A graph replacement keeps
 //! the table, so a voice that continues the same source key and position
 //! across the handoff keeps its fade; a new source generation is a new voice.
 //! When more voices sound than the table holds, the least recently touched
