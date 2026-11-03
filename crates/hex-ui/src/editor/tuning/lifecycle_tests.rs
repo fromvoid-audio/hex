@@ -318,6 +318,7 @@ fn review_final_period_refusal_preserves_the_draft_and_reports_recovery(cx: &mut
             NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value: 600.0,
+                gesture: None,
             },
             cx,
         );
@@ -332,6 +333,7 @@ fn review_final_period_refusal_preserves_the_draft_and_reports_recovery(cx: &mut
             NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value: 1800.0,
+                gesture: None,
             },
             cx,
         );

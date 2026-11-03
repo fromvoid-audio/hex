@@ -2,7 +2,10 @@ use super::*;
 use crate::routed_midi_fixture;
 mod authored_history;
 mod cue;
+mod instrument_matrix_ramp;
 mod interactive_start;
+mod release_timeline;
+mod tempo_continuity;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
 use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
@@ -976,6 +979,7 @@ fn project(gain: f32, note_start: u64, note_duration: u64) -> Project {
 
 fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
@@ -1218,6 +1222,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
 
 fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        automatic_track_names: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
@@ -4142,6 +4147,142 @@ fn mutable_arrangement_source_change_does_not_take_the_exact_continuity_path() {
     );
 }
 
+/// Field report (Pulse #3770): editing a note that is sounding under the
+/// cursor refused publication with `MutableInstrumentChase`, so audio stayed on
+/// the old revision. The strict planner still refuses; the live publication
+/// path restarts audio at the cursor instead (playing or paused), chasing the
+/// edited note, and a following edit applies too.
+#[test]
+fn live_handoff_restarts_an_unproven_chase_while_playing_or_paused() {
+    use hex_project::{Command, Editor};
+
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let revision = |project: &hex_project::Project| {
+        revision_with_instrument_registry(project, Arc::clone(&table), &registry)
+    };
+    for paused in [false, true] {
+        let mut editor =
+            Editor::new(with_test_instrument(&project(1.0, 0, 8 << 32), id, 0), 8).unwrap();
+        let note = editor.project().tracks()[0].midi_clips()[0].notes()[0].id();
+        let mut playback = SessionPlayback::new(revision(editor.project())).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut [[0.0; 2]; 8]).unwrap();
+        if paused {
+            playback.apply(SessionPlaybackCommand::Pause).unwrap();
+        }
+        let frame = playback.performance_frame();
+        editor
+            .execute(Command::UpdateMidiNote {
+                note,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_raw(8 << 32),
+                pitch: 61,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        let edited = revision(editor.project());
+        assert_eq!(
+            SessionPlayback::new(Arc::clone(&edited))
+                .unwrap()
+                .try_inherit_state_from(&mut playback),
+            Err(SessionPlaybackError::MutableInstrumentChase),
+            "strict planner; paused={paused}"
+        );
+        let mut candidate = SessionPlayback::new(Arc::clone(&edited)).unwrap();
+        candidate
+            .try_inherit_state_live_from(&mut playback)
+            .unwrap();
+        assert_eq!(candidate.playing(), !paused);
+        assert_eq!(candidate.performance_frame(), frame);
+
+        editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+        let later_revision = revision(editor.project());
+        let mut later = SessionPlayback::new(Arc::clone(&later_revision)).unwrap();
+        later.try_inherit_state_live_from(&mut candidate).unwrap();
+        assert_eq!(later.performance_frame(), frame);
+
+        let mut oracle = SessionPlayback::new(later_revision).unwrap();
+        oracle.play_from(frame).unwrap();
+        if paused {
+            later.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let mut actual = [[0.0; 2]; 64];
+        let mut expected = actual;
+        later.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(
+            actual, expected,
+            "restart chases the edited note; paused={paused}"
+        );
+        assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+    }
+}
+
+/// In-place bounces (Pulse #3784) bake an instrument's output into PCM, so a
+/// live handoff must not carry that instrument's release tail on top of it.
+/// A requested restart starts empty at the cursor; ordinary inheritance keeps
+/// the removed note's tail.
+#[test]
+fn requested_live_restart_drops_a_removed_note_release_tail() {
+    use hex_project::{Command, Editor};
+
+    let id = hex_lattice_contract::DeviceTypeId::from_static("test.instrument.mutable.feedback");
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id,
+            levels: [0.2, 0.4],
+            release_frames: 64,
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let revision = |project: &hex_project::Project| {
+        revision_with_instrument_registry(project, Arc::clone(&table), &registry)
+    };
+    let mut editor =
+        Editor::new(with_test_instrument(&project(1.0, 0, 8 << 32), id, 0), 8).unwrap();
+    let note = editor.project().tracks()[0].midi_clips()[0].notes()[0].id();
+    let sounding = revision(editor.project());
+    editor.execute(Command::RemoveMidiNote(note)).unwrap();
+    let removed = revision(editor.project());
+    let handoff = |restart: bool| {
+        let mut playback = SessionPlayback::new(Arc::clone(&sounding)).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut [[0.0; 2]; 8]).unwrap();
+        let frame = playback.performance_frame();
+        let mut candidate = SessionPlayback::new(Arc::clone(&removed)).unwrap();
+        if restart {
+            candidate.request_live_restart();
+        }
+        assert_eq!(candidate.live_restart_requested(), restart);
+        candidate
+            .try_inherit_state_live_from(&mut playback)
+            .unwrap();
+        assert!(candidate.playing());
+        assert_eq!(candidate.performance_frame(), frame);
+        let mut pcm = [[0.0; 2]; 64];
+        candidate.render(&mut pcm).unwrap();
+        pcm
+    };
+    assert!(
+        handoff(false).iter().flatten().any(|sample| *sample != 0.0),
+        "ordinary inheritance keeps the removed note's tail"
+    );
+    assert_eq!(handoff(true), [[0.0; 2]; 64], "restart carries no tail");
+}
+
 #[test]
 fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
     use hex_lattice_contract::NativeDeviceMetadata as _;
@@ -6575,11 +6716,11 @@ fn changing_session_instrument_identity_carries_old_held_voice_once() {
     let replaced = with_replaced_instrument_id(&original);
     let mut candidate = SessionPlayback::new(revision(&replaced, table)).unwrap();
     candidate.try_inherit_state_from(&mut previous).unwrap();
-    assert!(
-        candidate.releases.iter().any(|entry| {
-            entry.track_id == candidate.routes[0].id && entry.continuation.is_some()
-        })
-    );
+    assert!(candidate.releases.iter().any(|entry| {
+        entry.track_id == candidate.routes[0].id
+            && entry.continuation.is_some()
+            && entry.timeline == ReleaseTimeline::Session
+    }));
 
     let mut expected = [[0.0; 2]; 128];
     let mut actual = [[0.0; 2]; 128];
@@ -6906,6 +7047,142 @@ fn arrangement_instrument_edits_keep_old_occurrence_once_and_use_new_law_afterwa
 }
 
 #[test]
+fn instrument_edit_suppressions_end_at_the_loop_wrap_across_block_sizes() {
+    use hex_lattice::NativeInstrumentDefinition;
+
+    // Pulse #4135: the held note (beats 0..8) outlasts the loop over frames
+    // 0..1_200. Two configuration edits before the wrap release the old
+    // occurrence and then extend its carried suppression. Neither may outlive
+    // the wrap: the next pass is a new onset and sounds under the new law.
+    let definition = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.edit.loop"),
+        levels: [0.2, 0.4],
+        release_frames: 8,
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut looped = project(1.0, 0, 8 << 32).snapshot();
+    looped.loop_region = Some(LoopRegion::new(0, 1_200, true).unwrap());
+    let looped = legacy_project_from_snapshot(looped).unwrap();
+    let states = [0, 1, 0];
+    let cuts = [301, 601];
+    let wrap = 1_200;
+    let mut outputs = Vec::new();
+    for block in [1, 64, 512] {
+        let prepare = |state| {
+            SessionPlayback::new(revision_with_instrument_registry(
+                &with_test_instrument(&looped, definition.id, state),
+                Arc::clone(&table),
+                &registry,
+            ))
+            .unwrap()
+        };
+        let mut playback = prepare(states[0]);
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut output = Vec::new();
+        let mut buffer = vec![[0.0; 2]; block];
+        for (edit, cut) in cuts.iter().enumerate() {
+            while playback.performance_frame() < *cut {
+                let width = block.min(usize::try_from(cut - playback.performance_frame()).unwrap());
+                playback.render(&mut buffer[..width]).unwrap();
+                output.extend_from_slice(&buffer[..width]);
+            }
+            let mut candidate = prepare(states[edit + 1]);
+            candidate.try_inherit_state_from(&mut playback).unwrap();
+            assert!(
+                candidate
+                    .suppressions
+                    .iter()
+                    .all(|entry| entry.until_frame <= wrap),
+                "block={block} edit={edit}: {:?}",
+                candidate
+                    .suppressions
+                    .iter()
+                    .map(|entry| entry.until_frame)
+                    .collect::<Vec<_>>()
+            );
+            playback = candidate;
+        }
+        while playback.performance_frame() < wrap + 64 {
+            let width =
+                block.min(usize::try_from(wrap + 64 - playback.performance_frame()).unwrap());
+            playback.render(&mut buffer[..width]).unwrap();
+            output.extend_from_slice(&buffer[..width]);
+        }
+        // The held occurrence keeps its old law until the wrap, as unedited
+        // playback would, and the next pass starts again under the last
+        // configuration (the same law here): no doubled or silenced pass.
+        let mut reference = prepare(states[0]);
+        reference.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut expected = vec![[0.0; 2]; output.len()];
+        for chunk in expected.chunks_mut(block) {
+            reference.render(chunk).unwrap();
+        }
+        assert_eq!(
+            output[usize::try_from(wrap).unwrap()],
+            [0.2; 2],
+            "block={block}"
+        );
+        assert_eq!(output, expected, "block={block}");
+        outputs.push(output);
+    }
+    assert_eq!(outputs[0], outputs[1]);
+    assert_eq!(outputs[0], outputs[2]);
+}
+
+#[test]
+fn retained_arrangement_release_ends_when_a_later_edit_enables_a_loop() {
+    use hex_lattice::NativeInstrumentDefinition;
+    let definition = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.edit.enable_loop"),
+        levels: [0.2, 0.4],
+        release_frames: 8,
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let unlooped = project(1.0, 0, 8 << 32);
+    let mut snapshot = unlooped.snapshot();
+    snapshot.loop_region = Some(LoopRegion::new(0, 1_200, true).unwrap());
+    let looped = legacy_project_from_snapshot(snapshot).unwrap();
+    for (candidate_state, expected) in [(0, 0.2), (1, 0.4)] {
+        for block in [1, 64, 512] {
+            let prepare = |project: &Project, state| {
+                SessionPlayback::new(revision_with_instrument_registry(
+                    &with_test_instrument(project, definition.id, state),
+                    Arc::clone(&table),
+                    &registry,
+                ))
+                .unwrap()
+            };
+            let mut old = prepare(&unlooped, 0);
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut samples = vec![[0.0; 2]; 301];
+            for chunk in samples.chunks_mut(block) {
+                old.render(chunk).unwrap();
+            }
+            let mut changed = prepare(&unlooped, 1);
+            changed.try_inherit_state_from(&mut old).unwrap();
+            let mut samples = vec![[0.0; 2]; 300];
+            for chunk in samples.chunks_mut(block) {
+                changed.render(chunk).unwrap();
+            }
+            let mut next = prepare(&looped, candidate_state);
+            next.try_inherit_state_from(&mut changed).unwrap();
+            let mut samples = vec![[0.0; 2]; 600];
+            for chunk in samples.chunks_mut(block) {
+                next.render(chunk).unwrap();
+            }
+            assert_eq!(
+                samples[599], [expected; 2],
+                "block={block} state={candidate_state}"
+            );
+        }
+    }
+}
+
+#[test]
 fn arrangement_handoff_suppresses_through_candidate_release_end() {
     use hex_lattice::NativeInstrumentDefinition;
 
@@ -7209,6 +7486,10 @@ fn repeated_arrangement_instrument_edits_do_not_recapture_suppressed_occurrences
         .try_inherit_state_from(&mut second_revision)
         .unwrap();
     assert_eq!(third_revision.releases.len(), 1);
+    assert_eq!(
+        third_revision.releases[0].timeline,
+        ReleaseTimeline::Arrangement
+    );
     let mut after_two_edits = [[0.0; 2]; 64];
     third_revision.render(&mut after_two_edits).unwrap();
     assert_eq!(after_two_edits, [[0.2; 2]; 64]);
@@ -7627,6 +7908,75 @@ fn arrangement_instrument_bypass_releases_old_voice_and_reenable_does_not_chase(
     let mut future_onset = [[0.0; 2]; 1];
     reenabled.render(&mut future_onset).unwrap();
     assert_eq!(future_onset[0], [0.2; 2]);
+}
+
+#[test]
+fn reenabled_instrument_suppression_ends_at_the_loop_wrap_across_block_sizes() {
+    use hex_lattice::NativeInstrumentDefinition;
+
+    // Pulse #4124: the held note (beats 0..8) outlasts the loop over frames
+    // 0..12_000. Re-enabling must not chase it, but the next pass sounds.
+    let definition = ContinuityInstrumentDefinition {
+        id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.reenable.loop"),
+        levels: [0.2, 0.4],
+        release_frames: 8,
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let table = Arc::new(hex_devices::SineTable::new());
+    let mut looped = project(1.0, 0, 8 << 32).snapshot();
+    looped.loop_region = Some(LoopRegion::new(0, 12_000, true).unwrap());
+    let enabled = with_test_instrument(
+        &legacy_project_from_snapshot(looped).unwrap(),
+        definition.id,
+        0,
+    );
+    let mut bypassed_snapshot = enabled.snapshot();
+    bypassed_snapshot.tracks[0]
+        .instrument
+        .as_mut()
+        .unwrap()
+        .bypassed = true;
+    let bypassed = Project::from_legacy_snapshot(bypassed_snapshot).unwrap();
+    let cut = 3_001;
+    let mut outputs = Vec::new();
+    for block in [1, 64, 512] {
+        let mut disabled = SessionPlayback::new(revision_with_instrument_registry(
+            &bypassed,
+            Arc::clone(&table),
+            &registry,
+        ))
+        .unwrap();
+        disabled.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut buffer = vec![[0.0; 2]; block];
+        let mut remaining = cut;
+        while remaining > 0 {
+            let width = block.min(remaining);
+            disabled.render(&mut buffer[..width]).unwrap();
+            remaining -= width;
+        }
+        let mut reenabled = SessionPlayback::new(revision_with_instrument_registry(
+            &enabled,
+            Arc::clone(&table),
+            &registry,
+        ))
+        .unwrap();
+        reenabled.try_inherit_state_from(&mut disabled).unwrap();
+        let mut output = vec![[0.0; 2]; 12_000 - cut + 64];
+        for chunk in output.chunks_mut(block) {
+            reenabled.render(chunk).unwrap();
+        }
+        // No chase before the wrap; the next pass starts the note again.
+        assert!(
+            output[..12_000 - cut]
+                .iter()
+                .all(|frame| *frame == [0.0; 2])
+        );
+        assert_eq!(output[12_000 - cut], [0.2; 2], "block={block}");
+        outputs.push(output);
+    }
+    assert_eq!(outputs[0], outputs[1]);
+    assert_eq!(outputs[0], outputs[2]);
 }
 
 #[test]
@@ -9359,6 +9709,8 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
     let routes = failed.routes.clone();
     let release_end = failed.releases[0].voice.end_frame();
     let route_generation = failed.route_state_generation();
+    // The 500 bpm edit remaps the Arrangement cut by beat (Pulse #3935).
+    let arrangement_frame = failed.arrangement_frame();
     let mut pages = MissingPages::default();
     let mut output = [[9.0; 2]; 512];
     assert_eq!(
@@ -9368,7 +9720,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
     assert_eq!(output, [[0.0; 2]; 512]);
     assert_eq!(pages.0, [(stream_source.key(), 0)]);
     assert_eq!(failed.performance_frame(), 1);
-    assert_eq!(failed.arrangement_frame(), 1);
+    assert_eq!(failed.arrangement_frame(), arrangement_frame);
     assert_eq!(failed.route_state_generation(), route_generation);
     assert_eq!(failed.routes, routes);
     assert_eq!(failed.release_voice_count(), 1);
@@ -11975,19 +12327,17 @@ fn interactive_arrangement_preroll_accepts_loops_and_checks_cancellation() {
                 .unwrap_err(),
                 ArrangementPrerollError::Cancelled
             );
-            // Even though 1408 normalizes to 384, admission still requires the
-            // caller's original explicit work budget before doing any replay.
-            assert_eq!(
-                SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
-                    looped,
-                    1408,
-                    384,
-                    true,
-                    &AtomicBool::new(false),
-                )
-                .unwrap_err(),
-                ArrangementPrerollError::WorkBudgetExceeded,
-            );
+            // No prefix replays, so a post-loop destination needs no replay
+            // work budget and keeps its absolute cursor.
+            let post_loop = SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                looped,
+                1408,
+                0,
+                true,
+                &AtomicBool::new(false),
+            )
+            .expect("interactive seek renders no prefix");
+            assert_eq!(post_loop.arrangement_frame(), 1408);
         })
         .unwrap()
         .join()
@@ -12044,6 +12394,96 @@ fn assert_preroll_continuation(prepared: &Arc<PreparedRevision>, target: u64, in
     candidate.render(&mut actual).unwrap();
     assert_eq!(actual, expected, "preroll mismatch at frame {target}");
     assert!(actual.iter().any(|frame| *frame != [0.0; 2]));
+}
+
+#[test]
+fn interactive_and_section_destinations_exceed_the_linear_replay_ceiling() {
+    // 120 bpm at 48 kHz: beat 1398 starts at frame 33_552_000, so the
+    // destination lands inside the clip's first held note.
+    let destination = MAX_ARRANGEMENT_PREROLL_FRAMES * 4 + 37;
+    let mut snapshot = project(0.5, 0, 1 << 32).snapshot();
+    let (TrackContentSnapshot::Instrument(clips)
+    | TrackContentSnapshot::Hybrid {
+        midi_clips: clips, ..
+    }) = &mut snapshot.tracks[0].content
+    else {
+        panic!("fixture track holds midi clips");
+    };
+    clips[0].start_raw = 1398 << 32;
+    let prepared = revision(
+        &Project::from_legacy_snapshot(snapshot).unwrap(),
+        Arc::new(hex_devices::SineTable::new()),
+    );
+    // Linear export still replays the prefix and keeps its work ceiling.
+    assert_eq!(
+        SessionPlayback::prepare_arrangement_preroll_from_revision(
+            Arc::clone(&prepared),
+            destination,
+            MAX_ARRANGEMENT_PREROLL_FRAMES,
+            true,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err(),
+        ArrangementPrerollError::WorkBudgetExceeded
+    );
+    thread::Builder::new()
+        .name("hex-engine-long-seek-test".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let mut expected = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+            expected.play_from(destination).unwrap();
+            let mut expected_audio = [[0.0; 2]; 129];
+            expected.render(&mut expected_audio).unwrap();
+            assert!(expected_audio.iter().any(|frame| *frame != [0.0; 2]));
+            for start_playing in [true, false] {
+                let mut candidate =
+                    SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                        Arc::clone(&prepared),
+                        destination,
+                        destination,
+                        start_playing,
+                        &AtomicBool::new(false),
+                    )
+                    .expect("interactive seek beyond the replay ceiling");
+                assert_eq!(candidate.arrangement_frame(), destination);
+                assert_eq!(candidate.playing(), start_playing);
+                if !start_playing {
+                    candidate.apply(SessionPlaybackCommand::Play).unwrap();
+                }
+                let mut actual = [[0.0; 2]; 129];
+                candidate.render(&mut actual).unwrap();
+                assert_eq!(
+                    actual, expected_audio,
+                    "held note is chased at {destination}"
+                );
+            }
+            let region = LoopRegion::new(destination, destination + 4096, true).unwrap();
+            let section = SessionPlayback::prepare_section_arrangement_preroll(
+                Arc::clone(&prepared),
+                None,
+                region,
+                destination,
+                &AtomicBool::new(false),
+            )
+            .expect("section launch beyond the replay ceiling");
+            assert_eq!(section.arrangement_frame(), destination);
+            assert!(section.playing());
+            // Play-from arithmetic still bounds the destination.
+            assert_eq!(
+                SessionPlayback::prepare_interactive_arrangement_preroll_from_revision(
+                    prepared,
+                    u64::MAX,
+                    u64::MAX,
+                    true,
+                    &AtomicBool::new(false),
+                )
+                .unwrap_err(),
+                ArrangementPrerollError::Playback(SessionPlaybackError::ArithmeticOverflow)
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
@@ -12707,10 +13147,19 @@ fn mutable_checkpoint_store_bounds_factory_calls_before_construction() {
 #[path = "effect_tail_budget_tests.rs"]
 mod effect_tail_budget_tests;
 
+#[path = "idle_transition_tests.rs"]
+mod idle_transition_tests;
 #[path = "return_effect_tail_tests.rs"]
 mod return_effect_tail_tests;
 #[path = "saturator_tests.rs"]
 mod saturator_tests;
+#[path = "transition_busy_tests.rs"]
+mod transition_busy_tests;
+
+#[path = "eq8_mode_tests.rs"]
+mod eq8_mode_tests;
+#[path = "flexible_eq_mode_tests.rs"]
+mod flexible_eq_mode_tests;
 
 #[path = "compressor_tests.rs"]
 mod compressor_tests;
@@ -12731,6 +13180,9 @@ mod checkpoint_sources;
 
 #[path = "transport_loop_tests.rs"]
 mod transport_loop_tests;
+
+#[path = "pause_release_tests.rs"]
+mod pause_release_tests;
 
 #[path = "capture_tests.rs"]
 mod capture_tests;
@@ -12771,8 +13223,8 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
         assert_eq!(track_meter.take_track_output(), output_peak);
         assert_eq!(track_meter.take_track_output(), 0.0);
         let peaks = meter.take_peaks();
-        assert_eq!(peaks[0], 0.0);
-        assert!(peaks[1] > 0.0);
+        assert_eq!(peaks.input, 0.0);
+        assert!(peaks.output.iter().any(|peak| *peak > 0.0));
         let mut snapshot = project.snapshot();
         let instrument = snapshot.tracks[0].instrument.as_mut().unwrap();
         instrument.state = if input {

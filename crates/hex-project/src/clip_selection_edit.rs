@@ -547,6 +547,7 @@ impl Command {
             | Self::SetTuning(..)
             | Self::SetTrackColor { .. }
             | Self::InsertTrackWithDevice { .. }
+            | Self::InsertDefaultTrackWithDevice { .. }
             | Self::SpliceGainTouch { .. }
             | Self::SpliceGainTouchBatch { .. }
             | Self::ReplaceTrackGainEnvelope { .. }
@@ -562,6 +563,7 @@ impl Command {
             | Self::MoveMainDevice { .. }
             | Self::InsertDevice { .. }
             | Self::InsertInstrument { .. }
+            | Self::LoadInstrument { .. }
             | Self::RemoveInstrument { .. }
             | Self::RemoveDevice(..)
             | Self::MoveDevice { .. }
@@ -590,6 +592,7 @@ impl Command {
             | Self::DuplicateTracks { .. }
             | Self::AddTrack { .. }
             | Self::InsertTrack { .. }
+            | Self::InsertDefaultTrack { .. }
             | Self::MoveTrackBefore { .. }
             | Self::MoveTracksBefore { .. }
             | Self::PasteTracks { .. }
@@ -602,6 +605,7 @@ impl Command {
             | Self::ImportPreparedAudioClip { .. }
             | Self::ImportPreparedAudioClipWithOverwrite { .. }
             | Self::ImportPreparedSessionAudioClip { .. }
+            | Self::ImportExistingAudio { .. }
             | Self::RemoveTrack(..)
             | Self::RemoveTracks(..)
             | Self::RenameTrack { .. }
@@ -622,6 +626,7 @@ impl Command {
             | Self::ImportDeviceAssetIntoEmptyInstrument { .. }
             | Self::ImportDeviceAssetReplacingInstrument { .. }
             | Self::RemoveAsset(..)
+            | Self::RelinkAssets(..)
             | Self::PlaceClip { .. }
             | Self::GainBy { .. }
             | Self::BalanceBy { .. }

@@ -19,7 +19,9 @@ widgets = (
     # Clip name components normalize labels or render a native text-input entity.
     'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     # Waveform body wrappers contain view elements; preview titles normalize text.
-    'clip_waveform_body(', 'self.clip_name_preview_header(',
+    'clip_waveform_body(', 'super::tracks::clip_waveform_body(', 'self.clip_name_preview_header(',
+    # Fitted MIDI note columns paint one text-free canvas rectangle each.
+    'super::midi_thumbnail::note_column(',
     # Timeline boundary shell contains a previously constructed view and paint edges.
     'clip_boundary_shell(',
     # Loop body wrappers contain native views; marker glyphs use theme::text.
@@ -92,7 +94,7 @@ widgets = (
     'boundary::cursor_action(', 'boundary::handle(', 'source_adjust_button(', 'gain_adjust_button(', 'session_audio_loop_button(',
     'field_row(', 'loop_row(', 'time_ruler(', 'source_marker(', 'source_column)',
     'source_row(', 'details)', 'waveform_panel)', 'canvas_region)', 'roll_area)',
-    'status_slot(', 'super::waveform::waveform_view_cached(',
+    'status_slot(', 'disk_overload_slot(', 'super::waveform::waveform_view_cached(',
     'super::waveform::waveform_source_segment_view_cached(',
     'super::waveform::waveform_source_segment_gain_view_cached(',
     'toolbar)', 'control)', 'element)', 'controls)', 'clip_view)', 'step_button(', 'control_button(',
@@ -138,8 +140,8 @@ widgets = (
     'gate_column(',
     # Device-chain navigator is a typed view component; labels use theme::text.
     'super::device_panel::bottom_bar(', 'overview)',
-    # Shared host meter strip supplies lowercase tooltip text through theme::text.
-    'gain_meters::render(', 'super::gain_meters::render(',
+    # The passive post-device stereo meter supplies lowercase tooltip text through theme::text.
+    'device_meter::render(', 'super::device_meter::render(', 'hex_widgets::stereo_peak_meter(',
     # Typed routing/recording components normalize their labels at the boundary.
     'self.routing_controls(', 'gain_row(', 'sources)', 'super::waveform::button(',
     # Retained recording controls route all captions through theme::text internally.
@@ -238,7 +240,13 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             )
             and suffix.startswith('insertion_gap(')
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not transport_vector_component and not limiter_component and not device_insertion_component:
+        # The log viewer displays source bytes and native filenames verbatim;
+        # query and list are typed GPUI components, not app-owned labels.
+        log_viewer_source = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/log_viewer.rs'
+            and suffix.startswith(('display)', 'session)', 'detail)', 'status)', 'self.query.clone())', 'list)'))
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

@@ -153,7 +153,7 @@ impl NativeAudioSink {
                     Ok(())
                 });
             if let Err(error) = configured {
-                self.open_error = Some(error);
+                self.open_error = Some(error.into());
                 return;
             }
         }
@@ -244,7 +244,7 @@ impl NativeAudioSink {
             self.pending_open_event = Some(EditorAudioEvent::Unavailable {
                 project_generation: context.project_generation,
                 restart_request: self.restart_request,
-                error,
+                error: error.into(),
             });
         } else {
             self.observe(
@@ -293,7 +293,7 @@ impl NativeAudioSink {
                 self.pending_open_event = Some(EditorAudioEvent::Unavailable {
                     project_generation: context.project_generation,
                     restart_request: self.restart_request,
-                    error,
+                    error: error.into(),
                 });
             }
         } else if let Some(context) = context {
@@ -487,7 +487,7 @@ impl NativeAudioSink {
         }
         if state.phase == Phase::Draining && self.output.is_none() {
             if let Some(error) = self.open_error.take() {
-                self.sampler_refused(error);
+                self.sampler_refused(error.to_string());
             }
             return;
         }

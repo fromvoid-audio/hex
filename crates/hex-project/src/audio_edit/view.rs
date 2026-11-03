@@ -646,8 +646,11 @@ impl<'a> AudioViewProjection<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioViewResizeOperation {
-    /// Move the first read cursor in the retained root clock without moving the
-    /// outer placement or either cycle boundary. Once retains its silent tail.
+    /// Move the first read cursor in the retained root clock without moving
+    /// either cycle boundary. Like Live's unlooped region, a Once placement
+    /// begins at its start marker: its outer start moves with the cursor while
+    /// its end and every root position keep their project time. Repeat keeps
+    /// its outer placement and runs into the loop.
     /// Aligned frame-clock directed repeats retain their finite read window
     /// and resolve its first cursor through the existing base repeat phase.
     /// A live musical request that rounds to an empty first read resolves to
@@ -691,6 +694,8 @@ pub struct AudioViewResize {
     pub play_start_position: Option<u64>,
     // Owner-only metadata update; the GUI cannot submit this preview as an edit.
     content_override: Option<AudioContentView>,
+    // Owner-only destination start of a Once play start that moved its region.
+    outer_start: Option<u64>,
 }
 
 // A live phase changes the processing origin. The final source tick under
@@ -723,6 +728,32 @@ fn readable_musical_start(
         .filter(|length| *length > 0)
         .ok_or(Invalid("play start frame has no positive beat quantum"))?;
     Ok(position.min(view.end.saturating_sub(quantum).max(view.start)))
+}
+
+// A live Once region moves with its cursor, so its read ends at the fixed
+// cycle end. Resolve a request inside that final destination frame to the
+// previous frame boundary; `origin` is the reference of root position zero.
+fn readable_once_start(
+    tempo: &TempoMap,
+    origin: i128,
+    view: std::ops::Range<u64>,
+    position: u64,
+) -> Result<u64, Invalid> {
+    let at = |position: u64| {
+        origin
+            .checked_add(i128::from(position))
+            .ok_or(Invalid("play start boundary overflow"))
+    };
+    let last = audio_projection_frame(tempo, at(view.end)?)?;
+    if audio_projection_frame(tempo, at(position)?)? != last {
+        return Ok(position);
+    }
+    let begin = audio_projection_beat(tempo, last - 1)?
+        .checked_sub(origin)
+        .and_then(|position| u64::try_from(position).ok())
+        .filter(|position| *position < view.end)
+        .ok_or(Invalid("play start has no readable destination frame"))?;
+    Ok(begin.max(view.start))
 }
 
 pub fn preview_view_resize(
@@ -774,12 +805,19 @@ pub fn preview_view_resize(
         if position < view_start || position >= view_end {
             return Err(Invalid("play start must be inside the retained cycle"));
         }
+        let once = old.is_none_or(|p| p.mode == AudioViewMode::Once);
+        // Reference of the current first read cursor's root position zero.
+        let marker = i128::from(view_start) + i128::from(old.map_or(0, |p| p.cycle_phase));
         let position = if matches!(clock, AudioDomainClock::Beats(_))
             && clip
                 .audio_edit()
                 .is_some_and(|edit| matches!(edit.timing, AudioClipTiming::Musical(_)))
         {
-            readable_musical_start(tempo, start, view_start..view_end, position)?
+            if once {
+                readable_once_start(tempo, start - marker, view_start..view_end, position)?
+            } else {
+                readable_musical_start(tempo, start, view_start..view_end, position)?
+            }
         } else {
             position
         };
@@ -800,16 +838,23 @@ pub fn preview_view_resize(
             && matches!(edit.timing, AudioClipTiming::Frozen { .. })
         {
             // Frozen processing owns the old map and root origin. Move its
-            // carrier reference with the phase, then retain the exact outer
-            // frame gate instead of re-timing the source or its destination.
+            // carrier reference with the phase and retain the exact outer end
+            // frame. Once keeps its destination displacement, so its start
+            // follows the reference; Repeat keeps its outer start instead.
             let reference = edit
                 .processing_origin()?
                 .checked_add(i128::from(view_start))
                 .and_then(|value| value.checked_add(i128::from(phase)))
                 .ok_or(Invalid("frozen play start reference overflow"))?;
             let first = audio_projection_frame(tempo, reference)?;
-            let end = first
+            if !once {
+                displacement = i128::from(clip.start())
+                    .checked_sub(first)
+                    .ok_or(Invalid("frozen play start displacement overflow"))?;
+            }
+            let end = i128::from(clip.start())
                 .checked_add(i128::from(clip.duration()))
+                .and_then(|end| end.checked_sub(displacement))
                 .ok_or(Invalid("frozen play start end overflow"))?;
             let end = audio_projection_beat(tempo, end)?;
             let length = end
@@ -822,9 +867,27 @@ pub fn preview_view_resize(
             outer_length = AudioDomainClock::Beats(BeatTime::from_raw(length));
             reference_start_raw = Some(reference);
             start = reference;
-            displacement = i128::from(clip.start())
-                .checked_sub(first)
-                .ok_or(Invalid("frozen play start displacement overflow"))?;
+        } else if once {
+            // Shift the outer start by the cursor's movement in this clock and
+            // keep the end, so the read material stays at its project time.
+            let moved = i128::from(position) - marker;
+            start = start
+                .checked_add(moved)
+                .filter(|start| *start >= 0 || reference_start_raw.is_some())
+                .ok_or(Invalid(
+                    "play start would move the clip before project start",
+                ))?;
+            let length = u64::try_from(i128::from(outer_length.length()) - moved)
+                .ok()
+                .filter(|length| *length > 0)
+                .ok_or(Invalid("play start must precede the clip end"))?;
+            outer_length = match clock {
+                AudioDomainClock::Frames(_) => AudioDomainClock::Frames(length),
+                AudioDomainClock::Beats(_) => AudioDomainClock::Beats(BeatTime::from_raw(length)),
+            };
+            if reference_start_raw.is_some() {
+                reference_start_raw = Some(start);
+            }
         }
         let placement = AudioViewPlacement {
             mode: old.map_or(AudioViewMode::Once, |p| p.mode),
@@ -850,6 +913,7 @@ pub fn preview_view_resize(
             frame_end,
             play_start_position: Some(position),
             content_override: None,
+            outer_start: once.then_some(frame_start),
         });
     }
     if let AudioViewResizeOperation::CycleRange {
@@ -898,6 +962,7 @@ pub fn preview_view_resize(
             frame_end,
             play_start_position: None,
             content_override: None,
+            outer_start: None,
         });
     }
     let project_frame = match operation {
@@ -982,6 +1047,7 @@ pub fn preview_view_resize(
         frame_end,
         play_start_position: None,
         content_override: None,
+        outer_start: None,
     })
 }
 
@@ -1092,6 +1158,10 @@ fn materialize_view_resize(
         .edit
         .clone()
         .unwrap_or_else(|| Arc::new(AudioClipEdit::capture(&clip)));
+    if let Some(start) = next.outer_start {
+        // Frame clocks and frozen displacement read the clip's own start.
+        clip.start = start;
+    }
     let value = Arc::make_mut(&mut edit);
     value.view_start = next.view_start;
     value.view_end = next.view_end;

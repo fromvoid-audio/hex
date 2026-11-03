@@ -3,9 +3,16 @@
 //! stamps and owns history; released curves retain their exact ordered receipt.
 //! Provider descriptors and typed host gains have separate value metadata;
 //! reserved widget keys are translated only by the shared binding edge.
+//! Point selection is transient view state within one lane. A blank press adds
+//! a point and drags it; a shift blank drag draws the shared
+//! `hex_widgets::Marquee` (shift+cmd toggles). Dragging a selected point moves
+//! the whole selection, and
+//! delete/shape act on every selected point; each is one whole-lane request,
+//! so one Undo reverts the group edit.
 #[cfg(all(test, feature = "ui-test-support"))]
-mod host_tests;
+pub(super) mod host_tests;
 mod paint;
+mod plot_geometry;
 mod read_selection;
 #[cfg(test)]
 mod tests;
@@ -92,16 +99,69 @@ pub(super) enum Action {
     Shape(Target, AutomationInterpolation),
 }
 
+/// Selected beats within one lane, sorted, unique and non-empty.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Selection {
+    target: Target,
+    beats: Vec<BeatTime>,
+}
+
+impl Selection {
+    fn one(target: Target, beat: BeatTime) -> Self {
+        Self {
+            target,
+            beats: vec![beat],
+        }
+    }
+    /// `None` for an empty set, so an empty marquee clears the selection.
+    fn new(target: Target, mut beats: Vec<BeatTime>) -> Option<Self> {
+        beats.sort_unstable();
+        beats.dedup();
+        (!beats.is_empty()).then_some(Self { target, beats })
+    }
+    fn contains(&self, target: Target, beat: BeatTime) -> bool {
+        self.target == target && self.beats.binary_search(&beat).is_ok()
+    }
+    fn beats_in(&self, target: Target) -> &[BeatTime] {
+        if self.target == target {
+            &self.beats
+        } else {
+            &[]
+        }
+    }
+}
+
+/// Held point press. `group` holds the original selected points moving with
+/// the pressed `initial` point; `points` is the current candidate lane.
 #[derive(Clone)]
 pub(super) struct Draft {
     target: Target,
     revision: u64,
     points: Vec<AutomationPoint>,
+    group: Vec<AutomationPoint>,
+    rest: Vec<AutomationPoint>,
+    /// A stationary click on a grouped point collapses the selection to it.
+    collapse: bool,
     initial: AutomationPoint,
     point: AutomationPoint,
     viewport: super::viewport::Viewport,
     rect: [f32; 4],
     origin: [f32; 2],
+}
+
+/// Held shift blank press: a click adds `click` on release; a drag becomes a marquee.
+#[derive(Clone)]
+pub(super) struct MarqueeDraft {
+    target: Target,
+    revision: u64,
+    band: hex_widgets::Marquee,
+    mode: hex_widgets::MarqueeMode,
+    base: Option<Selection>,
+    click: Vec<AutomationPoint>,
+    click_beat: BeatTime,
+    viewport: super::viewport::Viewport,
+    rect: [f32; 4],
+    active: bool,
 }
 struct Pending {
     target: Target,
@@ -115,8 +175,9 @@ pub(super) struct Lanes {
     main: Vec<Entry>,
     extra: Vec<Entry>,
     known: Vec<Entry>,
-    selected: Option<(Target, BeatTime)>,
+    selected: Option<Selection>,
     draft: Option<Draft>,
+    marquee: Option<MarqueeDraft>,
     pending: Option<Pending>,
     read_pending: Option<read_selection::PendingRead>,
     read_summary: read_selection::ReadSummary,
@@ -303,6 +364,22 @@ impl Entry {
             self.target.kind,
         )
     }
+    /// Lane position of a control-space value; host gains travel in decibels.
+    fn normalized(&self, value: ParameterValue) -> Option<f32> {
+        match (self.metadata, value) {
+            (EntryMetadata::HostGain, ParameterValue::Float(db)) => {
+                HostGain::from_db(db).ok().map(HostGain::normalized)
+            }
+            (EntryMetadata::HostGain, _) => None,
+            (
+                EntryMetadata::Provider {
+                    descriptor,
+                    semantics,
+                },
+                value,
+            ) => semantics.normalization.normalize(descriptor, value).ok(),
+        }
+    }
     fn is_discrete(&self) -> bool {
         matches!(
             self.metadata,
@@ -408,6 +485,9 @@ impl Lanes {
             .and_then(|beat| project.tempo_map().beat_to_frame(beat).ok())
     }
     pub(super) fn pointer_active(&self) -> bool {
+        self.draft.is_some() || self.marquee.is_some()
+    }
+    pub(super) fn point_draft_active(&self) -> bool {
         self.draft.is_some()
     }
     pub(super) fn extra_height(&self, owner: Owner) -> f32 {
@@ -431,26 +511,47 @@ impl Lanes {
             .find(|entry| entry.target == target)
     }
     fn points(&self, state: &ViewState, target: Target) -> Vec<AutomationPoint> {
+        self.points_ref(&state.project, target).to_vec()
+    }
+    /// Displayed points (draft, then pending, then canonical) without copying.
+    fn points_ref<'a>(&'a self, project: &'a Project, target: Target) -> &'a [AutomationPoint] {
         if let Some(draft) = self.draft.as_ref().filter(|draft| draft.target == target) {
-            return draft.points.clone();
+            return &draft.points;
         }
         if let Some(pending) = self
             .pending
             .as_ref()
             .filter(|pending| pending.target == target)
         {
-            return pending.points.clone();
+            return &pending.points;
         }
-        state
-            .project
+        project
             .device(target.device)
             .and_then(|device| device.automation_target(target.kind))
-            .map(|lane| lane.points.clone())
-            .unwrap_or_default()
+            .map_or(&[], |lane| lane.points.as_slice())
     }
 }
 
 impl EditorView {
+    /// Unautomated lanes follow the bound control frame by frame: the in-flight
+    /// gesture, then the admitted manual value, then canonical `base`. Released
+    /// gestures keep their snapshot until the exact terminal installs canonical
+    /// state, so the line never snaps back. Authored envelopes ignore this value.
+    pub(super) fn live_device_automation_base(&mut self, entry: &Entry) -> f32 {
+        let parameter = match entry.target.kind {
+            DeviceAutomationTarget::Parameter(parameter) => parameter,
+            DeviceAutomationTarget::HostInputGain => hex_engine::DEVICE_INPUT_GAIN.id,
+            DeviceAutomationTarget::HostOutputGain => hex_engine::DEVICE_OUTPUT_GAIN.id,
+        };
+        let key = super::device_panel::ParameterKey {
+            device: entry.target.device,
+            parameter,
+        };
+        super::device_panel::parameter_display_override(self, key)
+            .and_then(|value| entry.normalized(value))
+            .unwrap_or(entry.base)
+    }
+
     pub(super) fn remember_automation_parameter(
         &mut self,
         device: DeviceId,
@@ -854,7 +955,8 @@ impl EditorView {
                     .automation_view
                     .devices
                     .selected
-                    .is_some_and(|(selected, _)| selected == target)
+                    .as_ref()
+                    .is_some_and(|selected| selected.target == target)
                 {
                     self.automation_view.devices.selected = None;
                 }
@@ -869,18 +971,17 @@ impl EditorView {
                 self.commit_device_automation(target, Vec::new(), cx);
             }
             Action::Shape(target, shape) => {
-                let Some((selected_target, beat)) = self.automation_view.devices.selected else {
+                let Some(selected) = self.automation_view.devices.selected.clone() else {
                     return;
                 };
-                if selected_target != target {
-                    return;
-                }
                 let Some(state) = &self.state else {
                     return;
                 };
                 let mut points = self.automation_view.devices.points(state, target);
-                if let Some(point) = points.iter_mut().find(|point| point.beat == beat) {
-                    point.outgoing = shape;
+                for point in &mut points {
+                    if selected.contains(target, point.beat) {
+                        point.outgoing = shape;
+                    }
                 }
                 self.commit_device_automation(target, points, cx);
             }
@@ -914,6 +1015,15 @@ impl EditorView {
         }) {
             lanes.draft = None;
         }
+        if lanes.marquee.as_ref().is_some_and(|marquee| {
+            marquee.revision != state.revision
+                || marquee
+                    .target
+                    .current(&state.project, self.project_generation)
+                    .is_none()
+        }) {
+            lanes.marquee = None;
+        }
         for entries in [&mut lanes.main, &mut lanes.extra, &mut lanes.known] {
             entries.retain_mut(|entry| {
                 if let Some(current) = entry.refreshed(&state.project, self.project_generation) {
@@ -924,18 +1034,29 @@ impl EditorView {
                 }
             });
         }
-        if lanes.selected.is_some_and(|(target, beat)| {
-            lanes
+        if let Some(selected) = lanes.selected.take() {
+            let target = selected.target;
+            lanes.selected = if lanes
                 .pending
                 .as_ref()
-                .is_none_or(|pending| pending.target != target)
-                && state
+                .is_some_and(|pending| pending.target == target)
+            {
+                Some(selected)
+            } else {
+                let canonical = state
                     .project
                     .device(target.device)
                     .and_then(|device| device.automation_target(target.kind))
-                    .is_none_or(|lane| !lane.points.iter().any(|point| point.beat == beat))
-        }) {
-            lanes.selected = None;
+                    .map_or(&[][..], |lane| lane.points.as_slice());
+                Selection::new(
+                    target,
+                    selected
+                        .beats
+                        .into_iter()
+                        .filter(|beat| canonical.iter().any(|point| point.beat == *beat))
+                        .collect(),
+                )
+            };
         }
         if lanes.extra.len() != previous_extra_count {
             self.track_scroll.remeasure();
@@ -987,21 +1108,29 @@ impl EditorView {
         }
     }
     pub(super) fn cancel_device_automation_draft(&mut self, cx: &mut Context<Self>) -> bool {
-        let changed = self.automation_view.devices.draft.take().is_some();
+        let lanes = &mut self.automation_view.devices;
+        let mut changed = lanes.draft.take().is_some();
+        if let Some(marquee) = lanes.marquee.take() {
+            lanes.selected = marquee.base;
+            changed = true;
+        }
         if changed {
             cx.notify();
         }
         changed
     }
+    /// Removes every selected point of the selected lane in one request.
     pub(super) fn delete_device_automation_point(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some((target, beat)) = self.automation_view.devices.selected else {
+        let Some(selected) = self.automation_view.devices.selected.clone() else {
             return false;
         };
         let Some(state) = &self.state else {
             return false;
         };
+        let target = selected.target;
         let mut points = self.automation_view.devices.points(state, target);
-        points.retain(|point| point.beat != beat);
+        points.retain(|point| !selected.contains(target, point.beat));
+        self.automation_view.devices.selected = None;
         self.commit_device_automation(target, points, cx);
         true
     }

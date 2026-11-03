@@ -202,18 +202,55 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         let mut expected = main;
         reference.render(&mut expected).unwrap();
         assert_eq!(main, expected);
-        for index in 0..512 {
-            let a = if index < 3 { [0.0; 2] } else { [0.25, -0.5] };
-            let b = if index < 3 {
-                [0.0; 2]
-            } else {
-                [0.4 * 0.75, -0.2 * 0.375]
-            };
-            let input = [a[0] * 0.5 + b[0], a[1] * 0.5 + b[1]];
-            let drive = 10.0_f64.powf(9.0 / 20.0);
-            let clipped = input.map(|sample| (f64::from(sample) * drive).clamp(-1.0, 1.0) as f32);
-            let mono = (clipped[0] + clipped[1]) * 0.5 * 0.25;
-            assert_eq!(capture.output(0).unwrap()[index], a);
+        // Oracle: standalone oversampled runtimes in processing order. Each
+        // device output is silent before its origin reaches the playback
+        // epoch; the track tap is delayed to Main's arrival (22 frames) and
+        // the dry track waits on its send edge for the track Saturator.
+        let saturate = |drive, input: &[Frame], input_arrival: usize| {
+            let prepared = hex_devices::saturator::SaturatorDefinition::prepare_owned(
+                &digital(drive),
+                48_000,
+                &[],
+            )
+            .unwrap();
+            let arrival = input_arrival
+                + hex_lattice::PreparedNativeProcessor::algorithmic_latency_frames(&prepared)
+                    .unwrap() as usize;
+            let mut frames = input.to_vec();
+            hex_lattice::PreparedNativeProcessor::create_runtime(&prepared)
+                .process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            frames[..arrival].fill([0.0; 2]);
+            (frames, arrival)
+        };
+        let delayed = |frames: &[Frame], index: usize, delay: usize| {
+            index
+                .checked_sub(delay)
+                .map_or([0.0; 2], |index| frames[index])
+        };
+        let source: Vec<Frame> = (0..512)
+            .map(|index| if index < 3 { [0.0; 2] } else { [0.4, -0.2] })
+            .collect();
+        let (track_wet, track_arrival) = saturate(24.0, &source, 0);
+        let a: Vec<Frame> = track_wet
+            .iter()
+            .map(|f| [f[0] * 0.25, f[1] * 0.5])
+            .collect();
+        let b: Vec<Frame> = source.iter().map(|f| [f[0] * 0.75, f[1] * 0.375]).collect();
+        let sent: Vec<Frame> = (0..512)
+            .map(|index| {
+                let b = delayed(&b, index, track_arrival);
+                [a[index][0] * 0.5 + b[0], a[index][1] * 0.5 + b[1]]
+            })
+            .collect();
+        let (return_wet, return_arrival) = saturate(9.0, &sent, track_arrival);
+        assert_eq!((track_arrival, return_arrival), (11, 22));
+        assert!(a.iter().any(|frame| frame[0] > 0.24));
+        for (index, wet) in return_wet.iter().enumerate() {
+            let mono = (wet[0] + wet[1]) * 0.5 * 0.25;
+            assert_eq!(
+                capture.output(0).unwrap()[index],
+                delayed(&a, index, return_arrival - track_arrival)
+            );
             assert!((capture.output(1).unwrap()[index][0] - mono).abs() < 1e-7);
             assert_eq!(
                 capture.output(1).unwrap()[index][0],
@@ -702,7 +739,7 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
                 comparison: None,
                 id: 101,
                 bypassed: false,
-                state: suffix,
+                state: suffix.clone(),
             },
         ];
         routed.tracks[0].instrument_position = Some(1);
@@ -757,14 +794,31 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
         let mut unobserved_pcm = routed_main;
         unobserved.render(&mut unobserved_pcm).unwrap();
         assert_eq!(routed_main, unobserved_pcm);
+        // Oracle: the suffix is a standalone oversampled Saturator runtime
+        // over prefix + instrument. Its declared latency delays every later
+        // stage equally, and its output is silent before the playback epoch.
         let gain = 2.0_f32;
+        let suffix_input: Vec<Frame> = (0..routed_main.len())
+            .map(|index| {
+                let audio = if index < 3 { [0.0; 2] } else { [0.4_f32, -0.2] };
+                let level = if index < 379 { 0.25 } else { 0.0 };
+                audio.map(|sample| sample * gain + level)
+            })
+            .collect();
+        let prepared_suffix =
+            hex_devices::saturator::SaturatorDefinition::prepare_owned(&suffix, 48_000, &[])
+                .unwrap();
+        let latency =
+            hex_lattice::PreparedNativeProcessor::algorithmic_latency_frames(&prepared_suffix)
+                .unwrap() as usize;
+        assert_eq!(latency, 11);
+        let mut suffix_output = suffix_input;
+        hex_lattice::PreparedNativeProcessor::create_runtime(&prepared_suffix)
+            .process_block(&mut suffix_output, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        suffix_output[..latency].fill([0.0; 2]);
+        assert!(suffix_output.iter().any(|frame| frame[0] > 0.9));
         for (index, main_frame) in routed_main.iter().enumerate() {
-            let audio = if index < 3 { [0.0; 2] } else { [0.4_f32, -0.2] };
-            let level = if index < 379 { 0.25 } else { 0.0 };
-            let processed = audio.map(|sample| {
-                ((f64::from(sample * gain + level)) * 10.0_f64.powf(6.0 / 20.0)).clamp(-1.0, 1.0)
-                    as f32
-            });
+            let processed = suffix_output[index];
             let track = [processed[0] * 0.5, processed[1] * 0.25];
             let returned = track.map(|sample| sample * 0.5 * 0.25);
             for channel in 0..2 {
@@ -1327,8 +1381,9 @@ fn live_project_taps_preserve_pcm_and_independent_tracks_across_loop_wraps() {
         for index in 0..1536 {
             let frame = if looping { index % 1024 } else { index };
             let sounding = (3..1027).contains(&frame);
-            let a = if sounding { [0.1, -0.1] } else { [0.0; 2] };
-            let b = if sounding { [0.3, -0.075] } else { [0.0; 2] };
+            let level = |at: usize| f32::from(u8::from(sounding)) * [0.1, 0.3][at];
+            let a = [level(0), -level(0)];
+            let b = [level(1), -level(1) * 0.25];
             for channel in 0..2 {
                 assert!((tracks[0][index][channel] - a[channel]).abs() < 1e-6);
                 assert!((tracks[1][index][channel] - b[channel]).abs() < 1e-6);

@@ -86,7 +86,11 @@ pub(super) fn resolve_delete_target(
             }
             return matches!(
                 project.session_cell(track, scene),
-                Some(SessionCellContent::Midi(_) | SessionCellContent::Stop)
+                Some(
+                    SessionCellContent::Audio(_)
+                        | SessionCellContent::Midi(_)
+                        | SessionCellContent::Stop
+                )
             )
             .then_some(DeleteTarget::SessionCell { track, scene });
         }
@@ -2432,6 +2436,66 @@ mod tests {
             ),
             Some(DeleteTarget::ArrangementClip(clip.id()))
         );
+
+        // Hybrid tracks hold audio Session cells; Delete clears them too.
+        let Created::Scene(audio_scene) = editor
+            .execute(Command::AddScene {
+                name: "audio".into(),
+            })
+            .unwrap()
+        else {
+            panic!("audio scene")
+        };
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 1_000,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        editor
+            .execute(Command::CreateSessionAudioClip {
+                track,
+                scene: audio_scene,
+                name: "audio".into(),
+                asset,
+                source_start: 0,
+                source_end: 1_000,
+            })
+            .unwrap();
+        let with_audio = editor.project().snapshot();
+        let target = resolve_delete_target(
+            Some(editor.project()),
+            super::EditorMode::Session,
+            false,
+            false,
+            Some((track, audio_scene)),
+            None,
+            None,
+        );
+        assert_eq!(
+            target,
+            Some(DeleteTarget::SessionCell {
+                track,
+                scene: audio_scene
+            })
+        );
+        editor
+            .execute(Command::ClearSessionCell {
+                track,
+                scene: audio_scene,
+            })
+            .unwrap();
+        assert!(editor.project().session_cell(track, audio_scene).is_none());
+        assert!(editor.undo());
+        assert!(matches!(
+            editor.project().session_cell(track, audio_scene),
+            Some(SessionCellContent::Audio(_))
+        ));
+        assert_eq!(editor.project().snapshot(), with_audio);
     }
 
     #[test]

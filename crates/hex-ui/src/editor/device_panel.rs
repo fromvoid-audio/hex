@@ -27,11 +27,11 @@ mod auto_pan_panel;
 mod bindings;
 mod delay_panel;
 mod overdrive_panel;
-pub(super) use bindings::effective_parameter_value;
 use bindings::{
     ControlPresentation, ControlText, ParameterControl, cancel_control,
     parameter_control_matches_identity,
 };
+pub(super) use bindings::{effective_parameter_value, parameter_display_override};
 mod gesture_adapter;
 pub(super) use gesture_adapter::{
     NumericGestureLease, commit_owned_numeric_edit, dispatch_bound_numeric_gesture,
@@ -46,7 +46,7 @@ mod eq_panel;
 mod limiter_panel;
 pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
-mod gain_meters;
+mod device_meter;
 mod gate_panel;
 mod keyboard;
 mod navigation;
@@ -123,7 +123,7 @@ pub(super) struct DevicePanelState {
     insertion: Option<InsertionPoint>,
     pub(super) drag_copy: Option<DeviceDragCopy>,
     controls: HashMap<ParameterKey, ParameterControl>,
-    meter_states: HashMap<DeviceId, gain_meters::MeterState>,
+    meter_states: HashMap<DeviceId, device_meter::MeterState>,
     send_controls: HashMap<SendControlKey, SendControl>,
     views: HashMap<
         DeviceId,
@@ -167,6 +167,8 @@ pub(super) struct DevicePanelState {
         hex_audio::spectrum_worker::SpectrumTargetId,
         hex_audio::spectrum_worker::PublishedSpectra,
     >,
+    /// Retained per-tick read buffer for the latest spectrum pairs.
+    pub(super) spectrum_scratch: Vec<hex_audio::spectrum_worker::PublishedSpectra>,
     add_menu_open: bool,
     message: Option<String>,
 }
@@ -349,21 +351,6 @@ impl DevicePanelState {
         self.controls.keys().any(|key| key.device == device)
     }
 
-    #[cfg(all(test, feature = "ui-test-support"))]
-    pub(super) fn has_only_host_control_for(&self, device: DeviceId) -> bool {
-        self.controls.contains_key(&ParameterKey {
-            device,
-            parameter: hex_engine::DEVICE_OUTPUT_GAIN.id,
-        }) && self
-            .controls
-            .keys()
-            .filter(|key| key.device == device)
-            .all(|key| {
-                key.parameter == hex_engine::DEVICE_OUTPUT_GAIN.id
-                    || key.parameter == hex_engine::DEVICE_INPUT_GAIN.id
-            })
-    }
-
     pub(super) fn has_pending_draft(&self, cx: &App) -> bool {
         self.controls.values().any(|control| match control {
             ParameterControl::Float { entity, .. } => entity.read_with(cx, |control, _| {
@@ -388,8 +375,10 @@ fn cache_device_metadata(
         .get(&device.id())
         .is_some_and(|(cached_class, state, _)| *cached_class == class && state == device.state());
     if !current {
-        let metadata = hex_engine::native_device_view_for_class(class, device.state())
-            .map_err(|error| error.to_string().to_lowercase());
+        let metadata =
+            hex_engine::native_device_view_for_class(class, device.state()).map_err(|error| {
+                hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
+            });
         panel
             .views
             .insert(device.id(), (class, device.state().clone(), metadata));
@@ -1048,14 +1037,16 @@ fn render_track(
 
     if view.device_panel.effect_catalog.is_none() {
         view.device_panel.effect_catalog = Some(
-            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect)
-                .map_err(|error| error.to_string().to_lowercase()),
+            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect).map_err(
+                |error| hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+            ),
         );
     }
     if view.device_panel.instrument_catalog.is_none() {
         view.device_panel.instrument_catalog = Some(
-            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Instrument)
-                .map_err(|error| error.to_string().to_lowercase()),
+            hex_engine::native_device_catalog_for_class(NativeDeviceClass::Instrument).map_err(
+                |error| hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+            ),
         );
     }
     let effect_catalog = view
@@ -1330,7 +1321,7 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Effect, Some("hex.overdrive")) => overdrive_panel::FRAME_WIDTH,
         _ => DEVICE_FRAME_WIDTH,
     };
-    frame_width + gain_meters::WIDTH
+    frame_width + device_meter::WIDTH
 }
 
 fn pointer_within_visible_device_drop_bounds(
@@ -1798,6 +1789,9 @@ fn device_selection_listener(
 
 fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful<Div> {
     let device_id = device.id();
+    if view.degraded_plugins.contains(device_id.value()) {
+        return vst3_degraded_body(device_id);
+    }
     let foreign = view
         .audible_playback
         .as_ref()
@@ -1834,6 +1828,33 @@ fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful
         .debug_selector(move || format!("device-body-{}", device_id.value()))
 }
 
+/// A vst3 endpoint that faulted renders as an aligned pass-through while the
+/// other devices keep processing (#3977). Shows the shared unsupported-body
+/// display with an explanatory tooltip.
+fn vst3_degraded_body(device_id: DeviceId) -> Stateful<Div> {
+    let selector = format!("device-vst3-degraded-{}", device_id.value());
+    let content = crate::device_composition::unsupported_body(theme::text(
+        "vst3 stopped responding · audio passes through",
+    ))
+    .id(ElementId::Name(selector.clone().into()))
+    .debug_selector(move || selector.clone())
+    .tooltip(|_, cx| {
+        cx.new(|_| super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Help,
+            description: theme::text(
+                "the plugin missed its audio deadline · it is bypassed with its latency kept, and other devices keep playing",
+            ),
+        })
+        .into()
+    });
+    div()
+        .child(content)
+        .id(ElementId::Name(
+            format!("device-body-{}", device_id.value()).into(),
+        ))
+        .debug_selector(move || format!("device-body-{}", device_id.value()))
+}
+
 fn render_effect(
     view: &mut EditorView,
     window: Option<&Window>,
@@ -1853,7 +1874,9 @@ fn render_effect(
         .map(|(_, _, result)| result)
         .unwrap_or_else(|| {
             hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
-                .map_err(|error| error.to_string().to_lowercase())
+                .map_err(|error| {
+                    hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
+                })
         });
     let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
@@ -1999,7 +2022,7 @@ fn render_effect(
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(frame_width + gain_meters::WIDTH))
+        .w(px(frame_width + device_meter::WIDTH))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
@@ -2010,12 +2033,7 @@ fn render_effect(
             cx,
         ))
         .child(rendered)
-        .child(gain_meters::render(
-            view,
-            cx,
-            device,
-            NativeDeviceClass::Effect,
-        ))
+        .child(device_meter::render(view, device, cx))
 }
 
 impl EditorView {
@@ -2464,7 +2482,9 @@ fn render_instrument(
         .map(|(_, _, result)| result);
     let device_view = cached.unwrap_or_else(|| {
         hex_engine::native_device_view_for_class(NativeDeviceClass::Instrument, device.state())
-            .map_err(|error| error.to_string().to_lowercase())
+            .map_err(|error| {
+                hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
+            })
     });
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
     let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
@@ -2539,6 +2559,7 @@ fn render_instrument(
                     hex_engine::SamplerParameter::LoopEnabled,
                     hex_engine::SamplerParameter::LoopStartFrame,
                     hex_engine::SamplerParameter::LoopEndFrame,
+                    hex_engine::SamplerParameter::LoopCrossfadeMs,
                 ] {
                     fields.push(view.sampler_parameter_control(track, device, parameter, cx));
                 }
@@ -2556,7 +2577,10 @@ fn render_instrument(
         }
         let controls = div()
             .grid()
-            .grid_cols(if loop_error.is_none() { 11 } else { 8 })
+            // One dense row: twelve classic controls at the sampler's inline
+            // value width (see `SAMPLER_INLINE_VALUE_WIDTH`) fit the 1024 px
+            // device body, keeping the waveform overview's full height.
+            .grid_cols(if loop_error.is_none() { 12 } else { 8 })
             .gap(px(2.0))
             .w_full()
             .flex_shrink_0()
@@ -2692,7 +2716,7 @@ fn render_instrument(
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(frame_width + gain_meters::WIDTH))
+        .w(px(frame_width + device_meter::WIDTH))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
@@ -2703,12 +2727,7 @@ fn render_instrument(
             cx,
         ))
         .child(rendered)
-        .child(gain_meters::render(
-            view,
-            cx,
-            device,
-            NativeDeviceClass::Instrument,
-        ))
+        .child(device_meter::render(view, device, cx))
 }
 
 fn instrument_actions(
@@ -3008,9 +3027,7 @@ fn binding_policy(
     presentation: ControlPresentation,
     display: ControlText,
 ) -> bindings::BindingPolicy {
-    let tab_navigation = identity.type_id.as_str() == Ok("hex.instrument.operator")
-        && descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id
-        && descriptor.id != hex_engine::DEVICE_INPUT_GAIN.id;
+    let tab_navigation = identity.type_id.as_str() == Ok("hex.instrument.operator");
     let numeric_begin = if identity.class == NativeDeviceClass::Instrument
         && identity.type_id.as_str() == Ok("hex.instrument.operator")
     {

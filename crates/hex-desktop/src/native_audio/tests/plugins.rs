@@ -122,7 +122,7 @@ fn same_source_edit(h: &mut ResidentHarness, request: Request) -> Event {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return_main() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for location in 0..3 {
         // A headless sink has no physical-device contribution. This original
         // zero-latency fixture has a known2Q copied bridge and no downstream
@@ -251,7 +251,7 @@ fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_restores_committed_effect_after_stop() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for location in 0..3 {
         let mut h = ResidentHarness::with_plugins(
             host(),
@@ -381,7 +381,7 @@ fn native_effect_coordinator_restores_committed_effect_after_stop() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_pending_restore_document_change_does_not_strand_next_output() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::with_plugins(
         host(),
         Some(EffectPresentation {
@@ -436,7 +436,7 @@ fn native_effect_pending_restore_document_change_does_not_strand_next_output() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_history_reuses_original_after_undo_with_and_without_stop() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for stop in [false, true] {
         native_effect_history_case(stop, false);
     }
@@ -446,7 +446,7 @@ fn native_effect_history_reuses_original_after_undo_with_and_without_stop() {
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_history_after_observed_tail_terminal() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     native_effect_history_case(false, true);
 }
 
@@ -617,7 +617,7 @@ fn native_effect_history_case(stop_while_undone: bool, drain_tail: bool) {
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_keeps_registered_sampler_and_file_pcm_across_stop() {
     use hex_project::BeatTime;
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::with_plugins(
         host(),
         Some(EffectPresentation {
@@ -745,7 +745,7 @@ fn native_effect_coordinator_keeps_registered_sampler_and_file_pcm_across_stop()
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_live_bypass_and_removal_keep_original_clock_and_tail_pcm() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::with_plugins(
         host(),
         Some(EffectPresentation {
@@ -884,7 +884,7 @@ fn native_effect_coordinator_live_bypass_and_removal_keep_original_clock_and_tai
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_reorder_waits_for_original_zero_input_prefix_and_undo() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::with_plugins(
         host(),
         Some(EffectPresentation {
@@ -1033,7 +1033,7 @@ fn native_effect_coordinator_reorder_waits_for_original_zero_input_prefix_and_un
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for known_presentation in [false, true] {
         let (reached, facts) = mpsc::sync_channel(1);
         let (resume, resumed) = mpsc::sync_channel(1);
@@ -1100,7 +1100,7 @@ fn native_effect_real_work_contention_waits_then_keeps_exact_accept_or_refusal()
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_refuses_unknown_presentation_without_canonical_or_history_edit() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let mut h = ResidentHarness::with_plugins(host(), None);
     let initial = h.next();
     assert!(initial.error.is_none());
@@ -1139,7 +1139,7 @@ fn native_effect_coordinator_refuses_unknown_presentation_without_canonical_or_h
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_cancel_or_stop_before_ack_preserves_history_and_recovers_original() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     for stop in [false, true] {
         let mut h = ResidentHarness::with_plugins(
             host(),

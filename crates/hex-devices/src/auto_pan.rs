@@ -12,11 +12,18 @@ use std::any::Any;
 mod automation;
 
 pub const AUTO_PAN_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.auto-pan");
+/// Current state version. Supported saved versions (Pulse #3956):
+/// - v1 (11 Oct 2026, 12 bytes): no waveform; migrates to Sine, v1's only LFO.
+/// - v2 (18 Oct 2026, 16 bytes): adds the waveform choice.
 pub const AUTO_PAN_STATE_VERSION: u32 = 2;
 const STATE_BYTES: usize = 16;
 const MIN_SAMPLE_RATE: u32 = 8_000;
 const MAX_SAMPLE_RATE: u32 = 192_000;
 const DEFAULT_RAMP_MS: f64 = 5.0;
+/// Square and saw discontinuities become a linear transition of this duration
+/// at any sample rate (Pulse #3959), so an edge never steps the gain in one
+/// sample.
+const EDGE_SECONDS: f64 = 0.001;
 
 pub mod parameter {
     use hex_lattice_contract::ParameterId;
@@ -131,7 +138,41 @@ impl Waveform {
             .copied()
             .ok_or(DeviceContractError::InvalidParameterValue)
     }
+    /// Ideal shape with exact discontinuities (also the preview geometry).
     fn lfo(self, phase: f64) -> f64 {
+        self.lfo_with_edge(phase, 0.0)
+    }
+
+    /// Shape whose square/saw discontinuities are replaced by a linear
+    /// transition across the `edge` cycles that end at each edge. Ending the
+    /// transition at the edge keeps the edge phases and every value outside
+    /// the transition unchanged. `edge` is clamped to `[0, 0.25]`.
+    fn lfo_with_edge(self, phase: f64, edge: f64) -> f64 {
+        let edge = edge.clamp(0.0, 0.25);
+        // Fraction of the transition completed before the edge at `at`.
+        let approach = |at: f64| {
+            let before = at - phase;
+            (edge > 0.0 && before > 0.0 && before <= edge).then(|| 1.0 - before / edge)
+        };
+        match self {
+            Self::SawUp => match approach(1.0) {
+                Some(done) => (1.0 - edge) * (1.0 - done),
+                None => phase,
+            },
+            Self::SawDown => match approach(1.0) {
+                Some(done) => 1.0 - (1.0 - edge) * (1.0 - done),
+                None => 1.0 - phase,
+            },
+            Self::Square => match (approach(0.5), approach(1.0)) {
+                (Some(done), _) => 1.0 - done,
+                (_, Some(done)) => done,
+                _ => self.ideal(phase),
+            },
+            _ => self.ideal(phase),
+        }
+    }
+
+    fn ideal(self, phase: f64) -> f64 {
         match self {
             Self::Sine => (1.0 + (std::f64::consts::TAU * phase).sin()) * 0.5,
             Self::Triangle => 1.0 - (2.0 * (phase + 0.25).rem_euclid(1.0) - 1.0).abs(),
@@ -172,11 +213,13 @@ fn decode(state: &NativeDeviceState) -> Result<AutoPanSettings, DeviceContractEr
     if state.type_id() != AUTO_PAN_TYPE_ID {
         return Err(DeviceContractError::WrongDeviceType);
     }
-    if state.state_version() != AUTO_PAN_STATE_VERSION {
-        return Err(DeviceContractError::UnsupportedStateVersion);
-    }
+    let expected = match state.state_version() {
+        1 => 12,
+        AUTO_PAN_STATE_VERSION => STATE_BYTES,
+        _ => return Err(DeviceContractError::UnsupportedStateVersion),
+    };
     let bytes = state.payload();
-    if bytes.len() != STATE_BYTES {
+    if bytes.len() != expected {
         return Err(DeviceContractError::MalformedState);
     }
     let read = |offset| {
@@ -191,11 +234,15 @@ fn decode(state: &NativeDeviceState) -> Result<AutoPanSettings, DeviceContractEr
         amount: read(0),
         rate_hz: read(4),
         right_phase_degrees: read(8),
-        waveform: Waveform::from_choice(u32::from_le_bytes(
-            bytes[12..16]
-                .try_into()
-                .map_err(|_| DeviceContractError::MalformedState)?,
-        ))?,
+        waveform: if expected == STATE_BYTES {
+            Waveform::from_choice(u32::from_le_bytes(
+                bytes[12..16]
+                    .try_into()
+                    .map_err(|_| DeviceContractError::MalformedState)?,
+            ))?
+        } else {
+            Waveform::Sine
+        },
     };
     validate(settings)?;
     Ok(settings)
@@ -535,19 +582,20 @@ impl AutoPanDspState {
     }
 
     fn lfo(&self, phase: f64) -> f64 {
+        let edge = self.rate_hz.current * EDGE_SECONDS;
         // Preserve the original Sine arithmetic and avoid blending when steady.
         if let Some(index) = self
             .waveform_weights
             .iter()
             .position(|weight| weight.current == 1.0)
         {
-            return Waveform::ALL[index].lfo(phase);
+            return Waveform::ALL[index].lfo_with_edge(phase, edge);
         }
         self.waveform_weights
             .iter()
             .zip(Waveform::ALL)
             .filter(|(weight, _)| weight.current != 0.0)
-            .map(|(weight, waveform)| weight.current * waveform.lfo(phase))
+            .map(|(weight, waveform)| weight.current * waveform.lfo_with_edge(phase, edge))
             .sum::<f64>()
             .clamp(0.0, 1.0)
     }
@@ -696,7 +744,8 @@ pub struct AutoPanWaveformPreview {
 }
 
 /// Uses the provider's exact waveform/amount/phase law, never prepares a runtime.
-/// Rate changes the time represented by one cycle, not its normalized geometry.
+/// Rate changes the time represented by one cycle, not its normalized geometry;
+/// the 1 ms square/saw edge transition is therefore drawn as an ideal edge.
 pub fn waveform_preview(
     state: &NativeDeviceState,
 ) -> Result<AutoPanWaveformPreview, DeviceContractError> {

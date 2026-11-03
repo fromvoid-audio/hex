@@ -317,7 +317,7 @@ mod tests {
             status.current().unwrap().state,
             AdmissionState::Rejected(reason)
         );
-        assert!(status.description().contains("stop transport"));
+        assert!(status.description().contains("previous audio continues"));
         assert!(status.description().contains("audio revision 31"));
         assert!(status.description().contains("rejected:"));
 

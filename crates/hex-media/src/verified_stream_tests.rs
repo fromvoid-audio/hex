@@ -592,3 +592,131 @@ fn sha256_backend_preserves_legacy_bytes_and_hex_across_padding_and_page_boundar
         }
     }
 }
+
+/// Ten raw pages of 16-bit stereo PCM, header in the first page.
+fn ten_page_fixture() -> (TempFile, Vec<[i16; 2]>) {
+    let frames: Vec<[i16; 2]> = (0..(10 * PAGE_BYTES / 4 - 16))
+        .map(|index| [index as i16, (index as i16).wrapping_neg()])
+        .collect();
+    (TempFile::create(&pcm16_wav(&frames, false)), frames)
+}
+
+fn reopen(
+    path: &Path,
+    limits: VerifiedWavReaderLimits,
+    manifest: &crate::VerifiedWavManifest,
+    cancelled: bool,
+) -> Result<VerifiedWavReader, ImportError> {
+    VerifiedWavReader::open_verified_with_cancel(path, limits, manifest.clone(), || cancelled)
+}
+
+#[test]
+fn reopening_under_a_captured_manifest_reads_only_header_pages() {
+    let (fixture, frames) = ten_page_fixture();
+    let full = VerifiedWavReader::open(fixture.path(), limits(64)).expect("full open");
+    assert_eq!(full.manifest().page_digests().len(), 10);
+    assert!(full.raw_page_reads() >= 10, "a full open hashes every page");
+    let mut reused =
+        reopen(fixture.path(), limits(64), full.manifest(), false).expect("reuse open");
+    assert_eq!(
+        reused.raw_page_reads(),
+        1,
+        "only the header page is read and verified"
+    );
+    assert_eq!(reused.fingerprint(), full.fingerprint());
+    assert_eq!(reused.source_frames(), full.source_frames());
+    assert_eq!(reused.manifest(), full.manifest());
+    // Data pages are still verified lazily: a far window reads its own page.
+    let tail = &frames[frames.len() - 4..];
+    let mut output = [[0.0; 2]; 4];
+    let start = frames.len() as u64 - 4;
+    assert_eq!(reused.read_frames_into(start, &mut output).unwrap(), 4);
+    for (decoded, [left, right]) in output.iter().zip(tail) {
+        assert_eq!(
+            *decoded,
+            [f32::from(*left) / 32_768.0, f32::from(*right) / 32_768.0]
+        );
+    }
+    assert_eq!(
+        reused.raw_page_reads(),
+        3,
+        "header page plus the window page"
+    );
+}
+
+#[test]
+fn a_changed_file_refuses_a_captured_manifest() {
+    let (fixture, _) = ten_page_fixture();
+    let full = VerifiedWavReader::open(fixture.path(), limits(64)).expect("full open");
+    let manifest = full.manifest().clone();
+    drop(full);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(fixture.path())
+        .expect("open for mutation");
+    let original = file.metadata().unwrap().modified().unwrap();
+    // A later modification time alone refuses reuse.
+    set_modified(&file, original + std::time::Duration::from_secs(5));
+    assert!(matches!(
+        reopen(fixture.path(), limits(64), &manifest, false),
+        Err(ImportError::SourceChanged)
+    ));
+    // A changed length refuses reuse even with the captured time restored.
+    file.set_len(manifest.file_len() - 4).unwrap();
+    set_modified(&file, original);
+    assert!(matches!(
+        reopen(fixture.path(), limits(64), &manifest, false),
+        Err(ImportError::SourceChanged)
+    ));
+}
+
+#[test]
+fn identity_preserving_edit_passes_reuse_open_but_fails_its_page_read() {
+    let (fixture, frames) = ten_page_fixture();
+    let manifest = VerifiedWavReader::open(fixture.path(), limits(64))
+        .expect("full open")
+        .manifest()
+        .clone();
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(fixture.path())
+        .expect("open for mutation");
+    let original = file.metadata().unwrap().modified().unwrap();
+    // Edit one sample in the last page, keeping length and modification time.
+    file.seek(SeekFrom::Start(9 * PAGE_BYTES as u64 + 8))
+        .unwrap();
+    file.write_all(&[0x55, 0x55]).unwrap();
+    set_modified(&file, original);
+    // Documented residual risk: identical length and mtime pass the open...
+    let mut reader = reopen(fixture.path(), limits(64), &manifest, false)
+        .expect("an identity-preserving edit is not visible at open");
+    // ...unchanged pages still serve, and the edited page is refused on read.
+    let mut early = [[0.0; 2]; 4];
+    assert_eq!(reader.read_frames_into(0, &mut early).unwrap(), 4);
+    let mut late = [[9.0; 2]; 4];
+    assert!(matches!(
+        reader.read_frames_into(frames.len() as u64 - 4, &mut late),
+        Err(ImportError::SourceChanged)
+    ));
+    assert_eq!(late, [[0.0; 2]; 4]);
+}
+
+#[test]
+fn reuse_open_keeps_manifest_limits_and_cancellation() {
+    let (fixture, _) = ten_page_fixture();
+    let manifest = VerifiedWavReader::open(fixture.path(), limits(64))
+        .expect("full open")
+        .manifest()
+        .clone();
+    let tight = VerifiedWavReaderLimits::new(limits(64).reader, manifest.manifest_bytes() - 1);
+    assert!(matches!(
+        reopen(fixture.path(), tight, &manifest, false),
+        Err(ImportError::LimitExceeded("verified page manifest bytes"))
+    ));
+    assert!(matches!(
+        reopen(fixture.path(), limits(64), &manifest, true),
+        Err(ImportError::Cancelled)
+    ));
+}

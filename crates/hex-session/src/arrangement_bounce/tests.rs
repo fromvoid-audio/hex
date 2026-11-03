@@ -122,6 +122,104 @@ fn isolated_bounce_retains_selected_alias_notes_and_excludes_console_members() {
     );
 }
 #[test]
+fn latent_track_bounce_is_aligned_and_ignores_other_path_latency() {
+    let folder = Folder::new();
+    let (mut session, track, clip) = fixture_at_rate(8_000);
+    let limiter = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    session
+        .command(Command::InsertDevice {
+            track,
+            before: None,
+            state: limiter.clone(),
+        })
+        .unwrap();
+    let reference = session.compile_prepared_revision(None).unwrap();
+    let latency = reference.arrangement().main_latency_frames() as usize;
+    assert!(latency > 0);
+    let target = BounceTarget::Clips(vec![clip]);
+    let item = session
+        .project()
+        .plan_arrangement_bounce(&target, false)
+        .unwrap()
+        .remove(0);
+    let expected = pcm(reference, item.end as usize + latency);
+    session
+        .command(Command::InsertMainDevice {
+            before: None,
+            state: limiter.clone(),
+        })
+        .unwrap();
+    let Created::Track(other) = session
+        .command(Command::AddTrack {
+            name: "other".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    session
+        .command(Command::InsertDevice {
+            track: other,
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    let original_track = session.project().track(track).unwrap().clone();
+    let original_other = session.project().track(other).unwrap().clone();
+    let original_main = session.project().main_devices().to_vec();
+    session
+        .bounce_arrangement(
+            target,
+            false,
+            &folder.0,
+            &hex_export::ExportControl::default(),
+            None,
+        )
+        .unwrap();
+    let bounced = &session.project().tracks()[1].clips()[0];
+    let frames = session.audio(bounced.asset()).unwrap().frames();
+    let range = &expected[item.start as usize + latency..item.end as usize + latency];
+    assert_eq!(&frames[..range.len()], range);
+    assert!(session.undo());
+    assert_eq!(session.project().tracks().len(), 2);
+    assert_eq!(session.project().track(track), Some(&original_track));
+    assert_eq!(session.project().track(other), Some(&original_other));
+    assert_eq!(session.project().main_devices(), original_main);
+    assert!(session.redo());
+    let redone = &session.project().tracks()[1].clips()[0];
+    assert_eq!(
+        &session.audio(redone.asset()).unwrap().frames()[..range.len()],
+        range
+    );
+    let project_path = folder.0.join("latent-bounce.hex");
+    hex_storage::save_new(&project_path, session.project()).unwrap();
+    let loaded = hex_storage::load(&project_path).unwrap();
+    let decoded = loaded
+        .assets()
+        .map(|asset| {
+            (
+                asset.id(),
+                hex_media::decode_wav_file(
+                    asset.path(),
+                    hex_media::Limits::new(1_000_000, 100_000),
+                )
+                .unwrap(),
+            )
+        })
+        .collect();
+    let reopened = Session::from_loaded(loaded, 32, 100_000, decoded).unwrap();
+    let reopened_clip = &reopened.project().tracks()[1].clips()[0];
+    assert_eq!(
+        &reopened.audio(reopened_clip.asset()).unwrap().frames()[..range.len()],
+        range
+    );
+}
+
+#[test]
 fn selected_and_in_place_bounce_history_preserve_stopped_guard_through_undo_redo() {
     for inplace in [false, true] {
         let folder = Folder::new();
@@ -269,6 +367,7 @@ fn bounce_failure_case(whole_track: bool) {
     let result = session.adopt_arrangement_bounce_using(
         target.clone(),
         whole_track,
+        hex_project::BounceAdoption::NewTracks,
         vec![BounceFile {
             source: hex_project::BounceSource::Arrangement,
             track: item.track,
@@ -711,6 +810,7 @@ fn nonreceiver_audio_bounce_case(shared: bool) {
         waveform: waveform::summarize(&source_audio, 1024).unwrap(),
         source_audio: source_audio.clone(),
         audio: source_audio.clone(),
+        file_identity: None,
     };
     let Created::Imported {
         track: contributor,
@@ -824,6 +924,7 @@ fn directed_audio_and_midi_bounces_preserve_accepted_content_pcm() {
                     waveform: waveform::summarize(&audio, 1_024).unwrap(),
                     source_audio: audio.clone(),
                     audio,
+                    file_identity: None,
                 };
                 let Created::Imported { track, clip, .. } = session.import(prepared).unwrap()
                 else {
@@ -876,6 +977,8 @@ fn directed_audio_and_midi_bounces_preserve_accepted_content_pcm() {
 
 #[path = "tests/grouping.rs"]
 mod grouping;
+#[path = "tests/streamed.rs"]
+mod streamed;
 
 #[test]
 fn clipped_thirty_second_delay_tail_adopts_media_and_undo_redo_as_one_edit() {
@@ -1358,9 +1461,15 @@ fn whole_track_console_second_output_cancel_and_final_publication_fail_without_p
             },
             |session, prepared, files| {
                 session
-                    .adopt_arrangement_bounce_using(target, true, files, prepared, None, |_| {
-                        Err::<(), _>(SessionError::Invalid("final publication refused"))
-                    })
+                    .adopt_arrangement_bounce_using(
+                        target,
+                        true,
+                        hex_project::BounceAdoption::NewTracks,
+                        files,
+                        prepared,
+                        None,
+                        |_| Err::<(), _>(SessionError::Invalid("final publication refused")),
+                    )
                     .map_err(|e| e.to_string())
             },
         );
@@ -1483,4 +1592,27 @@ fn retired_clip_and_range_in_place_intents_refuse_before_render_or_media_work() 
         assert_eq!((session.can_undo(), session.can_redo()), history);
         assert_eq!(std::fs::read_dir(&folder.0).unwrap().count(), 0);
     }
+}
+
+#[test]
+fn isolated_bounce_admits_projects_with_automatic_names_on_dropped_tracks() {
+    let (mut session, track, clip) = fixture();
+    let Created::Track(other) = session
+        .command(Command::InsertDefaultTrack { before_track: None })
+        .unwrap()
+    else {
+        panic!("default track")
+    };
+    let original = session.project().clone();
+    assert!(original.track(other).unwrap().name_is_automatic());
+    for target in [
+        BounceTarget::Clips(vec![clip]),
+        BounceTarget::Range(hex_project::TimeRange::new(vec![track], 30_013, 50_007).unwrap()),
+    ] {
+        let plan = original.plan_arrangement_bounce(&target, false).unwrap();
+        let projected = isolated(&original, &target, &plan[0]).unwrap();
+        assert!(projected.track(other).is_none());
+        assert!(projected.snapshot().automatic_track_names.is_empty());
+    }
+    assert_eq!(session.project(), &original);
 }

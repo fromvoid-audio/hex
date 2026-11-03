@@ -115,6 +115,7 @@ impl EditorView {
             }
         };
         if self.enqueue(request) {
+            self.stop_browser_preview_for_drop();
             self.audio_batch = Some(control);
             self.audio_batch_progress = None;
             self.error = None;

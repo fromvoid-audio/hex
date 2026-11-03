@@ -21,7 +21,7 @@ fn actual_native_harness() -> Harness {
                 Ok(Some(output))
             }
             Err(error) if error == "audio output is open or still shutting down" => Ok(None),
-            Err(error) => Err(error),
+            Err(error) => Err(error.into()),
         }
     }));
     let observation = Arc::new(Mutex::new(Observation::default()));
@@ -46,7 +46,7 @@ fn actual_native_harness() -> Harness {
 
 #[test]
 fn restored_stream_source_recovers_through_actual_desktop_restart() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
     h.next();
@@ -166,7 +166,7 @@ fn restored_stream_source_recovers_through_actual_desktop_restart() {
 
 #[test]
 fn repeated_device_errors_refuse_publication_until_desktop_restart() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
     h.next();
@@ -284,7 +284,7 @@ fn gain_diagnostics_correlate_session_outcome_submission_and_callback_applicatio
     use hex_audio::audio_diagnostics::{AudioDiagnosticKind, AudioDiagnosticsFlags};
     use hex_session::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
 
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
     h.next();
@@ -411,7 +411,7 @@ fn verified_session_gain_reaches_callback_before_commit() {
     verified_gain_case(true);
 }
 fn verified_gain_case(session: bool) {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(48_000, 480_000);
     let mut h = actual_native_harness();

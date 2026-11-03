@@ -62,13 +62,25 @@ fn seek_pcm(
     gain: f32,
 ) {
     let (start, pcm) = seek_output(h, event, applied, id);
-    let expected = std::array::from_fn(|i| [((start + i) * step % 4 + 1) as f32 * 0.125 * gain; 2]);
-    assert_eq!(pcm, expected);
+    if step == 1 {
+        let expected = std::array::from_fn(|i| [((start + i) % 4 + 1) as f32 * 0.125 * gain; 2]);
+        assert_eq!(pcm, expected);
+        return;
+    }
+    // Faster voices are band-limited (#4089). Every partial of the looped
+    // 4-frame ramp except DC lies at or above the output Nyquist at step 2, so
+    // the voice plays the ramp's mean, (1 + 2 + 3 + 4) / 4 * 0.125.
+    assert_eq!(step, 2);
+    for frame in pcm {
+        for sample in frame {
+            assert!((sample - 0.3125 * gain).abs() < 1e-3, "{pcm:?}");
+        }
+    }
 }
 
 #[test]
 fn loaded_resident_library_import_comparison_and_direct_source_requests_are_atomic() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(48_000, 8192);
     let mut bytes = fs::read(&path).unwrap();
@@ -328,7 +340,7 @@ fn loaded_resident_library_import_comparison_and_direct_source_requests_are_atom
 
 #[test]
 fn resource_free_library_import_and_audible_comparison_publish_native_graphs() {
-    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::new();
     h.next();
