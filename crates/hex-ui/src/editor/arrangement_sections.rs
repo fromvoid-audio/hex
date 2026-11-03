@@ -22,6 +22,7 @@ use super::{
 };
 use crate::{
     context_menu::{MenuItem, PopupMenu},
+    section_appearance,
     section_hit::{self, INNER_EDGE_WIDTH, SHARED_EDGE_RADIUS},
     section_input, section_reorder, section_resize, section_selection, theme,
 };
@@ -810,7 +811,7 @@ impl EditorView {
             Mode::Paint
         };
         if matches!(mode, Mode::Paint) {
-            let (name, color) = new_marker_appearance(&state.project);
+            let (name, color) = section_appearance::new_marker(&state.project);
             original = Some(Marker {
                 id: None,
                 name,
@@ -2027,24 +2028,6 @@ impl EditorView {
         elements
     }
 }
-fn new_marker_appearance(project: &hex_project::Project) -> (String, ElementColor) {
-    use std::hash::BuildHasher;
-    // Pick once at capture; preview/release and saved history retain that choice.
-    let ticket = std::collections::hash_map::RandomState::new()
-        .hash_one(project.arrangement_sections().len());
-    let color =
-        ElementColor::TRACK_CHOICES[(ticket % ElementColor::TRACK_CHOICES.len() as u64) as usize];
-    let number = (1..=hex_project::MAX_ARRANGEMENT_SECTIONS + 1)
-        .find(|n| {
-            let name = format!("section {n}");
-            !project
-                .arrangement_sections()
-                .iter()
-                .any(|s| s.name() == name)
-        })
-        .unwrap_or(hex_project::MAX_ARRANGEMENT_SECTIONS + 1);
-    (format!("section {number}"), color)
-}
 fn same_command(a: &Command, b: &Command) -> bool {
     match (a, b) {
         (
@@ -2947,7 +2930,7 @@ mod tests {
             section_reorder::insertion_target(p, ids[0], BeatTime::from_quarters(3).unwrap(), true),
             Some((ids[0], true))
         );
-        let (name, color) = new_marker_appearance(p);
+        let (name, color) = section_appearance::new_marker(p);
         assert_eq!(name, "section 3");
         assert!(ElementColor::TRACK_CHOICES.contains(&color));
     }
