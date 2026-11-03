@@ -166,6 +166,7 @@ mod midi_wheel;
 mod mixer;
 mod musical_audio_controls;
 mod musical_time;
+mod musical_time_controls;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod output_meter_ui_test;
 mod overview;
