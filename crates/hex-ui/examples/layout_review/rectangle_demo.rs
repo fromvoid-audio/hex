@@ -122,18 +122,30 @@ impl RectangleDemo {
             cx.notify();
             return true;
         }
-        let mut hit = None;
-        if self.kind == Kind::Section
-            && self.canonical[0][1] == self.canonical[1][0]
-            && RectangleEdges::seam_hit(x, left + width * self.canonical[0][1], 1.0)
-        {
-            hit = Some((0, RectanglePart::Seam));
-        }
+        let mut hit = if self.kind == Kind::Section {
+            let sections = self
+                .canonical
+                .iter()
+                .enumerate()
+                .map(|(index, &[start, end])| (index, start, end));
+            crate::section_hit::hit(sections, x, |position| Some(left + width * position)).map(
+                |hit| match hit {
+                    crate::section_hit::Hit::Leading(index) => (index, RectanglePart::Leading),
+                    crate::section_hit::Hit::Trailing(index) => (index, RectanglePart::Trailing),
+                    crate::section_hit::Hit::Seam(left, _) => (left, RectanglePart::Seam),
+                },
+            )
+        } else {
+            None
+        };
         if hit.is_none() {
             for (index, [start, end]) in self.canonical.into_iter().enumerate() {
                 let start = left + start * width;
                 let end = left + end * width;
                 if let Some(part) = self.edges().hit(x, start, end) {
+                    if self.kind == Kind::Section && part != RectanglePart::Body {
+                        continue;
+                    }
                     if self.kind == Kind::Clip
                         && part == RectanglePart::Body
                         && y > f32::from(bounds.top()) + 14.0
@@ -562,6 +574,32 @@ mod tests {
         visual.simulate_mouse_down(at(0.3, 0.1), MouseButton::Left, Modifiers::default());
         view.read_with(cx, |view, _| assert!(view.capture.is_none()));
     }
+    #[gpui::test]
+    fn overlapping_section_edge_takes_priority_over_another_section_body(cx: &mut TestAppContext) {
+        let handle =
+            cx.add_window(|_, cx| RectangleDemo::new(Kind::Section, "section-overlap".into(), cx));
+        let view = handle.root(cx).unwrap();
+        view.update(cx, |view, cx| {
+            view.canonical = [[0.1, 0.8], [0.5, 0.9]];
+            view.preview = view.canonical;
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let area = visual.debug_bounds("section-overlap-area").unwrap();
+        let edge = point(
+            area.left() + area.size.width * 0.5 + px(2.0),
+            area.top() + px(20.0),
+        );
+        visual.simulate_mouse_down(edge, MouseButton::Left, Modifiers::default());
+        view.read_with(cx, |view, _| {
+            let capture = view.capture.expect("section edge capture");
+            assert_eq!(capture.key, Target::Rectangle(1));
+            assert_eq!(capture.part, RectanglePart::Leading);
+        });
+    }
+
     #[gpui::test]
     fn rectangle_fixtures_hold_pending_across_repaints_cancel_and_refuse(cx: &mut TestAppContext) {
         for section in [false, true] {

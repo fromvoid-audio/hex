@@ -21,6 +21,8 @@ mod gallery;
 mod output_meter;
 #[path = "../../hex-ui/examples/layout_review/sandbox.rs"]
 mod sandbox;
+#[path = "../../hex-ui/src/section_hit.rs"]
+mod section_hit;
 #[path = "../../hex-ui/src/section_surface.rs"]
 mod section_surface;
 #[path = "../../hex-ui/src/theme.rs"]

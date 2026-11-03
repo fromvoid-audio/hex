@@ -14,6 +14,8 @@ mod output_meter;
 #[allow(dead_code)]
 mod theme;
 
+#[path = "../src/section_hit.rs"]
+mod section_hit;
 #[path = "../src/section_surface.rs"]
 mod section_surface;
 
