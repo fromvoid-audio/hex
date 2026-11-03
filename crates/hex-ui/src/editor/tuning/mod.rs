@@ -431,7 +431,7 @@ impl EditorView {
                         && std::rc::Rc::ptr_eq(&view.tuning.control_epoch, &epoch)
                         && !matches!(field, Field::Hz(i) | Field::Cents(i) if i >= view.tuning.value.scale().count())
                     {
-                        view.tuning_numeric(field, *event, cx);
+                        view.tuning_numeric(field, event.clone(), cx);
                     }
                 });
             self.tuning.controls.insert(
