@@ -40,6 +40,7 @@ mod clip_gain_ui_tests;
 mod clip_name;
 mod clip_range_fit;
 mod clip_selection;
+mod cpu_meter;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod delete_ui_tests;
 mod device_automation;
@@ -935,6 +936,7 @@ pub(super) struct EditorView {
     send_menu_track: Option<TrackId>,
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
     redraw_gate: RedrawGate,
+    cpu_meter: cpu_meter::CpuMeter,
     output_meter_frame: Option<refresh::AudioFrame>,
     disk_overload: disk_overload::DiskOverload,
     pub(in crate::editor) project_generation: u64,
@@ -1665,6 +1667,7 @@ impl EditorView {
             send_menu_track: None,
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
             redraw_gate: RedrawGate::default(),
+            cpu_meter: cpu_meter::CpuMeter::default(),
             output_meter_frame: None,
             disk_overload: disk_overload::DiskOverload::default(),
             project_generation: 0,
