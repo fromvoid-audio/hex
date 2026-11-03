@@ -9,6 +9,14 @@
 //! Does not schedule projects, access devices/files, retain host resource ownership or host
 //! foreign plugins. Preparation is control work; processing borrows validated inputs and must
 //! remain bounded and allocation-free.
+//!
+//! # Subnormal policy
+//! Hex does not configure flush-to-zero or denormals-are-zero and does not assume
+//! the floating-point mode inherited from a host or platform. Several recursive
+//! paths explicitly clear near-silent or subnormal state, including reverb, EQ,
+//! utility, delay and the operator lowpass. Performance effects depend on the
+//! hardware and workload and require measurement.
+mod oversampling;
 mod parameter_binding;
 mod response;
 

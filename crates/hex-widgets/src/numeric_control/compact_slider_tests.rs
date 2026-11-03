@@ -17,6 +17,8 @@ const STYLE: ControlStyle = ControlStyle {
     focus_marker: 0xaaaaaa,
     dial_rail: 0x000000,
     hover: 0x404040,
+    selection: 0x3350a0,
+    invalid: 0xff554c,
     font_size: 10.0,
     text_case: crate::TextCase::Preserve,
 };
@@ -846,4 +848,55 @@ fn explicit_unit_readout_drag_accumulates_fine_motion_clamps_and_cancels(cx: &mu
     visual.simulate_input("0.0625 ms");
     visual.simulate_keystrokes("enter");
     assert_eq!(control.read_with(cx, |c, _| c.value()), 0.0625);
+}
+
+#[gpui::test]
+fn numeric_same_position_input_restarts_hidden_caret(cx: &mut TestAppContext) {
+    cx.update(bind_numeric_control_keys);
+    let handle = *cx.add_window(|_, _| Empty);
+    cx.update_window(handle, |_, window, cx| {
+        let control = cx.new(|cx| {
+            NumericControl::from_config(
+                cx,
+                NumericControlConfig::new(
+                    "caret-edit",
+                    "value",
+                    NumericControlKind::HorizontalSlider,
+                    NumericSpec::new(0.0, 2.0, 1.0, crate::NumericScale::Linear, 2, None::<&str>)
+                        .unwrap(),
+                    1.0,
+                    STYLE,
+                )
+                .unwrap()
+                .with_presentation(NumericControlPresentation::FilledSlider),
+            )
+        });
+        window.replace_root(cx, |_, _| Root {
+            control,
+            width: 86.0,
+        });
+    })
+    .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.0), px(140.0)));
+    let at = visual.debug_bounds("caret-edit-value").unwrap().center();
+    visual.simulate_click(at, Modifiers::default());
+    visual.simulate_keystrokes("end");
+    visual.run_until_parked();
+    let caret = gpui::Background::from(gpui::rgb(STYLE.accent)).opacity(0.5);
+    let is_visible = |visual: &mut VisualTestContext| {
+        visual
+            .rendered_filled_quads("caret-edit-value")
+            .iter()
+            .any(|(_, fill)| *fill == caret)
+    };
+    assert!(is_visible(&mut visual));
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(510));
+    visual.run_until_parked();
+    assert!(!is_visible(&mut visual));
+    visual.simulate_keystrokes("delete");
+    visual.run_until_parked();
+    assert!(is_visible(&mut visual));
 }

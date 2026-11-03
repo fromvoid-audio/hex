@@ -22,6 +22,29 @@ use super::{
 use hex_project::{CapturedAutomationProjection, LoopRegion, Project, TempoMap};
 use std::{ops::Range, path::Path, sync::Arc};
 
+/// An open refusal retains the original draft; busy means its lock is held.
+#[derive(Debug)]
+pub enum TakeOpenError {
+    Busy(DraftError),
+    Other(String),
+}
+impl std::fmt::Display for TakeOpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy(error) => error.fmt(f),
+            Self::Other(error) => f.write_str(error),
+        }
+    }
+}
+impl std::error::Error for TakeOpenError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Busy(error) => Some(error),
+            Self::Other(_) => None,
+        }
+    }
+}
+
 pub const MAX_PREVIEW_QUERIES: usize = 64;
 
 /// A semantically checked immutable source, independent of an open document.
@@ -99,10 +122,15 @@ struct TakeCore<R> {
     cursor_owner: Arc<()>,
 }
 impl CompletedAutomationTake {
-    pub fn open_on_control(path: &Path, limits: DraftReadLimits) -> Result<Self, String> {
-        Self::from_completed_on_control(
-            CompletedDraft::open(path, limits).map_err(|error| error.to_string())?,
-        )
+    pub fn open_on_control(path: &Path, limits: DraftReadLimits) -> Result<Self, TakeOpenError> {
+        let source = CompletedDraft::open(path, limits).map_err(|error| {
+            if matches!(&*error.source, crate::StorageError::AutomationDraftBusy(_)) {
+                TakeOpenError::Busy(error)
+            } else {
+                TakeOpenError::Other(error.to_string())
+            }
+        })?;
+        Self::from_completed_on_control(source).map_err(TakeOpenError::Other)
     }
 
     pub fn from_completed_on_control(mut source: CompletedDraft) -> Result<Self, String> {

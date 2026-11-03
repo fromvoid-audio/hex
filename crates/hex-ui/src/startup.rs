@@ -4,18 +4,23 @@
 //! GPUI alerts attach to a window, so the report opens a small blank window to
 //! carry it; text inside that window is never rendered, keeping it independent
 //! of the font check that may have failed. Error text is shown verbatim because
-//! it may carry case-sensitive paths.
+//! it may carry case-sensitive paths; the host supplies the recovery hint for
+//! the step that failed, shown lowercase beneath it.
 use gpui::{
     App, AppContext, Bounds, PromptLevel, Render, WindowBounds, WindowOptions, div, px, size,
 };
 
-/// Run a startup step. On failure, report it and quit once the alert is dismissed.
-/// Returns whether the step succeeded.
-pub fn open_or_report(cx: &mut App, open: impl FnOnce(&mut App) -> Result<(), String>) -> bool {
+/// Run a startup step. On failure `(error, recovery hint)`, log the error, show
+/// both in a native alert and quit once it is dismissed. Returns whether the
+/// step succeeded.
+pub fn open_or_report(
+    cx: &mut App,
+    open: impl FnOnce(&mut App) -> Result<(), (String, &'static str)>,
+) -> bool {
     match open(cx) {
         Ok(()) => true,
-        Err(error) => {
-            report(cx, &error, |cx| cx.quit());
+        Err((error, recovery)) => {
+            report(cx, &error, recovery, |cx| cx.quit());
             false
         }
     }
@@ -32,10 +37,11 @@ impl Render for Blank {
     }
 }
 
-fn report(cx: &mut App, error: &str, quit: impl FnOnce(&mut App) + 'static) {
+fn report(cx: &mut App, error: &str, recovery: &str, quit: impl FnOnce(&mut App) + 'static) {
     // Shown and logged verbatim; only the verbatim-span marks are removed.
     let error = &hex_session::service::text::plain(error);
     eprintln!("{error}");
+    eprintln!("{recovery}");
     if let Some(unavailable) = crate::diagnostics::record_state(cx, "startup failed", Some(error)) {
         eprintln!("{unavailable}");
     }
@@ -49,10 +55,7 @@ fn report(cx: &mut App, error: &str, quit: impl FnOnce(&mut App) + 'static) {
             )
         },
     );
-    let detail = format!(
-        "{error}\n\n{}\n{log}",
-        crate::theme::text("reinstall hex or rebuild it with scripts/bundle-macos.sh.")
-    );
+    let detail = format!("{error}\n\n{}\n{log}", crate::theme::text(recovery));
     let bounds = Bounds::centered(None, size(px(420.0), px(160.0)), cx);
     let window = cx.open_window(
         WindowOptions {
@@ -111,7 +114,7 @@ mod tests {
             // The test application installs no embedded assets, so the real check fails.
             let error = crate::assets::validate(cx).expect_err("assets are absent");
             let quit = quit.clone();
-            report(cx, &error, move |_| quit.set(true));
+            report(cx, &error, "reinstall hex.", move |_| quit.set(true));
         });
         cx.run_until_parked();
         assert!(cx.has_pending_prompt());

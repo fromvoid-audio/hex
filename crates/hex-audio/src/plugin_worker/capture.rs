@@ -6,6 +6,7 @@
 use super::*;
 use hex_lattice_contract::{MAX_NATIVE_DEVICE_STATE_BYTES, NativeDeviceState};
 use hex_plugin_host::Error;
+use hex_plugin_host::protocol::StateCaptureRefusal;
 use std::sync::{TryLockError, Weak};
 use std::time::Instant;
 mod stopped;
@@ -47,6 +48,8 @@ pub(super) struct Slot {
     phase: Phase,
     mode: Mode,
     payload: Payload,
+    /// Set with `Phase::Complete` when the helper refused this operation.
+    refusal: Option<StateCaptureRefusal>,
 }
 impl Default for Slot {
     fn default() -> Self {
@@ -59,12 +62,49 @@ impl Default for Slot {
             phase: Phase::Idle,
             mode: Mode::Live,
             payload: Payload::default(),
+            refusal: None,
         }
+    }
+}
+impl Slot {
+    /// Publish the worker's terminal for the requested `ordinal`: captured
+    /// bytes or a non-terminal helper refusal. Any other slot state is a
+    /// protocol fault.
+    fn complete(
+        &mut self,
+        ordinal: u64,
+        outcome: Result<Payload, StateCaptureRefusal>,
+    ) -> Result<(), Error> {
+        if self.ordinal != ordinal || self.phase != Phase::Requested {
+            return Err(Error::Protocol("native capture operation changed"));
+        }
+        match outcome {
+            Ok(payload) => {
+                self.payload = payload;
+                self.refusal = None;
+            }
+            Err(refusal) => self.refusal = Some(refusal),
+        }
+        self.phase = Phase::Complete;
+        Ok(())
+    }
+
+    /// Consume a completed terminal and free the mailbox, or `None` while the
+    /// operation is still pending.
+    fn take_terminal(&mut self) -> Option<Result<Payload, StateCaptureRefusal>> {
+        if self.phase != Phase::Complete {
+            return None;
+        }
+        self.phase = Phase::Idle;
+        Some(match self.refusal.take() {
+            Some(refusal) => Err(refusal),
+            None => Ok(self.payload),
+        })
     }
 }
 pub(super) struct Work {
     ordinal: Option<u64>,
-    result: Option<Payload>,
+    result: Option<Result<Payload, StateCaptureRefusal>>,
     poll_after: Instant,
 }
 impl Default for Work {
@@ -103,6 +143,10 @@ pub enum NativeWorkerCaptureProgress {
     /// Original transport is revoked; its error/native lease remains in the
     /// same worker terminal for joining control and independent disposal.
     Failed,
+    /// The helper refused only this capture (state too large, or edits kept
+    /// arriving). The worker and its transport keep running; the mailbox is
+    /// free and a later capture may begin.
+    Refused(StateCaptureRefusal),
 }
 
 impl NativeWorker {
@@ -220,16 +264,18 @@ impl NativeWorker {
         if request.mode == Mode::Live && !self.transport_is_live_on_control() {
             return Ok(NativeWorkerCaptureProgress::Failed);
         }
-        if slot.phase != Phase::Complete {
-            return Ok(NativeWorkerCaptureProgress::Pending);
-        }
         // The matching operation is terminal even if constructing the caller's
         // owned envelope fails. Release its fixed slot before fallible allocation
         // so a refused save cannot strand the original worker's only mailbox.
-        let completed = slot.payload;
-        slot.phase = Phase::Idle;
+        let Some(terminal) = slot.take_terminal() else {
+            return Ok(NativeWorkerCaptureProgress::Pending);
+        };
         drop(slot);
-        materialize(&completed.bytes[..completed.len]).map(NativeWorkerCaptureProgress::Captured)
+        match terminal {
+            Ok(completed) => materialize(&completed.bytes[..completed.len])
+                .map(NativeWorkerCaptureProgress::Captured),
+            Err(refusal) => Ok(NativeWorkerCaptureProgress::Refused(refusal)),
+        }
     }
 }
 
@@ -254,29 +300,39 @@ impl State {
             }
             let ordinal = slot.ordinal;
             drop(slot);
-            instance.begin_state_capture_on_worker()?;
+            // A refusal retires only this operation; the lease keeps running.
+            match instance.begin_state_capture_on_worker() {
+                Ok(()) => {}
+                Err(Error::CaptureRefused(refusal)) => self.capture.result = Some(Err(refusal)),
+                Err(error) => return Err(error),
+            }
             self.capture.ordinal = Some(ordinal);
         } else if self.capture.result.is_none() {
             if Instant::now() < self.capture.poll_after {
                 return Ok(());
             }
-            if let Some(state) = instance.poll_state_capture_on_worker()? {
-                let mut payload = Payload::default();
-                if state.type_id() != hex_plugin_state::TYPE_ID
-                    || state.state_version() != hex_plugin_state::STATE_VERSION
-                    || state.payload().len() > payload.bytes.len()
-                {
-                    return Err(Error::Protocol("native captured state profile differs"));
+            match instance.poll_state_capture_on_worker() {
+                Ok(Some(state)) => {
+                    let mut payload = Payload::default();
+                    if state.type_id() != hex_plugin_state::TYPE_ID
+                        || state.state_version() != hex_plugin_state::STATE_VERSION
+                        || state.payload().len() > payload.bytes.len()
+                    {
+                        return Err(Error::Protocol("native captured state profile differs"));
+                    }
+                    payload.len = state.payload().len();
+                    payload.bytes[..payload.len].copy_from_slice(state.payload());
+                    self.capture.result = Some(Ok(payload));
                 }
-                payload.len = state.payload().len();
-                payload.bytes[..payload.len].copy_from_slice(state.payload());
-                self.capture.result = Some(payload);
+                Ok(None) => {}
+                Err(Error::CaptureRefused(refusal)) => self.capture.result = Some(Err(refusal)),
+                Err(error) => return Err(error),
             }
         }
         self.capture.poll_after = Instant::now()
             .checked_add(Duration::from_millis(1))
             .ok_or(Error::Protocol("native capture poll time exhausted"))?;
-        if let Some(payload) = self.capture.result {
+        if let (Some(outcome), Some(ordinal)) = (self.capture.result, self.capture.ordinal) {
             let mut slot = match signal.capture.try_lock() {
                 Ok(slot) => slot,
                 Err(TryLockError::WouldBlock) => return Ok(()),
@@ -284,11 +340,7 @@ impl State {
                     return Err(Error::Protocol("native capture mailbox failed"));
                 }
             };
-            if Some(slot.ordinal) != self.capture.ordinal || slot.phase != Phase::Requested {
-                return Err(Error::Protocol("native capture operation changed"));
-            }
-            slot.payload = payload;
-            slot.phase = Phase::Complete;
+            slot.complete(ordinal, outcome)?;
             signal.capture_requested.store(false, Release);
             self.capture.result = None;
             self.capture.ordinal = None;

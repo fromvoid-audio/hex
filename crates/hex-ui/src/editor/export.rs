@@ -1,7 +1,7 @@
 //! Native export admission and completion display; never applies canonical state.
 use super::EditorView;
 use gpui::{AnyWindowHandle, AppContext, Context, PromptButton, PromptLevel, Window};
-use hex_session::service::{ExportControl, ExportSignal, Request, Stem};
+use hex_session::service::{ExportControl, ExportFormat, ExportSignal, Request, Stem};
 use std::{path::PathBuf, sync::mpsc::TryRecvError};
 
 impl EditorView {
@@ -89,8 +89,10 @@ impl EditorView {
             let choice = scope.await;
             let _ = this.update(cx, |view, cx| {
                 match choice {
-                    Ok(1) => view.export_path_dialog(handle, start, frames, ExportSignal::Main, cx),
-                    Ok(2) if !selected.is_empty() => view.export_path_dialog(
+                    Ok(1) => {
+                        view.export_format_dialog(handle, start, frames, ExportSignal::Main, cx)
+                    }
+                    Ok(2) if !selected.is_empty() => view.export_format_dialog(
                         handle,
                         start,
                         frames,
@@ -103,14 +105,14 @@ impl EditorView {
                         ),
                         cx,
                     ),
-                    Ok(3) if !returns.is_empty() => view.export_path_dialog(
+                    Ok(3) if !returns.is_empty() => view.export_format_dialog(
                         handle,
                         start,
                         frames,
                         ExportSignal::CapturedMix(returns),
                         cx,
                     ),
-                    Ok(4) if !selected.is_empty() => view.export_path_dialog(
+                    Ok(4) if !selected.is_empty() => view.export_format_dialog(
                         handle,
                         start,
                         frames,
@@ -129,12 +131,60 @@ impl EditorView {
         .detach();
     }
 
+    /// Second native prompt: the sample format of the file or of every stem
+    /// file. The choice is per export and is not saved in the project.
+    fn export_format_dialog(
+        &mut self,
+        handle: AnyWindowHandle,
+        start: u64,
+        frames: Option<u64>,
+        signal: ExportSignal,
+        cx: &mut Context<Self>,
+    ) {
+        let mut buttons = vec![PromptButton::cancel("cancel")];
+        buttons.extend(
+            ExportFormat::ALL
+                .iter()
+                .map(|format| PromptButton::new(format_label(*format))),
+        );
+        let prompt = cx.update_window(handle, |_, window, cx| {
+            window.prompt(
+                PromptLevel::Info,
+                "export format",
+                Some(
+                    "16-bit is dithered. 24-bit and float keep more resolution; float keeps overs.",
+                ),
+                &buttons,
+                cx,
+            )
+        });
+        let Ok(prompt) = prompt else {
+            self.export_dialog_open = false;
+            self.error = Some("export window closed before choosing a format".into());
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let choice = prompt.await;
+            let _ = this.update(cx, |view, cx| {
+                match choice.ok().and_then(format_choice) {
+                    Some(format) => {
+                        view.export_path_dialog(handle, start, frames, signal, format, cx)
+                    }
+                    None => view.export_dialog_open = false,
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn export_path_dialog(
         &mut self,
         handle: AnyWindowHandle,
         start: u64,
         frames: Option<u64>,
         signal: ExportSignal,
+        format: ExportFormat,
         cx: &mut Context<Self>,
     ) {
         let batch = matches!(&signal, ExportSignal::Stems(_));
@@ -191,6 +241,7 @@ impl EditorView {
                         frames,
                         signal,
                         control: control.clone(),
+                        format,
                         overwrite: !batch,
                     }) {
                         view.export_pending = true;
@@ -259,17 +310,13 @@ impl EditorView {
                 }
                 match event.result {
                     Ok(report) => {
-                        self.status = format!(
-                            "exported rev {} · {} frames{}",
+                        self.status = export_status(
                             event.revision,
                             report.frames,
+                            report.clipped_samples,
                             report
                                 .recovery_path
-                                .map(|path| format!(
-                                    " · previous file at {}",
-                                    hex_session::service::text::verbatim(path.display())
-                                ))
-                                .unwrap_or_default()
+                                .map(|path| hex_session::service::text::verbatim(path.display())),
                         );
                         self.error = None;
                     }
@@ -286,6 +333,76 @@ impl EditorView {
             }
             Err(_) => changed,
         }
+    }
+}
+
+/// Lowercase format prompt button label.
+fn format_label(format: ExportFormat) -> &'static str {
+    match format {
+        ExportFormat::Pcm16 => "16-bit pcm",
+        ExportFormat::Pcm24 => "24-bit pcm",
+        ExportFormat::Float32 => "32-bit float",
+    }
+}
+
+/// Format for a format prompt answer: index 0 is cancel, then
+/// [`ExportFormat::ALL`] in button order.
+fn format_choice(answer: usize) -> Option<ExportFormat> {
+    answer
+        .checked_sub(1)
+        .and_then(|index| ExportFormat::ALL.get(index).copied())
+}
+
+/// Completed-export status line. Integer exports that clamped overs report the
+/// clipped channel-sample count so a hot master is never silently flattened.
+fn export_status(
+    revision: u64,
+    frames: u64,
+    clipped_samples: u64,
+    previous_file: Option<String>,
+) -> String {
+    let mut status = format!("exported rev {revision} · {frames} frames");
+    match clipped_samples {
+        0 => {}
+        1 => status.push_str(" · 1 sample clipped"),
+        count => status.push_str(&format!(" · {count} samples clipped")),
+    }
+    if let Some(path) = previous_file {
+        status.push_str(&format!(" · previous file at {path}"));
+    }
+    status
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::{ExportFormat, export_status, format_choice, format_label};
+
+    #[test]
+    fn format_prompt_answers_map_to_lowercase_labelled_formats_and_cancel() {
+        assert_eq!(format_choice(0), None, "cancel");
+        assert_eq!(format_choice(1), Some(ExportFormat::Pcm16));
+        assert_eq!(format_choice(2), Some(ExportFormat::Pcm24));
+        assert_eq!(format_choice(3), Some(ExportFormat::Float32));
+        assert_eq!(format_choice(4), None);
+        let labels: Vec<_> = ExportFormat::ALL.iter().map(|f| format_label(*f)).collect();
+        assert_eq!(labels, ["16-bit pcm", "24-bit pcm", "32-bit float"]);
+        assert!(labels.iter().all(|label| *label == label.to_lowercase()));
+    }
+
+    #[test]
+    fn export_status_reports_clipped_samples_only_when_present() {
+        assert_eq!(
+            export_status(3, 480, 0, None),
+            "exported rev 3 · 480 frames"
+        );
+        assert_eq!(
+            export_status(3, 480, 1, None),
+            "exported rev 3 · 480 frames · 1 sample clipped"
+        );
+        assert_eq!(
+            export_status(4, 2, 2, Some("/Old/Take.wav".into())),
+            "exported rev 4 · 2 frames · 2 samples clipped · previous file at /Old/Take.wav"
+        );
     }
 }
 
@@ -317,6 +434,16 @@ mod tests {
         begin(cx);
         cx.simulate_prompt_answer("main mix");
         cx.run_until_parked();
+        // Cancelling the format prompt ends the dialog without a path prompt.
+        cx.simulate_prompt_answer("cancel");
+        cx.run_until_parked();
+        assert!(!cx.did_prompt_for_new_path());
+        assert!(!editor.read_with(cx, |view, _| view.export_dialog_open));
+        begin(cx);
+        cx.simulate_prompt_answer("main mix");
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("16-bit pcm");
+        cx.run_until_parked();
         assert!(cx.did_prompt_for_new_path());
         cx.simulate_new_path_selection(|directory| {
             assert_eq!(directory, PathBuf::from(std::env::var_os("HOME").unwrap()));
@@ -326,6 +453,8 @@ mod tests {
         assert!(!editor.read_with(cx, |view, _| view.export_dialog_open));
         begin(cx);
         cx.simulate_prompt_answer("main mix");
+        cx.run_until_parked();
+        cx.simulate_prompt_answer("24-bit pcm");
         cx.run_until_parked();
         cx.simulate_new_path_selection(|_| {
             Some(std::path::PathBuf::from(

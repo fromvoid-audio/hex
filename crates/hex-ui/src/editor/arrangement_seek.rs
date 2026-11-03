@@ -513,6 +513,7 @@ impl EditorView {
         start_playing: bool,
         section: Option<hex_session::arrangement_seek::SectionLaunch>,
     ) {
+        self.wake_poll();
         if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error = Some(
                 if section.is_some() {
@@ -772,8 +773,8 @@ impl EditorView {
             Err(hex_session::service::SubmitError::Closed(_)) => {
                 self.error = Some("arrangement seek worker is unavailable".into());
             }
-            Err(hex_session::service::SubmitError::Busy(_)) => {
-                self.error = Some("arrangement seek worker is busy".into());
+            Err(hex_session::service::SubmitError::Busy(_, reason)) => {
+                self.error = Some(super::user_errors::busy(reason).into());
             }
         }
     }

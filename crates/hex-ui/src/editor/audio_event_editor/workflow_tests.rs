@@ -120,9 +120,10 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
         "derived root must exceed its budget"
     );
     let error = format!("{:?}", terminal.error);
+    // #4145 names the bounded transform domain and its recovery path.
     assert!(
-        error.contains("budget") || error.contains("limit") || error.contains("memory"),
-        "expected bounded preparation refusal: {error}"
+        error.contains("support clips up to") && error.contains("trim or split the clip first"),
+        "expected bounded transform-domain refusal: {error}"
     );
     for _ in 0..3 {
         repaint(&mut visual, &editor);

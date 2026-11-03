@@ -223,16 +223,10 @@ mod tests {
         }
     }
     fn next(service: &Service) -> Event {
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if let Ok(event) = service.try_event() {
-                return event;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "recovery worker completion"
-            );
-            std::thread::yield_now();
+        // Blocks on the event channel; bounded only against hangs.
+        match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+            Ok(event) => event,
+            Err(error) => panic!("next: worker event absent: {error}"),
         }
     }
     fn intent(event: &Event) -> RecoveryRestart {

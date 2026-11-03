@@ -5,9 +5,11 @@
 #include "macos_instance.hpp"
 #include "macos_instance_wire.hpp"
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <fcntl.h>
+#include <poll.h>
 #include <optional>
 #include <thread>
 
@@ -18,6 +20,35 @@ enum Failure : uint32_t { Configuration=1,Admission=2,ClassFailure=3,Setup=4,Pre
     Processing=7,ProtocolFailure=8,Cancelled=9,Teardown=10,HostControl=11,Unexpected=12,InstanceOpen=13,Restore=14,
     Quiescence=15,Resume=16 };
 struct Refusal {}; // Expected local/SDK return-code refusal, never an exception from foreign code.
+// Main-lane wait after a published failure: at most `milliseconds` per call,
+// never dispatching foreign callbacks. Returns true once the peer has closed
+// the socket. Unread request bytes stay for the worker; their readiness
+// sleeps rather than turning the wait into a spin.
+constexpr int failed_main_wait_ms=5;
+// A live capture still waiting on parameter edits after this long is refused
+// as still changing (HXVICR02 reason 2). It stays below the host's smallest
+// capture deadline (3 s), so continuous edits never fault the lease.
+constexpr auto live_settle_limit=std::chrono::milliseconds(1000);
+constexpr uint32_t refusal_still_changing=2;
+// Non-terminal refusal of exactly one capture operation; the epoch continues.
+bool send_still_changing(int channel,const wire::Config& config,uint64_t blocks,uint64_t frames,uint64_t operation) {
+    wire::Bytes body;config.stamp(body);
+    wire::number(body,blocks,8);wire::number(body,frames,8);wire::number(body,operation,8);
+    wire::number(body,refusal_still_changing,1);
+    return wire::send(channel,"HXVICR02",body);
+}
+bool wait_for_peer_close(int channel) {
+    pollfd descriptor{channel,POLLIN,0};
+    const int ready=::poll(&descriptor,1,failed_main_wait_ms);
+    if(ready==0) return false;
+    if(ready>0) {
+        uint8_t byte=0;const auto peer=::recv(channel,&byte,1,MSG_PEEK|MSG_DONTWAIT);
+        // A closed peer with unread bytes still reports hangup.
+        if(peer==0 || (descriptor.revents&POLLHUP)) return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(failed_main_wait_ms));
+    return false;
+}
 struct Module {
     CFBundleRef bundle=nullptr;IPluginFactory* factory=nullptr;
     bool native_attempted=false,loaded=false,entered=false,opened=false;bool (*exit)()=nullptr;
@@ -363,6 +394,7 @@ int main(int argc,char** argv) {
                     input.channelBuffers32=input_pointers;output.channelBuffers32=output_pointers;
                     ProcessData data{};data.processMode=kRealtime;data.symbolicSampleSize=kSample32;
                     uint64_t live_operation=0;
+                    auto live_started=std::chrono::steady_clock::now();
                     data.numInputs=config->inputs?1:0;data.numOutputs=1;data.inputs=config->inputs?&input:nullptr;data.outputs=&output;
                     // A live SDK failure waits only for the next serialized
                     // request to report its error, without another DSP call.
@@ -394,12 +426,21 @@ int main(int argc,char** argv) {
                             if(received==6) {
                                 if(stage!=LiveIdle || live_operation==std::numeric_limits<uint64_t>::max() ||
                                     packet.capture_operation!=live_operation+1) { worker_failure.store(ProtocolFailure);break; }
-                                live_operation=packet.capture_operation;
+                                live_operation=packet.capture_operation;live_started=std::chrono::steady_clock::now();
                                 live_stage.store(parameter_feedback.count || instance.pending_parameter_edits()?LiveFeedbackPending:LiveRequested,std::memory_order_release);
                             } else if(stage==LiveIdle || packet.capture_operation!=live_operation) {
                                 worker_failure.store(ProtocolFailure);break;
                             }
                             if(received==7 && stage==LiveFailed) { worker_failure.store(live_failure);break; }
+                            // Only this worker leaves FeedbackPending, and main
+                            // never touches it, so retiring here cannot race a capture.
+                            auto pending=LiveFeedbackPending;
+                            if(received==7 && stage==LiveFeedbackPending &&
+                                std::chrono::steady_clock::now()-live_started>=live_settle_limit &&
+                                live_stage.compare_exchange_strong(pending,LiveIdle,std::memory_order_acq_rel)) {
+                                if(!send_still_changing(channel,*config,blocks,frames,live_operation)) std::_Exit(Cancelled);
+                                continue;
+                            }
                             const bool complete=received==7 && stage==LiveComplete;
                             wire::Bytes body;config->stamp(body);
                             wire::number(body,blocks,8);wire::number(body,frames,8);wire::number(body,live_operation,8);
@@ -606,7 +647,12 @@ int main(int argc,char** argv) {
                     if(worker_failure.load()) {
                         // The joining worker/guardian owns terminal progress.
                         // Do not dispatch more foreign callbacks after failure.
-                        std::this_thread::yield();continue;
+                        // Block briefly instead of spinning, and retire on EOF
+                        // unless the worker itself is receiving (it then sees
+                        // EOF and finishes); a hung DSP/stop never returns.
+                        if(wait_for_peer_close(channel) && phase.load(std::memory_order_acquire)!=1 &&
+                            !done.load(std::memory_order_acquire)) std::_Exit(Cancelled);
+                        continue;
                     }
                     // The worker owns active response framing. Publishing a
                     // main-lane failure lets it finish any current response
@@ -699,16 +745,24 @@ int main(int argc,char** argv) {
                     } else if(stage==CaptureRequested) {
                         hex_instance::CapturedState current{};
                         const auto admission_revision=instance.host_callback_revision_on_control();
-                        if(instance.pending_parameter_edits() || !instance.capture_current_state_on_control(current)) { error(channel,&*config,Capture);std::_Exit(Capture); }
+                        // A stopped read cannot silently process a newly
+                        // admitted gesture or publish a mixed component/controller
+                        // cut. Edits that keep arriving refuse only this capture
+                        // (still changing); the stopped epoch stays usable.
+                        bool changing=instance.pending_parameter_edits();
+                        if(!changing && !instance.capture_current_state_on_control(current)) { error(channel,&*config,Capture);std::_Exit(Capture); }
                         instance.dispatch_host_callbacks();
                         const auto current_latency=instance.reported_latency_on_control();
                         const auto current_tail=instance.reported_tail_on_control();
-                        // A stopped read cannot silently process a newly
-                        // admitted gesture. Keep the established refusal path
-                        // rather than publish a mixed component/controller cut.
-                        if(instance.pending_parameter_edits() || instance.host_callback_revision_on_control()!=admission_revision ||
-                            instance.host_refusals() || !current_latency || !current_tail || *current_latency!=*latency || *current_tail!=*tail) {
+                        if(instance.host_refusals() || !current_latency || !current_tail || *current_latency!=*latency || *current_tail!=*tail) {
                             error(channel,&*config,Capture);std::_Exit(Capture);
+                        }
+                        changing=changing || instance.pending_parameter_edits() || instance.host_callback_revision_on_control()!=admission_revision;
+                        if(changing) {
+                            if(!send_still_changing(channel,*config,blocks,frames,capture_operation)) std::_Exit(Cancelled);
+                            std::lock_guard<std::mutex> lock(startup_mutex);
+                            epoch_stage=CaptureSent;startup_changed.notify_all();
+                            continue;
                         }
                         wire::Bytes body;config->stamp(body);
                         wire::number(body,blocks,8);wire::number(body,frames,8);wire::number(body,capture_operation,8);

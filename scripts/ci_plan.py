@@ -17,7 +17,7 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 7
+POLICY_VERSION = 8
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -278,51 +278,6 @@ def module_paths(source_root: Path) -> dict[Path, str] | None:
     return paths
 
 
-def module_test_skips(root: Path, paths: list[str], inventory: list[dict], tested: list[str],
-                      filters: dict[str, list[str]], changed_lines: dict[str, str]) -> dict[str, list[str]]:
-    """Untouched submodules a changed module root does not name (policy v7).
-
-    A root file such as `editor/mod.rs` owns many submodules. Its own tests
-    still run, as do submodules the change touches (another changed file) or
-    names in its changed lines; the rest are skipped. When that would leave the
-    root with no tests at all, nothing is skipped and the whole subtree runs.
-    """
-    skips: dict[str, set[str]] = {}
-    for owner, includes in filters.items():
-        package = next(p for p in inventory if p["name"] == owner)
-        directory = (root / Path(package["manifest"]).parent).resolve()
-        modules = module_paths(directory / "src") or {}
-        by_file = dict(modules)
-        changed = {by_file.get((root / p).resolve()) for p in paths if owner_package(p, inventory) == owner}
-        changed.discard(None)
-        for path in paths:
-            if owner_package(path, inventory) != owner:
-                continue
-            module = by_file.get((root / path).resolve())
-            if not module or module + "::" not in includes:
-                continue
-            depth = module.count("::") + 1
-            children = {name.split("::")[depth] for name in modules.values()
-                        if name.startswith(module + "::")}
-            if not children:
-                continue
-            text = changed_lines.get(path)
-            if text is None:
-                continue
-            words = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text))
-            touched = {c for c in children
-                       if any(m == f"{module}::{c}" or m.startswith(f"{module}::{c}::") for m in changed)}
-            keep = touched | (children & words)
-            kept = [f for f, name in modules.items() if name == module
-                    or any(name == f"{module}::{c}" or name.startswith(f"{module}::{c}::") for c in keep)]
-            kept_tests = any(TEST_ATTRIBUTE.search(f.read_text(errors="replace")) for f in kept)
-            if not kept_tests:
-                continue
-            skips.setdefault(owner, set()).update(f"{module}::{c}::" for c in children - keep)
-    return {owner: sorted(s for s in names if not any(i.startswith(s) for i in filters[owner]))
-            for owner, names in skips.items()}
-
-
 def doc_example_owners(root: Path, paths: list[str], inventory: list[dict]) -> list[str]:
     """Owners whose changed Rust files carry doc examples (fenced code in doc comments)."""
     owners = set()
@@ -425,8 +380,7 @@ def test_only_owner(root: Path, path: str, inventory: list[dict]) -> str | None:
     return owner if gated(file, frozenset()) else None
 
 
-def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affected: list[str],
-                       changed_lines: dict[str, str] | None = None) -> dict:
+def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affected: list[str]) -> dict:
     """Narrow only reviewed runtime relationships; Cargo closure remains the lint boundary.
 
     Compressor state/DSP uses the unchanged Lattice host interfaces. Its real
@@ -478,10 +432,8 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
     # Only owners of changed files get module filters; a runtime consumer tested
     # on another owner's behalf has no changed file and keeps its whole suite.
     module_filters = {} if narrow else module_test_filters(root, paths, inventory, tested)
-    module_skips = module_test_skips(root, paths, inventory, tested, module_filters, changed_lines or {})
     return {"kind": "compressor" if narrow else "packages", "tests": tests,
             "module_filters": module_filters,
-            "module_skips": module_skips,
             "doc_example_owners": doc_example_owners(root, paths, inventory),
             "test_packages": [] if narrow else tested,
             "single_run": {} if narrow else single_run_packages(root, tested, inventory),
@@ -669,13 +621,7 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
                   inventory, UI_PACKAGES, python_tests.available_modules(root)),
               "qualifies_merge": profile in {"merge", "full", "release"}}
     if scope in {"rust", "ui"}:
-        changed_lines = {path: git(root, "diff", "-U0", base_sha, source_sha, "--", path).decode(errors="replace")
-                         for path in selection_paths if path.endswith(".rs") and path in paths}
-        # Only changed (+/-) lines count as naming a submodule.
-        changed_lines = {path: "\n".join(line[1:] for line in text.splitlines()
-                                         if line[:1] in "+-" and not line.startswith(("+++", "---")))
-                         for path, text in changed_lines.items()}
-        result["boundary"] = boundary_selection(root, selection_paths, inventory, affected, changed_lines)
+        result["boundary"] = boundary_selection(root, selection_paths, inventory, affected)
     if profile == "health":
         result["health"] = health_selection(paths, inventory)
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()

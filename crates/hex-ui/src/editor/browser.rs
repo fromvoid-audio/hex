@@ -24,15 +24,17 @@ use gpui::{
 use hex_audio::sample_preview::Phase;
 use hex_library::{DirectoryListing, EntryKind, LibraryEntry, ScanError, scan_directory};
 use hex_preferences::{BrowserBuiltin, BrowserPlaces};
-use hex_session::service::AudioPreview;
-use hex_session::service::Request;
+use hex_session::service::{AudioPreview, PreviewFailure, PreviewSources, Request};
 use hex_widgets::TextInput;
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     path::PathBuf,
     rc::Rc,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 mod layout;
@@ -80,6 +82,8 @@ struct PlaybackPreviewRequest {
 struct PreviewRequest {
     key: PreviewKey,
     slot: PreviewSlot,
+    /// Set when a different waveform request supersedes this one in flight.
+    cancel: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Default)]
@@ -207,6 +211,9 @@ pub(super) struct BrowserState {
     places_save_in_flight: bool,
     folder_bookmark_pending: bool,
     pending_places_save: Option<BrowserPlaces>,
+    /// Latest failure from a save that a queued save followed; reported when
+    /// the save chain ends so a later success cannot hide it.
+    unreported_places_save_error: Option<String>,
     pub(super) places_status: Option<String>,
     samples: samples::SampleBrowser,
     plugins: plugins::Plugins,
@@ -227,7 +234,9 @@ pub(super) struct BrowserState {
     observed_query: String,
     history: history::History,
     playback_generation: u64,
-    playback_in_flight: bool,
+    /// Cancellation flag of the one in-flight audition preparation; set once
+    /// a newer request or a stop supersedes it.
+    playback_in_flight: Option<Arc<AtomicBool>>,
     playback_pending: Option<PlaybackPreviewRequest>,
     auto_audition: bool,
     playback_phase: Phase,
@@ -236,6 +245,8 @@ pub(super) struct BrowserState {
     playback_fraction: f32,
     waveform_bounds: Rc<Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     preview_cache: HashMap<PreviewKey, PreviewSlot>,
+    /// Decoded sources shared by waveform and audition jobs.
+    preview_sources: PreviewSources,
     preview_selected: Option<PreviewKey>,
     #[cfg(test)]
     preview_preparations: usize,
@@ -293,6 +304,7 @@ impl BrowserState {
             places_save_in_flight: false,
             folder_bookmark_pending: false,
             pending_places_save: None,
+            unreported_places_save_error: None,
             places_status: None,
             samples: samples::SampleBrowser::default(),
             plugins: plugins::Plugins::default(),
@@ -318,9 +330,10 @@ impl BrowserState {
             playback_path: None,
             playback_fraction: 0.0,
             waveform_bounds: Rc::new(Cell::new(None)),
-            playback_in_flight: false,
+            playback_in_flight: None,
             playback_pending: None,
             preview_cache: HashMap::new(),
+            preview_sources: PreviewSources::default(),
             preview_selected: None,
             #[cfg(test)]
             preview_preparations: 0,
@@ -333,6 +346,12 @@ impl BrowserState {
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn test_preferences_path(&self) -> &std::path::Path {
         &self.preferences_path
+    }
+
+    /// Redirects later saves; an in-flight save keeps its captured path.
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn set_test_preferences_path(&mut self, path: PathBuf) {
+        self.preferences_path = path;
     }
 
     #[cfg(feature = "ui-test-support")]
@@ -421,7 +440,7 @@ fn browser_audio_drag_ghost(
         .border_1()
         .border_l(px(stroke))
         .border_r(px(0.0))
-        .border_color(rgb(0x000000))
+        .border_color(rgb(theme::color(theme::PaletteRole::ClipOutline)))
         .bg(rgb(theme::color(theme::PaletteRole::ClipFill)));
     if let Some((lines, start, end)) = grid {
         ghost = ghost.children(super::tracks::aligned_clip_grid_layer(
@@ -460,8 +479,17 @@ fn browser_audio_drag_ghost(
             .child(theme::text(payload.label.clone()))
             .child(theme::text(status)),
     );
-    super::tracks::pixel_boundary_shell(ghost, left, top, width, height, stroke, 0x000000, true)
-        .opacity(0.9)
+    super::tracks::pixel_boundary_shell(
+        ghost,
+        left,
+        top,
+        width,
+        height,
+        stroke,
+        theme::color(theme::PaletteRole::ClipOutline),
+        true,
+    )
+    .opacity(0.9)
 }
 
 fn browser_audio_drag_ghost_position(pointer: (f32, f32)) -> (f32, f32) {
@@ -657,14 +685,25 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         self.browser.places_save_in_flight = false;
+        let error = result
+            .err()
+            .map(|error| places_error("could not save browser places", &error));
         if self.browser.pending_places_save.is_some() {
+            // A queued save supersedes the data, not the user's notice: show
+            // the failure now and keep the latest one until it is reported.
+            if let Some(error) = error {
+                self.browser.places_status = Some(error.clone());
+                self.browser.unreported_places_save_error = Some(error);
+            }
             self.start_browser_places_save(cx);
-        } else {
-            self.browser.places_status = Some(match result {
-                Ok(()) => "browser places saved".into(),
-                Err(error) => places_error("could not save browser places", &error),
-            });
+            return;
         }
+        let earlier = self.browser.unreported_places_save_error.take();
+        self.browser.places_status = Some(match (error, earlier) {
+            (Some(error), _) => error,
+            (None, Some(earlier)) => format!("{earlier} · a later save succeeded"),
+            (None, None) => "browser places saved".into(),
+        });
     }
 
     fn select_browser_source(&mut self, source: BrowserSection, cx: &mut Context<Self>) {
@@ -744,6 +783,7 @@ impl EditorView {
 
     pub(super) fn cancel_browser_sample_playback(&mut self) {
         self.browser.playback_generation = self.browser.playback_generation.saturating_add(1);
+        self.cancel_browser_playback_preparation();
         self.browser.playback_pending = None;
         self.browser.playback_phase = Phase::Idle;
         self.browser.playback_output = None;
@@ -751,6 +791,14 @@ impl EditorView {
         self.browser.playback_fraction = 0.0;
         if let Some(audio) = self.audio.as_mut() {
             audio.control.preview_cancel();
+        }
+    }
+
+    /// Stop the in-flight audition preparation within bounded work; its
+    /// result is already stale because the playback generation moved on.
+    fn cancel_browser_playback_preparation(&self) {
+        if let Some(cancel) = &self.browser.playback_in_flight {
+            cancel.store(true, Ordering::Relaxed);
         }
     }
 
@@ -800,6 +848,7 @@ impl EditorView {
             self.error = None;
         }
         self.browser.playback_generation = generation;
+        self.cancel_browser_playback_preparation();
         self.browser.playback_path = Some(path.clone());
         self.browser.playback_pending = None;
         let Some(audio) = self.audio.as_mut() else {
@@ -828,7 +877,7 @@ impl EditorView {
         self.browser.playback_phase = Phase::Preparing;
         self.browser.playback_output = Some((output_identity, output_generation));
         self.status = "sample preview preparing".into();
-        if self.browser.playback_in_flight {
+        if self.browser.playback_in_flight.is_some() {
             self.browser.playback_pending = Some(request);
         } else {
             self.start_browser_sample_playback(request, cx);
@@ -840,7 +889,9 @@ impl EditorView {
         request: PlaybackPreviewRequest,
         cx: &mut Context<Self>,
     ) {
-        self.browser.playback_in_flight = true;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.browser.playback_in_flight = Some(Arc::clone(&cancel));
+        let sources = self.browser.preview_sources.clone();
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
@@ -852,11 +903,13 @@ impl EditorView {
                 .spawn(async move {
                     #[cfg(test)]
                     let _test_environment = test_environment;
-                    hex_session::service::prepare_sample_preview(path, sample_rate)
+                    sources
+                        .prepare_playback(path, sample_rate, &cancel)
+                        .map_err(|failure| failure.to_string())
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                view.browser.playback_in_flight = false;
+                view.browser.playback_in_flight = None;
                 if request.generation == view.browser.playback_generation
                     && let Some(audio) = view.audio.as_mut().filter(|audio| {
                         audio.control.output_identity() == Some(request.output_identity)
@@ -1086,6 +1139,7 @@ impl EditorView {
         let request = PreviewRequest {
             key,
             slot: slot.clone(),
+            cancel: Arc::new(AtomicBool::new(false)),
         };
         if let Some(in_flight) = self
             .browser
@@ -1110,8 +1164,24 @@ impl EditorView {
         }
         if self.browser.preview_in_flight.is_some() {
             self.browser.preview_pending = Some(request);
+            self.cancel_superseded_browser_audio_preview();
         } else {
             self.start_browser_audio_preview(request, cx);
+        }
+    }
+
+    /// A newer waveform request replaced the pending one; stop the in-flight
+    /// job unless the selected row or an active drag still needs its result.
+    fn cancel_superseded_browser_audio_preview(&self) {
+        let Some(in_flight) = self.browser.preview_in_flight.as_ref() else {
+            return;
+        };
+        let needed = self.browser.preview_selected.as_ref() == Some(&in_flight.key)
+            || self.active_browser_audio_drag.as_ref().is_some_and(|drag| {
+                drag.path == in_flight.key.path && drag.sample_rate == in_flight.key.sample_rate
+            });
+        if !needed {
+            in_flight.cancel.store(true, Ordering::Relaxed);
         }
     }
 
@@ -1121,18 +1191,20 @@ impl EditorView {
             self.browser.preview_preparations += 1;
         }
         self.browser.preview_in_flight = Some(request.clone());
+        let sources = self.browser.preview_sources.clone();
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let path = request.key.path.clone();
             let sample_rate = request.key.sample_rate;
+            let cancel = Arc::clone(&request.cancel);
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     #[cfg(test)]
                     let _test_environment = test_environment;
-                    hex_session::service::prepare_audio_preview(path, sample_rate)
+                    sources.prepare_waveform(path, sample_rate, &cancel)
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
@@ -1146,7 +1218,7 @@ impl EditorView {
     fn browser_audio_preview_finished(
         &mut self,
         request: PreviewRequest,
-        result: Result<AudioPreview, String>,
+        result: Result<AudioPreview, PreviewFailure>,
         cx: &mut Context<Self>,
     ) {
         if self
@@ -1159,7 +1231,9 @@ impl EditorView {
         }
         match result {
             Ok(preview) => *request.slot.metadata.borrow_mut() = Some(Rc::new(preview)),
-            Err(_) => {
+            // A superseded job leaves its slot empty, so a later request retries.
+            Err(PreviewFailure::Cancelled) => {}
+            Err(PreviewFailure::Failed(_)) => {
                 *request.slot.error.borrow_mut() =
                     Some("audio preview could not be prepared".into());
             }

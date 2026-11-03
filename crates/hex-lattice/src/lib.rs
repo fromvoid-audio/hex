@@ -12,6 +12,7 @@
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 mod foreign_processor;
+mod matrix_ramp;
 mod meter;
 mod owned_processor;
 mod parameter_automation;
@@ -328,6 +329,39 @@ pub trait NativeProcessorRuntime: StdAny + Send {
     fn can_retarget_parameters_from(&self, _previous: &dyn NativeProcessorRuntime) -> bool {
         false
     }
+    /// Bounded live-transition admission (Pulse #4178). True when this
+    /// candidate can take over `previous` (its committed runtime) only by
+    /// capturing more still-audible transitions, such as outgoing routing or
+    /// audition branches, than its fixed inline capacity holds. It is not an
+    /// incompatibility: the host must then refuse the WHOLE handoff before
+    /// any ownership mutation with a transient busy result and retry after
+    /// rendering advances `previous`. Never answer this by reporting a
+    /// history copy or retarget as unsupported, because the host treats those
+    /// as reset, detached-tail or fresh-runtime handoffs instead of a refusal.
+    /// It must become false once `previous` has rendered past its oldest
+    /// captured transition, and after `reset`. The query must be bounded,
+    /// allocation-free, infallible, lock-free and read-only. The default
+    /// (false) is correct for runtimes that never hold live transitions.
+    fn transition_busy_from(&self, _previous: &dyn NativeProcessorRuntime) -> bool {
+        false
+    }
+    /// Idle-predecessor settlement (Pulse #4558). The host calls this on a
+    /// committed runtime only while its graph renders no device chains (a
+    /// paused transport without monitoring, keyboard or tail input), when a
+    /// handoff would otherwise be `transition_busy_from` this runtime forever
+    /// because nothing renders it. Its output is silent then and a resume
+    /// ramps in from silence, so complete every pending live transition at
+    /// once: discard only the outgoing, inaudible branches and keep the
+    /// current routing and its history unchanged, as if the transitions had
+    /// finished. Afterwards no candidate may be `transition_busy_from` this
+    /// runtime. Must be bounded, allocation-free, infallible and lock-free.
+    /// The host calls it only on a runtime that a candidate reports busy
+    /// from, so the default `reset` (coarser: it also clears the current
+    /// routing's frozen history) is correct for any runtime; providers with
+    /// live transitions may override it to keep that history.
+    fn settle_idle_transitions(&mut self) {
+        self.reset();
+    }
     fn as_any(&self) -> &dyn StdAny;
     /// Optional, transient live-audition controls. These are audio-owned and
     /// deliberately excluded from persisted device state.
@@ -558,6 +592,9 @@ struct RuntimeEntry {
     // freeze speculative controls into a retained output suffix.
     committed_host_gains: [f32; 2],
     scratch_host_gains: [f32; 2],
+    // Static matrix ramp twins; see `matrix_ramp` for the handoff law.
+    committed_matrix_ramp: matrix_ramp::MatrixRamp,
+    scratch_matrix_ramp: matrix_ramp::MatrixRamp,
     meter: std::sync::Arc<DeviceMeter>,
     metering: bool,
     input_gain: f32,
@@ -680,6 +717,8 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
             automation_frozen: _,
             committed_host_gains: _,
             scratch_host_gains: _,
+            committed_matrix_ramp: _,
+            scratch_matrix_ramp: _,
             meter: _,
             metering: _,
             input_gain: _,
@@ -928,6 +967,8 @@ impl NativeRuntimeChain {
                 scratch_host_gains: instance.configuration.as_ref().map_or([1.0; 2], |state| {
                     [state.input_gain_linear(), state.output_gain_linear()]
                 }),
+                committed_matrix_ramp: matrix_ramp::MatrixRamp::INACTIVE,
+                scratch_matrix_ramp: matrix_ramp::MatrixRamp::INACTIVE,
                 meter: instance.meter,
                 metering: false,
                 input_gain: instance
@@ -1219,7 +1260,9 @@ impl NativeRuntimeChain {
     /// authored parameter change. Entry identity and processing topology must
     /// remain exact; a changed configuration is accepted only when both
     /// candidate twins explicitly support retargeting from the old committed
-    /// runtime. Empty ranges and malformed ranges are refused.
+    /// runtime, or when an unbypassed, unautomated memoryless entry changes
+    /// only its static host matrix (the handoff then ramps it; see
+    /// `matrix_ramp`). Empty ranges and malformed ranges are refused.
     pub fn can_retarget_parameters_from_range(
         &self,
         previous: &Self,
@@ -1235,6 +1278,13 @@ impl NativeRuntimeChain {
             .iter()
             .zip(&previous.entries[range])
             .all(|(candidate, old)| {
+                // A memoryless static matrix carries no processor history; its
+                // changed coefficients ramp in the host across the handoff.
+                let static_matrix_retarget = !candidate.runtime.is_stateful()
+                    && !old.runtime.is_stateful()
+                    && !candidate.bypassed
+                    && candidate.automation.is_empty()
+                    && old.automation.is_empty();
                 let stable_processing_identity = candidate.owner == old.owner
                     && candidate.device_id == old.device_id
                     && candidate.device_type == old.device_type
@@ -1245,6 +1295,7 @@ impl NativeRuntimeChain {
                         .foreign_configuration_matches(&old.runtime)
                     && candidate.bypassed == old.bypassed
                     && (candidate.matrix == old.matrix
+                        || static_matrix_retarget
                         || ((!candidate.automation.is_empty() || !old.automation.is_empty())
                             && candidate.runtime.can_retarget_from(&old.runtime)));
                 if !stable_processing_identity {
@@ -1256,7 +1307,7 @@ impl NativeRuntimeChain {
                     }
                     _ => false,
                 };
-                if configuration_matches {
+                if configuration_matches || static_matrix_retarget {
                     return true;
                 }
                 candidate.runtime.can_retarget_from(&old.runtime)
@@ -1354,6 +1405,48 @@ impl NativeRuntimeChain {
         self.can_inherit_from_excluding_old_range(previous, 0..0)
     }
 
+    /// Whether any stateful entry must defer a handoff from the same-identity
+    /// entry of `previous` until that committed runtime's live transitions
+    /// drain (Pulse #4178; see `NativeProcessorRuntime::transition_busy_from`).
+    /// Hosts check this during pure handoff preflight, before inheritance,
+    /// tail capture or reset classification, and refuse the whole handoff as
+    /// transient instead of choosing another history path. It is conservative
+    /// for entries a retained tail would keep. Bounded and allocation-free:
+    /// one identity scan per candidate entry, like `can_inherit_from`.
+    /// Settle the committed runtimes that `candidate` is
+    /// `transition_busy_from`, while this (previous) chain's graph renders
+    /// nothing (Pulse #4558). Pairs entries exactly as
+    /// `transition_busy_from`; bounded and allocation-free. See
+    /// `NativeProcessorRuntime::settle_idle_transitions`.
+    pub fn settle_idle_transitions_for(&mut self, candidate: &Self) {
+        for entry in candidate
+            .entries
+            .iter()
+            .filter(|entry| entry.runtime.is_stateful())
+        {
+            if let Some(old) = self
+                .entries
+                .iter_mut()
+                .find(|old| Self::same_runtime_identity(entry, old) && old.runtime.is_stateful())
+                && entry.runtime.transition_busy_from(&old.runtime)
+            {
+                old.runtime.settle_idle_transitions();
+            }
+        }
+    }
+    pub fn transition_busy_from(&self, previous: &Self) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.runtime.is_stateful()
+                && previous
+                    .entries
+                    .iter()
+                    .find(|old| {
+                        Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
+                    })
+                    .is_some_and(|old| entry.runtime.transition_busy_from(&old.runtime))
+        })
+    }
+
     /// Preflight history inheritance while leaving a range of old chain entries
     /// with a retained tail owner. Exclusion is resolved by old stable device
     /// identity, so candidate reordering cannot accidentally inherit a tail's
@@ -1443,6 +1536,7 @@ impl NativeRuntimeChain {
         previous: &Self,
         excluded_old_range: std::ops::Range<usize>,
     ) {
+        self.inherit_matrix_ramps(previous, &excluded_old_range);
         for entry in &mut self.entries {
             if let Some((index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
                 Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
@@ -1479,6 +1573,7 @@ impl NativeRuntimeChain {
         previous: &mut Self,
         excluded: std::ops::Range<usize>,
     ) {
+        self.inherit_matrix_ramps(previous, &excluded);
         for entry in &mut self.entries {
             if let Some((index, old)) = previous.entries.iter_mut().enumerate().find(|(_, old)| {
                 Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
@@ -1486,6 +1581,36 @@ impl NativeRuntimeChain {
             {
                 entry.runtime.transfer_history_from(&mut old.runtime);
             }
+        }
+    }
+
+    /// Start or continue each static matrix ramp from the same-identity old
+    /// entry's committed matrix. Excluded (retained-tail) donors, bypass and
+    /// automation on either side apply the candidate matrix exactly.
+    fn inherit_matrix_ramps(&mut self, previous: &Self, excluded: &std::ops::Range<usize>) {
+        for entry in &mut self.entries {
+            let old = previous
+                .entries
+                .iter()
+                .enumerate()
+                .find(|(_, old)| Self::same_runtime_identity(entry, old));
+            let ramp = match old {
+                Some((index, old)) => matrix_ramp::MatrixRamp::inherited(
+                    old.committed_matrix_ramp,
+                    old.matrix,
+                    entry.matrix,
+                    entry.sample_rate,
+                    !excluded.contains(&index)
+                        && !entry.bypassed
+                        && !old.bypassed
+                        && entry.automation.is_empty()
+                        && old.automation.is_empty()
+                        && !matches!(entry.runtime, RuntimeOwnership::Foreign(_)),
+                ),
+                None => matrix_ramp::MatrixRamp::INACTIVE,
+            };
+            entry.committed_matrix_ramp = ramp;
+            entry.scratch_matrix_ramp = ramp;
         }
     }
 
@@ -1503,6 +1628,7 @@ impl NativeRuntimeChain {
     pub fn begin_block(&mut self) {
         for entry in &mut self.entries {
             entry.scratch_host_gains = entry.committed_host_gains;
+            entry.scratch_matrix_ramp = entry.committed_matrix_ramp;
             entry.runtime.begin();
         }
     }
@@ -2144,7 +2270,7 @@ impl NativeRuntimeChain {
                 }
             }
         } else {
-            entry.matrix.apply_block(frames);
+            entry.scratch_matrix_ramp.apply_block(entry.matrix, frames);
             if !entry.automation.parameter_ids().is_empty() && !entry.automation_frozen {
                 let values = entry.automation.block_with_optional_external(
                     clock,
@@ -2228,6 +2354,7 @@ impl NativeRuntimeChain {
     pub fn commit_block(&mut self) {
         for entry in &mut self.entries {
             entry.committed_host_gains = entry.scratch_host_gains;
+            entry.committed_matrix_ramp = entry.scratch_matrix_ramp;
             entry.runtime.commit();
             let reading = entry.runtime.take_dynamics_meter();
             if let Some(reading) = reading.filter(|_| entry.metering && !entry.bypassed) {
@@ -2239,6 +2366,7 @@ impl NativeRuntimeChain {
     pub fn rollback_block(&mut self) {
         for entry in &mut self.entries {
             entry.scratch_host_gains = entry.committed_host_gains;
+            entry.scratch_matrix_ramp = entry.committed_matrix_ramp;
             entry.runtime.rollback();
         }
     }
@@ -2248,6 +2376,8 @@ impl NativeRuntimeChain {
         for entry in &mut self.entries {
             entry.committed_host_gains = [entry.input_gain, entry.output_gain];
             entry.scratch_host_gains = entry.committed_host_gains;
+            entry.committed_matrix_ramp = matrix_ramp::MatrixRamp::INACTIVE;
+            entry.scratch_matrix_ramp = matrix_ramp::MatrixRamp::INACTIVE;
             entry.runtime.reset();
         }
     }

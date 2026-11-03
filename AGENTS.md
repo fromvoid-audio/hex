@@ -284,9 +284,10 @@ merge checks. Within an owner crate, merges test only the changed modules'
 own test subtrees (a module without tests falls back to its nearest tested
 ancestor), so give each module its own boundary tests and split large modules
 along their responsibilities. Keep each merge's test setup and execution,
-excluding build time, under one minute. `scripts/local-ci.py --profile merge` enforces this budget (see
-`docs/local-ci.md`). An over-budget owner suite is a test-design bug: record it in
-Pulse and pass its reason with `--over-budget-reason` until it is fixed.
+excluding build time, under one minute. `scripts/local-ci.py --profile merge` reports this
+budget as a warning, not a merge failure (user decision, 1 November 2026; see
+`docs/local-ci.md`). Merge when every other check is green. A recurring
+over-budget owner suite is a test-design bug: record it in Pulse.
 
 Broaden only for a documented concrete impact or unresolved risk. Explain unknown
 selection, then resolve it by inspecting owners/consumers or conservatively check

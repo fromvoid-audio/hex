@@ -500,10 +500,22 @@ fn eq_catalog_uses_shared_live_geometry_controls_and_registered_response_without
                 && graph.size.height >= body.size.height * 0.9
         );
     }
+    let q_control = view.read_with(cx, |view, _| {
+        view.fixtures[&Entry::Eq].numbers[3].entity.clone()
+    });
+    q_control.update(cx, |q, cx| q.set_external_value(18.0, cx).unwrap());
     let before = view.read_with(cx, |view, cx| {
         eq::model(&view.fixtures[&Entry::Eq], cx).unwrap()
     });
     before.validate().unwrap();
+    let center = before.nodes[0].position[0];
+    assert!(
+        before
+            .primary
+            .iter()
+            .any(|point| (point[0] - center).abs() < 1.0e-6),
+        "the narrow node center must be sampled"
+    );
     assert!(before.analyzer.is_none() && before.input_analyzer.is_none());
     let field = visual.debug_bounds("fixture-eq-numeric-2-value").unwrap();
     visual.simulate_click(field.center(), Modifiers::default());

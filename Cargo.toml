@@ -1,6 +1,6 @@
 [workspace]
 default-members = ["crates/hex-desktop"]
-members = ["crates/hex-mts", "crates/hex-tuning", "crates/hex-dsp", "crates/hex-midi", "crates/hex-clap-scan", "crates/hex-plugin-scan", "crates/hex-plugin-catalog", "crates/hex-plugin-state", "crates/hex-plugin-host", "crates/hex-warp", "crates/hex-diagnostics", "crates/hex-session", "crates/hex-storage", "crates/hex-media", "crates/hex-project", "crates/hex-lattice-contract", "crates/hex-lattice", "crates/hex-devices", "crates/hex-engine", "crates/hex-stream", "crates/hex-export", "crates/hex-library", "crates/hex-cli", "crates/hex-desktop", "crates/hex-ui", "crates/hex-sandbox", "crates/hex-audio", "crates/hex-preferences", "crates/hex-widgets"]
+members = ["crates/hex-mts", "crates/hex-tuning", "crates/hex-dsp", "crates/hex-midi", "crates/hex-clap-scan", "crates/hex-plugin-scan", "crates/hex-scan-supervisor", "crates/hex-plugin-catalog", "crates/hex-plugin-state", "crates/hex-plugin-host", "crates/hex-warp", "crates/hex-diagnostics", "crates/hex-session", "crates/hex-storage", "crates/hex-media", "crates/hex-project", "crates/hex-lattice-contract", "crates/hex-lattice", "crates/hex-devices", "crates/hex-engine", "crates/hex-stream", "crates/hex-export", "crates/hex-library", "crates/hex-cli", "crates/hex-desktop", "crates/hex-ui", "crates/hex-sandbox", "crates/hex-audio", "crates/hex-preferences", "crates/hex-widgets"]
 exclude = ["third_party/mts-esp-master", "third_party/gpui", "third_party/block", "third_party/proc-macro-error2", "third_party/xattr"]
 resolver = "3"
 
@@ -41,4 +41,22 @@ opt-level = 2
 # 16 s and provenance.rs from 47 s to 6 s at opt-level 1 (1 November 2026, Pulse
 # #4010). Debug assertions and overflow checks stay enabled.
 [profile.dev.package.hex-storage]
+opt-level = 1
+
+# Keep the full-rate Delay impulse and long-tail oracle under the per-test
+# budget without reducing its rates or history coverage. Debug assertions and
+# overflow checks remain enabled (Pulse #4153).
+[profile.dev.package.hex-devices]
+opt-level = 1
+
+# Long verified-source import/reopen regressions preserve their real multi-million
+# frame fixtures while staying within the per-test budget. Debug assertions and
+# overflow checks remain enabled; release builds are unchanged (Pulse #4171).
+[profile.dev.package.hex-media]
+opt-level = 2
+
+# Preserve the full long-source import, refusal and reopen fixtures while keeping
+# their test setup and execution within the per-test budget. Debug assertions and
+# overflow checks remain enabled; release builds are unchanged (Pulse #4172).
+[profile.dev.package.hex-session]
 opt-level = 1

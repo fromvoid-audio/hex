@@ -167,6 +167,8 @@ pub(super) struct DevicePanelState {
         hex_audio::spectrum_worker::SpectrumTargetId,
         hex_audio::spectrum_worker::PublishedSpectra,
     >,
+    /// Retained per-tick read buffer for the latest spectrum pairs.
+    pub(super) spectrum_scratch: Vec<hex_audio::spectrum_worker::PublishedSpectra>,
     add_menu_open: bool,
     message: Option<String>,
 }
@@ -1787,6 +1789,9 @@ fn device_selection_listener(
 
 fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful<Div> {
     let device_id = device.id();
+    if view.degraded_plugins.contains(device_id.value()) {
+        return vst3_degraded_body(device_id);
+    }
     let foreign = view
         .audible_playback
         .as_ref()
@@ -1815,6 +1820,33 @@ fn vst3_status_body(view: &EditorView, device: &hex_project::Device) -> Stateful
     };
     let content = crate::device_composition::unsupported_body(message)
         .debug_selector(move || format!("device-vst3-{status}-{}", device_id.value()));
+    div()
+        .child(content)
+        .id(ElementId::Name(
+            format!("device-body-{}", device_id.value()).into(),
+        ))
+        .debug_selector(move || format!("device-body-{}", device_id.value()))
+}
+
+/// A vst3 endpoint that faulted renders as an aligned pass-through while the
+/// other devices keep processing (#3977). Shows the shared unsupported-body
+/// display with an explanatory tooltip.
+fn vst3_degraded_body(device_id: DeviceId) -> Stateful<Div> {
+    let selector = format!("device-vst3-degraded-{}", device_id.value());
+    let content = crate::device_composition::unsupported_body(theme::text(
+        "vst3 stopped responding · audio passes through",
+    ))
+    .id(ElementId::Name(selector.clone().into()))
+    .debug_selector(move || selector.clone())
+    .tooltip(|_, cx| {
+        cx.new(|_| super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Help,
+            description: theme::text(
+                "the plugin missed its audio deadline · it is bypassed with its latency kept, and other devices keep playing",
+            ),
+        })
+        .into()
+    });
     div()
         .child(content)
         .id(ElementId::Name(
@@ -2527,6 +2559,7 @@ fn render_instrument(
                     hex_engine::SamplerParameter::LoopEnabled,
                     hex_engine::SamplerParameter::LoopStartFrame,
                     hex_engine::SamplerParameter::LoopEndFrame,
+                    hex_engine::SamplerParameter::LoopCrossfadeMs,
                 ] {
                     fields.push(view.sampler_parameter_control(track, device, parameter, cx));
                 }
@@ -2544,7 +2577,10 @@ fn render_instrument(
         }
         let controls = div()
             .grid()
-            .grid_cols(if loop_error.is_none() { 11 } else { 8 })
+            // One dense row: twelve classic controls at the sampler's inline
+            // value width (see `SAMPLER_INLINE_VALUE_WIDTH`) fit the 1024 px
+            // device body, keeping the waveform overview's full height.
+            .grid_cols(if loop_error.is_none() { 12 } else { 8 })
             .gap(px(2.0))
             .w_full()
             .flex_shrink_0()

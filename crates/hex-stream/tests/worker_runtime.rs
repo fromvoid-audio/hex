@@ -3,7 +3,8 @@ use hex_engine::{
     StreamedSourceMetadata, Track,
 };
 use hex_media::{
-    ResampleLimits, VerifiedWavReader, VerifiedWavReaderLimits, WavReaderLimits, resample,
+    ResampleLimits, ResampleVersion, VerifiedWavReader, VerifiedWavReaderLimits, WavReaderLimits,
+    resample, resample_with_version,
 };
 use hex_project::{AssetId, Command, Created, Editor, Project};
 use hex_stream::{PageKey, SourceDefinition, StreamConfig, StreamRuntime};
@@ -1339,4 +1340,96 @@ fn catalog_rejects_nonfinite_float_samples_outside_the_first_page() {
     );
     let report = runtime.shutdown().expect("shutdown after float rejection");
     assert!(report.accounting_complete);
+}
+
+/// Streamed pages reproduce each asset's saved conversion law bit-for-bit,
+/// including v2's wider downsampling halo; v1 output keeps the v1 law.
+#[test]
+fn actual_worker_renders_each_saved_conversion_law() {
+    for (source_rate, project_rate) in [(44_100, 48_000), (96_000, 44_100)] {
+        let (wav, source_pcm) = TestWav::stereo_pcm16(source_rate, 12_001);
+        let original = Audio::new(source_rate, source_pcm.clone()).expect("resident source");
+        let limits = ResampleLimits {
+            max_source_frames: 100_000,
+            max_output_frames: 100_000,
+        };
+        let mut laws = Vec::new();
+        for (generation, conversion, version) in [
+            (21, hex_project::SINC_CONVERSION_V1, ResampleVersion::V1),
+            (22, hex_project::SINC_CONVERSION_V2, ResampleVersion::V2),
+        ] {
+            let verified = VerifiedWavReader::open(wav.path(), reader_limits(source_pcm.len()))
+                .expect("verified source");
+            let playback_frames = hex_project::converted_frame_count(
+                source_pcm.len() as u64,
+                source_rate,
+                project_rate,
+            )
+            .expect("playback frames");
+            let key = StreamSourceKey::new(generation, asset_id(source_pcm.len(), project_rate));
+            let metadata = StreamedSourceMetadata::new(
+                key,
+                source_rate,
+                project_rate,
+                source_pcm.len() as u64,
+                playback_frames,
+                conversion,
+                *verified.fingerprint(),
+            )
+            .expect("metadata");
+            let definition = SourceDefinition::new(
+                wav.path().to_path_buf(),
+                metadata.clone(),
+                reader_limits(source_pcm.len()),
+            );
+            let mut runtime =
+                StreamRuntime::new(StreamConfig::with_pool_pages(8), vec![definition])
+                    .expect("runtime");
+            runtime
+                .wait_until_ready(Duration::from_secs(3))
+                .expect("catalog ready");
+            let expected = resample_with_version(&original, project_rate, limits, version)
+                .expect("resident oracle")
+                .frames()
+                .to_vec();
+            let clip = Clip::streamed_region(
+                std::sync::Arc::new(metadata),
+                0,
+                expected.len() as u64,
+                0,
+                expected.len() as u64,
+                false,
+            )
+            .expect("streamed clip");
+            let project = EngineProject::new(
+                project_rate,
+                vec![Track::new(vec![clip], 1.0, false).expect("track")],
+            )
+            .expect("engine project");
+            let pages = expected.len().div_ceil(hex_engine::STREAM_PAGE_FRAMES);
+            let keys: Vec<_> = (0..pages as u64)
+                .map(|page_index| PageKey {
+                    source: key,
+                    page_index,
+                })
+                .collect();
+            for page in &keys {
+                runtime.request_page(page.source, page.page_index);
+            }
+            assert!(wait_for_pages(&mut runtime, &keys, Duration::from_secs(3)));
+            let mut renderer = Renderer::new(&project);
+            renderer.play();
+            let mut output = vec![[0.0; 2]; expected.len()];
+            renderer
+                .render_with_pages(&mut output, &mut runtime)
+                .expect("render pages");
+            assert_eq!(
+                output, expected,
+                "{source_rate}->{project_rate} {version:?}"
+            );
+            laws.push(output);
+            runtime.shutdown().expect("shutdown");
+        }
+        assert_ne!(laws[0], laws[1]);
+    }
 }

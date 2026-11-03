@@ -2,7 +2,7 @@
 //! Decode and conversion calls are not internally interruptible. No UI, worker
 //! protocol, callback, source-file mutation or partial project event lives here.
 use crate::{PreparedImport, Session, SessionError, import_batch::AudioBatchDestination};
-use hex_media::{Limits, ResampleLimits, decode_wav_file};
+use hex_media::ResampleLimits;
 use hex_project::{Created, Project};
 use std::{
     fmt,
@@ -13,8 +13,7 @@ use std::{
     },
 };
 
-const FILE_BYTES: usize = 64 * 1024 * 1024;
-const SOURCE_FRAMES: usize = 8_000_000;
+const SOURCE_FRAMES: usize = crate::resident_import::IMPORT_FRAME_LIMIT;
 const RETAINED_FRAMES: u64 = 8_000_000;
 const OPEN: u8 = 0;
 const CANCEL_REQUESTED: u8 = 1;
@@ -480,14 +479,13 @@ impl AudioBatchImport {
             };
             self.control.publish(1, index + 1, index);
             self.check(current)?;
-            let decoded =
-                decode_wav_file(path, Limits::new(FILE_BYTES, SOURCE_FRAMES)).map_err(|e| {
-                    AudioBatchError::Member {
-                        member: index + 1,
-                        path: original.clone(),
-                        source: SessionError::Media(e),
-                    }
-                })?;
+            let decoded = crate::resident_import::decode_resident_import(path).map_err(|e| {
+                AudioBatchError::Member {
+                    member: index + 1,
+                    path: original.clone(),
+                    source: SessionError::Media(e),
+                }
+            })?;
             self.check(current)?;
             self.control.publish(2, index + 1, index);
             self.check(current)?;

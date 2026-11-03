@@ -1,14 +1,10 @@
 use super::*;
-use std::time::{Duration, Instant};
 
 fn next(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Ok(event) = service.try_event() {
-            return event;
-        }
-        assert!(Instant::now() < deadline, "worker response");
-        std::thread::sleep(Duration::from_millis(2));
+    // Blocks on the event channel; bounded only against hangs.
+    match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("next: worker event absent: {error}"),
     }
 }
 fn fixture() -> (

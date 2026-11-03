@@ -1,9 +1,9 @@
 //! Independent codec oracles and shared resident/seekable format regressions.
 use crate::{
     ImportError, Limits, VerifiedWavReader, VerifiedWavReaderLimits, WavFrameReader,
-    WavReaderLimits, WavTruncation, decode_wav, recover_wav_file,
+    WavReaderLimits, WavTruncation, decode_wav, decode_wav_file_cancellable, recover_wav_file,
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 fn chunk(out: &mut Vec<u8>, id: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(id);
@@ -543,4 +543,32 @@ fn block_compressed_sources_are_refused_by_random_access_readers() {
         ))
     ));
     std::fs::remove_file(path).expect("remove fixture");
+}
+
+#[test]
+fn cancellable_file_decode_matches_plain_decode_and_stops_when_cancelled() {
+    // More than one cancellation window, so the chunked loop is exercised.
+    let frames = crate::CANCEL_CHECK_FRAMES + 3;
+    let data: Vec<u8> = (0..frames)
+        .flat_map(|index| ((index % 1_000) as i16 * 16).to_le_bytes())
+        .collect();
+    let bytes = wave(&format(1, 1, 16), &data, None);
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "hex-cancellable-decode-{}-{}.wav",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&path, &bytes).expect("write fixture");
+    let limits = Limits::new(bytes.len(), frames);
+    let expected = decode_wav(&bytes, limits).expect("resident decode");
+    let running = AtomicBool::new(false);
+    let decoded = decode_wav_file_cancellable(&path, limits, &running).expect("decode");
+    assert_eq!(decoded.audio().frames(), expected.frames());
+    let cancel = AtomicBool::new(true);
+    assert!(matches!(
+        decode_wav_file_cancellable(&path, limits, &cancel),
+        Err(ImportError::Cancelled)
+    ));
+    std::fs::remove_file(&path).expect("remove fixture");
 }

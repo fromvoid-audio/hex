@@ -13,11 +13,26 @@ pub(super) struct State {
     levels: BTreeMap<TrackId, f32>,
     returns: BTreeMap<ReturnId, f32>,
     updated: Option<Instant>,
+    /// Per-tick staging buffers, retained across ticks and `clear`.
+    scratch: Scratch,
 }
+
+/// Reused staging for one meter observation; contents are per-tick only.
+#[derive(Default)]
+struct Scratch {
+    visible: Vec<TrackId>,
+    readings: Vec<(TrackId, f32)>,
+    returns: Vec<(ReturnId, f32)>,
+}
+
 impl State {
     fn clear(&mut self) -> bool {
         let changed = !self.levels.is_empty() || !self.returns.is_empty();
-        *self = Self::default();
+        let scratch = std::mem::take(&mut self.scratch);
+        *self = Self {
+            scratch,
+            ..Self::default()
+        };
         changed
     }
     // A revision handoff can temporarily lack an observation. Retain only
@@ -79,6 +94,21 @@ fn selected_console_meter(project: &Project, selected: Option<TrackId>) -> Optio
 
 impl EditorView {
     pub(super) fn tick_track_meters(&mut self, now: Instant) -> bool {
+        let mut scratch = std::mem::take(&mut self.track_meters.scratch);
+        let changed = self.observe_track_meters(now, &mut scratch);
+        self.track_meters.scratch = scratch;
+        changed
+    }
+
+    fn observe_track_meters(&mut self, now: Instant, scratch: &mut Scratch) -> bool {
+        let Scratch {
+            visible,
+            readings,
+            returns: return_readings,
+        } = scratch;
+        visible.clear();
+        readings.clear();
+        return_readings.clear();
         let Some(status) = self.audio.as_ref().and_then(|audio| audio.control.status()) else {
             return self.track_meters.clear();
         };
@@ -97,7 +127,6 @@ impl EditorView {
         };
         let identity = (audible.project_generation, audible.audio_revision);
         let project = self.state.as_ref().map(|state| &state.project);
-        let mut visible = Vec::new();
         if let Some(project) = project {
             if self.mode == super::EditorMode::Session {
                 visible.extend(selected_console_meter(project, self.selected_track));
@@ -123,24 +152,22 @@ impl EditorView {
         }
         // Stage the readings until the applied revision is rechecked. A race
         // discards them without wiping the last valid display.
-        let readings: Vec<_> = visible
-            .iter()
-            .filter_map(|id| {
-                observation
-                    .track_output_meter(*id)
-                    .map(|meter| (*id, meter.take_track_output()))
-            })
-            .collect();
-        let return_readings: Vec<_> = project
-            .into_iter()
-            .flat_map(|project| project.return_tracks())
-            .filter_map(|track| {
-                let id = track.id();
-                observation
-                    .return_output_meter(id)
-                    .map(|meter| (id, meter.take_track_output()))
-            })
-            .collect();
+        readings.extend(visible.iter().filter_map(|id| {
+            observation
+                .track_output_meter(*id)
+                .map(|meter| (*id, meter.take_track_output()))
+        }));
+        return_readings.extend(
+            project
+                .into_iter()
+                .flat_map(|project| project.return_tracks())
+                .filter_map(|track| {
+                    let id = track.id();
+                    observation
+                        .return_output_meter(id)
+                        .map(|meter| (id, meter.take_track_output()))
+                }),
+        );
         if status.device_fault.load(Acquire)
             || status.render_fault.load(Acquire)
             || status.shutdown_complete.load(Acquire)
@@ -156,7 +183,7 @@ impl EditorView {
         self.track_meters
             .levels
             .retain(|id, _| visible.contains(id));
-        for (id, peak) in readings {
+        for &(id, peak) in readings.iter() {
             let Some(entry) = self.track_meters.levels.get_mut(&id) else {
                 // Peaks retained while a row was offscreen have unknown age.
                 // Discard them before beginning this visible observation.
@@ -175,7 +202,7 @@ impl EditorView {
                     .iter()
                     .any(|track| track.id() == *id)
             });
-            for (id, peak) in return_readings {
+            for &(id, peak) in return_readings.iter() {
                 let Some(entry) = self.track_meters.returns.get_mut(&id) else {
                     self.track_meters.returns.insert(id, 0.0);
                     continue;
@@ -229,6 +256,41 @@ mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor, Project};
     use std::time::Duration;
+
+    #[test]
+    fn clearing_meters_keeps_the_per_tick_staging_capacity() {
+        let mut state = State::default();
+        state.scratch.visible.reserve(64);
+        state.scratch.readings.reserve(64);
+        state.scratch.returns.reserve(16);
+        let pointers = (
+            state.scratch.visible.as_ptr(),
+            state.scratch.readings.as_ptr(),
+            state.scratch.returns.as_ptr(),
+        );
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "t".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        state.levels.insert(track, 0.5);
+        assert!(state.clear());
+        assert!(state.levels.is_empty());
+        assert!(state.scratch.visible.capacity() >= 64);
+        assert!(state.scratch.readings.capacity() >= 64);
+        assert!(state.scratch.returns.capacity() >= 16);
+        assert_eq!(
+            (
+                state.scratch.visible.as_ptr(),
+                state.scratch.readings.as_ptr(),
+                state.scratch.returns.as_ptr(),
+            ),
+            pointers,
+            "a fault/stop clear must not drop the retained buffers"
+        );
+    }
 
     #[test]
     fn console_meter_tracks_the_selected_live_identity_including_groups() {
@@ -355,5 +417,103 @@ mod tests {
             assert!(height > px(1.0), "meter disappeared during handoff");
             assert!(height <= first);
         }
+    }
+
+    /// Inspection check (hex-ui hosts no allocation counter): steady-state
+    /// observed ticks stage readings in the same retained buffers.
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn steady_state_meter_ticks_reuse_the_staging_buffers(cx: &mut gpui::TestAppContext) {
+        use crate::editor::clip_drag_ui_test::editor_window;
+        use gpui::{VisualTestContext, px, size};
+        use std::{collections::BTreeMap, sync::Arc, sync::atomic::Ordering::Acquire};
+
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        for name in ["a", "b"] {
+            model
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap();
+        }
+        let project = model.project().clone();
+        let prepared = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &project,
+                &BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let observation = Arc::new(
+            hex_engine::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap(),
+        );
+        let deadline = crate::test_wait::hang_deadline();
+        let (mut output, _backend) = loop {
+            match hex_audio::worker_fixture::open(48_000) {
+                Ok(output) => break output,
+                Err(error)
+                    if error == "audio output is open or still shutting down"
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::yield_now()
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        let client = output.take_client().unwrap();
+        let applied = client.status().unwrap().applied_revision.load(Acquire);
+        let (window, editor) = editor_window(cx, project, Arc::default());
+        let visual = VisualTestContext::from_window(window, cx);
+        visual.simulate_resize(size(px(1_280.0), px(800.0)));
+        visual.run_until_parked();
+        let now = Instant::now();
+        let pointers = editor.update(cx, |view, _| {
+            view.audio = Some(crate::EditorAudio {
+                control: client,
+                sample_rate: 48_000,
+                label: "meter scratch fixture".into(),
+                spectrum_error: None,
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+            view.audible_playback = Some(super::super::PlaybackCandidate {
+                worker_requires_preroll: None,
+                observation: Some(observation),
+                audio_revision: applied,
+                project_generation: view.project_generation,
+                state: Arc::clone(view.state.as_ref().unwrap()),
+                prepared_revision: Some(prepared),
+                seek_request_id: None,
+                device_preview_identity: None,
+                tuning_preview_identity: None,
+            });
+            // Warm-up: the first observed ticks size the staging buffers.
+            for tick in 0..2 {
+                view.tick_track_meters(now + Duration::from_millis(16 * tick));
+            }
+            let scratch = &view.track_meters.scratch;
+            assert_eq!(scratch.visible.len(), 2, "both rows are observed");
+            assert_eq!(scratch.readings.len(), 2, "both rows are read");
+            (
+                scratch.visible.as_ptr(),
+                scratch.readings.as_ptr(),
+                scratch.returns.as_ptr(),
+            )
+        });
+        editor.update(cx, |view, _| {
+            for tick in 2..10 {
+                view.tick_track_meters(now + Duration::from_millis(16 * tick));
+                let scratch = &view.track_meters.scratch;
+                assert_eq!(scratch.readings.len(), 2);
+                assert_eq!(
+                    (
+                        scratch.visible.as_ptr(),
+                        scratch.readings.as_ptr(),
+                        scratch.returns.as_ptr(),
+                    ),
+                    pointers,
+                    "tick {tick} reallocated a staging buffer"
+                );
+            }
+        });
     }
 }

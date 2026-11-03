@@ -303,16 +303,16 @@ impl ResponseGraph {
         self.creation_drag_enabled = enabled;
     }
 
-    /// Opt into marquee selection from blank presses (see [`crate::marquee`]).
-    /// A blank press that crosses the drag threshold draws a band and emits
-    /// [`ResponseGraphMarqueeEvent`]s; a blank click without movement emits
-    /// Create on release when creation is enabled, otherwise a Commit with an
-    /// empty set (Replace mode only) so the owner clears its selection. While
-    /// enabled, marquee supersedes plain creation dragging: a creating click on
-    /// a creation-drag owner emits Create then a node-zero Release at the press,
-    /// and an Option blank press keeps that owner's held creation stream. Node presses keep their
-    /// select/drag stream: owners moving a multi-selection apply the dragged
-    /// node's delta to the other selected nodes in one edit.
+    /// Opt into marquee selection from Shift blank presses (see
+    /// [`crate::marquee`]). Plain blank presses keep the ordinary creation
+    /// stream. A Shift blank press that crosses the drag threshold draws a band
+    /// and emits [`ResponseGraphMarqueeEvent`]s; without movement it emits
+    /// Create on release when creation is enabled (closed by a node-zero
+    /// Release for creation-drag owners), otherwise a Commit with an empty set
+    /// so the owner clears its selection. Option Shift blank presses on
+    /// creation-drag owners keep the held creation stream. Node presses keep
+    /// their select/drag stream: owners moving a multi-selection apply the
+    /// dragged node's delta to the other selected nodes in one edit.
     pub fn set_marquee_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if !enabled && self.marquee.is_some() {
             self.cancel(cx);
@@ -523,8 +523,12 @@ impl ResponseGraph {
             {
                 return;
             }
-            // Creation-drag owners keep their held create-and-shape on Option.
-            if self.marquee_enabled && !(self.creation_drag_enabled && event.modifiers.alt) {
+            // Adding nodes comes first: only Shift starts a marquee, and
+            // creation-drag owners keep their held create-and-shape on Option.
+            if self.marquee_enabled
+                && MarqueeMode::starts(event.modifiers)
+                && !(self.creation_drag_enabled && event.modifiers.alt)
+            {
                 self.begin_marquee(event, position, window, cx);
                 return;
             }

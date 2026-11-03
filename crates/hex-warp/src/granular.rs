@@ -1,6 +1,6 @@
 //! Pitch-synchronous and deterministic textured granulation. Beats owns its plan.
 use super::{
-    resample::{BANK_BYTES, Bandlimited},
+    resample::{Bandlimited, bank_bytes},
     *,
 };
 
@@ -125,7 +125,7 @@ pub(super) fn grains(
         request.output_frames,
         half_limit * 2 + hop + 4,
         work,
-        BANK_BYTES + 202 * 8,
+        bank_bytes(work.resampler) + 202 * 8,
     )?;
     let bank = Bandlimited::new(pitch, work)?;
     let channel = request.input.reference_channel();
@@ -215,6 +215,7 @@ mod tests {
                 used: 0,
                 scratch: 0,
                 base_scratch: 0,
+                resampler: Resampler::V1,
             };
             let measured = period(input, 2_000.0, input.reference_channel(), &mut work)
                 .unwrap()

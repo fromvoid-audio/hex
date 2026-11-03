@@ -31,6 +31,7 @@ impl SessionPlayback {
             historical_floor: _,
             route_historical_floors: _,
             source_voice_envelopes: _,
+            stream_miss_fades: _,
             routes,
             route_scratch,
             device_chains,

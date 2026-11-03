@@ -85,6 +85,14 @@ impl EditorView {
             cx.notify();
             return;
         }
+        if self.gain_lane.draft.is_some()
+            || self.gain_lane.numeric_draft_active()
+            || self.sampler_parameter.numeric_draft_active()
+            || self.automation_view.devices.point_draft_active()
+        {
+            self.error = Some("finish local drafts before arming gain recording".into());
+            return;
+        }
         if self.edit_pending()
             || self.device_gesture.snapshot().is_some()
             || self.pending_playback.is_some()
