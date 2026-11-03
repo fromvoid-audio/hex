@@ -130,14 +130,6 @@ fn play(
     output
 }
 
-/// Output frames at which the transport wraps, playing from zero.
-fn wraps() -> impl Iterator<Item = usize> {
-    let length = (LOOP_END - LOOP_START) as usize;
-    (0..)
-        .map(move |pass| LOOP_END as usize + pass * length)
-        .take_while(|wrap| *wrap < RENDERED)
-}
-
 fn largest_step(output: &[Frame]) -> f32 {
     output
         .windows(2)
@@ -152,17 +144,31 @@ fn largest_step(output: &[Frame]) -> f32 {
 
 #[test]
 fn seam_crossfades_stepped_dc_identically_for_every_block_size_and_source() {
-    let (looped, asset) = project(Some((LOOP_START, LOOP_END)));
+    // Keep the DC edge outside the four-fade observation window.
+    const START: u64 = 41;
+    const END: u64 = 642;
+    const EDGE: usize = 341;
+    const LENGTH: usize = (END - START) as usize;
+    const FRAMES: usize = END as usize + 3 * LENGTH - 100;
+    let (looped, asset) = project(Some((START, END)));
     for dc_first in [true, false] {
-        let samples = stepped_dc(dc_first);
-        let reference = play(&mut resident(&looped, asset, &samples), 1, RENDERED, None);
+        let samples: Vec<Frame> = (0..CLIP)
+            .map(|frame| {
+                if (frame < EDGE) == dc_first {
+                    [1.0, -1.0]
+                } else {
+                    [0.0, 0.0]
+                }
+            })
+            .collect();
+        let reference = play(&mut resident(&looped, asset, &samples), 1, FRAMES, None);
         let (at_end, at_start) = if dc_first {
             ([0.0, 0.0], [1.0, -1.0])
         } else {
             ([1.0, -1.0], [0.0, 0.0])
         };
         let mut checked = 0;
-        for wrap in wraps() {
+        for wrap in (END as usize..FRAMES).step_by(LENGTH) {
             let step = largest_step(&reference[wrap - 2 * F..wrap + 2 * F]);
             assert!(
                 step <= 1.0 / F as f32 + 1e-6,
@@ -187,12 +193,7 @@ fn seam_crossfades_stepped_dc_identically_for_every_block_size_and_source() {
         }
         assert_eq!(checked, 3);
         for block in [64, 512] {
-            let output = play(
-                &mut resident(&looped, asset, &samples),
-                block,
-                RENDERED,
-                None,
-            );
+            let output = play(&mut resident(&looped, asset, &samples), block, FRAMES, None);
             assert_eq!(output, reference, "dc_first {dc_first}: block {block}");
         }
         for block in [1, 64, 512] {
@@ -203,7 +204,7 @@ fn seam_crossfades_stepped_dc_identically_for_every_block_size_and_source() {
             let output = play(
                 &mut streamed(&looped, asset),
                 block,
-                RENDERED,
+                FRAMES,
                 Some(&mut pages),
             );
             assert_eq!(
@@ -339,23 +340,38 @@ fn streamed_demand_pins_the_overrun_with_the_wrapped_chunks_that_read_it() {
 #[test]
 fn a_latent_graph_crossfades_the_seam_it_actually_outputs() {
     const LATENCY: usize = 7;
+    // Keep three wraps and a loop longer than the fade, while making the
+    // one-frame reference inexpensive. Its period is unaligned to both blocks.
+    const START: u64 = 41;
+    const END: u64 = 642;
+    const EDGE: usize = 341;
+    const LENGTH: usize = (END - START) as usize;
+    const FRAMES: usize = END as usize + 3 * LENGTH - 100;
     let mut f = crate::signal_graph::tests::fixture(&[&[LATENCY as u32]], CLIP);
     f.editor
         .execute(Command::SetLoopRegion {
-            start: LOOP_START,
-            end: LOOP_END,
+            start: START,
+            end: END,
             enabled: true,
         })
         .unwrap();
-    let samples = stepped_dc(true);
+    let samples: Vec<Frame> = (0..CLIP)
+        .map(|frame| {
+            if frame < EDGE {
+                [1.0, -1.0]
+            } else {
+                [0.0, 0.0]
+            }
+        })
+        .collect();
     for audio in f.media.values_mut() {
         *audio = Audio::new(RATE, samples.clone()).unwrap();
     }
     let latent = || Playback::from_prepared(crate::signal_graph::tests::prepare(&f).unwrap());
     let mut playback = latent();
     assert_eq!(playback.main_output_latency_frames(), LATENCY as u32);
-    let reference = play(&mut playback, 1, RENDERED, None);
-    for wrap in wraps() {
+    let reference = play(&mut playback, 1, FRAMES, None);
+    for wrap in (END as usize..FRAMES).step_by(LENGTH) {
         let seam = wrap + LATENCY;
         let step = largest_step(&reference[seam - 2 * F..seam + 2 * F]);
         assert!(step <= 1.0 / F as f32 + 1e-6, "step {step} at seam {seam}");
@@ -364,7 +380,7 @@ fn a_latent_graph_crossfades_the_seam_it_actually_outputs() {
     }
     for block in [64, 512] {
         assert_eq!(
-            play(&mut latent(), block, RENDERED, None),
+            play(&mut latent(), block, FRAMES, None),
             reference,
             "block {block}"
         );
