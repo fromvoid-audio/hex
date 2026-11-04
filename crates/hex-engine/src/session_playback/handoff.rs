@@ -2039,7 +2039,7 @@ impl SessionPlayback {
                                                 old_track,
                                                 previous.arrangement_frame,
                                                 previous.revision.gain_recording_track(),
-                                                previous.gain_recording_override,
+                                                previous.live_gain.audible(),
                                             ),
                                             continuation: None,
                                             inline_tuning_owned: false,
@@ -2538,7 +2538,7 @@ impl SessionPlayback {
                                     old_track,
                                     previous.arrangement_frame,
                                     previous.revision.gain_recording_track(),
-                                    previous.gain_recording_override,
+                                    previous.live_gain.audible(),
                                 ),
                                 clip_gain: match super::clip_gain::at_cut(
                                     previous,
@@ -3063,7 +3063,7 @@ impl SessionPlayback {
                         old_track,
                         previous.arrangement_frame,
                         previous.revision.gain_recording_track(),
-                        previous.gain_recording_override,
+                        previous.live_gain.audible(),
                     );
                     let continuation = matches.then_some(SessionContinuation {
                         key,
@@ -5063,7 +5063,7 @@ fn cut_arrangement_voices_for_remap(
                                 old_track,
                                 old_cut,
                                 previous.revision.gain_recording_track(),
-                                previous.gain_recording_override,
+                                previous.live_gain.audible(),
                             ),
                             clip_gain: super::clip_gain::at_cut(
                                 previous,

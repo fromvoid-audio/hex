@@ -1500,6 +1500,19 @@ impl Track {
             .as_ref()
             .map_or(self.mix, |envelope| envelope.mix_at(frame))
     }
+    pub(crate) fn gain_touch_target_at(&self, frame: u64) -> Option<gain_envelope::TouchTarget> {
+        self.gain_envelope.as_ref()?.touch_target_at(frame)
+    }
+    pub(crate) fn base_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.base_value_at(frame))
+    }
+    pub(crate) fn read_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.value_at(frame))
+    }
     pub fn mix(&self) -> PreparedTrackMix {
         self.mix
     }

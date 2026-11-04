@@ -416,7 +416,17 @@ impl Callback {
                 );
             }
         }
-        if let Some((target, clock)) = self.terminal.take() {
+        if let Some((target, mut clock)) = self.terminal.take() {
+            // Preserve the release timestamp and delay publication through
+            // the initial rejoin window and the downstream Main latency.
+            let Some(delay) = clock
+                .delivery_delay
+                .checked_add(u64::from(target.sample_rate.div_ceil(200).max(1) - 1))
+            else {
+                self.abort(AbortReason::ClockExhausted);
+                return;
+            };
+            clock.delivery_delay = delay;
             self.queue_marker(
                 clock,
                 Receipt::Finished {
