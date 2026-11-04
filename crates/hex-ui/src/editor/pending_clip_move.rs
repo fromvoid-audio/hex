@@ -1,4 +1,4 @@
-//! Release-to-ACK display custody for an existing-track move or copy. Service FIFO
+//! Release-to-ACK display custody for clip moves and copies. Service FIFO
 //! completion ordinals are the same contract used by trim and group-copy intents.
 //! This owns metadata paint only; the worker validates and commits the real edit.
 use super::pending_edit::{Disposition, Receipt};
@@ -95,6 +95,100 @@ impl Pending {
                     copy: other_copy,
                 },
             ) => (clips, anchor, track, position, copy) == (c, a, t, p, other_copy),
+            (
+                Command::DuplicateAliasClipsAt {
+                    clips,
+                    anchor,
+                    track,
+                    position,
+                },
+                Command::DuplicateAliasClipsAt {
+                    clips: c,
+                    anchor: a,
+                    track: t,
+                    position: p,
+                },
+            ) => (clips, anchor, track, position) == (c, a, t, p),
+            (
+                Command::MoveClipToNewTrack {
+                    clip,
+                    name,
+                    before_track,
+                    start,
+                    initial_gain,
+                },
+                Command::MoveClipToNewTrack {
+                    clip: c,
+                    name: n,
+                    before_track: b,
+                    start: s,
+                    initial_gain: g,
+                },
+            )
+            | (
+                Command::CopyClipToNewTrack {
+                    clip,
+                    name,
+                    before_track,
+                    start,
+                    initial_gain,
+                },
+                Command::CopyClipToNewTrack {
+                    clip: c,
+                    name: n,
+                    before_track: b,
+                    start: s,
+                    initial_gain: g,
+                },
+            ) => (clip, name, before_track, start, initial_gain) == (c, n, b, s, g),
+            (
+                Command::MoveMidiClipToNewTrack {
+                    clip,
+                    name,
+                    before_track,
+                    start,
+                    initial_gain,
+                },
+                Command::MoveMidiClipToNewTrack {
+                    clip: c,
+                    name: n,
+                    before_track: b,
+                    start: s,
+                    initial_gain: g,
+                },
+            )
+            | (
+                Command::CopyMidiClipToNewTrack {
+                    clip,
+                    name,
+                    before_track,
+                    start,
+                    initial_gain,
+                },
+                Command::CopyMidiClipToNewTrack {
+                    clip: c,
+                    name: n,
+                    before_track: b,
+                    start: s,
+                    initial_gain: g,
+                },
+            ) => (clip, name, before_track, start, initial_gain) == (c, n, b, s, g),
+            (
+                Command::DuplicateAliasClipToNewTrack {
+                    clip,
+                    name,
+                    before_track,
+                    position,
+                    initial_gain,
+                },
+                Command::DuplicateAliasClipToNewTrack {
+                    clip: c,
+                    name: n,
+                    before_track: b,
+                    position: p,
+                    initial_gain: g,
+                },
+            ) => (clip, name, before_track, position, initial_gain) == (c, n, b, p, g),
             _ => false,
         }
     }

@@ -32,6 +32,44 @@ fn request(service: &Service, request: Request) -> Event {
 }
 
 #[test]
+fn retained_receiver_open_refuses_without_changing_project_or_original_bytes() {
+    let files = Files::new();
+    let path = files.0.join("retained.hex");
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    let initial = next(&service);
+    let previous = initial.state.project.snapshot();
+    let mut editor = hex_project::Editor::new(initial.state.project.as_ref().clone(), 8).unwrap();
+    let hex_project::Created::Track(track) = editor
+        .execute(hex_project::Command::AddMidiTrack {
+            name: "receiver".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(hex_project::Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let mut snapshot = editor.project().snapshot();
+    snapshot.retained_source_paths.push(track.value());
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let original = hex_storage::encode(&project).unwrap();
+    fs::write(&path, &original).unwrap();
+    let refused = request(&service, Request::Open(path.clone()));
+    assert!(
+        refused
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("retained source path"))
+    );
+    assert_eq!(refused.state.project.snapshot(), previous);
+    assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
 fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save_as_failure() {
     let files = Files::new();
     let path = files.0.join("old.hex");

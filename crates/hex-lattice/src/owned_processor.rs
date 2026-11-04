@@ -145,6 +145,31 @@ pub trait OwnedProcessorRuntime: Any + Send {
         false
     }
     fn inherit_from(&mut self, _previous: &dyn OwnedProcessorRuntime) {}
+    /// Whether a pristine, empty successor can copy only time-varying control
+    /// state from the donor while the donor retains all signal history. This is
+    /// a non-mutating preflight; unsupported providers return false.
+    fn can_fork_timing_without_signal_history_from(
+        &self,
+        _previous: &dyn OwnedProcessorRuntime,
+    ) -> bool {
+        false
+    }
+    /// After the exact preflight succeeds, seed only the successor's scalar
+    /// timing/control state. Preserve the donor and leave all successor signal
+    /// history empty. No allocation, deallocation or blocking is permitted.
+    /// Return false without mutation if the preconditions no longer hold.
+    fn fork_timing_without_signal_history_from(
+        &mut self,
+        _previous: &dyn OwnedProcessorRuntime,
+    ) -> bool {
+        false
+    }
+    /// Explicitly authorize complementary input splitting between the old
+    /// and pristine new owners. A timing fork alone does not establish this
+    /// signal law. Unsupported or not-yet-validated providers return false.
+    fn can_split_tail_input_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {
+        false
+    }
     /// Commit-phase alternative when the host exclusively owns a retiring
     /// donor. It follows the same preflight as inherit_from. Providers may swap
     /// preallocated histories instead of copying them; the donor must not be

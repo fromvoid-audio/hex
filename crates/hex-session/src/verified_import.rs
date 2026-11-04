@@ -309,7 +309,7 @@ impl Session {
         destination: crate::import_batch::AudioBatchDestination,
         expected: &Project,
         previous: Option<&hex_engine::PreparedRevision>,
-        overwrite: bool,
+        options: crate::import_batch::AudioImportOptions,
         mut admit: impl FnMut() -> Result<(), SessionError>,
         prepare: impl FnOnce(
             crate::import_batch::Preparation<'_>,
@@ -317,6 +317,7 @@ impl Session {
         ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), SessionError> {
         use crate::import_batch::AudioBatchDestination;
+        options.validate()?;
         admit()?;
         if self.project() != expected || sources.is_empty() {
             return Err(SessionError::Invalid(
@@ -346,6 +347,7 @@ impl Session {
             destination,
             sources.len(),
             &track_name,
+            options.new_track_gain,
         )?;
         commands
             .try_reserve_exact(sources.len())
@@ -368,7 +370,7 @@ impl Session {
                 AudioBatchDestination::Track { track, .. } => VerifiedImportDestination::Track {
                     track,
                     start: cursor,
-                    overwrite,
+                    overwrite: options.overwrite,
                 },
                 AudioBatchDestination::NewTracks { before_track, .. } => {
                     VerifiedImportDestination::NewTrack {
@@ -399,42 +401,45 @@ impl Session {
         let limits = self.native_reservation;
         let max_frames = self.max_resident_frames;
         let shutdown = &self.shutdown;
-        let (_, (created, prepared)) =
-            self.editor
-                .execute_audio_imports_prepared(commands, |candidate, results| {
-                    let created = crate::import_batch::normalize_imports(
-                        candidate,
-                        results,
-                        console_cell,
-                        sources.len(),
-                    )?;
-                    for (created, source) in created.iter().zip(&sources) {
-                        let Created::Imported { asset, .. } = created else {
-                            return Err(SessionError::Invalid("verified batch has no asset"));
-                        };
-                        if bank.contains_key(asset) {
-                            return Err(SessionError::Invalid("verified batch asset collision"));
-                        }
-                        bank.verified.insert(*asset, source.clone());
+        let (_, (created, prepared)) = self.editor.execute_audio_imports_with_track_gain_prepared(
+            commands,
+            hex_project::AudioImportWarp::Off,
+            options.new_track_gain,
+            |candidate, results| {
+                let created = crate::import_batch::normalize_imports(
+                    candidate,
+                    results,
+                    console_cell,
+                    sources.len(),
+                )?;
+                for (created, source) in created.iter().zip(&sources) {
+                    let Created::Imported { asset, .. } = created else {
+                        return Err(SessionError::Invalid("verified batch has no asset"));
+                    };
+                    if bank.contains_key(asset) {
+                        return Err(SessionError::Invalid("verified batch asset collision"));
                     }
-                    let prepared = prepare(
-                        crate::import_batch::Preparation {
-                            project: candidate,
-                            media: &bank,
-                            native,
-                            table: Arc::clone(&table),
-                            transforms,
-                            waveforms: &candidate_waveforms,
-                            legacy: &legacy,
-                            limits,
-                            max_frames,
-                            shutdown,
-                            previous,
-                        },
-                        &mut admit,
-                    )?;
-                    Ok::<_, SessionError>((created, prepared))
-                })?;
+                    bank.verified.insert(*asset, source.clone());
+                }
+                let prepared = prepare(
+                    crate::import_batch::Preparation {
+                        project: candidate,
+                        media: &bank,
+                        native,
+                        table: Arc::clone(&table),
+                        transforms,
+                        waveforms: &candidate_waveforms,
+                        legacy: &legacy,
+                        limits,
+                        max_frames,
+                        shutdown,
+                        previous,
+                    },
+                    &mut admit,
+                )?;
+                Ok::<_, SessionError>((created, prepared))
+            },
+        )?;
         // Preparation/admission finished before canonical commit. Publish only owned moves;
         // a refused callback leaves both canonical source and display maps untouched.
         self.verified_sources = bank.verified;
