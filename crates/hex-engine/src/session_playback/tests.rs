@@ -6738,6 +6738,7 @@ fn session_bypass_releases_old_held_voice_and_reenable_does_not_chase_it() {
     let old_revision = revision(&original, Arc::clone(&table));
     let clip = old_revision.session().midi_clips()[0].id;
     let mut previous = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
+    let mut reference = SessionPlayback::new(Arc::clone(&old_revision)).unwrap();
     previous
         .apply(SessionPlaybackCommand::LaunchClip {
             clip,
@@ -6745,8 +6746,18 @@ fn session_bypass_releases_old_held_voice_and_reenable_does_not_chase_it() {
         })
         .unwrap();
     previous.apply(SessionPlaybackCommand::Play).unwrap();
+    reference
+        .apply(SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    reference.apply(SessionPlaybackCommand::Play).unwrap();
     let mut prefix = [[0.0; 2]; 64];
     previous.render(&mut prefix).unwrap();
+    reference.render(&mut [[0.0; 2]; 64]).unwrap();
+    let mut expected_next = [[0.0; 2]; 1];
+    reference.render(&mut expected_next).unwrap();
     assert!(prefix.iter().any(|frame| frame[0] != 0.0));
 
     let bypassed = with_instrument_bypassed(&original, true);
@@ -6763,6 +6774,12 @@ fn session_bypass_releases_old_held_voice_and_reenable_does_not_chase_it() {
 
     let mut tail = vec![[0.0; 2]; 2_500];
     muted_revision.render(&mut tail).unwrap();
+    assert!(
+        (tail[0][0] - expected_next[0][0]).abs() < 0.0001,
+        "instrument bypass discontinuity: {:?} -> {:?}",
+        expected_next[0],
+        tail[0]
+    );
     assert!(tail.iter().any(|frame| frame[0] != 0.0));
     assert!(tail[2_400..].iter().all(|frame| *frame == [0.0; 2]));
 
