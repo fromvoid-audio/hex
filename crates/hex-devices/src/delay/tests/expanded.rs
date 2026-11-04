@@ -906,11 +906,25 @@ fn tail_split_refuses_frozen_changed_and_invalid_buffers_without_losing_history(
     reference.commit_block();
     let frozen_old = split_test_chain(&frozen, false);
     let mut frozen_next = split_test_chain(&frozen, true);
+    assert!(frozen_next.tail_bypass_change_at(&frozen_old, 0));
+    assert!(!frozen_next.can_prepare_tail_split_at(&frozen_old, 0));
     assert!(frozen_next.prepare_tail_split_at(&frozen_old, 0).is_err());
     let mut wrong = split_test_chain(&changed, true);
+    assert!(wrong.tail_bypass_change_at(&old, 0));
+    assert!(!wrong.can_prepare_tail_split_at(&old, 0));
     assert!(wrong.prepare_tail_split_at(&old, 0).is_err());
+    let unchanged = split_test_chain(&configured, false);
+    assert!(!unchanged.tail_bypass_change_at(&old, 0));
+    assert!(!unchanged.can_prepare_tail_split_at(&old, 0));
     let mut next = split_test_chain(&configured, true);
+    assert!(!next.tail_bypass_change_at(&old, 1));
+    assert!(!next.can_prepare_tail_split_at(&old, 1));
+    for _ in 0..3 {
+        assert!(next.tail_bypass_change_at(&old, 0));
+        assert!(next.can_prepare_tail_split_at(&old, 0));
+    }
     let mut split = next.prepare_tail_split_at(&old, 0).unwrap();
+    assert!(!next.can_prepare_tail_split_at(&old, 0));
     old.begin_block();
     next.begin_block();
     split.begin_block().unwrap();

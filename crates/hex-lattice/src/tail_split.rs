@@ -33,6 +33,36 @@ pub struct TailSplit {
 }
 
 impl NativeRuntimeChain {
+    /// Identify a same-processor bypass edit that carries an output tail.
+    pub fn tail_bypass_change_at(&self, old: &Self, index: usize) -> bool {
+        self.entries
+            .get(index)
+            .zip(old.entries.get(index))
+            .is_some_and(|(next, previous)| {
+                Self::same_runtime_identity(next, previous)
+                    && next.bypassed != previous.bypassed
+                    && next.output_tail != (OutputTail::Finite { max_tail_frames: 0 })
+                    && previous.output_tail != (OutputTail::Finite { max_tail_frames: 0 })
+            })
+    }
+
+    /// Check split eligibility without mutating either runtime.
+    pub fn can_prepare_tail_split_at(&self, old: &Self, index: usize) -> bool {
+        let Some((next, previous)) = self.entries.get(index).zip(old.entries.get(index)) else {
+            return false;
+        };
+        self.tail_bypass_change_at(old, index)
+            && next.algorithmic_latency_frames == Some(0)
+            && previous.algorithmic_latency_frames == Some(0)
+            && next.automation.is_empty()
+            && previous.automation.is_empty()
+            && !previous.committed_bypass_ramp.is_active()
+            && !previous.committed_matrix_ramp.is_active()
+            && previous.committed_host_gains == [previous.input_gain, previous.output_gain]
+            && next.runtime.can_split_tail_input_from(&previous.runtime)
+            && self.can_fork_timing_without_signal_history_at(old, index)
+    }
+
     /// Prepare a transition by seeding an exact pristine successor's timing,
     /// without moving or copying the donor's signal history. This returns no
     /// resource lease and does not begin either chain's block transaction.
@@ -44,19 +74,7 @@ impl NativeRuntimeChain {
         let Some((next, previous)) = self.entries.get(index).zip(old.entries.get(index)) else {
             return Err(DeviceContractError::InvalidDescriptor);
         };
-        if next.bypassed == previous.bypassed
-            || next.algorithmic_latency_frames != Some(0)
-            || previous.algorithmic_latency_frames != Some(0)
-            || next.output_tail == (OutputTail::Finite { max_tail_frames: 0 })
-            || previous.output_tail == (OutputTail::Finite { max_tail_frames: 0 })
-            || !next.automation.is_empty()
-            || !previous.automation.is_empty()
-            || previous.committed_bypass_ramp.is_active()
-            || previous.committed_matrix_ramp.is_active()
-            || previous.committed_host_gains != [previous.input_gain, previous.output_gain]
-            || !next.runtime.can_split_tail_input_from(&previous.runtime)
-            || !self.can_fork_timing_without_signal_history_at(old, index)
-        {
+        if !self.can_prepare_tail_split_at(old, index) {
             return Err(DeviceContractError::InvalidDescriptor);
         }
         let old_bypassed = previous.bypassed;
