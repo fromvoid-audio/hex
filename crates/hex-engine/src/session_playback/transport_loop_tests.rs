@@ -1627,9 +1627,7 @@ fn live_loop_edit_away_from_wrap_keeps_held_note_output_continuous() {
     let mut active = SessionPlayback::new(prepare_mutable(&project)).expect("old loop");
     let mut reference = SessionPlayback::new(prepare_mutable(&project)).expect("reference loop");
     for playback in [&mut active, &mut reference] {
-        playback
-            .apply(SessionPlaybackCommand::Play)
-            .expect("play");
+        playback.apply(SessionPlaybackCommand::Play).expect("play");
     }
     let mut prefix = vec![[0.0; 2]; 30_000];
     let mut reference_prefix = prefix.clone();
