@@ -1162,6 +1162,7 @@ impl EditorView {
                     visible_change |= self.retire_clip_detail();
                     visible_change |= self.retire_pending_audio_events();
                     visible_change |= self.retire_pending_clip_loop();
+                    visible_change |= self.clear_pending_bypass();
                     visible_change |= self.cancel_audio_loop_gesture();
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_section();
@@ -1214,6 +1215,7 @@ impl EditorView {
             }
         }
         visible_change |= self.pump_device_gesture();
+        visible_change |= self.retire_abandoned_bypass();
         visible_change |= self.retire_abandoned_duplicate();
         visible_change |= self.retire_abandoned_track_clipboard();
         visible_change |= self.retire_abandoned_group_copy();
@@ -2146,6 +2148,7 @@ impl EditorView {
         }
         self.audio_events_request_complete(&event);
         self.clip_loop_request_complete(&event);
+        self.bypass_request_complete(&event);
         self.clip_move_request_complete(&event);
         self.truncated_import
             .observe(self.project_generation, &event);

@@ -25,6 +25,7 @@ use std::{
 
 mod auto_pan_panel;
 mod bindings;
+mod bypass;
 mod delay_panel;
 mod overdrive_panel;
 use bindings::{
@@ -110,6 +111,7 @@ struct DeviceControlIdentity {
 
 #[derive(Default)]
 pub(super) struct DevicePanelState {
+    bypass: bypass::State,
     pub(super) owner: Option<DevicePanelOwner>,
     pub(super) main_selected: Option<u64>,
     chain_window: chain_window::ChainWindow,
@@ -1907,7 +1909,7 @@ fn render_effect(
                     hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                 })
         });
-    let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
+    let leading = bypass_action(view, device, NativeDeviceClass::Effect, cx);
     let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
@@ -2517,7 +2519,7 @@ fn render_instrument(
     });
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
     let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
-    let leading = bypass_action(device, NativeDeviceClass::Instrument, cx);
+    let leading = bypass_action(view, device, NativeDeviceClass::Instrument, cx);
     let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
     let rendered = if hex_engine::is_empty_sampler_state_on_control(device.state()) {
         device_frame(
@@ -2918,12 +2920,13 @@ fn render_add_menu(
 }
 
 fn bypass_action(
+    view: &EditorView,
     device: &hex_project::Device,
     class: NativeDeviceClass,
     cx: &mut Context<EditorView>,
 ) -> Stateful<Div> {
     let id = device.id();
-    let bypassed = device.bypassed();
+    let bypassed = view.device_panel.bypass.displayed(id, device.bypassed());
     let (on_color, off_color) = theme::device_enable_colors();
     let tooltip = if class == NativeDeviceClass::Instrument {
         "toggle instrument bypass"
@@ -2945,10 +2948,7 @@ fn bypass_action(
     })
     .on_click(cx.listener(move |view, _, _, cx| {
         if finalize_controls(view, cx) {
-            view.enqueue_device_barrier(Request::Edit(Command::SetDeviceBypass {
-                device: id,
-                bypassed: !bypassed,
-            }));
+            view.toggle_device_bypass(id);
         }
         cx.notify();
     }))

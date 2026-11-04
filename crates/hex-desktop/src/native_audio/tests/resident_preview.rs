@@ -343,7 +343,19 @@ impl ResidentHarness {
         capacity: usize,
         rate: u32,
     ) -> Self {
-        Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None, None, None)
+        Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None, None, None, None)
+    }
+    pub(super) fn with_recovery(frame_limit: u64, recovery: PathBuf) -> Self {
+        Self::with_plugin_fixture(
+            frame_limit,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            48_000,
+            None,
+            None,
+            None,
+            Some(recovery),
+        )
     }
     pub(super) fn with_plugins(
         host: hex_audio::plugin_effects::Hosting,
@@ -355,6 +367,7 @@ impl ResidentHarness {
             4,
             48_000,
             Some((host, presentation)),
+            None,
             None,
             None,
         )
@@ -372,6 +385,7 @@ impl ResidentHarness {
             Some((host, presentation)),
             Some(facts),
             None,
+            None,
         )
     }
     pub(super) fn with_plugins_and_catalog(
@@ -387,8 +401,10 @@ impl ResidentHarness {
             Some((host, presentation)),
             None,
             Some(catalog),
+            None,
         )
     }
+    #[allow(clippy::too_many_arguments)] // Test fixture covers independent native failure modes.
     fn with_plugin_fixture(
         frame_limit: u64,
         gate: Arc<AtomicBool>,
@@ -400,6 +416,7 @@ impl ResidentHarness {
         )>,
         facts_gate: Option<crate::native_audio::plugins::FactsGate>,
         catalog: Option<PathBuf>,
+        recovery: Option<PathBuf>,
     ) -> Self {
         let native_plugins = plugin.is_some();
         let allow_unavailable = !gate.load(Acquire);
@@ -455,7 +472,7 @@ impl ResidentHarness {
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
-            None,
+            recovery,
             Box::new(ResidentSink {
                 inner,
                 refuse: Arc::clone(&refuse),
