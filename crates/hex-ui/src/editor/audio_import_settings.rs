@@ -9,7 +9,9 @@ use gpui::{Context, Div, div, prelude::*, px, rgb};
 use hex_preferences::AudioImportPreferences;
 use hex_project::AudioImportWarp;
 use hex_session::{
-    import_batch::AudioBatchDestination, import_batch_decode::AudioBatchContext, service::Request,
+    import_batch::{AudioBatchDestination, ConsoleDestination},
+    import_batch_decode::AudioBatchContext,
+    service::Request,
 };
 use std::path::PathBuf;
 
@@ -139,7 +141,9 @@ impl EditorView {
             },
         )?;
         if let Request::ImportAudioBatch {
-            destination: AudioBatchDestination::NewTracks { .. },
+            destination:
+                AudioBatchDestination::NewTracks { .. }
+                | AudioBatchDestination::Console(ConsoleDestination::NewTrack { .. }),
             options,
             ..
         } = &mut request

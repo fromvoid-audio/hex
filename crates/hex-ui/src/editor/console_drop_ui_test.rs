@@ -965,6 +965,15 @@ fn console_column_sample_boundaries_create_atomic_tracks_and_preserve_cells(
         let born = &after.tracks()[placement];
         assert!(!before.tracks().iter().any(|track| track.id() == born.id()));
         assert!(born.instrument().is_none() && born.devices().is_empty());
+        assert!((born.gain() - 0.251_188_64).abs() < 1e-7);
+        assert_eq!(
+            after.track(first).unwrap().gain(),
+            before.track(first).unwrap().gain()
+        );
+        assert_eq!(
+            after.track(second).unwrap().gain(),
+            before.track(second).unwrap().gain()
+        );
         let Some(hex_project::SessionCellContent::Audio(clip)) =
             after.session_cell(born.id(), scene)
         else {
