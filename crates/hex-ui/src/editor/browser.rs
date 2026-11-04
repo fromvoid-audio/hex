@@ -1620,6 +1620,7 @@ impl EditorView {
                 revision: state.revision,
                 class: hex_engine::NativeDeviceClass::Instrument,
                 type_id,
+                new_track_gain: None,
             });
             cx.notify();
             return;

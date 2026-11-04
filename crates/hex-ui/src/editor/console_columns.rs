@@ -161,7 +161,7 @@ impl EditorView {
                 view.clear_native_device_drag(drag);
                 cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                 if valid && let NativeDeviceDragSource::Browser {class, type_id} = drag.source {
-                    view.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {project_generation: drag.project_generation, revision: drag.revision, class, type_id, destination: ArrangementDeviceDestination::NewTrack {before_track}});
+                    view.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {project_generation: drag.project_generation, revision: drag.revision, class, type_id, destination: ArrangementDeviceDestination::NewTrack {before_track}, new_track_gain: None});
                 } else { view.error = Some("device drop canceled · target changed, editing is busy, or source is not a browser device".into()); }
                 cx.notify();
             }))

@@ -1351,9 +1351,10 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             type_id,
+            new_track_gain,
             ..
         } => {
-            describe!("insert_browser_instrument_track"; ["project_generation" => project_generation, "revision" => revision, "type_id" => type_id.as_str()]; omitted="class")
+            describe!("insert_browser_instrument_track"; ["project_generation" => project_generation, "revision" => revision, "type_id" => type_id.as_str(), "new_track_gain" => new_track_gain]; omitted="class")
         }
         Request::InsertPluginEffect(_) => describe!("insert_plugin_effect"; []; omitted="value0"),
         Request::ContinuePluginEffect => describe!("continue_plugin_effect"; []; omitted=""),
@@ -1376,9 +1377,10 @@ pub(super) fn request(value: &Request) -> Description {
             project_generation,
             revision,
             type_id,
+            new_track_gain,
             ..
         } => {
-            describe!("drop_browser_device_on_arrangement"; ["project_generation" => project_generation, "revision" => revision, "type_id" => type_id.as_str()]; omitted="class,destination")
+            describe!("drop_browser_device_on_arrangement"; ["project_generation" => project_generation, "revision" => revision, "type_id" => type_id.as_str(), "new_track_gain" => new_track_gain]; omitted="class,destination")
         }
         Request::CopyArrangementClipToConsoleTrack {
             project_generation,
