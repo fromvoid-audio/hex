@@ -923,7 +923,8 @@ fn rendered_sampler_save_open(
     visual.run_until_parked();
     let target_selector = Box::leak(format!("track-name-{}", track.value()).into_boxed_str());
     let other_selector = Box::leak(format!("track-name-{}", other.value()).into_boxed_str());
-    let other_selected = Box::leak(format!("selected-track-{}", other.value()).into_boxed_str());
+    let other_selected =
+        Box::leak(format!("selected-track-lane-{}", other.value()).into_boxed_str());
     let started = Instant::now();
     let end = started
         + if gain {
