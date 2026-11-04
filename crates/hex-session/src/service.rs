@@ -735,6 +735,13 @@ pub enum Request {
         before_track: Option<hex_project::TrackId>,
         start: u64,
     },
+    /// FIFO single-file import with an admission-time captured new-track gain.
+    ImportToNewTrackWithGain {
+        path: PathBuf,
+        before_track: Option<hex_project::TrackId>,
+        start: u64,
+        gain: f32,
+    },
     ImportToSession {
         path: PathBuf,
         track: hex_project::TrackId,
@@ -4627,12 +4634,13 @@ fn run_worker(
                 | Request::ImportToTrack { .. }
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
+                | Request::ImportToNewTrackWithGain { .. }
                 | Request::ImportToSession { .. })
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident =>
                 {
                     let result = (|| {
-                        let (path, destination, overwrite) = match request {
+                        let (path, destination, overwrite, gain) = match request {
                             Request::Import(path) => (
                                 path,
                                 AudioBatchDestination::NewTracks {
@@ -4640,13 +4648,20 @@ fn run_worker(
                                     start: 0,
                                 },
                                 false,
+                                None,
                             ),
-                            Request::ImportToTrack { path, track, start } => {
-                                (path, AudioBatchDestination::Track { track, start }, false)
-                            }
-                            Request::ImportToTrackWithOverwrite { path, track, start } => {
-                                (path, AudioBatchDestination::Track { track, start }, true)
-                            }
+                            Request::ImportToTrack { path, track, start } => (
+                                path,
+                                AudioBatchDestination::Track { track, start },
+                                false,
+                                None,
+                            ),
+                            Request::ImportToTrackWithOverwrite { path, track, start } => (
+                                path,
+                                AudioBatchDestination::Track { track, start },
+                                true,
+                                None,
+                            ),
                             Request::ImportToNewTrack {
                                 path,
                                 before_track,
@@ -4658,6 +4673,21 @@ fn run_worker(
                                     start,
                                 },
                                 false,
+                                None,
+                            ),
+                            Request::ImportToNewTrackWithGain {
+                                path,
+                                before_track,
+                                start,
+                                gain,
+                            } => (
+                                path,
+                                AudioBatchDestination::NewTracks {
+                                    before_track,
+                                    start,
+                                },
+                                false,
+                                Some(gain),
                             ),
                             Request::ImportToSession { path, track, scene } => (
                                 path,
@@ -4665,6 +4695,7 @@ fn run_worker(
                                     crate::import_batch::ConsoleDestination::Cell { track, scene },
                                 ),
                                 false,
+                                None,
                             ),
                             _ => return Err(SessionError::Invalid("audio import request changed")),
                         };
@@ -4675,7 +4706,11 @@ fn run_worker(
                             &mut session,
                             path,
                             destination,
-                            overwrite,
+                            crate::import_batch::AudioImportOptions {
+                                overwrite,
+                                new_track_gain: gain,
+                                ..Default::default()
+                            },
                             hex_engine::AudioSourceContext {
                                 project_generation,
                                 editor_revision: revision.saturating_add(1),
@@ -4842,6 +4877,37 @@ fn run_worker(
                     path,
                     before_track,
                     start,
+                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    ),
+                    &mut import_decode,
+                ) {
+                    Ok(prepared) => {
+                        unsaved = true;
+                        replacement_revision = Some(prepared);
+                        status = Some("audio imported to new track".into());
+                    }
+                    Err(reason) => error = Some(reason),
+                },
+                Request::ImportToNewTrackWithGain {
+                    path,
+                    before_track,
+                    start,
+                    gain,
+                } => match import_to_new_track_with_gain(
+                    &mut session,
+                    path,
+                    before_track,
+                    start,
+                    gain,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                     export_lane.admission_with_resident_owners(
                         compiled.as_ref().map(|(_, p)| {
@@ -8046,6 +8112,70 @@ fn import_to_new_track(
         .import_prepared_audio_track_at_revision(prepared, before_track, start, previous)
         .map(|(_, revision)| revision)
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn import_to_new_track_with_gain(
+    session: &mut Session,
+    path: PathBuf,
+    before_track: Option<hex_project::TrackId>,
+    start: u64,
+    gain: f32,
+    previous: Option<&PreparedRevision>,
+    admission: sampler_export::Admission<'_>,
+    decode: &mut truncated_import::ImportDecode,
+) -> Result<Arc<PreparedRevision>, String> {
+    let options = crate::import_batch::AudioImportOptions {
+        new_track_gain: Some(gain),
+        overwrite: false,
+        ..Default::default()
+    };
+    options.validate().map_err(|error| error.to_string())?;
+    let path = absolute_document_path(&path)?;
+    let destination = AudioBatchDestination::NewTracks {
+        before_track,
+        start,
+    };
+    let reused = session.unchanged_resident_import(&path);
+    if reused.is_none()
+        && let Some(source) = decode
+            .plan(session, &path, None)
+            .map_err(|e| e.to_string())?
+    {
+        let expected = session.project().clone();
+        return session
+            .import_verified_batch_revision(
+                vec![source],
+                destination,
+                &expected,
+                previous,
+                options,
+                || Ok(()),
+                crate::import_batch::prepare_asset_free,
+            )
+            .map(|(_, prepared)| prepared)
+            .map_err(|e| e.to_string());
+    }
+    let prepared = match reused {
+        Some(prepared) => prepared,
+        None => decode_resident_member(session, path, decode)?,
+    };
+    admission
+        .check_legacy_stage(session, std::slice::from_ref(&prepared))
+        .map_err(|e| e.to_string())?;
+    let expected = session.project().clone();
+    session
+        .import_prepared_batch_revision_using(
+            vec![prepared],
+            destination,
+            &expected,
+            previous,
+            options,
+            || Ok(()),
+            crate::import_batch::prepare_asset_free,
+        )
+        .map(|(_, prepared)| prepared)
+        .map_err(|e| hex_storage::text::lowercase_outside_verbatim(&e.to_string()))
 }
 
 fn import_to_session(
