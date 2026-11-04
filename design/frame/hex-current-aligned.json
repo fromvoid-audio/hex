@@ -2,7 +2,7 @@
   "version": 1,
   "id": "hex-yield-workstation",
   "name": "hex / orbital",
-  "revisionId": "hex-current-aligned-study-r62",
+  "revisionId": "hex-current-aligned-study-r63",
   "width": 1900,
   "height": 1120,
   "background": "#111111",
@@ -15998,6 +15998,21 @@
       },
       "arrange-time-selection-end": {
         "visible": false
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     },
     "playing": {
@@ -31977,6 +31992,21 @@
       },
       "arrange-time-selection-end": {
         "visible": false
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     },
     "session": {
@@ -38536,6 +38566,21 @@
       },
       "arrange-time-selection-end": {
         "visible": false
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     },
     "session-playing": {
@@ -45095,6 +45140,21 @@
       },
       "arrange-time-selection-end": {
         "visible": false
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     },
     "time-selection": {
@@ -61074,6 +61134,21 @@
       },
       "arrange-time-selection-end": {
         "visible": true
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     },
     "clip-colors": {
@@ -67633,6 +67708,21 @@
       },
       "arrange-time-selection-end": {
         "visible": false
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     },
     "grouped-tracks": {
@@ -74214,6 +74304,21 @@
       },
       "arrange-time-selection-end": {
         "visible": false
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     },
     "grouped-spectrum": {
@@ -80795,6 +80900,21 @@
       },
       "arrange-time-selection-end": {
         "visible": false
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     },
     "collections-hidden": {
@@ -96774,6 +96894,21 @@
       },
       "arrange-time-selection-end": {
         "visible": false
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     },
     "galaxy-nebula": {
@@ -112753,6 +112888,21 @@
       },
       "arrange-time-selection-end": {
         "visible": false
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     },
     "galaxy-starlight": {
@@ -128726,6 +128876,21 @@
       },
       "arrange-time-selection-end": {
         "visible": false
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     },
     "galaxy-cyan": {
@@ -144699,6 +144864,21 @@
       },
       "arrange-time-selection-end": {
         "visible": false
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     },
     "tuner-open": {
@@ -160678,6 +160858,21 @@
       },
       "arrange-time-selection-end": {
         "visible": false
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     },
     "browser-hidden": {
@@ -176444,6 +176639,21 @@
       },
       "arrange-time-selection-end": {
         "visible": false
+      },
+      "device-meter-outline-left": {
+        "visible": true
+      },
+      "device-meter-peak-left": {
+        "visible": true
+      },
+      "device-meter-outline-right": {
+        "visible": true
+      },
+      "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-overspill": {
+        "visible": true
       }
     }
   },
@@ -363170,6 +363380,106 @@
         "fill": "none",
         "stroke": "#d0eff6",
         "lineWidth": 1
+      }
+    },
+    {
+      "id": "device-meter-outline-left",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 509.5,
+        "y": 821.5,
+        "width": 4,
+        "height": 178
+      },
+      "style": {
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7",
+        "lineWidth": 1,
+        "fill": "none",
+        "stroke": "#a3b2b8"
+      }
+    },
+    {
+      "id": "device-meter-peak-left",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 510,
+        "y": 851,
+        "width": 3,
+        "height": 1.5
+      },
+      "style": {
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7",
+        "lineWidth": 1,
+        "fill": "#d5e7ec",
+        "stroke": "none"
+      }
+    },
+    {
+      "id": "device-meter-outline-right",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 513.5,
+        "y": 821.5,
+        "width": 4,
+        "height": 178
+      },
+      "style": {
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7",
+        "lineWidth": 1,
+        "fill": "none",
+        "stroke": "#a3b2b8"
+      }
+    },
+    {
+      "id": "device-meter-peak-right",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 514,
+        "y": 861,
+        "width": 3,
+        "height": 1.5
+      },
+      "style": {
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7",
+        "lineWidth": 1,
+        "fill": "#d5e7ec",
+        "stroke": "none"
+      }
+    },
+    {
+      "id": "device-meter-overspill",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 510,
+        "y": 817,
+        "width": 7,
+        "height": 3
+      },
+      "style": {
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7",
+        "lineWidth": 1,
+        "fill": "#bf4444",
+        "stroke": "none"
       }
     }
   ],
