@@ -63,7 +63,7 @@ impl SourceRoutingData {
                         count += usize::from(self.contributes[other]);
                     }
                 }
-                self.shared[index] = count > 1;
+                self.shared[index] = count > 1 || !self.contributes[index];
             }
         }
         let mut next = 0usize;
@@ -157,7 +157,7 @@ impl PreparedSourceRouting {
         for (index, track) in project.tracks().iter().enumerate() {
             plan.tracks[index] = Some(track.id());
             plan.sources[index] = track.source_id();
-            plan.contributes[index] = track.source_id().is_some();
+            plan.contributes[index] = track.source_id().is_some() && !track.retained_source_path();
             if let Some(source_id) = track.source_id() {
                 let source = project
                     .native_source(source_id)
@@ -348,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_receiver_is_refused_before_legacy_playback_preparation() {
+    fn retained_receiver_prepares_as_noncontributing_source_owner() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Track(receiver) = editor
             .execute(Command::AddMidiTrack {
@@ -367,21 +367,14 @@ mod tests {
         let mut snapshot = editor.project().snapshot();
         snapshot.retained_source_paths.push(receiver.value());
         let project = Project::from_snapshot(snapshot).unwrap();
-        let error =
-            crate::compile::project(&project, &std::collections::BTreeMap::new()).unwrap_err();
-        assert!(
-            error
-                .0
-                .contains("retained source path playback is not supported")
-        );
-        assert!(
-            crate::PreparedSessionInventory::prepare(
-                &project,
-                std::sync::Arc::new(crate::SineTable::new()),
-                None
-            )
-            .is_err()
-        );
+        let routing = PreparedSourceRouting::prepare(&project).unwrap();
+        assert!(routing.source(0).is_some());
+        assert!(!routing.contributes(0));
+        assert!(routing.contributors(0).is_empty());
+        let compiled =
+            crate::compile::project(&project, &std::collections::BTreeMap::new()).unwrap();
+        assert!(!compiled.tracks()[0].source_input_enabled());
+        assert!(compiled.tracks()[0].audio_content_enabled());
     }
 
     #[test]
@@ -443,7 +436,7 @@ mod tests {
         }
         data.finish().unwrap();
         assert_eq!(data.ranges[0], (0, 0));
-        assert!(!data.shared[0]);
+        assert!(data.shared[0]);
         assert!(data.sources[0].is_some());
 
         data.contributes[1] = true;

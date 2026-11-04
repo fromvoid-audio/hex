@@ -3,6 +3,39 @@ use crate::MidiTiming;
 mod shared_sources;
 use shared_sources::SharedSourceHandoff;
 
+/// Retained-path creation/removal needs the stopped bounce fence and a fresh
+/// graph. Do not let an ordinary handoff preserve voices or tails across it.
+fn retained_path_roles_match(old: &PreparedRevision, new: &PreparedRevision) -> bool {
+    let retained = |revision: &PreparedRevision, index: usize| {
+        revision.source_routing().source(index).is_some()
+            && !revision.source_routing().contributes(index)
+    };
+    let matches = |a: &PreparedRevision, b: &PreparedRevision| {
+        a.arrangement()
+            .tracks()
+            .iter()
+            .enumerate()
+            .all(|(index, track)| {
+                if !retained(a, index) {
+                    return true;
+                }
+                track
+                    .canonical_track_id()
+                    .and_then(|id| {
+                        b.arrangement()
+                            .tracks()
+                            .iter()
+                            .position(|candidate| candidate.canonical_track_id() == Some(id))
+                    })
+                    .is_some_and(|other| {
+                        retained(b, other)
+                            && a.source_routing().source(index) == b.source_routing().source(other)
+                    })
+            })
+    };
+    matches(old, new) && matches(new, old)
+}
+
 /// One physical foreign endpoint cannot process both current input and an old
 /// tail in the same callback. Fresh local scalar history cannot reset or clone
 /// that external source. Compare exact bindings, including root and epoch,
@@ -353,6 +386,11 @@ impl SessionPlayback {
         mut demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         live: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if !retained_path_roles_match(&previous.revision, &self.revision) {
+            return Err(SessionPlaybackError::Arrangement(
+                "retained source path changes require stopped graph replacement",
+            ));
+        }
         if live && self.live_restart && self.candidate_admission_open {
             return self.inherit_state_planned_once(previous, None, demand, true);
         }
