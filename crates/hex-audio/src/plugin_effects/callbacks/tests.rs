@@ -26,6 +26,7 @@ impl Facts {
             prepared: self.prepared,
             bypassed: false,
             input_gain: 1.0,
+            output_gain: 1.0,
         }
     }
 }
@@ -123,6 +124,128 @@ fn serve(worker: &mut Worker) {
     while let Some(block) = worker.receive().expect("healthy worker") {
         worker.complete(block).expect("reply published");
     }
+}
+
+#[test]
+fn endpoint_returns_post_trim_without_amplifying_extreme_finite_samples() {
+    let (mut callbacks, mut endpoints) = endpoints();
+    let source = f32::MAX / 4.0;
+    for block in 0..5 {
+        let mut node = endpoints[0].facts.node();
+        node.output_gain = 0.001;
+        let mut frames = [[source, -source]; QUANTUM];
+        let measured = allocations_during(|| {
+            callbacks.begin_host_callback(QUANTUM).unwrap();
+            callbacks
+                .process_segment(node, 0, &mut frames, None)
+                .unwrap();
+            callbacks.finish_host_callback(true).unwrap();
+        });
+        assert_eq!(measured, [0; 4]);
+        if block >= LATENCY_CALLBACKS {
+            assert!(frames.iter().flatten().all(|sample| sample.is_finite()));
+            assert_eq!(frames[0][0], source * 0.001);
+        }
+        serve(&mut endpoints[0].worker);
+    }
+    let mut node = endpoints[0].facts.node();
+    node.bypassed = true;
+    node.output_gain = 0.001;
+    let mut dry = [[source, -source]; QUANTUM];
+    callbacks.begin_host_callback(QUANTUM).unwrap();
+    callbacks.process_segment(node, 0, &mut dry, None).unwrap();
+    callbacks.finish_host_callback(true).unwrap();
+    assert_eq!(dry, [[source, -source]; QUANTUM]);
+}
+
+#[test]
+fn actual_chain_receives_post_trim_once_and_untrimmed_aligned_bypass() {
+    use hex_lattice::{
+        NativeRuntimeChain, PreparedProcessorFactory, PreparedRuntimeInstance, StereoMatrix,
+    };
+    use std::sync::Arc;
+    let (mut callbacks, mut endpoints) = endpoints();
+    let state = endpoints[0]
+        .facts
+        .state
+        .clone()
+        .with_output_gain_db(-60.0)
+        .unwrap();
+    let gain = state.output_gain_linear();
+    let prepared = endpoints[0].facts.prepared;
+    let identity = endpoints[0].facts.identity;
+    let make = |bypassed| {
+        NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            automation: Default::default(),
+            meter: Default::default(),
+            owner: identity.owner(),
+            device_id: identity.device_id(),
+            device_type: state.type_id(),
+            matrix: StereoMatrix::identity(),
+            bypassed,
+            sample_rate: 48_000,
+            configuration: Some(Arc::new(state.clone())),
+            definition: Some(PreparedProcessorFactory::Foreign(prepared)),
+        }])
+        .unwrap()
+    };
+    let mut active = make(false);
+    let mut bypass = make(true);
+    let source = f32::MAX / 4.0;
+    let mut run = |chain: &mut NativeRuntimeChain| {
+        let mut output = [[source, -source]; QUANTUM];
+        let measured = allocations_during(|| {
+            callbacks.begin_host_callback(QUANTUM).unwrap();
+            chain.begin_block();
+            chain
+                .process_range_with_foreign(0..1, &mut output, 0, None, None, &mut callbacks)
+                .unwrap();
+            chain.commit_block();
+            callbacks.finish_host_callback(true).unwrap();
+        });
+        assert_eq!(measured, [0; 4]);
+        serve(&mut endpoints[0].worker);
+        output
+    };
+    for _ in 0..4 {
+        run(&mut active);
+    }
+    assert_eq!(run(&mut active)[0], [source * gain, -source * gain]);
+    bypass.transfer_history_from(&mut active);
+    assert_eq!(run(&mut bypass)[0], [source, -source]);
+}
+
+#[test]
+fn revoked_endpoint_passes_aligned_dry_with_current_enabled_trim() {
+    let (mut callbacks, mut endpoints) = endpoints();
+    let source = [[0.25, -0.25]; QUANTUM];
+    for block in 0..7 {
+        let mut node = endpoints[0].facts.node();
+        node.output_gain = 0.5;
+        let mut output = source;
+        callbacks.begin_host_callback(QUANTUM).unwrap();
+        callbacks
+            .process_segment(node, 0, &mut output, None)
+            .unwrap();
+        callbacks.finish_host_callback(true).unwrap();
+        if block >= LATENCY_CALLBACKS {
+            assert_eq!(output, [[0.125, -0.125]; QUANTUM]);
+        }
+        if block == 0 {
+            serve(&mut endpoints[0].worker);
+        }
+    }
+    assert!(!callbacks.entries[0].transport_is_live());
+    let mut node = endpoints[0].facts.node();
+    node.bypassed = true;
+    node.output_gain = 0.5;
+    let mut output = source;
+    callbacks.begin_host_callback(QUANTUM).unwrap();
+    callbacks
+        .process_segment(node, 0, &mut output, None)
+        .unwrap();
+    callbacks.finish_host_callback(true).unwrap();
+    assert_eq!(output, source);
 }
 
 #[test]

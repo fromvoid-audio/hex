@@ -95,9 +95,12 @@ pub struct ForeignProcessorNode<'a> {
     pub bypassed: bool,
     /// Cached finite host input trim. Segments contain the original untrimmed
     /// signal so the host can preserve aligned dry history. Apply this gain to
-    /// the copied wet input, including while bypassed; output trim remains in
-    /// the chain after the host returns the selected wet/dry samples.
+    /// the copied wet input, including while bypassed. Output trim is applied
+    /// by the chain unless the endpoint declares post-trim output.
     pub input_gain: f32,
+    /// Host output trim for endpoints that explicitly return post-trim PCM.
+    /// Legacy borrowed endpoints continue to return pre-trim PCM.
+    pub output_gain: f32,
 }
 
 /// Unique borrowed view of the host's already retained foreign endpoints.
@@ -113,6 +116,12 @@ pub struct ForeignProcessorNode<'a> {
 /// still advances the same endpoint and returns aligned dry samples under its
 /// unchanged declared latency. The view cannot transfer resource custody.
 pub trait ForeignProcessors {
+    /// True only when this endpoint applies the supplied host output trim to
+    /// active wet output itself and returns post-trim PCM. The host must not
+    /// apply it a second time. Bypassed output remains untrimmed aligned dry.
+    fn returns_post_trim(&self, _node: ForeignProcessorNode<'_>) -> bool {
+        false
+    }
     fn process_segment(
         &mut self,
         node: ForeignProcessorNode<'_>,
