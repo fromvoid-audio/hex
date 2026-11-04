@@ -532,3 +532,57 @@ fn failed_derived_configuration_keeps_controls_cache_atomic_for_same_value_retry
         UTILITY_DEFINITION.prepare_effect_matrix(&expected).unwrap()
     );
 }
+
+#[test]
+fn bypass_advances_the_same_filter_and_automated_control_history() {
+    let base = UTILITY_DEFINITION.default_state().unwrap();
+    let factory = UtilityDefinition::prepare_owned_automated_filter(&base, 48_000).unwrap();
+    for muted in [false, true] {
+        let values = Values::new(vec![
+            (parameter::MUTE, ParameterValue::Bool(muted)),
+            (parameter::DC_REMOVE, ParameterValue::Bool(true)),
+            (parameter::BASS_MONO, ParameterValue::Bool(true)),
+        ]);
+        let mut active = factory.create_runtime();
+        let mut bypassed = factory.create_runtime();
+        let input = signal();
+        let mut wet = input.clone();
+        let mut dry = input.clone();
+        active
+            .process_block_with_automation(
+                &mut wet,
+                None,
+                &values,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        bypassed
+            .process_bypassed_block_with_automation(
+                &mut dry,
+                None,
+                &values,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        assert_eq!(dry, input);
+        let mut after_active = signal();
+        let mut after_bypass = after_active.clone();
+        active
+            .process_block_with_automation(
+                &mut after_active,
+                None,
+                &values,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        bypassed
+            .process_block_with_automation(
+                &mut after_bypass,
+                None,
+                &values,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        assert_eq!(after_bypass, after_active);
+    }
+}
