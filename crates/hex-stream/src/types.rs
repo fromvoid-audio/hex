@@ -2,7 +2,7 @@ use hex_engine::{
     STREAM_PAGE_FRAMES, ScalarSourceKey, ScalarSourceMetadata, StreamResourceKey, StreamSourceKey,
     StreamedSourceMetadata,
 };
-use hex_media::VerifiedWavReaderLimits;
+use hex_media::{VerifiedWavManifest, VerifiedWavReaderLimits};
 use hex_project::TempoMap;
 use hex_storage::automation_draft::{PreparedAutomationTake, automation_projection_fingerprint};
 use std::path::PathBuf;
@@ -105,6 +105,11 @@ pub struct SourceDefinition {
     pub path: PathBuf,
     pub metadata: StreamedSourceMetadata,
     pub reader_limits: VerifiedWavReaderLimits,
+    /// Manifest from the caller's earlier complete verification. When present,
+    /// the worker reopens under it (length/mtime check plus header pages)
+    /// instead of re-hashing the file. When absent, or when the identity changed,
+    /// it hashes the whole file and the fingerprint must still match.
+    pub verified_manifest: Option<VerifiedWavManifest>,
 }
 
 impl SourceDefinition {
@@ -118,7 +123,15 @@ impl SourceDefinition {
             path,
             metadata,
             reader_limits,
+            verified_manifest: None,
         }
+    }
+
+    /// Reuse a manifest already captured, and accounted, by the caller's
+    /// verification. Its fingerprint must still equal the metadata's.
+    pub fn with_verified_manifest(mut self, manifest: VerifiedWavManifest) -> Self {
+        self.verified_manifest = Some(manifest);
+        self
     }
 }
 

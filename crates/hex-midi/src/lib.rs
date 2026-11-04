@@ -21,6 +21,7 @@ use std::sync::{
     mpsc::{self, Receiver, SyncSender, TryRecvError},
 };
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Controllers {
@@ -73,6 +74,16 @@ impl Decoder {
     pub fn held_note_fault(&self) -> Option<HeldNoteFault> {
         self.held_fault
     }
+    /// Releases every held key and drops partial/running status, as MIDI reset
+    /// does. Note tokens stay monotonic for the activation's control-side floor.
+    fn reset(&mut self, note: &dyn Fn(NoteEvent)) {
+        self.held.clear();
+        self.held_changed = true;
+        self.status = 0;
+        self.used = 0;
+        self.sysex = false;
+        note(NoteEvent::AllNotesOff);
+    }
     pub fn byte(&mut self, byte: u8, channel: u8, current: Controllers) -> Option<Controllers> {
         self.byte_with_notes(byte, channel, current, &|_| {})
     }
@@ -87,12 +98,7 @@ impl Decoder {
         note: &dyn Fn(NoteEvent),
     ) -> Option<Controllers> {
         if byte == 0xff {
-            self.held.clear();
-            self.held_changed = true;
-            self.status = 0;
-            self.used = 0;
-            self.sysex = false;
-            note(NoteEvent::AllNotesOff);
+            self.reset(note);
         }
         if byte >= 0xf8 {
             return None;
@@ -147,7 +153,11 @@ const CALLBACK_PACKETS: usize = 1024;
 
 /// Same bounded packet loop for the native port and deterministic byte fixtures.
 /// Controllers retain their existing per-message delivery; physical notes coalesce
-/// once per invocation. Limit loss terminally invalidates the note activation.
+/// once per invocation. At most `CALLBACK_PACKETS` packets and `CALLBACK_BYTES`
+/// bytes are decoded per invocation; reaching a limit exactly is not a loss.
+/// Input beyond either limit is dropped and handled as a MIDI reset: held notes
+/// are released (`NoteEvent::AllNotesOff` plus an empty snapshot) and the decoder
+/// resynchronizes, so a dense burst cannot stick notes or end the connection.
 /// The connection owner must provide one serialized writer and one decoder per
 /// endpoint; never share a decoder/endpoint across concurrent input ports.
 pub fn deliver_packets<'a>(
@@ -162,9 +172,10 @@ pub fn deliver_packets<'a>(
 }
 
 /// Ordered-note counterpart of `deliver_packets`, sharing its byte/packet and
-/// held-snapshot limits. Input loss is terminal: publish one explicit loss event
-/// and stop delivery. The sink must cancel its host activation on loss; it must
-/// never silently drop a note-off when its own handoff is full.
+/// held-snapshot limits. Burst overflow publishes `AllNotesOff` and continues on
+/// the next invocation. Held-note faults are terminal: publish one explicit loss
+/// event and stop delivery. The sink must cancel its host activation on loss; it
+/// must never silently drop a note-off when its own handoff is full.
 pub fn deliver_packets_with_notes<'a>(
     decoder: &mut Decoder,
     channel: u8,
@@ -178,8 +189,15 @@ pub fn deliver_packets_with_notes<'a>(
         return current;
     }
     let mut remaining = CALLBACK_BYTES;
-    for (index, bytes) in packets.into_iter().take(CALLBACK_PACKETS).enumerate() {
-        for byte in bytes.iter().take(remaining) {
+    // One packet past the limit is inspected only to detect overflow.
+    for (index, bytes) in packets.into_iter().take(CALLBACK_PACKETS + 1).enumerate() {
+        let overflow = index == CALLBACK_PACKETS || bytes.len() > remaining;
+        let accepted = if index == CALLBACK_PACKETS {
+            &[][..]
+        } else {
+            bytes.get(..remaining).unwrap_or(bytes)
+        };
+        for byte in accepted {
             if let Some(next) = decoder.byte_with_notes(*byte, channel, current, note) {
                 current = next;
                 publish(current);
@@ -189,13 +207,11 @@ pub fn deliver_packets_with_notes<'a>(
                 return current;
             }
         }
-        if bytes.len() >= remaining || index == CALLBACK_PACKETS - 1 {
-            notes.fail(HeldNoteFault::PacketLimit);
-            note(NoteEvent::InputLost(HeldNoteFault::PacketLimit));
-            *decoder = Decoder::default();
-            return current;
+        if overflow {
+            decoder.reset(note);
+            break;
         }
-        remaining -= bytes.len();
+        remaining -= accepted.len();
     }
     if let Some(fault) = decoder.held_note_fault() {
         notes.fail(fault);
@@ -250,19 +266,36 @@ pub enum Event {
         result: Result<bool, String>,
     },
 }
+/// Command queue capacity shared by every handle; a full queue refuses the command.
+const COMMAND_CAPACITY: usize = 4;
+/// Event queue capacity; replies that do not fit wait in the worker's [`Outbox`].
+const EVENT_CAPACITY: usize = 4;
+/// Retry interval for a retained reply while the event queue stays full.
+const RETRY_INTERVAL: Duration = Duration::from_millis(20);
+/// Idle wait between connected-endpoint presence checks.
+const IDLE_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Worker-private queue entry: public commands plus the owner's prompt shutdown wake.
+enum Request {
+    Command(Command),
+    Shutdown,
+}
+/// Cloneable command/event access to one worker.
+///
+/// Commands use a bounded queue of `COMMAND_CAPACITY`; a full or closed queue refuses
+/// immediately and cancels a refused connection sink. Port and connection replies are
+/// never silently lost while the receiver exists: see `Outbox` for the overflow policy.
 #[derive(Clone)]
 pub struct Handle {
-    commands: SyncSender<Command>,
+    commands: SyncSender<Request>,
     events: Arc<std::sync::Mutex<Receiver<Event>>>,
 }
 impl Handle {
     pub fn send(&self, command: Command) -> Result<(), &'static str> {
-        match self.commands.try_send(command) {
+        match self.commands.try_send(Request::Command(command)) {
             Ok(()) => Ok(()),
-            Err(error) => {
-                if let mpsc::TrySendError::Full(Command::Connect { sink, .. })
-                | mpsc::TrySendError::Disconnected(Command::Connect { sink, .. }) = error
-                {
+            Err(mpsc::TrySendError::Full(request) | mpsc::TrySendError::Disconnected(request)) => {
+                if let Request::Command(Command::Connect { sink, .. }) = request {
                     sink.cancel();
                 }
                 Err("controller input worker is busy or unavailable")
@@ -276,15 +309,90 @@ impl Handle {
             .try_recv()
     }
 }
-fn cancel_queued(requests: &Receiver<Command>) {
-    for _ in 0..4 {
+/// Bounded worker-side custody for replies that do not fit the event queue.
+///
+/// At most one undelivered reply per kind (ports, connection) is retained and retried every
+/// [`RETRY_INTERVAL`] until the receiver drains. A newer reply of the same kind replaces a
+/// retained one unless it answers an older discovery id or activation: the UI issues both
+/// monotonically and ignores stale answers, so only the newest reply per kind is observable.
+/// A connection is never torn down because its reply is waiting. Replies are discarded only
+/// once the receiver is gone. Note input bypasses this queue; held-note, note-off and
+/// all-notes-off delivery are unaffected.
+#[derive(Default)]
+struct Outbox {
+    ports: Option<(u64, Result<Vec<Port>, String>)>,
+    connection: Option<(u64, Result<bool, String>)>,
+}
+impl Outbox {
+    fn retain(&mut self, event: Event) {
+        match event {
+            Event::Ports { request_id, result } => {
+                if self
+                    .ports
+                    .as_ref()
+                    .is_none_or(|(held, _)| *held <= request_id)
+                {
+                    self.ports = Some((request_id, result));
+                }
+            }
+            Event::Connection { activation, result } => {
+                if self
+                    .connection
+                    .as_ref()
+                    .is_none_or(|(held, _)| *held <= activation)
+                {
+                    self.connection = Some((activation, result));
+                }
+            }
+        }
+    }
+    /// Delivers retained replies that fit; full-queue replies stay retained.
+    fn flush(&mut self, events: &SyncSender<Event>) {
+        let ports = self
+            .ports
+            .take()
+            .map(|(request_id, result)| Event::Ports { request_id, result });
+        let connection = self
+            .connection
+            .take()
+            .map(|(activation, result)| Event::Connection { activation, result });
+        for event in [ports, connection].into_iter().flatten() {
+            match events.try_send(event) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(event)) => self.retain(event),
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    *self = Self::default();
+                    return;
+                }
+            }
+        }
+    }
+    fn send(&mut self, events: &SyncSender<Event>, event: Event) {
+        self.retain(event);
+        self.flush(events);
+    }
+    fn wait(&self) -> Duration {
+        if self.ports.is_some() || self.connection.is_some() {
+            RETRY_INTERVAL
+        } else {
+            IDLE_INTERVAL
+        }
+    }
+}
+fn cancel_queued(requests: &Receiver<Request>) {
+    for _ in 0..=COMMAND_CAPACITY {
         match requests.try_recv() {
-            Ok(Command::Connect { sink, .. }) => sink.cancel(),
+            Ok(Request::Command(Command::Connect { sink, .. })) => sink.cancel(),
             Ok(_) => {}
             Err(_) => break,
         }
     }
 }
+/// Owner of the control-side MIDI thread.
+///
+/// Dropping the worker sets the stop flag and queues a shutdown wake, so an idle worker
+/// exits without waiting for its idle interval. When the command queue is full the worker
+/// is already draining it and observes the flag after the current command.
 pub struct Worker {
     handle: Handle,
     stopping: Arc<AtomicBool>,
@@ -293,8 +401,8 @@ pub struct Worker {
 impl Worker {
     /// Starts an idle worker; discovery/native access requires an explicit command.
     pub fn start() -> Result<Self, String> {
-        let (commands, requests) = mpsc::sync_channel(4);
-        let (events, results) = mpsc::sync_channel(4);
+        let (commands, requests) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let (events, results) = mpsc::sync_channel(EVENT_CAPACITY);
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopping);
         let thread = std::thread::Builder::new()
@@ -317,6 +425,8 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::Release);
+        // A full queue is already being drained; the flag remains the fallback.
+        let _ = self.handle.commands.try_send(Request::Shutdown);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -326,7 +436,6 @@ impl Drop for Worker {
 mod native {
     use super::*;
     use coremidi::{Client, InputPort, Source, Sources};
-    use std::time::Duration;
     struct Active {
         // Rust drops fields in declaration order: input port closes before client.
         activation: u64,
@@ -427,25 +536,31 @@ mod native {
         }
     }
     pub(super) fn run(
-        requests: Receiver<Command>,
+        requests: Receiver<Request>,
         events: SyncSender<Event>,
         stop: Arc<AtomicBool>,
     ) {
         let mut active: Option<Active> = None;
+        let mut outbox = Outbox::default();
         while !stop.load(Ordering::Acquire) {
-            match requests.recv_timeout(Duration::from_millis(500)) {
-                Ok(Command::Discover { request_id }) => {
-                    let _ = events.try_send(Event::Ports {
-                        request_id,
-                        result: discover(),
-                    });
+            outbox.flush(&events);
+            match requests.recv_timeout(outbox.wait()) {
+                Ok(Request::Shutdown) => break,
+                Ok(Request::Command(Command::Discover { request_id })) => {
+                    outbox.send(
+                        &events,
+                        Event::Ports {
+                            request_id,
+                            result: discover(),
+                        },
+                    );
                 }
-                Ok(Command::Connect {
+                Ok(Request::Command(Command::Connect {
                     activation,
                     port,
                     channel,
                     sink,
-                }) => {
+                })) => {
                     active.take();
                     let result = match connect(activation, port, channel, sink) {
                         Ok(connection) => {
@@ -454,24 +569,22 @@ mod native {
                         }
                         Err(error) => Err(error),
                     };
-                    if events
-                        .try_send(Event::Connection { activation, result })
-                        .is_err()
-                    {
-                        active.take();
-                    }
+                    outbox.send(&events, Event::Connection { activation, result });
                 }
-                Ok(Command::Disconnect { activation }) => {
+                Ok(Request::Command(Command::Disconnect { activation })) => {
                     if active
                         .as_ref()
                         .is_some_and(|active| active.activation == activation)
                     {
                         active.take();
                     }
-                    let _ = events.try_send(Event::Connection {
-                        activation,
-                        result: Ok(false),
-                    });
+                    outbox.send(
+                        &events,
+                        Event::Connection {
+                            activation,
+                            result: Ok(false),
+                        },
+                    );
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -486,10 +599,13 @@ mod native {
                 if !present || connection.notes.is_cancelled() || (connection.is_cancelled)() {
                     let activation = connection.activation;
                     active.take();
-                    let _ = events.try_send(Event::Connection {
-                        activation,
-                        result: Err("controller input disconnected".into()),
-                    });
+                    outbox.send(
+                        &events,
+                        Event::Connection {
+                            activation,
+                            result: Err("controller input disconnected".into()),
+                        },
+                    );
                 }
             }
         }
@@ -501,28 +617,37 @@ mod native {
 mod native {
     use super::*;
     pub(super) fn run(
-        requests: Receiver<Command>,
+        requests: Receiver<Request>,
         events: SyncSender<Event>,
         stop: Arc<AtomicBool>,
     ) {
+        let mut outbox = Outbox::default();
         while !stop.load(Ordering::Acquire) {
-            match requests.recv_timeout(std::time::Duration::from_millis(500)) {
-                Ok(Command::Connect {
+            outbox.flush(&events);
+            match requests.recv_timeout(outbox.wait()) {
+                Ok(Request::Shutdown) => break,
+                Ok(Request::Command(Command::Connect {
                     activation, sink, ..
-                }) => {
+                })) => {
                     sink.cancel();
-                    let _ = events.try_send(Event::Connection {
-                        activation,
-                        result: Err("controller input currently supports macos only".into()),
-                    });
+                    outbox.send(
+                        &events,
+                        Event::Connection {
+                            activation,
+                            result: Err("controller input currently supports macos only".into()),
+                        },
+                    );
                 }
-                Ok(Command::Discover { request_id }) => {
-                    let _ = events.try_send(Event::Ports {
-                        request_id,
-                        result: Err("controller input currently supports macos only".into()),
-                    });
+                Ok(Request::Command(Command::Discover { request_id })) => {
+                    outbox.send(
+                        &events,
+                        Event::Ports {
+                            request_id,
+                            result: Err("controller input currently supports macos only".into()),
+                        },
+                    );
                 }
-                Ok(Command::Disconnect { .. }) => {}
+                Ok(Request::Command(Command::Disconnect { .. })) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
@@ -674,7 +799,7 @@ mod tests {
         let notes = Arc::new(HeldNoteInput::default());
         assert!(
             sender
-                .try_send(Command::Connect {
+                .try_send(Request::Command(Command::Connect {
                     activation: 7,
                     port: Port {
                         id: 1,
@@ -688,12 +813,130 @@ mod tests {
                         cancel: Box::new(move || flag.store(true, Ordering::Release)),
                         is_cancelled: Box::new(|| false)
                     }
-                })
+                }))
                 .is_ok()
         );
         let (events, _results) = mpsc::sync_channel(4);
         native::run(receiver, events, Arc::new(AtomicBool::new(true)));
         assert!(cancelled.load(Ordering::Acquire));
         assert!(notes.is_cancelled());
+    }
+    /// Drains events until one matches or the bounded deadline passes.
+    fn receive_until(
+        results: &Receiver<Event>,
+        limit: Duration,
+        done: impl Fn(&Event) -> bool,
+    ) -> Vec<Event> {
+        let deadline = std::time::Instant::now() + limit;
+        let mut received = Vec::new();
+        while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+            match results.recv_timeout(left) {
+                Ok(event) => {
+                    let finished = done(&event);
+                    received.push(event);
+                    if finished {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        received
+    }
+    #[test]
+    fn full_event_queue_retains_discovery_reply_until_drained() {
+        let (commands, requests) = mpsc::sync_channel(COMMAND_CAPACITY);
+        let (filler, results) = mpsc::sync_channel(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let (events, stop) = (filler.clone(), Arc::clone(&stop));
+            std::thread::spawn(move || native::run(requests, events, stop))
+        };
+        filler
+            .try_send(Event::Connection {
+                activation: 0,
+                result: Ok(false),
+            })
+            .unwrap();
+        commands
+            .try_send(Request::Command(Command::Discover { request_id: 9 }))
+            .unwrap();
+        // Let the worker answer into the full queue before anything is drained.
+        std::thread::sleep(Duration::from_millis(50));
+        let received = receive_until(&results, Duration::from_secs(2), |event| {
+            matches!(event, Event::Ports { request_id: 9, .. })
+        });
+        stop.store(true, Ordering::Release);
+        let _ = commands.try_send(Request::Shutdown);
+        worker.join().unwrap();
+        assert!(
+            received
+                .iter()
+                .any(|event| matches!(event, Event::Ports { request_id: 9, .. })),
+            "{received:?}"
+        );
+    }
+    #[test]
+    fn retained_replies_keep_the_newest_answer_per_kind() {
+        let (sender, results) = mpsc::sync_channel(1);
+        sender
+            .try_send(Event::Connection {
+                activation: 0,
+                result: Ok(false),
+            })
+            .unwrap();
+        let mut outbox = Outbox::default();
+        for event in [
+            Event::Ports {
+                request_id: 2,
+                result: Ok(Vec::new()),
+            },
+            Event::Ports {
+                request_id: 1,
+                result: Err("stale".into()),
+            },
+            Event::Connection {
+                activation: 5,
+                result: Ok(true),
+            },
+            Event::Connection {
+                activation: 4,
+                result: Ok(false),
+            },
+        ] {
+            outbox.send(&sender, event);
+        }
+        assert_eq!(outbox.wait(), RETRY_INTERVAL);
+        let mut delivered = Vec::new();
+        for _ in 0..3 {
+            delivered.extend(results.try_recv());
+            outbox.flush(&sender);
+        }
+        delivered.extend(results.try_recv());
+        assert_eq!(outbox.wait(), IDLE_INTERVAL);
+        assert!(matches!(
+            delivered.as_slice(),
+            [
+                Event::Connection { activation: 0, .. },
+                Event::Ports {
+                    request_id: 2,
+                    result: Ok(_)
+                },
+                Event::Connection {
+                    activation: 5,
+                    result: Ok(true)
+                },
+            ]
+        ));
+    }
+    #[test]
+    fn dropping_an_idle_worker_returns_promptly() {
+        let worker = Worker::start().unwrap();
+        // Ensure the worker is parked in its idle wait before shutdown.
+        std::thread::sleep(Duration::from_millis(20));
+        let started = std::time::Instant::now();
+        drop(worker);
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_millis(50), "{elapsed:?}");
     }
 }

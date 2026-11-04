@@ -29,6 +29,16 @@ pub enum DocumentAudioMode {
     Resident,
     VerifiedStreaming,
 }
+/// Largest original a verified streaming binding may reference. Streaming keeps one
+/// SHA-256 digest per 64 KiB page (2 MiB of manifest at this cap, inside the 64 MiB
+/// manifest budget) and never holds whole-file PCM, so this is far above the 64 MiB
+/// resident decode cap; classic RIFF sizes are 32-bit.
+pub const MAX_STREAMED_FILE_BYTES: u64 = u32::MAX as u64;
+/// Largest source extent a verified streaming binding may reference. Four clip
+/// domains admit 192 kHz originals in a 48 kHz project. Plain placement and playback
+/// stream any admitted extent; domain-bound edits (views, stretch, fades, grouping)
+/// keep their explicit [`hex_project::MAX_AUDIO_DOMAIN_FRAMES`] refusals.
+pub const MAX_STREAMED_SOURCE_FRAMES: u64 = hex_project::MAX_AUDIO_DOMAIN_FRAMES * 4;
 /// Metadata-only preparation bounds, independent of resident duration. An ordinary
 /// document may also reserve these for file-backed clip bindings without changing
 /// its document mode. No native custody, publication or readiness follows.
@@ -45,8 +55,8 @@ impl SourcePlanReservation {
             || self.max_retained_sources > hex_project::MAX_ASSETS
             || self.max_path_bytes == 0
             || self.max_manifest_bytes == 0
-            || self.reader.reader.max_file_bytes > 64 * 1024 * 1024
-            || self.reader.reader.max_source_frames > 8_000_000
+            || self.reader.reader.max_file_bytes > MAX_STREAMED_FILE_BYTES
+            || self.reader.reader.max_source_frames > MAX_STREAMED_SOURCE_FRAMES
             || self.reader.reader.max_file_bytes == 0
             || self.reader.reader.max_source_frames == 0
             || self.reader.reader.max_header_count == 0
@@ -59,7 +69,10 @@ impl SourcePlanReservation {
     }
 }
 /// Complete immutable binding captured by verification on the Session worker.
-/// Native workers independently reopen and verify this expected fingerprint.
+/// It retains the verified page manifest, already charged as
+/// [`Self::manifest_bytes`] against the document's source reservation. Native
+/// workers reopen under it ([`Self::verified_manifest`]) and re-verify each page
+/// they read. A changed length or mtime falls back to a full re-hash.
 #[derive(Clone, Debug)]
 pub struct VerifiedAudioFile {
     facts: Arc<VerifiedAudioFileFacts>,
@@ -76,19 +89,46 @@ impl Eq for VerifiedAudioFile {}
 #[derive(Debug, PartialEq, Eq)]
 struct VerifiedAudioFileFacts {
     path: PathBuf,
-    fingerprint: [u8; 32],
+    manifest: hex_media::VerifiedWavManifest,
     source_rate: u32,
     project_rate: u32,
     source_frames: u64,
     playback_frames: u64,
     conversion: u32,
     limits: VerifiedWavReaderLimits,
-    manifest_bytes: usize,
 }
 impl VerifiedAudioFile {
+    /// Verify a file for a new import, recording the current import law.
     pub fn inspect(
         path: PathBuf,
         project_rate: u32,
+        limits: VerifiedWavReaderLimits,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, SessionError> {
+        Self::inspect_inner(path, project_rate, None, limits, cancelled)
+    }
+
+    /// Verify a file for an existing asset, binding its saved conversion law.
+    pub fn inspect_for_conversion(
+        path: PathBuf,
+        project_rate: u32,
+        conversion_version: u32,
+        limits: VerifiedWavReaderLimits,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, SessionError> {
+        Self::inspect_inner(
+            path,
+            project_rate,
+            Some(conversion_version),
+            limits,
+            cancelled,
+        )
+    }
+
+    fn inspect_inner(
+        path: PathBuf,
+        project_rate: u32,
+        conversion: Option<u32>,
         limits: VerifiedWavReaderLimits,
         cancelled: impl FnMut() -> bool,
     ) -> Result<Self, SessionError> {
@@ -102,21 +142,25 @@ impl VerifiedAudioFile {
         let source_frames = reader.source_frames();
         let playback_frames =
             hex_project::converted_frame_count(source_frames, source_rate, project_rate)?;
+        let conversion = conversion
+            .unwrap_or_else(|| hex_project::import_conversion_version(source_rate, project_rate));
+        hex_project::validate_conversion_metadata(
+            source_frames,
+            source_rate,
+            playback_frames,
+            project_rate,
+            conversion,
+        )?;
         Ok(Self {
             facts: Arc::new(VerifiedAudioFileFacts {
                 path,
-                fingerprint: *reader.fingerprint(),
+                manifest: reader.manifest().clone(),
                 source_rate,
                 project_rate,
                 source_frames,
                 playback_frames,
-                conversion: if source_rate == project_rate {
-                    hex_project::IDENTITY_CONVERSION
-                } else {
-                    hex_project::SINC_CONVERSION_V1
-                },
+                conversion,
                 limits,
-                manifest_bytes: reader.page_manifest_bytes(),
             }),
             waveform: None,
         })
@@ -128,7 +172,11 @@ impl VerifiedAudioFile {
         self.facts.path.capacity()
     }
     pub fn fingerprint(&self) -> &[u8; 32] {
-        &self.facts.fingerprint
+        self.facts.manifest.fingerprint()
+    }
+    /// The page manifest captured at verification, shared rather than copied.
+    pub fn verified_manifest(&self) -> &hex_media::VerifiedWavManifest {
+        &self.facts.manifest
     }
     pub fn source_rate(&self) -> u32 {
         self.facts.source_rate
@@ -149,7 +197,7 @@ impl VerifiedAudioFile {
         self.facts.limits
     }
     pub fn manifest_bytes(&self) -> usize {
-        self.facts.manifest_bytes
+        self.facts.manifest.manifest_bytes()
     }
     pub(crate) fn matches_asset_format(&self, rate: u32) -> bool {
         self.facts.project_rate == rate
@@ -173,7 +221,7 @@ impl VerifiedAudioFile {
             self.facts.source_frames,
             self.facts.playback_frames,
             self.facts.conversion,
-            self.facts.fingerprint,
+            *self.facts.manifest.fingerprint(),
         )
     }
 }

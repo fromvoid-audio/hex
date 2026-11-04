@@ -4,6 +4,32 @@ mod pause_analytic;
 
 impl SessionPlayback {
     pub fn apply(&mut self, command: SessionPlaybackCommand) -> Result<(), SessionPlaybackError> {
+        self.admits_transport(&command)?;
+        self.candidate_admission_open = false;
+        if self.linear_arrangement_export
+            && matches!(
+                command,
+                SessionPlaybackCommand::LaunchClip { .. }
+                    | SessionPlaybackCommand::CueMidiClip { .. }
+                    | SessionPlaybackCommand::LaunchScene { .. }
+                    | SessionPlaybackCommand::StopTrack { .. }
+                    | SessionPlaybackCommand::StopAllClips { .. }
+                    | SessionPlaybackCommand::BackToArrangement { .. }
+                    | SessionPlaybackCommand::CancelPending { .. }
+            )
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.apply_admitted(command)
+    }
+
+    /// Refusals that depend only on this runtime's prepared shape, not on its
+    /// clock or voice state. A declicked Pause/Stop is checked here when it is
+    /// requested, before its fade begins.
+    pub(crate) fn admits_transport(
+        &self,
+        command: &SessionPlaybackCommand,
+    ) -> Result<(), SessionPlaybackError> {
         if self.current_sampler_console
             && matches!(
                 command,
@@ -25,26 +51,25 @@ impl SessionPlayback {
                 "sampler supports frame-zero offline export only",
             ));
         }
-        self.candidate_admission_open = false;
-        if self.linear_arrangement_export
-            && matches!(
-                command,
-                SessionPlaybackCommand::LaunchClip { .. }
-                    | SessionPlaybackCommand::CueMidiClip { .. }
-                    | SessionPlaybackCommand::LaunchScene { .. }
-                    | SessionPlaybackCommand::StopTrack { .. }
-                    | SessionPlaybackCommand::StopAllClips { .. }
-                    | SessionPlaybackCommand::BackToArrangement { .. }
-                    | SessionPlaybackCommand::CancelPending { .. }
-            )
-        {
-            return Err(SessionPlaybackError::InvalidCommand);
-        }
+        Ok(())
+    }
+
+    fn apply_admitted(
+        &mut self,
+        command: SessionPlaybackCommand,
+    ) -> Result<(), SessionPlaybackError> {
         match command {
             SessionPlaybackCommand::Play => self.playing = true,
             SessionPlaybackCommand::Pause => {
                 self.invalidate_native_parameter_input();
                 if self.playing {
+                    // Pause releases every held instrument note and never
+                    // re-chases it on resume; only new note-ons play (#4139).
+                    // Analytic routes capture releases and suppress the held
+                    // occurrences. Every instrument track binds a native
+                    // source, so its mutable runtime is a source owner and is
+                    // cut below and rendered while paused. Only sampler-only
+                    // offline export lacks one, and it refuses Pause.
                     self.pause_analytic_sources()?;
                     // A removed receiver may already own a detached release.
                     // Only explicit discontinuities reset admitted monitoring.
@@ -165,6 +190,7 @@ impl SessionPlayback {
         }
         for route in &mut self.routes {
             route.current_first_frame = false;
+            route.audio_release = None;
             changed |= route.pending.take().is_some();
             if let RouteOwner::Session { clip, origin } = route.owner {
                 changed |= origin != SessionMidiOrigin::launch(BeatTime::ZERO);
@@ -307,6 +333,9 @@ impl SessionPlayback {
     /// compensation epoch and mutable voices start empty. Allocation-free:
     /// existing owners are cleared or reset in place.
     pub(super) fn restart_audio_history(&mut self) {
+        for route in &mut self.routes {
+            route.audio_release = None;
+        }
         self.analytic_continuations.fill(None);
         self.analytic_continuation_scratch.fill(None);
         self.releases.clear();
@@ -817,6 +846,7 @@ impl SessionPlayback {
                 }
             }
         }
+        let fade = self.audio_release_fade();
         if moment.immediate {
             if !proven_current && transition_captures(owner, target) {
                 for destination in 0..self.route_scratch.len() {
@@ -848,6 +878,9 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             route.pending = None;
             route.owner = next_owner;
+            if self.playing {
+                audio_release::begin(route, owner, moment.performance_frame, fade)?;
+            }
             if let Some(reservation) = current_reservation {
                 route.current_incarnation = reservation.incarnation;
                 route.current_first_frame = true;
@@ -867,6 +900,9 @@ impl SessionPlayback {
                 .route_scratch
                 .get_mut(index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
+            if next_owner != owner && audio_release::conflicts(route, moment.target_frame) {
+                return Err(SessionPlaybackError::ReleaseBankFull);
+            }
             route.pending = Some(PendingRoute {
                 frame: moment.target_frame,
                 beat: moment.target_beat,
@@ -984,6 +1020,7 @@ impl SessionPlayback {
                                 &mut next_order,
                                 ReleaseEntry {
                                     source_origin,
+                                    timeline: ReleaseTimeline::Arrangement,
                                     monitor_offset: 0,
                                     location: match ReleaseLocation::new(audio_index, None) {
                                         Ok(location) => location,
@@ -998,7 +1035,7 @@ impl SessionPlayback {
                                         audio_track,
                                         source_frame,
                                         self.revision.gain_recording_track(),
-                                        self.gain_recording_override,
+                                        self.live_gain.audible(),
                                     ),
                                     continuation: keep_current_source.then_some(
                                         SessionContinuation {
@@ -1112,7 +1149,7 @@ impl SessionPlayback {
                             audio_track,
                             source_frame,
                             self.revision.gain_recording_track(),
-                            self.gain_recording_override,
+                            self.live_gain.audible(),
                         );
                         let clip_gain = super::clip_gain::at_cut(
                             self,
@@ -1129,6 +1166,7 @@ impl SessionPlayback {
                             &mut self.release_order_scratch,
                             ReleaseEntry {
                                 source_origin,
+                                timeline: ReleaseTimeline::Session,
                                 monitor_offset: 0,
                                 location: ReleaseLocation::new(audio_index, None)?,
                                 track_id: route.id,
@@ -1201,7 +1239,11 @@ impl SessionPlayback {
                 } else {
                     0
                 };
+                let audio = routes.get(index).map_or(0, |route| {
+                    audio_release::charged(route, self.performance_frame)
+                });
                 sum.checked_add(pending)
+                    .and_then(|sum| sum.checked_add(audio))
                     .ok_or(SessionPlaybackError::ArithmeticOverflow)
             })?;
         if release_count

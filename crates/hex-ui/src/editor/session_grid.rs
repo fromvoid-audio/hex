@@ -19,6 +19,8 @@ use std::sync::Arc;
 
 const TRACK_COLUMN_WIDTH: f32 = 148.0;
 const SCENE_ROW_HEIGHT: f32 = 34.0;
+// Eight nested ancestors fit while preserving a usable header label.
+const GROUP_BAND_HEIGHT: f32 = 1.0;
 const SCENE_HEADER_WIDTH: f32 = 150.0;
 
 fn session_scenes_header() -> Div {
@@ -86,7 +88,11 @@ pub(super) fn resolve_delete_target(
             }
             return matches!(
                 project.session_cell(track, scene),
-                Some(SessionCellContent::Midi(_) | SessionCellContent::Stop)
+                Some(
+                    SessionCellContent::Audio(_)
+                        | SessionCellContent::Midi(_)
+                        | SessionCellContent::Stop
+                )
             )
             .then_some(DeleteTarget::SessionCell { track, scene });
         }
@@ -450,6 +456,28 @@ impl EditorView {
                         let track_id = track.id();
                         let selected = self.track_selection.contains(track_id);
                         let hierarchy_indent = self.track_hierarchy_indent.pixels(track_id);
+                        let ancestors = self.track_hierarchy_indent.ancestors(track_id);
+                        let band_height = ancestors.len() as f32 * GROUP_BAND_HEIGHT;
+                        let group_bands = ancestors
+                            .iter()
+                            .enumerate()
+                            .map(|(depth, &(ancestor, color))| {
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .top(px(depth as f32 * GROUP_BAND_HEIGHT))
+                                    .h(px(GROUP_BAND_HEIGHT))
+                                    .debug_selector(move || {
+                                        format!(
+                                            "session-group-band-{}-{}",
+                                            track_id.value(),
+                                            ancestor.value()
+                                        )
+                                    })
+                                    .bg(rgb(theme::element_colors(color).accent))
+                            })
+                            .collect::<Vec<_>>();
                         let header_focus = self.track_header_focus(track_id, cx);
                         let click_focus = header_focus.clone();
                         let header = div()
@@ -496,12 +524,13 @@ impl EditorView {
                                         format!("selected-console-track-{}", track_id.value())
                                     })
                             }))
+                            .children(group_bands)
                             .child(
                                 div()
                                     .absolute()
                                     .left_0()
                                     .right_0()
-                                    .top_0()
+                                    .top(px(band_height))
                                     .h(px(4.0))
                                     .debug_selector(move || {
                                         format!("session-track-color-strip-{}", track_id.value())
@@ -523,6 +552,11 @@ impl EditorView {
                                 ),
                             )
                             .w(px(TRACK_COLUMN_WIDTH))
+                            .pt(px(if band_height > 0.0 {
+                                band_height + 4.0
+                            } else {
+                                0.0
+                            }))
                             .flex_shrink_0()
                             .px_2()
                             .flex()
@@ -544,6 +578,9 @@ impl EditorView {
                                     .truncate()
                                     .flex()
                                     .items_center()
+                                    .debug_selector(move || {
+                                        format!("session-track-label-{}", track_id.value())
+                                    })
                                     .children((hierarchy_indent > 0.0).then(|| {
                                         div()
                                             .w(px(hierarchy_indent))
@@ -2432,6 +2469,66 @@ mod tests {
             ),
             Some(DeleteTarget::ArrangementClip(clip.id()))
         );
+
+        // Hybrid tracks hold audio Session cells; Delete clears them too.
+        let Created::Scene(audio_scene) = editor
+            .execute(Command::AddScene {
+                name: "audio".into(),
+            })
+            .unwrap()
+        else {
+            panic!("audio scene")
+        };
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "source.wav".into(),
+                sample_rate: 48_000,
+                frames: 1_000,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        editor
+            .execute(Command::CreateSessionAudioClip {
+                track,
+                scene: audio_scene,
+                name: "audio".into(),
+                asset,
+                source_start: 0,
+                source_end: 1_000,
+            })
+            .unwrap();
+        let with_audio = editor.project().snapshot();
+        let target = resolve_delete_target(
+            Some(editor.project()),
+            super::EditorMode::Session,
+            false,
+            false,
+            Some((track, audio_scene)),
+            None,
+            None,
+        );
+        assert_eq!(
+            target,
+            Some(DeleteTarget::SessionCell {
+                track,
+                scene: audio_scene
+            })
+        );
+        editor
+            .execute(Command::ClearSessionCell {
+                track,
+                scene: audio_scene,
+            })
+            .unwrap();
+        assert!(editor.project().session_cell(track, audio_scene).is_none());
+        assert!(editor.undo());
+        assert!(matches!(
+            editor.project().session_cell(track, audio_scene),
+            Some(SessionCellContent::Audio(_))
+        ));
+        assert_eq!(editor.project().snapshot(), with_audio);
     }
 
     #[test]

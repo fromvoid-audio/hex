@@ -599,6 +599,15 @@ fn compile_project_inner<'a>(
                 let asset = snapshot
                     .asset(clip.asset())
                     .ok_or(Invalid("project asset missing"))?;
+                // Offline media (missing at open) compiles to no playback: the clip
+                // stays in the project and renders silence with no callback work.
+                if snapshot.asset_offline(asset.id())
+                    || clip
+                        .retained_audio_roots()
+                        .any(|root| snapshot.asset_offline(root.clip.asset()))
+                {
+                    return Ok(None);
+                }
                 let mut compiled = if let Some(events) = clip.audio_edit()
                     .and_then(|edit| edit.domain.events.as_ref())
                     .filter(|events| !events.sources.is_empty())
@@ -652,9 +661,14 @@ fn compile_project_inner<'a>(
             .flatten()
             .collect();
         let input_muted = solo.muted(track_index, track)?;
-        let shared_source = track
-            .source_id()
-            .filter(|source| snapshot.source_contributors(*source).count() > 1);
+        let shared_source = track.source_id().filter(|source| {
+            snapshot.source_contributors(*source).count() > 1
+                || snapshot
+                    .native_source(*source)
+                    .and_then(|definition| definition.receiver())
+                    .and_then(|receiver| snapshot.track(receiver))
+                    .is_some_and(hex_project::Track::retained_source_path)
+        });
         let muted = if track.receives_source_audio()
             && let Some(source) = shared_source
         {
@@ -770,7 +784,10 @@ fn compile_project_inner<'a>(
             )?
             .with_track_id(track.id())
             .with_source_audio_receiver(track.receives_source_audio())
-            .with_source_mix_scope(local_content_enabled, local_content_enabled)
+            .with_source_mix_scope(
+                local_content_enabled && !track.retained_source_path(),
+                local_content_enabled,
+            )
             .with_source_binding(
                 track.source_id(),
                 track

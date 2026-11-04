@@ -15,6 +15,17 @@ pub const GATE_STATE_VERSION: u32 = 1;
 const STATE_BYTES: usize = 24;
 const MIN_SAMPLE_RATE: u32 = 8_000;
 const MAX_SAMPLE_RATE: u32 = 192_000;
+/// Shortest internal hold, whatever the hold control says (Pulse #4107).
+///
+/// The detector is the instantaneous linked peak, so a low-frequency tone
+/// dips below the return level around every zero crossing. With no hold the
+/// gate closed there and chattered. Holding at least 5 ms rides through those
+/// dips (a sine at amplitude `a` stays below return `r` for
+/// `2 asin(r / a) / omega`, about 4.75 ms at 40 Hz just above a 5 dB
+/// hysteresis), so the hold control's range below 5 ms acts as 5 ms. Lower
+/// tones, or a return level close to the threshold, can still exceed it.
+/// This is a hex decision, not a measured reference behaviour.
+const MIN_HOLD_MS: f32 = 5.0;
 
 pub mod parameter {
     use hex_lattice_contract::ParameterId;
@@ -284,9 +295,9 @@ impl NativeDeviceDefinition for GateDefinition {
             return Err(DeviceContractError::InvalidParameterValue);
         }
         let settings = decode(state)?;
-        let attack_frames = checked_frames(settings.attack_ms, sample_rate, false)?;
-        let hold_frames = checked_frames(settings.hold_ms, sample_rate, true)?;
-        let release_frames = checked_frames(settings.release_ms, sample_rate, false)?;
+        let attack_frames = checked_frames(settings.attack_ms, sample_rate)?;
+        let hold_frames = checked_frames(settings.hold_ms.max(MIN_HOLD_MS), sample_rate)?;
+        let release_frames = checked_frames(settings.release_ms, sample_rate)?;
         Ok(Some(Box::new(PreparedGate {
             settings,
             sample_rate,
@@ -307,14 +318,7 @@ fn db_to_gain(db: f32) -> Result<f64, DeviceContractError> {
         .map_err(|_| DeviceContractError::InvalidParameterValue)
 }
 
-fn checked_frames(
-    milliseconds: f32,
-    sample_rate: u32,
-    allow_zero: bool,
-) -> Result<u32, DeviceContractError> {
-    if allow_zero && milliseconds == 0.0 {
-        return Ok(0);
-    }
+fn checked_frames(milliseconds: f32, sample_rate: u32) -> Result<u32, DeviceContractError> {
     let frames = (f64::from(milliseconds) * f64::from(sample_rate) / 1_000.0).ceil();
     if !frames.is_finite() || frames < 1.0 || frames > f64::from(u32::MAX) {
         return Err(DeviceContractError::InvalidParameterValue);
@@ -334,6 +338,9 @@ struct PreparedGate {
 }
 
 impl PreparedNativeProcessor for PreparedGate {
+    fn supports_smoothed_bypass(&self) -> bool {
+        true
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -466,18 +473,13 @@ impl GateRuntime {
             }
         } else if self.open {
             if peak <= self.return_level {
-                if self.hold_frames == 0 {
+                // `hold_frames` is at least `MIN_HOLD_MS`, never zero.
+                if self.hold_elapsed < self.hold_frames {
+                    self.hold_elapsed += 1;
+                } else {
                     self.open = false;
                     self.hold_elapsed = 0;
                     self.start_ramp(self.floor_gain, self.release_frames);
-                } else {
-                    if self.hold_elapsed < self.hold_frames {
-                        self.hold_elapsed += 1;
-                    } else {
-                        self.open = false;
-                        self.hold_elapsed = 0;
-                        self.start_ramp(self.floor_gain, self.release_frames);
-                    }
                 }
             } else {
                 self.hold_elapsed = 0;

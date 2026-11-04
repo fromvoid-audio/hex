@@ -252,7 +252,9 @@ pub(super) fn render(
 }
 
 fn peak_db(peak: f32) -> String {
-    if peak > 0.0 {
+    if peak == f32::INFINITY {
+        "+∞".to_owned()
+    } else if peak > 0.0 {
         format!("{:.2}", 20.0 * peak.log10())
     } else {
         "−∞".to_owned()
@@ -262,6 +264,16 @@ fn peak_db(peak: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peak_labels_include_infinity_symbols() {
+        assert_eq!(peak_db(f32::INFINITY), "+∞");
+        for value in [f32::NEG_INFINITY, f32::NAN, 0.0, -1.0] {
+            assert_eq!(peak_db(value), "−∞");
+        }
+        assert_eq!(peak_db(1.0), "0.00");
+        assert_eq!(peak_db(0.1), "-20.00");
+    }
 
     #[test]
     fn compatible_handoff_preserves_peaks_and_replacement_or_missing_source_clears_them() {

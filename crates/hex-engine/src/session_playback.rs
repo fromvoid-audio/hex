@@ -28,6 +28,7 @@ use std::{fmt, sync::Arc};
 mod candidate_storage;
 mod midi_capture;
 mod mutable_checkpoint;
+mod track_fader;
 mod transport_loop_admission;
 pub use mutable_checkpoint::{
     MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES, MAX_MUTABLE_RUNTIME_CHECKPOINTS,
@@ -139,6 +140,15 @@ pub enum SessionPlaybackError {
     /// The retained group path is still processing an outgoing tail. The
     /// publication owner can retry once the predecessor drains or stops.
     GroupTailRoutingBusy,
+    /// A device runtime's fixed live-transition capacity (outgoing routing or
+    /// audition branches) is full (Pulse #4178). The pure preflight refused
+    /// before any ownership change; the publication owner retries after
+    /// rendering advances the committed transitions. Never answered by a
+    /// reset, detached tail or fresh runtime, which would drop or duplicate
+    /// an audible branch. An idle predecessor that renders no device chains
+    /// (paused, no monitoring) is never left busy: the planner settles its
+    /// silent transitions instead (Pulse #4558).
+    DeviceTransitionBusy,
     MutableInstrumentRuntime,
     MutableInstrumentDiagnostic(&'static str),
     MutableInstrumentEvents,
@@ -184,6 +194,9 @@ impl SessionPlaybackError {
             }
             Self::GroupTailRoutingBusy => {
                 "group routing change is waiting for an outgoing tail · stop or wait for it to finish"
+            }
+            Self::DeviceTransitionBusy => {
+                "device change is waiting for an audible transition to finish"
             }
             Self::MutableInstrumentRuntime => {
                 "session playback mutable instrument runtime is unavailable"
@@ -299,6 +312,8 @@ struct TrackRoute {
     pending: Option<PendingRoute>,
     current_incarnation: u64,
     current_first_frame: bool,
+    /// Outgoing Session audio clip still fading; see `audio_release`.
+    audio_release: Option<audio_release::AudioRouteRelease>,
 }
 
 #[derive(Clone, Copy)]
@@ -335,9 +350,18 @@ impl ReleaseSourceOrigin {
     }
 }
 
+/// The timeline which created a retained MIDI voice. This remains fixed even
+/// when its track is later routed to the other view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReleaseTimeline {
+    Arrangement,
+    Session,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ReleaseEntry {
     source_origin: Option<ReleaseSourceOrigin>,
+    timeline: ReleaseTimeline,
     // Only paused monitoring advances this offset. Keeping it on Play avoids
     // rebasing an old onset into an unrepresentable negative musical frame.
     monitor_offset: u64,
@@ -449,6 +473,8 @@ pub struct SessionPlayback {
     capture_runtime: u64,
     capture_epoch: u64,
     gain_recording_override: Option<f32>,
+    live_gain: gain_recording::LiveGain,
+    live_gain_scratch: gain_recording::LiveGain,
     // Optional control allocation; the callback mutates Copy contents only.
     native_parameter_state: Option<Box<native_parameter_input::State>>,
     compensation: Option<crate::signal_graph::SignalRuntime>,
@@ -464,8 +490,13 @@ pub struct SessionPlayback {
     historical_floor: Option<BeatTime>,
     route_historical_floors: [Option<BeatTime>; MAX_TRACKS],
     source_voice_envelopes: [u16; MAX_TRACKS],
+    /// Per-voice streamed page-miss fades, lent to the page view for each
+    /// render; see `crate::stream_miss_fade` for ownership and resets.
+    stream_miss_fades: crate::StreamMissFades,
     routes: Vec<TrackRoute>,
     route_scratch: Vec<TrackRoute>,
+    track_faders: [track_fader::TrackFader; MAX_TRACKS],
+    track_fader_scratch: [track_fader::TrackFader; MAX_TRACKS],
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
     main_chain: hex_lattice::NativeRuntimeChain,
@@ -519,6 +550,9 @@ pub struct SessionPlayback {
     current_sampler_console: bool,
     route_state_generation: u64,
     candidate_admission_open: bool,
+    // Control-side request that the live handoff restart at the cursor rather
+    // than carry voices or detached tails the candidate already represents.
+    live_restart: bool,
 }
 
 impl fmt::Debug for SessionPlayback {
@@ -843,6 +877,8 @@ impl SessionPlayback {
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
+            live_gain: _,
+            live_gain_scratch: _,
             native_parameter_state: _,
             compensation,
             device_metering: _,
@@ -854,9 +890,12 @@ impl SessionPlayback {
             interactive_start_frame: _,
             historical_floor: _,
             route_historical_floors: _,
+            stream_miss_fades: _,
             source_voice_envelopes: _,
             routes: _,
             route_scratch: _,
+            track_faders: _,
+            track_fader_scratch: _,
             device_chains,
             return_chains,
             main_chain,
@@ -898,6 +937,7 @@ impl SessionPlayback {
             current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open: _,
+            live_restart: _,
         } = self;
         // Fresh Main metadata must match before any location is emitted.
         // A real owning transfer can later leave an allocation-free empty
@@ -1588,6 +1628,7 @@ impl SessionPlayback {
                                 factory.max_release_tail_frames(),
                                 factory.max_events_per_block(),
                                 factory.max_active_occurrences(),
+                                false,
                             )?
                         } else {
                             0
@@ -1620,6 +1661,7 @@ impl SessionPlayback {
                         factory.max_release_tail_frames(),
                         factory.max_events_per_block(),
                         factory.max_active_occurrences(),
+                        factory.steals_releasing_voices(),
                     )?;
                     source_voice_envelopes[receiver_index] = u16::try_from(
                         usize::from(source_voice_envelopes[receiver_index]).max(loop_voices),
@@ -1643,6 +1685,7 @@ impl SessionPlayback {
                 pending: None,
                 current_incarnation: 0,
                 current_first_frame: false,
+                audio_release: None,
             });
         }
         let mut mutable_count = 0_usize;
@@ -1929,6 +1972,11 @@ impl SessionPlayback {
                 ));
             }
         }
+        let stream_miss_fades = crate::StreamMissFades::new(revision.arrangement().sample_rate());
+        let mut track_faders = [track_fader::TrackFader::new([1.0; 2]); MAX_TRACKS];
+        for (fader, track) in track_faders.iter_mut().zip(arrangement_tracks) {
+            *fader = track_fader::TrackFader::new(track.mix_at(0).channel_gain());
+        }
         Ok(Self {
             live_expression: None,
             computer_keyboard: None,
@@ -1938,6 +1986,8 @@ impl SessionPlayback {
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
             gain_recording_override: None,
+            live_gain: gain_recording::LiveGain::default(),
+            live_gain_scratch: gain_recording::LiveGain::default(),
             native_parameter_state,
             compensation,
             device_metering: false,
@@ -1950,8 +2000,11 @@ impl SessionPlayback {
             historical_floor: None,
             route_historical_floors: [None; MAX_TRACKS],
             source_voice_envelopes,
+            stream_miss_fades,
             routes,
             route_scratch,
+            track_faders,
+            track_fader_scratch: track_faders,
             device_chains,
             return_chains,
             main_chain,
@@ -1993,6 +2046,7 @@ impl SessionPlayback {
             current_sampler_console: false,
             route_state_generation: 0,
             candidate_admission_open: true,
+            live_restart: false,
         })
     }
 
@@ -2036,6 +2090,9 @@ impl SessionPlayback {
     /// linear pass; a cursor before the start plays into the loop and wraps.
     /// A loop edited behind a cursor that already wrapped likewise lets
     /// playback continue linearly instead of jumping into the new region.
+    /// Arrangement audio fades out immediately before a wrap, while the loop
+    /// start keeps its authored level. Clip fades and transport action fades
+    /// retain their independent contracts.
     /// This query does not change loop settings or introduce transport state.
     pub(crate) fn active_loop_region(&self) -> Option<hex_project::LoopRegion> {
         self.active_loop_region_at(self.arrangement_frame)
@@ -2198,7 +2255,9 @@ impl SessionPlayback {
 
     /// Offline bounce completion after the isolated source's final gate. Checks
     /// actual analytic releases and mutable processor state, never output silence.
-    /// The caller must exclude future source events and nonzero latency paths.
+    /// The caller must exclude future source events. This does not inspect
+    /// compensation delay buffers: after an idle observation, callers must
+    /// render at least the full output-path latency and recheck before stopping.
     pub fn arrangement_bounce_is_quiescent(&self) -> bool {
         !self.has_active_arrangement_voices()
             && self.releases.is_empty()
@@ -2308,6 +2367,39 @@ impl SessionPlayback {
         self.inherit_state_live(previous, None)
     }
 
+    /// Reset a prepared bounce successor at an authenticated Arrangement fence.
+    /// The audio publication owner must validate the live fence before calling;
+    /// this does not grant permission to use an unfenced live handoff.
+    pub(crate) fn try_inherit_state_fenced_restart_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if !self.live_restart
+            || self.revision.requires_control_sampler_sources()
+            || self.midi_capture_active()
+            || previous.midi_capture_active()
+            || self.linear_arrangement_export
+            || previous.linear_arrangement_export
+            || self.current_sampler_console
+            || previous.current_sampler_console
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.require_fresh_candidate()?;
+        self.inherit_state_fenced_restart(previous)
+    }
+
+    /// Make a later live handoff restart at the cursor (voices and tails
+    /// reset, gate-active notes chased) without first trying to carry state.
+    /// In-place bounces need this: their baked PCM already contains the old
+    /// instrument and effect output, so detached tails would sound twice.
+    pub fn request_live_restart(&mut self) {
+        self.live_restart = true;
+    }
+    pub fn live_restart_requested(&self) -> bool {
+        self.live_restart
+    }
+
     pub(crate) fn inherit_candidate_groups(
         &mut self,
         previous: &mut Self,
@@ -2405,6 +2497,7 @@ pub(super) fn base_timing_for(
     })
 }
 
+mod audio_release;
 mod capture;
 mod meter_capture;
 mod release_location;

@@ -173,3 +173,54 @@ fn keyboard_preparation_accepts_clock_required_notes_but_render_still_requires_a
     assert_eq!(pcm, [[1.25, -0.75]; 4]);
     assert!(!keyboard.mutable.as_ref().unwrap().committed_is_quiescent());
 }
+
+#[test]
+fn mutable_instrument_refuses_a_whole_bank_if_one_pitch_is_unsupported() {
+    // The fixture runtime refuses pitches above 96 in its event preflight.
+    let (_, track) = super::tests::fixture();
+    let prepare = |notes: &[(u8, u8)]| {
+        let input = ComputerKeyboardInput::default()
+            .with_note_audition(notes, 64)
+            .unwrap();
+        ComputerKeyboardRuntime::prepare_instrument(
+            track,
+            Arc::new(input),
+            48_000,
+            &ClockRequiredInstrument,
+        )
+        .err()
+    };
+    assert_eq!(prepare(&[(60, 37)]), None);
+    assert_eq!(
+        prepare(&[(60, 37), (127, 93)]),
+        Some(Invalid(
+            "instrument cannot audition the complete selected chord"
+        ))
+    );
+}
+
+#[test]
+fn unsupported_live_key_sets_rejected_and_later_keys_still_sound() {
+    let (_, track) = super::tests::fixture();
+    let input = Arc::new(ComputerKeyboardInput::default());
+    let mut keyboard = ComputerKeyboardRuntime::prepare_instrument(
+        track,
+        Arc::clone(&input),
+        48_000,
+        &ClockRequiredInstrument,
+    )
+    .unwrap();
+    let clock = AuditionClock(Some(true));
+    input.set_key(0, Some((127, 80, 1))).unwrap();
+    keyboard.begin_block();
+    let mut pcm = [[1.0, -1.0]; 4];
+    keyboard.render(&mut pcm, Some(&clock)).unwrap();
+    keyboard.commit();
+    assert!(input.rejected());
+    assert_eq!(pcm, [[1.0, -1.0]; 4], "refused key adds no sound");
+    input.set_key(0, Some((60, 80, 2))).unwrap();
+    keyboard.begin_block();
+    keyboard.render(&mut pcm, Some(&clock)).unwrap();
+    keyboard.commit();
+    assert_eq!(pcm, [[1.25, -0.75]; 4]);
+}

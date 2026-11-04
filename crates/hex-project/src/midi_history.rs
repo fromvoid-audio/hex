@@ -1054,7 +1054,11 @@ fn same_shell(
         main_devices,
         tempo_map,
         meter_map,
+        offline_assets,
     } = a;
+    if offline_assets != &b.offline_assets {
+        return false;
+    }
     let death = match kind {
         Kind::ArrangeDeath { clip, .. } | Kind::ConsoleDeath { clip, .. } => Some(clip),
         _ => None,
@@ -1128,6 +1132,7 @@ fn same_shell(
             soloed,
             devices,
             instrument,
+            retained_source_path,
             instrument_position,
             content,
             sends,
@@ -1153,6 +1158,7 @@ fn same_shell(
             && soloed == &b.soloed
             && devices == &b.devices
             && instrument == &b.instrument
+            && retained_source_path == &b.retained_source_path
             && instrument_position == &b.instrument_position
             && sends == &b.sends
             && base == &b.gain_lane.base

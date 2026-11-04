@@ -25,6 +25,15 @@ impl Editor {
         if !(1..=128).contains(&capacity) {
             return Err(Invalid("history capacity must be 1..128"));
         }
+        if project
+            .tracks()
+            .iter()
+            .any(crate::Track::retained_source_path)
+        {
+            return Err(Invalid(
+                "retained source path editing is not supported yet; keep the original project",
+            ));
+        }
         Ok(Self {
             project,
             undo: VecDeque::new(),
@@ -225,8 +234,10 @@ impl Editor {
         )
     }
 
-    /// Apply the captured import policy to each new Arrangement source before
-    /// placement and preparation. Refusal preserves the complete previous history.
+    /// Apply the captured import policy to each new or reused Arrangement source
+    /// before placement and preparation. `Command::ImportExistingAudio` members
+    /// place an existing asset under the same law without adding one. Refusal
+    /// preserves the complete previous history.
     /// Console imports remain unwarped and reject a non-Off policy.
     pub fn execute_audio_imports_with_warp_prepared<T, E: From<Invalid>>(
         &mut self,
@@ -234,6 +245,22 @@ impl Editor {
         warp: crate::AudioImportWarp,
         prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
     ) -> Result<(Vec<Created>, T), E> {
+        self.execute_audio_imports_with_track_gain_prepared(commands, warp, None, prepare)
+    }
+
+    /// Apply an optional linear gain to tracks created by an Arrangement import.
+    /// Existing tracks and Console imports retain their authored gains. The gain
+    /// is captured before preparation and participates in the same undo step.
+    pub fn execute_audio_imports_with_track_gain_prepared<T, E: From<Invalid>>(
+        &mut self,
+        commands: Vec<Command>,
+        warp: crate::AudioImportWarp,
+        new_track_gain: Option<f32>,
+        prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
+    ) -> Result<(Vec<Created>, T), E> {
+        if new_track_gain.is_some_and(|gain| !gain.is_finite() || !(0.0..=2.0).contains(&gain)) {
+            return Err(E::from(Invalid("gain must be finite and within 0..2")));
+        }
         let arrangement = !commands.is_empty()
             && commands.iter().all(|command| {
                 matches!(
@@ -241,20 +268,44 @@ impl Editor {
                     Command::ImportPreparedAudioTrackAt { .. }
                         | Command::ImportPreparedAudioClip { .. }
                         | Command::ImportPreparedAudioClipWithOverwrite { .. }
+                ) || matches!(
+                    command,
+                    Command::ImportExistingAudio { placement, .. } if placement.is_arrangement()
                 )
             });
+        if !arrangement
+            && new_track_gain.is_some()
+            && commands.iter().any(|command| {
+                matches!(command, Command::ImportPreparedAudioTrackAt { .. })
+                    || matches!(
+                        command,
+                        Command::ImportExistingAudio {
+                            placement: crate::ExistingAudioPlacement::NewTrack { .. },
+                            ..
+                        }
+                    )
+            })
+        {
+            return Err(E::from(Invalid(
+                "new track gain requires an arrangement import batch",
+            )));
+        }
         if !arrangement && warp != crate::AudioImportWarp::Off {
             return Err(E::from(Invalid(
                 "auto-warp requires arrangement audio imports",
             )));
         }
-        self.execute_batch_prepared(commands, arrangement.then_some(warp), prepare)
+        self.execute_batch_prepared(
+            commands,
+            arrangement.then_some((warp, new_track_gain)),
+            prepare,
+        )
     }
 
     fn execute_batch_prepared<T, E: From<Invalid>>(
         &mut self,
         commands: Vec<Command>,
-        arrangement_import: Option<crate::AudioImportWarp>,
+        arrangement_import: Option<(crate::AudioImportWarp, Option<f32>)>,
         prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
     ) -> Result<(Vec<Created>, T), E> {
         if commands.len() > crate::MAX_CLIPS {
@@ -266,8 +317,8 @@ impl Editor {
             .try_reserve_exact(commands.len())
             .map_err(|_| E::from(Invalid("could not reserve batch results")))?;
         let mut candidate = self.project.clone();
-        if let Some(warp) = arrangement_import {
-            results = candidate.apply_audio_imports(commands, warp)?;
+        if let Some((warp, new_track_gain)) = arrangement_import {
+            results = candidate.apply_audio_imports(commands, warp, new_track_gain)?;
         } else {
             let mut alias_changed = false;
             for mut command in commands {
@@ -279,6 +330,7 @@ impl Editor {
                 Project::from_snapshot(candidate.snapshot())?;
             }
         }
+        candidate.validate_source_bindings()?;
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
@@ -323,6 +375,14 @@ impl Editor {
             stopped_bounce: previous.stopped_bounce,
         });
         true
+    }
+
+    /// Undo without an external preparation step. Returns false only when
+    /// history is empty; reservation failures leave history unchanged.
+    /// Callers that must prepare playback before committing use `undo_prepared`.
+    pub fn try_undo(&mut self) -> Result<bool, Invalid> {
+        self.undo_prepared(|_| Ok::<(), Invalid>(()))
+            .map(|result| result.is_some())
     }
 
     /// Prepare the previous snapshot before moving it across history. Failure
@@ -379,6 +439,14 @@ impl Editor {
         true
     }
 
+    /// Redo without an external preparation step. Returns false only when
+    /// history is empty; reservation failures leave history unchanged.
+    /// Callers that must prepare playback before committing use `redo_prepared`.
+    pub fn try_redo(&mut self) -> Result<bool, Invalid> {
+        self.redo_prepared(|_| Ok::<(), Invalid>(()))
+            .map(|result| result.is_some())
+    }
+
     /// Prepare the next snapshot before moving it across history. Failure
     /// leaves the project, allocator high-water mark, and both history stacks
     /// unchanged.
@@ -419,6 +487,310 @@ impl Editor {
             stopped_bounce,
         });
         Ok(Some(prepared))
+    }
+}
+
+#[cfg(test)]
+mod retained_source_batch_tests {
+    use super::*;
+
+    fn editor_with_receiver(retained: bool) -> (Editor, crate::TrackId, crate::SourceId) {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(receiver) = editor
+            .execute(Command::AddMidiTrack {
+                name: "receiver".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "source".into(),
+                devices: vec![crate::default_instrument_state().unwrap()],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: receiver,
+                source: Some(source),
+            })
+            .unwrap();
+        let mut snapshot = editor.project().snapshot();
+        if retained {
+            snapshot.retained_source_paths.push(receiver.value());
+        }
+        // The public constructor intentionally refuses retained projects until
+        // the complete editing and UI lifecycle is implemented.
+        editor.project = Project::from_snapshot(snapshot).unwrap();
+        editor.undo.clear();
+        editor.redo.clear();
+        (editor, receiver, source)
+    }
+
+    #[test]
+    fn batches_validate_retained_receiver_before_preparation_and_preserve_history_on_refusal() {
+        for unlink in [false, true] {
+            let (mut editor, receiver, source) = editor_with_receiver(true);
+            editor
+                .execute(Command::RenameTrack {
+                    track: receiver,
+                    name: "changed".into(),
+                })
+                .unwrap();
+            assert!(editor.undo());
+            let before = editor.project().snapshot();
+            let undo = editor.can_undo();
+            let redo = editor.can_redo();
+            let mut called = false;
+            let command = if unlink {
+                Command::BindTrackSource {
+                    track: receiver,
+                    source: None,
+                }
+            } else {
+                Command::SetNativeSourceReceiver {
+                    source,
+                    track: None,
+                }
+            };
+            let result = editor.execute_many_prepared(
+                vec![
+                    Command::AddTrack {
+                        name: "temporary".into(),
+                    },
+                    command,
+                ],
+                |_, _| {
+                    called = true;
+                    Ok::<(), Invalid>(())
+                },
+            );
+            assert!(result.is_err());
+            assert!(!called, "invalid candidates must not reach preparation");
+            assert_eq!(editor.project().snapshot(), before);
+            assert_eq!(editor.can_undo(), undo);
+            assert_eq!(editor.can_redo(), redo);
+            assert!(editor.redo());
+            assert_eq!(editor.project().track(receiver).unwrap().name(), "changed");
+        }
+    }
+
+    #[test]
+    fn valid_retained_and_ordinary_batches_remain_editable_and_undoable() {
+        for retained in [false, true] {
+            let (mut editor, receiver, source) = editor_with_receiver(retained);
+            let before = editor.project().snapshot();
+            editor
+                .execute_many_prepared(
+                    vec![
+                        Command::SetNativeSourceReceiver {
+                            source,
+                            track: None,
+                        },
+                        Command::SetNativeSourceReceiver {
+                            source,
+                            track: Some(receiver),
+                        },
+                        Command::RenameTrack {
+                            track: receiver,
+                            name: "renamed".into(),
+                        },
+                    ],
+                    |_, _| Ok::<(), Invalid>(()),
+                )
+                .unwrap();
+            assert_eq!(editor.project().track(receiver).unwrap().name(), "renamed");
+            assert!(editor.undo());
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(editor.redo());
+            assert_eq!(editor.project().track(receiver).unwrap().name(), "renamed");
+        }
+    }
+
+    fn add_peer(editor: &mut Editor, source: crate::SourceId) -> crate::TrackId {
+        let Created::Track(peer) = editor
+            .execute(Command::AddMidiTrack {
+                name: "peer".into(),
+            })
+            .unwrap()
+        else {
+            panic!("peer")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: peer,
+                source: Some(source),
+            })
+            .unwrap();
+        peer
+    }
+
+    fn group(editor: &mut Editor, tracks: &[crate::TrackId]) -> crate::TrackId {
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: crate::TrackSelectionIds::new(tracks).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        group
+    }
+
+    #[test]
+    fn deleting_retained_receiver_cannot_strand_surviving_source_peers() {
+        for mode in 0..3 {
+            let (mut editor, receiver, source) = editor_with_receiver(true);
+            let peer = add_peer(&mut editor, source);
+            let target = if mode == 2 {
+                let inner = group(&mut editor, &[receiver]);
+                group(&mut editor, &[inner])
+            } else {
+                receiver
+            };
+            editor
+                .execute(Command::RenameTrack {
+                    track: peer,
+                    name: "changed".into(),
+                })
+                .unwrap();
+            assert!(editor.undo());
+            let before = editor.project().snapshot();
+            let undo = editor.can_undo();
+            let mut prepared = false;
+            let result = if mode == 1 {
+                editor
+                    .execute_many_prepared(vec![Command::RemoveTrack(target)], |_, _| {
+                        prepared = true;
+                        Ok::<(), Invalid>(())
+                    })
+                    .map(|_| ())
+            } else {
+                editor
+                    .execute_prepared(Command::RemoveTrack(target), |_| {
+                        prepared = true;
+                        Ok::<(), Invalid>(())
+                    })
+                    .map(|_| ())
+            };
+            assert!(result.is_err());
+            assert!(!prepared);
+            assert_eq!(editor.project().snapshot(), before);
+            assert_eq!(editor.can_undo(), undo);
+            assert!(editor.redo());
+            assert_eq!(editor.project().track(peer).unwrap().name(), "changed");
+        }
+    }
+
+    #[test]
+    fn retained_receiver_and_all_peers_can_be_deleted_together_and_undone() {
+        for grouped in [false, true] {
+            let (mut editor, receiver, source) = editor_with_receiver(true);
+            let peer = add_peer(&mut editor, source);
+            let group = grouped.then(|| {
+                let inner = group(&mut editor, &[receiver, peer]);
+                group(&mut editor, &[inner])
+            });
+            let before = editor.project().snapshot();
+            let command = match group {
+                Some(group) => Command::RemoveTrack(group),
+                None => Command::RemoveTracks(vec![receiver, peer]),
+            };
+            editor.execute(command).unwrap();
+            assert!(editor.project().track(receiver).is_none());
+            assert!(editor.project().track(peer).is_none());
+            assert_eq!(
+                editor.project().native_source(source).unwrap().receiver(),
+                None
+            );
+            assert!(editor.undo());
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(editor.redo());
+            assert!(editor.project().track(receiver).is_none());
+        }
+        let (mut editor, receiver, source) = editor_with_receiver(true);
+        editor.execute(Command::RemoveTrack(receiver)).unwrap();
+        assert_eq!(
+            editor.project().native_source(source).unwrap().receiver(),
+            None
+        );
+        let (mut ordinary, receiver, source) = editor_with_receiver(false);
+        let peer = add_peer(&mut ordinary, source);
+        ordinary.execute(Command::RemoveTrack(receiver)).unwrap();
+        assert!(ordinary.project().track(peer).is_some());
+        assert_eq!(
+            ordinary.project().native_source(source).unwrap().receiver(),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
+mod prepared_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn fallible_simple_transitions_report_empty_and_retain_capacity() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+        assert!(!editor.try_undo().unwrap());
+        assert!(!editor.try_redo().unwrap());
+        for name in ["first", "second"] {
+            editor
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap();
+        }
+        assert!(editor.try_undo().unwrap());
+        assert_eq!(editor.project().tracks().len(), 1);
+        assert!(!editor.try_undo().unwrap());
+        assert!(editor.try_redo().unwrap());
+        assert_eq!(editor.project().tracks().len(), 2);
+        assert!(!editor.try_redo().unwrap());
+    }
+
+    #[test]
+    fn prepared_undo_and_redo_preserve_the_bounded_history() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        for name in ["first", "second", "third"] {
+            editor
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap();
+        }
+        for expected_tracks in [2, 1] {
+            assert!(
+                editor
+                    .undo_prepared(|_| Ok::<(), Invalid>(()))
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(editor.project().tracks().len(), expected_tracks);
+        }
+        assert!(
+            editor
+                .undo_prepared(|_| Ok::<(), Invalid>(()))
+                .unwrap()
+                .is_none()
+        );
+        for expected_tracks in [2, 3] {
+            assert!(
+                editor
+                    .redo_prepared(|_| Ok::<(), Invalid>(()))
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(editor.project().tracks().len(), expected_tracks);
+        }
+        assert!(
+            editor
+                .redo_prepared(|_| Ok::<(), Invalid>(()))
+                .unwrap()
+                .is_none()
+        );
     }
 }
 

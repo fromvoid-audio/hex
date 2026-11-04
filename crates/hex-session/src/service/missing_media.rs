@@ -135,15 +135,50 @@ pub(super) fn report_for(project: &Project, base: &Path) -> Result<Vec<MissingMe
                     usage_count: 0,
                 })
             }
-            Err(error) => return Err(format!("{}: {error}", path.display())),
+            Err(error) => {
+                return Err(format!(
+                    "{}: {error}",
+                    hex_storage::text::verbatim(path.display())
+                ));
+            }
             Ok(metadata) if !metadata.is_file() => {
-                return Err(format!("media is not a regular file: {}", path.display()));
+                return Err(format!(
+                    "media is not a regular file: {}",
+                    hex_storage::text::verbatim(path.display())
+                ));
             }
             Ok(_) => {}
         }
     }
+    Ok(with_usages(project, missing))
+}
+
+/// Offline assets of an open project (missing when it opened), with their uses,
+/// for relinking in place. Relative paths resolve against `base`, the saved
+/// project's folder; without one they stay as saved. Reads no files.
+pub fn offline_media_report(project: &Project, base: Option<&Path>) -> Vec<MissingMedia> {
+    let missing = project
+        .assets()
+        .filter(|asset| project.asset_offline(asset.id()))
+        .map(|asset| MissingMedia {
+            asset: asset.id(),
+            expected_path: match base {
+                Some(base) if !asset.path().is_absolute() => base.join(asset.path()),
+                _ => asset.path().to_path_buf(),
+            },
+            source_frames: asset.source_frames(),
+            source_sample_rate: asset.source_sample_rate(),
+            device_original: asset.original_source().is_some(),
+            usages: Vec::new(),
+            usage_count: 0,
+        })
+        .collect();
+    with_usages(project, missing)
+}
+
+fn with_usages(project: &Project, mut missing: Vec<MissingMedia>) -> Vec<MissingMedia> {
     if missing.is_empty() {
-        return Ok(missing);
+        return missing;
     }
     let index: HashMap<u64, usize> = missing
         .iter()
@@ -218,7 +253,7 @@ pub(super) fn report_for(project: &Project, base: &Path) -> Result<Vec<MissingMe
             );
         }
     }
-    Ok(missing)
+    missing
 }
 
 /// Compares a candidate's WAV header with the saved asset metadata.

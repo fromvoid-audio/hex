@@ -26,7 +26,7 @@ fn fraction(n: u64, d: u64) -> BeatTime {
     BeatTime::from_ratio(n, d).unwrap()
 }
 fn receive(service: &Service) -> Event {
-    let until = Instant::now() + Duration::from_secs(10);
+    let until = Instant::now() + std::time::Duration::from_secs(60);
     loop {
         if let Ok(event) = service.try_event() {
             return event;

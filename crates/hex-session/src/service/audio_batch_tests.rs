@@ -1,10 +1,7 @@
 use super::*;
 use crate::import_batch_decode::{AudioBatchCancel, AudioBatchPhase};
-use std::{
-    fs,
-    sync::atomic::AtomicU64,
-    time::{Duration, Instant},
-};
+use crate::test_wait::HANG_BOUND;
+use std::{fs, sync::atomic::AtomicU64};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Files(PathBuf);
 impl Files {
@@ -46,13 +43,10 @@ impl Drop for Files {
     }
 }
 fn event(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match service.try_event() {
-            Ok(e) => return e,
-            Err(TryRecvError::Empty) if Instant::now() < deadline => thread::yield_now(),
-            Err(error) => panic!("worker result absent: {error:?}"),
-        }
+    // Blocks on the event channel; the old 5 s yield-spin both raced and burnt CPU.
+    match service.events.recv_timeout(HANG_BOUND) {
+        Ok(e) => e,
+        Err(error) => panic!("worker result absent after {HANG_BOUND:?}: {error:?}"),
     }
 }
 fn service() -> (Service, Event) {

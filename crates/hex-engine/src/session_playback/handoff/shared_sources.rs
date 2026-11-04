@@ -1,6 +1,36 @@
 //! Source-owned kernel continuity, separate from track-local effect history.
 use super::*;
 
+/// A short, already-releasing source must finish before another kernel for
+/// the same device is admitted. The callback can retry while the old graph
+/// renders; held live inputs and long releases retain the existing policy.
+pub(super) fn short_source_release_blocks_reenable(
+    revision: &PreparedRevision,
+    previous: &SessionPlayback,
+) -> bool {
+    let limit = u64::from(revision.arrangement().sample_rate().div_ceil(200));
+    revision.arrangement().tracks().iter().any(|track| {
+        track.receives_source_audio()
+            && track.instrument_slot_enabled()
+            && track.instrument_id.is_some_and(|device| {
+                previous
+                    .tail_mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|tail| {
+                        tail.runtime.expression_identity == Some(device)
+                            && tail.runtime.max_release_tail_frames() <= limit
+                            && !tail.runtime.has_committed_live_occurrences()
+                            && tail.runtime.proofs().all(|note| {
+                                note.note_off_sent
+                                    || note.gate_end_frame <= previous.performance_frame
+                            })
+                            && !tail.runtime.committed_is_quiescent()
+                    })
+            })
+    })
+}
+
 pub(super) struct SharedSourceHandoff {
     pub(super) new_for_old: [usize; MAX_TRACKS],
     pub(super) retarget_for_old: [usize; MAX_TRACKS],
@@ -18,6 +48,7 @@ impl SharedSourceHandoff {
     pub(super) fn handles_new(&self, index: usize) -> bool {
         self.new_for_old.contains(&index) || self.retarget_for_old.contains(&index)
     }
+    #[allow(clippy::too_many_arguments)] // Explicit candidate/donor owners and timing facts.
     pub(super) fn prepare(
         revision: &PreparedRevision,
         runtimes: &[Option<MutableInstrumentTrackRuntime>],
@@ -25,6 +56,7 @@ impl SharedSourceHandoff {
         admission: Option<&crate::session_inventory::PreparedSessionMidiAdmission>,
         previous: &SessionPlayback,
         timing_changed: bool,
+        arrangement_tempo_remap: bool,
         spans: &mut MidiSpanBuffer,
     ) -> Result<Self, SessionPlaybackError> {
         let mut plan = Self {
@@ -104,7 +136,14 @@ impl SharedSourceHandoff {
                 }
                 continue;
             };
-            let exact = !timing_changed
+            // An edited base map cuts every held Arrangement gate at the cut
+            // (Pulse #4117); a proof from any other owner keeps stale frames.
+            let retimed = arrangement_tempo_remap
+                && super::arrangement_only_proofs(previous, old_runtime)
+                && routes
+                    .get(new_index)
+                    .is_some_and(|route| route.owner == RouteOwner::Arrangement);
+            let exact = (!timing_changed || retimed)
                 && previous
                     .revision
                     .retained_source_configuration_matches(revision, source);
@@ -452,11 +491,11 @@ pub(super) fn plan_release_audio_owner(
     if !source_track.instrument_bypassed {
         release.clip_gain *= f64::from(source_track.instrument_output_gain);
     }
-    release.mix = gain_recording::effective_mix(
+    release.mix = gain_recording::detached_mix(
+        previous,
         &previous.revision.arrangement().tracks()[old_receiver],
+        old_receiver,
         previous.arrangement_frame,
-        previous.revision.gain_recording_track(),
-        previous.gain_recording_override,
     );
     Ok(ReleaseAudioPlan {
         current_receiver: None,
@@ -687,6 +726,52 @@ mod tests {
     #[test]
     fn shared_analytic_release_keeps_receiver_mix_and_one_nonlinear_suffix() {
         on_control(|| {
+            shared_analytic_release_through_receiver_suffix(
+                hex_devices::saturator::SATURATOR_TYPE_ID,
+                hex_devices::saturator::parameter::DRIVE,
+                30.0,
+                0,
+            )
+        });
+    }
+    /// Pulse #4188: Overdrive declares oversampler latency, so the released
+    /// notes run through a latent nonlinear receiver suffix.
+    #[test]
+    fn shared_analytic_release_runs_through_a_latent_nonlinear_receiver_suffix() {
+        on_control(|| {
+            shared_analytic_release_through_receiver_suffix(
+                hex_devices::overdrive::OVERDRIVE_TYPE_ID,
+                hex_devices::overdrive::parameter::DRIVE,
+                0.8,
+                0,
+            )
+        });
+    }
+    /// Pulse #4188: when compensation delays the receiver's own edge to Main,
+    /// a detached copy of its suffix would land early. The strict planner
+    /// refuses explicitly instead of committing a silent cut.
+    #[test]
+    fn misaligned_latent_receiver_suffix_release_refuses_instead_of_silencing() {
+        on_control(|| {
+            shared_analytic_release_through_receiver_suffix(
+                hex_devices::overdrive::OVERDRIVE_TYPE_ID,
+                hex_devices::overdrive::parameter::DRIVE,
+                0.8,
+                2,
+            )
+        });
+    }
+    /// Unbinding a shared source while its notes sound releases them through
+    /// the receiver's suffix exactly as a baseline that stops the track. With
+    /// `contributor_effects` copies of the effect on the contributor, the
+    /// contributor arrives later than the receiver and the handoff refuses.
+    fn shared_analytic_release_through_receiver_suffix(
+        effect: hex_lattice_contract::DeviceTypeId,
+        drive: hex_lattice_contract::ParameterId,
+        drive_value: f32,
+        contributor_effects: usize,
+    ) {
+        {
             let mut f = fixture();
             let device = f
                 .editor
@@ -721,16 +806,23 @@ mod tests {
                 })
                 .unwrap();
             let registry = hex_devices::native_registry().unwrap();
-            let definition = registry
-                .definition(hex_devices::saturator::SATURATOR_TYPE_ID)
-                .unwrap();
+            let definition = registry.definition(effect).unwrap();
             let state = definition
                 .patch_parameter(
                     &definition.default_state().unwrap(),
-                    hex_devices::saturator::parameter::DRIVE,
-                    hex_lattice_contract::ParameterValue::Float(30.0),
+                    drive,
+                    hex_lattice_contract::ParameterValue::Float(drive_value),
                 )
                 .unwrap();
+            for _ in 0..contributor_effects {
+                f.editor
+                    .execute(Command::InsertDevice {
+                        track: f.contributor,
+                        before: None,
+                        state: state.clone(),
+                    })
+                    .unwrap();
+            }
             f.editor
                 .execute(Command::InsertDevice {
                     track: f.receiver,
@@ -777,7 +869,11 @@ mod tests {
             let mut right = left;
             actual.render(&mut left).unwrap();
             baseline.render(&mut right).unwrap();
-            assert_eq!(left, right);
+            if contributor_effects == 0 {
+                // The baseline has no contributor, so only an equal latency
+                // layout renders the same prefix.
+                assert_eq!(left, right);
+            }
             baseline
                 .apply(SessionPlaybackCommand::StopTrack {
                     track: f.receiver,
@@ -791,6 +887,18 @@ mod tests {
                 })
                 .unwrap();
             let mut candidate = SessionPlayback::new(prepare(f.editor.project())).unwrap();
+            if contributor_effects != 0 {
+                assert!(matches!(
+                    candidate.try_inherit_state_from(&mut actual),
+                    Err(SessionPlaybackError::Arrangement(message))
+                        if message == super::super::COMPENSATED_TAILS_CHANGED
+                ));
+                assert!(
+                    candidate.candidate_admission_open,
+                    "refusal commits nothing"
+                );
+                return;
+            }
             candidate.try_inherit_state_from(&mut actual).unwrap();
             assert_eq!(candidate.releases.len(), 2);
             let group = candidate.releases[0].location.tail_group();
@@ -818,7 +926,7 @@ mod tests {
                     );
                 }
             }
-        });
+        }
     }
 
     #[test]
@@ -1043,7 +1151,8 @@ mod tests {
             let mut next = playback(&f);
             next.try_inherit_state_from(&mut old).unwrap();
             assert_eq!(next.mutable_instruments.iter().flatten().count(), 2);
-            check_pcm(&mut next, 7, 19, 0.75);
+            // The relinked contributor's note releases on the old receiver.
+            check_released_pcm(&mut next, 7, 19, 0.75, 0.25);
         });
     }
 
@@ -1365,12 +1474,16 @@ mod tests {
             muted
                 .try_inherit_runtime_in_control_context(&mut previous, Some(19), Some(19))
                 .unwrap();
+            // The deactivated clip's note releases from frame7 under the
+            // still-held key.
+            let release = release_frames(0.0);
             let mut after_cut = [[0.0; 2]; 5];
             muted.render(&mut after_cut).unwrap();
             for (index, frame) in after_cut.iter().enumerate() {
+                let gain = 0.25 * (1.0 + release_level(index, release));
                 for channel in 0..2 {
                     assert!(
-                        (frame[channel] - PCM[(7 + index) % 4][channel] * 0.25).abs() < 0.000_002
+                        (frame[channel] - PCM[(7 + index) % 4][channel] * gain).abs() < 0.000_002
                     );
                 }
             }
@@ -1410,6 +1523,7 @@ mod tests {
             effected.render(&mut after_effect).unwrap();
             let gain = 0.25 * 0.5;
             for (index, frame) in after_effect.iter().enumerate() {
+                let gain = gain * (1.0 + release_level(5 + index, release));
                 for channel in 0..2 {
                     assert!(
                         (frame[channel] - PCM[(12 + index) % 4][channel] * gain).abs() < 0.000_002
@@ -1514,6 +1628,11 @@ mod tests {
                 reenabled.try_inherit_state_from(&mut disabled),
                 Err(SessionPlaybackError::MutableInstrumentActive)
             );
+            assert_eq!(
+                reenabled.try_inherit_state_live_from(&mut disabled),
+                Err(SessionPlaybackError::DeviceTransitionBusy),
+                "live publication must wait for the short original release"
+            );
             let mut actual = [[0.0; 2]; 32];
             let mut expected = actual;
             disabled.render(&mut actual).unwrap();
@@ -1529,6 +1648,61 @@ mod tests {
                     .any(|sample| sample.abs() > 0.001)
             );
             assert_eq!(actual[16..], [[0.0; 2]; 16]);
+            reenabled
+                .try_inherit_state_live_from(&mut disabled)
+                .unwrap();
+            let mut settled = [[0.0; 2]; 32];
+            reenabled.render(&mut settled).unwrap();
+            assert_eq!(
+                settled, [[0.0; 2]; 32],
+                "the old held note must not be chased"
+            );
+        });
+    }
+
+    #[test]
+    fn long_source_release_is_not_mistaken_for_a_short_retry() {
+        on_control(|| {
+            let mut f = fixture();
+            let instrument = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(instrument.state()).unwrap();
+            state.envelope.release_seconds = 0.1;
+            let state = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(instrument.state().asset_references().to_vec())
+                .unwrap();
+            let device = instrument.id();
+            f.editor
+                .execute(Command::ReplaceDeviceState { device, state })
+                .unwrap();
+            let mut old = started(&f);
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device,
+                    bypassed: true,
+                })
+                .unwrap();
+            let mut disabled = playback(&f);
+            disabled.try_inherit_state_from(&mut old).unwrap();
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device,
+                    bypassed: false,
+                })
+                .unwrap();
+            let candidate = playback(&f);
+            assert!(!short_source_release_blocks_reenable(
+                &candidate.revision,
+                &disabled
+            ));
         });
     }
 
@@ -1770,6 +1944,61 @@ mod tests {
             }
         }
     }
+    /// Prepared gated release, in 8 kHz output frames, of the fixture sampler
+    /// with `release_seconds`. Oracles derive from it so a host declick floor
+    /// only lengthens the release they expect.
+    fn release_frames(release_seconds: f64) -> u64 {
+        let mut state = hex_devices::sampler::state::SamplerState::for_source_frames(4).unwrap();
+        state.envelope.release_seconds = release_seconds;
+        hex_devices::sampler::PreparedSamplerPlan::new(
+            hex_devices::sampler::SampleShape::new(
+                4,
+                8000,
+                hex_devices::sampler::SampleChannels::Stereo,
+            )
+            .unwrap(),
+            8000,
+            state.settings(),
+        )
+        .unwrap()
+        .prepare_voice_coefficients(60, 127)
+        .unwrap()
+        .unwrap()
+        .release_frames()
+    }
+    /// Linear release level `steps` frames after note-off.
+    fn release_level(steps: usize, release: u64) -> f32 {
+        let steps = steps as u64;
+        if steps >= release {
+            0.0
+        } else {
+            1.0 - steps as f32 / release as f32
+        }
+    }
+    /// Like `check_pcm`, plus one same-phase note released at `start` with
+    /// `released` gain over the fixture's zero-authored-release envelope.
+    fn check_released_pcm(
+        playback: &mut SessionPlayback,
+        start: usize,
+        count: usize,
+        held: f32,
+        released: f32,
+    ) {
+        let release = release_frames(0.0);
+        let mut output = vec![[0.0; 2]; count];
+        for chunk in output.chunks_mut(3) {
+            playback.render(chunk).unwrap();
+        }
+        for (index, frame) in output.iter().enumerate() {
+            let gain = held + released * release_level(index, release);
+            for channel in 0..2 {
+                assert!(
+                    (frame[channel] - PCM[(start + index) % 4][channel] * gain).abs() < 0.000_002,
+                    "start={start} index={index} frame={frame:?} gain={gain}"
+                );
+            }
+        }
+    }
     fn started(f: &Fixture) -> SessionPlayback {
         let mut old = playback(f);
         old.apply(SessionPlaybackCommand::Play).unwrap();
@@ -1843,15 +2072,17 @@ mod tests {
             assert!(actual.revision.arrangement().tracks().is_empty());
             actual.apply(SessionPlaybackCommand::Play).unwrap();
             actual.apply(SessionPlaybackCommand::Pause).unwrap();
-            let mut expected = [[0.0; 2]; 16];
-            let mut output = [[0.0; 2]; 16];
+            // The detached release lasts the prepared release, then stays quiet.
+            let quiet_from = release_frames(4.0 / 8000.0) as usize + 4;
+            let mut expected = vec![[0.0; 2]; quiet_from + 8];
+            let mut output = expected.clone();
             oracle.render(&mut expected).unwrap();
             for chunk in output.chunks_mut(3) {
                 actual.render(chunk).unwrap();
             }
             assert!(expected.iter().any(|frame| *frame != [0.0; 2]));
             assert_eq!(output, expected);
-            assert_eq!(&output[8..], &[[0.0; 2]; 8]);
+            assert!(output[quiet_from..].iter().all(|frame| *frame == [0.0; 2]));
             assert_eq!(actual.performance_frame, 7);
             assert_eq!(actual.arrangement_frame, 7);
         });
@@ -1947,7 +2178,9 @@ mod tests {
                     .iter()
                     .all(Option::is_none)
             );
-            check_pcm(&mut detached, 20, 8, 0.125);
+            // The detached contributor's note releases from frame20 while the
+            // receiver's own note holds.
+            check_released_pcm(&mut detached, 20, 8, 0.125, 0.125);
         });
     }
     #[test]
@@ -2017,7 +2250,7 @@ mod tests {
                     .unwrap();
                 let mut candidate = playback(&f);
                 candidate.try_inherit_state_from(&mut old).unwrap();
-                check_pcm(&mut candidate, 7, 19, 0.25);
+                check_released_pcm(&mut candidate, 7, 19, 0.25, 0.25);
             }
         });
     }
@@ -2165,6 +2398,24 @@ mod tests {
                     );
                 }
             }
+            // An octave up, band-limited reconstruction (#4089) of the
+            // 4-frame loop keeps only its mean: every other partial lies at
+            // or above the output Nyquist. The cursor is checked by the
+            // literal unity segments on either side.
+            fn octave(runtime: &mut SessionPlayback, count: usize) {
+                let mut output = vec![[0.0; 2]; count];
+                for chunk in output.chunks_mut(3) {
+                    runtime.render(chunk).unwrap();
+                }
+                let mean: [f32; 2] = std::array::from_fn(|channel| {
+                    PCM.iter().map(|frame| frame[channel]).sum::<f32>() / 4.0 * 0.5
+                });
+                for frame in output {
+                    for channel in 0..2 {
+                        assert!((frame[channel] - mean[channel]).abs() < 1e-3, "{frame:?}");
+                    }
+                }
+            }
             let mut f = fixture();
             let neutral = f.editor.project().clone();
             let mut old = started(&f);
@@ -2184,7 +2435,7 @@ mod tests {
             tuned.try_inherit_state_from(&mut old).unwrap();
             assert_eq!(tuned.mutable_instruments.iter().flatten().count(), 1);
             assert!(tuned.tail_mutable_instruments.iter().all(Option::is_none));
-            literal(&mut tuned, 12, 2, 21);
+            octave(&mut tuned, 21);
             f.editor
                 .execute(Command::SetTuning(neutral.tuning()))
                 .unwrap();

@@ -8,14 +8,15 @@
 //! crop, and each part keeps only its uncrossed ramp as its clip fade. Ramps are
 //! never duplicated, so the rendered product is unchanged.
 //!
-//! Looped, processed (warped/musical/event) clips, already split fades whose
+//! Looped, processed (warped/musical/event) clips, cuts inside a one-shot's
+//! silent tail, already split fades whose
 //! domain extends beyond the clip, and roots longer than the audio domain limit
 //! keep the retained-domain split law from [`crate::edit::split_clip_at_tempo`].
 //! Their fades also sound unchanged; only the handle may lie outside the part.
 use crate::{
     AudioClipEdit, AudioEventFade, AudioEvents, Clip, ClipFade, ClipId, Invalid, TempoMap,
     audio_edit::{MAX_AUDIO_DOMAIN_FRAMES, project_clip, set_clip_fade_envelope},
-    edit::{split_clip_at, split_clip_at_tempo},
+    edit::{cuts_silent_tail, split_clip_at, split_clip_at_tempo},
 };
 use std::sync::Arc;
 
@@ -33,6 +34,7 @@ pub(crate) fn split(
         || fade.offset() != 0
         || fade.span() != duration
         || duration > MAX_AUDIO_DOMAIN_FRAMES
+        || cuts_silent_tail(original, frame)
     {
         return split_clip_at_tempo(original, frame, right_id, tempo);
     }
