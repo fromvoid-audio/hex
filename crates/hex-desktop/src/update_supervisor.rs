@@ -164,17 +164,17 @@ impl Prepared {
 
 impl Drop for Prepared {
     fn drop(&mut self) {
-        if self.input.take().is_some() {
-            if let Some(mut child) = self.child.take() {
-                // The platform can stall process termination. Never wait on
-                // the UI owner which cancels a prepared update.
-                signal_child_group(&mut child);
-                let _ = std::thread::Builder::new()
-                    .name("hex-update-reap".into())
-                    .spawn(move || {
-                        let _ = child.wait();
-                    });
-            }
+        if self.input.take().is_some()
+            && let Some(mut child) = self.child.take()
+        {
+            // The platform can stall process termination. Never wait on
+            // the UI owner which cancels a prepared update.
+            signal_child_group(&mut child);
+            let _ = std::thread::Builder::new()
+                .name("hex-update-reap".into())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
         }
     }
 }
