@@ -804,6 +804,88 @@ fn tail_split_both_directions_preserves_delay_and_rolls_back() {
 }
 
 #[test]
+fn tail_split_tracks_tempo_change_across_segment_offsets() {
+    let configured = state(&[
+        (FEEDBACK, ParameterValue::Float(0.6)),
+        (DRY_WET, ParameterValue::Float(1.0)),
+        (SMOOTHING, ParameterValue::Choice(2)),
+    ]);
+    let input: Vec<_> = (0..7000)
+        .map(|i| {
+            let value = ((i as f32) * 0.13).sin() * 0.4;
+            [value, -value]
+        })
+        .collect();
+    let clock = |start| Clock {
+        start,
+        breakpoint: 6063,
+        first: 90_000_000,
+        second: 150_000_000,
+    };
+    let render = |partition: usize| {
+        let mut old = split_test_chain(&configured, true);
+        let mut next = split_test_chain(&configured, false);
+        let mut warm = input[..6000].to_vec();
+        old.begin_block();
+        old.process_range_with_clock(0..1, &mut warm, Some(&clock(0)), Some(&clock(0)))
+            .unwrap();
+        old.commit_block();
+        let mut reference = split_test_chain(&configured, false);
+        reference.inherit_from(&old);
+        let mut split = next.prepare_tail_split_at(&old, 0).unwrap();
+        let mut result = Vec::new();
+        for (part, chunk) in input[6000..].chunks(partition).enumerate() {
+            let offset = part * partition;
+            let segment_clock = clock(6000 + offset);
+            let mut a = vec![[0.0; 2]; chunk.len()];
+            let mut b = a.clone();
+            let mut expected = chunk.to_vec();
+            old.begin_block();
+            next.begin_block();
+            reference.begin_block();
+            split.begin_block().unwrap();
+            split
+                .process(
+                    &mut old,
+                    &mut next,
+                    chunk,
+                    &mut a,
+                    &mut b,
+                    offset,
+                    Some(&segment_clock),
+                )
+                .unwrap();
+            reference
+                .process_range_with_clock(
+                    0..1,
+                    &mut expected,
+                    Some(&segment_clock),
+                    Some(&segment_clock),
+                )
+                .unwrap();
+            old.commit_block();
+            next.commit_block();
+            reference.commit_block();
+            split.commit_block().unwrap();
+            for (i, ((a, b), expected)) in a.iter().zip(&b).zip(expected).enumerate() {
+                let combined = [a[0] + b[0], a[1] + b[1]];
+                if offset + i >= 40 {
+                    for lane in 0..2 {
+                        assert!((combined[lane] - expected[lane]).abs() < 2e-6);
+                    }
+                }
+                result.push(combined);
+            }
+        }
+        assert!(result.iter().flatten().any(|value| value.abs() > 1e-5));
+        result
+    };
+    let expected = render(1);
+    assert_eq!(expected, render(64));
+    assert_eq!(expected, render(256));
+}
+
+#[test]
 fn tail_split_refuses_frozen_changed_and_invalid_buffers_without_losing_history() {
     let configured = free(10.0, 0.6);
     let frozen = DEFINITION
