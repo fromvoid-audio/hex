@@ -2,7 +2,7 @@
   "version": 1,
   "id": "hex-yield-workstation",
   "name": "hex / orbital",
-  "revisionId": "hex-current-aligned-study-r74",
+  "revisionId": "hex-current-aligned-study-r76",
   "width": 1900,
   "height": 1120,
   "background": "#111111",
@@ -1549,12 +1549,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons0": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number0": {
         "visible": true,
         "style": {
@@ -3026,12 +3020,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons1": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number1": {
@@ -7328,12 +7316,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons6": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number6": {
         "visible": true,
         "style": {
@@ -8372,12 +8354,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons7": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number7": {
@@ -9572,12 +9548,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons8": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number8": {
@@ -11051,12 +11021,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons9": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number9": {
@@ -16081,34 +16045,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     },
     "playing": {
@@ -17639,12 +17643,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons0": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number0": {
         "visible": true,
         "style": {
@@ -19116,12 +19114,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons1": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number1": {
@@ -23418,12 +23410,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons6": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number6": {
         "visible": true,
         "style": {
@@ -24462,12 +24448,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons7": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number7": {
@@ -25662,12 +25642,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons8": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number8": {
@@ -27141,12 +27115,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons9": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number9": {
@@ -32171,34 +32139,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     },
     "session": {
@@ -33330,9 +33338,6 @@
       "aligned-track-name0": {
         "visible": true
       },
-      "aligned-track-buttons0": {
-        "visible": true
-      },
       "aligned-track-number0": {
         "visible": true
       },
@@ -33987,9 +33992,6 @@
         }
       },
       "aligned-track-name1": {
-        "visible": true
-      },
-      "aligned-track-buttons1": {
         "visible": true
       },
       "aligned-track-number1": {
@@ -35935,9 +35937,6 @@
       "aligned-track-name6": {
         "visible": true
       },
-      "aligned-track-buttons6": {
-        "visible": true
-      },
       "aligned-track-number6": {
         "visible": true
       },
@@ -36402,9 +36401,6 @@
         }
       },
       "aligned-track-name7": {
-        "visible": true
-      },
-      "aligned-track-buttons7": {
         "visible": true
       },
       "aligned-track-number7": {
@@ -36937,9 +36933,6 @@
         }
       },
       "aligned-track-name8": {
-        "visible": true
-      },
-      "aligned-track-buttons8": {
         "visible": true
       },
       "aligned-track-number8": {
@@ -37592,9 +37585,6 @@
         }
       },
       "aligned-track-name9": {
-        "visible": true
-      },
-      "aligned-track-buttons9": {
         "visible": true
       },
       "aligned-track-number9": {
@@ -38853,34 +38843,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     },
     "session-playing": {
@@ -40012,9 +40042,6 @@
       "aligned-track-name0": {
         "visible": true
       },
-      "aligned-track-buttons0": {
-        "visible": true
-      },
       "aligned-track-number0": {
         "visible": true
       },
@@ -40669,9 +40696,6 @@
         }
       },
       "aligned-track-name1": {
-        "visible": true
-      },
-      "aligned-track-buttons1": {
         "visible": true
       },
       "aligned-track-number1": {
@@ -42617,9 +42641,6 @@
       "aligned-track-name6": {
         "visible": true
       },
-      "aligned-track-buttons6": {
-        "visible": true
-      },
       "aligned-track-number6": {
         "visible": true
       },
@@ -43084,9 +43105,6 @@
         }
       },
       "aligned-track-name7": {
-        "visible": true
-      },
-      "aligned-track-buttons7": {
         "visible": true
       },
       "aligned-track-number7": {
@@ -43619,9 +43637,6 @@
         }
       },
       "aligned-track-name8": {
-        "visible": true
-      },
-      "aligned-track-buttons8": {
         "visible": true
       },
       "aligned-track-number8": {
@@ -44274,9 +44289,6 @@
         }
       },
       "aligned-track-name9": {
-        "visible": true
-      },
-      "aligned-track-buttons9": {
         "visible": true
       },
       "aligned-track-number9": {
@@ -45535,34 +45547,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     },
     "time-selection": {
@@ -47093,12 +47145,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons0": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number0": {
         "visible": true,
         "style": {
@@ -48570,12 +48616,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons1": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number1": {
@@ -52872,12 +52912,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons6": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number6": {
         "visible": true,
         "style": {
@@ -53916,12 +53950,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons7": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number7": {
@@ -55116,12 +55144,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons8": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number8": {
@@ -56595,12 +56617,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons9": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number9": {
@@ -61625,34 +61641,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     },
     "clip-colors": {
@@ -62784,9 +62840,6 @@
       "aligned-track-name0": {
         "visible": true
       },
-      "aligned-track-buttons0": {
-        "visible": true
-      },
       "aligned-track-number0": {
         "visible": true
       },
@@ -63441,9 +63494,6 @@
         }
       },
       "aligned-track-name1": {
-        "visible": true
-      },
-      "aligned-track-buttons1": {
         "visible": true
       },
       "aligned-track-number1": {
@@ -65389,9 +65439,6 @@
       "aligned-track-name6": {
         "visible": true
       },
-      "aligned-track-buttons6": {
-        "visible": true
-      },
       "aligned-track-number6": {
         "visible": true
       },
@@ -65856,9 +65903,6 @@
         }
       },
       "aligned-track-name7": {
-        "visible": true
-      },
-      "aligned-track-buttons7": {
         "visible": true
       },
       "aligned-track-number7": {
@@ -66391,9 +66435,6 @@
         }
       },
       "aligned-track-name8": {
-        "visible": true
-      },
-      "aligned-track-buttons8": {
         "visible": true
       },
       "aligned-track-number8": {
@@ -67046,9 +67087,6 @@
         }
       },
       "aligned-track-name9": {
-        "visible": true
-      },
-      "aligned-track-buttons9": {
         "visible": true
       },
       "aligned-track-number9": {
@@ -68307,34 +68345,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     },
     "grouped-tracks": {
@@ -69488,9 +69566,6 @@
       "aligned-track-name0": {
         "visible": true
       },
-      "aligned-track-buttons0": {
-        "visible": true
-      },
       "aligned-track-number0": {
         "visible": true
       },
@@ -70145,9 +70220,6 @@
         }
       },
       "aligned-track-name1": {
-        "visible": true
-      },
-      "aligned-track-buttons1": {
         "visible": true
       },
       "aligned-track-number1": {
@@ -72093,9 +72165,6 @@
       "aligned-track-name6": {
         "visible": true
       },
-      "aligned-track-buttons6": {
-        "visible": true
-      },
       "aligned-track-number6": {
         "visible": true
       },
@@ -72560,9 +72629,6 @@
         }
       },
       "aligned-track-name7": {
-        "visible": true
-      },
-      "aligned-track-buttons7": {
         "visible": true
       },
       "aligned-track-number7": {
@@ -73095,9 +73161,6 @@
         }
       },
       "aligned-track-name8": {
-        "visible": true
-      },
-      "aligned-track-buttons8": {
         "visible": true
       },
       "aligned-track-number8": {
@@ -73750,9 +73813,6 @@
         }
       },
       "aligned-track-name9": {
-        "visible": true
-      },
-      "aligned-track-buttons9": {
         "visible": true
       },
       "aligned-track-number9": {
@@ -75011,34 +75071,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     },
     "grouped-spectrum": {
@@ -76192,9 +76292,6 @@
       "aligned-track-name0": {
         "visible": true
       },
-      "aligned-track-buttons0": {
-        "visible": true
-      },
       "aligned-track-number0": {
         "visible": true
       },
@@ -76849,9 +76946,6 @@
         }
       },
       "aligned-track-name1": {
-        "visible": true
-      },
-      "aligned-track-buttons1": {
         "visible": true
       },
       "aligned-track-number1": {
@@ -78797,9 +78891,6 @@
       "aligned-track-name6": {
         "visible": true
       },
-      "aligned-track-buttons6": {
-        "visible": true
-      },
       "aligned-track-number6": {
         "visible": true
       },
@@ -79264,9 +79355,6 @@
         }
       },
       "aligned-track-name7": {
-        "visible": true
-      },
-      "aligned-track-buttons7": {
         "visible": true
       },
       "aligned-track-number7": {
@@ -79799,9 +79887,6 @@
         }
       },
       "aligned-track-name8": {
-        "visible": true
-      },
-      "aligned-track-buttons8": {
         "visible": true
       },
       "aligned-track-number8": {
@@ -80454,9 +80539,6 @@
         }
       },
       "aligned-track-name9": {
-        "visible": true
-      },
-      "aligned-track-buttons9": {
         "visible": true
       },
       "aligned-track-number9": {
@@ -81715,34 +81797,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     },
     "collections-hidden": {
@@ -83273,12 +83395,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons0": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number0": {
         "visible": true,
         "style": {
@@ -84750,12 +84866,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons1": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number1": {
@@ -89052,12 +89162,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons6": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number6": {
         "visible": true,
         "style": {
@@ -90096,12 +90200,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons7": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number7": {
@@ -91296,12 +91394,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons8": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number8": {
@@ -92775,12 +92867,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons9": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number9": {
@@ -97805,34 +97891,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     },
     "galaxy-nebula": {
@@ -99363,12 +99489,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons0": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number0": {
         "visible": true,
         "style": {
@@ -100840,12 +100960,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons1": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number1": {
@@ -105142,12 +105256,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons6": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number6": {
         "visible": true,
         "style": {
@@ -106186,12 +106294,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons7": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number7": {
@@ -107386,12 +107488,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons8": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number8": {
@@ -108865,12 +108961,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons9": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number9": {
@@ -113895,34 +113985,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     },
     "galaxy-starlight": {
@@ -115453,12 +115583,6 @@
           "color": "#17181a"
         }
       },
-      "aligned-track-buttons0": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
-        }
-      },
       "aligned-track-number0": {
         "visible": true,
         "style": {
@@ -116930,12 +117054,6 @@
         "visible": true,
         "style": {
           "color": "#17181a"
-        }
-      },
-      "aligned-track-buttons1": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
         }
       },
       "aligned-track-number1": {
@@ -121232,12 +121350,6 @@
           "color": "#17181a"
         }
       },
-      "aligned-track-buttons6": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
-        }
-      },
       "aligned-track-number6": {
         "visible": true,
         "style": {
@@ -122276,12 +122388,6 @@
         "visible": true,
         "style": {
           "color": "#17181a"
-        }
-      },
-      "aligned-track-buttons7": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
         }
       },
       "aligned-track-number7": {
@@ -123476,12 +123582,6 @@
         "visible": true,
         "style": {
           "color": "#17181a"
-        }
-      },
-      "aligned-track-buttons8": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
         }
       },
       "aligned-track-number8": {
@@ -124955,12 +125055,6 @@
         "visible": true,
         "style": {
           "color": "#17181a"
-        }
-      },
-      "aligned-track-buttons9": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
         }
       },
       "aligned-track-number9": {
@@ -129979,34 +130073,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     },
     "galaxy-cyan": {
@@ -131537,12 +131671,6 @@
           "color": "#17181a"
         }
       },
-      "aligned-track-buttons0": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
-        }
-      },
       "aligned-track-number0": {
         "visible": true,
         "style": {
@@ -133014,12 +133142,6 @@
         "visible": true,
         "style": {
           "color": "#17181a"
-        }
-      },
-      "aligned-track-buttons1": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
         }
       },
       "aligned-track-number1": {
@@ -137316,12 +137438,6 @@
           "color": "#17181a"
         }
       },
-      "aligned-track-buttons6": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
-        }
-      },
       "aligned-track-number6": {
         "visible": true,
         "style": {
@@ -138360,12 +138476,6 @@
         "visible": true,
         "style": {
           "color": "#17181a"
-        }
-      },
-      "aligned-track-buttons7": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
         }
       },
       "aligned-track-number7": {
@@ -139560,12 +139670,6 @@
         "visible": true,
         "style": {
           "color": "#17181a"
-        }
-      },
-      "aligned-track-buttons8": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
         }
       },
       "aligned-track-number8": {
@@ -141039,12 +141143,6 @@
         "visible": true,
         "style": {
           "color": "#17181a"
-        }
-      },
-      "aligned-track-buttons9": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
         }
       },
       "aligned-track-number9": {
@@ -146063,34 +146161,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     },
     "tuner-open": {
@@ -147621,12 +147759,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons0": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number0": {
         "visible": true,
         "style": {
@@ -149098,12 +149230,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons1": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number1": {
@@ -153400,12 +153526,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons6": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number6": {
         "visible": true,
         "style": {
@@ -154444,12 +154564,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons7": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number7": {
@@ -155644,12 +155758,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons8": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number8": {
@@ -157123,12 +157231,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons9": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number9": {
@@ -162153,34 +162255,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     },
     "browser-hidden": {
@@ -163552,12 +163694,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons0": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number0": {
         "visible": true,
         "style": {
@@ -165029,12 +165165,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons1": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number1": {
@@ -169331,12 +169461,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons6": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number6": {
         "visible": true,
         "style": {
@@ -170375,12 +170499,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons7": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number7": {
@@ -171575,12 +171693,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons8": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number8": {
@@ -173054,12 +173166,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons9": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number9": {
@@ -178030,34 +178136,74 @@
         "visible": true
       },
       "track-disclosure-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       },
       "track-disclosure-9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "fill": "none",
+          "color": "#242424"
+        }
       }
     }
   },
@@ -317838,17 +317984,17 @@
       "bounds": {
         "x": 1576,
         "y": 181,
-        "width": 10,
-        "height": 10
+        "width": 11,
+        "height": 11
       },
       "text": "▾",
       "style": {
-        "fill": "#303030",
+        "fill": "none",
         "stroke": "none",
-        "radius": 1,
-        "color": "#d7d7d7",
+        "radius": 0,
+        "color": "#242424",
         "fontFamily": "Ioskeley Mono",
-        "fontSize": 8,
+        "fontSize": 10,
         "padding": 0,
         "textAlign": "center",
         "verticalAlign": "middle"
@@ -317873,26 +318019,6 @@
       },
       "parentId": "aligned-current-study",
       "text": "imported audio"
-    },
-    {
-      "id": "aligned-track-buttons0",
-      "type": "text",
-      "bounds": {
-        "x": 1577,
-        "y": 205,
-        "width": 105,
-        "height": 14.0
-      },
-      "style": {
-        "fill": "none",
-        "stroke": "none",
-        "color": "#242224",
-        "fontSize": 10,
-        "fontFamily": "Ioskeley Mono",
-        "padding": 0
-      },
-      "parentId": "aligned-current-study",
-      "text": "●a   ↗"
     },
     {
       "id": "aligned-track-number0",
@@ -322542,17 +322668,17 @@
       "bounds": {
         "x": 1576,
         "y": 232,
-        "width": 10,
-        "height": 10
+        "width": 11,
+        "height": 11
       },
       "text": "▾",
       "style": {
-        "fill": "#303030",
+        "fill": "none",
         "stroke": "none",
-        "radius": 1,
-        "color": "#d7d7d7",
+        "radius": 0,
+        "color": "#242424",
         "fontFamily": "Ioskeley Mono",
-        "fontSize": 8,
+        "fontSize": 10,
         "padding": 0,
         "textAlign": "center",
         "verticalAlign": "middle"
@@ -322577,26 +322703,6 @@
       },
       "parentId": "aligned-current-study",
       "text": "vector"
-    },
-    {
-      "id": "aligned-track-buttons1",
-      "type": "text",
-      "bounds": {
-        "x": 1577,
-        "y": 256,
-        "width": 105,
-        "height": 14.0
-      },
-      "style": {
-        "fill": "none",
-        "stroke": "none",
-        "color": "#242224",
-        "fontSize": 10,
-        "fontFamily": "Ioskeley Mono",
-        "padding": 0
-      },
-      "parentId": "aligned-current-study",
-      "text": "●a   ↗"
     },
     {
       "id": "aligned-track-number1",
@@ -326162,17 +326268,17 @@
       "bounds": {
         "x": 1576,
         "y": 283,
-        "width": 10,
-        "height": 10
+        "width": 11,
+        "height": 11
       },
       "text": "▾",
       "style": {
-        "fill": "#303030",
+        "fill": "none",
         "stroke": "none",
-        "radius": 1,
-        "color": "#d7d7d7",
+        "radius": 0,
+        "color": "#242424",
         "fontFamily": "Ioskeley Mono",
-        "fontSize": 8,
+        "fontSize": 10,
         "padding": 0,
         "textAlign": "center",
         "verticalAlign": "middle"
@@ -327238,17 +327344,17 @@
       "bounds": {
         "x": 1579,
         "y": 334,
-        "width": 10,
-        "height": 10
+        "width": 11,
+        "height": 11
       },
       "text": "▾",
       "style": {
-        "fill": "#303030",
+        "fill": "none",
         "stroke": "none",
-        "radius": 1,
-        "color": "#d7d7d7",
+        "radius": 0,
+        "color": "#242424",
         "fontFamily": "Ioskeley Mono",
-        "fontSize": 8,
+        "fontSize": 10,
         "padding": 0,
         "textAlign": "center",
         "verticalAlign": "middle"
@@ -331637,17 +331743,17 @@
       "bounds": {
         "x": 1579,
         "y": 385,
-        "width": 10,
-        "height": 10
+        "width": 11,
+        "height": 11
       },
       "text": "▾",
       "style": {
-        "fill": "#303030",
+        "fill": "none",
         "stroke": "none",
-        "radius": 1,
-        "color": "#d7d7d7",
+        "radius": 0,
+        "color": "#242424",
         "fontFamily": "Ioskeley Mono",
-        "fontSize": 8,
+        "fontSize": 10,
         "padding": 0,
         "textAlign": "center",
         "verticalAlign": "middle"
@@ -335457,17 +335563,17 @@
       "bounds": {
         "x": 1582,
         "y": 436,
-        "width": 10,
-        "height": 10
+        "width": 11,
+        "height": 11
       },
       "text": "▾",
       "style": {
-        "fill": "#303030",
+        "fill": "none",
         "stroke": "none",
-        "radius": 1,
-        "color": "#d7d7d7",
+        "radius": 0,
+        "color": "#242424",
         "fontFamily": "Ioskeley Mono",
-        "fontSize": 8,
+        "fontSize": 10,
         "padding": 0,
         "textAlign": "center",
         "verticalAlign": "middle"
@@ -339107,17 +339213,17 @@
       "bounds": {
         "x": 1576,
         "y": 487,
-        "width": 10,
-        "height": 10
+        "width": 11,
+        "height": 11
       },
       "text": "▾",
       "style": {
-        "fill": "#303030",
+        "fill": "none",
         "stroke": "none",
-        "radius": 1,
-        "color": "#d7d7d7",
+        "radius": 0,
+        "color": "#242424",
         "fontFamily": "Ioskeley Mono",
-        "fontSize": 8,
+        "fontSize": 10,
         "padding": 0,
         "textAlign": "center",
         "verticalAlign": "middle"
@@ -339142,26 +339248,6 @@
       },
       "parentId": "aligned-current-study",
       "text": "imported audio"
-    },
-    {
-      "id": "aligned-track-buttons6",
-      "type": "text",
-      "bounds": {
-        "x": 1577,
-        "y": 511,
-        "width": 105,
-        "height": 14.0
-      },
-      "style": {
-        "fill": "none",
-        "stroke": "none",
-        "color": "#242224",
-        "fontSize": 10,
-        "fontFamily": "Ioskeley Mono",
-        "padding": 0
-      },
-      "parentId": "aligned-current-study",
-      "text": "●a   ↗"
     },
     {
       "id": "aligned-track-number6",
@@ -342548,17 +342634,17 @@
       "bounds": {
         "x": 1576,
         "y": 538,
-        "width": 10,
-        "height": 10
+        "width": 11,
+        "height": 11
       },
       "text": "▾",
       "style": {
-        "fill": "#303030",
+        "fill": "none",
         "stroke": "none",
-        "radius": 1,
-        "color": "#d7d7d7",
+        "radius": 0,
+        "color": "#242424",
         "fontFamily": "Ioskeley Mono",
-        "fontSize": 8,
+        "fontSize": 10,
         "padding": 0,
         "textAlign": "center",
         "verticalAlign": "middle"
@@ -342583,26 +342669,6 @@
       },
       "parentId": "aligned-current-study",
       "text": "track 6"
-    },
-    {
-      "id": "aligned-track-buttons7",
-      "type": "text",
-      "bounds": {
-        "x": 1577,
-        "y": 562,
-        "width": 105,
-        "height": 14.0
-      },
-      "style": {
-        "fill": "none",
-        "stroke": "none",
-        "color": "#242224",
-        "fontSize": 10,
-        "fontFamily": "Ioskeley Mono",
-        "padding": 0
-      },
-      "parentId": "aligned-current-study",
-      "text": "●a   ↗"
     },
     {
       "id": "aligned-track-number7",
@@ -346427,17 +346493,17 @@
       "bounds": {
         "x": 1576,
         "y": 589,
-        "width": 10,
-        "height": 10
+        "width": 11,
+        "height": 11
       },
       "text": "▾",
       "style": {
-        "fill": "#303030",
+        "fill": "none",
         "stroke": "none",
-        "radius": 1,
-        "color": "#d7d7d7",
+        "radius": 0,
+        "color": "#242424",
         "fontFamily": "Ioskeley Mono",
-        "fontSize": 8,
+        "fontSize": 10,
         "padding": 0,
         "textAlign": "center",
         "verticalAlign": "middle"
@@ -346462,26 +346528,6 @@
       },
       "parentId": "aligned-current-study",
       "text": "track 9"
-    },
-    {
-      "id": "aligned-track-buttons8",
-      "type": "text",
-      "bounds": {
-        "x": 1577,
-        "y": 613,
-        "width": 105,
-        "height": 14.0
-      },
-      "style": {
-        "fill": "none",
-        "stroke": "none",
-        "color": "#242224",
-        "fontSize": 10,
-        "fontFamily": "Ioskeley Mono",
-        "padding": 0
-      },
-      "parentId": "aligned-current-study",
-      "text": "●a   ↗"
     },
     {
       "id": "aligned-track-number8",
@@ -351131,17 +351177,17 @@
       "bounds": {
         "x": 1576,
         "y": 640,
-        "width": 10,
-        "height": 10
+        "width": 11,
+        "height": 11
       },
       "text": "▾",
       "style": {
-        "fill": "#303030",
+        "fill": "none",
         "stroke": "none",
-        "radius": 1,
-        "color": "#d7d7d7",
+        "radius": 0,
+        "color": "#242424",
         "fontFamily": "Ioskeley Mono",
-        "fontSize": 8,
+        "fontSize": 10,
         "padding": 0,
         "textAlign": "center",
         "verticalAlign": "middle"
@@ -351166,26 +351212,6 @@
       },
       "parentId": "aligned-current-study",
       "text": "track 17"
-    },
-    {
-      "id": "aligned-track-buttons9",
-      "type": "text",
-      "bounds": {
-        "x": 1577,
-        "y": 664,
-        "width": 105,
-        "height": 14.0
-      },
-      "style": {
-        "fill": "none",
-        "stroke": "none",
-        "color": "#242224",
-        "fontSize": 10,
-        "fontFamily": "Ioskeley Mono",
-        "padding": 0
-      },
-      "parentId": "aligned-current-study",
-      "text": "●a   ↗"
     },
     {
       "id": "aligned-track-number9",
