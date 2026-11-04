@@ -1572,13 +1572,11 @@ impl Service {
                 | hex_project::BounceTarget::AudioGroup { clips: ids, .. },
             ..
         } = &request
-        {
-            if ids.is_empty()
+            && (ids.is_empty()
                 || ids.len() > hex_project::MAX_CLIPS
-                || ids.capacity() > hex_project::MAX_CLIPS
-            {
-                return Err(SubmitError::Busy(request, BusyReason::InvalidBounceTarget));
-            }
+                || ids.capacity() > hex_project::MAX_CLIPS)
+        {
+            return Err(SubmitError::Busy(request, BusyReason::InvalidBounceTarget));
         }
         if matches!(&request, Request::ResidentArrangementSeek(_)) {
             if self.arrangement_seek.is_some() {
@@ -2591,13 +2589,12 @@ fn run_worker(
                 | Request::Open(_)
                 | Request::OpenWith { .. }
                 | Request::OpenWithAudioMode { .. }
-        ) {
-            if let Some(gain) = pending_sampler_parameter.take() {
-                gain.cancel().store(true, Ordering::Release);
-                sampler_edit_complete = Some(gain.request_id());
-                if let Some(audio) = events.sampler_edit_audio() {
-                    audio.cancel_sampler_edit();
-                }
+        ) && let Some(gain) = pending_sampler_parameter.take()
+        {
+            gain.cancel().store(true, Ordering::Release);
+            sampler_edit_complete = Some(gain.request_id());
+            if let Some(audio) = events.sampler_edit_audio() {
+                audio.cancel_sampler_edit();
             }
         }
         let mut midi_take_complete = match &request {
@@ -6860,10 +6857,9 @@ fn run_worker(
                             Ok(playback) => {
                                 live_expression_complete = Some(Arc::clone(&input));
                                 if let Some(previous) = live_expression.replace(Arc::clone(&input))
+                                    && !Arc::ptr_eq(&previous, &input)
                                 {
-                                    if !Arc::ptr_eq(&previous, &input) {
-                                        previous.cancel();
-                                    }
+                                    previous.cancel();
                                 }
                                 keyboard_tuning_hint = playback.computer_keyboard_tuning_hint();
                                 computer_keyboard_playback = Some(playback);
@@ -6961,10 +6957,9 @@ fn run_worker(
                             Ok((project, prepared, playback, is_preview)) => {
                                 if let Some(previous) =
                                     audition_activation.replace(Arc::clone(&input))
+                                    && !Arc::ptr_eq(&previous, &input)
                                 {
-                                    if !Arc::ptr_eq(&previous, &input) {
-                                        previous.cancel();
-                                    }
+                                    previous.cancel();
                                 }
                                 computer_keyboard_playback = Some(playback);
                                 if is_preview {
@@ -7823,10 +7818,10 @@ fn run_worker(
         ) {
             return;
         }
-        if let Some(job) = export_job {
-            if let Err(event) = export_lane.submit(job) {
-                let _ = export_events.try_send(event);
-            }
+        if let Some(job) = export_job
+            && let Err(event) = export_lane.submit(job)
+        {
+            let _ = export_events.try_send(event);
         }
         if let Some(event) = export_completion {
             let _ = export_events.try_send(event);
