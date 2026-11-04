@@ -926,6 +926,69 @@ fn unavailable_output_keeps_canonical_editing_and_saving_available(retained_fail
 }
 
 #[test]
+fn initial_open_shutdown_wins_over_expired_deadline() {
+    let _native = native_fixture();
+    let (events, _audio_events) = mpsc::sync_channel(1);
+    let mut sink = NativeAudioSink::new(events);
+    sink.lifecycle_status = Some(|| None);
+    sink.output_factory = Some(Box::new(|_| {
+        panic!("cancelled startup must not open audio")
+    }));
+    sink.startup_open_deadline = Duration::ZERO;
+    assert_eq!(
+        sink.initialize(&AtomicBool::new(true)),
+        Err("audio startup cancelled".into())
+    );
+}
+
+#[test]
+fn hung_initial_open_times_out_to_offline_editing() {
+    let _native = native_fixture();
+    let (events, audio_events) = mpsc::sync_channel(1);
+    let mut sink = NativeAudioSink::new(events);
+    sink.lifecycle_status = Some(|| None);
+    sink.output_factory = Some(Box::new(|_| Ok(None)));
+    sink.startup_open_deadline = Duration::from_millis(50);
+    let service = Service::with_audio_sink_and_native_reservation(
+        32,
+        0,
+        None,
+        Box::new(sink),
+        AudioPolicy::new().unwrap().resident_native,
+    )
+    .unwrap();
+    let next = || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(event) = service.try_event() {
+                return event;
+            }
+            assert!(Instant::now() < deadline, "initial state never arrived");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let initial = next();
+    let error = initial.error.as_deref().unwrap();
+    assert!(error.contains("audio unavailable"), "{error}");
+    assert!(error.contains("did not open in time"), "{error}");
+    assert!(matches!(
+        audio_events.recv_timeout(Duration::from_secs(1)).unwrap(),
+        EditorAudioEvent::Unavailable {
+            restart_request: None,
+            ..
+        }
+    ));
+    service
+        .submit(Request::Edit(hex_project::Command::MasterGain {
+            gain: 0.5,
+        }))
+        .unwrap();
+    let edited = next();
+    assert!(edited.error.is_none());
+    assert!(edited.state.revision > initial.state.revision);
+}
+
+#[test]
 fn canonical_service_installs_verified_mixed_rate_and_empty_successors_despite_lost_submitted() {
     let _native = native_fixture();
     let files = Files::new();

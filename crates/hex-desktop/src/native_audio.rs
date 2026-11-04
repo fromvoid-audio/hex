@@ -141,6 +141,8 @@ pub(super) struct NativeAudioSink {
     restart_request: Option<u64>,
     /// A typed `RateMismatch` stays distinct so the UI can offer retry.
     open_error: Option<hex_audio::OutputOpenError>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    startup_open_deadline: std::time::Duration,
     next_catalog: u64,
     domains: [Option<Domain>; 2],
     preparation: Option<Preparation>,
@@ -167,6 +169,9 @@ pub(super) struct NativeAudioSink {
     #[cfg(all(test, feature = "allocation-probe"))]
     lifecycle_status: Option<fn() -> Option<hex_audio::AudioLifecycleFailure>>,
 }
+const STARTUP_OPEN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+const STARTUP_OPEN_TIMEOUT: &str = "audio output did not open in time; editing continues without audio. use restart audio to retry";
+
 impl NativeAudioSink {
     fn new(events: SyncSender<EditorAudioEvent>) -> Self {
         Self {
@@ -204,6 +209,8 @@ impl NativeAudioSink {
             requested_rate: None,
             restart_request: None,
             open_error: None,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            startup_open_deadline: STARTUP_OPEN_DEADLINE,
             next_catalog: 1,
             domains: std::array::from_fn(|_| None),
             preparation: None,
@@ -1294,10 +1301,23 @@ impl WorkerAudioSink for NativeAudioSink {
         self.plugins.initialize();
         self.route_watch = hex_audio::OutputRouteWatch::spawn().ok();
         self.request_open(None, None);
+        #[cfg(all(test, feature = "allocation-probe"))]
+        let timeout = self.startup_open_deadline;
+        #[cfg(not(all(test, feature = "allocation-probe")))]
+        let timeout = STARTUP_OPEN_DEADLINE;
+        let started = std::time::Instant::now();
         loop {
             if shutdown.load(Acquire) {
                 self.close();
                 return Err("audio startup cancelled".into());
+            }
+            if started.elapsed() >= timeout {
+                // Dropping the waiter abandons interest; the lifecycle owner
+                // retains custody and retires any output that arrives later.
+                self.opening = None;
+                self.open_pending = false;
+                self.open_error = Some(STARTUP_OPEN_TIMEOUT.to_owned().into());
+                return Err(STARTUP_OPEN_TIMEOUT.to_owned());
             }
             self.poll_open();
             if let Some(output) = self.output.as_ref() {
