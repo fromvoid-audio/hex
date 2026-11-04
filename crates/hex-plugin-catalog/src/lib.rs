@@ -521,51 +521,51 @@ impl Catalog {
             if let Some(report) = &entry.last_good
                 && let Some(discovery) = &report.discovery
             {
-                    for class in &discovery.classes {
-                        if class.category != "Audio Module Class" {
-                            continue;
-                        }
-                        let kind = reported_kind(class);
-                        let vendor = class
-                            .class_vendor
-                            .as_deref()
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or(&discovery.vendor);
-                        if !query.is_empty()
-                            && !class.name.to_lowercase().contains(&query)
-                            && !vendor.to_lowercase().contains(&query)
-                            && !kind.contains(&query)
-                        {
-                            continue;
-                        }
-                        rows.push(Row {
-                            module: entry.path.clone(),
-                            cid: Some(class.cid),
-                            name: class.name.clone(),
-                            vendor: vendor.into(),
-                            status: {
-                                let state = if let Some(error) = &entry.failure {
-                                    format!("last good · {error} · ")
-                                } else if !discovery.cacheable() {
-                                    "prior discovery · rescan required · ".into()
-                                } else {
-                                    String::new()
-                                };
-                                let source = self.source_errors.get(&entry.path).map_or_else(
-                                    String::new,
-                                    |error| {
-                                        format!("source unavailable · rescan required · {error} · ")
-                                    },
-                                );
-                                let action = if matches!(kind, "effect" | "instrument and effect") {
-                                    "enter to insert · source validation required"
-                                } else {
-                                    "hosting unavailable"
-                                };
-                                format!("{source}{state}vst3 {kind} · {action}")
-                            },
-                        });
+                for class in &discovery.classes {
+                    if class.category != "Audio Module Class" {
+                        continue;
                     }
+                    let kind = reported_kind(class);
+                    let vendor = class
+                        .class_vendor
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(&discovery.vendor);
+                    if !query.is_empty()
+                        && !class.name.to_lowercase().contains(&query)
+                        && !vendor.to_lowercase().contains(&query)
+                        && !kind.contains(&query)
+                    {
+                        continue;
+                    }
+                    rows.push(Row {
+                        module: entry.path.clone(),
+                        cid: Some(class.cid),
+                        name: class.name.clone(),
+                        vendor: vendor.into(),
+                        status: {
+                            let state = if let Some(error) = &entry.failure {
+                                format!("last good · {error} · ")
+                            } else if !discovery.cacheable() {
+                                "prior discovery · rescan required · ".into()
+                            } else {
+                                String::new()
+                            };
+                            let source = self.source_errors.get(&entry.path).map_or_else(
+                                String::new,
+                                |error| {
+                                    format!("source unavailable · rescan required · {error} · ")
+                                },
+                            );
+                            let action = if matches!(kind, "effect" | "instrument and effect") {
+                                "enter to insert · source validation required"
+                            } else {
+                                "hosting unavailable"
+                            };
+                            format!("{source}{state}vst3 {kind} · {action}")
+                        },
+                    });
+                }
             }
         }
         rows.sort_by(|a, b| (&a.module, a.cid).cmp(&(&b.module, b.cid)));

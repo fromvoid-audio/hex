@@ -902,7 +902,7 @@ fn ceil_div(numerator: u128, denominator: u128) -> Result<u128, MidiTemplateErro
         return Err(MidiTemplateError::ArithmeticOverflow);
     }
     let quotient = numerator / denominator;
-    if numerator % denominator == 0 {
+    if numerator.is_multiple_of(denominator) {
         Ok(quotient)
     } else {
         quotient

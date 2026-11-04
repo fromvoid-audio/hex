@@ -173,9 +173,10 @@ fn open_midi_gap(
                     new_end_frame,
                     duration,
                     &mut expanded_notes,
-                )? {
-                    replacement.push(shifted);
-                    continue;
+                )?
+            {
+                replacement.push(shifted);
+                continue;
             }
             expanded_notes = expanded_notes
                 .checked_add(materialized_note_bound(&original)?)
