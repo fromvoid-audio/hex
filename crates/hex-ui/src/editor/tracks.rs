@@ -1281,7 +1281,7 @@ impl EditorView {
         if let Some(preview) = self.clip_paint_overlay(track_id, viewport) {
             clip_area = clip_area.child(preview);
         }
-        if let Some(selection) = self.time_selection_overlay(track_id, viewport, scale_factor) {
+        if let Some(selection) = self.time_selection_overlay(track_id, viewport, scale_factor, cx) {
             clip_area = clip_area.children([selection]);
         }
         if let Some(preview) = self.time_range_move_preview_overlay(track_id, track_index, viewport)

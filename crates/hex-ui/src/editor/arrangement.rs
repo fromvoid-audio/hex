@@ -501,7 +501,7 @@ impl EditorView {
                                 cx.notify();
                                 return (true, false);
                             }
-                            if view.pointer_hits_priority_clip_control(x, y) {
+                            if view.pointer_hits_priority_clip_control(x, y, event.modifiers.alt) {
                                 return (false, false);
                             }
                             if event.click_count == 2
