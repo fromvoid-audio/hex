@@ -109,14 +109,14 @@ impl Plugins {
         _: Option<&mut WorkerPreparedOutput>,
         input: ResidentEffectPreparation<'_>,
         _: Option<&CanonicalAudioSourceSnapshot>,
-        cancellation: Option<&RequestCancellation>,
+        _: Option<&RequestCancellation>,
         _: &mut dyn FnMut(
             &hex_engine::AudioCandidateEffects<'_, '_>,
         ) -> Result<PreparedRevision, hex_engine::Invalid>,
     ) -> Result<Option<PreparedRevision>, String> {
-        if cancellation.is_some_and(RequestCancellation::is_cancelled) {
-            return Err("vst3 preparation cancelled".into());
-        }
+        // No native work is admitted here. Document replacement advances
+        // intent when queued, so its prior-intent token must not be reused to
+        // cancel ordinary compilation. Session owns those admission checks.
         input.visit_plugin_effects(|_, _, _| Err(UNAVAILABLE.into()))?;
         Ok(None)
     }
@@ -125,11 +125,8 @@ impl Plugins {
 impl NativeAudioSink {
     pub(in crate::native_audio) fn capture_plugin_save(
         &mut self,
-        input: PluginStateSaveInput<'_>,
+        _: PluginStateSaveInput<'_>,
     ) -> Result<Vec<PluginStateCapture>, String> {
-        if input.cancellation().is_cancelled() {
-            return Err("vst3 save cancelled by document request or shutdown".into());
-        }
         // No hosted source exists. Session's empty-capture contract retains the
         // complete canonical opaque payload; this never claims a fresh capture.
         Ok(Vec::new())

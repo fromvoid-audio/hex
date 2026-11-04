@@ -49,7 +49,9 @@ fn unavailable_plugin_insertion_preserves_project_history_and_ordinary_output() 
             .error
             .as_ref()
             .unwrap()
-            .contains("vst3 hosting requires macos arm64")
+            .contains("vst3 hosting requires macos arm64"),
+        "unexpected refusal: {:?}",
+        refused.error
     );
     assert_eq!(
         refused.state.project.snapshot(),
@@ -109,7 +111,9 @@ fn unavailable_foreign_graph_refuses_open_without_rewriting_opaque_project() {
             .error
             .as_ref()
             .unwrap()
-            .contains("vst3 hosting requires macos arm64")
+            .contains("vst3 hosting requires macos arm64"),
+        "unexpected refusal: {:?}",
+        refused.error
     );
     assert!(!refused.project_replaced);
     assert_eq!(
