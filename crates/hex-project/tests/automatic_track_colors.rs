@@ -87,6 +87,7 @@ fn all_creation_routes_choose_unused_hues_and_keep_history() {
             conversion_version: 0,
         },
         Command::CopyClipToNewTrack {
+            initial_gain: None,
             clip,
             name: "copied audio".into(),
             before_track: None,
@@ -115,6 +116,7 @@ fn all_creation_routes_choose_unused_hues_and_keep_history() {
     // Exhausted palette remains balanced through actual move-to-new-track paths.
     for command in [
         Command::MoveClipToNewTrack {
+            initial_gain: None,
             clip,
             name: "moved audio".into(),
             before_track: None,
