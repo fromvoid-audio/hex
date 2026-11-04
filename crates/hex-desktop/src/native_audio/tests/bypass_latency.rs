@@ -804,6 +804,15 @@ fn parked_device_edit_cancels_if_document_changes_before_admission() {
 
 #[test]
 fn consecutive_device_gesture_changes_reach_the_resident_callback() {
+    gesture_publication_case(true);
+}
+
+#[test]
+fn stalled_gesture_cancel_retains_the_preview_and_can_be_retried() {
+    gesture_publication_case(false);
+}
+
+fn gesture_publication_case(commit: bool) {
     use hex_session::device_gesture::{
         GestureKey, GestureRequest, GestureTarget, ParameterId, ParameterValue,
     };
@@ -898,18 +907,24 @@ fn consecutive_device_gesture_changes_reach_the_resident_callback() {
         std::thread::yield_now();
     }
     let third_revision = h.submitted.unwrap().0;
-    h.service
-        .submit(Request::DeviceGesture(GestureRequest::Commit {
+    let terminal = if commit {
+        GestureRequest::Commit {
             key,
             sequence: 4,
             manual_edit: true,
             value: ParameterValue::Float(2.5),
-        }))
-        .unwrap();
+        }
+    } else {
+        GestureRequest::Cancel { key }
+    };
+    h.service.submit(Request::DeviceGesture(terminal)).unwrap();
     let refused = h.next();
     assert!(
         refused.gesture_ack.as_ref().is_some_and(|ack| {
-            ack.key == key && ack.sequence == 4 && !ack.accepted && ack.preview_retained
+            ack.key == key
+                && ack.sequence == if commit { 4 } else { 0 }
+                && !ack.accepted
+                && ack.preview_retained
         }),
         "{:?}",
         refused.gesture_ack
@@ -920,12 +935,7 @@ fn consecutive_device_gesture_changes_reach_the_resident_callback() {
             .is_some_and(|snapshot| snapshot.key == key && snapshot.sequence == 3)
     );
     h.render();
-    let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
-        key,
-        sequence: 4,
-        manual_edit: true,
-        value: ParameterValue::Float(2.5),
-    }));
+    let committed = h.run(Request::DeviceGesture(terminal));
     assert!(
         committed
             .gesture_ack
@@ -940,6 +950,6 @@ fn consecutive_device_gesture_changes_reach_the_resident_callback() {
             ParameterId::new(1).unwrap(),
         )
         .unwrap(),
-        ParameterValue::Float(2.5)
+        ParameterValue::Float(if commit { 2.5 } else { 1.0 })
     );
 }
