@@ -209,6 +209,205 @@ fn canonical_retained_receiver_preserves_mute_and_solo_source_routing() {
     }
 }
 
+#[test]
+fn retained_receiver_automates_source_effect_without_processing_printed_audio() {
+    use hex_devices::eq::{AutomationLane, AutomationPoint, EqState, Node, NodeId, NodeParameter};
+
+    for latency in [0, 5] {
+        let mut f = fixture_at_rate(&[&[latency], &[]], 600, 8_000);
+        f.editor
+            .execute(Command::SetProjectTempo {
+                tempo: hex_project::Tempo::new(1_000_000_000).unwrap(),
+            })
+            .unwrap();
+        let Created::NativeSource(source) = f
+            .editor
+            .execute(Command::CreateNativeSource {
+                name: "shared".into(),
+                devices: vec![LegacyInstrumentDefinition.default_state().unwrap()],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        for &track in &f.tracks {
+            f.editor
+                .execute(Command::BindTrackSource {
+                    track,
+                    source: Some(source),
+                })
+                .unwrap();
+        }
+        f.editor
+            .execute(Command::Gain {
+                track: f.tracks[0],
+                gain: 0.5,
+            })
+            .unwrap();
+        let Created::ReturnTrack(bus) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return track")
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track: f.tracks[0],
+                return_track: bus,
+                gain: 1.0,
+            })
+            .unwrap();
+        let Created::Clip(clip) = f
+            .editor
+            .execute(Command::PlaceMidiClip {
+                track: f.tracks[1],
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(2).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        for start in [BeatTime::ZERO, BeatTime::ONE] {
+            f.editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start,
+                    duration: BeatTime::ONE,
+                    pitch: 60,
+                    velocity: 100,
+                    channel: 0,
+                })
+                .unwrap();
+        }
+        let node = NodeId::new(100).unwrap();
+        let mut eq = EqState::default();
+        eq.add(Node::new(node, 1_000.0, 0.0, 0).unwrap()).unwrap();
+        eq.set_lane(AutomationLane {
+            node,
+            parameter: NodeParameter::Gain,
+            points: vec![
+                AutomationPoint {
+                    beat: 0,
+                    normalized: 0.25,
+                },
+                AutomationPoint {
+                    beat: 1 << 28,
+                    normalized: 0.75,
+                },
+            ],
+        })
+        .unwrap();
+        f.editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: None,
+                state: eq.encode().unwrap(),
+            })
+            .unwrap();
+
+        let mut snapshot = f.editor.project().snapshot();
+        snapshot
+            .tracks
+            .iter_mut()
+            .find(|track| track.id == f.tracks[1].value())
+            .unwrap()
+            .audio_clips_mut()
+            .unwrap()
+            .clear();
+        let mut source_only = snapshot.clone();
+        source_only
+            .tracks
+            .iter_mut()
+            .find(|track| track.id == f.tracks[0].value())
+            .unwrap()
+            .audio_clips_mut()
+            .unwrap()
+            .clear();
+        let mut static_source = source_only.clone();
+        eq.set_lane(AutomationLane {
+            node,
+            parameter: NodeParameter::Gain,
+            points: vec![AutomationPoint {
+                beat: 0,
+                normalized: 0.25,
+            }],
+        })
+        .unwrap();
+        let static_eq = static_source
+            .tracks
+            .iter_mut()
+            .find(|track| track.id == f.tracks[0].value())
+            .unwrap()
+            .devices
+            .iter_mut()
+            .find(|device| {
+                device.state.type_id()
+                    == NativeDeviceMetadata::type_id(&hex_devices::eq::EQ_DEFINITION)
+            })
+            .unwrap();
+        static_eq.state = eq.encode().unwrap();
+        snapshot.retained_source_paths.push(f.tracks[0].value());
+        let effects: [&dyn NativeDeviceDefinition; 2] =
+            [&Definition, &hex_devices::eq::EQ_DEFINITION];
+        let instruments: [&dyn hex_lattice::NativeInstrumentDefinition; 1] =
+            [&LegacyInstrumentDefinition];
+        let prepare = |snapshot| {
+            Arc::new(
+                PreparedRevision::prepare_with_registries(
+                    &hex_project::Project::from_snapshot(snapshot).unwrap(),
+                    &f.media,
+                    Arc::new(SineTable::new()),
+                    None,
+                    &NativeDeviceRegistry::new(&effects).unwrap(),
+                    &hex_lattice::NativeInstrumentRegistry::new(&instruments).unwrap(),
+                )
+                .unwrap(),
+            )
+        };
+        let source = prepare(source_only);
+        let static_source = prepare(static_source);
+        let retained = prepare(snapshot);
+        let frames = f.samples.len() + latency as usize;
+        let source_output = session(Arc::clone(&source), frames, 127);
+        let static_output = session(static_source, frames, 127);
+        assert!(
+            source_output
+                .iter()
+                .zip(&static_output)
+                .any(|(automated, fixed)| (automated[0] - fixed[0]).abs() > 0.000_01),
+            "the automated lane must change the peer source output"
+        );
+        let mut expected = source_output.clone();
+        for (index, sample) in f.samples.iter().enumerate() {
+            for channel in 0..2 {
+                expected[index + latency as usize][channel] += sample[channel];
+            }
+        }
+        for partition in [7, 64, 257] {
+            let actual = session(Arc::clone(&retained), frames, partition);
+            for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+                for channel in 0..2 {
+                    assert!(
+                        (actual[channel] - expected[channel]).abs() < 0.000_001,
+                        "latency {latency}, block {partition}, frame {index}: {actual:?} != {expected:?}"
+                    );
+                }
+            }
+        }
+        let offline = render(retained.arrangement(), frames);
+        for (actual, expected) in offline.iter().zip(&expected) {
+            for channel in 0..2 {
+                assert!((actual[channel] - expected[channel]).abs() < 0.000_001);
+            }
+        }
+    }
+}
+
 fn retained_receiver_session_at_latency(
     latency: u32,
     peer_count: usize,
