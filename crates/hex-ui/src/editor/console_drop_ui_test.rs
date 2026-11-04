@@ -1163,6 +1163,7 @@ fn console_column_browser_devices_create_only_explicit_device_and_one_atomic_tra
             "device creates no clips or scenes"
         );
         let born = &after.tracks()[usize::from(effect)];
+        assert!((born.gain() - 0.251_188_64).abs() < 1e-7);
         if effect {
             assert!(born.instrument().is_none());
             assert_eq!(born.devices().len(), 1);

@@ -131,13 +131,21 @@ impl EditorView {
         if let (true, Some(preview), NativeDeviceDragSource::Browser { class, type_id }) =
             (valid, captured, source)
         {
+            let gain = match self.device_track_gain(preview.destination) {
+                Ok(gain) => gain,
+                Err(error) => {
+                    self.error = Some(error.into());
+                    cx.notify();
+                    return;
+                }
+            };
             if self.enqueue_device_barrier(Request::DropBrowserDeviceOnArrangement {
                 project_generation: drag.project_generation,
                 revision: drag.revision,
                 class,
                 type_id,
                 destination: preview.destination,
-                new_track_gain: None,
+                new_track_gain: gain,
             }) {
                 self.error = None;
                 self.status = "adding device to arrangement".into();
