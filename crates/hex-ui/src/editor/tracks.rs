@@ -1573,7 +1573,8 @@ impl EditorView {
         } else if resident_layout {
             let (active_background, active_text) =
                 super::track_gain::activator_colors(!track.muted());
-            let (solo_background, solo_text) = super::track_gain::activator_colors(track.soloed());
+            let (solo_background, solo_text) =
+                super::track_gain::activator_colors(self.displayed_solo(track_id, track.soloed()));
             let utilities = div()
                 .id(("track-header-utilities", track_id.value()))
                 .w_full()
@@ -1771,7 +1772,7 @@ impl EditorView {
                         ("track-solo", track_id.value()),
                     )
                     .debug_selector(move || format!("track-solo-{}", track_id.value()))
-                    .text_color(rgb(if track.soloed() {
+                    .text_color(rgb(if self.displayed_solo(track_id, track.soloed()) {
                         theme::color(theme::PaletteRole::Primary)
                     } else {
                         theme::color(theme::PaletteRole::Muted)
