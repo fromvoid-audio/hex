@@ -687,38 +687,6 @@ impl EditorView {
                 .w(px(1.0))
                 .bg(rgb(theme::color(theme::PaletteRole::Border))),
         );
-        if track_selected {
-            // Paint beneath clip content so every outer selection stroke stays
-            // intact, including where vertical clip edges cross these accents.
-            let edge = gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .alpha(theme::TRACK_SELECTION_EDGE_OPACITY);
-            let stroke = 1.0 / scale_factor.max(1.0);
-            clip_area = clip_area
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(px(1.0))
-                        .h(px(stroke))
-                        .debug_selector(move || {
-                            format!("selected-track-lane-top-{}", track_id.value())
-                        })
-                        .bg(edge),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .bottom(px(1.0))
-                        .h(px(stroke))
-                        .debug_selector(move || {
-                            format!("selected-track-lane-bottom-{}", track_id.value())
-                        })
-                        .bg(edge),
-                );
-        }
         clip_area = clip_area.child(
             div()
                 .absolute()
@@ -1489,14 +1457,6 @@ impl EditorView {
                 }),
             )
             .relative()
-            .children(self.track_selection.contains(track_id).then(|| {
-                div()
-                    .absolute()
-                    .inset_0()
-                    .debug_selector(move || format!("selected-track-{}", track_id.value()))
-                    .border_1()
-                    .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
-            }))
             .debug_selector(|| format!("track-name-{}", track_id.value()))
             .children(track.is_group().then(|| {
                 let folded = self.arrangement_focus.projection.folded(track_id);
@@ -1873,17 +1833,6 @@ impl EditorView {
                 .w(px(4.0))
                 .debug_selector(move || format!("track-color-strip-{}", track_id.value()))
                 .bg(rgb(theme::element_colors(track.color()).accent)),
-        )
-        // Paint selection after opaque header content and its assigned-color
-        // strip. Keep layout/input bounds unchanged and resize feedback local.
-        .children(
-            (selected && self.active_trim_drag.is_none() && self.active_midi_trim_drag.is_none())
-                .then(|| {
-                    super::track_header::selection_outline(format!(
-                        "track-selection-outline-{}",
-                        track_id.value()
-                    ))
-                }),
         )
         .on_mouse_down(
             MouseButton::Right,

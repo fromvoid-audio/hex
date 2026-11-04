@@ -84,12 +84,11 @@ fn track_headers_toggle_range_and_render_explicit_members_including_empty_tracks
         assert_eq!(view.selected_track_ids(), [source, empty])
     });
     for id in [source, empty] {
+        let name = Box::leak(format!("track-name-{}", id.value()).into_boxed_str());
         assert!(
             visual
-                .debug_bounds(Box::leak(
-                    format!("selected-track-{}", id.value()).into_boxed_str()
-                ))
-                .is_some()
+                .rendered_border(name)
+                .is_none_or(|(_, widths, _)| widths == Default::default())
         );
     }
     visual.simulate_click(
@@ -249,9 +248,7 @@ fn export_sources_use_explicit_ids_and_names_not_time_scope_or_focused_track(
 }
 
 #[gpui::test]
-fn selected_track_lanes_paint_subtle_tint_and_both_edges_only_for_explicit_members(
-    cx: &mut TestAppContext,
-) {
+fn selected_track_lanes_fill_bounds_only_for_explicit_members(cx: &mut TestAppContext) {
     let (project, source, empty, _) = audio_project();
     let before = project.snapshot();
     let (handle, editor) = editor_window(cx, project, Arc::default());
@@ -308,23 +305,17 @@ fn selected_track_lanes_paint_subtle_tint_and_both_edges_only_for_explicit_membe
         });
         for id in [source, empty] {
             let active = selected.contains(&id);
-            for prefix in [
-                "selected-track-lane",
-                "selected-track-lane-top",
-                "selected-track-lane-bottom",
-            ] {
-                let name = selector(prefix, id);
+            let tint = selector("selected-track-lane", id);
+            assert_eq!(visual.debug_bounds(tint).is_some(), active);
+            for edge in ["selected-track-lane-top", "selected-track-lane-bottom"] {
+                assert!(visual.debug_bounds(selector(edge, id)).is_none());
+            }
+            if active {
+                assert!(visual.rendered_background(tint).is_some());
                 assert_eq!(
-                    visual.debug_bounds(name).is_some(),
-                    active,
-                    "{prefix} {id:?}"
+                    visual.debug_bounds(tint),
+                    visual.debug_bounds(selector("arrangement-lane", id))
                 );
-                if active {
-                    assert!(
-                        visual.rendered_background(name).is_some(),
-                        "actual completed selection paint"
-                    );
-                }
             }
         }
     }
@@ -397,33 +388,6 @@ fn selected_lane_palette_and_paint_order_preserve_clip_fill_and_outer_selection_
             tint_layers.iter().map(|x| x.0).max().unwrap()
                 < clip_layers.iter().map(|x| x.0).min().unwrap()
         );
-        let lane = visual.debug_bounds(tint).unwrap();
-        let scale = visual.update(|window, _| window.scale_factor());
-        for edge in ["top", "bottom"] {
-            let selector = Box::leak(
-                format!("selected-track-lane-{edge}-{}", source.value()).into_boxed_str(),
-            );
-            let bounds = visual.debug_bounds(selector).unwrap();
-            let edge_layers = visual.rendered_quad_paint_layers(selector, false);
-            assert!(
-                edge_layers.iter().map(|x| x.0).max().unwrap()
-                    < clip_layers.iter().map(|x| x.0).min().unwrap(),
-                "lane accents must remain below all four clip selection strokes"
-            );
-            assert!((f32::from(bounds.size.height) * scale - 1.0).abs() < 0.001);
-            assert!(
-                bounds.top() >= lane.top() + gpui::px(1.0)
-                    && bounds.bottom() <= lane.bottom() - gpui::px(1.0)
-            );
-            assert_eq!(
-                visual.rendered_background(selector),
-                Some(
-                    gpui::Hsla::from(gpui::rgb(theme::color(theme::PaletteRole::Secondary)))
-                        .alpha(theme::TRACK_SELECTION_EDGE_OPACITY)
-                        .into()
-                )
-            );
-        }
     }
 }
 
@@ -546,24 +510,20 @@ fn empty_lane_click_moves_header_and_lane_highlight_with_active_track(cx: &mut T
                 }
             });
             for id in [source, empty] {
+                let name = selector("selected-track-lane", id);
+                assert_eq!(visual.debug_bounds(name).is_some(), selected.contains(&id));
+                if selected.contains(&id) {
+                    assert!(
+                        visual.rendered_background(name).is_some(),
+                        "completed lane paint"
+                    );
+                }
                 for prefix in [
                     "selected-track",
-                    "selected-track-lane",
                     "selected-track-lane-top",
                     "selected-track-lane-bottom",
                 ] {
-                    let name = selector(prefix, id);
-                    assert_eq!(
-                        visual.debug_bounds(name).is_some(),
-                        selected.contains(&id),
-                        "{prefix} after release={released}"
-                    );
-                    if selected.contains(&id) && prefix != "selected-track" {
-                        assert!(
-                            visual.rendered_background(name).is_some(),
-                            "completed lane paint"
-                        );
-                    }
+                    assert!(visual.debug_bounds(selector(prefix, id)).is_none());
                 }
             }
         }
