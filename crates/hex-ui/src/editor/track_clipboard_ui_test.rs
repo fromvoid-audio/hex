@@ -214,6 +214,16 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
             let header = visual.debug_bounds(header).unwrap();
             assert_eq!(f32::from(rail.size.width), 4.0);
             assert!(f32::from(rail.size.height) >= f32::from(header.size.height) - 2.0);
+            let lane_rail = Box::leak(
+                format!("lane-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
+            );
+            let lane = Box::leak(format!("arrangement-lane-{}", id.value()).into_boxed_str());
+            let lane_rail = visual
+                .debug_bounds(lane_rail)
+                .expect("member lane has its group cue");
+            let lane = visual.debug_bounds(lane).unwrap();
+            assert_eq!(f32::from(lane_rail.size.width), 2.0);
+            assert!(f32::from(lane_rail.size.height) >= f32::from(lane.size.height) - 2.0);
         }
         let fold = Box::leak(format!("group-fold-{}", group.value()).into_boxed_str());
         let click_fold = |visual: &mut VisualTestContext| {
@@ -243,6 +253,10 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
                 format!("track-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
             );
             assert!(visual.debug_bounds(rail).is_none());
+            let lane_rail = Box::leak(
+                format!("lane-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
+            );
+            assert!(visual.debug_bounds(lane_rail).is_none());
         }
         click_fold(&mut visual);
         editor.read_with(&visual, |view, _| {
