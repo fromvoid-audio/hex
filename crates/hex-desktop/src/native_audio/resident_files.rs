@@ -53,8 +53,8 @@ impl NativeAudioSink {
                     // Retirement remains charged and cannot stop a domain while
                     // an actual ordinary graph retains a use. Never evict the
                     // newest cached domain while making room for its successor.
-                    if !self.domains.iter().flatten().any(|domain| domain.retiring) {
-                        if let Some(domain) = self
+                    if !self.domains.iter().flatten().any(|domain| domain.retiring)
+                        && let Some(domain) = self
                             .domains
                             .iter_mut()
                             .flatten()
@@ -62,9 +62,8 @@ impl NativeAudioSink {
                                 control.audio_candidate_domain_has_no_graph_users(domain.token)
                             })
                             .min_by_key(|domain| domain.sources.catalog_generation())
-                        {
-                            domain.request_retirement(control);
-                        }
+                    {
+                        domain.request_retirement(control);
                     }
                     return Ok(false);
                 };
