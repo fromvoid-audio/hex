@@ -2,7 +2,7 @@
   "version": 1,
   "id": "hex-yield-workstation",
   "name": "hex / orbital",
-  "revisionId": "hex-current-aligned-study-r68",
+  "revisionId": "hex-current-aligned-study-r69",
   "width": 1900,
   "height": 1120,
   "background": "#111111",
@@ -3386,12 +3386,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons2": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number2": {
         "visible": true,
         "style": {
@@ -3662,12 +3656,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons3": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number3": {
@@ -5037,12 +5025,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons4": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number4": {
         "visible": true,
         "style": {
@@ -6227,12 +6209,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons5": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number5": {
@@ -16126,6 +16102,30 @@
         "visible": true
       },
       "aligned-pan-indicator-7": {
+        "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
         "visible": true
       }
     },
@@ -19494,12 +19494,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons2": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number2": {
         "visible": true,
         "style": {
@@ -19770,12 +19764,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons3": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number3": {
@@ -21145,12 +21133,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons4": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number4": {
         "visible": true,
         "style": {
@@ -22335,12 +22317,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons5": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number5": {
@@ -32235,6 +32211,30 @@
       },
       "aligned-pan-indicator-7": {
         "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
+        "visible": true
       }
     },
     "session": {
@@ -34200,9 +34200,6 @@
       "aligned-track-name2": {
         "visible": true
       },
-      "aligned-track-buttons2": {
-        "visible": true
-      },
       "aligned-track-number2": {
         "visible": true
       },
@@ -34337,9 +34334,6 @@
         }
       },
       "aligned-track-name3": {
-        "visible": true
-      },
-      "aligned-track-buttons3": {
         "visible": true
       },
       "aligned-track-number3": {
@@ -34949,9 +34943,6 @@
       "aligned-track-name4": {
         "visible": true
       },
-      "aligned-track-buttons4": {
-        "visible": true
-      },
       "aligned-track-number4": {
         "visible": true
       },
@@ -35479,9 +35470,6 @@
         }
       },
       "aligned-track-name5": {
-        "visible": true
-      },
-      "aligned-track-buttons5": {
         "visible": true
       },
       "aligned-track-number5": {
@@ -38922,6 +38910,30 @@
         "visible": true
       },
       "aligned-pan-indicator-7": {
+        "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
         "visible": true
       }
     },
@@ -40888,9 +40900,6 @@
       "aligned-track-name2": {
         "visible": true
       },
-      "aligned-track-buttons2": {
-        "visible": true
-      },
       "aligned-track-number2": {
         "visible": true
       },
@@ -41025,9 +41034,6 @@
         }
       },
       "aligned-track-name3": {
-        "visible": true
-      },
-      "aligned-track-buttons3": {
         "visible": true
       },
       "aligned-track-number3": {
@@ -41637,9 +41643,6 @@
       "aligned-track-name4": {
         "visible": true
       },
-      "aligned-track-buttons4": {
-        "visible": true
-      },
       "aligned-track-number4": {
         "visible": true
       },
@@ -42167,9 +42170,6 @@
         }
       },
       "aligned-track-name5": {
-        "visible": true
-      },
-      "aligned-track-buttons5": {
         "visible": true
       },
       "aligned-track-number5": {
@@ -45610,6 +45610,30 @@
         "visible": true
       },
       "aligned-pan-indicator-7": {
+        "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
         "visible": true
       }
     },
@@ -48978,12 +49002,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons2": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number2": {
         "visible": true,
         "style": {
@@ -49254,12 +49272,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons3": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number3": {
@@ -50629,12 +50641,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons4": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number4": {
         "visible": true,
         "style": {
@@ -51819,12 +51825,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons5": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number5": {
@@ -61719,6 +61719,30 @@
       },
       "aligned-pan-indicator-7": {
         "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
+        "visible": true
       }
     },
     "clip-colors": {
@@ -63684,9 +63708,6 @@
       "aligned-track-name2": {
         "visible": true
       },
-      "aligned-track-buttons2": {
-        "visible": true
-      },
       "aligned-track-number2": {
         "visible": true
       },
@@ -63821,9 +63842,6 @@
         }
       },
       "aligned-track-name3": {
-        "visible": true
-      },
-      "aligned-track-buttons3": {
         "visible": true
       },
       "aligned-track-number3": {
@@ -64433,9 +64451,6 @@
       "aligned-track-name4": {
         "visible": true
       },
-      "aligned-track-buttons4": {
-        "visible": true
-      },
       "aligned-track-number4": {
         "visible": true
       },
@@ -64963,9 +64978,6 @@
         }
       },
       "aligned-track-name5": {
-        "visible": true
-      },
-      "aligned-track-buttons5": {
         "visible": true
       },
       "aligned-track-number5": {
@@ -68406,6 +68418,30 @@
         "visible": true
       },
       "aligned-pan-indicator-7": {
+        "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
         "visible": true
       }
     },
@@ -70394,9 +70430,6 @@
       "aligned-track-name2": {
         "visible": true
       },
-      "aligned-track-buttons2": {
-        "visible": true
-      },
       "aligned-track-number2": {
         "visible": true
       },
@@ -70531,9 +70564,6 @@
         }
       },
       "aligned-track-name3": {
-        "visible": true
-      },
-      "aligned-track-buttons3": {
         "visible": true
       },
       "aligned-track-number3": {
@@ -71143,9 +71173,6 @@
       "aligned-track-name4": {
         "visible": true
       },
-      "aligned-track-buttons4": {
-        "visible": true
-      },
       "aligned-track-number4": {
         "visible": true
       },
@@ -71673,9 +71700,6 @@
         }
       },
       "aligned-track-name5": {
-        "visible": true
-      },
-      "aligned-track-buttons5": {
         "visible": true
       },
       "aligned-track-number5": {
@@ -75116,6 +75140,30 @@
         "visible": true
       },
       "aligned-pan-indicator-7": {
+        "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
         "visible": true
       }
     },
@@ -77104,9 +77152,6 @@
       "aligned-track-name2": {
         "visible": true
       },
-      "aligned-track-buttons2": {
-        "visible": true
-      },
       "aligned-track-number2": {
         "visible": true
       },
@@ -77241,9 +77286,6 @@
         }
       },
       "aligned-track-name3": {
-        "visible": true
-      },
-      "aligned-track-buttons3": {
         "visible": true
       },
       "aligned-track-number3": {
@@ -77853,9 +77895,6 @@
       "aligned-track-name4": {
         "visible": true
       },
-      "aligned-track-buttons4": {
-        "visible": true
-      },
       "aligned-track-number4": {
         "visible": true
       },
@@ -78383,9 +78422,6 @@
         }
       },
       "aligned-track-name5": {
-        "visible": true
-      },
-      "aligned-track-buttons5": {
         "visible": true
       },
       "aligned-track-number5": {
@@ -81826,6 +81862,30 @@
         "visible": true
       },
       "aligned-pan-indicator-7": {
+        "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
         "visible": true
       }
     },
@@ -85194,12 +85254,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons2": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number2": {
         "visible": true,
         "style": {
@@ -85470,12 +85524,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons3": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number3": {
@@ -86845,12 +86893,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons4": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number4": {
         "visible": true,
         "style": {
@@ -88035,12 +88077,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons5": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number5": {
@@ -97934,6 +97970,30 @@
         "visible": true
       },
       "aligned-pan-indicator-7": {
+        "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
         "visible": true
       }
     },
@@ -101302,12 +101362,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons2": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number2": {
         "visible": true,
         "style": {
@@ -101578,12 +101632,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons3": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number3": {
@@ -102953,12 +103001,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons4": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number4": {
         "visible": true,
         "style": {
@@ -104143,12 +104185,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons5": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number5": {
@@ -114042,6 +114078,30 @@
         "visible": true
       },
       "aligned-pan-indicator-7": {
+        "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
         "visible": true
       }
     },
@@ -117410,12 +117470,6 @@
           "color": "#17181a"
         }
       },
-      "aligned-track-buttons2": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
-        }
-      },
       "aligned-track-number2": {
         "visible": true,
         "style": {
@@ -117686,12 +117740,6 @@
         "visible": true,
         "style": {
           "color": "#17181a"
-        }
-      },
-      "aligned-track-buttons3": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
         }
       },
       "aligned-track-number3": {
@@ -119061,12 +119109,6 @@
           "color": "#17181a"
         }
       },
-      "aligned-track-buttons4": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
-        }
-      },
       "aligned-track-number4": {
         "visible": true,
         "style": {
@@ -120251,12 +120293,6 @@
         "visible": true,
         "style": {
           "color": "#17181a"
-        }
-      },
-      "aligned-track-buttons5": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
         }
       },
       "aligned-track-number5": {
@@ -130145,6 +130181,30 @@
       },
       "aligned-pan-indicator-7": {
         "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
+        "visible": true
       }
     },
     "galaxy-cyan": {
@@ -133512,12 +133572,6 @@
           "color": "#17181a"
         }
       },
-      "aligned-track-buttons2": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
-        }
-      },
       "aligned-track-number2": {
         "visible": true,
         "style": {
@@ -133788,12 +133842,6 @@
         "visible": true,
         "style": {
           "color": "#17181a"
-        }
-      },
-      "aligned-track-buttons3": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
         }
       },
       "aligned-track-number3": {
@@ -135163,12 +135211,6 @@
           "color": "#17181a"
         }
       },
-      "aligned-track-buttons4": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
-        }
-      },
       "aligned-track-number4": {
         "visible": true,
         "style": {
@@ -136353,12 +136395,6 @@
         "visible": true,
         "style": {
           "color": "#17181a"
-        }
-      },
-      "aligned-track-buttons5": {
-        "visible": true,
-        "style": {
-          "color": "#202123"
         }
       },
       "aligned-track-number5": {
@@ -146247,6 +146283,30 @@
       },
       "aligned-pan-indicator-7": {
         "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
+        "visible": true
       }
     },
     "tuner-open": {
@@ -149614,12 +149674,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons2": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number2": {
         "visible": true,
         "style": {
@@ -149890,12 +149944,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons3": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number3": {
@@ -151265,12 +151313,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons4": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number4": {
         "visible": true,
         "style": {
@@ -152455,12 +152497,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons5": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number5": {
@@ -162354,6 +162390,30 @@
         "visible": true
       },
       "aligned-pan-indicator-7": {
+        "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
         "visible": true
       }
     },
@@ -165563,12 +165623,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons2": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number2": {
         "visible": true,
         "style": {
@@ -165839,12 +165893,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons3": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number3": {
@@ -167214,12 +167262,6 @@
           "color": "#111111"
         }
       },
-      "aligned-track-buttons4": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
-        }
-      },
       "aligned-track-number4": {
         "visible": true,
         "style": {
@@ -168404,12 +168446,6 @@
         "visible": true,
         "style": {
           "color": "#111111"
-        }
-      },
-      "aligned-track-buttons5": {
-        "visible": true,
-        "style": {
-          "color": "#121212"
         }
       },
       "aligned-track-number5": {
@@ -178249,6 +178285,30 @@
         "visible": true
       },
       "aligned-pan-indicator-7": {
+        "visible": true
+      },
+      "track-tag-disc-2": {
+        "visible": true
+      },
+      "track-tag-dot-2": {
+        "visible": true
+      },
+      "track-tag-disc-3": {
+        "visible": true
+      },
+      "track-tag-dot-3": {
+        "visible": true
+      },
+      "track-tag-disc-4": {
+        "visible": true
+      },
+      "track-tag-dot-4": {
+        "visible": true
+      },
+      "track-tag-disc-5": {
+        "visible": true
+      },
+      "track-tag-dot-5": {
         "visible": true
       }
     }
@@ -326307,7 +326367,7 @@
       "bounds": {
         "x": 1576,
         "y": 281,
-        "width": 120,
+        "width": 102,
         "height": 15.399999999999999
       },
       "style": {
@@ -326320,26 +326380,6 @@
       },
       "parentId": "aligned-current-study",
       "text": "⊖ percussion"
-    },
-    {
-      "id": "aligned-track-buttons2",
-      "type": "text",
-      "bounds": {
-        "x": 1576,
-        "y": 307,
-        "width": 120,
-        "height": 14.0
-      },
-      "style": {
-        "fill": "none",
-        "stroke": "none",
-        "color": "#242224",
-        "fontSize": 9,
-        "fontFamily": "Ioskeley Mono",
-        "padding": 0
-      },
-      "parentId": "aligned-current-study",
-      "text": "→ main"
     },
     {
       "id": "aligned-track-number2",
@@ -327380,7 +327420,7 @@
       "bounds": {
         "x": 1579,
         "y": 332,
-        "width": 117,
+        "width": 99,
         "height": 15.399999999999999
       },
       "style": {
@@ -327393,26 +327433,6 @@
       },
       "parentId": "aligned-current-study",
       "text": "⊙ kick"
-    },
-    {
-      "id": "aligned-track-buttons3",
-      "type": "text",
-      "bounds": {
-        "x": 1579,
-        "y": 358,
-        "width": 117,
-        "height": 14.0
-      },
-      "style": {
-        "fill": "none",
-        "stroke": "none",
-        "color": "#242224",
-        "fontSize": 9,
-        "fontFamily": "Ioskeley Mono",
-        "padding": 0
-      },
-      "parentId": "aligned-current-study",
-      "text": "→ percussion"
     },
     {
       "id": "aligned-track-number3",
@@ -331776,7 +331796,7 @@
       "bounds": {
         "x": 1579,
         "y": 383,
-        "width": 117,
+        "width": 99,
         "height": 15.399999999999999
       },
       "style": {
@@ -331789,26 +331809,6 @@
       },
       "parentId": "aligned-current-study",
       "text": "⊖ drums"
-    },
-    {
-      "id": "aligned-track-buttons4",
-      "type": "text",
-      "bounds": {
-        "x": 1579,
-        "y": 409,
-        "width": 117,
-        "height": 14.0
-      },
-      "style": {
-        "fill": "none",
-        "stroke": "none",
-        "color": "#242224",
-        "fontSize": 9,
-        "fontFamily": "Ioskeley Mono",
-        "padding": 0
-      },
-      "parentId": "aligned-current-study",
-      "text": "→ percussion"
     },
     {
       "id": "aligned-track-number4",
@@ -335593,7 +335593,7 @@
       "bounds": {
         "x": 1582,
         "y": 434,
-        "width": 114,
+        "width": 96,
         "height": 15.399999999999999
       },
       "style": {
@@ -335606,26 +335606,6 @@
       },
       "parentId": "aligned-current-study",
       "text": "⊙ hats"
-    },
-    {
-      "id": "aligned-track-buttons5",
-      "type": "text",
-      "bounds": {
-        "x": 1582,
-        "y": 460,
-        "width": 114,
-        "height": 14.0
-      },
-      "style": {
-        "fill": "none",
-        "stroke": "none",
-        "color": "#242224",
-        "fontSize": 9,
-        "fontFamily": "Ioskeley Mono",
-        "padding": 0
-      },
-      "parentId": "aligned-current-study",
-      "text": "→ drums"
     },
     {
       "id": "aligned-track-number5",
@@ -367533,6 +367513,166 @@
         "fontFamily": "Ioskeley Mono",
         "padding": 0
       }
+    },
+    {
+      "id": "track-tag-disc-2",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 1680,
+        "y": 281,
+        "width": 14,
+        "height": 14
+      },
+      "style": {
+        "fill": "#303030",
+        "stroke": "none",
+        "radius": 7.0,
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7"
+      }
+    },
+    {
+      "id": "track-tag-dot-2",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 1684,
+        "y": 285,
+        "width": 6,
+        "height": 6
+      },
+      "style": {
+        "fill": "#9d9d9d",
+        "stroke": "none",
+        "radius": 3.0,
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7"
+      }
+    },
+    {
+      "id": "track-tag-disc-3",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 1680,
+        "y": 332,
+        "width": 14,
+        "height": 14
+      },
+      "style": {
+        "fill": "#303030",
+        "stroke": "none",
+        "radius": 7.0,
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7"
+      }
+    },
+    {
+      "id": "track-tag-dot-3",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 1684,
+        "y": 336,
+        "width": 6,
+        "height": 6
+      },
+      "style": {
+        "fill": "#af9741",
+        "stroke": "none",
+        "radius": 3.0,
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7"
+      }
+    },
+    {
+      "id": "track-tag-disc-4",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 1680,
+        "y": 383,
+        "width": 14,
+        "height": 14
+      },
+      "style": {
+        "fill": "#303030",
+        "stroke": "none",
+        "radius": 7.0,
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7"
+      }
+    },
+    {
+      "id": "track-tag-dot-4",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 1684,
+        "y": 387,
+        "width": 6,
+        "height": 6
+      },
+      "style": {
+        "fill": "#af9741",
+        "stroke": "none",
+        "radius": 3.0,
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7"
+      }
+    },
+    {
+      "id": "track-tag-disc-5",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 1680,
+        "y": 434,
+        "width": 14,
+        "height": 14
+      },
+      "style": {
+        "fill": "#303030",
+        "stroke": "none",
+        "radius": 7.0,
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7"
+      }
+    },
+    {
+      "id": "track-tag-dot-5",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 1684,
+        "y": 438,
+        "width": 6,
+        "height": 6
+      },
+      "style": {
+        "fill": "#4f9970",
+        "stroke": "none",
+        "radius": 3.0,
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7"
+      }
     }
   ],
   "designNotes": {
@@ -367543,7 +367683,8 @@
     "tuner": "the toolbar opens an illustrative no-signal tuner panel; pitch detection is not implemented in the frame prototype.",
     "recording": "the first arrangement track illustrates active recording: red arm control and a translucent red track overlay; track meters show left and right channels.",
     "browserToggle": "bottom-left browser toggle shows and hides the browser in this fixed-layout prototype; surrounding panels do not reflow.",
-    "timeSelection": "time-selection state illustrates a light blue selected range across two arrangement tracks."
+    "timeSelection": "time-selection state illustrates a light blue selected range across two arrangement tracks.",
+    "trackTags": "tagged tracks show a color-coded dot inside a dark circle at the upper right of their headers."
   },
   "themeDefinitions": {
     "galaxy-nebula": {
