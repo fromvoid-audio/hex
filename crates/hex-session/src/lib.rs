@@ -2035,12 +2035,19 @@ fn prepare_with_waveforms_using(
                 })
             })
             .count();
+        let repeat_roots = prepared
+            .arrangement()
+            .audio_clip_views()
+            .iter()
+            .filter(|view| view.repeat.is_some())
+            .count();
         let requested_bins = (262_144
             / prepared
                 .arrangement()
                 .audio_clip_views()
                 .len()
                 .saturating_add(preview_roots)
+                .saturating_add(repeat_roots)
                 .max(1))
         .clamp(1, 1_024);
         // A repeated view plays a shared root as a loop; its summary is still in

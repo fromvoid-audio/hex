@@ -752,6 +752,7 @@ pub(super) struct EnqueuedNativeDeviceDrop {
 
 pub(super) struct EditorView {
     service: Service,
+    solo_observation: Option<hex_session::service::SoloViewObservation>,
     transport_trace: Option<crate::diagnostics::TransportTrace>,
     audio: Option<crate::EditorAudio>,
     retired_action_outcomes: Option<hex_audio::prepared::ActionOutcomeReader>,
@@ -1496,6 +1497,7 @@ impl EditorView {
         let mut view = Self {
             transport_trace: crate::diagnostics::TransportTrace::from_app(cx),
             service,
+            solo_observation: None,
             audio,
             retired_action_outcomes: None,
             retired_action_message: None,
@@ -1893,6 +1895,39 @@ impl EditorView {
             .and_then(|state| state.project.loop_region())
             .filter(|region| region.enabled())
             .map_or(0, |region| region.start())
+    }
+
+    fn observe_solo_view(&mut self, view: hex_session::service::SoloViewObservation) -> bool {
+        if view.project_generation != self.project_generation
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|state| state.revision != view.previous_revision)
+            || view.revision != view.previous_revision.saturating_add(1)
+        {
+            return false;
+        }
+        self.solo_observation = Some(view);
+        true
+    }
+
+    fn displayed_solo(&self, track: TrackId, canonical: bool) -> bool {
+        self.solo_observation
+            .as_ref()
+            .filter(|view| {
+                view.project_generation == self.project_generation
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == view.previous_revision)
+            })
+            .and_then(|view| {
+                view.tracks
+                    .iter()
+                    .find(|(id, _)| *id == track)
+                    .map(|(_, soloed)| *soloed)
+            })
+            .unwrap_or(canonical)
     }
 
     pub(super) fn toggle_solo(&mut self, track: TrackId, exclusive: bool) {
