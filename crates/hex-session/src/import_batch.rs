@@ -8,17 +8,31 @@ pub(crate) use console::{ResolvedCell, normalize as normalize_imports};
 
 /// Immutable import intent captured before decode. Ordinary and Console callers
 /// retain Off; overwrite preserves the existing destination-specific placement law.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AudioImportOptions {
     pub warp: hex_project::AudioImportWarp,
     pub overwrite: bool,
+    /// Captured linear gain for newly created Arrangement or Console tracks.
+    pub new_track_gain: Option<f32>,
 }
 impl Default for AudioImportOptions {
     fn default() -> Self {
         Self {
             warp: hex_project::AudioImportWarp::Off,
             overwrite: true,
+            new_track_gain: None,
         }
+    }
+}
+impl AudioImportOptions {
+    pub(crate) fn validate(self) -> Result<(), SessionError> {
+        if self
+            .new_track_gain
+            .is_some_and(|gain| !gain.is_finite() || !(0.0..=2.0).contains(&gain))
+        {
+            return Err(SessionError::Invalid("gain must be finite and within 0..2"));
+        }
+        Ok(())
     }
 }
 
@@ -117,6 +131,7 @@ impl Session {
             &mut dyn FnMut() -> Result<(), SessionError>,
         ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        options.validate()?;
         admit()?;
         if self.project() != expected_project {
             return Err(SessionError::Invalid(
@@ -168,8 +183,13 @@ impl Session {
             .and_then(|member| member.path.file_stem())
             .map(|name| name.to_string_lossy())
             .unwrap_or_else(|| "imported audio".into());
-        let (mut commands, console_cell) =
-            console::prefix(self.project(), destination, count, &track_name)?;
+        let (mut commands, console_cell) = console::prefix(
+            self.project(),
+            destination,
+            count,
+            &track_name,
+            options.new_track_gain,
+        )?;
         // One slot per member; `None` marks a member that reuses a resident asset.
         let mut residents: Vec<Option<ResidentAsset>> = Vec::new();
         commands
@@ -345,9 +365,10 @@ impl Session {
         let limits = self.native_reservation;
         let max_frames = self.max_resident_frames;
         let shutdown = &self.shutdown;
-        let (_, (created, revision)) = self.editor.execute_audio_imports_with_warp_prepared(
+        let (_, (created, revision)) = self.editor.execute_audio_imports_with_track_gain_prepared(
             commands,
             options.warp,
+            options.new_track_gain,
             |candidate, results| {
                 let created =
                     console::normalize(candidate, results, console_cell, residents.len())?;

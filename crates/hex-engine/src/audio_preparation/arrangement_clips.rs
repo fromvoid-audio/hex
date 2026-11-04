@@ -189,6 +189,13 @@ impl ArrangementClips {
         effects: Option<&hex_lattice::NativeDeviceRegistry<'_>>,
         native_input: Option<crate::device_automation::NativeParameterInputTarget>,
     ) -> Result<(), AudioStorageError> {
+        if project
+            .tracks()
+            .iter()
+            .any(hex_project::Track::retained_source_path)
+        {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
         let Stages {
             assemble_tracks: tracks,
             assemble_returns: returns,

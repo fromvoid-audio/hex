@@ -73,6 +73,11 @@ pub(super) fn bind_keys(cx: &mut App) {
             RemoveHeaderTracks,
             Some("hex_track_header && !hex_text_editing"),
         ),
+        KeyBinding::new(
+            "x",
+            RemoveHeaderTracks,
+            Some("hex_track_header && !hex_text_editing && !hex_text_input"),
+        ),
         // Forward-delete owns the same header deletion; it must not fall
         // through to the editor's clip deletion.
         KeyBinding::new(
@@ -92,6 +97,9 @@ impl EditorView {
         };
         let tracks = self.selected_track_ids();
         if tracks.is_empty() || !tracks.contains(&focused) {
+            return true;
+        }
+        if self.selection_delete_blocked() {
             return true;
         }
         if self.edit_pending()

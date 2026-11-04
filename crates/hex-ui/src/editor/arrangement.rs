@@ -309,7 +309,7 @@ impl EditorView {
                     ),
             );
         }
-        content = content.children(self.edit_cursor_layer(viewport));
+        content = content.children(self.edit_cursor_layer(viewport, cx));
         content = content.children(self.track_reorder_line());
         let upper = div()
             .flex()
@@ -501,7 +501,7 @@ impl EditorView {
                                 cx.notify();
                                 return (true, false);
                             }
-                            if view.pointer_hits_priority_clip_control(x, y) {
+                            if view.pointer_hits_priority_clip_control(x, y, event.modifiers.alt) {
                                 return (false, false);
                             }
                             if event.click_count == 2
@@ -656,9 +656,7 @@ impl EditorView {
                 .filter(|drag| self.browser_audio_drag_is_current(drag))
                 .and_then(|drag| drag.insertion_line_y.get())
                 .or_else(|| {
-                    self.active_clip_drag
-                        .as_ref()
-                        .filter(|drag| self.drag_start_is_current(drag))
+                    self.displayed_clip_drag()
                         .and_then(|drag| drag.insertion_line_y.get())
                 })
         };
@@ -675,7 +673,12 @@ impl EditorView {
                             .right_0()
                             .top(px((relative_y - 1.0).max(0.0)))
                             .h(px(2.0))
-                            .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+                            .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            .children(
+                                self.displayed_clip_drag()
+                                    .filter(|drag| drag.alias_copy())
+                                    .map(|_| super::tracks::alias_drag_badge()),
+                            ),
                     );
                 }
             }
@@ -948,7 +951,6 @@ impl EditorView {
                 .into()
             })
             .children([labels])
-            .children(self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Top))
             .children([canvas(
                 |_, _, _| (),
                 move |bounds, _, window, _cx| {
@@ -1035,7 +1037,8 @@ impl EditorView {
             .top_0()
             .bottom_0()
             .left_0()
-            .right_0()]);
+            .right_0()])
+            .children(self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Top, cx));
         super::timeline_strip::ruler_surface()
             .debug_selector(|| "arrangement-time-ruler".into())
             .flex()
