@@ -698,34 +698,7 @@ impl EditorView {
                 generation,
                 revision,
                 command,
-            } => {
-                if self.track_name.is_editing()
-                    || self.clip_name_edit.is_some()
-                    || self.track_reorder_active()
-                    || self.track_resize_active()
-                    || self.active_clip_drag.is_some()
-                    || self.active_trim_drag.is_some()
-                    || self.active_midi_trim_drag.is_some()
-                    || self.active_fade_drag.is_some()
-                    || self.time_selection_gesture.is_some()
-                {
-                    self.error = Some("finish the current edit before changing tracks".into());
-                    cx.notify();
-                    return;
-                }
-                if generation == self.project_generation
-                    && self
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.revision == revision)
-                    && !self.edit_pending()
-                    && device_panel::finalize_controls(self, cx)
-                {
-                    self.focus.focus(window);
-                    self.enqueue(Request::Edit(command));
-                    cx.notify();
-                }
-            }
+            } => self.perform_track_group(generation, revision, command, window, cx),
             EditorContextAction::PlaceIcon { path, id } => {
                 self.set_browser_place_icon(path, id, cx)
             }
@@ -843,6 +816,42 @@ impl EditorView {
                 }
                 cx.notify();
             }
+        }
+    }
+
+    pub(super) fn perform_track_group(
+        &mut self,
+        generation: u64,
+        revision: u64,
+        command: Command,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.track_name.is_editing()
+            || self.clip_name_edit.is_some()
+            || self.track_reorder_active()
+            || self.track_resize_active()
+            || self.active_clip_drag.is_some()
+            || self.active_trim_drag.is_some()
+            || self.active_midi_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
+            || self.time_selection_gesture.is_some()
+        {
+            self.error = Some("finish the current edit before changing tracks".into());
+            cx.notify();
+            return;
+        }
+        if generation == self.project_generation
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.revision == revision)
+            && !self.edit_pending()
+            && device_panel::finalize_controls(self, cx)
+        {
+            self.focus.focus(window);
+            self.enqueue(Request::Edit(command));
+            cx.notify();
         }
     }
 
