@@ -316,10 +316,10 @@ impl Callback {
         &mut self,
         mut admit: impl FnMut(Target) -> Result<Clock, AbortReason>,
     ) -> Option<(u64, f32)> {
-        if let Some(owner) = self.owner {
-            if let Err(reason) = admit(owner) {
-                self.abort(reason);
-            }
+        if let Some(owner) = self.owner
+            && let Err(reason) = admit(owner)
+        {
+            self.abort(reason);
         }
         let count = self.commands.slots().min(CAPACITY);
         for _ in 0..count {
@@ -401,20 +401,20 @@ impl Callback {
             self.abort(AbortReason::OutputFailed);
             return;
         }
-        if let Some((command, clock)) = self.staged.take() {
-            if let Kind::Begin(gain) | Kind::Change(gain) = command.kind {
-                self.queue_marker(
-                    clock,
-                    Receipt::Applied {
-                        target: command.target,
-                        sequence: command.sequence,
-                        gain,
-                        performance_frame: clock.performance_frame,
-                        content_frame: clock.content_frame,
-                        loop_pass: clock.loop_pass,
-                    },
-                );
-            }
+        if let Some((command, clock)) = self.staged.take()
+            && let Kind::Begin(gain) | Kind::Change(gain) = command.kind
+        {
+            self.queue_marker(
+                clock,
+                Receipt::Applied {
+                    target: command.target,
+                    sequence: command.sequence,
+                    gain,
+                    performance_frame: clock.performance_frame,
+                    content_frame: clock.content_frame,
+                    loop_pass: clock.loop_pass,
+                },
+            );
         }
         if let Some((target, mut clock)) = self.terminal.take() {
             // Preserve the release timestamp and delay publication through

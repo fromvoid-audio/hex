@@ -179,12 +179,12 @@ fn closed_constructor_conflicting_pcm_key_facts_refuse_and_preserve_owner_and_do
         measured_silent_render(&mut data);
         control.reclaim();
         for (index, token) in domains.iter().enumerate() {
-            if !reports[index] {
-                if let Some(report) = control.recover_audio_candidate_domain(*token) {
-                    assert!(report.worker_joined && report.accounting_complete);
-                    assert_eq!(report.page_buffers, 4);
-                    reports[index] = true;
-                }
+            if !reports[index]
+                && let Some(report) = control.recover_audio_candidate_domain(*token)
+            {
+                assert!(report.worker_joined && report.accounting_complete);
+                assert_eq!(report.page_buffers, 4);
+                reports[index] = true;
             }
         }
         assert!(std::time::Instant::now() < deadline);
