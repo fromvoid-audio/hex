@@ -550,3 +550,64 @@ fn publication_observation_tracks_worker_callback_admission_and_application() {
         }
     );
 }
+
+#[test]
+fn eq_bypass_waits_for_inflight_parameter_publication() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let mut eq = hex_engine::eq::EqState {
+        output_gain: 2.0,
+        ..Default::default()
+    };
+    let inserted = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: eq.encode().unwrap(),
+    }));
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("eq device")
+    };
+    (applied, _) = h.applied(applied);
+    eq.output_gain = 3.0;
+    h.run(Request::Edit(Command::ReplaceDeviceState {
+        device,
+        state: eq.encode().unwrap(),
+    }));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.submitted.is_none_or(|(revision, _)| revision <= applied) {
+        h.pump();
+        assert!(
+            Instant::now() < deadline,
+            "parameter publication was not staged"
+        );
+        std::thread::yield_now();
+    }
+    let parameter_revision = h.submitted.unwrap().0;
+    h.service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    let wait = Instant::now() + Duration::from_millis(100);
+    while Instant::now() < wait {
+        h.pump();
+        if let Ok(event) = h.service.try_event() {
+            panic!(
+                "bypass must wait for the parameter publication, got {:?}",
+                event.error
+            );
+        }
+        std::thread::yield_now();
+    }
+    h.render();
+    let event = h.next();
+    assert!(event.error.is_none(), "{:?}", event.error);
+    assert!(event.state.project.device(device).unwrap().bypassed());
+    let (next, metadata) = h.applied(parameter_revision);
+    assert_eq!(metadata.context.editor_revision, event.state.revision);
+    assert!(next > parameter_revision);
+}
