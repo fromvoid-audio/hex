@@ -271,6 +271,7 @@ impl EditorView {
                 self.track_header_width(),
                 RETURN_ROW_HEIGHT,
                 selected,
+                None,
             )
             .debug_selector(move || format!("return-track-header-{}", id.value()))
             .child(
