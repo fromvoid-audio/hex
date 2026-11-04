@@ -207,3 +207,63 @@ fn option_wheel_main_and_overview_share_existing_heights_and_held_resize_exclude
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| assert!(!v.track_resize_active()));
 }
+
+#[gpui::test]
+fn option_wheel_centers_hovered_track_as_it_resizes(cx: &mut TestAppContext) {
+    let (mut visual, editor, tracks) = fixture(cx, 40);
+    editor.update(&mut visual, |view, cx| {
+        view.track_scroll
+            .scroll_to_item(10, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let track = tracks[12];
+    for delta in [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0] {
+        let row = bounds(&mut visual, "arrangement-track-header", track);
+        wheel(&mut visual, row.center(), line(delta), option());
+        let row = bounds(&mut visual, "arrangement-track-header", track);
+        let viewport =
+            editor.read_with(&visual, |view, _| view.track_scroll.list.viewport_bounds());
+        assert!(
+            (f32::from(row.center().y - viewport.center().y)).abs() <= 1.0,
+            "resized row center {:?} must stay at viewport center {:?}",
+            row,
+            viewport
+        );
+    }
+}
+
+#[gpui::test]
+fn option_wheel_centering_respects_scroll_endpoints(cx: &mut TestAppContext) {
+    let (mut visual, editor, tracks) = fixture(cx, 40);
+    for (track, strategy) in [
+        (tracks[0], gpui::ScrollStrategy::Top),
+        (tracks[39], gpui::ScrollStrategy::Bottom),
+    ] {
+        editor.update(&mut visual, |view, cx| {
+            let index = if track == tracks[0] {
+                0
+            } else {
+                tracks.len() - 1
+            };
+            view.track_scroll.scroll_to_item(index, strategy);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        for delta in [1.0, 1.0, -1.0] {
+            let row = bounds(&mut visual, "arrangement-track-header", track);
+            wheel(&mut visual, row.center(), line(delta), option());
+            let row = bounds(&mut visual, "arrangement-track-header", track);
+            editor.read_with(&visual, |view, _| {
+                let viewport = view.track_scroll.list.viewport_bounds();
+                let offset = -f32::from(view.track_scroll.offset().y);
+                let maximum = f32::from(view.track_scroll.max_offset().height);
+                assert!(
+                    offset >= -1.0 && offset <= maximum + 1.0,
+                    "offset={offset}, max={maximum}"
+                );
+                assert!(row.bottom() > viewport.top() && row.top() < viewport.bottom());
+            });
+        }
+    }
+}
