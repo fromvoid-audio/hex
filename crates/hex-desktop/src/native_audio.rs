@@ -592,20 +592,18 @@ impl NativeAudioSink {
             .preparation
             .as_ref()
             .is_some_and(|p| p.snapshot.key() != key)
+            && let Some(p) = self.preparation.as_mut()
         {
-            if let Some(p) = self.preparation.as_mut() {
-                control.cancel_audio_candidate_preparation(p.token);
-                p.cancelling = true;
-                if let Some(token) = p.domain {
-                    if let Some(domain) = self
-                        .domains
-                        .iter_mut()
-                        .flatten()
-                        .find(|d| d.token == token && !d.ready)
-                    {
-                        domain.request_retirement(control);
-                    }
-                }
+            control.cancel_audio_candidate_preparation(p.token);
+            p.cancelling = true;
+            if let Some(token) = p.domain
+                && let Some(domain) = self
+                    .domains
+                    .iter_mut()
+                    .flatten()
+                    .find(|d| d.token == token && !d.ready)
+            {
+                domain.request_retirement(control);
             }
         }
         if self.preparation.as_ref().is_some_and(|p| p.cancelling) {
@@ -965,15 +963,14 @@ impl NativeAudioSink {
         let key = pending.snapshot.key();
         control.cancel_audio_candidate_preparation(pending.token);
         pending.cancelling = true;
-        if let Some(token) = pending.domain {
-            if let Some(domain) = self
+        if let Some(token) = pending.domain
+            && let Some(domain) = self
                 .domains
                 .iter_mut()
                 .flatten()
                 .find(|d| d.token == token && !d.ready)
-            {
-                domain.request_retirement(control);
-            }
+        {
+            domain.request_retirement(control);
         }
         self.preparation = Some(pending);
         self.blocked = Some(context);
@@ -1083,14 +1080,13 @@ impl WorkerAudioSink for NativeAudioSink {
             .output
             .as_mut()
             .and_then(|output| output.publication.control())
-        {
-            if let Some(domain) = self.domains.iter().flatten().find(|domain| {
+            && let Some(domain) = self.domains.iter().flatten().find(|domain| {
                 domain.ready
                     && !domain.retiring
                     && domain.sources.covers_files(&input, domain.token, control)
-            }) {
-                return domain.sources.file_metadata(&input).map(Some);
-            }
+            })
+        {
+            return domain.sources.file_metadata(&input).map(Some);
         }
         let catalog = self.next_catalog;
         self.next_catalog = catalog

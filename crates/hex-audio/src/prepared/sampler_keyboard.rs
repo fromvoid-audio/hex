@@ -339,12 +339,12 @@ impl Callback {
         }) {
             return;
         }
-        if let Some(runtime) = active.runtime_mut() {
-            if runtime.apply_current_sampler_keyboard(frame).is_err() {
-                self.status
-                    .sampler_keyboard
-                    .reject_on_callback(frame.map_or(0, |f| f.epoch));
-            }
+        if let Some(runtime) = active.runtime_mut()
+            && runtime.apply_current_sampler_keyboard(frame).is_err()
+        {
+            self.status
+                .sampler_keyboard
+                .reject_on_callback(frame.map_or(0, |f| f.epoch));
         }
     }
 }
