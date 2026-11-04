@@ -51,6 +51,9 @@ impl SessionPlayback {
                 "gain recording override must be finite and within 0..2",
             ));
         }
+        if self.gain_recording_override == Some(gain) {
+            return Ok(());
+        }
         self.gain_recording_override = Some(gain);
         Ok(())
     }
