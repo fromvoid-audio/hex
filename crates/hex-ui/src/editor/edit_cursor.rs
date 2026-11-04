@@ -44,6 +44,71 @@ impl EditCursor {
 }
 
 impl EditorView {
+    pub(super) fn valid_locked_play_start(&self) -> Option<EditCursor> {
+        self.locked_play_start.filter(|cursor| {
+            cursor.generation == self.project_generation
+                && self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.project.track(cursor.track).is_some())
+        })
+    }
+
+    pub(super) fn update_locked_play_start_from_point(&mut self) {
+        if self.locked_play_start.is_some() {
+            self.locked_play_start = self.edit_cursor;
+        }
+    }
+
+    fn toggle_play_start_lock(&mut self, cx: &mut Context<Self>) {
+        if self.mode != EditorMode::Arrangement
+            || self.context_menu.is_some()
+            || self.track_name.is_editing()
+            || self.clip_name_edit.is_some()
+            || self.sections.naming()
+            || self.sections.held()
+            || self.changelog.is_open()
+            || self.project_tempo_editing(cx)
+            || self.gain_numeric_editing(cx)
+            || self.clip_numeric_editing(cx)
+            || self.opening_project
+            || self.close_prompt_open
+            || self.save_dialog_open
+            || self.export_dialog_open
+            || self.preset_dialog_open
+            || self.theme_settings.open
+            || self.tuning.open
+            || self.controller_input_is_open()
+            || self.time_selection_gesture.is_some()
+            || self.time_range_move_gesture.is_some()
+            || self.active_clip_drag.is_some()
+            || self.active_browser_audio_drag.is_some()
+            || self.active_native_device_drag.is_some()
+            || self.active_trim_drag.is_some()
+            || self.active_midi_trim_drag.is_some()
+            || self.active_fade_drag.is_some()
+            || self.loop_rail_gesture.is_some()
+            || self.scrub_active()
+            || self.track_resize_active()
+            || self.track_reorder_active()
+            || cx.has_active_drag()
+        {
+            return;
+        }
+        if self.valid_locked_play_start().is_some() {
+            self.locked_play_start = None;
+        } else if self.normalized_time_selection().is_none() {
+            self.locked_play_start = self.edit_cursor.filter(|cursor| {
+                cursor.generation == self.project_generation
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.project.track(cursor.track).is_some())
+            });
+        }
+        cx.notify();
+    }
+
     pub(super) fn place_edit_cursor(
         &mut self,
         track: TrackId,
@@ -92,6 +157,7 @@ impl EditorView {
             pulse_color: theme::color(theme::PaletteRole::Text),
             pulse_started: Instant::now(),
         });
+        self.update_locked_play_start_from_point();
         self.time_selection = Some(TimeSelection {
             anchor_track: track,
             end_track: track,
@@ -145,6 +211,9 @@ impl EditorView {
     }
 
     pub(super) fn tick_edit_cursor(&mut self, now: Instant) -> bool {
+        if self.locked_play_start.is_some() && self.valid_locked_play_start().is_none() {
+            self.locked_play_start = None;
+        }
         if self.context_menu.is_some()
             || self.close_prompt_open
             || (self.mode != EditorMode::Arrangement
@@ -230,12 +299,14 @@ impl EditorView {
         &self,
         viewport: super::viewport::Viewport,
         edge: hex_widgets::TimeMarkerEdge,
+        cx: &mut Context<Self>,
     ) -> Option<Div> {
         use hex_widgets::{TimeMarkerEndpoint as Endpoint, time_position_marker};
-        let cursor = self.edit_cursor?;
-        if cursor.generation != self.project_generation {
-            return None;
-        }
+        let locked = self.valid_locked_play_start();
+        let cursor = self
+            .edit_cursor
+            .filter(|cursor| cursor.generation == self.project_generation);
+        let cursor = cursor.or(locked)?;
         let (start, end) = self
             .time_selection
             .map_or((cursor.frame, cursor.frame), |selection| {
@@ -248,34 +319,70 @@ impl EditorView {
             hex_widgets::TimeMarkerEdge::Top => "top",
             hex_widgets::TimeMarkerEdge::Bottom => "bottom",
         };
-        if start == end && self.selected_clip_play_start().is_some() {
+        if locked.is_none() && start == end && self.selected_clip_play_start().is_some() {
             return None;
         }
-        let markers = [
-            (
-                start,
-                if start == end {
-                    Endpoint::Point
-                } else {
-                    Endpoint::Start
-                },
-                "start",
-            ),
-            (end, Endpoint::End, "end"),
-        ]
-        .into_iter()
-        .filter_map(|(frame, endpoint, name)| {
-            if start == end && endpoint == Endpoint::End {
-                return None;
+        let mut markers = Vec::new();
+        if start != end {
+            for (frame, endpoint, name) in [
+                (start, Endpoint::Start, "start"),
+                (end, Endpoint::End, "end"),
+            ] {
+                if let Some(marker) = viewport.fraction(frame).and_then(|position| {
+                    time_position_marker(
+                        format!("time-marker-{edge_name}-{name}").into(),
+                        position,
+                        endpoint,
+                        edge,
+                        theme::time_position_marker_color(),
+                    )
+                }) {
+                    markers.push(marker.into_any_element());
+                }
             }
-            time_position_marker(
-                format!("time-marker-{edge_name}-{name}").into(),
-                viewport.fraction(frame)?,
-                endpoint,
-                edge,
-                theme::time_position_marker_color(),
-            )
+        }
+        let point = locked.or_else(|| {
+            (start == end && self.selected_clip_play_start().is_none()).then_some(cursor)
         });
+        if let Some(point) = point
+            && let Some(marker) = viewport.fraction(point.frame).and_then(|position| {
+                time_position_marker(
+                    if locked.is_some() {
+                        format!("locked-play-start-{edge_name}").into()
+                    } else {
+                        format!("time-marker-{edge_name}-start").into()
+                    },
+                    position,
+                    Endpoint::Point,
+                    edge,
+                    if locked.is_some() {
+                        theme::locked_time_position_marker_color()
+                    } else {
+                        theme::time_position_marker_color()
+                    },
+                )
+            })
+        {
+            markers.push(
+                marker
+                    .id(if edge == hex_widgets::TimeMarkerEdge::Top {
+                        "play-start-lock-top"
+                    } else {
+                        "play-start-lock-bottom"
+                    })
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|view, event: &gpui::MouseDownEvent, _, cx| {
+                            if event.modifiers == gpui::Modifiers::default() {
+                                view.toggle_play_start_lock(cx);
+                                cx.stop_propagation();
+                            }
+                        }),
+                    )
+                    .into_any_element(),
+            );
+        }
         Some(
             div()
                 .absolute()
@@ -287,8 +394,13 @@ impl EditorView {
         )
     }
 
-    pub(super) fn edit_cursor_layer(&self, viewport: super::viewport::Viewport) -> Option<Div> {
-        let markers = self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Bottom)?;
+    pub(super) fn edit_cursor_layer(
+        &self,
+        viewport: super::viewport::Viewport,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let markers =
+            self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Bottom, cx)?;
         Some(
             div()
                 .absolute()

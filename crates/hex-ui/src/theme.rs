@@ -64,7 +64,6 @@ pub(crate) fn time_position_marker_color() -> u32 {
 ///
 /// Preserve the theme accent where it separates from both the ordinary marker
 /// and the ruler surface; otherwise choose the better of two fixed fallbacks.
-#[allow(dead_code)] // Used by the pending cursor-lock consumer in #4752.
 pub(crate) fn locked_time_position_marker_color() -> u32 {
     locked_marker_color_for(
         color(PaletteRole::Surface),

@@ -2566,6 +2566,7 @@ impl EditorView {
             self.device_gesture_barriers.clear();
             self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
+            self.locked_play_start = None;
             self.loop_start_over_clip = None;
             self.selection_loop_start = None;
             self.clip_paint_gesture = None;
