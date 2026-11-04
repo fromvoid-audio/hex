@@ -34,6 +34,8 @@ impl SessionPlayback {
             stream_miss_fades: _,
             routes,
             route_scratch,
+            track_faders: _,
+            track_fader_scratch: _,
             device_chains,
             return_chains,
             main_chain,
