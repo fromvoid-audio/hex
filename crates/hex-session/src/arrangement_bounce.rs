@@ -105,12 +105,15 @@ pub(crate) fn isolated(
             .any(|clip| selected_midi.contains(&clip.value()));
         // For a range, earlier notes may still be sounding at its start. Keep
         // the selected track's MIDI for causal preroll, excluding its peers.
-        let render_contributor = !in_place
-            && !selected_is_receiver
+        if console_source && !selected_is_receiver && !selected_midi.is_empty() {
+            return Err("cannot bounce shared-source contributor console midi yet".into());
+        }
+        let render_contributor = !selected_is_receiver
             && selected_source_instrument_id.is_some()
             && match target {
-                BounceTarget::Clips(_) => has_selected_midi,
-                BounceTarget::Range(_) => !selected_midi.is_empty(),
+                BounceTarget::Clips(_) => !in_place && has_selected_midi,
+                BounceTarget::Range(_) => !in_place && !selected_midi.is_empty(),
+                BounceTarget::Track(_) => in_place && !selected_midi.is_empty(),
                 _ => false,
             };
         if !selected_is_receiver

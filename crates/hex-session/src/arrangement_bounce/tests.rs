@@ -996,7 +996,138 @@ fn shared_contributor_selected_clip_renders_its_own_source_without_other_notes()
 }
 
 #[test]
-fn contributor_whole_track_bounce_still_refuses_unsafe_in_place_render() {
+fn whole_contributor_bounce_preserves_shared_source_and_receiver() {
+    let folder = Folder::new();
+    let (mut session, receiver, receiver_clip) = fixture();
+    let source = session
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(contributor) = session
+        .command(Command::AddMidiTrack {
+            name: "contributor".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    session
+        .command(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(clip) = session
+        .command(Command::PlaceMidiClip {
+            track: contributor,
+            start: BeatTime::ONE,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    session
+        .command(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 67,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let effect = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap()
+    .with_output_gain_db(-6.0)
+    .unwrap();
+    session
+        .command(Command::InsertDevice {
+            track: contributor,
+            before: None,
+            state: effect,
+        })
+        .unwrap();
+    let original = session.project().clone();
+    // Independent reference: temporarily route the live source to this track and
+    // disable the other track's clip, then compile before restoring the project.
+    session
+        .command(Command::SetNativeSourceReceiver {
+            source,
+            track: Some(contributor),
+        })
+        .unwrap();
+    session
+        .command(Command::SetClipActive {
+            clip: receiver_clip,
+            active: false,
+        })
+        .unwrap();
+    let reference = session.compile_prepared_revision(None).unwrap();
+    assert!(session.undo());
+    assert!(session.undo());
+    assert_eq!(session.project(), &original);
+    let revision = session.compile_prepared_revision(None).unwrap();
+    session
+        .bounce_arrangement(
+            BounceTarget::Track(contributor),
+            true,
+            &folder.0,
+            &hex_export::ExportControl::default(),
+            Some(&revision),
+        )
+        .unwrap();
+    let audio = session
+        .project()
+        .tracks()
+        .iter()
+        .find_map(|track| track.clips().first())
+        .expect("bounced audio");
+    let actual = session.audio(audio.asset()).unwrap().frames();
+    let start = audio.start() as usize;
+    let expected = pcm(reference, start + actual.len());
+    let expected = &expected[start..];
+    assert_eq!(actual.len(), expected.len());
+    assert!(
+        expected.iter().flatten().any(|sample| sample.abs() > 1e-5),
+        "reference must contain audible source output"
+    );
+    let error = actual
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(error < 1e-5, "isolated contributor PCM differs: {error}");
+    assert_eq!(
+        session.project().native_source(source),
+        original.native_source(source)
+    );
+    assert_eq!(session.project().track(receiver), original.track(receiver));
+    let bounced = session.project().clone();
+    let bounced_track = session.project().track(contributor).unwrap();
+    assert!(bounced_track.instrument().is_none());
+    assert!(bounced_track.devices().is_empty());
+    assert!(session.undo());
+    assert_eq!(
+        session.project().snapshot().tracks,
+        original.snapshot().tracks
+    );
+    assert_eq!(
+        session.project().native_sources(),
+        original.native_sources()
+    );
+    assert!(session.redo());
+    assert_eq!(session.project(), &bounced);
+}
+
+#[test]
+fn contributor_console_midi_bounce_refuses_without_mutation() {
     let (mut session, receiver, _) = fixture();
     let source_id = session
         .project()
@@ -1045,14 +1176,36 @@ fn contributor_whole_track_bounce_still_refuses_unsafe_in_place_render() {
             )
             .is_err()
     );
-    let target = BounceTarget::Track(contributor);
-    let item = session
-        .project()
-        .plan_arrangement_bounce(&target, true)
+    let Created::Scene(scene) = session
+        .command(Command::AddScene {
+            name: "console".into(),
+        })
         .unwrap()
-        .remove(0);
-    let error = isolated(session.project(), &target, &item, true).unwrap_err();
-    assert!(error.contains("bounce its receiver"), "{error}");
+    else {
+        panic!("scene")
+    };
+    session
+        .command(Command::CreateSessionMidiClip {
+            track: contributor,
+            scene,
+            name: "console".into(),
+            source_length: BeatTime::ONE,
+        })
+        .unwrap();
+    let original = session.project().clone();
+    let folder = Folder::new();
+    let error = session
+        .bounce_arrangement(
+            BounceTarget::Track(contributor),
+            true,
+            &folder.0,
+            &hex_export::ExportControl::default(),
+            None,
+        )
+        .unwrap_err();
+    assert!(error.contains("contributor console midi"), "{error}");
+    assert_eq!(session.project(), &original);
+    assert_eq!(std::fs::read_dir(&folder.0).unwrap().count(), 0);
 }
 
 #[test]
