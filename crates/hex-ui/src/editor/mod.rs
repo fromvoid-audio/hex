@@ -1039,6 +1039,8 @@ pub(super) struct EditorView {
     tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
+    /// Transient Arrangement play-start lock; never seeks the active transport.
+    locked_play_start: Option<edit_cursor::EditCursor>,
     /// The selected clip a point cursor was deliberately placed inside; that
     /// cursor then outranks the clip's play start (see `selected_clip_play_start`).
     edit_cursor_in_selected_clip: Option<ClipId>,
@@ -1790,6 +1792,7 @@ impl EditorView {
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
             edit_cursor: None,
+            locked_play_start: None,
             edit_cursor_in_selected_clip: None,
             loop_start_over_clip: None,
             selection_loop_start: None,
@@ -1911,6 +1914,9 @@ impl EditorView {
     }
 
     fn playback_start_frame(&self) -> u64 {
+        if let Some(cursor) = self.valid_locked_play_start() {
+            return cursor.frame;
+        }
         if let Some((epoch, region)) = self.selection_loop_start
             && self.selection_intent_epoch == Some(epoch)
             && self
