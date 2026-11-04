@@ -132,6 +132,15 @@ pub(crate) fn prepare_source_instruments(
 /// Refuse the same selected MIDI root entering one source twice. Its independent
 /// route identities cannot currently distinguish an intentional duplicate stream.
 pub(crate) fn validate_source_midi_roots(project: &hex_project::Project) -> Result<(), Invalid> {
+    if project
+        .tracks()
+        .iter()
+        .any(hex_project::Track::retained_source_path)
+    {
+        return Err(Invalid(
+            "retained source path playback is not supported yet; keep the original project",
+        ));
+    }
     for source in project
         .native_sources()
         .iter()
