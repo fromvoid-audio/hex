@@ -1866,6 +1866,15 @@ fn long_sampler_release_survives_immediate_reenable() {
         velocity: 127,
     }));
     (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::from_raw(BeatTime::ONE.raw() / 6),
+        duration: BeatTime::from_raw(BeatTime::ONE.raw() / 32),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
     h.audio
         .as_mut()
         .unwrap()
@@ -1920,9 +1929,13 @@ fn long_sampler_release_survives_immediate_reenable() {
     );
     h.applied(bypass_revision);
     let mut release = Vec::new();
-    for _ in 0..80 {
+    for _ in 0..140 {
         release.extend_from_slice(&h.render());
     }
+    assert!(
+        release.iter().any(|frame| frame[0] > 0.3),
+        "a future note must sound while the original release continues"
+    );
     assert!(
         release[..200].iter().any(|frame| frame[0].abs() > 0.01),
         "original release must continue"
