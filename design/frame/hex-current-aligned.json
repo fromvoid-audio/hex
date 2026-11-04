@@ -2,7 +2,7 @@
   "version": 1,
   "id": "hex-yield-workstation",
   "name": "hex / orbital",
-  "revisionId": "hex-current-aligned-study-r61",
+  "revisionId": "hex-current-aligned-study-r62",
   "width": 1900,
   "height": 1120,
   "background": "#111111",
@@ -14380,7 +14380,7 @@
       },
       "utility-ref-meter": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -14393,7 +14393,7 @@
       },
       "utility-ref-meter-right": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -30359,7 +30359,7 @@
       },
       "utility-ref-meter": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -30372,7 +30372,7 @@
       },
       "utility-ref-meter-right": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -59456,7 +59456,7 @@
       },
       "utility-ref-meter": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -59469,7 +59469,7 @@
       },
       "utility-ref-meter-right": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -95156,7 +95156,7 @@
       },
       "utility-ref-meter": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -95169,7 +95169,7 @@
       },
       "utility-ref-meter-right": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -111135,7 +111135,7 @@
       },
       "utility-ref-meter": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -111148,7 +111148,7 @@
       },
       "utility-ref-meter-right": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -127113,7 +127113,7 @@
       },
       "utility-ref-meter": {
         "style": {
-          "fill": "#202123",
+          "fill": "#000000",
           "stroke": "#17181a",
           "color": "#c3c9ca"
         }
@@ -127126,7 +127126,7 @@
       },
       "utility-ref-meter-right": {
         "style": {
-          "fill": "#202123",
+          "fill": "#000000",
           "stroke": "#17181a",
           "color": "#c3c9ca"
         }
@@ -143086,7 +143086,7 @@
       },
       "utility-ref-meter": {
         "style": {
-          "fill": "#202123",
+          "fill": "#000000",
           "stroke": "#17181a",
           "color": "#c3c9ca"
         }
@@ -143099,7 +143099,7 @@
       },
       "utility-ref-meter-right": {
         "style": {
-          "fill": "#202123",
+          "fill": "#000000",
           "stroke": "#17181a",
           "color": "#c3c9ca"
         }
@@ -159060,7 +159060,7 @@
       },
       "utility-ref-meter": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -159073,7 +159073,7 @@
       },
       "utility-ref-meter-right": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -174847,7 +174847,7 @@
       },
       "utility-ref-meter": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -174860,7 +174860,7 @@
       },
       "utility-ref-meter-right": {
         "style": {
-          "fill": "#121212",
+          "fill": "#000000",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -354669,7 +354669,7 @@
         "height": 177
       },
       "style": {
-        "fill": "#1c1c1e",
+        "fill": "#000000",
         "stroke": "#191719",
         "color": "#bcbfbd",
         "fontSize": 9,
@@ -354713,7 +354713,7 @@
         "height": 177
       },
       "style": {
-        "fill": "#1c1c1e",
+        "fill": "#000000",
         "stroke": "#191719",
         "color": "#bcbfbd",
         "fontSize": 9,
