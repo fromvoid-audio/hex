@@ -118,7 +118,8 @@ pub struct ForeignProcessorNode<'a> {
 pub trait ForeignProcessors {
     /// True only when this endpoint applies the supplied host output trim to
     /// active wet output itself and returns post-trim PCM. The host must not
-    /// apply it a second time. Bypassed output remains untrimmed aligned dry.
+    /// apply it a second time. Steady bypass output is untrimmed aligned dry;
+    /// an endpoint may transition between the two while keeping them aligned.
     fn returns_post_trim(&self, _node: ForeignProcessorNode<'_>) -> bool {
         false
     }
