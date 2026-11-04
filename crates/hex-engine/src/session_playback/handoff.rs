@@ -407,6 +407,17 @@ impl SessionPlayback {
             // An open admission proves the refusal came from the pure
             // preflight: neither runtime changed, so the reset handoff may
             // run instead (Pulse #3770, #3774).
+            Err(SessionPlaybackError::MutableInstrumentActive)
+                if live
+                    && previous.playing
+                    && self.candidate_admission_open
+                    && shared_sources::short_source_release_blocks_reenable(
+                        &self.revision,
+                        previous,
+                    ) =>
+            {
+                Err(SessionPlaybackError::DeviceTransitionBusy)
+            }
             Err(error) if live && self.candidate_admission_open && restartable(error) => {
                 self.inherit_state_planned_once(previous, None, demand, true)
             }
