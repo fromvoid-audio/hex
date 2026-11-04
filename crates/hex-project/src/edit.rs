@@ -506,6 +506,11 @@ pub enum Command {
     InsertDefaultTrack {
         before_track: Option<TrackId>,
     },
+    /// Insert an automatically named track with a validated initial linear gain.
+    InsertDefaultTrackWithGain {
+        before_track: Option<TrackId>,
+        gain: f32,
+    },
     /// Atomically create one track, its source asset and a full-length one-shot clip.
     ImportAudioTrack {
         name: String,
@@ -2319,6 +2324,14 @@ impl Project {
             Command::InsertDefaultTrack { before_track } => Ok(Created::Track(
                 crate::track_name::insert_default_track(self, before_track)?,
             )),
+            Command::InsertDefaultTrackWithGain { before_track, gain } => {
+                if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
+                    return Err(Invalid("gain must be finite and within 0..2"));
+                }
+                let track = crate::track_name::insert_default_track(self, before_track)?;
+                self.track_mut(track)?.gain = gain;
+                Ok(Created::Track(track))
+            }
             Command::InsertDefaultTrackWithDevice {
                 before_track,
                 slot,
