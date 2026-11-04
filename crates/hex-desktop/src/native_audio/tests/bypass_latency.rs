@@ -897,6 +897,7 @@ fn consecutive_device_gesture_changes_reach_the_resident_callback() {
         assert!(Instant::now() < deadline);
         std::thread::yield_now();
     }
+    let third_revision = h.submitted.unwrap().0;
     h.service
         .submit(Request::DeviceGesture(GestureRequest::Commit {
             key,
@@ -917,5 +918,28 @@ fn consecutive_device_gesture_changes_reach_the_resident_callback() {
         refused
             .active_device_gesture
             .is_some_and(|snapshot| snapshot.key == key && snapshot.sequence == 3)
+    );
+    h.render();
+    let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+        key,
+        sequence: 4,
+        manual_edit: true,
+        value: ParameterValue::Float(2.5),
+    }));
+    assert!(
+        committed
+            .gesture_ack
+            .as_ref()
+            .is_some_and(|ack| ack.accepted)
+    );
+    let (_, metadata) = h.applied(third_revision);
+    assert_eq!(metadata.context.editor_revision, committed.state.revision);
+    assert_eq!(
+        hex_engine::native_device_parameter(
+            committed.state.project.device(device).unwrap().state(),
+            ParameterId::new(1).unwrap(),
+        )
+        .unwrap(),
+        ParameterValue::Float(2.5)
     );
 }
