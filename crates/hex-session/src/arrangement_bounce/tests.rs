@@ -1124,6 +1124,61 @@ fn whole_contributor_bounce_preserves_shared_source_and_receiver() {
     );
     assert!(session.redo());
     assert_eq!(session.project(), &bounced);
+
+    let asset = session.project().track(contributor).unwrap().clips()[0].asset();
+    let audio_path = session.project().asset(asset).unwrap().path().to_path_buf();
+    let audio_bytes = fs::read(&audio_path).unwrap();
+    let project_path = folder.0.join("shared-bounce.hex");
+    hex_storage::save_new(&project_path, session.project()).unwrap();
+    let loaded = hex_storage::load(&project_path).unwrap();
+    assert_eq!(loaded, bounced);
+    assert_eq!(
+        loaded.native_source(source).unwrap().receiver(),
+        Some(receiver)
+    );
+    assert_eq!(loaded.track(contributor).unwrap().source_id(), None);
+    let decoded = loaded
+        .assets()
+        .map(|asset| {
+            (
+                asset.id(),
+                hex_media::decode_wav_file(
+                    asset.path(),
+                    hex_media::Limits::new(64 * 1024 * 1024 + 44, 2_000_000),
+                )
+                .unwrap(),
+            )
+        })
+        .collect();
+    let mut reopened = Session::from_loaded(loaded, 32, 2_000_000, decoded).unwrap();
+    assert_eq!(
+        reopened.audio(asset).unwrap().frames(),
+        session.audio(asset).unwrap().frames()
+    );
+    reopened.command(Command::RemoveTrack(contributor)).unwrap();
+    let Created::Track(replacement) = reopened
+        .command(Command::AddMidiTrack {
+            name: "replacement".into(),
+        })
+        .unwrap()
+    else {
+        panic!("replacement")
+    };
+    reopened
+        .command(Command::BindTrackSource {
+            track: replacement,
+            source: Some(source),
+        })
+        .unwrap();
+    assert_eq!(
+        reopened.project().native_source(source).unwrap().receiver(),
+        Some(receiver)
+    );
+    assert_eq!(
+        reopened.project().track(replacement).unwrap().source_id(),
+        Some(source)
+    );
+    assert_eq!(fs::read(audio_path).unwrap(), audio_bytes);
 }
 
 #[test]
