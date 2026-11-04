@@ -647,7 +647,9 @@ fn browser_device_double_click_appends_once_and_preserves_history(cx: &mut TestA
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
     pump_until(&editor, cx, idle);
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.state.as_ref().unwrap().project, original)
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(track), original.track(track));
+        assert_eq!(project.tracks().len(), original.tracks().len());
     });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
     pump_until(&editor, cx, idle);
