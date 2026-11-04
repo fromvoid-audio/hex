@@ -593,6 +593,7 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
     );
     // Compatible edits use the ordinary same-output handoff. Repeated publication
     // must close the returned candidate's unused lease rather than accumulating it.
+    let mut current_gain = 1.0_f32;
     for (muted, gain) in [(true, 1.0), (false, 1.0), (false, 0.5), (false, 1.0)] {
         editor.execute(Command::Mute { track, muted }).unwrap();
         editor.execute(Command::Gain { track, gain }).unwrap();
@@ -604,13 +605,13 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
             )
             .unwrap();
         let output = block(&mut callback);
-        let expected = if muted { 0.0 } else { 0.25 * gain };
-        assert!(
-            output
-                .iter()
-                .flatten()
-                .all(|sample| (*sample - expected).abs() < 1e-6)
-        );
+        for (index, frame) in output.iter().enumerate() {
+            if current_gain != gain {
+                current_gain += (gain - current_gain) / (40 - index) as f32;
+            }
+            let expected = if muted { 0.0 } else { 0.25 * current_gain };
+            assert!(frame.iter().all(|sample| (*sample - expected).abs() < 1e-6));
+        }
         assert_eq!(control.status.applied_revision.load(Acquire), revision);
         assert_eq!(control.reclaim(), 1);
         assert_eq!(control.outstanding_device_resource_leases(), 1);
