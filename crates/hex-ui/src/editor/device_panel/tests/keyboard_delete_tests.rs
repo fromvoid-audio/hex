@@ -950,6 +950,38 @@ fn device_delete_release_does_not_rearm_old_card_after_selection_changes(cx: &mu
 }
 
 #[gpui::test]
+fn device_zero_rapid_toggles_remain_ordered_before_worker_responses(cx: &mut TestAppContext) {
+    cx.update(super::super::super::bind_editor_keys);
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let point = title(&mut visual, device);
+    visual.simulate_click(point, Modifiers::default());
+    visual.simulate_keystrokes("c");
+    visual.simulate_keystrokes("c");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.worker_requests_pending, 2);
+        assert!(view.error.is_none());
+    });
+    super::header_actions_tests::assert_power_paint(&mut visual, device, true);
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert!(
+            !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .bypassed()
+        );
+    });
+    super::header_actions_tests::assert_power_paint(&mut visual, device, true);
+}
+
+#[gpui::test]
 fn device_zero_toggles_focused_effect_and_instrument_with_history_and_save(
     cx: &mut TestAppContext,
 ) {

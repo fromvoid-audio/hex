@@ -37,6 +37,17 @@ fn note(pitch: u8) -> MidiNoteInsert {
 }
 
 #[test]
+fn retained_source_path_change_is_not_a_midi_only_history_edge() {
+    let (editor, _, scene, _) = fixture();
+    let original = editor.project();
+    let mut changed = original.clone();
+    changed.tracks[0].retained_source_path = true;
+    let kind = Kind::AppendScene { scene };
+    assert!(same_shell(original, original, None, kind));
+    assert!(!same_shell(original, &changed, None, kind));
+}
+
+#[test]
 fn clip_gain_is_independent_of_curve_and_has_valid_history() {
     let (mut editor, _, _, clip) = fixture();
     let length = BeatTime::from_raw(4 << 32);

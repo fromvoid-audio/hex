@@ -106,17 +106,10 @@ impl EditorView {
                 self.toggle_loop();
             }
             Ok(Some((start, end))) => {
-                if self.section_loop_bounds() == Ok(Some((start, end))) {
-                    match hex_project::LoopRegion::new(start, end, true) {
-                        Ok(region) => self.submit_section_loop_preview(region),
-                        Err(error) => self.error = Some(error.0.into()),
-                    }
-                } else {
-                    self.enqueue(Request::Edit(Command::SetLoopRegion {
-                        start,
-                        end,
-                        enabled: true,
-                    }));
+                let section = self.section_loop_bounds() == Ok(Some((start, end)));
+                match hex_project::LoopRegion::new(start, end, true) {
+                    Ok(region) => self.submit_selection_loop_preview(region, section),
+                    Err(error) => self.error = Some(error.0.into()),
                 }
             }
             Ok(None) if existing.is_some() => self.toggle_loop(),

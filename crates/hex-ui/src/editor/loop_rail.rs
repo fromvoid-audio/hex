@@ -17,6 +17,7 @@ pub(super) struct PendingLoop {
     remaining: Option<usize>,
     // Selection intent for automatic focus after a successful section-loop ACK.
     focus_intent: Option<u64>,
+    start_intent: Option<u64>,
 }
 
 const EDGE_HIT_PIXELS: f32 = 6.0;
