@@ -16,7 +16,8 @@ const FADE_ENVELOPE_SAMPLES: usize = 32;
 const FADE_ENVELOPE_BREAKPOINTS: usize = 72;
 
 /// Same-revision accepted peaks and the original/prospective metadata view.
-/// Ordinary trim retains its processing root; no decoding or DSP belongs here.
+/// Trim retains its processing root or proves a silent frame prefix before
+/// borrowing unchanged output. No decoding or DSP belongs here.
 #[derive(Clone, Copy)]
 pub(super) struct WaveformPreview<'a> {
     pub(super) original: &'a Clip,
@@ -40,6 +41,101 @@ pub(super) fn preview_waveform_view_cached(
 ) -> Option<Div> {
     preview_waveform_view_cached_inner(request, visible_start, visible_end, cache, grid)
         .map(|body| clip_waveform_activity(body, request.preview.active()))
+}
+
+/// A canonical silent prefix translates the accepted frame output unchanged.
+/// Prove the exact model operation before borrowing peaks; a different root
+/// cannot use this path. Work is bounded by one clip's event/point limits.
+fn prefix_waveform_view(
+    request: WaveformPreview<'_>,
+    visible_start: u64,
+    visible_end: u64,
+    cache: Rc<std::cell::RefCell<WaveformGeometryCache>>,
+    grid: Option<WaveformGrid>,
+) -> Option<Div> {
+    let WaveformPreview {
+        original,
+        preview,
+        tempo,
+        asset,
+        prepared,
+    } = request;
+    let source_end = original
+        .source_offset()
+        .checked_add(original.source_length())?;
+    let asset_frames = asset.map_or(source_end, |wave| wave.source_frames as u64);
+    let (origin, source, mapping) = if let Some(old) = original.audio_edit() {
+        let (_, length, offset, _) = old.projected_domain(tempo).ok()?;
+        let origin = original.start().checked_sub(offset)?;
+        let accepted = prepared?;
+        if accepted.offset != offset
+            || accepted.length != original.duration()
+            || accepted.waveform.source_frames as u64 != length
+            || accepted.preview_root.is_some()
+        {
+            return None;
+        }
+        (
+            origin,
+            Arc::clone(&accepted.waveform),
+            WaveformMapping::Prepared {
+                timeline_origin: origin,
+                root_offset: 0,
+                gain: preview.gain(),
+            },
+        )
+    } else {
+        let origin = original.start().checked_sub(original.source_offset())?;
+        let source = Arc::clone(asset?);
+        let rewound = original
+            .preview_edge_trim(hex_project::TrimEdge::Left, origin, asset_frames)
+            .ok()?;
+        (
+            origin,
+            source,
+            WaveformMapping::Clip {
+                clip: rewound,
+                timeline_origin: origin,
+            },
+        )
+    };
+    if preview.start() >= origin {
+        return None;
+    }
+    let expected = original
+        .preview_edge_trim_with_tempo(
+            hex_project::TrimEdge::Left,
+            preview.start(),
+            asset_frames,
+            tempo,
+        )
+        .ok()?;
+    // Plain cached peaks are raw source samples, with fades painted separately.
+    // Their existing lower-handle operation can borrow the same raw mapping.
+    if &expected != preview {
+        let lower_handle = original.audio_edit().is_none()
+            && original
+                .preview_fade_edge_trim(
+                    hex_project::TrimEdge::Left,
+                    preview.start(),
+                    asset_frames,
+                    tempo,
+                )
+                .ok()
+                .as_ref()
+                == Some(preview);
+        if !lower_handle {
+            return None;
+        }
+    }
+    Some(timeline_waveform_view_cached(
+        source,
+        mapping,
+        visible_start,
+        visible_end,
+        cache,
+        grid,
+    ))
 }
 
 fn preview_waveform_view_cached_inner(
@@ -75,6 +171,11 @@ fn preview_waveform_view_cached_inner(
             .audio_edit()
             .is_none_or(|old| !Arc::ptr_eq(&old.domain, &edit.domain))
         {
+            if let Some(prefix) =
+                prefix_waveform_view(request, visible_start, visible_end, Rc::clone(&cache), grid)
+            {
+                return Some(prefix);
+            }
             return super::waveform_stretch::stretch_waveform_view(
                 request,
                 visible_start,

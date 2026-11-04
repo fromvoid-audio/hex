@@ -135,6 +135,11 @@ pub(crate) fn trim_view(
     frame: u64,
     tempo: &TempoMap,
 ) -> Result<Clip, Invalid> {
+    if edge == TrimEdge::Left
+        && let Some(prefixed) = super::prepend_silence(clip, frame)?
+    {
+        return Ok(prefixed);
+    }
     let edit = clip
         .edit
         .as_ref()

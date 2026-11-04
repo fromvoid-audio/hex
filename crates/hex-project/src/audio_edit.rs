@@ -4,6 +4,8 @@ use crate::{BeatTime, Clip, ClipFade, Invalid, TempoMap, TrimEdge};
 use std::sync::Arc;
 
 mod content;
+mod prefix;
+pub(crate) use prefix::prepend_silence;
 mod timing;
 pub use content::AudioContentView;
 pub use timing::AudioClipTiming;

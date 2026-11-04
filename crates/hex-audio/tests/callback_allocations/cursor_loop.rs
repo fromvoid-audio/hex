@@ -231,3 +231,86 @@ fn selection_crossfade_publication_seek_stop_and_retirement_are_callback_allocat
     control.reclaim();
     Ok(())
 }
+
+#[test]
+fn silent_left_prefix_publication_keeps_pcm_and_allocates_or_frees_nothing()
+-> Result<(), Box<dyn Error>> {
+    for cents in [0, 137] {
+        let mut editor = Editor::new(Project::new(RATE)?, 16)?;
+        let Created::Imported { track, asset, clip } =
+            editor.execute(Command::ImportAudioTrack {
+                name: "prefix".into(),
+                path: "prefix.wav".into(),
+                sample_rate: RATE,
+                frames: 64,
+            })?
+        else {
+            return Err("expected import".into());
+        };
+        editor.execute(Command::MoveClip {
+            clip,
+            track,
+            start: 32,
+        })?;
+        editor.execute(Command::SetClipFadeEnvelope {
+            clip,
+            fade: hex_project::ClipFade::new(64, 0, 4, 4)?,
+        })?;
+        if cents != 0 {
+            editor.execute(Command::SetAudioClipPitch { clip, cents })?;
+        }
+        let media = BTreeMap::from([(asset, Audio::new(RATE, vec![[0.5; 2]; 64])?)]);
+        let sine = Arc::new(SineTable::new());
+        let original = Arc::new(PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            Arc::clone(&sine),
+            None,
+        )?);
+        let mut reference = Playback::try_from_prepared_with_session(Arc::clone(&original))?;
+        reference.apply(PlaybackCommand::PlayFrom(16));
+        let mut graphs = vec![Arc::clone(&original)];
+        for frame in [16, 8] {
+            editor.execute(Command::TrimClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Left,
+                frame,
+            })?;
+            graphs.push(Arc::new(PreparedRevision::prepare(
+                editor.project(),
+                &media,
+                Arc::clone(&sine),
+                None,
+            )?));
+        }
+        let (mut control, mut callback) = prepared::channel(RATE)?;
+        control
+            .publish(Playback::try_from_prepared_with_session(Arc::clone(
+                &original,
+            ))?)
+            .map_err(|_| "publication failed")?;
+        control
+            .command(PlaybackCommand::PlayFrom(16))
+            .map_err(|_| "play failed")?;
+        for block in 0..12 {
+            if block == 1 || block == 4 {
+                let index = if block == 1 { 1 } else { 2 };
+                control
+                    .publish(Playback::try_from_prepared_with_session(Arc::clone(
+                        &graphs[index],
+                    ))?)
+                    .map_err(|_| "prefix publication failed")?;
+            }
+            let mut expected = [[0.0; 2]; 8];
+            let mut actual = [[0.0; 2]; 8];
+            reference.render(&mut expected)?;
+            measured_block(&mut callback, &mut actual);
+            compare_output(&actual, &expected);
+            control.reclaim();
+        }
+        control.request_shutdown();
+        measured_shutdown(&mut callback, &mut [[0.0; 2]; 8]);
+        control.reclaim();
+    }
+    Ok(())
+}
