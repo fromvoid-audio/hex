@@ -112,6 +112,19 @@ impl Builder {
     }
 }
 impl SignalGraph {
+    #[cfg(test)]
+    pub(crate) fn test_printed_branch(
+        project: &Project,
+        canonical: &hex_project::Project,
+        index: usize,
+    ) -> Result<Arc<Self>, Invalid> {
+        Ok(Arc::new(Self::prepare_value(
+            project,
+            &[],
+            canonical,
+            &[index],
+        )?))
+    }
     /// Resolve the prepared stage's origin in this actual graph. Project device
     /// identities are unique; no caller-provided latency becomes authority.
     pub(crate) fn parameter_arrival(

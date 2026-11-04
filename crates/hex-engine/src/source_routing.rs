@@ -123,6 +123,22 @@ pub struct PreparedSourceRouting {
 }
 
 impl PreparedSourceRouting {
+    #[cfg(test)]
+    pub(crate) fn test_exclude_receiver_contribution(
+        &mut self,
+        index: usize,
+    ) -> Result<(), Invalid> {
+        let data = self
+            .data
+            .as_mut()
+            .ok_or(Invalid("source routing is missing"))?;
+        let contributor = data
+            .contributes
+            .get_mut(index)
+            .ok_or(Invalid("receiver index is missing"))?;
+        *contributor = false;
+        data.finish()
+    }
     pub(crate) fn prepare(project: &Project) -> Result<Self, Invalid> {
         if project.tracks().len() > MAX_TRACKS {
             return Err(Invalid("source contributor limit reached"));

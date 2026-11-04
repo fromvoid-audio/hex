@@ -169,6 +169,144 @@ fn sum_frames(frames: &[Frame]) -> Frame {
 }
 
 #[test]
+fn retained_receiver_session_mixes_printed_audio_and_peer_without_its_own_midi() {
+    for latency in [0, 5] {
+        for peer_count in [1, 2] {
+            retained_receiver_session_at_latency(latency, peer_count);
+        }
+    }
+}
+
+fn retained_receiver_session_at_latency(latency: u32, peer_count: usize) {
+    let receiver_chain = [latency];
+    let mut chains: Vec<&[u32]> = vec![&receiver_chain];
+    chains.extend(std::iter::repeat_n(&[][..], peer_count));
+    let mut f = fixture_at_rate(&chains, 32, 8_000);
+    f.editor
+        .execute(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(1_000_000_000).unwrap(),
+        })
+        .unwrap();
+    let Created::NativeSource(source) = f
+        .editor
+        .execute(Command::CreateNativeSource {
+            name: "shared".into(),
+            devices: vec![LegacyInstrumentDefinition.default_state().unwrap()],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("source")
+    };
+    for &track in &f.tracks {
+        f.editor
+            .execute(Command::BindTrackSource {
+                track,
+                source: Some(source),
+            })
+            .unwrap();
+    }
+    f.editor
+        .execute(Command::Gain {
+            track: f.tracks[0],
+            gain: 0.5,
+        })
+        .unwrap();
+    let mut clips = vec![(
+        f.tracks[0],
+        BeatTime::ONE,
+        BeatTime::ONE,
+        vec![BeatTime::ZERO],
+    )];
+    clips.extend(f.tracks[1..].iter().copied().map(|track| {
+        (
+            track,
+            BeatTime::ZERO,
+            BeatTime::from_quarters(2).unwrap(),
+            vec![BeatTime::ZERO, BeatTime::ONE],
+        )
+    }));
+    for (track, start, length, notes) in clips {
+        let Created::Clip(clip) = f
+            .editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start,
+                length,
+            })
+            .unwrap()
+        else {
+            panic!("midi clip")
+        };
+        for note_start in notes {
+            f.editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: note_start,
+                    duration: BeatTime::ONE,
+                    pitch: 60,
+                    velocity: 100,
+                    channel: 0,
+                })
+                .unwrap();
+        }
+    }
+    let effects: [&dyn NativeDeviceDefinition; 1] = [&Definition];
+    let instruments: [&dyn hex_lattice::NativeInstrumentDefinition; 1] =
+        [&LegacyInstrumentDefinition];
+    let mut revision = PreparedRevision::prepare_with_registries(
+        f.editor.project(),
+        &f.media,
+        Arc::new(SineTable::new()),
+        None,
+        &NativeDeviceRegistry::new(&effects).unwrap(),
+        &hex_lattice::NativeInstrumentRegistry::new(&instruments).unwrap(),
+    )
+    .unwrap();
+    revision
+        .test_install_retained_receiver(f.editor.project(), f.tracks[0])
+        .unwrap();
+    let revision = Arc::new(revision);
+    let mut expected = vec![[0.0; 2]; 500];
+    let delay = latency as usize;
+    for offset in 0..8 {
+        let peer = [0.0625 * peer_count as f32, -0.125 * peer_count as f32];
+        expected[delay + offset] = peer;
+        expected[480 + delay + offset] = peer;
+    }
+    expected[delay][0] += 0.125;
+    expected[delay][1] -= 0.25;
+    expected[31 + delay] = [-0.0625, 0.1875];
+    for block in [7, 64, 257] {
+        let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let plan = playback
+            .output_capture_plan(&[crate::OutputCaptureId::Track(f.tracks[0])], block)
+            .unwrap();
+        let mut output = vec![[0.0; 2]; expected.len()];
+        let mut captured = output.clone();
+        for (main, tap) in output.chunks_mut(block).zip(captured.chunks_mut(block)) {
+            let mut captures = [tap];
+            playback
+                .render_with_capture(main, &mut crate::OutputCapture::new(&plan, &mut captures))
+                .unwrap();
+        }
+        for (frame, ((main, capture), expected)) in
+            output.iter().zip(&captured).zip(&expected).enumerate()
+        {
+            assert_eq!(
+                main, expected,
+                "main latency {latency}, peers {peer_count}, block {block}, frame {frame}"
+            );
+            assert_eq!(
+                capture, expected,
+                "capture latency {latency}, peers {peer_count}, block {block}, frame {frame}"
+            );
+        }
+    }
+}
+
+#[test]
 fn renderer_sums_shared_midi_at_receiver_and_keeps_contributor_audio_local() {
     let (f, _) = shared_fixture(&[0], &[0]);
     let project = compiled(&f);
