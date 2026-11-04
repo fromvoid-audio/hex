@@ -653,6 +653,15 @@ fn split_test_chain_with_meter(
     bypassed: bool,
     meter: Arc<hex_lattice::DeviceMeter>,
 ) -> hex_lattice::NativeRuntimeChain {
+    split_test_chain_with_automation(state, bypassed, meter, Default::default())
+}
+
+fn split_test_chain_with_automation(
+    state: &NativeDeviceState,
+    bypassed: bool,
+    meter: Arc<hex_lattice::DeviceMeter>,
+    automation: hex_lattice::PreparedParameterAutomation,
+) -> hex_lattice::NativeRuntimeChain {
     let rate = 8000;
     let factory = DEFINITION
         .prepare_runtime_factory(
@@ -665,7 +674,7 @@ fn split_test_chain_with_meter(
         )
         .unwrap();
     hex_lattice::NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
-        automation: Default::default(),
+        automation,
         meter,
         owner: hex_lattice::ProcessorChainOwner::Main,
         device_id: 1,
@@ -677,6 +686,340 @@ fn split_test_chain_with_meter(
         definition: factory,
     }])
     .unwrap()
+}
+
+#[test]
+fn tail_split_delivers_successor_host_control_and_combined_observations() {
+    use hex_lattice::{
+        NativeTransientInput, NativeTransientOperation, NativeTransientProcessing,
+        NativeTransientValue, NodeSignalPhase, ProcessorChainOwner, ProcessorInstanceIdentity,
+    };
+    use hex_lattice_contract::{DeviceAutomationTarget, HostGain};
+    let configured = state(&[(DRY_WET, ParameterValue::Float(0.0))]);
+    let mut automation = hex_lattice::PreparedParameterAutomation::default();
+    automation
+        .arm_host_gain_input(DeviceAutomationTarget::HostOutputGain)
+        .unwrap();
+    let meter = Arc::new(hex_lattice::DeviceMeter::default());
+    let mut old =
+        split_test_chain_with_automation(&configured, true, Arc::clone(&meter), automation.clone());
+    let mut next =
+        split_test_chain_with_automation(&configured, false, Arc::clone(&meter), automation);
+    assert!(next.can_prepare_tail_split_at(&old, 0));
+    let mut split = next.prepare_tail_split_at(&old, 0).unwrap();
+    old.begin_block();
+    next.begin_block();
+    split.begin_block().unwrap();
+    let mut a = [[0.0; 2]; 20];
+    let mut b = a;
+    split
+        .process(
+            &mut old,
+            &mut next,
+            &[[1.0, -0.5]; 20],
+            &mut a,
+            &mut b,
+            0,
+            None,
+        )
+        .unwrap();
+    old.commit_block();
+    next.commit_block();
+    split.commit_block().unwrap();
+    old.set_metering(true);
+    next.set_metering(true);
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 1).unwrap();
+    let operation = NativeTransientOperation::Set(NativeTransientValue::HostOutputGain(
+        HostGain::from_db(-6.0).unwrap(),
+    ));
+    let mut context = NativeTransientProcessing::new(NativeTransientInput {
+        identity,
+        operation,
+    });
+    let mut observed = Vec::new();
+    old.begin_block();
+    next.begin_block();
+    split.begin_block().unwrap();
+    let mut a = [[0.0; 2]; 1];
+    let mut b = a;
+    split
+        .process_with_controls(
+            &mut old,
+            &mut next,
+            &[[1.0, -0.5]],
+            &mut a,
+            &mut b,
+            7,
+            None,
+            Some(&mut context),
+            None,
+            Some(&mut |owner, device, kind, phase, offset, frames| {
+                observed.push((owner, device, kind, phase, offset, frames.to_vec()));
+            }),
+        )
+        .unwrap();
+    let combined = [a[0][0] + b[0][0], a[0][1] + b[0][1]];
+    let expected = 0.5 + 0.5 * HostGain::from_db(-6.0).unwrap().linear();
+    assert!((combined[0] - expected).abs() < 1e-6);
+    assert!((combined[1] + expected * 0.5).abs() < 1e-6);
+    assert_eq!(context.applied.unwrap().identity, identity);
+    assert_eq!(context.applied.unwrap().operation, operation);
+    assert_eq!(context.applied.unwrap().offset, 7);
+    assert_eq!(observed.len(), 2);
+    for observation in &observed {
+        assert_eq!(observation.0, ProcessorChainOwner::Main);
+        assert_eq!(observation.1, 1);
+        assert_eq!(observation.2, DeviceTypeId::from_static("hex.delay"));
+        assert_eq!(observation.4, 7);
+    }
+    assert_eq!(observed[0].3, NodeSignalPhase::Input);
+    assert_eq!(observed[0].5, vec![[1.0, -0.5]]);
+    assert_eq!(observed[1].3, NodeSignalPhase::Output);
+    assert_eq!(observed[1].5, vec![combined]);
+    assert_eq!(
+        meter.take_peaks().output,
+        [combined[0].abs(), combined[1].abs()]
+    );
+    old.rollback_block();
+    next.rollback_block();
+    split.rollback_block();
+    context.applied = None;
+    old.begin_block();
+    next.begin_block();
+    split.begin_block().unwrap();
+    let mut replay_old = [[0.0; 2]; 1];
+    let mut replay_new = replay_old;
+    split
+        .process_with_controls(
+            &mut old,
+            &mut next,
+            &[[1.0, -0.5]],
+            &mut replay_old,
+            &mut replay_new,
+            7,
+            None,
+            Some(&mut context),
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(replay_old, a);
+    assert_eq!(replay_new, b);
+    assert_eq!(context.applied.unwrap().offset, 7);
+    old.commit_block();
+    next.commit_block();
+    split.commit_block().unwrap();
+    let bad_operation =
+        NativeTransientOperation::Set(NativeTransientValue::HostInputGain(HostGain::ZERO));
+    let mut bad = NativeTransientProcessing::new(NativeTransientInput {
+        identity,
+        operation: bad_operation,
+    });
+    bad.applied = context.applied;
+    let mut bad_old = [[7.0; 2]; 1];
+    let mut bad_next = [[8.0; 2]; 1];
+    let mut observed_bad = false;
+    old.begin_block();
+    next.begin_block();
+    split.begin_block().unwrap();
+    assert!(
+        split
+            .process_with_controls(
+                &mut old,
+                &mut next,
+                &[[1.0; 2]],
+                &mut bad_old,
+                &mut bad_next,
+                0,
+                None,
+                Some(&mut bad),
+                None,
+                Some(&mut |_, _, _, _, _, _| observed_bad = true)
+            )
+            .is_err()
+    );
+    assert_eq!(bad_old, [[7.0; 2]; 1]);
+    assert_eq!(bad_next, [[8.0; 2]; 1]);
+    assert!(bad.applied.is_none());
+    assert!(!observed_bad);
+    old.rollback_block();
+    next.rollback_block();
+    split.rollback_block();
+}
+
+#[test]
+fn tail_split_refuses_armed_input_gain_before_preparation() {
+    use hex_lattice_contract::DeviceAutomationTarget;
+    let configured = state(&[(DRY_WET, ParameterValue::Float(0.0))]);
+    let mut automation = hex_lattice::PreparedParameterAutomation::default();
+    automation
+        .arm_host_gain_input(DeviceAutomationTarget::HostInputGain)
+        .unwrap();
+    let old =
+        split_test_chain_with_automation(&configured, true, Default::default(), automation.clone());
+    let mut next =
+        split_test_chain_with_automation(&configured, false, Default::default(), automation);
+    assert!(next.tail_bypass_change_at(&old, 0));
+    assert!(!next.can_prepare_tail_split_at(&old, 0));
+    assert!(next.prepare_tail_split_at(&old, 0).is_err());
+}
+
+#[test]
+fn tail_split_live_output_gain_change_is_continuous() {
+    use hex_lattice::{
+        NativeTransientInput, NativeTransientOperation, NativeTransientProcessing,
+        NativeTransientValue, ProcessorChainOwner, ProcessorInstanceIdentity,
+    };
+    use hex_lattice_contract::{DeviceAutomationTarget, HostGain};
+    let configured = state(&[(DRY_WET, ParameterValue::Float(0.0))]);
+    let mut automation = hex_lattice::PreparedParameterAutomation::default();
+    automation
+        .arm_host_gain_input(DeviceAutomationTarget::HostOutputGain)
+        .unwrap();
+    let mut old =
+        split_test_chain_with_automation(&configured, true, Default::default(), automation.clone());
+    let mut next =
+        split_test_chain_with_automation(&configured, false, Default::default(), automation);
+    let mut split = next.prepare_tail_split_at(&old, 0).unwrap();
+    old.begin_block();
+    next.begin_block();
+    split.begin_block().unwrap();
+    let mut a = [[0.0; 2]; 20];
+    let mut b = a;
+    split
+        .process(
+            &mut old,
+            &mut next,
+            &[[1.0; 2]; 20],
+            &mut a,
+            &mut b,
+            0,
+            None,
+        )
+        .unwrap();
+    let before = a[19][0] + b[19][0];
+    old.commit_block();
+    next.commit_block();
+    split.commit_block().unwrap();
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 1).unwrap();
+    let operation = NativeTransientOperation::Set(NativeTransientValue::HostOutputGain(
+        HostGain::from_db(-6.0).unwrap(),
+    ));
+    let mut context = NativeTransientProcessing::new(NativeTransientInput {
+        identity,
+        operation,
+    });
+    old.begin_block();
+    next.begin_block();
+    split.begin_block().unwrap();
+    let mut a = [[0.0; 2]; 1];
+    let mut b = a;
+    split
+        .process_with_controls(
+            &mut old,
+            &mut next,
+            &[[1.0; 2]],
+            &mut a,
+            &mut b,
+            0,
+            None,
+            Some(&mut context),
+            None,
+            None,
+        )
+        .unwrap();
+    let step = (a[0][0] + b[0][0] - before).abs();
+    assert!(step < 0.01, "live output-gain step: {step}");
+}
+
+#[test]
+fn tail_split_applies_external_output_gain_at_the_requested_offset() {
+    use hex_lattice::{
+        ExternalParameterAutomation, NativeExternalAutomation, NormalizedAutomationValue,
+        ProcessorChainOwner, ProcessorInstanceIdentity,
+    };
+    use hex_lattice_contract::{DeviceAutomationTarget, HostGain};
+    struct Values {
+        gain: NormalizedAutomationValue,
+    }
+    impl ExternalParameterAutomation for Values {
+        fn frames(&self) -> usize {
+            3
+        }
+        fn targets(&self) -> &[DeviceAutomationTarget] {
+            &[DeviceAutomationTarget::HostOutputGain]
+        }
+        fn value_at(
+            &self,
+            target: DeviceAutomationTarget,
+            offset: usize,
+        ) -> Option<NormalizedAutomationValue> {
+            (target == DeviceAutomationTarget::HostOutputGain && offset == 1).then_some(self.gain)
+        }
+    }
+    let configured = state(&[(DRY_WET, ParameterValue::Float(0.0))]);
+    let mut automation = hex_lattice::PreparedParameterAutomation::default();
+    automation
+        .prepare_external_host(DeviceAutomationTarget::HostOutputGain)
+        .unwrap();
+    let mut old =
+        split_test_chain_with_automation(&configured, true, Default::default(), automation.clone());
+    let mut next =
+        split_test_chain_with_automation(&configured, false, Default::default(), automation);
+    let mut split = next.prepare_tail_split_at(&old, 0).unwrap();
+    old.begin_block();
+    next.begin_block();
+    split.begin_block().unwrap();
+    let mut a = [[0.0; 2]; 20];
+    let mut b = a;
+    split
+        .process(
+            &mut old,
+            &mut next,
+            &[[1.0; 2]; 20],
+            &mut a,
+            &mut b,
+            0,
+            None,
+        )
+        .unwrap();
+    old.commit_block();
+    next.commit_block();
+    split.commit_block().unwrap();
+    let gain = HostGain::from_db(-6.0).unwrap();
+    let values = Values {
+        gain: NormalizedAutomationValue::new(gain.normalized()).unwrap(),
+    };
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 1).unwrap();
+    let external = NativeExternalAutomation {
+        identity,
+        frame_offset: 10,
+        values: &values,
+    };
+    old.begin_block();
+    next.begin_block();
+    split.begin_block().unwrap();
+    let mut a = [[0.0; 2]; 1];
+    let mut b = a;
+    split
+        .process_with_controls(
+            &mut old,
+            &mut next,
+            &[[1.0; 2]],
+            &mut a,
+            &mut b,
+            11,
+            None,
+            None,
+            Some(external),
+            None,
+        )
+        .unwrap();
+    let expected = 0.5 + 0.5 * gain.linear();
+    assert!((a[0][0] + b[0][0] - expected).abs() < 1e-6);
+    old.rollback_block();
+    next.rollback_block();
+    split.rollback_block();
 }
 
 #[test]

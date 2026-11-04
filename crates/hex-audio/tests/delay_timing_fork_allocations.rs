@@ -178,3 +178,95 @@ fn delay_tail_split_prepare_render_and_retire_are_allocation_free() {
         );
     }
 }
+
+#[test]
+fn delay_tail_split_control_and_observation_are_allocation_free() {
+    use hex_lattice::{
+        NativeTransientInput, NativeTransientOperation, NativeTransientProcessing,
+        NativeTransientValue, ProcessorInstanceIdentity,
+    };
+    use hex_lattice_contract::{DeviceAutomationTarget, HostGain};
+    let state = Arc::new(hex_devices::delay::DEFINITION.default_state().unwrap());
+    let factory = hex_devices::delay::DEFINITION
+        .prepare_runtime_factory(
+            &state,
+            &DevicePreparationContext {
+                sample_rate: 8000,
+                tuning: &TuningTable::default(),
+                resources: &EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let mut automation = hex_lattice::PreparedParameterAutomation::default();
+    automation
+        .arm_host_gain_input(DeviceAutomationTarget::HostOutputGain)
+        .unwrap();
+    let make = |bypassed| {
+        NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            automation: automation.clone(),
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Main,
+            device_id: 1,
+            device_type: hex_lattice_contract::DeviceTypeId::from_static("hex.delay"),
+            matrix: StereoMatrix::identity(),
+            bypassed,
+            sample_rate: 8000,
+            configuration: Some(Arc::clone(&state)),
+            definition: Some(factory.clone()),
+        }])
+        .unwrap()
+    };
+    let mut old = make(true);
+    let mut next = make(false);
+    let mut split = next.prepare_tail_split_at(&old, 0).unwrap();
+    old.set_metering(true);
+    next.set_metering(true);
+    let identity = ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 1).unwrap();
+    let operation =
+        NativeTransientOperation::Set(NativeTransientValue::HostOutputGain(HostGain::ZERO));
+    let mut context = NativeTransientProcessing::new(NativeTransientInput {
+        identity,
+        operation,
+    });
+    let mut old_out = [[0.0; 2]; 64];
+    let mut next_out = old_out;
+    let mut observations = 0;
+    let mut accepted = false;
+    let info = measure(|| {
+        old.begin_block();
+        next.begin_block();
+        if split.begin_block().is_ok()
+            && split
+                .process_with_controls(
+                    &mut old,
+                    &mut next,
+                    &[[0.2, -0.1]; 64],
+                    &mut old_out,
+                    &mut next_out,
+                    0,
+                    None,
+                    Some(&mut context),
+                    None,
+                    Some(&mut |_, _, _, _, _, _| observations += 1),
+                )
+                .is_ok()
+        {
+            old.commit_block();
+            next.commit_block();
+            accepted = split.commit_block().is_ok() && split.finish_retained_tail(&mut old).is_ok();
+        }
+    });
+    assert!(accepted);
+    assert_eq!(observations, 2);
+    assert_eq!(context.applied.unwrap().identity, identity);
+    assert_eq!(
+        (
+            info.count_total,
+            info.bytes_total,
+            info.count_current,
+            info.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}
