@@ -2,7 +2,7 @@
   "version": 1,
   "id": "hex-yield-workstation",
   "name": "hex / orbital",
-  "revisionId": "hex-current-aligned-study-r63",
+  "revisionId": "hex-current-aligned-study-r64",
   "width": 1900,
   "height": 1120,
   "background": "#111111",
@@ -16010,9 +16010,6 @@
       },
       "device-meter-peak-right": {
         "visible": true
-      },
-      "device-meter-overspill": {
-        "visible": true
       }
     },
     "playing": {
@@ -32004,9 +32001,6 @@
       },
       "device-meter-peak-right": {
         "visible": true
-      },
-      "device-meter-overspill": {
-        "visible": true
       }
     },
     "session": {
@@ -38578,9 +38572,6 @@
       },
       "device-meter-peak-right": {
         "visible": true
-      },
-      "device-meter-overspill": {
-        "visible": true
       }
     },
     "session-playing": {
@@ -45151,9 +45142,6 @@
         "visible": true
       },
       "device-meter-peak-right": {
-        "visible": true
-      },
-      "device-meter-overspill": {
         "visible": true
       }
     },
@@ -61146,9 +61134,6 @@
       },
       "device-meter-peak-right": {
         "visible": true
-      },
-      "device-meter-overspill": {
-        "visible": true
       }
     },
     "clip-colors": {
@@ -67719,9 +67704,6 @@
         "visible": true
       },
       "device-meter-peak-right": {
-        "visible": true
-      },
-      "device-meter-overspill": {
         "visible": true
       }
     },
@@ -74316,9 +74298,6 @@
       },
       "device-meter-peak-right": {
         "visible": true
-      },
-      "device-meter-overspill": {
-        "visible": true
       }
     },
     "grouped-spectrum": {
@@ -80911,9 +80890,6 @@
         "visible": true
       },
       "device-meter-peak-right": {
-        "visible": true
-      },
-      "device-meter-overspill": {
         "visible": true
       }
     },
@@ -96906,9 +96882,6 @@
       },
       "device-meter-peak-right": {
         "visible": true
-      },
-      "device-meter-overspill": {
-        "visible": true
       }
     },
     "galaxy-nebula": {
@@ -112900,9 +112873,6 @@
       },
       "device-meter-peak-right": {
         "visible": true
-      },
-      "device-meter-overspill": {
-        "visible": true
       }
     },
     "galaxy-starlight": {
@@ -128888,9 +128858,6 @@
       },
       "device-meter-peak-right": {
         "visible": true
-      },
-      "device-meter-overspill": {
-        "visible": true
       }
     },
     "galaxy-cyan": {
@@ -144875,9 +144842,6 @@
         "visible": true
       },
       "device-meter-peak-right": {
-        "visible": true
-      },
-      "device-meter-overspill": {
         "visible": true
       }
     },
@@ -160870,9 +160834,6 @@
       },
       "device-meter-peak-right": {
         "visible": true
-      },
-      "device-meter-overspill": {
-        "visible": true
       }
     },
     "browser-hidden": {
@@ -176650,9 +176611,6 @@
         "visible": true
       },
       "device-meter-peak-right": {
-        "visible": true
-      },
-      "device-meter-overspill": {
         "visible": true
       }
     }
@@ -363387,19 +363345,19 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 509.5,
-        "y": 821.5,
-        "width": 4,
-        "height": 178
+        "x": 510,
+        "y": 822,
+        "width": 3,
+        "height": 177
       },
       "style": {
         "fontFamily": "Ioskeley Mono",
         "fontSize": 9,
         "padding": 0,
         "color": "#c7c7c7",
-        "lineWidth": 1,
+        "lineWidth": 0.4,
         "fill": "none",
-        "stroke": "#a3b2b8"
+        "stroke": "#d4dce0"
       }
     },
     {
@@ -363427,19 +363385,19 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 513.5,
-        "y": 821.5,
-        "width": 4,
-        "height": 178
+        "x": 514,
+        "y": 822,
+        "width": 3,
+        "height": 177
       },
       "style": {
         "fontFamily": "Ioskeley Mono",
         "fontSize": 9,
         "padding": 0,
         "color": "#c7c7c7",
-        "lineWidth": 1,
+        "lineWidth": 0.4,
         "fill": "none",
-        "stroke": "#a3b2b8"
+        "stroke": "#d4dce0"
       }
     },
     {
@@ -363459,26 +363417,6 @@
         "color": "#c7c7c7",
         "lineWidth": 1,
         "fill": "#d5e7ec",
-        "stroke": "none"
-      }
-    },
-    {
-      "id": "device-meter-overspill",
-      "type": "container",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 510,
-        "y": 817,
-        "width": 7,
-        "height": 3
-      },
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 9,
-        "padding": 0,
-        "color": "#c7c7c7",
-        "lineWidth": 1,
-        "fill": "#bf4444",
         "stroke": "none"
       }
     }
