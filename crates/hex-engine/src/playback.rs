@@ -1862,7 +1862,7 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
-        self.try_inherit_runtime_impl(previous, false)
+        self.try_inherit_runtime_impl(previous, false, false)
     }
 
     /// Ordinary publication may rebind a fresh monitor to the same physical input client in
@@ -1878,13 +1878,34 @@ impl Playback {
         self.try_inherit_runtime_impl(
             previous,
             generation.is_some() && generation == previous_generation,
+            false,
         )
+    }
+
+    /// Reset an explicitly prepared bounce successor at a verified live
+    /// Arrangement fence. The publication owner must validate the fence and
+    /// unchanged source context in the callback before invoking this method.
+    pub fn try_restart_runtime_under_arrangement_fence(
+        &mut self,
+        previous: &mut Self,
+        generation: Option<u64>,
+        previous_generation: Option<u64>,
+    ) -> Result<(), PlaybackHandoffError> {
+        if generation.is_none()
+            || generation != previous_generation
+            || !self.live_restart_requested()
+            || previous.session_runtime.is_none()
+        {
+            return Err(PlaybackHandoffError::RuntimeFenceChanged);
+        }
+        self.try_inherit_runtime_impl(previous, true, true)
     }
 
     fn try_inherit_runtime_impl(
         &mut self,
         previous: &mut Self,
         same_control_context: bool,
+        fenced_restart: bool,
     ) -> Result<(), PlaybackHandoffError> {
         if previous
             .session_runtime
@@ -1961,10 +1982,13 @@ impl Playback {
             _ => false,
         };
         match (&mut self.session_runtime, &mut previous.session_runtime) {
-            (Some(next), Some(old)) => next
-                .try_inherit_state_live_from(old)
-                .map(|_| ())
-                .map_err(PlaybackHandoffError::Session)?,
+            (Some(next), Some(old)) => (if fenced_restart {
+                next.try_inherit_state_fenced_restart_from(old)
+            } else {
+                next.try_inherit_state_live_from(old)
+            })
+            .map(|_| ())
+            .map_err(PlaybackHandoffError::Session)?,
             (Some(next), None) => {
                 if previous.performance_clock_exhausted {
                     return Err(PlaybackHandoffError::PerformanceClockExhausted);

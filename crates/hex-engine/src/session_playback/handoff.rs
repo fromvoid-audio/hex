@@ -361,7 +361,7 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned(previous, None, None, false)
+        self.inherit_state_planned(previous, None, None, false, false)
     }
     /// Live publication policy (Pulse #3770): see `inherit_state_planned`.
     pub(super) fn inherit_state_live(
@@ -369,7 +369,13 @@ impl SessionPlayback {
         previous: &mut Self,
         groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned(previous, groups, None, true)
+        self.inherit_state_planned(previous, groups, None, true, false)
+    }
+    pub(super) fn inherit_state_fenced_restart(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.inherit_state_planned(previous, None, None, true, true)
     }
     /// With `live`, a transition the strict planner cannot prove (an unproven
     /// mutable chase, a changed MIDI source layout, compensated timing or tails,
@@ -385,8 +391,11 @@ impl SessionPlayback {
         groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
         mut demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         live: bool,
+        fenced_restart: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        if !retained_path_roles_match(&previous.revision, &self.revision) {
+        if !(retained_path_roles_match(&previous.revision, &self.revision)
+            || fenced_restart && live && self.live_restart && self.candidate_admission_open)
+        {
             return Err(SessionPlaybackError::Arrangement(
                 "retained source path changes require stopped graph replacement",
             ));
