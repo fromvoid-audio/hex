@@ -645,6 +645,14 @@ fn timing_only_fork_preserves_rollback_and_exact_host_identity() {
 }
 
 fn split_test_chain(state: &NativeDeviceState, bypassed: bool) -> hex_lattice::NativeRuntimeChain {
+    split_test_chain_with_meter(state, bypassed, Default::default())
+}
+
+fn split_test_chain_with_meter(
+    state: &NativeDeviceState,
+    bypassed: bool,
+    meter: Arc<hex_lattice::DeviceMeter>,
+) -> hex_lattice::NativeRuntimeChain {
     let rate = 8000;
     let factory = DEFINITION
         .prepare_runtime_factory(
@@ -658,7 +666,7 @@ fn split_test_chain(state: &NativeDeviceState, bypassed: bool) -> hex_lattice::N
         .unwrap();
     hex_lattice::NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
         automation: Default::default(),
-        meter: Default::default(),
+        meter,
         owner: hex_lattice::ProcessorChainOwner::Main,
         device_id: 1,
         device_type: DeviceTypeId::from_static("hex.delay"),
@@ -669,6 +677,76 @@ fn split_test_chain(state: &NativeDeviceState, bypassed: bool) -> hex_lattice::N
         definition: factory,
     }])
     .unwrap()
+}
+
+#[test]
+fn tail_split_meter_observes_the_combined_signal() {
+    for initial_bypass in [false, true] {
+        for gain in [-6000, 0, 6000] {
+            let configured = state(&[(DRY_WET, ParameterValue::Float(0.0))])
+                .with_input_gain_millidb(gain)
+                .unwrap();
+            let meter = Arc::new(hex_lattice::DeviceMeter::default());
+            let mut old =
+                split_test_chain_with_meter(&configured, initial_bypass, Arc::clone(&meter));
+            let mut next =
+                split_test_chain_with_meter(&configured, !initial_bypass, Arc::clone(&meter));
+            let mut split = next.prepare_tail_split_at(&old, 0).unwrap();
+            old.begin_block();
+            next.begin_block();
+            split.begin_block().unwrap();
+            let warm = [[1.0, -0.25]; 20];
+            let mut old_out = [[0.0; 2]; 20];
+            let mut new_out = old_out;
+            split
+                .process(
+                    &mut old,
+                    &mut next,
+                    &warm,
+                    &mut old_out,
+                    &mut new_out,
+                    0,
+                    None,
+                )
+                .unwrap();
+            old.commit_block();
+            next.commit_block();
+            split.commit_block().unwrap();
+            old.set_metering(true);
+            next.set_metering(true);
+            old.begin_block();
+            next.begin_block();
+            split.begin_block().unwrap();
+            let mut a = [[0.0; 2]; 1];
+            let mut b = a;
+            split
+                .process(
+                    &mut old,
+                    &mut next,
+                    &[[1.0, -0.25]],
+                    &mut a,
+                    &mut b,
+                    0,
+                    None,
+                )
+                .unwrap();
+            old.commit_block();
+            next.commit_block();
+            split.commit_block().unwrap();
+            let actual = [a[0][0] + b[0][0], a[0][1] + b[0][1]];
+            let peaks = meter.take_peaks();
+            assert!(
+                (peaks.input - actual[0]).abs() < 1e-6,
+                "bypass={initial_bypass} gain={gain}"
+            );
+            for lane in 0..2 {
+                assert!(
+                    (peaks.output[lane] - actual[lane].abs()).abs() < 1e-6,
+                    "bypass={initial_bypass} gain={gain}"
+                );
+            }
+        }
+    }
 }
 
 fn split_test_render(initial_bypass: bool, partition: usize, rollback: bool) -> Vec<StereoFrame> {
