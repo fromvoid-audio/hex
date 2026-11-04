@@ -147,7 +147,25 @@ impl EditorView {
             options.new_track_gain =
                 Some(self.track_defaults.captured_gain().map_err(str::to_owned)?);
         }
-        Ok(request)
+        match request {
+            Request::Import(path) => Ok(Request::ImportToNewTrackWithGain {
+                path,
+                before_track: None,
+                start: 0,
+                gain: self.track_defaults.captured_gain().map_err(str::to_owned)?,
+            }),
+            Request::ImportToNewTrack {
+                path,
+                before_track,
+                start,
+            } => Ok(Request::ImportToNewTrackWithGain {
+                path,
+                before_track,
+                start,
+                gain: self.track_defaults.captured_gain().map_err(str::to_owned)?,
+            }),
+            request => Ok(request),
+        }
     }
 
     pub(super) fn start_audio_import_preferences_load(&mut self, cx: &mut Context<Self>) {
