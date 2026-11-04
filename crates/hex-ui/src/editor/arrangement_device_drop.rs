@@ -137,6 +137,7 @@ impl EditorView {
                 class,
                 type_id,
                 destination: preview.destination,
+                new_track_gain: None,
             }) {
                 self.error = None;
                 self.status = "adding device to arrangement".into();

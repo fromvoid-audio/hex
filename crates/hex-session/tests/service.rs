@@ -1962,6 +1962,7 @@ fn arrangement_catalog_drop_routes_all_destinations_and_is_one_undo() {
             });
             service
                 .submit(Request::DropBrowserDeviceOnArrangement {
+                    new_track_gain: None,
                     project_generation: 0,
                     revision: baseline.state.revision,
                     class,
@@ -2057,6 +2058,7 @@ fn arrangement_catalog_drop_refuses_stale_catalog_and_captured_targets_atomicall
     for refusal in 0..5 {
         service
             .submit(Request::DropBrowserDeviceOnArrangement {
+                new_track_gain: None,
                 project_generation: u64::from(refusal == 0),
                 revision: baseline.state.revision + u64::from(refusal == 1),
                 class: NativeDeviceClass::Instrument,
@@ -2104,6 +2106,7 @@ fn arrangement_catalog_drop_refuses_stale_catalog_and_captured_targets_atomicall
     ] {
         service
             .submit(Request::DropBrowserDeviceOnArrangement {
+                new_track_gain: None,
                 project_generation: 0,
                 revision: removed.state.revision,
                 class: NativeDeviceClass::Effect,

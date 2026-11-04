@@ -573,6 +573,7 @@ pub enum Request {
         revision: u64,
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
+        new_track_gain: Option<f32>,
     },
     /// Captured VST3 catalog choice; native preparation remains on the canonical worker.
     InsertPluginEffect(PluginEffectInsertion),
@@ -596,6 +597,7 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         destination: ArrangementDeviceDestination,
+        new_track_gain: Option<f32>,
     },
     /// Copy one captured Arrangement source to a new normal Console column.
     /// Resolve stamps before any gesture barrier, source preparation or history.
@@ -2857,6 +2859,7 @@ fn run_worker(
                 revision: expected_revision,
                 class,
                 type_id,
+                new_track_gain,
             } => Some(
                 if *expected_generation != project_generation || *expected_revision != revision {
                     Err("instrument insertion canceled · project changed".to_owned())
@@ -2874,12 +2877,13 @@ fn run_worker(
                             hex_storage::text::lowercase_outside_verbatim(&reason.to_string())
                         })
                         .and_then(|state| {
-                            Ok(Command::InsertDefaultTrackWithDevice {
-                                before_track: None,
-                                slot: hex_project::TrackDeviceSlot::Instrument,
+                            Ok(device_track_command(
+                                None,
+                                hex_project::TrackDeviceSlot::Instrument,
                                 state,
-                                device_name: native_device_name(*class, *type_id)?,
-                            })
+                                native_device_name(*class, *type_id)?,
+                                *new_track_gain,
+                            ))
                         })
                 },
             ),
@@ -3975,6 +3979,7 @@ fn run_worker(
                     class,
                     type_id,
                     destination,
+                    new_track_gain,
                 } => {
                     let command = if device_gesture.snapshot().is_some() {
                         Err("device edit is still applying; drag again".to_owned())
@@ -3983,7 +3988,13 @@ fn run_worker(
                     {
                         Err("device drag canceled · project changed".to_owned())
                     } else {
-                        arrangement_device_command(session.project(), class, type_id, destination)
+                        arrangement_device_command(
+                            session.project(),
+                            class,
+                            type_id,
+                            destination,
+                            new_track_gain,
+                        )
                     };
                     match command.and_then(|command| {
                         resident_audio::execute_command(
@@ -8239,27 +8250,51 @@ fn native_device_name(
         )
 }
 
+fn device_track_command(
+    before_track: Option<hex_project::TrackId>,
+    slot: hex_project::TrackDeviceSlot,
+    state: hex_lattice_contract::NativeDeviceState,
+    device_name: String,
+    gain: Option<f32>,
+) -> Command {
+    match gain {
+        Some(gain) => Command::InsertDefaultTrackWithDeviceAndGain {
+            before_track,
+            slot,
+            state,
+            device_name,
+            gain,
+        },
+        None => Command::InsertDefaultTrackWithDevice {
+            before_track,
+            slot,
+            state,
+            device_name,
+        },
+    }
+}
+
 fn arrangement_device_command(
     project: &hex_project::Project,
     class: hex_engine::NativeDeviceClass,
     type_id: hex_lattice_contract::DeviceTypeId,
     destination: ArrangementDeviceDestination,
+    new_track_gain: Option<f32>,
 ) -> Result<Command, String> {
     use hex_engine::NativeDeviceClass;
     let state = hex_engine::default_native_device_state_for_class(class, type_id)
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     match destination {
-        ArrangementDeviceDestination::NewTrack { before_track } => {
-            Ok(Command::InsertDefaultTrackWithDevice {
-                before_track,
-                slot: match class {
-                    NativeDeviceClass::Instrument => hex_project::TrackDeviceSlot::Instrument,
-                    NativeDeviceClass::Effect => hex_project::TrackDeviceSlot::Effect,
-                },
-                state,
-                device_name: native_device_name(class, type_id)?,
-            })
-        }
+        ArrangementDeviceDestination::NewTrack { before_track } => Ok(device_track_command(
+            before_track,
+            match class {
+                NativeDeviceClass::Instrument => hex_project::TrackDeviceSlot::Instrument,
+                NativeDeviceClass::Effect => hex_project::TrackDeviceSlot::Effect,
+            },
+            state,
+            native_device_name(class, type_id)?,
+            new_track_gain,
+        )),
         ArrangementDeviceDestination::ExistingTrack { track, instrument } => {
             let target = project
                 .track(track)
@@ -11041,6 +11076,7 @@ mod service_tests {
                 class: hex_engine::NativeDeviceClass::Effect,
                 type_id: utility,
                 destination: ArrangementDeviceDestination::NewTrack { before_track: None },
+                new_track_gain: None,
             })
             .expect("arrangement drop during parameter gesture");
         let refused_arrangement = next_event(&service);
