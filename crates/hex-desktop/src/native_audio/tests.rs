@@ -17,6 +17,7 @@ mod resident_sections;
 mod resident_streamed_bounce;
 mod sampler;
 mod section_benchmark;
+mod solo_latency;
 mod stream_export;
 mod track_clipboard;
 mod track_reorder;

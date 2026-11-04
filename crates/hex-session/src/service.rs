@@ -310,6 +310,19 @@ pub struct Event {
     pub tuning_library: Option<TuningLibraryResult>,
 }
 
+/// Best-effort display observation after a Solo edit commits and before its
+/// ordinary terminal. The one-slot channel can drop observations under
+/// backpressure; only the ordered Event terminal acknowledges the request.
+/// Consumers must match the generation and previous revision before painting,
+/// and retire the observation on the terminal or project replacement. It
+/// never acknowledges recovery, transfers project custody or proves audio application.
+pub struct SoloViewObservation {
+    pub project_generation: u64,
+    pub previous_revision: u64,
+    pub revision: u64,
+    pub tracks: Vec<(hex_project::TrackId, bool)>,
+}
+
 mod verified_gain;
 pub use verified_gain::VerifiedTrackGainSource;
 
@@ -1028,6 +1041,7 @@ pub struct Service {
     /// `None` after shutdown, which disconnects an idle blocking worker.
     requests: Option<request_cancellation::Sender>,
     events: diagnostics::EventReceiver,
+    solo_views: Receiver<SoloViewObservation>,
     diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
     export_busy: Arc<AtomicBool>,
@@ -1332,6 +1346,7 @@ impl Service {
         let document_intent = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let worker_document_intent = Arc::clone(&document_intent);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
+        let (solo_view_tx, solo_views) = mpsc::sync_channel(1);
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
         let actor_export_events = export_event_tx.clone();
@@ -1439,6 +1454,7 @@ impl Service {
                     actor_export_events,
                     recovery,
                     resident_seek,
+                    solo_view_tx,
                 )
             })
             .map_err(ServiceError::Worker)?;
@@ -1451,6 +1467,7 @@ impl Service {
             )),
             diagnostics: Arc::clone(&diagnostics),
             events: diagnostics::EventReceiver::new(event_rx, diagnostics),
+            solo_views,
             export_events: export_event_rx,
             export_busy,
             shutdown,
@@ -1467,6 +1484,12 @@ impl Service {
     /// Construction failure recorded before the initial-state sender disconnects.
     pub fn startup_failure(&self) -> Option<&str> {
         self.startup_failure.get().map(String::as_str)
+    }
+
+    /// Receive a bounded, optional Solo display observation. A full channel
+    /// drops the observation; the ordinary terminal remains authoritative.
+    pub fn try_solo_view(&self) -> Result<SoloViewObservation, TryRecvError> {
+        self.solo_views.try_recv()
     }
 
     /// Submit without waiting for worker capacity.
@@ -2144,6 +2167,7 @@ fn run_worker(
     export_events: SyncSender<ExportEvent>,
     recovery: Option<PathBuf>,
     mut resident_seek: Option<resident_seek::Lane>,
+    solo_views: SyncSender<SoloViewObservation>,
 ) {
     let mut revision = 0_u64;
     let mut unsaved = false;
@@ -2499,6 +2523,10 @@ fn run_worker(
         events.begin_request(&document_intent, queued.document_intent);
         let save_correlation = queued.save_correlation;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
+        let solo_request = matches!(
+            &request,
+            Request::Edit(Command::ToggleSolo { .. } | Command::ToggleSoloTracks { .. })
+        );
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
             _ => None,
@@ -2882,8 +2910,10 @@ fn run_worker(
                     Command::MoveClipWithOverwrite { .. }
                     | Command::MoveMidiClipWithOverwrite { .. }
                     | Command::CopyClipTo { .. }
-                    | Command::CopyMidiClipTo { .. } => true,
-                    Command::MoveClipsWithOverwrite { clips, .. } => {
+                    | Command::CopyMidiClipTo { .. }
+                    | Command::DuplicateAliasClipToNewTrack { .. } => true,
+                    Command::MoveClipsWithOverwrite { clips, .. }
+                    | Command::DuplicateAliasClipsAt { clips, .. } => {
                         !clips.is_empty() && clips.len() <= hex_project::MAX_CLIPS
                     }
                     _ => false,
@@ -7305,6 +7335,27 @@ fn run_worker(
                     .flatten();
             }
         }
+        if solo_request && canonical_changed && error.is_none() {
+            let mut tracks = Vec::new();
+            if tracks
+                .try_reserve_exact(state.project.tracks().len())
+                .is_ok()
+            {
+                tracks.extend(
+                    state
+                        .project
+                        .tracks()
+                        .iter()
+                        .map(|track| (track.id(), track.soloed())),
+                );
+                let _ = solo_views.try_send(SoloViewObservation {
+                    project_generation,
+                    previous_revision: revision_before_request,
+                    revision,
+                    tracks,
+                });
+            }
+        }
         if let Some(untitled_path) = recovery.as_deref() {
             let journal_result = recovery_tracker.maintain(
                 recovery::RecoveryContext {
@@ -11623,6 +11674,7 @@ mod service_tests {
         let (requests, _request_receiver) = mpsc::sync_channel(0);
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
+        let (_solo_sender, solo_views) = mpsc::sync_channel(1);
         let service = Service {
             diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
@@ -11634,6 +11686,7 @@ mod service_tests {
                 events,
                 Arc::new(diagnostics::Hooks::default()),
             ),
+            solo_views,
             export_events,
             export_busy: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
