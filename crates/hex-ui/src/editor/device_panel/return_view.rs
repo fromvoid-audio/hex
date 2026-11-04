@@ -229,7 +229,7 @@ pub(super) fn render_return_effect(
                     hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                 })
         });
-    let leading = bypass_action(device, NativeDeviceClass::Effect, cx);
+    let leading = bypass_action(view, device, NativeDeviceClass::Effect, cx);
     let mut actions = div().flex().items_center().gap(px(2.0));
     if device_view.is_ok() {
         actions = actions

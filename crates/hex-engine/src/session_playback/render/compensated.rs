@@ -37,6 +37,14 @@ impl SessionPlayback {
             .take(4)
             .count()
             == 4;
+        let loop_fade = self
+            .active_loop_region_at(arrangement_frame)
+            .and_then(|region| {
+                crate::loop_seam::LoopEndFade::new(
+                    region,
+                    self.revision.arrangement().sample_rate(),
+                )
+            });
         eligible.fill(false);
         analytic.fill(false);
         let batch_analytic = self.suppression_scratch.is_empty()
@@ -91,6 +99,7 @@ impl SessionPlayback {
                             continuations: &self.analytic_continuations,
                             index,
                             raw: true,
+                            loop_fade: None,
                             timing: &timing,
                             table: self.revision.session().sine_table(),
                         },
@@ -147,6 +156,9 @@ impl SessionPlayback {
                             track
                                 .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
                                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                            if let Some(fade) = loop_fade {
+                                fade.apply(arrangement_frame, output);
+                            }
                         }
                         *eligible
                             .get_mut(index)
@@ -199,6 +211,7 @@ impl SessionPlayback {
                             continuations: &self.analytic_continuations,
                             index,
                             raw: true,
+                            loop_fade: None,
                             timing: &timing,
                             table: self.revision.session().sine_table(),
                         },
@@ -308,6 +321,14 @@ impl SessionPlayback {
         external: Option<hex_lattice::NativeExternalAutomation<'_>>,
         resident_source: Option<BatchedSources<'_>>,
     ) -> Result<(), SessionPlaybackError> {
+        let loop_fade = self
+            .active_loop_region_at(arrangement_frame)
+            .and_then(|region| {
+                crate::loop_seam::LoopEndFade::new(
+                    region,
+                    self.revision.arrangement().sample_rate(),
+                )
+            });
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
@@ -388,6 +409,7 @@ impl SessionPlayback {
                                     // after the current graph returns to a fused mix.
                                     // The content-origin fader below owns that mix.
                                     raw: true,
+                                    loop_fade,
                                     timing: &timing,
                                     table: self.revision.session().sine_table(),
                                 },
@@ -431,6 +453,7 @@ impl SessionPlayback {
                                     continuations: &self.analytic_continuations,
                                     index,
                                     raw: true,
+                                    loop_fade: None,
                                     timing: &timing,
                                     table: self.revision.session().sine_table(),
                                 },

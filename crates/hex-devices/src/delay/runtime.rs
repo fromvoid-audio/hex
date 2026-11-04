@@ -50,6 +50,7 @@ impl PreparedOwnedProcessorRuntime for Factory {
             dirty_len: 0,
             open: false,
             releasing: false,
+            pristine: true,
         };
         if runtime.fixed_storage_pair_bytes() != Some(self.declared_pair_bytes()) {
             return Err(DeviceContractError::RuntimeBudgetExceeded);
@@ -182,6 +183,9 @@ pub(super) struct Runtime {
     dirty_len: usize,
     open: bool,
     releasing: bool,
+    // Reset intentionally leaves old bytes in the rings; only constructor-owned
+    // rings are known to be empty without a callback-time scan.
+    pristine: bool,
 }
 fn finite(v: f64) -> f32 {
     v.clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
@@ -223,6 +227,7 @@ impl Runtime {
         destination[..length - first].copy_from_slice(&source[..length - first]);
     }
     fn inherit_scalars(&mut self, old: Scalar, old_settings: Settings) {
+        self.pristine = false;
         self.primary = old;
         (self.primary.dry_gain, self.primary.wet_gain) =
             mix_gains(self.primary.mix, self.settings.flag(EQUAL_LOUDNESS));
@@ -455,9 +460,11 @@ impl OwnedProcessorRuntime for Runtime {
         self.open = false;
     }
     fn begin_output_tail(&mut self) {
+        self.pristine = false;
         self.releasing = true;
     }
     fn reset(&mut self) {
+        self.pristine = false;
         self.releasing = false;
         let s = Scalar::new(self.settings, self.rate);
         self.primary = s;
@@ -506,6 +513,47 @@ impl OwnedProcessorRuntime for Runtime {
             self.inherit_scalars(old.primary, old.settings);
             old.reset();
         }
+    }
+    fn can_fork_timing_without_signal_history_from(
+        &self,
+        previous: &dyn OwnedProcessorRuntime,
+    ) -> bool {
+        previous.as_any().downcast_ref::<Self>().is_some_and(|old| {
+            self.pristine
+                && self.primary.valid == 0
+                && self.speculative.valid == 0
+                && !self.open
+                && !old.open
+                && !old.releasing
+                && self.rate == old.rate
+                && self.settings == old.settings
+                && !self.settings.flag(FREEZE)
+                && self.committed.len() == old.committed.len()
+                && self.scratch.len() == old.scratch.len()
+        })
+    }
+    fn fork_timing_without_signal_history_from(
+        &mut self,
+        previous: &dyn OwnedProcessorRuntime,
+    ) -> bool {
+        if !self.can_fork_timing_without_signal_history_from(previous) {
+            return false;
+        }
+        let Some(old) = previous.as_any().downcast_ref::<Self>() else {
+            return false;
+        };
+        let mut scalar = old.primary;
+        scalar.nonzero = 0;
+        scalar.filters = scalar.filters.map(BandPass::without_signal_memory);
+        self.primary = scalar;
+        self.speculative = scalar;
+        self.dirty_start = scalar.next;
+        self.dirty_len = 0;
+        self.pristine = false;
+        true
+    }
+    fn can_split_tail_input_from(&self, previous: &dyn OwnedProcessorRuntime) -> bool {
+        self.can_fork_timing_without_signal_history_from(previous)
     }
     fn can_retarget_parameters_from(&self, old: &dyn OwnedProcessorRuntime) -> bool {
         self.can_inherit_from(old)

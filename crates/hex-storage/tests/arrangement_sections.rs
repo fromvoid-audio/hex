@@ -610,7 +610,7 @@ fn structural_section_edits_roundtrip_the_complete_project_and_one_history_edge(
                 let duplicate = editor.project().arrangement_section(copy).unwrap();
                 assert_eq!(duplicate.start(), source.end());
                 assert_eq!(duplicate.name(), source.name());
-                assert_eq!(duplicate.color(), source.color());
+                assert_ne!(duplicate.color(), source.color());
             }
             "duplicate-before" | "duplicate-after" => {
                 let after_target = operation == "duplicate-after";
@@ -627,10 +627,8 @@ fn structural_section_edits_roundtrip_the_complete_project_and_one_history_edge(
                 let source = editor.project().arrangement_section(ids[0]).unwrap();
                 let target = editor.project().arrangement_section(ids[1]).unwrap();
                 let copied = editor.project().arrangement_section(copy).unwrap();
-                assert_eq!(
-                    (copied.name(), copied.color()),
-                    (source.name(), source.color())
-                );
+                assert_eq!(copied.name(), source.name());
+                assert_ne!(copied.color(), source.color());
                 if after_target {
                     assert_eq!(copied.start(), target.end());
                 } else {

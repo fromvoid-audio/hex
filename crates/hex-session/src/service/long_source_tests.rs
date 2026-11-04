@@ -314,3 +314,32 @@ fn transform_edits_past_the_edit_domain_name_the_limit_and_the_remedy() {
         assert_eq!(refused.state.project, imported.state.project);
     }
 }
+
+#[test]
+fn fifo_new_track_gain_applies_to_verified_file_imports() {
+    let files = Files::new();
+    let path = files.long_wav("gain.wav", 256);
+    let service = service_in(DocumentAudioMode::VerifiedStreaming);
+    service
+        .submit(Request::ImportToNewTrackWithGain {
+            path,
+            before_track: None,
+            start: 13,
+            gain: 0.25,
+        })
+        .unwrap();
+    let imported = next(&service);
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let track = &imported.state.project.tracks()[0];
+    assert_eq!(track.gain(), 0.25);
+    assert_eq!(track.clips()[0].start(), 13);
+    assert_eq!(streamed_frames(&imported), 256);
+    service.submit(Request::Undo).unwrap();
+    let undo = next(&service);
+    assert!(undo.error.is_none(), "{:?}", undo.error);
+    assert!(undo.state.project.tracks().is_empty());
+    service.submit(Request::Redo).unwrap();
+    let redo = next(&service);
+    assert!(redo.error.is_none(), "{:?}", redo.error);
+    assert_eq!(redo.state.project.tracks()[0].gain(), 0.25);
+}

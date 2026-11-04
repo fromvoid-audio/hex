@@ -534,3 +534,84 @@ fn cancel_request_is_observed_after_decode_and_conversion_boundaries() {
 }
 
 mod console;
+
+#[test]
+fn captured_new_track_gain_survives_decode_reuse_and_leaves_existing_tracks_unchanged() {
+    let files = Files::new();
+    let path = files.wav("gain.wav", 48_000, 64, 8192);
+    let mut s = session();
+    let run = |s: &mut Session, destination, gain| {
+        let op = AudioBatchImport::capture_with_control(
+            vec![path.clone()],
+            destination,
+            s,
+            context(),
+            Arc::new(AudioBatchControl::new(1).unwrap()),
+            crate::import_batch::AudioImportOptions {
+                new_track_gain: Some(gain),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        op.run(s, None, context).unwrap().0[0]
+    };
+    let Created::Imported {
+        track: first,
+        asset: first_asset,
+        ..
+    } = run(&mut s, destination(), 0.25)
+    else {
+        panic!("first import")
+    };
+    assert_eq!(s.project().track(first).unwrap().gain(), 0.25);
+    let frames = s.resident_frames();
+    let before = s.project().clone();
+    let Created::Imported {
+        track: second,
+        asset: second_asset,
+        ..
+    } = run(&mut s, destination(), 0.5)
+    else {
+        panic!("reuse")
+    };
+    assert_eq!(
+        first_asset, second_asset,
+        "the same resident media is reused"
+    );
+    assert_eq!(s.resident_frames(), frames);
+    assert_eq!(s.project().track(first).unwrap().gain(), 0.25);
+    assert_eq!(s.project().track(second).unwrap().gain(), 0.5);
+    let after = s.project().clone();
+    assert!(s.undo());
+    assert_eq!(s.project().tracks().len(), before.tracks().len());
+    assert!(s.redo());
+    assert_eq!(s.project(), &after);
+    run(
+        &mut s,
+        AudioBatchDestination::Track {
+            track: first,
+            start: 100,
+        },
+        0.9,
+    );
+    assert_eq!(s.project().track(first).unwrap().gain(), 0.25);
+    let before_invalid = s.project().clone();
+    for gain in [f32::NAN, f32::INFINITY, -0.1, 2.1] {
+        assert!(
+            AudioBatchImport::capture_with_control(
+                vec![path.clone()],
+                destination(),
+                &s,
+                context(),
+                Arc::new(AudioBatchControl::new(1).unwrap()),
+                crate::import_batch::AudioImportOptions {
+                    new_track_gain: Some(gain),
+                    ..Default::default()
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(s.project(), &before_invalid);
+        assert_eq!(s.resident_frames(), frames);
+    }
+}

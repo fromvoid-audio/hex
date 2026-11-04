@@ -419,32 +419,28 @@ pub(super) fn card(
                 if view.opening_project
                     || view.close_prompt_open
                     || view.gain_recorder.blocks_edits()
-                    || !view.pending_requests.is_empty()
-                    || !view.device_gesture_barriers.is_empty()
-                    || view.worker_requests_pending > 1
-                    || (view.worker_requests_pending != 0
-                        && view.device_gesture.snapshot().is_none())
+                    || ((!view.pending_requests.is_empty()
+                        || !view.device_gesture_barriers.is_empty()
+                        || view.worker_requests_pending > 1
+                        || (view.worker_requests_pending != 0
+                            && view.device_gesture.snapshot().is_none()))
+                        && !view.only_bypass_requests_pending())
                 {
                     view.error =
                         Some("finish pending edits before toggling the selected device".into());
                     cx.notify();
                     return;
                 }
-                let bypassed = view.state.as_ref().and_then(|state| {
+                let valid = view.state.as_ref().and_then(|state| {
                     let owner = owner?;
                     if selected_owner(view, state) != Some(owner) {
                         return None;
                     }
                     let item = owned_device(&state.project, owner, device)?;
-                    (Some(item.state().type_id()) == type_id).then_some(!item.bypassed())
+                    (Some(item.state().type_id()) == type_id).then_some(())
                 });
-                if let Some(bypassed) = bypassed
-                    && finalize_controls(view, cx)
-                {
-                    view.enqueue_device_barrier(Request::Edit(Command::SetDeviceBypass {
-                        device,
-                        bypassed,
-                    }));
+                if valid.is_some() && finalize_controls(view, cx) {
+                    view.toggle_device_bypass(device);
                     cx.notify();
                 }
             }),

@@ -1,6 +1,36 @@
 //! Source-owned kernel continuity, separate from track-local effect history.
 use super::*;
 
+/// A short, already-releasing source must finish before another kernel for
+/// the same device is admitted. The callback can retry while the old graph
+/// renders; held live inputs and long releases retain the existing policy.
+pub(super) fn short_source_release_blocks_reenable(
+    revision: &PreparedRevision,
+    previous: &SessionPlayback,
+) -> bool {
+    let limit = u64::from(revision.arrangement().sample_rate().div_ceil(200));
+    revision.arrangement().tracks().iter().any(|track| {
+        track.receives_source_audio()
+            && track.instrument_slot_enabled()
+            && track.instrument_id.is_some_and(|device| {
+                previous
+                    .tail_mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|tail| {
+                        tail.runtime.expression_identity == Some(device)
+                            && tail.runtime.max_release_tail_frames() <= limit
+                            && !tail.runtime.has_committed_live_occurrences()
+                            && tail.runtime.proofs().all(|note| {
+                                note.note_off_sent
+                                    || note.gate_end_frame <= previous.performance_frame
+                            })
+                            && !tail.runtime.committed_is_quiescent()
+                    })
+            })
+    })
+}
+
 pub(super) struct SharedSourceHandoff {
     pub(super) new_for_old: [usize; MAX_TRACKS],
     pub(super) retarget_for_old: [usize; MAX_TRACKS],
@@ -1598,6 +1628,11 @@ mod tests {
                 reenabled.try_inherit_state_from(&mut disabled),
                 Err(SessionPlaybackError::MutableInstrumentActive)
             );
+            assert_eq!(
+                reenabled.try_inherit_state_live_from(&mut disabled),
+                Err(SessionPlaybackError::DeviceTransitionBusy),
+                "live publication must wait for the short original release"
+            );
             let mut actual = [[0.0; 2]; 32];
             let mut expected = actual;
             disabled.render(&mut actual).unwrap();
@@ -1613,6 +1648,61 @@ mod tests {
                     .any(|sample| sample.abs() > 0.001)
             );
             assert_eq!(actual[16..], [[0.0; 2]; 16]);
+            reenabled
+                .try_inherit_state_live_from(&mut disabled)
+                .unwrap();
+            let mut settled = [[0.0; 2]; 32];
+            reenabled.render(&mut settled).unwrap();
+            assert_eq!(
+                settled, [[0.0; 2]; 32],
+                "the old held note must not be chased"
+            );
+        });
+    }
+
+    #[test]
+    fn long_source_release_is_not_mistaken_for_a_short_retry() {
+        on_control(|| {
+            let mut f = fixture();
+            let instrument = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(instrument.state()).unwrap();
+            state.envelope.release_seconds = 0.1;
+            let state = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(instrument.state().asset_references().to_vec())
+                .unwrap();
+            let device = instrument.id();
+            f.editor
+                .execute(Command::ReplaceDeviceState { device, state })
+                .unwrap();
+            let mut old = started(&f);
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device,
+                    bypassed: true,
+                })
+                .unwrap();
+            let mut disabled = playback(&f);
+            disabled.try_inherit_state_from(&mut old).unwrap();
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device,
+                    bypassed: false,
+                })
+                .unwrap();
+            let candidate = playback(&f);
+            assert!(!short_source_release_blocks_reenable(
+                &candidate.revision,
+                &disabled
+            ));
         });
     }
 
