@@ -28,6 +28,10 @@ impl TrackFader {
         self.remaining != 0
     }
 
+    pub(super) fn current(self) -> Frame {
+        self.current
+    }
+
     pub(super) fn follow(&mut self, gain: Frame) {
         *self = Self::new(gain);
     }

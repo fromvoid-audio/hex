@@ -1962,6 +1962,35 @@ fn outgoing_arrangement_release_keeps_the_old_stateful_suffix() {
             .any(|sample| sample.abs() > 1.0e-6)
     );
     assert_eq!(old_settings_tail, new_settings_tail);
+    // Detaching a live voice mid-fader ramp captures the audible gain, not
+    // the target that the old track has not reached yet.
+    let registry = hex_devices::native_instrument_registry().unwrap();
+    let mut previous = ordinary_mutable_playback(&old_project, &registry);
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    previous.render(&mut [[0.0; 2]; 64]).unwrap();
+    let mut fading_snapshot = old_project.snapshot();
+    fading_snapshot.tracks[0].gain = 0.0;
+    let fading_project = legacy_project_from_snapshot(fading_snapshot).unwrap();
+    let mut fading = ordinary_mutable_playback(&fading_project, &registry);
+    fading.try_inherit_state_from(&mut previous).unwrap();
+    fading.render(&mut [[0.0; 2]; 64]).unwrap();
+    let mut detached_snapshot = disabled.snapshot();
+    detached_snapshot.tracks[0].gain = 0.0;
+    let detached_project = legacy_project_from_snapshot(detached_snapshot).unwrap();
+    let mut detached = ordinary_mutable_playback(&detached_project, &registry);
+    detached.try_inherit_state_from(&mut fading).unwrap();
+    let release = detached
+        .releases
+        .iter()
+        .find(|entry| {
+            entry.location.tail_group().is_some()
+                && entry
+                    .source_origin
+                    .is_some_and(|origin| !origin.follows_current_configuration)
+        })
+        .unwrap();
+    let boundary_gain = 0.5 * (1.0 - 64.0 / 240.0);
+    assert!((release.mix.channel_gain()[0] - boundary_gain).abs() < 1e-6);
 }
 
 #[test]
@@ -2081,10 +2110,42 @@ fn detached_arrangement_effect_suffix_renders_after_its_source_ends() {
     );
     // Mix-only edits keep the same filter history under the new gain. They
     // must not capture an independently audible old-mix suffix.
-    assert_eq!(
-        transition_output(old_revision, prepare(&changed_mix_project), false),
-        expected.map(|frame| [frame[0] * 0.25, frame[1] * 0.25])
+    let changed = transition_output(
+        Arc::clone(&old_revision),
+        prepare(&changed_mix_project),
+        false,
     );
+    for (index, (actual, reference)) in changed.iter().zip(expected).enumerate() {
+        let gain = 1.0 - 0.75 * (index + 1).min(240) as f32 / 240.0;
+        for channel in 0..2 {
+            assert!((actual[channel] - reference[channel] * gain).abs() < 1e-6);
+        }
+    }
+
+    // A device replacement mid-ramp freezes the old suffix at the gain that
+    // actually reached the output, rather than jumping to the target.
+    let mut zero_snapshot = old_project.snapshot();
+    zero_snapshot.tracks[0].gain = 0.0;
+    let zero = legacy_project_from_snapshot(zero_snapshot.clone()).unwrap();
+    zero_snapshot.tracks[0].devices[0].bypassed = true;
+    let detached = legacy_project_from_snapshot(zero_snapshot).unwrap();
+    let mut previous = start_old(old_revision);
+    let mut fading = SessionPlayback::new(prepare(&zero)).unwrap();
+    fading.try_inherit_state_from(&mut previous).unwrap();
+    let mut during = [[0.0; 2]; 64];
+    fading.render(&mut during).unwrap();
+    assert!(during.iter().flatten().any(|sample| sample.abs() > 1e-6));
+    let mut after = SessionPlayback::new(prepare(&detached)).unwrap();
+    after.try_inherit_state_from(&mut fading).unwrap();
+    assert!(after.tail_output_active[0]);
+    let mut tail = [[0.0; 2]; 64];
+    after.render(&mut tail).unwrap();
+    let boundary_gain = 1.0 - 64.0 / 240.0;
+    for (actual, reference) in tail.iter().zip(&expected[64..128]) {
+        for channel in 0..2 {
+            assert!((actual[channel] - reference[channel] * boundary_gain).abs() < 1e-6);
+        }
+    }
 }
 
 #[test]

@@ -4378,11 +4378,11 @@ impl SessionPlayback {
                     self.tail_mixes.get_mut(slot),
                     previous.revision.arrangement().tracks().get(old_index),
                 ) {
-                    *tail_mix = gain_recording::effective_mix(
+                    *tail_mix = gain_recording::detached_mix(
+                        previous,
                         old_track,
+                        old_index,
                         previous.arrangement_frame,
-                        previous.revision.gain_recording_track(),
-                        previous.gain_recording_override,
                     );
                 }
                 if let (Some(start), Some((suffix_start, _))) = (
