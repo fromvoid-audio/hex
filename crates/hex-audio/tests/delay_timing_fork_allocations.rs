@@ -123,6 +123,22 @@ fn delay_tail_split_prepare_render_and_retire_are_allocation_free() {
         let input = [[0.2, -0.1]; 64];
         let mut old_output = [[0.0; 2]; 64];
         let mut new_output = [[0.0; 2]; 64];
+        let mut checked = false;
+        let preflight = measure(|| {
+            checked = next.tail_bypass_change_at(&old, 0)
+                && next.can_prepare_tail_split_at(&old, 0)
+                && !next.can_prepare_tail_split_at(&old, 1);
+        });
+        assert!(checked);
+        assert_eq!(
+            (
+                preflight.count_total,
+                preflight.bytes_total,
+                preflight.count_current,
+                preflight.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
         let mut accepted = false;
         let info = measure(|| {
             if let Ok(mut split) = next.prepare_tail_split_at(&old, 0) {
