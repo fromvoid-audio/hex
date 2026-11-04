@@ -1639,14 +1639,13 @@ impl SignalRuntime {
             track.instrument_meter.observe_input(&[audio]);
         }
         audio = self.edge(self.graph.tracks[index].audio_merge, audio)?;
-        if let Some(node) = self.graph.tracks[index].generator {
-            if self
+        if let Some(node) = self.graph.tracks[index].generator
+            && self
                 .delays
                 .stamp_at_delay(self.graph.plan.nodes()[node].output_arrival_frames)
                 .is_none()
-            {
-                generator = [0.0; 2];
-            }
+        {
+            generator = [0.0; 2];
         }
         if let Some(edge) = self.graph.tracks[index].generator_merge {
             generator = self.edge(edge, generator)?;

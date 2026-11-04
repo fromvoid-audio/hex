@@ -2619,35 +2619,35 @@ impl Playback {
                 self.position = start;
             }
             let remaining = output.len() - output_offset;
-            if self.position == start {
-                if let Ok(period_length) = usize::try_from(length) {
-                    let stateful = self
-                        .linear_runtime
-                        .as_ref()
-                        .is_some_and(|runtime| runtime.has_stateful_processors());
-                    if period_length > 0 && period_length <= remaining && !stateful {
-                        let period_end = output_offset + period_length;
-                        self.render_linear_with_pages(
-                            &mut output[output_offset..period_end],
-                            pages.as_deref_mut(),
-                        )?;
-                        self.position = start;
+            if self.position == start
+                && let Ok(period_length) = usize::try_from(length)
+            {
+                let stateful = self
+                    .linear_runtime
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.has_stateful_processors());
+                if period_length > 0 && period_length <= remaining && !stateful {
+                    let period_end = output_offset + period_length;
+                    self.render_linear_with_pages(
+                        &mut output[output_offset..period_end],
+                        pages.as_deref_mut(),
+                    )?;
+                    self.position = start;
 
-                        let mut filled = period_length;
-                        while filled < remaining {
-                            let copy_length = filled.min(remaining - filled);
-                            let source_start = output_offset;
-                            let source_end = source_start + copy_length;
-                            let destination = output_offset + filled;
-                            output.copy_within(source_start..source_end, destination);
-                            filled += copy_length;
-                        }
-                        let offset = u64::try_from(remaining % period_length)
-                            .map_err(|_| Invalid("loop offset overflow"))?;
-                        self.position = start + offset;
-                        output_offset = output.len();
-                        continue;
+                    let mut filled = period_length;
+                    while filled < remaining {
+                        let copy_length = filled.min(remaining - filled);
+                        let source_start = output_offset;
+                        let source_end = source_start + copy_length;
+                        let destination = output_offset + filled;
+                        output.copy_within(source_start..source_end, destination);
+                        filled += copy_length;
                     }
+                    let offset = u64::try_from(remaining % period_length)
+                        .map_err(|_| Invalid("loop offset overflow"))?;
+                    self.position = start + offset;
+                    output_offset = output.len();
+                    continue;
                 }
             }
             let span_length = if self.position < start {

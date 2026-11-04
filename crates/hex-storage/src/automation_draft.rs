@@ -943,12 +943,12 @@ fn validate_event(previous: Option<AppliedEvent>, event: AppliedEvent) -> Result
     }
     AutomationValue::new(event.value.get())
         .map_err(|_| StorageError::Invalid("invalid automation draft value"))?;
-    if let Some(previous) = previous {
-        if event.sequence <= previous.sequence || !clock_follows(clock(previous), clock(event)) {
-            return Err(StorageError::Invalid(
-                "automation draft sequence or clocks are out of order",
-            ));
-        }
+    if let Some(previous) = previous
+        && (event.sequence <= previous.sequence || !clock_follows(clock(previous), clock(event)))
+    {
+        return Err(StorageError::Invalid(
+            "automation draft sequence or clocks are out of order",
+        ));
     }
     Ok(())
 }
@@ -968,12 +968,12 @@ fn validate_terminal(
     previous: Option<AppliedEvent>,
     terminal: DraftTerminal,
 ) -> Result<(), StorageError> {
-    if let (Some(previous), DraftTerminal::Finished(next)) = (previous, terminal) {
-        if !clock_follows(clock(previous), next) {
-            return Err(StorageError::Invalid(
-                "automation draft terminal clocks are out of order",
-            ));
-        }
+    if let (Some(previous), DraftTerminal::Finished(next)) = (previous, terminal)
+        && !clock_follows(clock(previous), next)
+    {
+        return Err(StorageError::Invalid(
+            "automation draft terminal clocks are out of order",
+        ));
     }
     Ok(())
 }

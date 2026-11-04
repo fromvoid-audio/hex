@@ -716,14 +716,12 @@ impl SessionPlayback {
             for index in 0..self.routes.len() {
                 if self.routes[index].current_incarnation
                     != self.route_scratch[index].current_incarnation
-                {
-                    if let Some(runtime) = self
+                    && let Some(runtime) = self
                         .mutable_instruments
                         .get_mut(index)
                         .and_then(Option::as_mut)
-                    {
-                        runtime.cut_gate_deadlines_at(self.performance_frame);
-                    }
+                {
+                    runtime.cut_gate_deadlines_at(self.performance_frame);
                 }
             }
         }

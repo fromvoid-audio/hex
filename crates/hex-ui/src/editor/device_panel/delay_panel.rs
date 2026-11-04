@@ -75,17 +75,16 @@ fn control(
         presentation,
         ControlText { label, codec },
     );
-    if presentation == ControlPresentation::InlineValue {
-        if let Some(ParameterControl::Float { entity, .. }) =
+    if presentation == ControlPresentation::InlineValue
+        && let Some(ParameterControl::Float { entity, .. }) =
             view.device_panel.controls.get(&ParameterKey {
                 device,
                 parameter: id,
             })
-        {
-            entity.update(cx, |control, cx| {
-                let _ = control.set_inline_value_width(width, cx);
-            });
-        }
+    {
+        entity.update(cx, |control, cx| {
+            let _ = control.set_inline_value_width(width, cx);
+        });
     }
     rendered.w(px(width)).flex_shrink_0()
 }
@@ -208,10 +207,10 @@ pub(super) fn render_body(
         .map_or(48000, |s| s.project.sample_rate());
     let mut draft = canonical.clone();
     for id in [FREQUENCY, WIDTH, FILTER] {
-        if let Some(value) = value(view, metadata, device, id) {
-            if let Ok(next) = hex_engine::patch_native_device_parameter(&draft, id, value) {
-                draft = next;
-            }
+        if let Some(value) = value(view, metadata, device, id)
+            && let Ok(next) = hex_engine::patch_native_device_parameter(&draft, id, value)
+        {
+            draft = next;
         }
     }
     let client_key = view.device_gesture.snapshot().map(|s| s.key);
@@ -226,38 +225,37 @@ pub(super) fn render_body(
         .preview
         .as_ref()
         .is_none_or(|(state, r, _)| state != &draft || *r != rate)
+        && let Ok(preview) = filter_preview(&draft, rate)
     {
-        if let Ok(preview) = filter_preview(&draft, rate) {
-            let points = if preview.enabled {
-                preview.points.to_vec()
-            } else {
-                preview.points.iter().map(|p| [p[0], 0.8]).collect()
-            };
-            let model = ResponseGraphModel {
-                primary: points.clone(),
-                secondary: points,
-                analyzer: None,
-                input_analyzer: None,
-                analyzer_peak: None,
-                nodes: vec![ResponseGraphNode {
-                    id: 1,
-                    position: preview.position,
-                    enabled: true,
-                    selected: true,
-                }],
-            };
-            let result = panel.graph.update(cx, |graph, cx| {
-                graph.set_model(
-                    model,
-                    theme::device_style(theme::DeviceStyleRole::Display),
-                    cx,
-                )
-            });
-            if let Err(error) = result {
-                view.device_panel.message = Some(error.into());
-            }
-            panel.preview = Some((draft, rate, preview));
+        let points = if preview.enabled {
+            preview.points.to_vec()
+        } else {
+            preview.points.iter().map(|p| [p[0], 0.8]).collect()
+        };
+        let model = ResponseGraphModel {
+            primary: points.clone(),
+            secondary: points,
+            analyzer: None,
+            input_analyzer: None,
+            analyzer_peak: None,
+            nodes: vec![ResponseGraphNode {
+                id: 1,
+                position: preview.position,
+                enabled: true,
+                selected: true,
+            }],
+        };
+        let result = panel.graph.update(cx, |graph, cx| {
+            graph.set_model(
+                model,
+                theme::device_style(theme::DeviceStyleRole::Display),
+                cx,
+            )
+        });
+        if let Err(error) = result {
+            view.device_panel.message = Some(error.into());
         }
+        panel.preview = Some((draft, rate, preview));
     }
     let graph = panel.graph.clone();
     let expanded = panel.expanded;
@@ -564,10 +562,10 @@ fn graph_event(
         if let Some(initial) = initial {
             if let Err(error) = view.begin_device_pair_gesture(device, FREQUENCY, WIDTH, initial) {
                 view.device_panel.message = Some(error.into());
-            } else if let Some(key) = view.device_gesture.snapshot().map(|s| s.key) {
-                if let Some(panel) = view.device_panel.delay_panels.get_mut(&device) {
-                    panel.gesture = Some(key);
-                }
+            } else if let Some(key) = view.device_gesture.snapshot().map(|s| s.key)
+                && let Some(panel) = view.device_panel.delay_panels.get_mut(&device)
+            {
+                panel.gesture = Some(key);
             }
         }
         return;
@@ -596,10 +594,9 @@ fn graph_event(
     if matches!(
         event.phase,
         ResponseGraphPhase::Commit | ResponseGraphPhase::Cancel
-    ) {
-        if let Some(panel) = view.device_panel.delay_panels.get_mut(&device) {
-            panel.gesture = None;
-        }
+    ) && let Some(panel) = view.device_panel.delay_panels.get_mut(&device)
+    {
+        panel.gesture = None;
     }
     if event.phase == ResponseGraphPhase::Cancel {
         for parameter in [FREQUENCY, WIDTH] {
