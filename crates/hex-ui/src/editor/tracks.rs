@@ -413,10 +413,10 @@ pub(super) fn midi_trim_note_shapes(
 }
 
 pub(super) const TRACK_ROW_HEIGHT: f32 = 44.0;
-pub(super) const TRACK_HEADER_WIDTH: f32 = 176.0;
-/// Default leaves a readable name column beside the fixed compact mixer;
-/// the existing workspace budget may still clamp down to the normal minimum.
-pub(super) const DEFAULT_TRACK_HEADER_WIDTH: f32 = 256.0;
+/// Reserve a readable label beside the compact mixer and meter, even at the
+/// minimum header width. The remaining workspace stays available to the lane.
+pub(super) const TRACK_HEADER_WIDTH: f32 = 256.0;
+pub(super) const DEFAULT_TRACK_HEADER_WIDTH: f32 = TRACK_HEADER_WIDTH;
 
 /// Visible occupied spans under a landing preview. Merge overlapping victims so
 /// the translucent accent has the same intensity everywhere.
@@ -1573,7 +1573,8 @@ impl EditorView {
         } else if resident_layout {
             let (active_background, active_text) =
                 super::track_gain::activator_colors(!track.muted());
-            let (solo_background, solo_text) = super::track_gain::activator_colors(track.soloed());
+            let (solo_background, solo_text) =
+                super::track_gain::activator_colors(self.displayed_solo(track_id, track.soloed()));
             let utilities = div()
                 .id(("track-header-utilities", track_id.value()))
                 .w_full()
@@ -1771,7 +1772,7 @@ impl EditorView {
                         ("track-solo", track_id.value()),
                     )
                     .debug_selector(move || format!("track-solo-{}", track_id.value()))
-                    .text_color(rgb(if track.soloed() {
+                    .text_color(rgb(if self.displayed_solo(track_id, track.soloed()) {
                         theme::color(theme::PaletteRole::Primary)
                     } else {
                         theme::color(theme::PaletteRole::Muted)
@@ -1825,12 +1826,16 @@ impl EditorView {
         };
         let header_focus = self.track_header_focus(track_id, cx);
         let click_focus = header_focus.clone();
+        let header_height = self.track_body_height(track_id);
+        let expanded_header = header_height > TRACK_ROW_HEIGHT;
         let header = super::track_header::surface(
             ("arrangement-track-header", track_id.value()),
             self.track_header_width(),
-            self.track_body_height(track_id),
+            header_height,
             selected,
+            expanded_header.then_some(name_fill),
         )
+        .when(expanded_header, |header| header.justify_start())
         .debug_selector(move || format!("arrangement-track-header-{}", track_id.value()))
         .track_focus(&header_focus)
         .key_context("hex_track_header")
@@ -1844,6 +1849,9 @@ impl EditorView {
         .child(
             div()
                 .w_full()
+                // Keep the compact content slot, excluding its bottom inset
+                // and border, anchored to the top when the row grows.
+                .when(expanded_header, |row| row.h(px(TRACK_ROW_HEIGHT - 4.0)))
                 .flex()
                 .items_center()
                 .gap(px(2.0))
@@ -1851,7 +1859,7 @@ impl EditorView {
                 .children([super::track_meters::render(
                     track_id,
                     self.track_meters.level(track_id),
-                    self.track_body_height(track_id),
+                    header_height.min(TRACK_ROW_HEIGHT),
                 )]),
         )
         .children(self.track_resize_handles(track_id, cx))

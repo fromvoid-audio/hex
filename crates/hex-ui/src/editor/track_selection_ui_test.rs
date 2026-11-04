@@ -3,6 +3,62 @@ use gpui::{Modifiers, TestAppContext, VisualTestContext};
 use std::sync::Arc;
 
 #[gpui::test]
+fn solo_observation_paints_without_installing_project_and_rejects_stale_scope(
+    cx: &mut TestAppContext,
+) {
+    use hex_session::service::SoloViewObservation;
+    let (project, first, second, _) = audio_project();
+    let (handle, editor) = editor_window(cx, project, Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let (generation, revision) = editor.read_with(&visual, |view, _| {
+        (
+            view.project_generation,
+            view.state.as_ref().unwrap().revision,
+        )
+    });
+    let selector = Box::leak(format!("track-solo-{}", first.value()).into_boxed_str());
+    let before = visual.rendered_background(selector);
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.observe_solo_view(SoloViewObservation {
+            project_generation: generation,
+            previous_revision: revision,
+            revision: revision + 1,
+            tracks: vec![(first, true), (second, false)],
+        }));
+        assert!(
+            !view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(first)
+                .unwrap()
+                .soloed()
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let after = visual.rendered_background(selector);
+    assert_ne!(before, after);
+    editor.update(&mut visual, |view, cx| {
+        assert!(view.displayed_solo(first, false));
+        assert!(!view.observe_solo_view(SoloViewObservation {
+            project_generation: generation + 1,
+            previous_revision: revision,
+            revision: revision + 1,
+            tracks: vec![(first, false)],
+        }));
+        assert!(view.displayed_solo(first, false));
+        view.project_generation += 1;
+        assert!(!view.displayed_solo(first, false));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(visual.rendered_background(selector), before);
+}
+
+#[gpui::test]
 fn track_headers_toggle_range_and_render_explicit_members_including_empty_tracks(
     cx: &mut TestAppContext,
 ) {
@@ -625,8 +681,35 @@ fn selected_solo_click_shortcut_and_history_share_the_complete_selection(cx: &mu
     let revision = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
     let solo = bounds(&mut visual, "track-solo", tracks[0]);
     visual.simulate_click(solo.center(), Modifiers::default());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        let observed = editor.update(&mut visual, |view, cx| {
+            if let Ok(observation) = view.service.try_solo_view() {
+                let accepted = view.observe_solo_view(observation);
+                cx.notify();
+                accepted
+            } else {
+                false
+            }
+        });
+        if observed {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "solo observation missing"
+        );
+        std::thread::yield_now();
+    }
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.displayed_solo(tracks[0], false));
+        assert!(view.displayed_solo(tracks[2], false));
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+    });
     flush(&editor, cx);
     check([true, false, true], cx);
+    editor.read_with(cx, |view, _| assert!(view.solo_observation.is_none()));
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().revision, revision + 1)
     });
