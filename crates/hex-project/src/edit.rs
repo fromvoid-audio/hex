@@ -1338,6 +1338,7 @@ pub(crate) fn new_track(
         soloed: false,
         devices: Vec::new(),
         instrument: None,
+        retained_source_path: false,
         instrument_position: None,
         content: TrackContent::default(),
         sends: Vec::new(),

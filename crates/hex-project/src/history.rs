@@ -25,6 +25,15 @@ impl Editor {
         if !(1..=128).contains(&capacity) {
             return Err(Invalid("history capacity must be 1..128"));
         }
+        if project
+            .tracks()
+            .iter()
+            .any(crate::Track::retained_source_path)
+        {
+            return Err(Invalid(
+                "retained source path editing is not supported yet; keep the original project",
+            ));
+        }
         Ok(Self {
             project,
             undo: VecDeque::new(),

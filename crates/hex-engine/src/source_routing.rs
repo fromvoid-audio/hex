@@ -348,6 +348,43 @@ mod tests {
     }
 
     #[test]
+    fn retained_receiver_is_refused_before_legacy_playback_preparation() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(receiver) = editor
+            .execute(Command::AddMidiTrack {
+                name: "receiver".into(),
+            })
+            .unwrap()
+        else {
+            panic!("receiver")
+        };
+        editor
+            .execute(Command::InsertInstrument {
+                track: receiver,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+        let mut snapshot = editor.project().snapshot();
+        snapshot.retained_source_paths.push(receiver.value());
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let error =
+            crate::compile::project(&project, &std::collections::BTreeMap::new()).unwrap_err();
+        assert!(
+            error
+                .0
+                .contains("retained source path playback is not supported")
+        );
+        assert!(
+            crate::PreparedSessionInventory::prepare(
+                &project,
+                std::sync::Arc::new(crate::SineTable::new()),
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn receiver_and_contributor_roles_are_independent() {
         let mut data = shared_plan();
         data.sources[0] = None;

@@ -5225,6 +5225,7 @@ mod tests {
         }
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5400,6 +5401,7 @@ mod tests {
         let make_state = || state.clone();
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5534,6 +5536,7 @@ mod tests {
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5687,6 +5690,7 @@ mod tests {
         const FRAMES: u64 = 512;
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -10176,6 +10180,7 @@ mod tests {
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -10894,6 +10899,7 @@ mod tests {
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
