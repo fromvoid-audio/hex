@@ -3,7 +3,7 @@ mod scale;
 
 use super::EditorView;
 use crate::theme;
-use gpui::{Div, prelude::*, px};
+use gpui::{Div, div, prelude::*, px};
 use hex_project::{Project, ReturnId, TrackId};
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering::Acquire;
@@ -253,7 +253,7 @@ fn render_meter(id: String, peak: f32, height: f32) -> Div {
         },
     )
     .child(
-        gpui::div()
+        div()
             .debug_selector(move || unity_selector.clone())
             .absolute()
             .top(gpui::relative(6.0 / 76.0))
@@ -271,7 +271,7 @@ fn render_meter(id: String, peak: f32, height: f32) -> Div {
         })
         .into()
     });
-    gpui::div()
+    div()
         .w(px(6.0))
         .h(px((height - 8.0).clamp(10.0, 42.0)))
         .flex_shrink_0()
@@ -306,11 +306,9 @@ mod tests {
         }
         impl Render for Fixture {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                gpui::div().size_full().child(render_meter(
-                    "scale-probe".into(),
-                    self.peak,
-                    self.height,
-                ))
+                div()
+                    .size_full()
+                    .child(render_meter("scale-probe".into(), self.peak, self.height))
             }
         }
         let handle = cx.add_window(|_, _| Fixture {
@@ -339,7 +337,16 @@ mod tests {
                 let fill = visual
                     .debug_bounds("scale-probe-fill")
                     .map_or(0.0, |b| f32::from(b.size.height));
-                assert!((fill - f32::from(well.size.height) * expected).abs() < 0.1);
+                let expected_height = f32::from(well.size.height) * expected;
+                if expected == 0.0 || expected == 1.0 {
+                    assert_eq!(fill, expected_height);
+                } else {
+                    // GPUI snaps these compact wells to physical pixels.
+                    assert!(
+                        (fill - expected_height).abs() <= 1.0,
+                        "height={height}, peak={peak}, fill={fill}, expected={expected_height}"
+                    );
+                }
                 let unity = visual.debug_bounds("scale-probe-unity").unwrap();
                 assert!(unity.top() >= well.top() && unity.bottom() <= well.bottom());
             }
