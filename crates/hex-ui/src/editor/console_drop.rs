@@ -164,6 +164,7 @@ impl EditorView {
             self.retire_console_clip_drag(drag);
             if valid {
                 self.enqueue(Request::CopyArrangementClipToConsoleTrack {
+                    initial_gain: None,
                     project_generation: drag.project_generation,
                     revision: drag.revision,
                     source: drag.clip,

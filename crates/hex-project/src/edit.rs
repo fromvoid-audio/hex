@@ -962,11 +962,15 @@ pub enum Command {
         source: ClipId,
         before_track: Option<TrackId>,
         scene: crate::SessionSceneTarget,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     CopyArrangementMidiToNewSessionTrack {
         source: ClipId,
         before_track: Option<TrackId>,
         scene: crate::SessionSceneTarget,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     MoveSessionCell {
         from_track: TrackId,

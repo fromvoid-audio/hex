@@ -607,6 +607,7 @@ pub enum Request {
         source: hex_project::ClipId,
         before_track: Option<hex_project::TrackId>,
         scene: hex_project::SessionSceneTarget,
+        initial_gain: Option<f32>,
     },
     /// Retains the take through preparation; every path echoes request_id.
     CommitMidiTake {
@@ -2945,6 +2946,7 @@ fn run_worker(
                 source,
                 before_track,
                 scene,
+                initial_gain,
             } => Some(
                 if *captured_generation != project_generation || *captured_revision != revision {
                     Err("console clip insertion canceled · project changed".into())
@@ -2961,12 +2963,14 @@ fn run_worker(
                         source: *source,
                         before_track: *before_track,
                         scene: *scene,
+                        initial_gain: *initial_gain,
                     })
                 } else if session.project().midi_clip(*source).is_some() {
                     Ok(Command::CopyArrangementMidiToNewSessionTrack {
                         source: *source,
                         before_track: *before_track,
                         scene: *scene,
+                        initial_gain: *initial_gain,
                     })
                 } else {
                     Err("arrangement source no longer exists".into())
