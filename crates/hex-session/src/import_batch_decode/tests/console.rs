@@ -458,11 +458,16 @@ fn failed_new_column_decode_cancel_or_stale_context_creates_no_track_scene_asset
                 before_track: Some(track),
                 scene: hex_project::SessionSceneTarget::Existing(row),
             };
-            let op = AudioBatchImport::capture(
+            let op = AudioBatchImport::capture_with_control(
                 vec![if failure == 0 { bad } else { good }],
                 AudioBatchDestination::Console(target),
                 &s,
                 context(),
+                Arc::new(AudioBatchControl::new(1).unwrap()),
+                crate::import_batch::AudioImportOptions {
+                    new_track_gain: Some(0.25),
+                    ..Default::default()
+                },
             )
             .unwrap();
             if failure == 1 {
@@ -554,4 +559,50 @@ fn captured_gain_applies_to_new_verified_streaming_tracks() {
     assert!(s.project().track(track).is_none());
     assert!(s.redo_prepared_revision(None).unwrap().is_some());
     assert_eq!(s.project().track(track).unwrap().gain(), 0.25);
+}
+
+#[test]
+fn captured_gain_is_atomic_for_new_console_tracks_in_both_audio_modes() {
+    for mode in [
+        DocumentAudioMode::Resident,
+        DocumentAudioMode::VerifiedStreaming,
+    ] {
+        let files = Files::new();
+        let path = files.wav("new-column.wav", 48_000, 128, 8192);
+        let (mut s, existing, scene) = fixture(mode);
+        let before = s.project().clone();
+        let op = AudioBatchImport::capture_with_control(
+            vec![path],
+            AudioBatchDestination::Console(ConsoleDestination::NewTrack {
+                before_track: Some(existing),
+                scene: hex_project::SessionSceneTarget::Existing(scene),
+            }),
+            &s,
+            context(),
+            Arc::new(AudioBatchControl::new(1).unwrap()),
+            crate::import_batch::AudioImportOptions {
+                new_track_gain: Some(0.25),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (created, _) = op.run(&mut s, None, context).unwrap();
+        let Created::Imported { track, clip, .. } = created[0] else {
+            panic!("import")
+        };
+        assert_eq!(s.project().track(track).unwrap().gain(), 0.25);
+        assert_eq!(
+            s.project().track(existing).unwrap().gain(),
+            before.track(existing).unwrap().gain()
+        );
+        assert!(
+            matches!(s.project().session_cell(track, scene), Some(SessionCellContent::Audio(audio)) if audio.id() == clip)
+        );
+        let after = s.project().clone();
+        assert!(s.undo_prepared_revision(None).unwrap().is_some());
+        assert_eq!(s.project().tracks(), before.tracks());
+        assert_eq!(s.project().session_cells(), before.session_cells());
+        assert!(s.redo_prepared_revision(None).unwrap().is_some());
+        assert_eq!(s.project(), &after);
+    }
 }
