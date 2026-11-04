@@ -1359,6 +1359,26 @@ impl Render for EditorView {
                     if !view.merge_sections(window) {
                         cx.propagate();
                     }
+                } else if matches!(
+                    view.focused_header_target(window),
+                    Some(super::track_name::Target::Track(_))
+                ) && !view.computer_keyboard.accepts_key("g")
+                {
+                    if view.selected_track_ids().len() >= 2
+                        && let Some(tracks) = view.track_membership(None)
+                        && let Some(revision) = view.state.as_ref().map(|state| state.revision)
+                    {
+                        view.perform_track_group(
+                            view.project_generation,
+                            revision,
+                            Command::GroupTracks {
+                                tracks,
+                                name: "group".into(),
+                            },
+                            window,
+                            cx,
+                        );
+                    }
                 } else if view.mode == super::EditorMode::Arrangement
                     && view.focus.is_focused(window)
                 {

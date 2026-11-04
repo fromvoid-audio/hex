@@ -19,6 +19,9 @@ pub struct Waveform {
     samples: Option<Audio>,
     /// Present when summary frame `f` reads `samples[offset + (phase + f) % period]`.
     repeat: Option<Repeat>,
+    // A bounded pyramid for one cycle prevents an extended clip from losing
+    // source detail as its outer-summary bins grow.
+    repeat_root: Option<Box<Waveform>>,
 }
 
 /// Loop geometry over retained samples, for clips that repeat one shared root.
@@ -119,14 +122,34 @@ impl Waveform {
             levels,
             samples: None,
             repeat: None,
+            repeat_root: None,
         })
+    }
+
+    /// Leaf bins retained by this summary and its repeat-cycle cache.
+    pub fn cached_leaf_count(&self) -> usize {
+        self.bins.len().saturating_add(
+            self.repeat_root
+                .as_ref()
+                .map_or(0, |root| root.cached_leaf_count()),
+        )
     }
 
     /// Data bins retained by all resolutions, for control-side resident accounting.
     pub fn cached_bin_count(&self) -> usize {
-        self.levels.iter().fold(self.bins.len(), |count, level| {
+        let count = self.levels.iter().fold(self.bins.len(), |count, level| {
             count.saturating_add(level.len())
-        })
+        });
+        count.saturating_add(
+            self.repeat_root
+                .as_ref()
+                .map_or(0, |root| root.cached_bin_count()),
+        )
+    }
+
+    /// Whether this summary represents repetitions of retained source PCM.
+    pub fn is_repeated(&self) -> bool {
+        self.repeat.is_some()
     }
 
     /// Exact resident-PCM extrema for a caller-bounded range. Returns `None`
@@ -159,6 +182,32 @@ impl Waveform {
         let end = end.min(self.source_frames);
         if start >= end || self.bins.is_empty() || self.bins.len() > self.source_frames {
             return None;
+        }
+        if let (Some(repeat), Some(root)) = (self.repeat, self.repeat_root.as_deref()) {
+            let length = end - start;
+            if length >= repeat.period {
+                return root.cached_peaks_for_bins(0, root.bins.len());
+            }
+            let phase = start % repeat.period;
+            let begin = if repeat.phase >= repeat.period - phase {
+                repeat.phase - (repeat.period - phase)
+            } else {
+                repeat.phase + phase
+            };
+            let first_len = length.min(repeat.period - begin);
+            if first_len == length {
+                return root.bounded_exact_peaks_for_frames(begin, begin + length, max_pcm_frames);
+            }
+            let first_budget = max_pcm_frames / 2;
+            let mut peaks =
+                root.bounded_exact_peaks_for_frames(begin, begin + first_len, first_budget)?;
+            let rest = root.bounded_exact_peaks_for_frames(
+                0,
+                length - first_len,
+                max_pcm_frames - first_budget,
+            )?;
+            merge(&mut peaks, rest);
+            return Some(peaks);
         }
         let count = self.bins.len();
         let width = self.source_frames / count;
@@ -229,6 +278,24 @@ impl Waveform {
         }
         if end - start <= 64 && self.samples.is_some() {
             return self.exact_range(start, end);
+        }
+        if let (Some(repeat), Some(root)) = (self.repeat, self.repeat_root.as_deref()) {
+            let length = end - start;
+            if length >= repeat.period {
+                return root.peaks_for_frames(0, repeat.period);
+            }
+            let phase = start % repeat.period;
+            let begin = if repeat.phase >= repeat.period - phase {
+                repeat.phase - (repeat.period - phase)
+            } else {
+                repeat.phase + phase
+            };
+            let first_len = length.min(repeat.period - begin);
+            let mut peaks = root.peaks_for_frames(begin, begin + first_len)?;
+            if first_len < length {
+                merge(&mut peaks, root.peaks_for_frames(0, length - first_len)?);
+            }
+            return Some(peaks);
         }
         let count = self.bins.len();
         let width = self.source_frames / count;
@@ -341,6 +408,10 @@ pub fn summarize_repeated(
     let mut waveform = Waveform::from_peaks(frames, bins)?;
     waveform.samples = Some(audio.clone());
     waveform.repeat = Some(repeat);
+    let mut root_summary = summarize_slice(root, requested_bins)?;
+    root_summary.samples = Some(audio.clone());
+    root_summary.repeat = Some(Repeat { phase: 0, ..repeat });
+    waveform.repeat_root = Some(Box::new(root_summary));
     Ok(waveform)
 }
 
@@ -350,7 +421,10 @@ pub fn summarize_peaks(audio: &Audio, requested_bins: usize) -> Result<Waveform,
     if requested_bins == 0 || requested_bins > MAX_BINS {
         return Err(ImportError::LimitExceeded("waveform bins must be 1..65536"));
     }
-    let frames = audio.frames();
+    summarize_slice(audio.frames(), requested_bins)
+}
+
+fn summarize_slice(frames: &[[f32; 2]], requested_bins: usize) -> Result<Waveform, ImportError> {
     let count = requested_bins.min(frames.len());
     let mut bins = Vec::new();
     bins.try_reserve_exact(count)
@@ -442,6 +516,43 @@ mod tests {
             assert!(summarize_repeated(&audio, invalid, frames, 37).is_err());
         }
         assert!(summarize_repeated(&audio, repeat, 0, 37).is_err());
+    }
+
+    #[test]
+    fn long_repeated_summary_queries_the_cycle_with_phase_and_wrap() {
+        let mut pcm = vec![[0.0, 0.0]; 16_020];
+        pcm[10 + 2_010] = [1.0, -0.75];
+        pcm[10 + 15_990] = [-0.25, 0.5];
+        let audio = Audio::new(48_000, pcm).unwrap();
+        let repeat = Repeat {
+            offset: 10,
+            period: 16_000,
+            phase: 100,
+        };
+        let waveform = summarize_repeated(&audio, repeat, 8_000_000, 1_024).unwrap();
+        assert!(waveform.is_repeated());
+        let zero = [Peak { min: 0.0, max: 0.0 }; 2];
+        for cycle in [0, 249, 498] {
+            let start = cycle * repeat.period;
+            assert_eq!(
+                waveform.peaks_for_frames(start + 6_000, start + 10_097),
+                Some(zero)
+            );
+            let peak = waveform
+                .peaks_for_frames(start + 1_900, start + 2_060)
+                .unwrap();
+            assert_eq!(peak[0].max, 1.0);
+            assert_eq!(peak[1].min, -0.75);
+            let seam = waveform
+                .peaks_for_frames(start + 15_800, start + 16_100)
+                .unwrap();
+            assert_eq!(seam[0].min, -0.25);
+            assert_eq!(seam[1].max, 0.5);
+        }
+        assert!(
+            waveform.cached_bin_count() > waveform.bins.len() * 2,
+            "both pyramids count toward retained budget"
+        );
     }
 
     #[test]

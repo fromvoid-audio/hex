@@ -1,4 +1,4 @@
-//! Release-to-ACK display custody for an existing-track move or copy. Service FIFO
+//! Release-to-ACK display custody for clip moves and copies. Service FIFO
 //! completion ordinals are the same contract used by trim and group-copy intents.
 //! This owns metadata paint only; the worker validates and commits the real edit.
 use super::pending_edit::{Disposition, Receipt};
@@ -95,6 +95,34 @@ impl Pending {
                     copy: other_copy,
                 },
             ) => (clips, anchor, track, position, copy) == (c, a, t, p, other_copy),
+            (
+                Command::DuplicateAliasClipsAt {
+                    clips,
+                    anchor,
+                    track,
+                    position,
+                },
+                Command::DuplicateAliasClipsAt {
+                    clips: c,
+                    anchor: a,
+                    track: t,
+                    position: p,
+                },
+            ) => (clips, anchor, track, position) == (c, a, t, p),
+            (
+                Command::DuplicateAliasClipToNewTrack {
+                    clip,
+                    name,
+                    before_track,
+                    position,
+                },
+                Command::DuplicateAliasClipToNewTrack {
+                    clip: c,
+                    name: n,
+                    before_track: b,
+                    position: p,
+                },
+            ) => (clip, name, before_track, position) == (c, n, b, p),
             _ => false,
         }
     }
