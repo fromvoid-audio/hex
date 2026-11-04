@@ -7,6 +7,8 @@ const DIAGNOSTIC_REFRESH: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct AudioFrame {
+    pub source: u64,
+    pub cpu: hex_audio::cpu_meter::CpuSample,
     pub playing: bool,
     pub position: u64,
     pub peak_left: u32,
@@ -26,6 +28,8 @@ impl AudioFrame {
     /// remain independent relaxed loads, with no age or coherent-pair guarantee.
     pub(super) fn capture(status: &Status) -> Self {
         Self {
+            source: 0,
+            cpu: status.cpu_meter.snapshot(),
             playing: status.playing.load(Relaxed),
             position: status.position.load(Relaxed),
             peak_left: status.peak_left.load(Relaxed),
@@ -63,13 +67,19 @@ impl super::EditorView {
         visible_change: bool,
         now: Instant,
     ) -> bool {
+        let cpu_changed = self.cpu_meter.observe(
+            frame
+                .filter(|f| !f.shutdown_complete && !f.device_fault)
+                .map(|f| (f.source, f.cpu, f.deadline_misses)),
+            now,
+        );
         let availability_changed = self.output_meter_frame.is_some() != frame.is_some();
         self.output_meter_frame = frame;
         let overload_changed = self
             .disk_overload
             .observe(frame.map(|frame| frame.stream_starved), now);
         self.redraw_gate.should_redraw(
-            visible_change || availability_changed || overload_changed,
+            visible_change || availability_changed || overload_changed || cpu_changed,
             frame,
             now,
         )
@@ -130,6 +140,8 @@ mod tests {
 
     fn frame(playing: bool) -> AudioFrame {
         AudioFrame {
+            source: 1,
+            cpu: Default::default(),
             playing,
             position: 0,
             peak_left: 0,

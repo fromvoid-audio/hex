@@ -465,10 +465,10 @@ pub fn run(
             cause.get_or_insert(error);
         }
     }
-    if let Some(value) = &executable {
-        if let Err(error) = bundle.executable_unchanged(value) {
-            cause.get_or_insert(String::from(error));
-        }
+    if let Some(value) = &executable
+        && let Err(error) = bundle.executable_unchanged(value)
+    {
+        cause.get_or_insert(String::from(error));
     }
     if sent != outgoing.len() {
         cause.get_or_insert_with(|| "incomplete scan request/admission".into());

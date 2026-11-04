@@ -206,7 +206,7 @@
     "src/platform/linux/wayland/client.rs": "602eda28dee3df1c77a3074e678e10928168a3e1ec650e218c7faaca6685bb16",
     "src/platform/linux/x11/client.rs": "df5110245cfaec8dcf9df3eec2c11b10d36c9ba365be6f46e238912d27f46ae8",
     "src/platform/mac/events.rs": "e4f972d4353c7352d106aa396754206c6891448685a766ab750687b601070f07",
-    "src/platform/mac/platform.rs": "2493f6bc36814129d342ff362c59518d0e157cecd682af869d97616c5212aba8",
+    "src/platform/mac/platform.rs": "a666801b27a4c0c4880c30502aa9e757ae68f5fa1bcc8a0c3f5f34ac64bfb9fd",
     "src/platform/mac/window.rs": "93f86e8a31f7753c3363921eacb9addda72e2bf16ae989898dd51f8ff048f598",
     "src/platform/test/platform.rs": "805d57535284d790bec80d2e9464a1b6d9acee69b6132f6da2740b9adbf8ab6f",
     "src/platform/windows/events.rs": "57ec8c2a9b6ceda1e25d88ce45334423feec499b995919f3fa92a60e265adf15",
@@ -215,7 +215,7 @@
     "src/taffy.rs": "519afe0f4369cfb0cebd8442898dd11c52b52825d3e7128adcec71d841091e22",
     "src/view.rs": "106968c2296e1063d92c13bddd459a1416c7cbc6d45bfbaa6647316b9cd047bf",
     "src/window.rs": "a6a74afcae6daf97aef4c38c0cc3551872ddf9ae9842f7682aa7ed5324c68ea8",
-    "src/app.rs": "92ed28e331a683698f547f5f893ae7157f99420c7b24389ba707185a9782c677",
+    "src/app.rs": "a1ff1ed9c58337e2c2c8162c07b6f512852b8eafc4bca7333664536cb232de8f",
     "src/element.rs": "93dbbe830b6cc8fc961e50d2119a3ebf5680024b8e293ea54c3c7e16f1b7c365",
     "src/text_system.rs": "8ab7faae0a1cade0aefc92e824a7ff025c62c9bd7ac29da123de8b8655cf14eb",
     "src/text_system/line.rs": "794653fb72e4d9abf3412b151033c5c65ff1fc3466ed16caccdef3ff76595b19"

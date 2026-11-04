@@ -273,14 +273,14 @@ pub(crate) fn open_prepared(
     } else {
         None
     };
-    if let Some(frames) = physical_callback_request {
-        if let Err(error) = control.configure_physical_callback_request(&mut callback, frames) {
-            drop(lifecycle::StreamOwner::failed_preparation_custody(
-                lease,
-                spectrum_reaper,
-            ));
-            return Err(error.to_string().into());
-        }
+    if let Some(frames) = physical_callback_request
+        && let Err(error) = control.configure_physical_callback_request(&mut callback, frames)
+    {
+        drop(lifecycle::StreamOwner::failed_preparation_custody(
+            lease,
+            spectrum_reaper,
+        ));
+        return Err(error.to_string().into());
     }
     let root = control.native_candidate_root();
     let (data_guard, error_guard, terminals, mut legacy_control, mut worker_control, client) =
@@ -445,6 +445,9 @@ where
                 status.peak_left.store(peaks[0].to_bits(), Relaxed);
                 status.peak_right.store(peaks[1].to_bits(), Relaxed);
                 let elapsed = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+                status
+                    .cpu_meter
+                    .record(elapsed, data.len() / channels, rate);
                 status.callback_max_ns.fetch_max(elapsed, Relaxed);
                 let deadline = (data.len() / channels) as u64 * 1_000_000_000 / u64::from(rate);
                 if elapsed > deadline {
@@ -473,7 +476,7 @@ pub(crate) fn valid_transport_buffer(
         .chain(callback.native_effect_quantum())
         .min()
         .is_none_or(|quantum| {
-            channels != 0 && samples % channels == 0 && samples / channels <= quantum
+            channels != 0 && samples.is_multiple_of(channels) && samples / channels <= quantum
         })
 }
 
@@ -1138,7 +1141,9 @@ mod tests {
             FIRST_WRITTEN as u64,
             Instant::now()
         ));
-        assert_eq!(output[..2], [0.2, -0.4]);
+        let first_gain = 1.0 - 0.2 / 240.0;
+        assert!((output[0] - 0.25 * first_gain).abs() < 1e-6);
+        assert!((output[1] + 0.5 * first_gain).abs() < 1e-6);
         assert_eq!(
             control.gain_recording.try_receipt(),
             Some(Receipt::Applied {

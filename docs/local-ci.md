@@ -32,9 +32,10 @@ first feedback.
    actual impact, a reviewed change-based check set may qualify instead under
    AGENTS.md, recorded in the PR as shown in the template below. Allocation-probe,
    persistence and Undo/Redo requirements of the touched boundaries still apply.
-4. After merging, run the [post-merge health check](#check-main-right-after-a-merge);
-   when the base moved during step 3, [carry](#continue-after-the-base-advances)
-   instead of rerunning everything.
+
+Complete verification before merging. When the base moves during step 3,
+[carry](#continue-after-the-base-advances) eligible evidence instead of
+rerunning everything. Do not run a routine post-merge check.
 
 When several sessions share the machine, run one Cargo-heavy command (test,
 clippy, build or runner) at a time. A session's own worktree target may need
@@ -146,6 +147,9 @@ Scripts without their own test module, config files and unknown inputs keep
 comprehensive discovery. Owner selections run through `scripts/python_shards.py`:
 one process per test from a shared work queue (up to 12 workers), which brings
 `test_local_ci` + `test_ci_plan` from 124 s serial to about 40 s.
+Subprocess-heavy test methods explicitly marked `__hex_shard_bounded__ = True`
+run after the ordinary queue with at most two workers. Their output and timing
+remain included, and unmarked tests retain their normal worker count.
 
 Module-scoped test steps build only the library (or, for a binary-only crate,
 the binaries): a `module::path::` filter can never match an integration test,
@@ -266,10 +270,10 @@ commit and log that actually executed them, preserved through chained carries);
 the summary's `carry` lists each decision and its reason. A carried report is
 not a fresh full run and cannot feed `--reuse-report`.
 
-## Check main right after a merge
+## Investigate main on request
 
-After each standing-authorization merge, check the merge commit on an
-up-to-date main checkout before starting further merges:
+The health profile remains available when a specific investigation calls for
+checking a merge commit on an up-to-date main checkout:
 
 ```sh
 git switch main && git pull --ff-only
@@ -282,6 +286,10 @@ paths add the Python self-tests; unknown or high-risk inputs test the
 workspace). It is a fast red-main signal, never merge qualification, so a pass
 reports `partial`. A failure prints the merge that turned main red: fix forward
 in a focused PR before merging anything else, and tell other active sessions.
+
+When health runs Python checks for exclusively reviewed tooling paths, it selects
+each changed owner's test module and the shared planner invariants. Mixed,
+unowned, unknown, or native-acceptance inputs retain comprehensive discovery.
 
 ## macOS target storage
 
@@ -415,9 +423,8 @@ another executor's active cache, release artifacts or user data.
 
 Development and release ownership are separate markers: a target populated by
 local CI has no release owner, so packaging refuses it unless it is empty or
-explicitly adopted. `./launch` therefore defaults to dedicated
-`artifacts/cargo-ci-target` and `artifacts/cargo-release-target` targets when
-`CARGO_TARGET_DIR` is unset; see [native macOS builds](test-builds.md).
+explicitly adopted. Set separate `CARGO_TARGET_DIR` values for local CI and
+release packaging when both are needed; see [native macOS builds](test-builds.md).
 
 Package-scoped handoffs use Cargo-supported plain package names only after
 complete metadata proves each selected workspace/path name is unique across

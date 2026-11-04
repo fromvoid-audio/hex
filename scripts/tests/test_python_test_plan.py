@@ -1,13 +1,17 @@
 """App-only self-test selection and conservative refusal, without Cargo builds."""
 import copy
+from contextlib import redirect_stderr
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +22,10 @@ SPEC = importlib.util.spec_from_file_location(
     "python_impact_fixture", Path(__file__).resolve().parents[1] / "python_test_plan.py")
 impact = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(impact)
+SHARDS_SPEC = importlib.util.spec_from_file_location(
+    "python_shards_fixture", Path(__file__).resolve().parents[1] / "python_shards.py")
+shards = importlib.util.module_from_spec(SHARDS_SPEC)
+SHARDS_SPEC.loader.exec_module(shards)
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = [
     {"name": "hex-ui", "manifest": "crates/hex-ui/Cargo.toml", "dependencies": []},
@@ -40,6 +48,109 @@ def cases(suite):
 
 
 class SelectionTests(unittest.TestCase):
+    def test_health_owned_tooling_uses_owner_and_shared_checks(self):
+        chosen = selection(["scripts/ci_plan.py"], profile="health")
+        self.assertEqual(chosen["mode"], "shared")
+        self.assertIn("test_ci_plan", chosen["test_selectors"])
+        self.assertIn("test_python_test_plan", chosen["test_selectors"])
+        self.assertIn("test_architecture", chosen["excluded_groups"])
+        self.assertEqual(impact.argv(chosen)[:3], ("python3", "scripts/python_shards.py", "--"))
+
+    def test_health_mixed_and_unknown_inputs_remain_comprehensive(self):
+        for paths in (["scripts/ci_plan.py", "crates/hex-engine/src/lib.rs"],
+                      ["scripts/ci_plan.py", "Cargo.lock"],
+                      ["scripts/unknown-helper.py"]):
+            with self.subTest(paths=paths):
+                self.assertEqual(selection(paths, profile="health")["mode"], "comprehensive")
+
+    def test_health_native_or_unregistered_inputs_remain_comprehensive(self):
+        paths = ["scripts/ci_plan.py"]
+        self.assertEqual(selection(paths, profile="health", env={"HEX_VST3_SDK_DIR": "fixture"})["mode"],
+                         "comprehensive")
+        modules = sorted(impact.REVIEWED_MODULES) + ["test_unknown"]
+        self.assertEqual(selection(paths, profile="health", modules=modules)["mode"], "comprehensive")
+
+    def test_shard_discovery_retains_bounded_marker_and_deduplicates(self):
+        class Cases(unittest.TestCase):
+            def test_plain(self):
+                pass
+            def test_bounded(self):
+                pass
+        Cases.test_bounded.__hex_shard_bounded__ = True
+        plain, bounded = Cases("test_plain"), Cases("test_bounded")
+        suite = unittest.TestSuite([plain, bounded, plain])
+        with patch.object(unittest.defaultTestLoader, "loadTestsFromNames", return_value=suite):
+            selected = shards.test_cases(["fixture"])
+        self.assertEqual(dict(selected), {plain.id(): False, bounded.id(): True})
+
+    def test_shard_scheduler_preserves_fast_parallelism_and_bounds_tagged_cases(self):
+        lock = threading.Lock()
+        barrier = threading.Barrier(3, timeout=0.5)
+        active = {False: 0, True: 0}
+        maximum = {False: 0, True: 0}
+        events = []
+        def run(name):
+            bounded = name.startswith("bounded")
+            with lock:
+                active[bounded] += 1
+                maximum[bounded] = max(maximum[bounded], active[bounded])
+                events.append(name)
+            if not bounded:
+                barrier.wait()
+            time.sleep(0.01)
+            with lock:
+                active[bounded] -= 1
+            return (name, int(name == "bounded-1"), "result")
+        cases = [(f"fast-{i}", False) for i in range(3)] + [(f"bounded-{i}", True) for i in range(5)]
+        results = list(shards.run_cases(cases, 3, run))
+        self.assertEqual([item[0] for item in results], [name for name, _ in cases])
+        self.assertEqual([item[1] for item in results].count(1), 1)
+        self.assertEqual(maximum[False], 3)
+        self.assertLessEqual(maximum[True], 2)
+        self.assertTrue(all(name.startswith("fast") for name in events[:3]))
+
+    def test_shard_bounded_phase_respects_a_single_worker(self):
+        active = 0
+        maximum = 0
+        def run(name):
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
+            time.sleep(0.01)
+            active -= 1
+            return (name, 0, "")
+        results = list(shards.run_cases([("a", True), ("b", True)], 1, run))
+        self.assertEqual([item[0] for item in results], ["a", "b"])
+        self.assertEqual(maximum, 1)
+
+    def test_shard_cli_refuses_empty_or_missing_selection(self):
+        output = io.StringIO()
+        with patch.object(shards, "test_cases", return_value=[]), redirect_stderr(output):
+            self.assertEqual(shards.main(["--", "fixture"]), 1)
+        self.assertIn("no tests matched", output.getvalue())
+        output = io.StringIO()
+        with redirect_stderr(output):
+            self.assertEqual(shards.main(["--", "missing_shard_fixture.no_case"]), 1)
+        self.assertIn("exit 1", output.getvalue())
+
+    def test_shard_cli_runs_both_groups_and_propagates_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "shard_fixture.py").write_text(
+                "import unittest\n"
+                "class Cases(unittest.TestCase):\n"
+                "    def test_plain(self): pass\n"
+                "    def test_bounded(self): self.fail('expected')\n"
+                "    test_bounded.__hex_shard_bounded__ = True\n"
+            )
+            output = io.StringIO()
+            with patch.dict(os.environ, {"PYTHONPATH": directory}), patch.object(sys, "path", [directory, *sys.path]):
+                with redirect_stderr(output):
+                    self.assertEqual(shards.main(["--workers", "3", "--", "shard_fixture"]), 1)
+            self.assertIn("shard_fixture.Cases.test_plain (exit 0)", output.getvalue())
+            self.assertIn("shard_fixture.Cases.test_bounded (exit 1)", output.getvalue())
+            sys.modules.pop("shard_fixture", None)
+
     def test_ui_and_core_app_edits_have_the_same_reviewed_shared_checks(self):
         ui = selection(["crates/hex-ui/src/editor.rs"])
         core = selection(["crates/hex-engine/src/lib.rs"])
@@ -54,6 +165,8 @@ class SelectionTests(unittest.TestCase):
 
     def test_current_repository_inventory_retains_scoped_feedback_and_impact_fallbacks(self):
         modules = impact.available_modules(ROOT)
+        self.assertIn("test_ui_style_log_viewer", modules)
+        self.assertEqual(selection(["scripts/check-ui-style.py"], modules=modules)["mode"], "comprehensive")
         for path in ("crates/hex-ui/src/editor.rs", "crates/hex-engine/src/lib.rs"):
             with self.subTest(path=path):
                 chosen = selection([path], modules=modules)

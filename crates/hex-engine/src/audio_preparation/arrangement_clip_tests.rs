@@ -52,6 +52,31 @@ fn begin(
 ) -> Result<AudioPreparationToken, Box<AudioArrangementRefusal>> {
     c.begin_input_on_control(AudioArrangementInput::new(p, 11, b).with_audio_clip_inventory())
 }
+
+#[test]
+fn retained_receiver_refuses_closed_preparation_without_losing_inputs() {
+    let (project, bank, token) = fixture(false, false, 1);
+    let track = project.tracks()[0].id();
+    let mut editor = hex_project::Editor::new(project, 8).unwrap();
+    editor
+        .execute(hex_project::Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let mut snapshot = editor.project().snapshot();
+    snapshot.retained_source_paths.push(track.value());
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let pointer = bank.sources.as_ptr();
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    let refusal = match begin(&mut custody, &project, bank) {
+        Ok(_) => panic!("retained path must refuse"),
+        Err(refusal) => refusal,
+    };
+    assert_eq!(refusal.reason, AudioStorageError::UnsupportedGraph);
+    assert_eq!(refusal.inputs.sources.as_ptr(), pointer);
+    assert!(refusal.inputs.source_view(&token).is_ok());
+}
 #[test]
 fn actual_arrangement_clips_preserve_source_handles_geometry_fades_phases_and_metadata_capacity() {
     if !super::session_source_tests::supported("arrangement_final_clips") {

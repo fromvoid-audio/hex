@@ -55,10 +55,10 @@ fn render_action(
         }
         fn complete_chunk(&mut self) -> Result<(), ExportError> {
             self.pages.complete_chunk()?;
-            if !self.at_finish {
-                if let Some(action) = self.action.take() {
-                    action();
-                }
+            if !self.at_finish
+                && let Some(action) = self.action.take()
+            {
+                action();
             }
             Ok(())
         }

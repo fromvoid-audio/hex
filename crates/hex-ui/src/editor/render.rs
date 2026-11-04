@@ -1258,15 +1258,15 @@ impl Render for EditorView {
                 view.cancel_duplicate_chain();
                 if view.midi_focus.is_focused(window) {
                     if view.midi_selection.len() == 1 {
-                        if let Some(note) = view.midi_selection.primary() {
-                            if let Some(state) = view.state.as_ref() {
-                                view.update_note_field(
-                                    note,
-                                    state.revision,
-                                    view.project_generation,
-                                    super::midi::NoteField::Duration(-1),
-                                );
-                            }
+                        if let Some(note) = view.midi_selection.primary()
+                            && let Some(state) = view.state.as_ref()
+                        {
+                            view.update_note_field(
+                                note,
+                                state.revision,
+                                view.project_generation,
+                                super::midi::NoteField::Duration(-1),
+                            );
                         }
                     } else if view.midi_selection.len() > 1 {
                         view.adjust_selected_group_current(
@@ -1287,15 +1287,15 @@ impl Render for EditorView {
                 view.cancel_duplicate_chain();
                 if view.midi_focus.is_focused(window) {
                     if view.midi_selection.len() == 1 {
-                        if let Some(note) = view.midi_selection.primary() {
-                            if let Some(state) = view.state.as_ref() {
-                                view.update_note_field(
-                                    note,
-                                    state.revision,
-                                    view.project_generation,
-                                    super::midi::NoteField::Duration(1),
-                                );
-                            }
+                        if let Some(note) = view.midi_selection.primary()
+                            && let Some(state) = view.state.as_ref()
+                        {
+                            view.update_note_field(
+                                note,
+                                state.revision,
+                                view.project_generation,
+                                super::midi::NoteField::Duration(1),
+                            );
                         }
                     } else if view.midi_selection.len() > 1 {
                         view.adjust_selected_group_current(
@@ -1359,6 +1359,26 @@ impl Render for EditorView {
                     if !view.merge_sections(window) {
                         cx.propagate();
                     }
+                } else if matches!(
+                    view.focused_header_target(window),
+                    Some(super::track_name::Target::Track(_))
+                ) && !view.computer_keyboard.accepts_key("g")
+                {
+                    if view.selected_track_ids().len() >= 2
+                        && let Some(tracks) = view.track_membership(None)
+                        && let Some(revision) = view.state.as_ref().map(|state| state.revision)
+                    {
+                        view.perform_track_group(
+                            view.project_generation,
+                            revision,
+                            Command::GroupTracks {
+                                tracks,
+                                name: "group".into(),
+                            },
+                            window,
+                            cx,
+                        );
+                    }
                 } else if view.mode == super::EditorMode::Arrangement
                     && view.focus.is_focused(window)
                 {
@@ -1369,6 +1389,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &DeleteClip, window, cx| {
+                if view.selection_delete_blocked() {
+                    return;
+                }
                 if view.delete_automation_point(window, cx) {
                     return;
                 }
@@ -1513,7 +1536,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &ToggleLoop, window, cx| {
-                view.toggle_active_loop_shortcut(window);
+                view.toggle_active_loop_shortcut(window, cx);
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &ZoomIn, _, cx| {

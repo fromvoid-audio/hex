@@ -93,6 +93,8 @@ mod delay_tests;
 mod device_resources_tests;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod keyboard_activation_tests;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod loop_audio_tests;
 #[cfg(test)]
 mod project_spectrum_tests;
 mod runtime_view;
@@ -561,6 +563,7 @@ pub struct Status {
     pub device_fault: AtomicBool,
     pub render_fault: AtomicBool,
     render_fault_record: crate::render_fault::RenderFaultRecord,
+    pub cpu_meter: crate::cpu_meter::CpuMeter,
     pub callback_max_ns: AtomicU64,
     pub deadline_misses: AtomicU64,
     pub peak_left: AtomicU32,
@@ -650,6 +653,12 @@ impl Default for Status {
 }
 
 impl Status {
+    /// Snapshot of the publication reservation, not a guarantee that admission will succeed:
+    /// other actors may own admission, and the state can change immediately after this read.
+    pub fn publication_in_flight(&self) -> bool {
+        self.publication_pending.load(Acquire)
+    }
+
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn headless_shutdown_requested(&self) -> bool {
         self.closing.load(Acquire)
@@ -785,6 +794,7 @@ impl Status {
             render_fault_record: crate::render_fault::RenderFaultRecord::default(),
             diagnostics_flags: AtomicU32::new(0),
             diagnostics_dropped: AtomicU64::new(0),
+            cpu_meter: crate::cpu_meter::CpuMeter::default(),
             callback_max_ns: AtomicU64::new(0),
             deadline_misses: AtomicU64::new(0),
             peak_left: AtomicU32::new(0),
@@ -2703,10 +2713,10 @@ impl Callback {
     }
     #[cfg(all(test, feature = "allocation-probe"))]
     fn apply_candidate_action(&mut self, action: PlaybackAction) {
-        if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
-            if active.owner.test_apply_action(action).is_err() {
-                self.status.device_fault.store(true, Relaxed);
-            }
+        if let Some(ActivePublication::Candidate(active)) = self.active.as_mut()
+            && active.owner.test_apply_action(action).is_err()
+        {
+            self.status.device_fault.store(true, Relaxed);
         }
     }
     pub(crate) fn close_candidate_custody_on_control(&mut self) {
@@ -2900,19 +2910,19 @@ impl Callback {
                 ));
                 self.status.publication_pending.store(false, Release);
             }
-            if !self.retired.is_full() {
-                if let Some(publication) = self.deferred.take() {
-                    if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
-                        if cancellation.finish_for_shutdown() {
-                            self.reject_publication(
-                                publication.revision,
-                                PlaybackHandoffRejection::FreshRuntimeCancelled,
-                            );
-                        }
-                    }
-                    self.return_graph(publication);
-                    self.status.publication_pending.store(false, Release);
+            if !self.retired.is_full()
+                && let Some(publication) = self.deferred.take()
+            {
+                if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref()
+                    && cancellation.finish_for_shutdown()
+                {
+                    self.reject_publication(
+                        publication.revision,
+                        PlaybackHandoffRejection::FreshRuntimeCancelled,
+                    );
                 }
+                self.return_graph(publication);
+                self.status.publication_pending.store(false, Release);
             }
             if !self.retired.is_full() {
                 if let Some(mut active) = self
@@ -2928,46 +2938,46 @@ impl Callback {
                     self.return_graph(publication);
                 }
             }
-            if !self.retired.is_full() {
-                if let Ok(publication) = self.publications.pop() {
-                    let publication = match publication {
-                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        QueuedPublication::NativeEpoch { .. } => return,
-                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        QueuedPublication::Native(endpoint) => {
-                            self.return_publication(ReturnedPublication::Native(endpoint));
-                            return;
-                        }
-                        QueuedPublication::Domain(pages) => {
-                            self.return_publication(ReturnedPublication::Domain(pages));
-                            return;
-                        }
-                        QueuedPublication::Eligible(value) => {
-                            self.return_publication(ReturnedPublication::Eligible(
-                                value.reject_before_install(),
-                            ));
-                            self.status.publication_pending.store(false, Release);
-                            return;
-                        }
-                        QueuedPublication::Legacy(publication) => publication,
-                        QueuedPublication::Candidate(candidate) => {
-                            self.return_publication(ReturnedPublication::Candidate(
-                                candidate.reject_before_install(),
-                            ));
-                            return;
-                        }
-                    };
-                    if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
-                        if cancellation.finish_for_shutdown() {
-                            self.reject_publication(
-                                publication.revision,
-                                PlaybackHandoffRejection::FreshRuntimeCancelled,
-                            );
-                        }
+            if !self.retired.is_full()
+                && let Ok(publication) = self.publications.pop()
+            {
+                let publication = match publication {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    QueuedPublication::NativeEpoch { .. } => return,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    QueuedPublication::Native(endpoint) => {
+                        self.return_publication(ReturnedPublication::Native(endpoint));
+                        return;
                     }
-                    self.return_graph(publication);
-                    self.status.publication_pending.store(false, Release);
+                    QueuedPublication::Domain(pages) => {
+                        self.return_publication(ReturnedPublication::Domain(pages));
+                        return;
+                    }
+                    QueuedPublication::Eligible(value) => {
+                        self.return_publication(ReturnedPublication::Eligible(
+                            value.reject_before_install(),
+                        ));
+                        self.status.publication_pending.store(false, Release);
+                        return;
+                    }
+                    QueuedPublication::Legacy(publication) => publication,
+                    QueuedPublication::Candidate(candidate) => {
+                        self.return_publication(ReturnedPublication::Candidate(
+                            candidate.reject_before_install(),
+                        ));
+                        return;
+                    }
+                };
+                if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref()
+                    && cancellation.finish_for_shutdown()
+                {
+                    self.reject_publication(
+                        publication.revision,
+                        PlaybackHandoffRejection::FreshRuntimeCancelled,
+                    );
                 }
+                self.return_graph(publication);
+                self.status.publication_pending.store(false, Release);
             }
             self.status.playing.store(false, Relaxed);
             if self.active.is_none()
@@ -3411,14 +3421,29 @@ impl Callback {
                     .as_mut()
                     .and_then(ActivePublication::legacy_mut)
                     .map(|previous| {
-                        next.playback.try_inherit_runtime_in_control_context(
-                            &mut previous.playback,
-                            next.explicit_control_context
-                                .then_some(next.control_context_generation),
-                            previous
-                                .explicit_control_context
-                                .then_some(previous.control_context_generation),
-                        )
+                        let generation = next
+                            .explicit_control_context
+                            .then_some(next.control_context_generation);
+                        let previous_generation = previous
+                            .explicit_control_context
+                            .then_some(previous.control_context_generation);
+                        if matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
+                            && next.streams.is_none()
+                            && previous.streams.is_none()
+                            && next.playback.live_restart_requested()
+                        {
+                            next.playback.try_restart_runtime_under_arrangement_fence(
+                                &mut previous.playback,
+                                generation,
+                                previous_generation,
+                            )
+                        } else {
+                            next.playback.try_inherit_runtime_in_control_context(
+                                &mut previous.playback,
+                                generation,
+                                previous_generation,
+                            )
+                        }
                     })
             };
             match handoff {
@@ -3495,14 +3520,13 @@ impl Callback {
                         .as_mut()
                         .and_then(ActivePublication::stream_view)
                     {
-                        if let Some(mut successor) = next.stream_view() {
-                            if let Some(ticket) =
+                        if let Some(mut successor) = next.stream_view()
+                            && let Some(ticket) =
                                 successor.inherit_schedule_observation(&mut previous)
-                            {
-                                self.status
-                                    .stream_invalidated_schedule
-                                    .store(ticket, Release);
-                            }
+                        {
+                            self.status
+                                .stream_invalidated_schedule
+                                .store(ticket, Release);
                         }
                         previous.clear_stream_roles(&mut self.domain_pages);
                     }
@@ -4869,22 +4893,24 @@ impl Callback {
                 loop_pass,
             })
         });
-        if let Some(mut active) = active {
+        if let Some(mut active) = active
+            && active.playback.set_gain_recording_input(live).is_err()
+        {
             active.playback.clear_gain_recording_override();
-            if let Some((track, gain)) = live {
-                if active
-                    .playback
-                    .set_gain_recording_override(track, gain)
-                    .is_err()
-                {
-                    self.gain_recording.abort(AbortReason::SourceChanged);
-                }
-            }
+            self.gain_recording.abort(AbortReason::SourceChanged);
         }
     }
     /// Confirm the exact converted output quantum; this is sink delivery, not
     /// physical loudspeaker playback. Failure discards the entire pending take.
     pub fn finish_gain_recording_quantum(&mut self, output_valid: bool) {
+        if !output_valid
+            && let Some(mut active) = self
+                .active
+                .as_mut()
+                .and_then(ActivePublication::current_mut)
+        {
+            active.playback.clear_gain_recording_override();
+        }
         let end = self
             .active
             .as_ref()
@@ -5221,6 +5247,7 @@ mod tests {
         }
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5396,6 +5423,7 @@ mod tests {
         let make_state = || state.clone();
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5530,6 +5558,7 @@ mod tests {
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5683,6 +5712,7 @@ mod tests {
         const FRAMES: u64 = 512;
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -10172,6 +10202,7 @@ mod tests {
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -10890,6 +10921,7 @@ mod tests {
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),

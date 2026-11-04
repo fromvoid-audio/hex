@@ -30,7 +30,8 @@ pub(super) fn exercise(
     let other_device_selector =
         Box::leak(format!("effect-device-{}", other_device.id().value()).into_boxed_str());
     let other_selector = Box::leak(format!("track-name-{}", other.value()).into_boxed_str());
-    let other_selected = Box::leak(format!("selected-track-{}", other.value()).into_boxed_str());
+    let other_selected =
+        Box::leak(format!("selected-track-lane-{}", other.value()).into_boxed_str());
     let pulse = |visual: &mut VisualTestContext| {
         cx.background_executor
             .advance_clock(Duration::from_millis(16));

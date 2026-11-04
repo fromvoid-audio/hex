@@ -70,10 +70,10 @@ fn terminal(h: &mut ResidentHarness) -> Event {
     loop {
         h.pump();
         h.render();
-        if let Ok(event) = h.service.try_event() {
-            if !event.plugin_effect_complete.is_empty() {
-                return event;
-            }
+        if let Ok(event) = h.service.try_event()
+            && !event.plugin_effect_complete.is_empty()
+        {
+            return event;
         }
         assert!(
             Instant::now() < end,
@@ -328,10 +328,10 @@ fn native_effect_coordinator_restores_committed_effect_after_stop() {
         let restored = loop {
             h.pump();
             h.render();
-            if let Ok(event) = h.service.try_event() {
-                if event.stopped_playback_restore_complete {
-                    break event;
-                }
+            if let Ok(event) = h.service.try_event()
+                && event.stopped_playback_restore_complete
+            {
+                break event;
             }
             assert!(Instant::now() < end, "stopped restore terminal timed out");
             std::thread::yield_now();

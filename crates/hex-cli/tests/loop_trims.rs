@@ -118,9 +118,9 @@ fn saved_loop_edge_trims_and_recursive_splits_preserve_absolute_pcm() {
     let trimmed = fixture.render(editor.project(), "trimmed");
     assert_eq!(&trimmed[..12], &[0; 12]);
     assert_eq!(&trimmed[12..], &original[12..]);
-    assert!(editor.undo());
+    assert!(editor.try_undo().unwrap());
     assert_eq!(fixture.render(editor.project(), "undo"), original);
-    assert!(editor.redo());
+    assert!(editor.try_redo().unwrap());
     assert_eq!(fixture.render(editor.project(), "redo"), trimmed);
     editor
         .execute(Command::TrimClipEdge {

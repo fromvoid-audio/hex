@@ -7,21 +7,16 @@ The private repository does not currently select a distribution license.
 
 ## Run
 
-Install the native Rust/macOS build toolchain and use locked dependencies.
-Save and quit hex before replacing the development app.
+Install the native Rust/macOS build toolchain.
 
 ```sh
-./launch          # verify/open the installed app without updating or building
-./launch --update # update clean main, build/install optimized hex, then open
-./launch --test   # also run full local CI
-./launch --open   # verify/open the installed app without updating or building
+./launch                    # git pull, then cargo run -r
+./launch --diagnostics=off  # pass arguments to hex
 ```
 
-The default app is `artifacts/hex.app`, identity `org.portalsurfer.hex.dev`.
-Normal launch refuses running installed or raw desktop processes. Use
-`./launch --help` for explicit restart and recovery options; never infer permission
-to discard an unsaved project. An explicit `--update` build records tests as not run.
-See [native builds](docs/test-builds.md) for qualified user-test delivery.
+The launcher runs in its own checkout and stops if `git pull` fails. It runs the
+release binary directly; it does not install an app bundle or run tests. See
+[native builds](docs/test-builds.md) for qualified user-test delivery.
 Use [`./release beta`](docs/releases.md) for immutable signed/notarized beta,
 nightly and stable distribution packages.
 
@@ -37,19 +32,21 @@ including optimized builds. The recommended preset records semantic actions,
 requests/outcomes, pointer/key intent and observed view changes together with
 audio publication/readiness and transport. Raw callback timing remains off.
 
-Use `./launch --open --diagnostics=off` to turn detailed tracing off for the next
-launch, or `./launch --open --diagnostics` to select the recommended preset
-explicitly. Save and quit an existing process before changing launch options.
-`./launch --test --diagnostics=off` also preserves the opt-out after building.
+Use `./launch --diagnostics=off` to turn detailed tracing off for that launch,
+or `./launch --diagnostics` to select the recommended preset explicitly.
 `--diagnostics=all` additionally records every callback timing sample and can
-overflow sooner. Explicit modes require a verified installed build advertising
-diagnostic support; older bundles need rebuilding. Raw source runs accept the
-same options after `--`.
+overflow sooner. Direct Cargo runs accept the same options after `--`.
 
 When a failure occurs, note what you heard and the approximate time. Keep the
 session's current log and its `.1.log` through `.3.log` siblings together; the
-header repeats source/build/flags and segment metadata. The log button opens the
-current file. Check loss counters before interpreting a missing event. New action
+header repeats source/build/flags and segment metadata. The log button opens a
+native viewer. Use the session, category and time controls or search to narrow
+the list. Use older and newer lines to move through large sessions; filters
+apply to the displayed page and live history may shift on refresh. Click a row
+to inspect it, then shift-click another to select a range and copy it.
+Times shown in the viewer are UTC. Refresh reads new records; the copied excerpt
+is limited to 1 MiB and includes available session context and loss warnings.
+Check loss counters before interpreting a missing event. New action
 records redact typed names/search contents and paths, with counts, IDs and numeric
 values retained. Existing status/error messages may contain paths or source text;
 review a capture before sharing it. Input tracing is not complete replay: rapid
