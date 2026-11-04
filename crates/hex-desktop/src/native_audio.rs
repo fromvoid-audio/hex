@@ -141,6 +141,7 @@ pub(super) struct NativeAudioSink {
     restart_request: Option<u64>,
     /// A typed `RateMismatch` stays distinct so the UI can offer retry.
     open_error: Option<hex_audio::OutputOpenError>,
+    initial_open_started: Option<std::time::Instant>,
     #[cfg(all(test, feature = "allocation-probe"))]
     startup_open_deadline: std::time::Duration,
     next_catalog: u64,
@@ -209,6 +210,7 @@ impl NativeAudioSink {
             requested_rate: None,
             restart_request: None,
             open_error: None,
+            initial_open_started: None,
             #[cfg(all(test, feature = "allocation-probe"))]
             startup_open_deadline: STARTUP_OPEN_DEADLINE,
             next_catalog: 1,
@@ -236,6 +238,7 @@ impl NativeAudioSink {
         }
     }
     fn relinquish_output(&mut self) {
+        self.initial_open_started = None;
         if let Some(identity) = self.output_identity {
             self.relinquished_output_identity = Some(identity);
         }
@@ -275,6 +278,7 @@ impl NativeAudioSink {
         self.sampler_budget_wait = None;
     }
     fn request_open(&mut self, rate: Option<u32>, request: Option<u64>) {
+        self.initial_open_started = None;
         self.opening = None;
         self.open_pending = true;
         self.requested_rate = rate;
@@ -283,6 +287,21 @@ impl NativeAudioSink {
     }
     fn poll_open(&mut self) {
         if !self.open_pending || self.pending_release_event.is_some() {
+            return;
+        }
+        #[cfg(all(test, feature = "allocation-probe"))]
+        let timeout = self.startup_open_deadline;
+        #[cfg(not(all(test, feature = "allocation-probe")))]
+        let timeout = STARTUP_OPEN_DEADLINE;
+        if self
+            .initial_open_started
+            .is_some_and(|started| started.elapsed() >= timeout)
+        {
+            // Abandon interest; the lifecycle owner retires a late result.
+            self.opening = None;
+            self.open_pending = false;
+            self.initial_open_started = None;
+            self.open_error = Some(STARTUP_OPEN_TIMEOUT.to_owned().into());
             return;
         }
         let failure = hex_audio::audio_lifecycle_failure();
@@ -1298,36 +1317,19 @@ impl WorkerAudioSink for NativeAudioSink {
         self.retry_resident_pending(admit);
     }
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
+        if shutdown.load(Acquire) {
+            self.close();
+            return Err("audio startup cancelled".into());
+        }
         self.plugins.initialize();
         self.route_watch = hex_audio::OutputRouteWatch::spawn().ok();
-        self.request_open(None, None);
-        #[cfg(all(test, feature = "allocation-probe"))]
-        let timeout = self.startup_open_deadline;
-        #[cfg(not(all(test, feature = "allocation-probe")))]
-        let timeout = STARTUP_OPEN_DEADLINE;
-        let started = std::time::Instant::now();
-        loop {
-            if shutdown.load(Acquire) {
-                self.close();
-                return Err("audio startup cancelled".into());
-            }
-            if started.elapsed() >= timeout {
-                // Dropping the waiter abandons interest; the lifecycle owner
-                // retains custody and retires any output that arrives later.
-                self.opening = None;
-                self.open_pending = false;
-                self.open_error = Some(STARTUP_OPEN_TIMEOUT.to_owned().into());
-                return Err(STARTUP_OPEN_TIMEOUT.to_owned());
-            }
-            self.poll_open();
-            if let Some(output) = self.output.as_ref() {
-                return Ok(output.sample_rate);
-            }
-            if let Some(error) = self.open_error.as_ref() {
-                return Err(error.to_string());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        // New projects use the existing offline rate before any device result.
+        // The output must honor it; rate_checked refuses a mismatch rather than
+        // retiming edits made while opening. Existing poll/delivery owns completion.
+        let rate = 48_000;
+        self.request_open(Some(rate), None);
+        self.initial_open_started = Some(std::time::Instant::now());
+        Ok(rate)
     }
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
         if self.desired.as_ref().is_none_or(|old| {
@@ -1510,6 +1512,9 @@ impl WorkerAudioSink for NativeAudioSink {
         self.poll_edit_timeout();
         self.poll_section_edit();
         self.poll_open();
+        if !self.open_pending {
+            self.initial_open_started = None;
+        }
         self.deliver_open();
         self.observe_route();
         if let Some(mut output) = self.output.take() {

@@ -355,13 +355,14 @@ fn resident_offline_source_replay_surfaces_refusal_and_restart_keeps_exact_exten
     // the same physical bank, rather than charging another 8192 frames during output teardown.
     let mut h = ResidentHarness::with_open_gate(8192, Arc::clone(&gate));
     let initial = h.next();
-    assert!(
-        initial
-            .error
-            .as_ref()
-            .unwrap()
-            .contains("fixture output unavailable")
-    );
+    assert!(initial.error.is_none());
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while h.unavailable.is_empty() {
+        h.pump();
+        assert!(Instant::now() < deadline, "open refusal was not delivered");
+        std::thread::yield_now();
+    }
+    assert!(h.unavailable[0].contains("fixture output unavailable"));
     let added = h.run(Request::Edit(Command::AddMidiTrack {
         name: "sampler".into(),
     }));

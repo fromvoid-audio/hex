@@ -22,6 +22,7 @@ mod resident_streamed_bounce;
 mod sampler;
 mod section_benchmark;
 mod solo_latency;
+mod startup;
 mod stream_export;
 mod touch_recording;
 mod track_clipboard;
@@ -174,11 +175,12 @@ fn rendered_current_rejects_old_endpoint_with_reused_applied_revision() {
     );
 }
 
-// A read-only test observer around the actual sink, not an alternate source,
-// graph, publication or ownership path.
+// A test observer with explicit initial project-rate configuration around the
+// actual sink, not an alternate source, graph, publication or ownership path.
 struct ObservedSink {
     inner: NativeAudioSink,
     observation: Arc<Mutex<Observation>>,
+    initial_rate: Option<u32>,
 }
 impl ObservedSink {
     /// These fixtures exercise the legacy Client bridge and closed sampler candidate lifecycle.
@@ -186,14 +188,22 @@ impl ObservedSink {
     /// production-default coverage uses ResidentHarness and rendered fixtures unchanged.
     fn legacy(mut inner: NativeAudioSink, observation: Arc<Mutex<Observation>>) -> Self {
         inner.worker_owned_resident_graphs = false;
-        Self { inner, observation }
+        Self {
+            inner,
+            observation,
+            initial_rate: None,
+        }
     }
     fn rendered(inner: NativeAudioSink, observation: Arc<Mutex<Observation>>) -> Self {
         assert!(
             inner.resident_publication_enabled(),
             "actual production default"
         );
-        Self { inner, observation }
+        Self {
+            inner,
+            observation,
+            initial_rate: None,
+        }
     }
     fn record_resident_submission(&mut self) {
         self.observation
@@ -322,7 +332,12 @@ impl WorkerAudioSink for ObservedSink {
         self.record_resident_submission();
     }
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
-        self.inner.initialize(shutdown)
+        let rate = self.inner.initialize(shutdown)?;
+        // Exercise explicit alternative project rates independently of a
+        // device's delayed completion, preserving the downsample fixtures.
+        let rate = self.initial_rate.unwrap_or(rate);
+        self.inner.requested_rate = Some(rate);
+        Ok(rate)
     }
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
         if source
@@ -632,13 +647,9 @@ impl Harness {
             }
         }));
         let observation = Arc::new(Mutex::new(Observation::default()));
-        let service = Service::with_audio_sink(
-            16,
-            0,
-            None,
-            Box::new(ObservedSink::legacy(sink, Arc::clone(&observation))),
-        )
-        .unwrap();
+        let mut observed = ObservedSink::legacy(sink, Arc::clone(&observation));
+        observed.initial_rate = Some(default_rate);
+        let service = Service::with_audio_sink(16, 0, None, Box::new(observed)).unwrap();
         Self {
             rendered_setup: None,
             service: Some(service),
@@ -896,13 +907,7 @@ fn unavailable_output_keeps_canonical_editing_and_saving_available(retained_fail
         }
     };
     let initial = next();
-    assert!(
-        initial
-            .error
-            .as_ref()
-            .unwrap()
-            .contains("audio unavailable")
-    );
+    assert!(initial.error.is_none());
     assert!(matches!(
         audio_events.recv_timeout(Duration::from_secs(1)).unwrap(),
         EditorAudioEvent::Unavailable {
@@ -968,15 +973,18 @@ fn hung_initial_open_times_out_to_offline_editing() {
         }
     };
     let initial = next();
-    let error = initial.error.as_deref().unwrap();
-    assert!(error.contains("audio unavailable"), "{error}");
-    assert!(error.contains("did not open in time"), "{error}");
+    assert!(
+        initial.error.is_none(),
+        "opening must not delay initial state"
+    );
+    assert_eq!(initial.state.project.sample_rate(), 48_000);
     assert!(matches!(
         audio_events.recv_timeout(Duration::from_secs(1)).unwrap(),
         EditorAudioEvent::Unavailable {
             restart_request: None,
+            error,
             ..
-        }
+        } if error.to_string().contains("did not open in time")
     ));
     service
         .submit(Request::Edit(hex_project::Command::MasterGain {
