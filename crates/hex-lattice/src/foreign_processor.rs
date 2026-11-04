@@ -98,6 +98,10 @@ pub struct ForeignProcessorNode<'a> {
     /// the copied wet input, including while bypassed; output trim remains in
     /// the chain after the host returns the selected wet/dry samples.
     pub input_gain: f32,
+    /// Current output trim applied by the chain after this call. A foreign
+    /// endpoint can use it to align a wet/dry transition with that host stage;
+    /// the endpoint must continue returning samples before that stage.
+    pub output_gain: f32,
 }
 
 /// Unique borrowed view of the host's already retained foreign endpoints.

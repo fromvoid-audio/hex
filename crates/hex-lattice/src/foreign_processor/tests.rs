@@ -68,6 +68,7 @@ impl ForeignProcessors for BorrowedEndpoint {
         ));
         assert_eq!(node.prepared.quantum_frames(), 8);
         assert_eq!(node.input_gain, 10.0);
+        assert_eq!(node.output_gain, self.configuration.output_gain_linear());
         assert_eq!(frame_offset, self.next);
         self.next += frames.len();
         self.segments += 1;
@@ -388,6 +389,11 @@ fn parameter_capability_default_refuses_nonempty_without_silent_loss_and_preserv
         prepared: PreparedForeignProcessor::new(8, 3, 16).unwrap(),
         bypassed: false,
         input_gain: 10.0,
+        output_gain: declaration
+            .configuration
+            .as_ref()
+            .unwrap()
+            .output_gain_linear(),
     };
     let mut frames = [[1.0, -0.5]; 2];
     endpoint

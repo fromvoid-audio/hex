@@ -2403,6 +2403,11 @@ impl NativeRuntimeChain {
                 prepared: runtime.prepared,
                 bypassed: entry.bypassed,
                 input_gain: entry.input_gain,
+                output_gain: if entry.automation_frozen {
+                    entry.committed_host_gains[1]
+                } else {
+                    entry.output_gain
+                },
             };
             // A failed stage supplies no new observation. Invalidate scratch
             // first so an earlier quiet state cannot mask renewed input.

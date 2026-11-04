@@ -26,6 +26,7 @@ impl Facts {
             prepared: self.prepared,
             bypassed: false,
             input_gain: 1.0,
+            output_gain: 1.0,
         }
     }
 }
@@ -123,6 +124,169 @@ fn serve(worker: &mut Worker) {
     while let Some(block) = worker.receive().expect("healthy worker") {
         worker.complete(block).expect("reply published");
     }
+}
+
+#[test]
+fn live_bypass_crossfades_aligned_plugin_output_and_survives_rapid_reversal() {
+    for gain in [0.001_f32, 0.5, 1.0, 2.0, 15.0] {
+        let (mut callbacks, mut endpoints) = endpoints();
+        let mut run = |bypassed: bool, frames: usize, split: bool| {
+            let mut node = endpoints[0].facts.node();
+            node.bypassed = bypassed;
+            node.output_gain = gain;
+            let mut output = [[0.25, -0.25]; QUANTUM];
+            let measured = allocations_during(|| {
+                callbacks.begin_host_callback(frames).unwrap();
+                if split && frames > 1 {
+                    callbacks
+                        .process_segment(node, 0, &mut output[..1], None)
+                        .unwrap();
+                    callbacks
+                        .process_segment(node, 1, &mut output[1..frames], None)
+                        .unwrap();
+                } else {
+                    callbacks
+                        .process_segment(node, 0, &mut output[..frames], None)
+                        .unwrap();
+                }
+                callbacks.finish_host_callback(true).unwrap();
+                if !bypassed {
+                    for frame in &mut output[..frames] {
+                        frame[0] *= gain;
+                        frame[1] *= gain;
+                    }
+                }
+            });
+            assert_eq!(measured, [0; 4]);
+            while let Some(mut block) = endpoints[0].worker.receive().unwrap() {
+                for frame in &mut block.pcm[..QUANTUM] {
+                    frame[0] *= 2.0;
+                    frame[1] *= 2.0;
+                }
+                endpoints[0].worker.complete(block).unwrap();
+            }
+            output
+        };
+        // The physical 2Q transport and dry delay start in silence.
+        for _ in 0..4 {
+            run(false, QUANTUM, false);
+        }
+        let start = run(false, QUANTUM, true);
+        let wet = 0.5 * gain;
+        assert!((start[3][0] - wet).abs() < 1e-6);
+        let mut elapsed = 0;
+        for frames in [1, 3, 4, 4, 4, 4] {
+            let output = run(true, frames, true);
+            for frame in &output[..frames] {
+                elapsed += 1;
+                let expected = wet + (0.25 - wet) * elapsed as f32 / 240.0;
+                assert!(
+                    (frame[0] - expected).abs() < 1e-5,
+                    "bypass frame {elapsed}: {frame:?} expected {expected}"
+                );
+            }
+        }
+        let from = wet + (0.25 - wet) * elapsed as f32 / 240.0;
+        let reversed = run(false, QUANTUM, true);
+        for (i, frame) in reversed.iter().enumerate() {
+            let expected = from + (wet - from) * (i + 1) as f32 / 240.0;
+            assert!(
+                (frame[0] - expected).abs() < 1e-5,
+                "reverse frame {i}: {frame:?} expected {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn plugin_bypass_keeps_host_output_trim_on_the_wet_side_only() {
+    use hex_lattice::{
+        NativeRuntimeChain, PreparedProcessorFactory, PreparedRuntimeInstance, StereoMatrix,
+    };
+    use std::sync::Arc;
+    let (mut callbacks, mut endpoints) = endpoints();
+    let state = endpoints[0]
+        .facts
+        .state
+        .clone()
+        .with_output_gain_db(6.0)
+        .unwrap();
+    let gain = state.output_gain_linear();
+    let prepared = endpoints[0].facts.prepared;
+    let identity = endpoints[0].facts.identity;
+    let make = |bypassed| {
+        NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            automation: Default::default(),
+            meter: Default::default(),
+            owner: identity.owner(),
+            device_id: identity.device_id(),
+            device_type: state.type_id(),
+            matrix: StereoMatrix::identity(),
+            bypassed,
+            sample_rate: 48_000,
+            configuration: Some(Arc::new(state.clone())),
+            definition: Some(PreparedProcessorFactory::Foreign(prepared)),
+        }])
+        .unwrap()
+    };
+    let mut old = make(false);
+    let mut bypass = make(true);
+    assert!(bypass.configuration_matches_range(&old, 0..1));
+    let mut run = |chain: &mut NativeRuntimeChain| {
+        let mut output = [[0.25, -0.25]; QUANTUM];
+        let measured = allocations_during(|| {
+            callbacks.begin_host_callback(QUANTUM).unwrap();
+            chain.begin_block();
+            chain
+                .process_range_with_foreign(0..1, &mut output, 0, None, None, &mut callbacks)
+                .unwrap();
+            chain.commit_block();
+            callbacks.finish_host_callback(true).unwrap();
+        });
+        assert_eq!(measured, [0; 4]);
+        while let Some(mut block) = endpoints[0].worker.receive().unwrap() {
+            for frame in &mut block.pcm[..QUANTUM] {
+                frame[0] *= 2.0;
+                frame[1] *= 2.0;
+            }
+            endpoints[0].worker.complete(block).unwrap();
+        }
+        output
+    };
+    for _ in 0..4 {
+        run(&mut old);
+    }
+    let before = run(&mut old);
+    let wet = 0.5 * gain;
+    assert!((before[3][0] - wet).abs() < 1e-6);
+    bypass.transfer_history_from(&mut old);
+    let first = run(&mut bypass);
+    for (index, frame) in first.iter().enumerate() {
+        let expected = wet + (0.25 - wet) * (index + 1) as f32 / 240.0;
+        assert!(
+            (frame[0] - expected).abs() < 1e-5,
+            "{index}: {frame:?} expected {expected}"
+        );
+    }
+    for _ in 0..59 {
+        run(&mut bypass);
+    }
+    let dry = run(&mut bypass);
+    assert_eq!(dry, [[0.25, -0.25]; QUANTUM]);
+}
+
+#[test]
+fn invalid_output_trim_rejects_the_foreign_epoch() {
+    let (mut callbacks, endpoints) = endpoints();
+    let mut node = endpoints[0].facts.node();
+    node.output_gain = 0.0;
+    let mut frames = [[0.25; 2]; QUANTUM];
+    callbacks.begin_host_callback(QUANTUM).unwrap();
+    assert_eq!(
+        callbacks.process_segment(node, 0, &mut frames, None),
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    );
+    assert!(callbacks.cycle.revoked());
 }
 
 #[test]

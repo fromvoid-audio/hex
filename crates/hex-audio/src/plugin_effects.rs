@@ -17,6 +17,7 @@ use hex_plugin_host::{
     transport::{Callback, Fault, MAX_FRAMES},
 };
 
+mod bypass;
 mod definition;
 mod tail;
 pub use definition::{NativeEffectDefinition, UnavailableEffect};
@@ -189,6 +190,7 @@ impl NativeEffect {
                 dry,
                 dry_cursor: 0,
                 tail,
+                bypass: bypass::BypassMix::default(),
             },
         })
     }
@@ -322,6 +324,7 @@ pub struct NativeEffectCallback {
     dry: Vec<[f32; 2]>,
     dry_cursor: usize,
     tail: tail::TailDrain,
+    bypass: bypass::BypassMix,
 }
 impl NativeEffectCallback {
     pub fn binding(&self) -> Binding {
@@ -415,6 +418,7 @@ impl NativeEffectCallback {
             dry: vec![[0.0; 2]; latency as usize],
             dry_cursor: 0,
             tail: tail::TailDrain::new(0, latency),
+            bypass: bypass::BypassMix::default(),
         }
     }
     fn matches(&self, node: ForeignProcessorNode<'_>) -> bool {
@@ -449,6 +453,8 @@ impl ForeignProcessors for NativeEffectCallback {
             || frames.len() > MAX_FRAMES
             || !node.input_gain.is_finite()
             || node.input_gain < 0.0
+            || !node.output_gain.is_finite()
+            || node.output_gain <= 0.0
         {
             self.reject_callback();
             return Err(DeviceContractError::ForeignProcessingUnavailable);
@@ -486,9 +492,13 @@ impl ForeignProcessors for NativeEffectCallback {
         }
         // Both paths advance. Refusal irreversibly revokes this epoch, so dry
         // and foreign history are never rolled back or replayed.
-        if node.bypassed {
-            frames.copy_from_slice(&self.dry_output[..frames.len()]);
-        }
+        self.bypass.process(
+            frames,
+            &self.dry_output[..frames.len()],
+            node.bypassed,
+            node.sample_rate,
+            node.output_gain,
+        );
         Ok(())
     }
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
