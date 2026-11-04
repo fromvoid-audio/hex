@@ -656,9 +656,7 @@ impl EditorView {
                 .filter(|drag| self.browser_audio_drag_is_current(drag))
                 .and_then(|drag| drag.insertion_line_y.get())
                 .or_else(|| {
-                    self.active_clip_drag
-                        .as_ref()
-                        .filter(|drag| self.drag_start_is_current(drag))
+                    self.displayed_clip_drag()
                         .and_then(|drag| drag.insertion_line_y.get())
                 })
         };
@@ -675,7 +673,12 @@ impl EditorView {
                             .right_0()
                             .top(px((relative_y - 1.0).max(0.0)))
                             .h(px(2.0))
-                            .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+                            .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            .children(
+                                self.displayed_clip_drag()
+                                    .filter(|drag| drag.alias_copy())
+                                    .map(|_| super::tracks::alias_drag_badge()),
+                            ),
                     );
                 }
             }
