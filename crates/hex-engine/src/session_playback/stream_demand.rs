@@ -67,7 +67,7 @@ impl SessionPlayback {
             visit,
             window: None,
         };
-        self.inherit_state_planned(previous, None, Some(&mut demand), true)?;
+        self.inherit_state_planned(previous, None, Some(&mut demand), true, false)?;
         demand
             .window
             .ok_or(SessionPlaybackError::ArithmeticOverflow)
