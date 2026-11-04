@@ -246,6 +246,14 @@ pub enum Command {
         state: hex_lattice_contract::NativeDeviceState,
         device_name: String,
     },
+    /// Create an automatically named device-bearing track with finite linear gain in `0..=2`.
+    InsertDefaultTrackWithDeviceAndGain {
+        before_track: Option<TrackId>,
+        slot: TrackDeviceSlot,
+        state: hex_lattice_contract::NativeDeviceState,
+        device_name: String,
+        gain: f32,
+    },
     /// Atomically splice a bounded touch span, preserving the underlying base curve.
     SpliceGainTouch {
         track: TrackId,
@@ -2354,6 +2362,29 @@ impl Project {
                 state,
                 device_name,
             ),
+            Command::InsertDefaultTrackWithDeviceAndGain {
+                before_track,
+                slot,
+                state,
+                device_name,
+                gain,
+            } => {
+                if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
+                    return Err(Invalid("gain must be finite and within 0..2"));
+                }
+                let Created::Track(track) = crate::track_name::insert_default_track_with_device(
+                    self,
+                    before_track,
+                    slot,
+                    state,
+                    device_name,
+                )?
+                else {
+                    return Err(Invalid("device track creation returned no track"));
+                };
+                self.track_mut(track)?.gain = gain;
+                Ok(Created::Track(track))
+            }
             Command::LoadInstrument {
                 track,
                 replacing,
