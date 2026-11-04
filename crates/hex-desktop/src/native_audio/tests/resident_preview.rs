@@ -12,6 +12,20 @@ use hex_session::service::{
 };
 use std::sync::atomic::AtomicU8;
 
+// Native fixture parameters are uninhabited on targets without the host; the
+// portable harness can still use its ordinary constructor with None.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+type PluginFixture = (
+    hex_audio::plugin_effects::Hosting,
+    Option<hex_audio::plugin_effects::EffectPresentation>,
+);
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+enum PluginFixture {}
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+type PluginFacts = crate::native_audio::plugins::FactsGate;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+enum PluginFacts {}
+
 #[test]
 fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
     use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
@@ -427,6 +441,7 @@ impl WorkerAudioSink for ResidentSink {
 
 pub(super) struct ResidentHarness {
     pub(super) service: Service,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     event_sender: mpsc::SyncSender<EditorAudioEvent>,
     events: mpsc::Receiver<EditorAudioEvent>,
     pub(super) callback: Arc<Mutex<Option<HeadlessBackend>>>,
@@ -445,9 +460,13 @@ pub(super) struct ResidentHarness {
     pub(super) publication_refusals: Vec<String>,
     constructor_submitted: Option<(u64, AudioSourceContext)>,
     native_plugins: bool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_completed: Arc<AtomicU64>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_queued: Arc<AtomicBool>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_records: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_progress: Arc<Mutex<crate::native_audio::plugins::PreparationObservation>>,
 }
 impl ResidentHarness {
@@ -490,6 +509,7 @@ impl ResidentHarness {
             Some(recovery),
         )
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn with_plugins(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
@@ -505,6 +525,7 @@ impl ResidentHarness {
             None,
         )
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn with_plugins_paused_at_facts(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
@@ -521,6 +542,7 @@ impl ResidentHarness {
             None,
         )
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn with_plugins_and_catalog(
         host: hex_audio::plugin_effects::Hosting,
         presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
@@ -543,26 +565,30 @@ impl ResidentHarness {
         gate: Arc<AtomicBool>,
         capacity: usize,
         rate: u32,
-        plugin: Option<(
-            hex_audio::plugin_effects::Hosting,
-            Option<hex_audio::plugin_effects::EffectPresentation>,
-        )>,
-        facts_gate: Option<crate::native_audio::plugins::FactsGate>,
+        plugin: Option<PluginFixture>,
+        facts_gate: Option<PluginFacts>,
         catalog: Option<PathBuf>,
         recovery: Option<PathBuf>,
     ) -> Self {
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        assert!(plugin.is_none() && facts_gate.is_none() && catalog.is_none());
         let native_plugins = plugin.is_some();
         let allow_unavailable = !gate.load(Acquire);
         let (sender, events) = mpsc::sync_channel(capacity);
         let callback = Arc::new(Mutex::new(None));
         let target = Arc::clone(&callback);
         let mut inner = NativeAudioSink::new(sender.clone());
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let plugin_completed = Arc::new(AtomicU64::new(0));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let plugin_queued = Arc::new(AtomicBool::new(false));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let plugin_records = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let plugin_progress = Arc::new(Mutex::new(
             crate::native_audio::plugins::PreparationObservation::default(),
         ));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if let Some((host, presentation)) = plugin {
             inner.plugins = crate::native_audio::plugins::Plugins::with_fixture(host, presentation);
             inner.plugins.catalog = catalog;
@@ -621,6 +647,7 @@ impl ResidentHarness {
         .unwrap();
         Self {
             service,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             event_sender: sender,
             events,
             callback,
@@ -639,15 +666,20 @@ impl ResidentHarness {
             publication_refusals: Vec::new(),
             constructor_submitted: None,
             native_plugins,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_completed,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_queued,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_records,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_progress,
         }
     }
     /// Attach the actual already-open output and latest submission observation
     /// to a rendered view. These are original events, never manufactured ACKs;
     /// the simulated callback and publication owner stay in their usual custody.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn into_plugin_ui_backend(mut self) -> EditorBackend {
         let audio = self.audio.take().expect("actual opened output");
         let output_identity = audio.control.output_identity().unwrap();
@@ -681,6 +713,7 @@ impl ResidentHarness {
         }
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn submitted_observation(&self) -> Option<&PreparedPlaybackObservation> {
         self.submitted_observation.as_deref()
     }
@@ -815,6 +848,7 @@ impl ResidentHarness {
         );
         pcm
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn render_plugin_block(&self) -> [hex_engine::Frame; 256] {
         let mut pcm = [[0.0; 2]; 256];
         let mut host = [0.0; 512];
@@ -840,6 +874,7 @@ impl ResidentHarness {
     /// waiting for page/callback progress and is not the DSP completion clock.
     fn render_worker_step(&self) {
         self.render();
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.native_plugins
             && self
                 .audio
@@ -869,6 +904,7 @@ impl ResidentHarness {
             }
         }
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn hold_native_work_on_control(
         &self,
         held: SyncSender<()>,
