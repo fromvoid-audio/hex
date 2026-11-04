@@ -757,6 +757,135 @@ fn shared_receiver_bounce_case(whole_track: bool) {
 }
 
 #[test]
+fn shared_contributor_selected_clip_renders_its_own_source_without_other_notes() {
+    let folder = Folder::new();
+    let (mut session, receiver, receiver_clip) = fixture();
+    let source = session
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(contributor) = session
+        .command(Command::AddMidiTrack {
+            name: "contributor".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    session
+        .command(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(clip) = session
+        .command(Command::PlaceMidiClip {
+            track: contributor,
+            start: BeatTime::ONE,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    session
+        .command(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 67,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let effect = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap()
+    .with_output_gain_db(-6.0)
+    .unwrap();
+    session
+        .command(Command::InsertDevice {
+            track: contributor,
+            before: None,
+            state: effect,
+        })
+        .unwrap();
+    let original = session.project().clone();
+    // Independent reference: temporarily route the live source to this track and
+    // disable the other track's clip, then compile before restoring the project.
+    session
+        .command(Command::SetNativeSourceReceiver {
+            source,
+            track: Some(contributor),
+        })
+        .unwrap();
+    session
+        .command(Command::SetClipActive {
+            clip: receiver_clip,
+            active: false,
+        })
+        .unwrap();
+    let reference = session.compile_prepared_revision(None).unwrap();
+    assert!(session.undo());
+    assert!(session.undo());
+    assert_eq!(session.project(), &original);
+    let revision = session.compile_prepared_revision(None).unwrap();
+    session
+        .bounce_arrangement(
+            BounceTarget::Clips(vec![clip]),
+            false,
+            &folder.0,
+            &hex_export::ExportControl::default(),
+            Some(&revision),
+        )
+        .unwrap();
+    let audio = session
+        .project()
+        .tracks()
+        .iter()
+        .find_map(|track| track.clips().first())
+        .expect("bounced audio");
+    let actual = session.audio(audio.asset()).unwrap().frames();
+    let start = audio.start() as usize;
+    let expected = pcm(reference, start + actual.len());
+    let expected = &expected[start..];
+    assert_eq!(actual.len(), expected.len());
+    assert!(
+        expected.iter().flatten().any(|sample| sample.abs() > 1e-5),
+        "reference must contain audible source output"
+    );
+    let error = actual
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(error < 1e-5, "isolated contributor PCM differs: {error}");
+    assert_eq!(
+        session.project().native_source(source),
+        original.native_source(source)
+    );
+    assert_eq!(session.project().track(receiver), original.track(receiver));
+    assert_eq!(
+        session.project().track(contributor),
+        original.track(contributor)
+    );
+    assert!(session.undo());
+    assert_eq!(
+        session.project().snapshot().tracks,
+        original.snapshot().tracks
+    );
+    assert_eq!(
+        session.project().native_sources(),
+        original.native_sources()
+    );
+}
+
+#[test]
 fn contributor_midi_clip_bounce_is_refused_instead_of_silently_baking_nothing() {
     let (mut session, receiver, _) = fixture();
     let source_id = session
@@ -789,8 +918,13 @@ fn contributor_midi_clip_bounce_is_refused_instead_of_silently_baking_nothing() 
     else {
         panic!("midi clip")
     };
+    assert!(
+        session
+            .project()
+            .plan_arrangement_bounce(&BounceTarget::Clips(vec![clip]), true)
+            .is_err()
+    );
     for (target, in_place) in [
-        (BounceTarget::Clips(vec![clip]), false),
         (BounceTarget::Track(contributor), true),
         (
             BounceTarget::Range(hex_project::TimeRange::new(vec![contributor], 0, 48_000).unwrap()),
