@@ -2,7 +2,7 @@
   "version": 1,
   "id": "hex-yield-workstation",
   "name": "hex / orbital",
-  "revisionId": "hex-current-aligned-study-r64",
+  "revisionId": "hex-current-aligned-study-r65",
   "width": 1900,
   "height": 1120,
   "background": "#111111",
@@ -16000,13 +16000,19 @@
         "visible": false
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -31991,13 +31997,19 @@
         "visible": false
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -38562,13 +38574,19 @@
         "visible": false
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -45133,13 +45151,19 @@
         "visible": false
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -61124,13 +61148,19 @@
         "visible": true
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -67695,13 +67725,19 @@
         "visible": false
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -74288,13 +74324,19 @@
         "visible": false
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -80881,13 +80923,19 @@
         "visible": false
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -96872,13 +96920,19 @@
         "visible": false
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -112863,13 +112917,19 @@
         "visible": false
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -128848,13 +128908,19 @@
         "visible": false
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -144833,13 +144899,19 @@
         "visible": false
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -160824,13 +160896,19 @@
         "visible": false
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -176602,13 +176680,19 @@
         "visible": false
       },
       "device-meter-outline-left": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-left": {
         "visible": true
       },
       "device-meter-outline-right": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "stroke": "#f0f3f4"
+        }
       },
       "device-meter-peak-right": {
         "visible": true
@@ -354833,7 +354917,7 @@
       "bounds": {
         "x": 510,
         "y": 822,
-        "width": 3,
+        "width": 2,
         "height": 177
       },
       "style": {
@@ -354855,7 +354939,7 @@
       "bounds": {
         "x": 510,
         "y": 859,
-        "width": 3,
+        "width": 2,
         "height": 140
       },
       "style": {
@@ -354877,7 +354961,7 @@
       "bounds": {
         "x": 514,
         "y": 822,
-        "width": 3,
+        "width": 2,
         "height": 177
       },
       "style": {
@@ -354899,7 +354983,7 @@
       "bounds": {
         "x": 514,
         "y": 869,
-        "width": 3,
+        "width": 2,
         "height": 130
       },
       "style": {
@@ -363347,7 +363431,7 @@
       "bounds": {
         "x": 510,
         "y": 822,
-        "width": 3,
+        "width": 2,
         "height": 177
       },
       "style": {
@@ -363357,7 +363441,7 @@
         "color": "#c7c7c7",
         "lineWidth": 0.4,
         "fill": "none",
-        "stroke": "#d4dce0"
+        "stroke": "#f0f3f4"
       }
     },
     {
@@ -363367,7 +363451,7 @@
       "bounds": {
         "x": 510,
         "y": 851,
-        "width": 3,
+        "width": 2,
         "height": 1.5
       },
       "style": {
@@ -363387,7 +363471,7 @@
       "bounds": {
         "x": 514,
         "y": 822,
-        "width": 3,
+        "width": 2,
         "height": 177
       },
       "style": {
@@ -363397,7 +363481,7 @@
         "color": "#c7c7c7",
         "lineWidth": 0.4,
         "fill": "none",
-        "stroke": "#d4dce0"
+        "stroke": "#f0f3f4"
       }
     },
     {
@@ -363407,7 +363491,7 @@
       "bounds": {
         "x": 514,
         "y": 861,
-        "width": 3,
+        "width": 2,
         "height": 1.5
       },
       "style": {
