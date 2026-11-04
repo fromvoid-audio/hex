@@ -168,3 +168,75 @@ fn extent_update_uses_existing_overwrite_and_atomic_refusal_contracts() {
     assert!(editor.undo());
     assert_eq!(editor.project().snapshot(), before);
 }
+
+#[test]
+fn extent_growth_keeps_existing_loop_gate_deadlines_and_one_shot_projection() {
+    for looping in [false, true] {
+        let (mut editor, clip, note) = fixture();
+        editor
+            .execute(Command::SetMidiClipSource {
+                clip,
+                source_length: beat(4),
+                source_start: beat(0),
+                loop_start: beat(0),
+                loop_end: beat(4),
+                looping,
+                length: beat(12),
+            })
+            .unwrap();
+        let half = BeatTime::ONE.raw() / 2;
+        let crossing = BeatTime::from_raw(7 * half);
+        editor
+            .execute(Command::UpdateMidiNotesWithSourceExtent {
+                clip,
+                notes: vec![update(note, crossing, beat(1))],
+            })
+            .unwrap();
+        let placed = editor.project().midi_clip(clip).unwrap();
+        assert_eq!(placed.source_length(), BeatTime::from_raw(9 * half));
+        assert_eq!((placed.loop_start(), placed.loop_end()), (beat(0), beat(4)));
+        let plan = placed
+            .source_playback()
+            .unwrap()
+            .note_occurrences(crossing, beat(1))
+            .unwrap();
+        let actual: Vec<_> = plan
+            .iter()
+            .map(|n| (n.timeline_start(), n.gate_duration()))
+            .collect();
+        let expected = if looping {
+            vec![
+                (crossing, BeatTime::from_raw(half)),
+                (
+                    BeatTime::from_raw(crossing.raw() + beat(4).raw()),
+                    BeatTime::from_raw(half),
+                ),
+                (
+                    BeatTime::from_raw(crossing.raw() + beat(8).raw()),
+                    BeatTime::from_raw(half),
+                ),
+            ]
+        } else {
+            vec![(crossing, beat(1))]
+        };
+        assert_eq!(actual, expected);
+        editor
+            .execute(Command::UpdateMidiNotesWithSourceExtent {
+                clip,
+                notes: vec![update(note, beat(5), beat(1))],
+            })
+            .unwrap();
+        let placed = editor.project().midi_clip(clip).unwrap();
+        let plan = placed
+            .source_playback()
+            .unwrap()
+            .note_occurrences(beat(5), beat(1))
+            .unwrap();
+        assert_eq!(
+            plan.count(),
+            u64::from(!looping),
+            "storage growth must not extend the authored loop"
+        );
+        assert_eq!(editor.project().midi_note(note).unwrap().start(), beat(5));
+    }
+}

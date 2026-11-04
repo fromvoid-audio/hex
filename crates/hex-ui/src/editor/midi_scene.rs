@@ -5,7 +5,7 @@
 use hex_project::{ClipId, MidiNote, MidiNoteInsert, NoteId};
 use std::{collections::HashMap, sync::Arc};
 
-/// Horizontal navigation may reveal space beyond short sources without editing them.
+/// Zoom span stays finite relative to the source. The viewport origin is independent.
 pub(super) fn zoom_limit(length: u64) -> u64 {
     length
         .saturating_mul(4)
@@ -75,7 +75,7 @@ pub(super) fn wheel_zoom(
     }
     let minimum = (hex_project::BeatTime::ONE.raw() / 16).max(1).min(length);
     let span = span.clamp(minimum, zoom_limit(length));
-    let start = clamp_start(start, length, span);
+    let start = clamp_start(start, span);
     let anchor = anchor.clamp(start, start + span);
     let next_span = if inward {
         ((u128::from(span) * 4 / 5) as u64).max(minimum)
@@ -86,13 +86,15 @@ pub(super) fn wheel_zoom(
     };
     let offset = (u128::from(anchor - start) * u128::from(next_span) / u128::from(span)) as u64;
     (
-        clamp_start(anchor.saturating_sub(offset), length, next_span),
+        clamp_start(anchor.saturating_sub(offset), next_span),
         next_span,
     )
 }
 
-pub(super) fn clamp_start(start: u64, clip_length: u64, span: u64) -> u64 {
-    start.min(zoom_limit(clip_length).saturating_sub(span))
+/// Blank navigation never grows authored data. Only the checked viewport end
+/// limits its positive origin; rendering still visits a bounded grid and note set.
+pub(super) fn clamp_start(start: u64, span: u64) -> u64 {
+    start.min(u64::MAX.saturating_sub(span))
 }
 
 pub(super) fn pixel_bounds(note: NoteGeometry, width: f32) -> Option<(f32, f32)> {
@@ -700,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn horizontal_zoom_and_pan_stay_inside_bounded_authoring_domain() {
+    fn zoom_span_is_bounded_but_horizontal_origin_only_has_numeric_limit() {
         let beat = BeatTime::ONE.raw();
         let length = 96 * beat;
         assert_eq!(fit_span(length, beat), 96 * beat);
@@ -712,8 +714,13 @@ mod tests {
         assert_eq!(zoom_span(beat / 8, length, beat, true), beat / 16);
         assert_eq!(fit_span(beat / 512, beat), beat / 512);
         assert_eq!(zoom_span(beat / 512, beat / 512, beat, true), beat / 512);
-        assert_eq!(clamp_start(100 * beat, length, 16 * beat), 100 * beat);
-        assert_eq!(clamp_start(4 * beat, 3 * beat, 4 * beat), 4 * beat);
+        assert_eq!(clamp_start(100 * beat, 16 * beat), 100 * beat);
+        assert_eq!(clamp_start(4 * beat, 4 * beat), 4 * beat);
+        assert_eq!(clamp_start(1024 * beat, 4 * beat), 1024 * beat);
+        assert_eq!(clamp_start(u64::MAX, 4 * beat), u64::MAX - 4 * beat);
+        let view = super::wheel_zoom(u64::MAX - 4 * beat, 4 * beat, beat, u64::MAX, false);
+        assert!(view.0.checked_add(view.1).is_some());
+        assert!(view.0 > 1024 * beat);
     }
 
     #[test]

@@ -85,6 +85,10 @@ impl Pending {
             (
                 Command::UpdateMidiNotes { clip, notes },
                 Request::Edit(Command::UpdateMidiNotes { clip: c, notes: n }),
+            )
+            | (
+                Command::UpdateMidiNotesWithSourceExtent { clip, notes },
+                Request::Edit(Command::UpdateMidiNotesWithSourceExtent { clip: c, notes: n }),
             ) => (clip, notes) == (c, n),
             (
                 Command::EditMidiNotes {

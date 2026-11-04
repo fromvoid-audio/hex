@@ -355,11 +355,7 @@ impl GroupGesture {
         let resolved = if self.kind == HitKind::Move {
             resolve_common_delta(
                 &self.originals,
-                if self.copy {
-                    super::midi_scene::zoom_limit(self.clip_length)
-                } else {
-                    self.clip_length
-                },
+                u64::MAX,
                 desired_delta,
                 i16::from(pointer_pitch) - i16::from(self.pointer_pitch),
             )
@@ -502,6 +498,10 @@ impl GroupGesture {
         self.bounds
     }
 
+    pub(super) fn source_length(&self) -> u64 {
+        self.clip_length
+    }
+
     pub(super) fn preview(&self, id: NoteId) -> Option<GroupNote> {
         let index = self
             .originals
@@ -548,13 +548,8 @@ impl GroupGesture {
             }
             return Ok(updates);
         }
-        nudge_updates(
-            &self.originals,
-            self.clip_length,
-            self.delta,
-            self.pitch_delta,
-        )?
-        .ok_or("group midi edit is a no-op")
+        nudge_updates(&self.originals, u64::MAX, self.delta, self.pitch_delta)?
+            .ok_or("group midi edit is a no-op")
     }
 }
 
@@ -816,16 +811,32 @@ mod tests {
     }
 
     #[test]
-    fn shared_delta_clamps_at_each_member_domain_and_preserves_spacing() {
+    fn shared_move_crosses_source_end_preserving_spacing_and_numeric_gate_bounds() {
         let beat = BeatTime::ONE.raw();
         let fixture = fixture(&[(beat / 2, beat / 4, 60), (15 * beat / 4, beat / 4, 62)]);
         let first = fixture.notes[0];
         let edge = fixture.notes[1];
         let mut drag = gesture(MidiGrid::Off, fixture, [150.0, 315.0]);
-        assert!(!drag.update([250.0, 315.0], false));
-        assert!(drag.is_noop());
-        assert_eq!(drag.preview(first.id).unwrap().start, first.start);
-        assert_eq!(drag.preview(edge.id).unwrap().start, edge.start);
+        assert!(drag.update([250.0, 315.0], false));
+        assert_eq!(drag.preview(first.id).unwrap().start, first.start + beat);
+        assert_eq!(drag.preview(edge.id).unwrap().start, edge.start + beat);
+        let updates = drag.updates().unwrap();
+        assert_eq!(
+            updates[1].start.raw() + updates[1].duration.raw(),
+            CLIP + beat
+        );
+        let (delta, _) =
+            super::resolve_common_delta(&drag.originals, u64::MAX, i128::MAX, 0).unwrap();
+        assert_eq!(
+            i128::from(edge.start + edge.duration) + delta,
+            i128::from(u64::MAX)
+        );
+        assert!(drag.update([-10_000.0, 315.0], false));
+        assert_eq!(drag.preview(first.id).unwrap().start, 0);
+        assert_eq!(
+            drag.preview(edge.id).unwrap().start,
+            edge.start - first.start
+        );
     }
 
     #[test]

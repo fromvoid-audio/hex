@@ -2697,7 +2697,6 @@ impl EditorView {
                 self.piano_beat_start =
                     hex_project::BeatTime::from_raw(super::midi_scene::clamp_start(
                         self.piano_beat_start.raw(),
-                        source_length,
                         self.piano_beat_span.raw(),
                     ));
                 let valid = clip.notes().iter().map(|note| note.id());

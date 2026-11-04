@@ -1758,18 +1758,18 @@ impl EditorView {
 
     pub(super) fn pan_piano(&mut self, right: bool) {
         self.cancel_midi_note_gesture();
-        let clip_length = self
-            .midi_clip()
-            .map_or(0, |clip| clip.source_length().raw());
+        if self.midi_clip().is_none() {
+            return;
+        }
         let span = self
             .piano_beat_span
             .raw()
             .max((BeatTime::ONE.raw() / 16).max(1));
         let current = self.piano_beat_start.raw();
         self.piano_beat_start = BeatTime::from_raw(if right {
-            super::midi_scene::clamp_start(current.saturating_add(span / 2), clip_length, span)
+            super::midi_scene::clamp_start(current.saturating_add(span / 2), span)
         } else {
-            super::midi_scene::clamp_start(current.saturating_sub(span / 2), clip_length, span)
+            super::midi_scene::clamp_start(current.saturating_sub(span / 2), span)
         });
     }
 
@@ -1875,7 +1875,6 @@ impl EditorView {
         ));
         self.piano_beat_start = BeatTime::from_raw(super::midi_scene::clamp_start(
             self.piano_beat_start.raw(),
-            clip_length,
             self.piano_beat_span.raw(),
         ));
     }

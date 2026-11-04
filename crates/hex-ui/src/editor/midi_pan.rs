@@ -1,5 +1,5 @@
-//! View-only, captured two-axis piano-roll navigation. Time uses the same finite
-//! domain as zoom; dragging never changes source extent, notes or history.
+//! View-only, captured two-axis piano-roll navigation. The time origin has a
+//! checked numeric bound independent of source length; dragging never edits data.
 //! Pointer deltas are resolved from the captured viewport, avoiding rounding drift.
 //! Window owns held input; its read-only canvas witness never retains pending edits.
 use super::{EditorView, midi_scene, midi_stroke::CanvasBounds};
@@ -48,7 +48,7 @@ impl Gesture {
             .round()
             .clamp(-128.0, 128.0) as i16;
         Some(Viewport {
-            start: midi_scene::clamp_start(start, self.length, self.viewport.span),
+            start: midi_scene::clamp_start(start, self.viewport.span),
             low: (i16::from(self.viewport.low) + pitches)
                 .clamp(0, 128 - i16::from(self.viewport.rows)) as u8,
             ..self.viewport
@@ -109,7 +109,7 @@ impl EditorView {
         if length == 0
             || viewport.span == 0
             || viewport.span > midi_scene::zoom_limit(length)
-            || midi_scene::clamp_start(viewport.start, length, viewport.span) != viewport.start
+            || midi_scene::clamp_start(viewport.start, viewport.span) != viewport.start
             || !midi_scene::valid_pitch_range(viewport.low, viewport.rows)
         {
             return false;
@@ -357,7 +357,7 @@ mod tests {
             assert_eq!(first.start, 0);
             assert_eq!(first.low, 128 - rows);
             let last = g.resolve([-f32::MAX, -f32::MAX]).unwrap();
-            assert_eq!(last.start, midi_scene::zoom_limit(length) - span);
+            assert_eq!(last.start, u64::MAX - span);
             assert_eq!(last.low, 0);
             assert!(last.start.checked_add(last.span).is_some());
         }

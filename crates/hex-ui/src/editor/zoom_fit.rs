@@ -24,11 +24,7 @@ fn bounded_piano_view(prior: PianoView, length: u64) -> PianoView {
         .raw()
         .clamp(minimum, super::midi_scene::zoom_limit(length));
     PianoView {
-        start: BeatTime::from_raw(super::midi_scene::clamp_start(
-            prior.start.raw(),
-            length,
-            span,
-        )),
+        start: BeatTime::from_raw(super::midi_scene::clamp_start(prior.start.raw(), span)),
         span: BeatTime::from_raw(span),
         ..prior
     }

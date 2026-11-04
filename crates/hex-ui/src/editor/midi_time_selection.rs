@@ -135,11 +135,10 @@ impl EditorView {
         } else {
             old
         };
-        if let Some(source) = self.midi_clip() {
-            let length = source.source_length().raw();
+        if self.midi_clip().is_some() {
             self.piano_beat_span = BeatTime::from_raw(span);
             self.piano_beat_start =
-                BeatTime::from_raw(super::super::midi_scene::clamp_start(reveal, length, span));
+                BeatTime::from_raw(super::super::midi_scene::clamp_start(reveal, span));
         }
     }
     pub(in crate::editor) fn midi_time_selection_bounds(&self) -> Option<(u64, u64)> {

@@ -83,6 +83,37 @@ fn viewport(
     })
 }
 #[gpui::test]
+fn piano_pan_can_begin_and_repaint_far_beyond_source_without_edit(cx: &mut TestAppContext) {
+    let Fixture {
+        mut visual,
+        editor,
+        from,
+        to,
+        ..
+    } = open(cx, MouseButton::Middle);
+    let start = BeatTime::from_quarters(1024).unwrap();
+    let before = editor.update(&mut visual, |v, cx| {
+        v.piano_beat_start = start;
+        cx.notify();
+        v.state.as_ref().unwrap().project.snapshot()
+    });
+    visual.run_until_parked();
+    visual.simulate_mouse_down(from, MouseButton::Middle, Modifiers::default());
+    assert!(editor.read_with(&visual, |v, _| v.midi_pan.gesture.is_some()));
+    visual.simulate_mouse_move(to, MouseButton::Middle, Modifiers::default());
+    visual.simulate_mouse_up(to, MouseButton::Middle, Modifiers::default());
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert!(viewport(&editor, &visual).0 > start);
+    }
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_pan.gesture.is_none());
+        assert!(!v.edit_pending());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+}
+#[gpui::test]
 fn piano_pan_owns_both_buttons_and_finishes_outside_without_edit(cx: &mut TestAppContext) {
     for button in [MouseButton::Middle, MouseButton::Left] {
         let cx = &mut cx.new_app();

@@ -186,10 +186,9 @@ fn pan_bounds_and_focus_cancel_are_view_only_at_pitch_and_time_extremes(cx: &mut
             cx.notify();
         });
         visual.run_until_parked();
-        for (delta, expected_low, expected_start) in [
-            (1_000_000.0, 128 - rows, 0),
-            (-1_000_000.0, 0, 16 * BeatTime::ONE.raw() - span),
-        ] {
+        for (delta, expected_low, expected_start) in
+            [(1.0e30, 128 - rows, 0), (-1.0e30, 0, u64::MAX - span)]
+        {
             visual.simulate_mouse_down(roll.center(), MouseButton::Middle, Modifiers::default());
             let end = roll.center() + point(px(delta), px(delta));
             visual.simulate_mouse_move(end, Some(MouseButton::Middle), Modifiers::default());

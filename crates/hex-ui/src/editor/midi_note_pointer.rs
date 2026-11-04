@@ -246,11 +246,23 @@ impl EditorView {
                     }
                 } else {
                     match g.updates() {
-                        Ok(notes) => self.submit_midi_drag_preview(
-                            clip,
-                            crate::editor::midi_pending_drag::Frozen::Group(g),
-                            Command::UpdateMidiNotes { clip, notes },
-                        ),
+                        Ok(notes) => {
+                            let command = if notes.iter().any(|note| {
+                                note.start
+                                    .raw()
+                                    .checked_add(note.duration.raw())
+                                    .is_none_or(|end| end > g.source_length())
+                            }) {
+                                Command::UpdateMidiNotesWithSourceExtent { clip, notes }
+                            } else {
+                                Command::UpdateMidiNotes { clip, notes }
+                            };
+                            self.submit_midi_drag_preview(
+                                clip,
+                                crate::editor::midi_pending_drag::Frozen::Group(g),
+                                command,
+                            );
+                        }
                         Err(error) => self.error = Some(error.into()),
                     }
                 }
@@ -267,9 +279,24 @@ impl EditorView {
         }
         midi_drag::update_with_modifier(&mut g, point[0], point[1], modifiers.platform);
         if !midi_drag::is_noop(&g) {
-            self.submit_midi_drag_preview(
-                clip,
-                crate::editor::midi_pending_drag::Frozen::Single(g),
+            let command = if g
+                .preview
+                .start
+                .checked_add(g.preview.duration)
+                .is_none_or(|end| end > g.clip_length)
+            {
+                Command::UpdateMidiNotesWithSourceExtent {
+                    clip,
+                    notes: vec![hex_project::MidiNoteUpdate {
+                        note: g.note,
+                        start: BeatTime::from_raw(g.preview.start),
+                        duration: BeatTime::from_raw(g.preview.duration),
+                        pitch: g.preview.pitch,
+                        channel: g.channel,
+                        velocity: g.velocity,
+                    }],
+                }
+            } else {
                 Command::UpdateMidiNote {
                     note: g.note,
                     start: BeatTime::from_raw(g.preview.start),
@@ -277,7 +304,12 @@ impl EditorView {
                     pitch: g.preview.pitch,
                     channel: g.channel,
                     velocity: g.velocity,
-                },
+                }
+            };
+            self.submit_midi_drag_preview(
+                clip,
+                crate::editor::midi_pending_drag::Frozen::Single(g),
+                command,
             );
         }
     }

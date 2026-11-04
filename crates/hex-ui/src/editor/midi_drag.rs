@@ -375,9 +375,9 @@ pub(super) fn update_with_modifier(
             pointer_pitch: down_pitch,
         } => {
             let delta = delta_from(down_beat);
-            let max_start = gesture
-                .clip_length
-                .saturating_sub(gesture.original.duration);
+            // Movement can retain material beyond the current source. The
+            // canonical extent-growing update owns storage growth on commit.
+            let max_start = u64::MAX - gesture.original.duration;
             let start =
                 (i128::from(gesture.original.start) + delta).clamp(0, i128::from(max_start)) as u64;
             let pitch = (i16::from(gesture.original.pitch) + i16::from(pointer_pitch)
@@ -803,18 +803,43 @@ mod tests {
     }
 
     #[test]
-    fn move_clamps_to_clip_and_pitch_limits_and_noop_is_detected() {
+    fn move_preserves_gate_and_clamps_to_zero_and_pitch_limits() {
         let mut drag = gesture(HitKind::Move);
         assert!(is_noop(&drag));
         assert!(!update(&mut drag, 250.0, 335.0));
         update(&mut drag, 500.0, 200.0);
-        assert!(drag.preview.start + drag.preview.duration <= CLIP_LENGTH);
+        assert_eq!(drag.preview.duration, drag.original.duration);
         assert_eq!(drag.preview.pitch, 73);
         update(&mut drag, -10_000.0, 10_000.0);
         assert_eq!(drag.preview.start, 0);
         assert_eq!(drag.preview.pitch, 2);
         update(&mut drag, 250.0, -10_000.0);
         assert_eq!(drag.preview.pitch, 127);
+    }
+
+    #[test]
+    fn move_retains_gate_length_beyond_source_and_at_numeric_end() {
+        let mut drag = gesture_for_span(
+            NotePreview {
+                start: 1,
+                duration: 1,
+                pitch: 60,
+            },
+            HitKind::Move,
+            [BOUNDS[0], 335.0],
+            u64::MAX,
+        );
+        drag.grid = MidiGrid::Off;
+        assert!(update(&mut drag, BOUNDS[0] + BOUNDS[2], 335.0));
+        assert_eq!(drag.preview.start, u64::MAX - 1);
+        assert_eq!(drag.preview.duration, 1);
+        assert_eq!(
+            drag.preview.start.checked_add(drag.preview.duration),
+            Some(u64::MAX)
+        );
+        assert!(drag.preview.start > drag.clip_length);
+        assert!(update(&mut drag, BOUNDS[0], 335.0));
+        assert_eq!(drag.preview, drag.original);
     }
 
     #[test]

@@ -65,8 +65,7 @@ impl StrokeContext {
             && self.view_span > 0
             && self.clip_length > 0
             && self.view_span <= super::midi_scene::zoom_limit(self.clip_length)
-            && self.view_start
-                == super::midi_scene::clamp_start(self.view_start, self.clip_length, self.view_span)
+            && self.view_start == super::midi_scene::clamp_start(self.view_start, self.view_span)
             && self.view_start.checked_add(self.view_span).is_some()
             && super::midi_scene::valid_pitch_range(self.pitch_low, self.pitch_rows)
             && self.bounds.is_valid()
@@ -1629,9 +1628,15 @@ mod tests {
         };
         assert!(blank.is_valid());
         assert_eq!(blank.authoring_length(), Some(beat(12)));
+        let distant = StrokeContext {
+            view_start: beat(1024),
+            ..blank
+        };
+        assert!(distant.is_valid());
+        assert_eq!(distant.authoring_length(), Some(beat(1028)));
         for invalid in [
             StrokeContext {
-                view_start: beat(16),
+                view_span: super::super::midi_scene::zoom_limit(blank.clip_length) + 1,
                 ..blank
             },
             StrokeContext {

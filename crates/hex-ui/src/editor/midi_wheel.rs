@@ -75,7 +75,7 @@ impl EditorView {
         {
             return false;
         }
-        let Some(length) = self
+        let Some(_) = self
             .midi_clip()
             .map(|source| source.source_length().raw())
             .filter(|length| *length > 0)
@@ -108,7 +108,7 @@ impl EditorView {
                 .round()
                 .clamp(-(u64::MAX as f64), u64::MAX as f64) as i128;
             let next = (i128::from(start) - ticks).clamp(0, i128::from(u64::MAX)) as u64;
-            start = super::midi_scene::clamp_start(next, length, span);
+            start = super::midi_scene::clamp_start(next, span);
         }
         if (low, start) == (self.piano_pitch_low, self.piano_beat_start.raw()) {
             return false;
