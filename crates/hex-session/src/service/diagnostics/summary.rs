@@ -1025,16 +1025,18 @@ pub(super) fn command(value: &Command) -> Description {
         Command::CopyArrangementAudioClipToNewSessionTrack {
             source,
             before_track,
+            initial_gain,
             ..
         } => {
-            describe!("copy_arrangement_audio_clip_to_new_session_track"; ["source" => source.value(), "before_track" => before_track.map(|id| id.value())]; omitted="scene")
+            describe!("copy_arrangement_audio_clip_to_new_session_track"; ["source" => source.value(), "before_track" => before_track.map(|id| id.value()), "initial_gain" => initial_gain]; omitted="scene")
         }
         Command::CopyArrangementMidiToNewSessionTrack {
             source,
             before_track,
+            initial_gain,
             ..
         } => {
-            describe!("copy_arrangement_midi_to_new_session_track"; ["source" => source.value(), "before_track" => before_track.map(|id| id.value())]; omitted="scene")
+            describe!("copy_arrangement_midi_to_new_session_track"; ["source" => source.value(), "before_track" => before_track.map(|id| id.value()), "initial_gain" => initial_gain]; omitted="scene")
         }
         Command::MoveSessionCell {
             from_track,
@@ -1392,9 +1394,10 @@ pub(super) fn request(value: &Request) -> Description {
             revision,
             source,
             before_track,
+            initial_gain,
             ..
         } => {
-            describe!("copy_arrangement_clip_to_console_track"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "before_track" => before_track.map(|id| id.value())]; omitted="scene")
+            describe!("copy_arrangement_clip_to_console_track"; ["project_generation" => project_generation, "revision" => revision, "source" => source.value(), "before_track" => before_track.map(|id| id.value()), "initial_gain" => initial_gain]; omitted="scene")
         }
         Request::CommitMidiTake {
             request_id,
