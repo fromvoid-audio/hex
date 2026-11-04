@@ -523,6 +523,7 @@ impl Command {
             | Self::GroupClips(_)
             | Self::DuplicateClips(_)
             | Self::DuplicateAliasClips(_)
+            | Self::DuplicateAliasClipsAt { .. }
             | Self::MakeClipsUnique(_)
             | Self::ApplyClipSettingsToAliases(_)
             | Self::DuplicateSessionCell { .. }
