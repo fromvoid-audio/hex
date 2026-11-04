@@ -62,6 +62,10 @@ pub(super) struct ClipDrag {
 }
 
 impl ClipDrag {
+    pub(super) fn alias_copy(&self) -> bool {
+        self.copy_modifier.get() && self.snap_modifier.get()
+    }
+
     pub(super) fn retire(&self) {
         self.preview.set(None);
         self.group.borrow_mut().capture = None;
@@ -929,13 +933,51 @@ impl super::EditorView {
             .as_ref()
             .map_or(0, |state| state.project.tracks().len());
         let name = format!("track {}", count + 1);
-        let command = if drag.copy_modifier.get() {
-            copy_to_new_track_command(drag.clip, name, before_track, position)
+        if drag.alias_copy() {
+            let command = Command::DuplicateAliasClipToNewTrack {
+                clip: drag.clip,
+                name,
+                before_track,
+                position: group_position(position),
+            };
+            let copy_intent = super::group_copy::Pending::capture(self, &command);
+            let Some(source) = self
+                .state
+                .as_ref()
+                .map(|state| std::sync::Arc::clone(&state.project))
+            else {
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+                return;
+            };
+            self.pending_clip_move = self
+                .active_clip_drag
+                .take()
+                .map(|drag| super::pending_clip_move::Pending::new(drag, command.clone(), source));
+            let before_pending = self.worker_requests_pending;
+            if self.enqueue(Request::MoveExistingClips {
+                project_generation: drag.project_generation,
+                revision: drag.revision,
+                command,
+            }) {
+                if let Some(mut intent) = copy_intent {
+                    if self.worker_requests_pending > before_pending {
+                        intent.submitted(self.worker_requests_pending);
+                    }
+                    self.pending_group_copy = Some(intent);
+                }
+            } else {
+                self.retire_pending_clip_move();
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+            }
         } else {
-            move_to_new_track_command(drag.clip, name, before_track, position)
-        };
-        self.clear_clip_drag(drag.project_generation, drag.clip);
-        self.enqueue(Request::Edit(command));
+            let command = if drag.copy_modifier.get() {
+                copy_to_new_track_command(drag.clip, name, before_track, position)
+            } else {
+                move_to_new_track_command(drag.clip, name, before_track, position)
+            };
+            self.clear_clip_drag(drag.project_generation, drag.clip);
+            self.enqueue(Request::Edit(command));
+        }
         cx.notify();
     }
 
@@ -1443,7 +1485,14 @@ impl super::EditorView {
             clear(self);
             return;
         }
-        let command = if drag.group.borrow().ids.len() > 1 {
+        let command = if drag.alias_copy() {
+            Command::DuplicateAliasClipsAt {
+                clips: drag.group.borrow().ids.clone(),
+                anchor: drag.clip,
+                track: target_track,
+                position: group_position(preview.position),
+            }
+        } else if drag.group.borrow().ids.len() > 1 {
             Command::MoveClipsWithOverwrite {
                 clips: drag.group.borrow().ids.clone(),
                 anchor: drag.clip,

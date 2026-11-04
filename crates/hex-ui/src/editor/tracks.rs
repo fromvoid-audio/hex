@@ -155,6 +155,19 @@ fn waveform_body_below(content: Div, header_height: f32) -> Div {
         .overflow_hidden()
 }
 
+pub(super) fn alias_drag_badge() -> Div {
+    div()
+        .debug_selector(|| "clip-alias-drag-indicator".to_owned())
+        .absolute()
+        .right_0()
+        .top_0()
+        .px_1()
+        .bg(rgb(theme::color(theme::PaletteRole::Primary)))
+        .text_color(rgb(theme::color(theme::PaletteRole::Background)))
+        .text_xs()
+        .child(theme::text("alias"))
+}
+
 fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipGhostDecor) -> Div {
     let ClipGhostGeometry {
         left,
@@ -187,8 +200,12 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
         ));
     }
     if let Some(content) = contents {
+        ghost = ghost.child(content);
+        if payload.alias_copy() {
+            ghost = ghost.children([alias_drag_badge()]);
+        }
         return pixel_boundary_shell(
-            ghost.child(content),
+            ghost,
             left,
             top,
             width,
@@ -225,6 +242,11 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
             .line_clamp(1)
             .child(theme::text(payload.ghost_label.clone())),
     );
+    let ghost = if payload.alias_copy() {
+        ghost.children([alias_drag_badge()])
+    } else {
+        ghost
+    };
     pixel_boundary_shell(
         ghost,
         left,
@@ -1018,6 +1040,9 @@ impl EditorView {
                     {
                         overlay = overlay.child(content);
                     }
+                    if drag.alias_copy() {
+                        overlay = overlay.children([alias_drag_badge()]);
+                    }
                     let color = theme::color(theme::PaletteRole::Primary);
                     clip_area = clip_area.child(clip_boundary_shell(
                         overlay,
@@ -1188,6 +1213,13 @@ impl EditorView {
                         visible_start,
                         visible_end,
                     )]);
+                }
+                if clip_preview.is_some()
+                    && self
+                        .displayed_clip_drag()
+                        .is_some_and(|drag| drag.alias_copy())
+                {
+                    drop_preview = drop_preview.children([alias_drag_badge()]);
                 }
                 let color = if clip_preview.is_some() {
                     theme::color(theme::PaletteRole::Primary)
