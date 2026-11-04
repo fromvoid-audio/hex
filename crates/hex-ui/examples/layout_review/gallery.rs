@@ -462,17 +462,17 @@ impl Gallery {
                 return false;
             }
             for (index, entity, value) in prepared {
-                if self.entry == Entry::Eq {
-                    if let Some(fixture) = self.fixtures.get_mut(&Entry::Eq) {
-                        eq::finish_numeric(
-                            fixture,
-                            index,
-                            value.previous,
-                            value.value,
-                            value.gesture.clone(),
-                            cx,
-                        );
-                    }
+                if self.entry == Entry::Eq
+                    && let Some(fixture) = self.fixtures.get_mut(&Entry::Eq)
+                {
+                    eq::finish_numeric(
+                        fixture,
+                        index,
+                        value.previous,
+                        value.value,
+                        value.gesture.clone(),
+                        cx,
+                    );
                 }
                 entity.update(cx, |control, cx| {
                     control.accept_finish_edit_for_owner(value, cx)
@@ -487,10 +487,11 @@ impl Gallery {
             cx.notify();
             return;
         }
-        if self.entry == Entry::Eq && entry != Entry::Eq {
-            if let Some(fixture) = self.fixtures.get(&Entry::Eq) {
-                fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
-            }
+        if self.entry == Entry::Eq
+            && entry != Entry::Eq
+            && let Some(fixture) = self.fixtures.get(&Entry::Eq)
+        {
+            fixture.graph.update(cx, |graph, cx| graph.cancel(cx));
         }
         self.entry = entry;
         self.selected = false;
@@ -522,15 +523,12 @@ impl Gallery {
             && !event.keystroke.modifiers.alt
             && !event.keystroke.modifiers.control
         {
-            if self.finish_drafts(cx) {
-                if let Some(fixture) = self.fixtures.get_mut(&Entry::Eq) {
-                    if !eq::defer_history(fixture, event.keystroke.modifiers.shift)
-                        && let Err(error) =
-                            eq::history(fixture, event.keystroke.modifiers.shift, cx)
-                    {
-                        self.error = Some(error);
-                    }
-                }
+            if self.finish_drafts(cx)
+                && let Some(fixture) = self.fixtures.get_mut(&Entry::Eq)
+                && !eq::defer_history(fixture, event.keystroke.modifiers.shift)
+                && let Err(error) = eq::history(fixture, event.keystroke.modifiers.shift, cx)
+            {
+                self.error = Some(error);
             }
             cx.stop_propagation();
             cx.notify();

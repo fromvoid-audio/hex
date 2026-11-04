@@ -210,7 +210,12 @@ fn delivered_fixture(cx: &mut TestAppContext, release: bool) -> DeliveredFixture
         }
     });
     if release {
-        backend.render_direct(&mut frames, &mut host).unwrap();
+        // Finished follows the complete 5 ms rejoin, rather than the first
+        // callback after release. Deliver that terminal before testing custody.
+        let release_frames = 48_000_usize.div_ceil(200);
+        for _ in 0..release_frames.div_ceil(frames.len()) {
+            backend.render_direct(&mut frames, &mut host).unwrap();
+        }
     }
     DeliveredFixture {
         visual,
