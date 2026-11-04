@@ -10,7 +10,7 @@ use hex_widgets::{TextInput, TextInputChanged, TextInputConfig, TextInputKind};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const CATEGORIES: &[&str] = &[
@@ -36,6 +36,49 @@ const COPY_LIMIT: usize = 1024 * 1024;
 const COPY_CLIPPED: &str = "[excerpt clipped at 1 mib]\n";
 
 mod scrollbar;
+
+/// One action's owned filters, with a fixed inclusive relative-time window.
+/// Moving between pages never reanchors a range to that page's last event.
+struct ViewerFilter {
+    category: &'static str,
+    query: String,
+    window: &'static str,
+    since: Option<u128>,
+    until: Option<u128>,
+}
+impl ViewerFilter {
+    fn new(
+        category: &'static str,
+        query: String,
+        window: (&'static str, Option<u64>),
+        now: u128,
+    ) -> Self {
+        Self {
+            category,
+            query,
+            window: window.0,
+            since: window
+                .1
+                .map(|seconds| now.saturating_sub(Duration::from_secs(seconds).as_nanos())),
+            until: window.1.map(|_| now),
+        }
+    }
+    fn borrowed(&self) -> LogFilter<'_> {
+        LogFilter {
+            category: (self.category != "all").then_some(self.category),
+            text: (!self.query.is_empty()).then_some(self.query.as_str()),
+            since_unix_nanos: self.since,
+            until_unix_nanos: self.until,
+        }
+    }
+}
+
+struct FilteredCopy {
+    text: String,
+    matching_events: usize,
+    warnings: bool,
+    clipped: bool,
+}
 
 struct LogInputBindings;
 impl gpui::Global for LogInputBindings {}
@@ -197,6 +240,20 @@ impl Viewer {
         .detach();
         cx.notify();
     }
+    fn current_filter(&self, cx: &App) -> Result<ViewerFilter, String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| {
+                "could not resolve log time range: system clock is before unix epoch".to_owned()
+            })?
+            .as_nanos();
+        Ok(ViewerFilter::new(
+            CATEGORIES[self.category],
+            self.query.read(cx).text().to_owned(),
+            WINDOWS[self.window],
+            now,
+        ))
+    }
     fn filter(&mut self, cx: &mut Context<Self>) {
         let Some(snapshot) = self.snapshot.clone() else {
             return;
@@ -212,25 +269,17 @@ impl Viewer {
             cx.notify();
             return;
         }
+        let request = match self.current_filter(cx) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = error;
+                cx.notify();
+                return;
+            }
+        };
         self.filtering = true;
-        let category = CATEGORIES[self.category].to_owned();
-        let seconds = WINDOWS[self.window].1;
-        let query = self.query.read(cx).text().to_owned();
         let task = cx.background_executor().spawn(async move {
-            let latest = snapshot
-                .lines
-                .iter()
-                .filter_map(|line| line.event.as_ref().map(|e| e.unix_nanos))
-                .max();
-            let since = seconds.zip(latest).map(|(seconds, latest)| {
-                latest.saturating_sub(Duration::from_secs(seconds).as_nanos())
-            });
-            let filter = LogFilter {
-                category: (category != "all").then_some(category.as_str()),
-                text: (!query.is_empty()).then_some(query.as_str()),
-                since_unix_nanos: since,
-                until_unix_nanos: None,
-            };
+            let filter = request.borrowed();
             let rows = snapshot
                 .lines
                 .iter()
@@ -294,6 +343,44 @@ impl Viewer {
             self.reload(cx);
         }
     }
+    fn copy_all(&mut self, cx: &mut Context<Self>) {
+        if self.copying {
+            return;
+        }
+        let request = match self.current_filter(cx) {
+            Ok(request) => request,
+            Err(error) => {
+                self.status = error;
+                cx.notify();
+                return;
+            }
+        };
+        let path = self.path.clone();
+        self.copying = true;
+        self.status = "reading all retained matching logs…".into();
+        let task = cx
+            .background_executor()
+            .spawn(async move { make_filtered_copy(&path, &request) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |view, cx| {
+                view.copying = false;
+                match result {
+                    Ok(copy) => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy.text.clone()));
+                        // GPUI's write API has no error return. Confirm the
+                        // bounded payload through its read API before success.
+                        let actual = cx.read_from_clipboard().and_then(|item| item.text());
+                        view.status = filtered_copy_status(&copy, actual.as_deref()).into();
+                    }
+                    Err(error) => view.status = format!("could not copy filtered logs: {error}"),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
     fn copy_selection(&mut self, cx: &mut Context<Self>) {
         if self.copying {
             return;
@@ -342,6 +429,52 @@ impl Viewer {
             });
         })
         .detach();
+    }
+}
+
+fn make_filtered_copy(path: &Path, request: &ViewerFilter) -> Result<FilteredCopy, String> {
+    let result = hex_diagnostics::reader::read_session_filtered(path, &request.borrowed())
+        .map_err(|error| error.to_string())?;
+    let since = request
+        .since
+        .map_or_else(|| "unbounded".into(), |value| value.to_string());
+    let until = request
+        .until
+        .map_or_else(|| "unbounded".into(), |value| value.to_string());
+    let time = format!(
+        "{}; inclusive unix_nanos {since}..{until}\nmatching event records: {}; omitted export entries: {}\nall retained pages; context/loss lines are kept regardless of event filters",
+        request.window, result.matching_events, result.omitted_lines
+    );
+    let rows: Vec<_> = (0..result.snapshot.lines.len()).collect();
+    let text = make_excerpt(
+        &result.snapshot,
+        &rows,
+        path,
+        request.category,
+        &time,
+        &request.query,
+        (0, rows.len().saturating_sub(1)),
+    );
+    let clipped = result.omitted_lines > 0 || text.ends_with(COPY_CLIPPED);
+    Ok(FilteredCopy {
+        text,
+        matching_events: result.matching_events,
+        warnings: result.snapshot.header.is_none() || !result.snapshot.warnings.is_empty(),
+        clipped,
+    })
+}
+
+fn filtered_copy_status(copy: &FilteredCopy, actual: Option<&str>) -> &'static str {
+    if actual != Some(copy.text.as_str()) {
+        "could not verify clipboard contents · try copying again"
+    } else if copy.clipped {
+        "filtered logs copied · incomplete at export limit · review warnings"
+    } else if copy.warnings {
+        "filtered logs copied with warnings · review before sharing"
+    } else if copy.matching_events == 0 {
+        "no matching events · available context copied"
+    } else {
+        "all retained matching logs copied · review before sharing"
     }
 }
 
@@ -590,6 +723,11 @@ impl Render for Viewer {
                     .child(
                         control("copy selection")
                             .on_click(cx.listener(|view, _, _, cx| view.copy_selection(cx))),
+                    )
+                    .child(
+                        control("copy all")
+                            .debug_selector(|| "log-copy-all".into())
+                            .on_click(cx.listener(|view, _, _, cx| view.copy_all(cx))),
                     )
                     .child(
                         control("bottom")
@@ -922,3 +1060,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "log_viewer/copy_tests.rs"]
+mod copy_tests;

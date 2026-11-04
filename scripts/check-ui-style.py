@@ -192,6 +192,12 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/mixer.rs'
             and suffix.startswith(('super::track_meters::render(', 'toggle_button_with_style('))
         )
+        # Track meters compose a text-free shared gauge and its rendered fixture.
+        # Tooltip text still passes through MiniTooltip's theme::text boundary.
+        header_mixer_component = header_mixer_component or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/track_meters.rs'
+            and suffix.startswith(('meter)', 'render_meter('))
+        )
         # Clip-detail bindings return shared widgets; their labels pass through
         # theme::text in the owning component, never raw .child text.
         clip_detail_component = (

@@ -1178,8 +1178,9 @@ impl Service {
     }
 
     /// Compose the desktop audio adapter without opening a device on the caller.
-    /// The existing worker negotiates the actual rate before creating Session;
-    /// failed output setup retains canonical editing/saving in offline mode.
+    /// The adapter supplies the initial project rate without waiting for device
+    /// opening. Delayed results use its existing polling contract; failed output
+    /// setup retains canonical editing/saving in offline mode.
     pub fn with_audio_sink(
         history_capacity: usize,
         max_resident_frames: u64,

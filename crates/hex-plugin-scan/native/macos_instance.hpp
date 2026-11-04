@@ -312,6 +312,18 @@ public:
         return processor->getTailSamples();
     }
 
+    // Explicit latency-facts renewal at the stopped main-lane barrier. Normal
+    // epochs do not reset component activity or DSP history. No rollback after
+    // a foreign refusal: the existing terminal owner retains this component.
+    bool reactivate_on_control() {
+        if (![NSThread isMainThread] || !configured || !active || processing.load() ||
+            processing_fault.load() || quarantined.load()) return false;
+        if (component->setActive(false)!=kResultOk) return refuse_cleanup();
+        active=false;
+        if (component->setActive(true)!=kResultOk) return refuse_cleanup();
+        active=true;
+        return true;
+    }
     bool start_processing() {
         if ([NSThread isMainThread] || !configured || !active || processing.load() || processing_fault.load() || quarantined.load()) return false;
         if (processing_thread != std::thread::id{} && processing_thread != std::this_thread::get_id()) return false;
