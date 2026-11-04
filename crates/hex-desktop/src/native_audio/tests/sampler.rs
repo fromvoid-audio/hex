@@ -588,6 +588,10 @@ fn new_cancels_actual_draining_sampler_before_immediate_fresh_open_poll() {
     });
     assert!(h.observation.lock().unwrap().fresh_before_input_checked);
     h.open();
+    while !h.observation.lock().unwrap().fresh_replacement_hold_checked {
+        assert!(Instant::now() < end, "fresh-output policy was not checked");
+        std::thread::yield_now();
+    }
     assert_eq!(h.render(), [[0.0; 2]; 64]);
 }
 
