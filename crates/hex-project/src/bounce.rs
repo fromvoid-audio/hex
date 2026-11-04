@@ -317,6 +317,19 @@ pub(crate) fn commit(
         return crate::clip_consolidate::render::commit(project, clips, range.as_ref(), files);
     }
     let plan = project.plan_arrangement_bounce(&target, in_place)?;
+    commit_planned(project, target, in_place, adoption, files, plan)
+}
+
+/// Adopt one already validated, current-project plan into a private candidate.
+/// The caller owns atomic commit and must discard the candidate on refusal.
+fn commit_planned(
+    project: &mut Project,
+    target: BounceTarget,
+    in_place: bool,
+    adoption: crate::BounceAdoption,
+    files: Vec<BounceFile>,
+    plan: Vec<BounceTrack>,
+) -> Result<Created, Invalid> {
     if files.len() != plan.len() {
         return Err(Invalid("bounce output count changed"));
     }
@@ -504,20 +517,34 @@ pub(crate) fn commit(
         };
     }
     if let BounceTarget::Track(track) = target {
-        if project
-            .track(track)
-            .is_some_and(|owner| owner.instrument().is_some())
-        {
-            project.apply(Command::RemoveInstrument { track })?;
+        let retain = project.track(track).is_some_and(|owner| {
+            owner.retained_source_path()
+                || owner.source_id().is_some_and(|source| {
+                    owner.receives_source_audio()
+                        && project
+                            .tracks()
+                            .iter()
+                            .any(|peer| peer.id() != track && peer.source_id() == Some(source))
+                })
+        });
+        if retain {
+            project.track_mut(track)?.retained_source_path = true;
+        } else {
+            if project
+                .track(track)
+                .is_some_and(|owner| owner.instrument().is_some())
+            {
+                project.apply(Command::RemoveInstrument { track })?;
+            }
+            let owner = project
+                .tracks
+                .iter_mut()
+                .find(|t| t.id == track)
+                .ok_or(Invalid("bounce track changed"))?;
+            owner.devices.clear();
+            owner.instrument = None;
+            owner.instrument_position = None;
         }
-        let owner = project
-            .tracks
-            .iter_mut()
-            .find(|t| t.id == track)
-            .ok_or(Invalid("bounce track changed"))?;
-        owner.devices.clear();
-        owner.instrument = None;
-        owner.instrument_position = None;
     }
     match (first, last) {
         (Some(first), Some(last)) => Ok(Created::Clips { first, last }),
@@ -610,6 +637,290 @@ fn midi_frames(project: &Project, clip: &crate::MidiClip) -> Result<(u64, u64), 
 mod tests {
     use super::*;
     use crate::{BeatTime, TrackDeviceSlot, default_instrument_state};
+
+    #[test]
+    fn retained_receiver_adoption_keeps_source_devices_and_peer_while_replacing_material() {
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+        let Created::Track(receiver) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "receiver".into(),
+                before_track: None,
+                slot: TrackDeviceSlot::Instrument,
+                state: default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("receiver")
+        };
+        let instrument = editor
+            .project()
+            .track(receiver)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        for before in [Some(instrument), None] {
+            editor
+                .execute(Command::InsertDevice {
+                    track: receiver,
+                    before,
+                    state: default_instrument_state().unwrap(),
+                })
+                .unwrap();
+        }
+        editor
+            .execute(Command::Gain {
+                track: receiver,
+                gain: 0.5,
+            })
+            .unwrap();
+        editor
+            .execute(Command::UpsertTrackGainPoint {
+                track: receiver,
+                point: crate::GainPoint {
+                    incoming_gain: None,
+                    beat: BeatTime::ONE,
+                    gain: 0.75,
+                    outgoing: crate::GainInterpolation::Linear,
+                },
+            })
+            .unwrap();
+        editor
+            .execute(Command::Balance {
+                track: receiver,
+                balance: 0.25,
+            })
+            .unwrap();
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        editor
+            .execute(Command::SetReturnSend {
+                track: receiver,
+                return_track: bus,
+                gain: 0.25,
+            })
+            .unwrap();
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "original.wav".into(),
+                sample_rate: 48_000,
+                frames: 100,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let Created::Clip(audio) = editor
+            .execute(Command::PlaceClip {
+                track: receiver,
+                asset,
+                start: 0,
+                duration: 100,
+                source_offset: 0,
+                source_length: 100,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::PlaceMidiClip {
+                track: receiver,
+                start: BeatTime::ONE,
+                length: BeatTime::ONE,
+            })
+            .unwrap();
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        editor
+            .execute(Command::CopyArrangementAudioClipToSession {
+                source: audio,
+                scene,
+            })
+            .unwrap();
+        let Created::Scene(midi_scene) = editor
+            .execute(Command::AddScene {
+                name: "midi".into(),
+            })
+            .unwrap()
+        else {
+            panic!("midi scene")
+        };
+        let Created::SessionClip(console_midi) = editor
+            .execute(Command::CreateSessionMidiClip {
+                track: receiver,
+                scene: midi_scene,
+                name: "midi".into(),
+                source_length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("console midi")
+        };
+        let source = editor
+            .project()
+            .track(receiver)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        let target = BounceTarget::Track(receiver);
+        let plan = editor
+            .project()
+            .plan_arrangement_bounce(&target, true)
+            .unwrap();
+        assert_eq!(plan.len(), 3);
+        let Created::Track(peer) = editor
+            .execute(Command::AddMidiTrack {
+                name: "peer".into(),
+            })
+            .unwrap()
+        else {
+            panic!("peer")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: peer,
+                source: Some(source),
+            })
+            .unwrap();
+        let before = editor.project().clone();
+        let before_track = before.track(receiver).unwrap();
+        let files: Vec<_> = plan
+            .iter()
+            .enumerate()
+            .map(|(index, item)| BounceFile {
+                source: item.source,
+                track: receiver,
+                start: item.start,
+                frames: item.end - item.start,
+                path: format!("printed-{index}.wav").into(),
+            })
+            .collect();
+        // Public planning still refuses this case. The material plan was
+        // captured before the peer joined, for this private-core test only.
+        let mut invalid = files.clone();
+        invalid[2].track = peer;
+        let mut refused_candidate = before.clone();
+        assert!(
+            commit_planned(
+                &mut refused_candidate,
+                target.clone(),
+                true,
+                BounceAdoption::NewTracks,
+                invalid,
+                plan.clone(),
+            )
+            .is_err()
+        );
+        assert_eq!(editor.project(), &before);
+        let mut candidate = before.clone();
+        commit_planned(
+            &mut candidate,
+            target,
+            true,
+            BounceAdoption::NewTracks,
+            files,
+            plan,
+        )
+        .unwrap();
+        let after = candidate.track(receiver).unwrap();
+        assert!(after.retained_source_path());
+        assert_eq!(after.source_id(), Some(source));
+        assert_eq!(
+            after.instrument_position(),
+            before_track.instrument_position()
+        );
+        assert_eq!(after.instrument(), before_track.instrument());
+        assert_eq!(after.devices(), before_track.devices());
+        assert_eq!(after.gain_lane(), before_track.gain_lane());
+        assert_eq!(
+            (after.gain(), after.balance(), after.sends()),
+            (
+                before_track.gain(),
+                before_track.balance(),
+                before_track.sends()
+            )
+        );
+        assert!(after.midi_clips().is_empty());
+        assert_eq!(after.clips().len(), 1);
+        assert_ne!(after.clips()[0].asset(), asset);
+        assert_eq!(candidate.track(peer), before.track(peer));
+        assert_eq!(
+            candidate.native_source(source),
+            before.native_source(source)
+        );
+        assert_eq!(
+            candidate
+                .source_contributors(source)
+                .map(|track| track.id())
+                .collect::<Vec<_>>(),
+            vec![peer]
+        );
+        assert!(candidate.asset(asset).is_some());
+        let SessionCellContent::Audio(printed) = candidate.session_cells()[0].content() else {
+            panic!("printed console audio")
+        };
+        assert_ne!(printed.asset(), asset);
+        assert!(candidate.session_cells().iter().any(|cell| {
+            matches!(cell.content(), SessionCellContent::Audio(clip) if clip.id() == console_midi)
+        }));
+        assert_eq!(
+            Project::from_snapshot(candidate.snapshot()).unwrap(),
+            candidate
+        );
+        assert_eq!(editor.project(), &before);
+
+        // Re-bouncing a retained path must not remove its devices just because
+        // its last peer was subsequently unlinked.
+        candidate
+            .apply(Command::BindTrackSource {
+                track: peer,
+                source: None,
+            })
+            .unwrap();
+        let target = BounceTarget::Track(receiver);
+        let plan = candidate.plan_arrangement_bounce(&target, true).unwrap();
+        let files = plan
+            .iter()
+            .enumerate()
+            .map(|(index, item)| BounceFile {
+                source: item.source,
+                track: receiver,
+                start: item.start,
+                frames: item.end - item.start,
+                path: format!("reprinted-{index}.wav").into(),
+            })
+            .collect();
+        commit(
+            &mut candidate,
+            target,
+            true,
+            BounceAdoption::NewTracks,
+            files,
+        )
+        .unwrap();
+        let after = candidate.track(receiver).unwrap();
+        assert!(after.retained_source_path());
+        assert_eq!(after.instrument(), before_track.instrument());
+        assert_eq!(after.devices(), before_track.devices());
+        assert_eq!(
+            Project::from_snapshot(candidate.snapshot()).unwrap(),
+            candidate
+        );
+    }
 
     #[test]
     fn whole_track_bounce_refuses_to_disconnect_other_source_contributors() {
