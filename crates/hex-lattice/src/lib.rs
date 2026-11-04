@@ -979,9 +979,15 @@ impl NativeRuntimeChain {
             {
                 return Err(DeviceContractError::UnsupportedProcessingClass);
             }
-            let supports_smoothed_bypass = instance.definition.as_ref().is_none_or(|factory| {
-                matches!(factory, PreparedProcessorFactory::Legacy(value) if value.supports_smoothed_bypass())
-            });
+            let supports_smoothed_bypass =
+                instance
+                    .definition
+                    .as_ref()
+                    .is_none_or(|factory| match factory {
+                        PreparedProcessorFactory::Legacy(value) => value.supports_smoothed_bypass(),
+                        PreparedProcessorFactory::Owned(value) => value.supports_smoothed_bypass(),
+                        PreparedProcessorFactory::Foreign(_) => false,
+                    });
             let runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
             for &parameter in instance.automation.parameter_ids() {
                 if instance.definition.as_ref().is_none_or(|factory| {

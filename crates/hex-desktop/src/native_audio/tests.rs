@@ -2,6 +2,7 @@
 //! domains, graph preparation, publication and callback are production paths.
 use super::*;
 mod bypass_latency;
+mod delay_bypass;
 mod limiter;
 mod plugins;
 mod recovery;
