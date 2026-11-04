@@ -320,11 +320,15 @@ impl Stage {
         mean * self.noise_scale
     }
 
-    /// Detect tonal peaks up to `limit_hz` and record each one's corrected
-    /// level at the display point containing its interpolated frequency.
+    /// Deposit a calibrated tone continuously between adjacent log-frequency
+    /// display points. The containing band retains the calibrated peak; its
+    /// neighbor rises toward the same level at their shared boundary. This is
+    /// a display interpolation, not an energy-conserving spectral estimate.
     fn detect_tonal(&mut self, sample_rate_hz: u32, limit_hz: f64) {
         self.tonal.fill(0.0);
         let half = self.size / 2;
+        let maximum = maximum_frequency(sample_rate_hz);
+        let log_scale = SPECTRUM_BANDS as f64 / (maximum / MIN_FREQUENCY_HZ).ln();
         let last = ((limit_hz / self.resolution_hz).ceil() as usize).min(half - 1);
         for bin in 2..=last {
             let peak = self.power[bin];
@@ -350,8 +354,20 @@ impl Stage {
             }
             let (offset, level) = hann_peak(self.power[bin - 1], peak, self.power[bin + 1]);
             let frequency = (bin as f64 + offset) * self.resolution_hz;
-            if let Some(point) = point_index(sample_rate_hz, frequency) {
+            if (MIN_FREQUENCY_HZ..maximum).contains(&frequency) {
+                let position = (frequency / MIN_FREQUENCY_HZ).ln() * log_scale;
+                let point = (position as usize).min(SPECTRUM_BANDS - 1);
                 self.tonal[point] = self.tonal[point].max(level);
+                let fraction = position - point as f64;
+                let neighbor = if fraction < 0.5 {
+                    point.checked_sub(1)
+                } else {
+                    (point + 1 < SPECTRUM_BANDS).then_some(point + 1)
+                };
+                if let Some(neighbor) = neighbor {
+                    let weight = (2.0 * (fraction - 0.5).abs()).clamp(0.0, 1.0);
+                    self.tonal[neighbor] = self.tonal[neighbor].max(level * weight * weight);
+                }
             }
         }
     }
@@ -576,13 +592,20 @@ fn band_bounds(sample_rate_hz: u32, band: usize) -> (f64, f64) {
     (lower, upper)
 }
 
-fn point_index(sample_rate_hz: u32, frequency_hz: f64) -> Option<usize> {
+#[cfg(test)]
+fn point_position(sample_rate_hz: u32, frequency_hz: f64) -> Option<f64> {
     let maximum = maximum_frequency(sample_rate_hz);
     if !(MIN_FREQUENCY_HZ..maximum).contains(&frequency_hz) {
         return None;
     }
     let position = (frequency_hz / MIN_FREQUENCY_HZ).ln() / (maximum / MIN_FREQUENCY_HZ).ln();
-    Some(((position * SPECTRUM_BANDS as f64) as usize).min(SPECTRUM_BANDS - 1))
+    Some(position * SPECTRUM_BANDS as f64)
+}
+
+#[cfg(test)]
+fn point_index(sample_rate_hz: u32, frequency_hz: f64) -> Option<usize> {
+    point_position(sample_rate_hz, frequency_hz)
+        .map(|position| (position as usize).min(SPECTRUM_BANDS - 1))
 }
 
 fn maximum_frequency(sample_rate_hz: u32) -> f64 {
