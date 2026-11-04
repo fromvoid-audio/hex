@@ -215,7 +215,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .id();
 
     let run_mutations = |editor: &mut Editor, iteration: usize| -> Result<(), Box<dyn Error>> {
-        let gain = if iteration.is_multiple_of(2) { 0.75 } else { 0.5 };
+        let gain = if iteration.is_multiple_of(2) {
+            0.75
+        } else {
+            0.5
+        };
         let start = if iteration.is_multiple_of(2) { 1 } else { 0 };
         editor.execute(Command::Gain { track, gain })?;
         editor.execute(Command::MoveClip { clip, track, start })?;
