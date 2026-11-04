@@ -994,10 +994,14 @@ impl SessionPlayback {
         let old_base = previous.revision.session().timing();
         let new_base = self.revision.session().timing();
         let same_base = old_base.same_map(new_base);
+        let arrangement_loop_continuity = same_base
+            && old_loop != new_loop
+            && first_pass_arrangement_loop_continuity(self, previous);
         // An edited base map cuts every held mutable Arrangement gate at the
         // donor's cut (`arrangement_tempo_remap` below), so a retimed loop
         // has no active gate deadline left to prove.
         if same_base
+            && !arrangement_loop_continuity
             && old_loop != new_loop
             && previous.routes.iter().enumerate().any(|(index, _)| {
                 effective_midi_route(&previous.revision, &previous.routes, index)
@@ -1072,6 +1076,7 @@ impl SessionPlayback {
             ));
         }
         if timing_changed
+            && !arrangement_loop_continuity
             && !arrangement_tempo_remap
             && old_loop.is_some()
             && previous.routes.iter().enumerate().any(|(index, _)| {
@@ -1168,13 +1173,14 @@ impl SessionPlayback {
             previous,
             timing_changed,
             arrangement_tempo_remap,
+            arrangement_loop_continuity,
             &mut self.spans,
         )?;
         let mut mutable_continuity_new_for_old = source_handoff.new_for_old;
         let mut mutable_retarget_new_for_old = source_handoff.retarget_for_old;
         // An edited base map keeps only Arrangement mutable runtimes: their
         // held gates are cut at the cut, so no stale frame deadline survives.
-        if !timing_changed || arrangement_tempo_remap {
+        if !timing_changed || arrangement_tempo_remap || arrangement_loop_continuity {
             for (old_index, _) in previous.routes.iter().enumerate() {
                 if source_handoff.handles_old(old_index) {
                     continue;
@@ -4794,8 +4800,78 @@ fn mutable_proof_deadline(
     deadline
 }
 
-/// Whether every proof of `runtime` belongs to a donor Arrangement route, so
-/// an edited base map cuts each held gate at the cut (Pulse #4117).
+/// A route-local proof, not equivalence of the periodic Session clocks.
+/// Before the first wrap, Arrangement queries use the unchanged canonical map.
+/// No retained gate or tail may reach either discontinuity. Existing candidate
+/// signature, source-law and occupancy checks still run before runtime transfer.
+fn first_pass_arrangement_loop_continuity(
+    candidate: &SessionPlayback,
+    previous: &SessionPlayback,
+) -> bool {
+    if !previous
+        .revision
+        .session()
+        .timing()
+        .same_map(candidate.revision.session().timing())
+        || previous.anchor.is_some()
+        || previous.computer_keyboard.is_some()
+        || candidate.computer_keyboard.is_some()
+        || previous.arrangement_loop_pass != 0
+        || previous.performance_frame != previous.arrangement_frame
+        || candidate.revision.arrangement().main_latency_frames() != 0
+        || previous.revision.arrangement().main_latency_frames() != 0
+        || previous
+            .tail_mutable_instruments
+            .iter()
+            .any(Option::is_some)
+    {
+        return false;
+    }
+    let boundary = [previous.loop_region(), candidate.loop_region()]
+        .into_iter()
+        .flatten()
+        .filter(|region| region.enabled())
+        .map(hex_project::LoopRegion::end)
+        .min()
+        .unwrap_or(u64::MAX);
+    if previous.performance_frame >= boundary {
+        return false;
+    }
+    for playback in [previous, candidate] {
+        for (index, route) in playback.routes.iter().enumerate() {
+            if route.owner != RouteOwner::Arrangement
+                || route.pending.is_some()
+                || playback.revision.source_routing().is_shared(index)
+            {
+                return false;
+            }
+        }
+    }
+    previous
+        .mutable_instruments
+        .iter()
+        .enumerate()
+        .all(|(index, runtime)| {
+            let Some(runtime) = runtime else {
+                return true;
+            };
+            let Some(route) = previous.routes.get(index) else {
+                return false;
+            };
+            previous
+                .revision
+                .mutable_arrangement_track_matches(&candidate.revision, route.id)
+                && !runtime.has_committed_live_occurrences()
+                && runtime.proofs().all(|proof| {
+                    proof.signature.key().loop_pass == 0
+                        && proof.gate_end_frame < boundary
+                        && proof.quiet_deadline_frame < boundary
+                })
+        })
+}
+
+/// Whether every proof belongs to a donor Arrangement route, so an edited
+/// base map can cut each held gate at the cut (Pulse #4117).
 fn arrangement_only_proofs(
     previous: &SessionPlayback,
     runtime: &MutableInstrumentTrackRuntime,

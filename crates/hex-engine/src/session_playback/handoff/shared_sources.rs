@@ -57,6 +57,7 @@ impl SharedSourceHandoff {
         previous: &SessionPlayback,
         timing_changed: bool,
         arrangement_tempo_remap: bool,
+        arrangement_loop_continuity: bool,
         spans: &mut MidiSpanBuffer,
     ) -> Result<Self, SessionPlaybackError> {
         let mut plan = Self {
@@ -137,8 +138,9 @@ impl SharedSourceHandoff {
                 continue;
             };
             // An edited base map cuts every held Arrangement gate at the cut
-            // (Pulse #4117); a proof from any other owner keeps stale frames.
-            let retimed = arrangement_tempo_remap
+            // (Pulse #4117). A first-pass loop proof instead preserves their
+            // canonical deadlines before either wrap. Other owners refuse.
+            let retimed = (arrangement_tempo_remap || arrangement_loop_continuity)
                 && super::arrangement_only_proofs(previous, old_runtime)
                 && routes
                     .get(new_index)

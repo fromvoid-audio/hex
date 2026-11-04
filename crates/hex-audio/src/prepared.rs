@@ -6257,6 +6257,118 @@ mod tests {
 
     #[cfg(feature = "allocation-probe")]
     #[test]
+    fn held_mutable_arrangement_loop_handoff_preserves_pcm_without_callback_allocation() {
+        use hex_project::{BeatTime, Command, Created, Editor, Project};
+        let class = hex_engine::NativeDeviceClass::Instrument;
+        let state = hex_engine::default_native_device_state_for_class(
+            class,
+            hex_engine::DeviceTypeId::from_static("hex.instrument.operator"),
+        )
+        .unwrap();
+        let state = hex_engine::patch_native_device_parameter_for_class(
+            class,
+            &state,
+            hex_lattice_contract::ParameterId::from_static(78),
+            hex_lattice_contract::ParameterValue::Float(0.4),
+        )
+        .unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "loop probe".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state,
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(10).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ONE,
+                duration: BeatTime::from_quarters(2).unwrap(),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        // Leave room for the native instrument's conservative release bound.
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 48_000,
+                end: 96_000_000,
+                enabled: true,
+            })
+            .unwrap();
+        let prepare = |project: &Project| {
+            Playback::from_prepared(Arc::new(
+                hex_engine::PreparedRevision::prepare(
+                    project,
+                    &std::collections::BTreeMap::new(),
+                    Arc::new(hex_engine::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            ))
+        };
+        let mut reference = prepare(editor.project());
+        reference.apply(PlaybackCommand::Play);
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        control.publish(prepare(editor.project())).unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        let mut prefix = vec![[0.0; 2]; 30_000];
+        for chunk in prefix.chunks_mut(256) {
+            callback.begin_block();
+            callback.render(chunk).unwrap();
+        }
+        let mut expected_prefix = prefix.clone();
+        reference.render(&mut expected_prefix).unwrap();
+        assert_eq!(prefix, expected_prefix);
+        editor
+            .execute(Command::SetLoopRegion {
+                start: 24_000,
+                end: 120_000_000,
+                enabled: true,
+            })
+            .unwrap();
+        control.publish(prepare(editor.project())).unwrap();
+        let mut actual = [[0.0; 2]; 256];
+        let measured = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut actual).unwrap();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let mut expected = actual;
+        reference.render(&mut expected).unwrap();
+        assert!(expected.iter().flatten().any(|sample| sample.abs() > 1e-6));
+        assert_eq!(actual, expected, "held source must keep its DSP history");
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
     fn saturator_track_and_return_revision_admission_and_render_allocate_nothing() {
         let (mut control, mut callback) = channel(48_000).expect("channel");
         let playback = saturator_track_and_return_graph(36.0);
