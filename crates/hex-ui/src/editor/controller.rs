@@ -3301,6 +3301,12 @@ impl EditorView {
             path,
             before_track,
             start,
+        }
+        | Request::ImportToNewTrackWithGain {
+            path,
+            before_track,
+            start,
+            ..
         } = &request
         {
             self.last_enqueued_import_to_new_track = Some((path.clone(), *before_track, *start));
@@ -3355,6 +3361,7 @@ impl EditorView {
                 | Request::ImportToTrack { .. }
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
+                | Request::ImportToNewTrackWithGain { .. }
                 | Request::ImportToSession { .. }
                 | Request::RecoverTruncatedImport(_)
                 | Request::RelinkMedia(_)

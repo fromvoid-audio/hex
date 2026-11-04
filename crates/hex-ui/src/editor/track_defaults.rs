@@ -264,8 +264,12 @@ mod tests {
             let make = |destination| Request::audio_batch(vec![PathBuf::from("/sample.wav")], destination, context).unwrap().0;
             let destination = AudioBatchDestination::NewTracks { before_track: None, start: 42 };
             v.track_defaults.committed = TrackDefaults::new(0.5).unwrap();
+            let legacy = v.capture_audio_import_policy(Request::Import(PathBuf::from("/legacy.wav"))).unwrap();
+            let anchored = v.capture_audio_import_policy(Request::ImportToNewTrack { path: PathBuf::from("/anchored.wav"), before_track: Some(target), start: 123 }).unwrap();
             let captured = v.capture_audio_import_policy(make(destination)).unwrap();
             v.track_defaults.committed = TrackDefaults::new(0.25).unwrap();
+            assert!(matches!(legacy, Request::ImportToNewTrackWithGain { before_track: None, start: 0, gain, .. } if gain == 0.5));
+            assert!(matches!(anchored, Request::ImportToNewTrackWithGain { before_track: Some(id), start: 123, gain, .. } if id == target && gain == 0.5));
             v.track_defaults.saving = true;
             let during_save = v.capture_audio_import_policy(make(destination)).unwrap();
             assert!(matches!(during_save, Request::ImportAudioBatch { options, .. } if options.new_track_gain == Some(0.25)));
@@ -282,7 +286,8 @@ mod tests {
             v.track_defaults.loading = false;
             v.track_defaults.writable = false;
             assert!(v.capture_audio_import_policy(make(destination)).unwrap_err().contains("open settings"));
-            assert!(matches!(v.capture_audio_import_policy(Request::Import(PathBuf::from("/legacy.wav"))).unwrap(), Request::Import(_)));
+            assert!(v.capture_audio_import_policy(Request::Import(PathBuf::from("/legacy.wav"))).unwrap_err().contains("open settings"));
+            assert!(matches!(v.capture_audio_import_policy(Request::ImportToTrack { path: PathBuf::from("/existing.wav"), track: target, start: 12 }).unwrap(), Request::ImportToTrack { track, start: 12, .. } if track == target));
         });
     }
 
