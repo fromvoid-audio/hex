@@ -758,13 +758,24 @@ impl EditorView {
                     cx.notify();
                     return;
                 }
-                device_panel::enqueue_return_edit(
+                let gain = match self.track_defaults.captured_gain() {
+                    Ok(gain) => gain,
+                    Err(error) => {
+                        self.error = Some(error.into());
+                        cx.notify();
+                        return;
+                    }
+                };
+                if device_panel::enqueue_return_edit(
                     self,
-                    Command::AddReturnTrack {
+                    Command::AddReturnTrackWithGain {
                         name: format!("return {}", count + 1),
+                        gain,
                     },
                     cx,
-                );
+                ) {
+                    self.error = None;
+                }
                 cx.notify();
             }
             EditorContextAction::InsertTrack(action) => {
@@ -1809,6 +1820,9 @@ mod tests {
             cx.notify();
         });
         visual.run_until_parked();
+        editor.update(&mut visual, |view, _| {
+            view.track_defaults.set_test_state(0.5, false, true)
+        });
         let original = editor.read_with(&visual, |view, _| {
             view.state.as_ref().unwrap().project.clone()
         });
@@ -1840,12 +1854,16 @@ mod tests {
             );
         });
         visual.simulate_keystrokes("down enter");
+        editor.update(&mut visual, |view, _| {
+            view.track_defaults.set_test_state(0.25, false, true)
+        });
         pump(&editor, &mut visual);
         let inserted = editor.read_with(&visual, |view, _| {
             let p = &view.state.as_ref().unwrap().project;
             assert_eq!(p.tracks(), original.tracks());
             assert_eq!(p.return_tracks().len(), 1);
             assert_eq!(p.return_tracks()[0].name(), "return 1");
+            assert_eq!(p.return_tracks()[0].gain(), 0.5);
             assert!(p.return_tracks()[0].devices().is_empty());
             assert!(view.context_menu.is_none());
             p.clone()
@@ -1891,6 +1909,47 @@ mod tests {
             super::super::EditorMode::Session,
         );
     }
+    #[gpui::test]
+    fn return_menu_refuses_unavailable_defaults_without_an_edit(cx: &mut TestAppContext) {
+        use crate::editor::midi_canvas::creation_tests::fixture;
+        for loading in [true, false] {
+            let (mut visual, editor, _environment, _) = fixture(cx);
+            visual.run_until_parked();
+            editor.update(&mut visual, |view, _| {
+                view.track_defaults.set_test_state(0.5, loading, false)
+            });
+            let before = editor.read_with(&visual, |view, _| {
+                view.state.as_ref().unwrap().project.clone()
+            });
+            let action = visual.update(|window, cx| {
+                editor.update(cx, |view, cx| {
+                    view.open_track_context_menu(point(px(600.0), px(100.0)), None, window, cx);
+                    view.context_menu
+                        .as_ref()
+                        .unwrap()
+                        .items
+                        .iter()
+                        .find(|item| item.label == "insert return track")
+                        .unwrap()
+                        .action
+                        .clone()
+                })
+            });
+            visual.update(|window, cx| {
+                editor.update(cx, |view, cx| view.select_context_item(action, window, cx))
+            });
+            editor.read_with(&visual, |view, _| {
+                assert!(view.error.as_deref().unwrap().contains(if loading {
+                    "loading"
+                } else {
+                    "open settings"
+                }));
+                assert_eq!(view.worker_requests_pending, 0);
+                assert_eq!(view.state.as_ref().unwrap().project, before);
+            });
+        }
+    }
+
     #[gpui::test]
     fn return_insertion_refuses_stale_menu_and_capacity_consumed_after_open(
         cx: &mut TestAppContext,
