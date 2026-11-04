@@ -643,3 +643,255 @@ fn timing_only_fork_preserves_rollback_and_exact_host_identity() {
             .is_err()
     );
 }
+
+fn split_test_chain(state: &NativeDeviceState, bypassed: bool) -> hex_lattice::NativeRuntimeChain {
+    let rate = 8000;
+    let factory = DEFINITION
+        .prepare_runtime_factory(
+            state,
+            &DevicePreparationContext {
+                sample_rate: rate,
+                tuning: &TuningTable::default(),
+                resources: &EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap();
+    hex_lattice::NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
+        automation: Default::default(),
+        meter: Default::default(),
+        owner: hex_lattice::ProcessorChainOwner::Main,
+        device_id: 1,
+        device_type: DeviceTypeId::from_static("hex.delay"),
+        matrix: hex_lattice::StereoMatrix::identity(),
+        bypassed,
+        sample_rate: rate,
+        configuration: Some(Arc::new(state.clone())),
+        definition: factory,
+    }])
+    .unwrap()
+}
+
+fn split_test_render(initial_bypass: bool, partition: usize, rollback: bool) -> Vec<StereoFrame> {
+    let configured = state(&[
+        (LEFT_SYNC, ParameterValue::Bool(false)),
+        (TIME, ParameterValue::Float(10.0)),
+        (FEEDBACK, ParameterValue::Float(0.6)),
+        (DRY_WET, ParameterValue::Float(1.0)),
+        (FILTER, ParameterValue::Bool(true)),
+        (HIGH_QUALITY, ParameterValue::Bool(false)),
+        (SMOOTHING, ParameterValue::Choice(2)),
+        (LFO_DELAY, ParameterValue::Float(0.8)),
+        (LFO_FILTER, ParameterValue::Float(0.5)),
+        (LFO_RATE, ParameterValue::Float(13.0)),
+        (FREQUENCY, ParameterValue::Float(400.0)),
+        (WIDTH, ParameterValue::Float(2.0)),
+    ]);
+    let mut old = split_test_chain(&configured, initial_bypass);
+    let mut reference = split_test_chain(&configured, initial_bypass);
+    let mut successor = split_test_chain(&configured, !initial_bypass);
+    let input: Vec<_> = (0..3600)
+        .map(|i| {
+            let x = ((i as f32) * 0.13).sin() * 0.4;
+            [x, -x]
+        })
+        .collect();
+    let mut warm = input[..3000].to_vec();
+    let mut expected_warm = warm.clone();
+    old.begin_block();
+    reference.begin_block();
+    old.process_block(&mut warm).unwrap();
+    reference.process_block(&mut expected_warm).unwrap();
+    old.commit_block();
+    reference.commit_block();
+    assert_eq!(warm, expected_warm);
+    // One independently rendered active delay is the oracle for the sum of
+    // the split histories after enabling: echoes must not be duplicated.
+    let mut active_reference = split_test_chain(&configured, false);
+    active_reference.inherit_from(&old);
+    reference.begin_block();
+    let mut expected_first = [input[3000]];
+    reference.process_block(&mut expected_first).unwrap();
+    reference.commit_block();
+    let mut split = successor.prepare_tail_split_at(&old, 0).unwrap();
+    if rollback {
+        old.begin_block();
+        successor.begin_block();
+        split.begin_block().unwrap();
+        let mut old_out = [[0.0; 2]; 17];
+        let mut new_out = [[0.0; 2]; 17];
+        split
+            .process(
+                &mut old,
+                &mut successor,
+                &input[3000..3017],
+                &mut old_out,
+                &mut new_out,
+                0,
+                None,
+            )
+            .unwrap();
+        old.rollback_block();
+        successor.rollback_block();
+        split.rollback_block();
+    }
+    let mut output = Vec::new();
+    for (part, chunk) in input[3000..].chunks(partition).enumerate() {
+        let mut old_out = vec![[0.0; 2]; chunk.len()];
+        let mut new_out = vec![[0.0; 2]; chunk.len()];
+        old.begin_block();
+        successor.begin_block();
+        split.begin_block().unwrap();
+        split
+            .process(
+                &mut old,
+                &mut successor,
+                chunk,
+                &mut old_out,
+                &mut new_out,
+                part * partition,
+                None,
+            )
+            .unwrap();
+        old.commit_block();
+        successor.commit_block();
+        split.commit_block().unwrap();
+        if initial_bypass {
+            let mut active = chunk.to_vec();
+            active_reference.begin_block();
+            active_reference.process_block(&mut active).unwrap();
+            active_reference.commit_block();
+            for (i, ((old_frame, new_frame), expected)) in
+                old_out.iter().zip(&new_out).zip(&active).enumerate()
+            {
+                if part * partition + i >= 40 {
+                    for lane in 0..2 {
+                        assert!((old_frame[lane] + new_frame[lane] - expected[lane]).abs() < 2e-6);
+                    }
+                }
+            }
+        }
+        output.extend(
+            old_out
+                .iter()
+                .zip(new_out)
+                .map(|(a, b)| [a[0] + b[0], a[1] + b[1]]),
+        );
+    }
+    for lane in 0..2 {
+        assert!((output[0][lane] - expected_first[0][lane]).abs() < 2e-6);
+    }
+    assert!(split.is_complete());
+    split.finish_retained_tail(&mut old).unwrap();
+    old.begin_block();
+    let mut retained = [[0.0; 2]; 256];
+    old.process_block(&mut retained).unwrap();
+    old.commit_block();
+    assert!(
+        retained.iter().flatten().any(|sample| sample.abs() > 1e-6),
+        "old echo must remain audible"
+    );
+    assert!(split.finish_retained_tail(&mut old).is_err());
+    output
+}
+
+#[test]
+fn tail_split_both_directions_preserves_delay_and_rolls_back() {
+    for initial_bypass in [false, true] {
+        let expected = split_test_render(initial_bypass, 1, false);
+        assert_eq!(expected, split_test_render(initial_bypass, 17, true));
+        assert_eq!(expected, split_test_render(initial_bypass, 256, false));
+    }
+}
+
+#[test]
+fn tail_split_refuses_frozen_changed_and_invalid_buffers_without_losing_history() {
+    let configured = free(10.0, 0.6);
+    let frozen = DEFINITION
+        .patch_parameter(&configured, FREEZE, ParameterValue::Bool(true))
+        .unwrap();
+    let changed = DEFINITION
+        .patch_parameter(&configured, FEEDBACK, ParameterValue::Float(0.3))
+        .unwrap();
+    let mut old = split_test_chain(&configured, false);
+    let mut reference = split_test_chain(&configured, false);
+    let mut warm = [[0.2, -0.1]; 160];
+    let mut other = warm;
+    old.begin_block();
+    reference.begin_block();
+    old.process_block(&mut warm).unwrap();
+    reference.process_block(&mut other).unwrap();
+    old.commit_block();
+    reference.commit_block();
+    let frozen_old = split_test_chain(&frozen, false);
+    let mut frozen_next = split_test_chain(&frozen, true);
+    assert!(frozen_next.prepare_tail_split_at(&frozen_old, 0).is_err());
+    let mut wrong = split_test_chain(&changed, true);
+    assert!(wrong.prepare_tail_split_at(&old, 0).is_err());
+    let mut next = split_test_chain(&configured, true);
+    let mut split = next.prepare_tail_split_at(&old, 0).unwrap();
+    old.begin_block();
+    next.begin_block();
+    split.begin_block().unwrap();
+    let input = [[0.3, 0.1]; 2];
+    let mut old_out = [[7.0; 2]; 1];
+    let mut new_out = [[8.0; 2]; 2];
+    assert!(
+        split
+            .process(
+                &mut old,
+                &mut next,
+                &input,
+                &mut old_out,
+                &mut new_out,
+                0,
+                None
+            )
+            .is_err()
+    );
+    assert_eq!(old_out, [[7.0; 2]; 1]);
+    assert_eq!(new_out, [[8.0; 2]; 2]);
+    let mut other_next = split_test_chain(&configured, true);
+    other_next.begin_block();
+    let mut old_out = [[7.0; 2]; 2];
+    assert!(
+        split
+            .process(
+                &mut old,
+                &mut other_next,
+                &input,
+                &mut old_out,
+                &mut new_out,
+                0,
+                None
+            )
+            .is_err()
+    );
+    assert_eq!(old_out, [[7.0; 2]; 2]);
+    assert_eq!(new_out, [[8.0; 2]; 2]);
+    assert!(
+        split
+            .process(
+                &mut old,
+                &mut next,
+                &input,
+                &mut old_out,
+                &mut new_out,
+                usize::MAX,
+                None
+            )
+            .is_err()
+    );
+    other_next.rollback_block();
+    old.rollback_block();
+    next.rollback_block();
+    split.rollback_block();
+    let mut before = [[0.0; 2]; 128];
+    let mut expected = before;
+    old.begin_block();
+    reference.begin_block();
+    old.process_block(&mut before).unwrap();
+    reference.process_block(&mut expected).unwrap();
+    old.commit_block();
+    reference.commit_block();
+    assert_eq!(before, expected);
+}
