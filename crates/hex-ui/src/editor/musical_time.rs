@@ -320,7 +320,7 @@ pub(super) fn ruler_ticks(
         start_beat,
         last_beat,
         target_count,
-        LandmarkDensity::Adaptive(&resolution),
+        LandmarkDensity::Ruler(&resolution),
     );
     let mut candidates = ruler_candidates.ticks;
     candidates.sort_by_key(|tick| tick.frame);
@@ -391,6 +391,7 @@ struct RulerCandidates {
 enum LandmarkDensity<'a> {
     Meter,
     Adaptive(&'a AdaptiveGridResolution<'a>),
+    Ruler(&'a AdaptiveGridResolution<'a>),
     #[cfg(test)]
     Fixed(u64),
 }
@@ -454,7 +455,7 @@ fn ruler_candidates(
                 let meter_beat_length =
                     (4_u64 * BeatTime::ONE.raw()) / u64::from(point.meter().denominator());
                 let beat_length = match target_grid {
-                    LandmarkDensity::Adaptive(resolution) => {
+                    LandmarkDensity::Adaptive(resolution) | LandmarkDensity::Ruler(resolution) => {
                         resolution.step(point.beat(), meter_beat_length)
                     }
                     #[cfg(test)]
@@ -549,9 +550,9 @@ fn ruler_candidates(
             if quota == 0 {
                 continue;
             }
-            // Keep landmarks on an origin-anchored musical subdivision. Evenly
-            // sampling the visible indices produces alternating gaps and makes
-            // labels jump when panning changes the first visible landmark.
+            let regular = matches!(target_grid, LandmarkDensity::Ruler(_));
+            // Only the ruler thins to an origin-anchored stride. Grid and snap
+            // consumers retain their existing visible-candidate sampling.
             let stride = section
                 .landmark_count
                 .div_ceil(quota)
@@ -560,8 +561,6 @@ fn ruler_candidates(
             let last = section
                 .first_landmark
                 .saturating_add(section.landmark_count - 1);
-            // A short meter section can contain no stride-aligned landmark;
-            // retain one visible landmark rather than losing its fair share.
             let first = section
                 .first_landmark
                 .div_ceil(stride)
@@ -569,15 +568,34 @@ fn ruler_candidates(
                 .filter(|first| *first <= last)
                 .unwrap_or(section.first_landmark);
             for sample in 0..quota {
-                let Some(landmark_index) = sample
-                    .checked_mul(stride)
-                    .and_then(|offset| first.checked_add(offset))
-                else {
-                    break;
+                let landmark_index = if regular {
+                    let Some(index) = sample
+                        .checked_mul(stride)
+                        .and_then(|offset| first.checked_add(offset))
+                    else {
+                        break;
+                    };
+                    if index > last {
+                        break;
+                    }
+                    index
+                } else {
+                    let offset = if quota <= 1 {
+                        0
+                    } else {
+                        let Ok(offset) = u64::try_from(
+                            u128::from(sample) * u128::from(section.landmark_count - 1)
+                                / u128::from(quota - 1),
+                        ) else {
+                            continue;
+                        };
+                        offset
+                    };
+                    let Some(index) = section.first_landmark.checked_add(offset) else {
+                        continue;
+                    };
+                    index
                 };
-                if landmark_index > last {
-                    break;
-                }
                 let raw_beat = u128::from(section.point_beat.raw())
                     + u128::from(landmark_index) * u128::from(section.beat_length);
                 let Ok(raw_beat) = u64::try_from(raw_beat) else {
