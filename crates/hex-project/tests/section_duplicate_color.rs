@@ -16,7 +16,7 @@ fn section(editor: &mut Editor, color: ElementColor, start: u64) -> hex_project:
 }
 
 #[test]
-fn duplicates_use_unused_colors_in_preview_history_and_both_entry_points() {
+fn duplicates_keep_palette_colors_in_preview_history_and_both_entry_points() {
     let mut editor = Editor::new(Project::new(8_000).unwrap(), 32).unwrap();
     let source = section(&mut editor, ElementColor::Cyan, 0);
     let target = section(&mut editor, ElementColor::Red, 2);
@@ -34,12 +34,7 @@ fn duplicates_use_unused_colors_in_preview_history_and_both_entry_points() {
             panic!("copy identity")
         };
         let color = editor.project().arrangement_section(copy).unwrap().color();
-        assert!(
-            !before
-                .arrangement_sections()
-                .iter()
-                .any(|s| s.color() == color)
-        );
+        assert!(ElementColor::ALL.contains(&color));
         assert_eq!(
             preview
                 .sections()
@@ -65,22 +60,62 @@ fn duplicates_use_unused_colors_in_preview_history_and_both_entry_points() {
 }
 
 #[test]
-fn exhausted_palette_refuses_without_mutating_project_or_history() {
-    let mut editor = Editor::new(Project::new(8_000).unwrap(), 32).unwrap();
-    let mut first = None;
+fn exhausted_palette_allows_repeated_creation_and_both_duplicate_entry_points() {
+    let mut editor = Editor::new(Project::new(8_000).unwrap(), 64).unwrap();
+    let mut ids = Vec::new();
     for (i, color) in ElementColor::ALL.into_iter().enumerate() {
-        let id = section(&mut editor, color, (i * 2) as u64);
-        first.get_or_insert(id);
+        ids.push(section(&mut editor, color, (i * 2) as u64));
     }
-    let before = editor.project().clone();
-    let command = Command::DuplicateArrangementSection(first.unwrap());
-    assert!(before.preview_arrangement_section_edit(&command).is_err());
-    let error = editor.execute(command).unwrap_err();
-    assert!(error.to_string().contains("color"));
-    assert_eq!(editor.project(), &before);
-    assert!(editor.undo());
-    assert_eq!(
-        editor.project().arrangement_sections().len(),
-        ElementColor::ALL.len() - 1
-    );
+    // Explicit creation also permits repeated colors after every hue is used.
+    section(&mut editor, ElementColor::Cyan, 24);
+    for round in 0..12 {
+        let command = if round % 2 == 0 {
+            Command::DuplicateArrangementSection(ids[0])
+        } else {
+            Command::DuplicateArrangementSectionAt {
+                section: ids[0],
+                target: ids[1],
+                after: round % 3 == 0,
+            }
+        };
+        let before = editor.project().snapshot();
+        let preview = editor
+            .project()
+            .preview_arrangement_section_edit(&command)
+            .unwrap();
+        let Created::ArrangementSection(copy) = editor.execute(command).unwrap() else {
+            panic!("copy identity")
+        };
+        let copied = editor.project().arrangement_section(copy).unwrap();
+        assert!(ElementColor::ALL.contains(&copied.color()));
+        assert_eq!(copied.name(), "part");
+        assert_eq!(
+            copied.end().raw() - copied.start().raw(),
+            BeatTime::ONE.raw()
+        );
+        assert_eq!(
+            editor
+                .project()
+                .arrangement_section(ids[0])
+                .unwrap()
+                .color(),
+            ElementColor::Gray
+        );
+        assert_eq!(
+            preview
+                .sections()
+                .iter()
+                .find(|s| s.id().value() == 0)
+                .unwrap()
+                .color(),
+            copied.color()
+        );
+        let after = editor.project().snapshot();
+        assert!(editor.undo());
+        let mut undone = editor.project().snapshot();
+        undone.next_id = before.next_id;
+        assert_eq!(undone, before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+    }
 }
