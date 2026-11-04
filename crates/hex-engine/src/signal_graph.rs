@@ -149,11 +149,9 @@ impl SignalGraph {
         feeds: &[(usize, usize, f32)],
         canonical: &hex_project::Project,
     ) -> Result<Option<Arc<Self>>, Invalid> {
+        let printed = Self::retained_receivers(project, canonical)?;
         Ok(Some(Arc::new(Self::prepare_value(
-            project,
-            feeds,
-            canonical,
-            &[],
+            project, feeds, canonical, &printed,
         )?)))
     }
     /// The same private topology constructor, retained by closed preparation.
@@ -163,9 +161,33 @@ impl SignalGraph {
         feeds: &[(usize, usize, f32)],
         canonical: &hex_project::Project,
     ) -> Result<crate::owned_shared::OwnedShared<Self>, Invalid> {
+        let printed = Self::retained_receivers(project, canonical)?;
         Ok(crate::owned_shared::OwnedShared::new_owned(
-            Self::prepare_value(project, feeds, canonical, &[])?,
+            Self::prepare_value(project, feeds, canonical, &printed)?,
         ))
+    }
+    fn retained_receivers(
+        project: &Project,
+        canonical: &hex_project::Project,
+    ) -> Result<Vec<usize>, Invalid> {
+        let mut indices = Vec::new();
+        for receiver in canonical
+            .tracks()
+            .iter()
+            .filter(|track| track.retained_source_path())
+        {
+            let index = project
+                .tracks
+                .iter()
+                .position(|track| track.canonical_track_id() == Some(receiver.id()))
+                .ok_or(Invalid("retained receiver is missing from prepared graph"))?;
+            indices
+                .try_reserve(1)
+                .map_err(|_| Invalid("could not reserve retained receiver graph"))?;
+            indices.push(index);
+        }
+        indices.sort_unstable();
+        Ok(indices)
     }
     fn prepare_value(
         project: &Project,

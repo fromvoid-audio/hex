@@ -132,15 +132,6 @@ pub(crate) fn prepare_source_instruments(
 /// Refuse the same selected MIDI root entering one source twice. Its independent
 /// route identities cannot currently distinguish an intentional duplicate stream.
 pub(crate) fn validate_source_midi_roots(project: &hex_project::Project) -> Result<(), Invalid> {
-    if project
-        .tracks()
-        .iter()
-        .any(hex_project::Track::retained_source_path)
-    {
-        return Err(Invalid(
-            "retained source path playback is not supported yet; keep the original project",
-        ));
-    }
     for source in project
         .native_sources()
         .iter()
@@ -670,9 +661,14 @@ fn compile_project_inner<'a>(
             .flatten()
             .collect();
         let input_muted = solo.muted(track_index, track)?;
-        let shared_source = track
-            .source_id()
-            .filter(|source| snapshot.source_contributors(*source).count() > 1);
+        let shared_source = track.source_id().filter(|source| {
+            snapshot.source_contributors(*source).count() > 1
+                || snapshot
+                    .native_source(*source)
+                    .and_then(|definition| definition.receiver())
+                    .and_then(|receiver| snapshot.track(receiver))
+                    .is_some_and(hex_project::Track::retained_source_path)
+        });
         let muted = if track.receives_source_audio()
             && let Some(source) = shared_source
         {
@@ -788,7 +784,10 @@ fn compile_project_inner<'a>(
             )?
             .with_track_id(track.id())
             .with_source_audio_receiver(track.receives_source_audio())
-            .with_source_mix_scope(local_content_enabled, local_content_enabled)
+            .with_source_mix_scope(
+                local_content_enabled && !track.retained_source_path(),
+                local_content_enabled,
+            )
             .with_source_binding(
                 track.source_id(),
                 track

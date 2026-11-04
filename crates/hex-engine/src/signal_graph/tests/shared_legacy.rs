@@ -172,12 +172,49 @@ fn sum_frames(frames: &[Frame]) -> Frame {
 fn retained_receiver_session_mixes_printed_audio_and_peer_without_its_own_midi() {
     for latency in [0, 5] {
         for peer_count in [1, 2] {
-            retained_receiver_session_at_latency(latency, peer_count);
+            retained_receiver_session_at_latency(latency, peer_count, false, Selection::Normal);
         }
     }
 }
 
-fn retained_receiver_session_at_latency(latency: u32, peer_count: usize) {
+#[test]
+fn canonical_retained_receiver_prepares_and_renders_without_receiver_midi() {
+    for latency in [0, 5] {
+        for peer_count in [0, 1, 2] {
+            retained_receiver_session_at_latency(latency, peer_count, true, Selection::Normal);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Selection {
+    Normal,
+    MuteReceiver,
+    MutePeer,
+    SoloReceiver,
+    SoloPeer,
+}
+
+#[test]
+fn canonical_retained_receiver_preserves_mute_and_solo_source_routing() {
+    for latency in [0, 5] {
+        for selection in [
+            Selection::MuteReceiver,
+            Selection::MutePeer,
+            Selection::SoloReceiver,
+            Selection::SoloPeer,
+        ] {
+            retained_receiver_session_at_latency(latency, 1, true, selection);
+        }
+    }
+}
+
+fn retained_receiver_session_at_latency(
+    latency: u32,
+    peer_count: usize,
+    canonical: bool,
+    selection: Selection,
+) {
     let receiver_chain = [latency];
     let mut chains: Vec<&[u32]> = vec![&receiver_chain];
     chains.extend(std::iter::repeat_n(&[][..], peer_count));
@@ -187,11 +224,20 @@ fn retained_receiver_session_at_latency(latency: u32, peer_count: usize) {
             tempo: hex_project::Tempo::new(1_000_000_000).unwrap(),
         })
         .unwrap();
+    let mut state = LegacyInstrumentDefinition.default_state().unwrap();
+    if canonical {
+        state = state.with_output_gain_millidb(-6_000).unwrap();
+    }
+    let source_gain = if canonical {
+        state.output_gain_linear()
+    } else {
+        0.5
+    };
     let Created::NativeSource(source) = f
         .editor
         .execute(Command::CreateNativeSource {
             name: "shared".into(),
-            devices: vec![LegacyInstrumentDefinition.default_state().unwrap()],
+            devices: vec![state],
             instrument_index: 0,
         })
         .unwrap()
@@ -205,6 +251,41 @@ fn retained_receiver_session_at_latency(latency: u32, peer_count: usize) {
                 source: Some(source),
             })
             .unwrap();
+    }
+    match selection {
+        Selection::Normal => {}
+        Selection::MuteReceiver => {
+            f.editor
+                .execute(Command::Mute {
+                    track: f.tracks[0],
+                    muted: true,
+                })
+                .unwrap();
+        }
+        Selection::MutePeer => {
+            f.editor
+                .execute(Command::Mute {
+                    track: f.tracks[1],
+                    muted: true,
+                })
+                .unwrap();
+        }
+        Selection::SoloReceiver => {
+            f.editor
+                .execute(Command::ToggleSolo {
+                    track: f.tracks[0],
+                    exclusive: true,
+                })
+                .unwrap();
+        }
+        Selection::SoloPeer => {
+            f.editor
+                .execute(Command::ToggleSolo {
+                    track: f.tracks[1],
+                    exclusive: true,
+                })
+                .unwrap();
+        }
     }
     f.editor
         .execute(Command::Gain {
@@ -254,8 +335,15 @@ fn retained_receiver_session_at_latency(latency: u32, peer_count: usize) {
     let effects: [&dyn NativeDeviceDefinition; 1] = [&Definition];
     let instruments: [&dyn hex_lattice::NativeInstrumentDefinition; 1] =
         [&LegacyInstrumentDefinition];
+    let project = if canonical {
+        let mut snapshot = f.editor.project().snapshot();
+        snapshot.retained_source_paths.push(f.tracks[0].value());
+        hex_project::Project::from_snapshot(snapshot).unwrap()
+    } else {
+        f.editor.project().clone()
+    };
     let mut revision = PreparedRevision::prepare_with_registries(
-        f.editor.project(),
+        &project,
         &f.media,
         Arc::new(SineTable::new()),
         None,
@@ -263,20 +351,43 @@ fn retained_receiver_session_at_latency(latency: u32, peer_count: usize) {
         &hex_lattice::NativeInstrumentRegistry::new(&instruments).unwrap(),
     )
     .unwrap();
-    revision
-        .test_install_retained_receiver(f.editor.project(), f.tracks[0])
-        .unwrap();
+    if !canonical {
+        revision
+            .test_install_retained_receiver(&project, f.tracks[0])
+            .unwrap();
+    }
     let revision = Arc::new(revision);
     let mut expected = vec![[0.0; 2]; 500];
     let delay = latency as usize;
-    for offset in 0..8 {
-        let peer = [0.0625 * peer_count as f32, -0.125 * peer_count as f32];
-        expected[delay + offset] = peer;
-        expected[480 + delay + offset] = peer;
+    if matches!(selection, Selection::Normal | Selection::SoloPeer) {
+        for offset in 0..8 {
+            let peer = [
+                0.125 * source_gain * peer_count as f32,
+                -0.25 * source_gain * peer_count as f32,
+            ];
+            expected[delay + offset] = peer;
+            expected[480 + delay + offset] = peer;
+        }
     }
-    expected[delay][0] += 0.125;
-    expected[delay][1] -= 0.25;
-    expected[31 + delay] = [-0.0625, 0.1875];
+    if matches!(
+        selection,
+        Selection::Normal | Selection::MutePeer | Selection::SoloReceiver
+    ) {
+        expected[delay][0] += 0.125;
+        expected[delay][1] -= 0.25;
+        expected[31 + delay] = [-0.0625, 0.1875];
+    }
+    if canonical {
+        let output = render(revision.arrangement(), expected.len());
+        for (frame, (actual, expected)) in output.iter().zip(&expected).enumerate() {
+            for channel in 0..2 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 0.000_001,
+                    "renderer latency {latency}, peers {peer_count}, selection {selection:?}, frame {frame}: {actual:?} != {expected:?}"
+                );
+            }
+        }
+    }
     for block in [7, 64, 257] {
         let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         playback.apply(SessionPlaybackCommand::Play).unwrap();
@@ -294,14 +405,16 @@ fn retained_receiver_session_at_latency(latency: u32, peer_count: usize) {
         for (frame, ((main, capture), expected)) in
             output.iter().zip(&captured).zip(&expected).enumerate()
         {
-            assert_eq!(
-                main, expected,
-                "main latency {latency}, peers {peer_count}, block {block}, frame {frame}"
-            );
-            assert_eq!(
-                capture, expected,
-                "capture latency {latency}, peers {peer_count}, block {block}, frame {frame}"
-            );
+            for channel in 0..2 {
+                assert!(
+                    (main[channel] - expected[channel]).abs() < 0.000_001,
+                    "main latency {latency}, peers {peer_count}, selection {selection:?}, block {block}, frame {frame}: {main:?} != {expected:?}"
+                );
+                assert!(
+                    (capture[channel] - expected[channel]).abs() < 0.000_001,
+                    "capture latency {latency}, peers {peer_count}, selection {selection:?}, block {block}, frame {frame}: {capture:?} != {expected:?}"
+                );
+            }
         }
     }
 }

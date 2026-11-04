@@ -97,6 +97,75 @@ fn editor_with_delay() -> (Editor, hex_project::TrackId, hex_project::DeviceId) 
 }
 
 #[test]
+fn retained_receiver_reopened_from_storage_renders_peer_without_callback_allocations() {
+    let (mut editor, receiver, _) = editor_with_delay();
+    let source = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(peer) = editor
+        .execute(Command::AddMidiTrack {
+            name: "peer".into(),
+        })
+        .unwrap()
+    else {
+        panic!("peer")
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: peer,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: peer,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let mut snapshot = editor.project().snapshot();
+    snapshot.retained_source_paths.push(receiver.value());
+    let retained = Project::from_snapshot(snapshot).unwrap();
+    let bytes = hex_storage::encode(&retained).unwrap();
+    let reopened = hex_storage::decode(&bytes).unwrap();
+    assert_eq!(reopened.snapshot(), retained.snapshot());
+    let (mut control, mut callback) = channel(48_000).unwrap();
+    control.publish(graph(&reopened)).unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut output = [[0.0; 2]; 127];
+    let mut audible = false;
+    for _ in 0..12 {
+        block(&mut callback, &mut output);
+        audible |= output.iter().flatten().any(|sample| sample.abs() > 1e-6);
+    }
+    assert!(
+        audible,
+        "the peer remains audible through the retained source"
+    );
+    control.stop();
+    block(&mut callback, &mut output);
+    control.request_shutdown();
+    block(&mut callback, &mut output);
+    control.reclaim();
+}
+
+#[test]
 fn play_from_chases_vector_with_fresh_delay_without_callback_allocations() {
     let (mut editor, track, _) = editor_with_delay();
     let device = editor
