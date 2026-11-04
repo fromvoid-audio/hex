@@ -2350,6 +2350,28 @@ impl SessionPlayback {
         self.inherit_state_live(previous, None)
     }
 
+    /// Reset a prepared bounce successor at an authenticated Arrangement fence.
+    /// The audio publication owner must validate the live fence before calling;
+    /// this does not grant permission to use an unfenced live handoff.
+    pub(crate) fn try_inherit_state_fenced_restart_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if !self.live_restart
+            || self.revision.requires_control_sampler_sources()
+            || self.midi_capture_active()
+            || previous.midi_capture_active()
+            || self.linear_arrangement_export
+            || previous.linear_arrangement_export
+            || self.current_sampler_console
+            || previous.current_sampler_console
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.require_fresh_candidate()?;
+        self.inherit_state_fenced_restart(previous)
+    }
+
     /// Make a later live handoff restart at the cursor (voices and tails
     /// reset, gate-active notes chased) without first trying to carry state.
     /// In-place bounces need this: their baked PCM already contains the old
