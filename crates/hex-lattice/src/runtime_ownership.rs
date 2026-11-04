@@ -167,6 +167,18 @@ impl RuntimeOwnership {
             _ => false,
         }
     }
+    pub(super) fn can_fork_timing_without_signal_history_from(&self, old: &Self) -> bool {
+        matches!((self, old), (Self::Owned(new), Self::Owned(old))
+            if new.can_fork_timing_without_signal_history_from(old.as_ref()))
+    }
+    pub(super) fn fork_timing_without_signal_history_from(&mut self, old: &Self) -> bool {
+        match (self, old) {
+            (Self::Owned(new), Self::Owned(old)) => {
+                new.fork_timing_without_signal_history_from(old.as_ref())
+            }
+            _ => false,
+        }
+    }
     pub(super) fn foreign_configuration_matches(&self, old: &Self) -> bool {
         match (self, old) {
             (Self::Foreign(new), Self::Foreign(old)) => new.prepared == old.prepared,

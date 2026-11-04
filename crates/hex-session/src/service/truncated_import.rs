@@ -47,8 +47,8 @@ impl ImportTruncation {
 
 /// One single-file import request explicitly asking to recover readable frames.
 /// Construct it with [`TruncatedImportRecovery::new`]; only `Import`,
-/// `ImportToTrack`, `ImportToTrackWithOverwrite`, `ImportToNewTrack` and
-/// `ImportToSession` qualify.
+/// `ImportToTrack`, `ImportToTrackWithOverwrite`, `ImportToNewTrack`,
+/// `ImportToNewTrackWithGain` and `ImportToSession` qualify.
 #[derive(Debug)]
 pub struct TruncatedImportRecovery(Box<Request>);
 
@@ -76,6 +76,7 @@ fn is_single_file_import(request: &Request) -> bool {
             | Request::ImportToTrack { .. }
             | Request::ImportToTrackWithOverwrite { .. }
             | Request::ImportToNewTrack { .. }
+            | Request::ImportToNewTrackWithGain { .. }
             | Request::ImportToSession { .. }
     )
 }

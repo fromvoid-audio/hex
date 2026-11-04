@@ -17,6 +17,7 @@ pub(crate) fn isolated(
     project: &Project,
     target: &BounceTarget,
     item: &BounceTrack,
+    in_place: bool,
 ) -> Result<Project, String> {
     let mut snapshot = project.snapshot();
     let selected_track_id = item.track.value();
@@ -98,7 +99,22 @@ pub(crate) fn isolated(
                 _ => std::collections::BTreeSet::new(),
             })
             .ok_or("bounce track changed")?;
+        let has_selected_midi = item
+            .clips
+            .iter()
+            .any(|clip| selected_midi.contains(&clip.value()));
+        // For a range, earlier notes may still be sounding at its start. Keep
+        // the selected track's MIDI for causal preroll, excluding its peers.
+        let render_contributor = !selected_is_receiver
+            && selected_source_instrument_id.is_some()
+            && match target {
+                BounceTarget::Clips(_) => !in_place && has_selected_midi,
+                BounceTarget::Range(_) => !in_place && !selected_midi.is_empty(),
+                BounceTarget::Track(_) => in_place && !selected_midi.is_empty(),
+                _ => false,
+            };
         if !selected_is_receiver
+            && !render_contributor
             && (item
                 .clips
                 .iter()
@@ -113,8 +129,15 @@ pub(crate) fn isolated(
             );
         }
 
-        let retain_contributors =
-            !console_source && selected_is_receiver && selected_source_instrument_id.is_some();
+        // Clip and range bounces print only the selected track's input to
+        // the shared runtime, not the other tracks' mixed signal.
+        let retain_contributors = !console_source
+            && selected_is_receiver
+            && selected_source_instrument_id.is_some()
+            // A whole-track receiver bounce prints only its own input; linked
+            // tracks continue through the retained live source after adoption.
+            && !matches!(target, BounceTarget::Track(_))
+            && (in_place || !matches!(target, BounceTarget::Clips(_) | BounceTarget::Range(_)));
         snapshot.tracks.retain(|track| {
             track.id == selected_track_id
                 || (retain_contributors
@@ -150,6 +173,21 @@ pub(crate) fn isolated(
                 }
             }
         }
+        if render_contributor {
+            // The copied graph gets its own receiver; the canonical source and
+            // live graph retain their original receiver and state.
+            let source = snapshot
+                .native_sources
+                .iter_mut()
+                .find(|source| {
+                    source
+                        .devices
+                        .get(source.instrument_index)
+                        .is_some_and(|device| Some(device.id) == selected_source_instrument_id)
+                })
+                .ok_or("bounce source changed")?;
+            source.receiver = Some(selected_track_id);
+        }
         for (index, track) in snapshot.tracks.iter_mut().enumerate() {
             if index == track_index {
                 track.gain = 1.0;
@@ -159,7 +197,7 @@ pub(crate) fn isolated(
                 track.gain_envelope.clear();
                 track.gain_touch_spans.clear();
                 track.sends.clear();
-                if !selected_is_receiver {
+                if !selected_is_receiver && !render_contributor {
                     let audio_clips = track.audio_clips_mut().map_err(|e| e.to_string())?.clone();
                     track.instrument = None;
                     track.instrument_position = None;
@@ -211,6 +249,26 @@ pub(crate) fn isolated(
             source.receiver = None;
         }
     }
+    // The isolated copy can drop a retained receiver or strip its instrument.
+    // Keep the role only when its original receiver and source still match;
+    // rebinding a temporary contributor never transfers the retained role.
+    snapshot.retained_source_paths.retain(|id| {
+        snapshot
+            .tracks
+            .iter()
+            .find(|track| track.id == *id)
+            .is_some_and(|track| {
+                track.instrument.as_ref().is_some_and(|instrument| {
+                    snapshot.native_sources.iter().any(|source| {
+                        source.receiver == Some(*id)
+                            && source
+                                .devices
+                                .get(source.instrument_index)
+                                .is_some_and(|device| device.id == instrument.id)
+                    })
+                })
+            })
+    });
     snapshot.session = Default::default();
     snapshot.return_tracks.clear();
     snapshot.main_devices.clear();
@@ -318,7 +376,7 @@ impl Session {
                 {
                     return Err("bounce exceeds resident frame limit".into());
                 }
-                let source = isolated(self.project(), &target, item)?;
+                let source = isolated(self.project(), &target, item, in_place)?;
                 let revision = prepare(
                     self,
                     &source,

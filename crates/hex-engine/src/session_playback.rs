@@ -2073,9 +2073,9 @@ impl SessionPlayback {
     /// linear pass; a cursor before the start plays into the loop and wraps.
     /// A loop edited behind a cursor that already wrapped likewise lets
     /// playback continue linearly instead of jumping into the new region.
-    /// A wrap renders Arrangement audio at the loop start without an implicit
-    /// seam fade; authored discontinuities remain audible. Clip fades and
-    /// transport action fades retain their independent contracts.
+    /// Arrangement audio fades out immediately before a wrap, while the loop
+    /// start keeps its authored level. Clip fades and transport action fades
+    /// retain their independent contracts.
     /// This query does not change loop settings or introduce transport state.
     pub(crate) fn active_loop_region(&self) -> Option<hex_project::LoopRegion> {
         self.active_loop_region_at(self.arrangement_frame)
@@ -2238,7 +2238,9 @@ impl SessionPlayback {
 
     /// Offline bounce completion after the isolated source's final gate. Checks
     /// actual analytic releases and mutable processor state, never output silence.
-    /// The caller must exclude future source events and nonzero latency paths.
+    /// The caller must exclude future source events. This does not inspect
+    /// compensation delay buffers: after an idle observation, callers must
+    /// render at least the full output-path latency and recheck before stopping.
     pub fn arrangement_bounce_is_quiescent(&self) -> bool {
         !self.has_active_arrangement_voices()
             && self.releases.is_empty()
@@ -2346,6 +2348,28 @@ impl SessionPlayback {
         }
         self.require_fresh_candidate()?;
         self.inherit_state_live(previous, None)
+    }
+
+    /// Reset a prepared bounce successor at an authenticated Arrangement fence.
+    /// The audio publication owner must validate the live fence before calling;
+    /// this does not grant permission to use an unfenced live handoff.
+    pub(crate) fn try_inherit_state_fenced_restart_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if !self.live_restart
+            || self.revision.requires_control_sampler_sources()
+            || self.midi_capture_active()
+            || previous.midi_capture_active()
+            || self.linear_arrangement_export
+            || previous.linear_arrangement_export
+            || self.current_sampler_console
+            || previous.current_sampler_console
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        self.require_fresh_candidate()?;
+        self.inherit_state_fenced_restart(previous)
     }
 
     /// Make a later live handoff restart at the cursor (voices and tails

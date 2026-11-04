@@ -2376,20 +2376,22 @@ mod tests {
                 bounds(&mut visual, 2),
             ];
             let selected_fill = visual.rendered_background("arrangement-section-2");
+            let preview = before
+                .preview_arrangement_section_edit(&Command::DuplicateArrangementSectionAt {
+                    section: ids[0],
+                    target: ids[1],
+                    after: true,
+                })
+                .unwrap();
+            let copy_color = preview
+                .sections()
+                .iter()
+                .find(|section| section.id().value() == 0)
+                .unwrap()
+                .color();
             assert_eq!(
                 selected_fill,
-                Some(
-                    rgba(
-                        (theme::section_colors(
-                            before.arrangement_section(ids[0]).unwrap().color(),
-                            true,
-                            true,
-                        )
-                        .0 << 8)
-                            | 0x38,
-                    )
-                    .into()
-                ),
+                Some(rgba((theme::section_colors(copy_color, true, true,).0 << 8) | 0x38,).into()),
                 "the captured copy retains its gesture-owned target feedback"
             );
             visual.simulate_mouse_up(to, MouseButton::Left, copy);
