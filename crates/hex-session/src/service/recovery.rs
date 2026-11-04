@@ -750,46 +750,66 @@ pub(super) fn project_for_save(
     session: &Session,
     document_base: Option<&Path>,
 ) -> Result<hex_project::Project, String> {
-    let mut snapshot = session.project().snapshot();
-    for (metadata, asset) in session.project().assets().zip(&mut snapshot.assets) {
-        if metadata.id().value() != asset.id {
-            return Err("save source inventory differs from canonical project".into());
-        }
-        if session.native_assets.contains(metadata.id()) {
-            let source = session
-                .native_source(metadata.id())
-                .ok_or("native original source is unavailable for saving")?;
-            if source.sample_rate() != asset.source_sample_rate
-                || source
-                    .resident_frames()
-                    .and_then(|pcm| u64::try_from(pcm.len()).ok())
-                    != Some(asset.source_frames)
-            {
-                return Err("native original source differs from canonical media metadata".into());
+    SaveImage::capture(session, document_base)?.materialize()
+}
+
+/// Owned save input after control-side media custody and identity checks.
+/// It contains no Session, native resource handle, or borrowed path and can be
+/// transferred to a worker before validating/materializing the project.
+pub(super) struct SaveImage {
+    snapshot: hex_project::Snapshot,
+}
+
+impl SaveImage {
+    pub(super) fn capture(session: &Session, document_base: Option<&Path>) -> Result<Self, String> {
+        let mut snapshot = session.project().snapshot();
+        for (metadata, asset) in session.project().assets().zip(&mut snapshot.assets) {
+            if metadata.id().value() != asset.id {
+                return Err("save source inventory differs from canonical project".into());
             }
-            let facts = session
-                .native_assets
-                .original_source_facts_on_control(metadata.id())
-                .map_err(|e| SessionError::from(e).to_string())?;
-            if asset
-                .original_source
-                .is_some_and(|expected| expected != facts)
-            {
-                return Err("native original content differs from saved source identity".into());
+            if session.native_assets.contains(metadata.id()) {
+                let source = session
+                    .native_source(metadata.id())
+                    .ok_or("native original source is unavailable for saving")?;
+                if source.sample_rate() != asset.source_sample_rate
+                    || source
+                        .resident_frames()
+                        .and_then(|pcm| u64::try_from(pcm.len()).ok())
+                        != Some(asset.source_frames)
+                {
+                    return Err(
+                        "native original source differs from canonical media metadata".into(),
+                    );
+                }
+                let facts = session
+                    .native_assets
+                    .original_source_facts_on_control(metadata.id())
+                    .map_err(|e| SessionError::from(e).to_string())?;
+                if asset
+                    .original_source
+                    .is_some_and(|expected| expected != facts)
+                {
+                    return Err("native original content differs from saved source identity".into());
+                }
+                asset.original_source = Some(facts);
+            } else if asset.original_source.is_some() {
+                return Err("saved device-original media has no admitted native source".into());
             }
-            asset.original_source = Some(facts);
-        } else if asset.original_source.is_some() {
-            return Err("saved device-original media has no admitted native source".into());
+            if !asset.path.is_absolute() {
+                let base = document_base.ok_or_else(|| {
+                    "relative media path has no project directory; refusing ambiguous save"
+                        .to_owned()
+                })?;
+                asset.path = base.join(&asset.path);
+            }
         }
-        if !asset.path.is_absolute() {
-            let base = document_base.ok_or_else(|| {
-                "relative media path has no project directory; refusing ambiguous save".to_owned()
-            })?;
-            asset.path = base.join(&asset.path);
-        }
+        Ok(Self { snapshot })
     }
-    hex_project::Project::from_snapshot(snapshot)
-        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
+
+    pub(super) fn materialize(self) -> Result<hex_project::Project, String> {
+        hex_project::Project::from_snapshot(self.snapshot)
+            .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
+    }
 }
 
 fn checkpoint_path(document: Option<&DocumentHandle>, untitled: &Path) -> Result<PathBuf, String> {
@@ -803,6 +823,75 @@ fn checkpoint_path(document: Option<&DocumentHandle>, untitled: &Path) -> Result
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn captured_save_image_moves_to_worker_and_keeps_its_original_revision() {
+        let mut session = Session::new(48_000, 8, 1024).unwrap();
+        session
+            .command(Command::AddTrack {
+                name: "first".into(),
+            })
+            .unwrap();
+        let expected = project_for_save(&session, None).unwrap();
+        let image = SaveImage::capture(&session, None).unwrap();
+        session
+            .command(Command::AddTrack {
+                name: "later".into(),
+            })
+            .unwrap();
+        let materialized = std::thread::spawn(move || image.materialize())
+            .join()
+            .unwrap()
+            .unwrap();
+        assert_eq!(materialized, expected);
+        assert_eq!(
+            hex_storage::encode(&materialized).unwrap(),
+            hex_storage::encode(&expected).unwrap()
+        );
+        assert_ne!(materialized, *session.project());
+    }
+
+    #[test]
+    fn captured_save_image_rebases_relative_offline_media_without_changing_session() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "samples/source.wav".into(),
+                sample_rate: 48_000,
+                frames: 8,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture");
+        };
+        let project = editor
+            .project()
+            .clone()
+            .with_offline_assets([asset])
+            .unwrap();
+        let session = Session::from_loaded(project, 8, 1024, Vec::new()).unwrap();
+        assert!(SaveImage::capture(&session, None).is_err());
+        let base = std::env::temp_dir().join("hex-save-image-test");
+        let image = SaveImage::capture(&session, Some(&base)).unwrap();
+        let mut snapshot = session.project().snapshot();
+        snapshot.assets[0].path = base.join("samples/source.wav");
+        let expected = Project::from_snapshot(snapshot).unwrap();
+        let materialized = std::thread::spawn(move || image.materialize())
+            .join()
+            .unwrap()
+            .unwrap();
+        assert_eq!(materialized, expected);
+        assert_eq!(
+            hex_storage::encode(&materialized).unwrap(),
+            hex_storage::encode(&expected).unwrap()
+        );
+        assert_eq!(
+            session.project().asset(asset).unwrap().path(),
+            Path::new("samples/source.wav")
+        );
+        assert_eq!(session.project().offline_assets().count(), 1);
+    }
 
     fn scratch() -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(0);

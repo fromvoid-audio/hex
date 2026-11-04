@@ -160,6 +160,7 @@ pub(super) fn render_body(
         let entity = cx.new(|cx| {
             let mut graph =
                 ResponseGraph::new(cx, format!("eq-response-{}", device.value()), style);
+            graph.set_circular_nodes(true, cx);
             graph.set_editable(true, cx);
             graph.set_tab_navigation(true, cx);
             graph.set_creation_enabled(true);
@@ -1133,7 +1134,9 @@ fn handle_event(
     let (selected, bank) = (panel.selected, panel.bank);
     let group = panel.group.clone();
     if event.phase == ResponseGraphPhase::Remove {
-        if panel.creation.is_some() || current(view, device).as_ref() != Some(&panel.authored_state)
+        if view.selection_delete_blocked()
+            || panel.creation.is_some()
+            || current(view, device).as_ref() != Some(&panel.authored_state)
         {
             return;
         }
@@ -1193,24 +1196,13 @@ fn handle_event(
         ResponseGraphPhase::Select => {
             if finalize_controls(view, cx) {
                 if let Some(p) = view.device_panel.eq_panels.get_mut(&device) {
-                    p.collapse = None;
-                    if event.modifiers.shift {
-                        // Shift-press adds the node to the group and drags it.
-                        if p.group.is_empty() {
-                            p.group.extend(p.selected);
-                        }
-                        if !p.group.contains(&id) {
-                            p.group.push(id);
-                        }
-                        if p.group.len() < 2 {
-                            p.group.clear();
-                        }
-                    } else if p.group.contains(&id) {
-                        p.collapse = Some(id);
-                    } else {
-                        p.group.clear();
-                    }
-                    p.selected = Some(id);
+                    selection::select_node(
+                        &mut p.selected,
+                        &mut p.group,
+                        &mut p.collapse,
+                        id,
+                        event.modifiers.shift,
+                    );
                 }
             }
         }

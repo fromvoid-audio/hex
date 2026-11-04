@@ -28,6 +28,7 @@ pub(super) struct PendingKinds {
     clip_detail: bool,
     audio_events: bool,
     clip_loop: bool,
+    bypass: Option<hex_project::DeviceId>,
     clip_move: bool,
     section: bool,
     track_reorder: bool,
@@ -74,6 +75,14 @@ impl EditorView {
                 clip_detail: self.audio_clip_controls.matches(request),
                 audio_events: self.pending_audio_events_matches(request),
                 clip_loop: self.pending_clip_loop_matches(request),
+                bypass: match request {
+                    Request::Edit(hex_project::Command::ToggleDeviceBypass { device })
+                        if self.pending_bypass_matches(request) =>
+                    {
+                        Some(*device)
+                    }
+                    _ => None,
+                },
                 clip_move: self.pending_clip_move_matches(request),
                 section: self.pending_section_matches(request),
                 track_reorder: self.pending_track_reorder_matches(request),
@@ -140,6 +149,11 @@ impl EditorView {
         }
         if kinds.clip_loop {
             self.clip_loop_submitted();
+        }
+        if let Some(device) = kinds.bypass {
+            self.bypass_submitted(&Request::Edit(hex_project::Command::ToggleDeviceBypass {
+                device,
+            }));
         }
         if kinds.clip_move {
             self.clip_move_submitted();
@@ -231,6 +245,9 @@ impl EditorView {
         }
         if kinds.clip_loop {
             visible |= self.retire_pending_clip_loop();
+        }
+        if kinds.bypass.is_some() {
+            visible |= self.retire_unsubmitted_bypass(request);
         }
         if kinds.clip_move {
             visible |= self.retire_pending_clip_move();

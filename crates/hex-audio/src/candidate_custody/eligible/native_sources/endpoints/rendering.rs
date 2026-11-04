@@ -95,6 +95,9 @@ impl NativeEndpointBank {
     }
 }
 impl ForeignProcessors for NativeEndpointBank {
+    fn returns_post_trim(&self, _node: ForeignProcessorNode<'_>) -> bool {
+        true
+    }
     fn process_segment(
         &mut self,
         node: ForeignProcessorNode<'_>,

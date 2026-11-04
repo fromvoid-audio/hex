@@ -6,8 +6,10 @@
 //! callback as `StreamError::DeviceNotAvailable`. Hex therefore samples the
 //! default route on one dedicated control thread at a bounded cadence: each
 //! sample is one default-device lookup, one device UID read and one default
-//! config read through CPAL's safe API. Hex adds no unsafe code and no native
-//! dependency.
+//! config read through CPAL's safe API. The pinned CPAL dependency reads the
+//! macOS buffer range directly from the device, without constructing an Audio
+//! Unit for each probe; see `third_party/cpal/HEX-PATCHES.md`. Hex adds no
+//! workspace unsafe code or competing audio-device owner.
 //!
 //! A different route is published only after two consecutive equal samples,
 //! so a transient default while macOS switches devices is not followed. A

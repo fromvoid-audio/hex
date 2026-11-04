@@ -137,6 +137,9 @@ impl PreparedEq {
     }
 }
 impl PreparedNativeProcessor for PreparedEq {
+    fn supports_smoothed_bypass(&self) -> bool {
+        true
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -208,7 +211,7 @@ struct RuntimeBand {
     current: BandStages,
     target: BandStages,
     history: [[[f64; 2]; 4]; 2],
-    remaining: u8,
+    remaining: u16,
     shape: u8,
 }
 impl Default for RuntimeBand {
@@ -221,6 +224,10 @@ impl Default for RuntimeBand {
             shape: 0,
         }
     }
+}
+/// A five-millisecond transition independent of device sample rate.
+fn coefficient_smooth_frames(sample_rate: u32) -> u16 {
+    u16::try_from(sample_rate.div_ceil(200).max(1)).unwrap_or(u16::MAX)
 }
 /// Frames for a channel-mode crossfade: 256 at 48 kHz, scaled by rate.
 fn mode_fade_frames(sample_rate: u32) -> u32 {
@@ -474,12 +481,17 @@ impl EqRuntime {
                         band.history = [[[0.0; 2]; 4]; 2];
                         band.shape = node.kind as u8;
                     }
-                    band.target = target;
                     if discontinuity {
+                        band.target = target;
                         band.current = target;
                         band.remaining = 0;
-                    } else if band.current != target {
-                        band.remaining = CADENCE as u8;
+                    } else if band.target != target {
+                        band.target = target;
+                        band.remaining = if band.current == target {
+                            0
+                        } else {
+                            coefficient_smooth_frames(self.sample_rate)
+                        };
                     }
                 }
             }
@@ -508,6 +520,9 @@ impl EqRuntime {
                         current.a2 += (target.a2 - current.a2) * t;
                     }
                     band.remaining -= 1;
+                    if band.remaining == 0 {
+                        band.current = band.target;
+                    }
                 }
                 for (channel, value) in working.iter_mut().enumerate() {
                     if self.effective_banks[index] == bank(self.configuration.mode, channel) {
@@ -691,10 +706,11 @@ impl NativeProcessorRuntime for EqRuntime {
                 .position(|n| n.id == node.id && n.bank == node.bank)
             {
                 if old.configuration.nodes[prior].kind == node.kind {
-                    self.bands[index].history = old.bands[prior].history;
+                    self.bands[index] = old.bands[prior];
+                } else {
+                    self.bands[index].current = old.bands[prior].current;
+                    self.bands[index].remaining = coefficient_smooth_frames(self.sample_rate);
                 }
-                self.bands[index].current = old.bands[prior].current;
-                self.bands[index].remaining = CADENCE as u8;
             }
         }
         if old
@@ -874,4 +890,202 @@ fn design(node: Node, sample_rate: u32) -> BandStages {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod smoothing_tests {
+    use super::*;
+    use hex_lattice::EMPTY_DEVICE_RESOURCES;
+
+    fn runtime(rate: u32, gain: f32) -> Box<dyn NativeProcessorRuntime> {
+        let mut state = EqState::default();
+        let mut node = Node::new(NodeId::new(1).unwrap(), 750.0, gain, 0).unwrap();
+        node.kind = NodeKind::LowShelf;
+        state.add(node).unwrap();
+        PreparedEq::new(state, rate).unwrap().create_runtime()
+    }
+
+    fn process(runtime: &mut dyn NativeProcessorRuntime, count: usize) -> Vec<StereoFrame> {
+        let mut frames = vec![[0.25; 2]; count];
+        runtime.process_block(&mut frames, &EMPTY_DEVICE_RESOURCES);
+        frames
+    }
+
+    fn remaining(runtime: &dyn NativeProcessorRuntime) -> u32 {
+        u32::from(runtime.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].remaining)
+    }
+
+    #[test]
+    fn unchanged_target_reaches_its_sample_rate_scaled_deadline() {
+        for rate in [8_000_u32, 44_100, 48_000, 192_000] {
+            let mut old = runtime(rate, 0.0);
+            process(old.as_mut(), 17);
+            let mut changed = runtime(rate, 12.0);
+            let initial = old.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].current[0].b0;
+            let target =
+                changed.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].target[0].b0;
+            changed.copy_history_from(old.as_ref());
+            let duration = rate.div_ceil(200);
+            for elapsed in 1..=duration {
+                process(changed.as_mut(), 1);
+                assert_eq!(
+                    remaining(changed.as_ref()),
+                    duration - elapsed,
+                    "rate={rate}, elapsed={elapsed}"
+                );
+                let actual =
+                    changed.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].current[0].b0;
+                let expected =
+                    initial + (target - initial) * f64::from(elapsed) / f64::from(duration);
+                assert!(
+                    (actual - expected).abs() < 1e-12,
+                    "rate={rate}, elapsed={elapsed}: {actual} vs {expected}"
+                );
+            }
+            let band = &changed.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0];
+            assert_eq!(band.current, band.target, "rate={rate}");
+        }
+    }
+
+    #[test]
+    fn equivalent_publication_preserves_the_active_ramp_and_pcm() {
+        let mut old = runtime(48_000, 0.0);
+        process(old.as_mut(), 17);
+        let mut reference = runtime(48_000, 12.0);
+        reference.copy_history_from(old.as_ref());
+        process(reference.as_mut(), 23);
+        let mut republished: Vec<_> = [1, 17, 64]
+            .into_iter()
+            .map(|block| {
+                let mut next = runtime(48_000, 12.0);
+                next.copy_history_from(reference.as_ref());
+                (next, block)
+            })
+            .collect();
+        let expected = process(reference.as_mut(), 300);
+        for (runtime, block) in &mut republished {
+            let mut actual = vec![[0.25; 2]; 300];
+            for chunk in actual.chunks_mut(*block) {
+                runtime.process_block(chunk, &EMPTY_DEVICE_RESOURCES);
+            }
+            for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+                assert_eq!(
+                    actual, expected,
+                    "equivalent publication changed PCM at frame {index}, block {block}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn changed_target_restarts_from_the_effective_coefficients() {
+        let mut old = runtime(48_000, 0.0);
+        process(old.as_mut(), 17);
+        let mut first = runtime(48_000, 12.0);
+        first.copy_history_from(old.as_ref());
+        process(first.as_mut(), 23);
+        let effective = first.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].current;
+        let mut reversed = runtime(48_000, -12.0);
+        reversed.copy_history_from(first.as_ref());
+        assert_eq!(
+            reversed.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].current,
+            effective
+        );
+        process(reversed.as_mut(), 1);
+        assert_eq!(remaining(reversed.as_ref()), 239);
+    }
+
+    #[test]
+    fn extreme_frequency_and_q_retargets_remain_finite() {
+        fn extreme(rate: u32, frequency: f32, gain: f32) -> Box<dyn NativeProcessorRuntime> {
+            let mut state = EqState::default();
+            let mut node = Node::new(NodeId::new(1).unwrap(), frequency, gain, 0).unwrap();
+            node.q = 18.0;
+            state.add(node).unwrap();
+            PreparedEq::new(state, rate).unwrap().create_runtime()
+        }
+        for rate in [48_000, 192_000] {
+            let mut old = extreme(rate, 20.0, 24.0);
+            process(old.as_mut(), 128);
+            let mut next = extreme(rate, 20_000.0, -24.0);
+            next.copy_history_from(old.as_ref());
+            let frames = process(next.as_mut(), 4096);
+            assert!(
+                frames
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.is_finite() && sample.abs() < 32.0),
+                "rate={rate}"
+            );
+            assert!(frames.iter().flatten().any(|sample| sample.abs() > 1e-6));
+            let band = &next.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0];
+            assert!(
+                band.current
+                    .iter()
+                    .chain(&band.target)
+                    .all(|c| [c.b0, c.b1, c.b2, c.a1, c.a2].iter().all(|v| v.is_finite()))
+            );
+            assert!(
+                band.history
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .all(|sample| sample.is_finite())
+            );
+        }
+    }
+
+    #[test]
+    fn moving_automation_is_independent_of_block_partitioning() {
+        struct Clock(u64);
+        impl NativeInstrumentClock for Clock {
+            fn beat_at_offset(&self, offset: usize) -> Option<u64> {
+                self.arrangement_beat_at_offset(offset)
+            }
+            fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+                Some(self.0 + offset as u64)
+            }
+            fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+                Some((self.0 + offset as u64) << 22)
+            }
+            fn transport_is_running(&self) -> Option<bool> {
+                Some(true)
+            }
+        }
+        fn render(block: usize) -> Vec<StereoFrame> {
+            let mut state = EqState::default();
+            let node = Node::new(NodeId::new(1).unwrap(), 750.0, 0.0, 0).unwrap();
+            state.add(node).unwrap();
+            state
+                .set_lane(AutomationLane {
+                    node: node.id,
+                    parameter: NodeParameter::Gain,
+                    points: vec![
+                        AutomationPoint {
+                            beat: 0,
+                            normalized: 0.25,
+                        },
+                        AutomationPoint {
+                            beat: 1 << 32,
+                            normalized: 0.75,
+                        },
+                    ],
+                })
+                .unwrap();
+            let mut runtime = PreparedEq::new(state, 48_000).unwrap().create_runtime();
+            let mut frames = vec![[0.25; 2]; 1024];
+            for (index, chunk) in frames.chunks_mut(block).enumerate() {
+                runtime.process_block_with_clock(
+                    chunk,
+                    Some(&Clock((index * block) as u64)),
+                    &EMPTY_DEVICE_RESOURCES,
+                );
+            }
+            frames
+        }
+        let expected = render(1);
+        for block in [17, 64, 256] {
+            assert_eq!(render(block), expected, "block size {block}");
+        }
+    }
 }

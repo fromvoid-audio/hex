@@ -531,6 +531,8 @@ pub struct Track {
     pub(crate) soloed: bool,
     pub(crate) devices: Vec<Device>,
     pub(crate) instrument: Option<native_sources::SourceBinding>,
+    /// The bound receiver retains its source path after its own MIDI was printed.
+    pub(crate) retained_source_path: bool,
     /// Number of serial effects that precede the optional instrument.
     /// `None` exactly when `instrument` is absent.
     pub(crate) instrument_position: Option<usize>,
@@ -592,6 +594,10 @@ impl Track {
         self.instrument
             .as_ref()
             .map(native_sources::SourceBinding::source_id)
+    }
+    /// Whether this receiver keeps its source path independently of track MIDI.
+    pub fn retained_source_path(&self) -> bool {
+        self.retained_source_path
     }
     /// Whether this track is the selected audio receiver for its bound source.
     pub fn receives_source_audio(&self) -> bool {

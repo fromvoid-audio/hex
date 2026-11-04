@@ -137,7 +137,8 @@ impl HeldNoteInput {
             return;
         }
         let before = self.sequence.load(SeqCst);
-        let Some(after) = before.checked_add(2).filter(|_| before % 2 == 0) else {
+        // The low bit marks an in-flight publication.
+        let Some(after) = before.checked_add(2).filter(|_| before & 1 == 0) else {
             self.fail(HeldNoteFault::PublicationLimit);
             return;
         };
@@ -159,7 +160,7 @@ impl HeldNoteInput {
                 return HeldNotesRead::Cancelled;
             }
             let before = self.sequence.load(SeqCst);
-            if before % 2 != 0 {
+            if before & 1 != 0 {
                 continue;
             }
             let notes = HeldNotes {

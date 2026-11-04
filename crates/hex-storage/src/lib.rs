@@ -34,8 +34,8 @@ pub use files::{
 };
 use hex_project::Project;
 pub use replacement::{
-    RecoveryDocument, ReplaceOutcome, ReplaceWarning, load_recovery, recovery_path,
-    replace_confirmed, replace_existing,
+    PreparedReplacement, RecoveryDocument, ReplaceOutcome, ReplaceWarning, load_recovery,
+    prepare_replacement_within, recovery_path, replace_confirmed, replace_existing,
 };
 use std::{fmt, io, path::PathBuf};
 
@@ -72,10 +72,14 @@ pub const CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION: u32 = 66;
 /// such a save needs consent.
 pub const DEVICE_STATE_SCHEMA_VERSION: u32 = 67;
 
+/// Schema68 stores receiver-owned retained source paths; earlier readers refuse
+/// these projects, so overwriting an older-format file requires consent.
+pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = DEVICE_STATE_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = RETAINED_RECEIVER_SCHEMA_VERSION;
 
 /// Schema [`encode`] writes for `project`:
+/// [`RETAINED_RECEIVER_SCHEMA_VERSION`] when a retained source path is present,
 /// [`DEVICE_STATE_SCHEMA_VERSION`] when a device state is newer than schema66
 /// readers decode, [`CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION`] when a directed view names an
 /// explicit read law, [`WARP_RESAMPLER_SCHEMA_VERSION`]
@@ -83,7 +87,9 @@ pub const NEWEST_SCHEMA_VERSION: u32 = DEVICE_STATE_SCHEMA_VERSION;
 /// [`SINC_V2_SCHEMA_VERSION`] when it contains sinc v2 media, otherwise
 /// [`CURRENT_SCHEMA_VERSION`].
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::sampler_crossfade::contains_newer_states(project) {
+    if schema::retained_receiver::contains(project) {
+        RETAINED_RECEIVER_SCHEMA_VERSION
+    } else if schema::sampler_crossfade::contains_newer_states(project) {
         DEVICE_STATE_SCHEMA_VERSION
     } else if schema::content_view_resampler::contains_explicit(project) {
         CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION
@@ -257,12 +263,15 @@ impl From<serde_json::Error> for StorageError {
 /// project stays schema63, byte-compatible with older readers. Only content
 /// naming an explicit warp resampler law makes a project schema65, and only a
 /// directed view naming an explicit read law makes it schema66, and only a
-/// device state newer than schema66 readers decode makes it schema67.
+/// device state newer than schema66 readers decode makes it schema67. A retained
+/// receiver path makes it schema68; absent paths migrate as ordinary bindings.
 /// Schema59 is reserved and explicitly refused.
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if schema::sampler_crossfade::contains_newer_states(project) {
+    if schema::retained_receiver::contains(project) {
+        encode_document(&schema::retained_receiver::encode(project)?)
+    } else if schema::sampler_crossfade::contains_newer_states(project) {
         encode_document(&schema::sampler_crossfade::encode(project)?)
     } else if schema::content_view_resampler::contains_explicit(project) {
         encode_document(&schema::content_view_resampler::encode(project)?)
@@ -288,6 +297,11 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if schema::retained_receiver::contains(project) {
+        return Err(StorageError::Invalid(
+            "older schema cannot save a retained source path",
+        ));
+    }
     schema::sampler_crossfade::require_older_states(project)?;
     schema::content_view_resampler::require_implied(project)?;
     schema::warp_resampler::require_implied(project)?;
@@ -451,6 +465,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
+        RETAINED_RECEIVER_SCHEMA_VERSION => schema::retained_receiver::decode(bytes),
         DEVICE_STATE_SCHEMA_VERSION => schema::sampler_crossfade::decode(bytes),
         CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION => schema::content_view_resampler::decode(bytes),
         WARP_RESAMPLER_SCHEMA_VERSION => schema::warp_resampler::decode(bytes),

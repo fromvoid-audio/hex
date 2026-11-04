@@ -35,6 +35,12 @@ pub(super) enum ImportIntent {
         before_track: Option<TrackId>,
         start: u64,
     },
+    ToNewTrackWithGain {
+        path: PathBuf,
+        before_track: Option<TrackId>,
+        start: u64,
+        gain_bits: u32,
+    },
     ToSession {
         path: PathBuf,
         track: TrackId,
@@ -67,6 +73,17 @@ impl ImportIntent {
                 before_track: *before_track,
                 start: *start,
             },
+            Request::ImportToNewTrackWithGain {
+                path,
+                before_track,
+                start,
+                gain,
+            } => Self::ToNewTrackWithGain {
+                path: path.clone(),
+                before_track: *before_track,
+                start: *start,
+                gain_bits: gain.to_bits(),
+            },
             Request::ImportToSession { path, track, scene } => Self::ToSession {
                 path: path.clone(),
                 track: *track,
@@ -81,6 +98,7 @@ impl ImportIntent {
             Self::Import(path)
             | Self::ToTrack { path, .. }
             | Self::ToNewTrack { path, .. }
+            | Self::ToNewTrackWithGain { path, .. }
             | Self::ToSession { path, .. } => path,
         }
     }
@@ -108,6 +126,17 @@ impl ImportIntent {
                 path,
                 before_track,
                 start,
+            },
+            Self::ToNewTrackWithGain {
+                path,
+                before_track,
+                start,
+                gain_bits,
+            } => Request::ImportToNewTrackWithGain {
+                path,
+                before_track,
+                start,
+                gain: f32::from_bits(gain_bits),
             },
             Self::ToSession { path, track, scene } => {
                 Request::ImportToSession { path, track, scene }

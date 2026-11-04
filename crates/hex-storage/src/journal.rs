@@ -109,10 +109,19 @@ impl Journal {
         let result = (|| {
             if supersede {
                 let bytes = read(&self.path)?;
-                if let Some(bytes) = &bytes {
-                    let _ = decode(&self.path, bytes)?;
+                // Equal retained bytes were validated or produced by this
+                // owner. Name aliases depend on current filesystem identity,
+                // however, so only a direct name binding can reuse validation.
+                let reusable = bytes == self.bytes
+                    && bytes
+                        .as_deref()
+                        .is_none_or(|bytes| directly_bound(&self.path, bytes));
+                if !reusable {
+                    if let Some(bytes) = &bytes {
+                        let _ = decode(&self.path, bytes)?;
+                    }
+                    self.bytes = bytes;
                 }
-                self.bytes = bytes;
             }
             self.check()?;
             let mut bytes =
@@ -259,6 +268,25 @@ fn read(path: &Path) -> Result<Option<Vec<u8>>, StorageError> {
         ));
     }
     Ok(Some(crate::files::read_document(path)?))
+}
+
+// Cached bytes have already passed envelope validation. A direct byte-exact
+// name match is stable; aliases must go through decode's live same-file check.
+fn directly_bound(path: &Path, bytes: &[u8]) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(length) = bytes
+        .get(12..16)
+        .and_then(|raw| <[u8; 4]>::try_from(raw).ok())
+        .map(u32::from_le_bytes)
+    else {
+        return false;
+    };
+    let Some(end) = 24_usize.checked_add(length as usize) else {
+        return false;
+    };
+    bytes.get(24..end) == Some(name.as_bytes())
 }
 
 fn decode(path: &Path, bytes: &[u8]) -> Result<Project, StorageError> {
@@ -614,6 +642,13 @@ mod tests {
         let second = Project::new(44_100).expect("second");
         let mut older = Journal::open(path.clone()).expect("open");
         older.checkpoint_latest(&first).expect("first checkpoint");
+        let mut previous = Journal::open(path.clone()).expect("observe first generation");
+        older.checkpoint_latest(&first).expect("repeat same owner");
+        assert_eq!(load_journal(&path).expect("repeated checkpoint"), first);
+        assert!(matches!(
+            previous.clear(),
+            Err(StorageError::JournalConflict { .. })
+        ));
         let mut newer = Journal::open(path.clone()).expect("new process");
         newer.checkpoint_latest(&second).expect("latest checkpoint");
         assert_eq!(load_journal(&path).expect("latest"), second);
@@ -819,6 +854,25 @@ mod tests {
             },
         );
         panic!("child must terminate at injected boundary");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn previously_valid_alias_is_refused_if_its_original_binding_disappears() {
+        let dir = Temp::new();
+        let original = dir.0.join("original.hex-journal");
+        let alias = dir.0.join("alias.hex-journal");
+        let project = Project::new(48_000).expect("project");
+        Journal::open(original.clone())
+            .expect("open")
+            .checkpoint(&project)
+            .expect("checkpoint");
+        fs::hard_link(&original, &alias).expect("link journal under another name");
+        let mut adopted = Journal::open(alias.clone()).expect("valid same-file alias");
+        let bytes = fs::read(&alias).expect("original bytes");
+        fs::remove_file(&original).expect("remove original name");
+        assert!(adopted.checkpoint_latest(&project).is_err());
+        assert_eq!(fs::read(&alias).expect("preserved bytes"), bytes);
     }
 
     #[cfg(unix)]
