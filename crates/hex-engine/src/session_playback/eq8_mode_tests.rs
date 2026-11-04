@@ -157,6 +157,45 @@ fn combined_live_parameter_edit_and_bypass_preserves_filter_history_and_continui
             boundary <= steady * 1.5,
             "combined change step {boundary}, steady {steady}"
         );
+        let interim_state = EQ8_DEFINITION
+            .patch_parameter(
+                &eq8_state(0),
+                parameter::gain(0, 0),
+                ParameterValue::Float(-6.0),
+            )
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: interim_state,
+            })
+            .unwrap();
+        let interim_revision = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::clone(&table),
+                Some(original_revision.session()),
+            )
+            .unwrap(),
+        );
+        let mut interim = SessionPlayback::new(interim_revision).unwrap();
+        interim.try_inherit_state_from(&mut next).unwrap();
+        assert!(interim.tail_groups.iter().all(Option::is_none));
+        assert!(
+            interim
+                .return_effect_tails
+                .slots()
+                .iter()
+                .all(Option::is_none)
+        );
+        let mut during_edit = [[0.0; 2]; 64];
+        interim.render(&mut during_edit).unwrap();
+        let edit_step = (during_edit[0][0] - after[63][0]).abs();
+        assert!(
+            edit_step <= steady * 1.5,
+            "owner {owner}: bypass-ramp edit step {edit_step}, steady {steady}"
+        );
         let edited_state = EQ8_DEFINITION
             .patch_parameter(
                 &eq8_state(0),
@@ -183,7 +222,7 @@ fn combined_live_parameter_edit_and_bypass_preserves_filter_history_and_continui
             .unwrap(),
         );
         let mut reversed = SessionPlayback::new(reversed_revision).unwrap();
-        reversed.try_inherit_state_from(&mut next).unwrap();
+        reversed.try_inherit_state_from(&mut interim).unwrap();
         assert!(reversed.tail_groups.iter().all(Option::is_none));
         assert!(
             reversed
@@ -194,7 +233,7 @@ fn combined_live_parameter_edit_and_bypass_preserves_filter_history_and_continui
         );
         let mut resumed = [[0.0; 2]; 64];
         reversed.render(&mut resumed).unwrap();
-        let reversal = (resumed[0][0] - after[63][0]).abs();
+        let reversal = (resumed[0][0] - during_edit[63][0]).abs();
         assert!(
             reversal <= steady * 1.5,
             "owner {owner}: combined rapid reversal step {reversal}, steady {steady}"
