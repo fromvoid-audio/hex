@@ -1,5 +1,5 @@
 use super::*;
-use hex_project::{Editor, Tempo};
+use hex_project::{Command, Editor, Meter, Tempo};
 
 #[test]
 fn adaptive_density_presets_resolve_distinct_current_zoom_without_changing_default() {

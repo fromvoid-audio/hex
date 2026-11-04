@@ -104,8 +104,12 @@ fn console_audio_loop_launch_wrap_and_stop_have_no_callback_allocation_or_drop()
             .session_command_with_ticket(SessionPlaybackCommand::Stop)
             .unwrap();
         let measured = measure(|| {
-            callback.begin_block();
-            callback.render(&mut output).unwrap();
+            // The queued Stop fades over 128 frames, ending in the eighth
+            // 17-frame block; the ninth is silent (#4151).
+            for _ in 0..9 {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            }
         });
         assert_eq!(
             (

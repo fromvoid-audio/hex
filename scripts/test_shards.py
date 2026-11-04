@@ -1,11 +1,12 @@
 """Run a package's Rust test binaries as disjoint concurrent processes.
 
-Usage: python3 scripts/test_shards.py --shards N -- cargo test -p PACKAGE [--features F] --locked
+Usage: python3 scripts/test_shards.py --shards N [--filter NAME ...] -- cargo test -p PACKAGE [--features F] --locked
 
 Some fixtures serialize on process-wide resources (hex-desktop's native output
 lease). Separate processes each own that resource, so their serialized chains
 run concurrently. Every listed test runs exactly once: names are split
-round-robin into `--exact` sets, each binary runs with Cargo's package working
+round-robin into `--exact` sets (optionally only names containing a
+`--filter` substring, as libtest filters do), each binary runs with Cargo's package working
 directory and environment, and each shard prints its own `test result` line so
 the local runner keeps counting real passes. Doctests are not run; use only for
 packages without them or keep a separate `cargo test --doc` step.
@@ -56,6 +57,10 @@ def partition(names: list[str], shards: int) -> list[list[str]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--shards", type=int, required=True)
+    parser.add_argument("--filter", action="append", default=[],
+                        help="keep only tests whose name contains this substring (repeatable)")
+    parser.add_argument("--skip", action="append", default=[],
+                        help="drop tests whose name contains this substring (repeatable)")
     parser.add_argument("cargo", nargs=argparse.REMAINDER)
     arguments = parser.parse_args(argv)
     cargo = arguments.cargo[1:] if arguments.cargo[:1] == ["--"] else arguments.cargo
@@ -66,6 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     jobs = []
     for binary in test_binaries(cargo, env):
         names = list_tests(binary["executable"], binary["package_dir"], env)
+        if arguments.filter:
+            names = [name for name in names if any(f in name for f in arguments.filter)]
+        names = [name for name in names if not any(s in name for s in arguments.skip)]
         for index, group in enumerate(partition(names, arguments.shards)):
             jobs.append((f"{Path(binary['executable']).name} shard {index + 1}", binary, group))
 

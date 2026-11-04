@@ -368,6 +368,7 @@ fn every_page_is_validated_before_queries_and_legacy_wrapped_context_is_not_gues
         CompletedAutomationTake::open_on_control(&bad, limits())
             .err()
             .unwrap()
+            .to_string()
             .contains("discontinuous")
     );
     assert_eq!(fs::read(&bad).unwrap(), original);
@@ -379,6 +380,7 @@ fn every_page_is_validated_before_queries_and_legacy_wrapped_context_is_not_gues
         CompletedAutomationTake::open_on_control(&legacy, limits())
             .err()
             .unwrap()
+            .to_string()
             .contains("no captured loop context")
     );
     let known_linear = files.path("false-linear");
@@ -403,6 +405,7 @@ fn release_rate_overflow_and_preview_failures_preserve_original_drafts() {
         CompletedAutomationTake::open_on_control(&path, limits())
             .err()
             .unwrap()
+            .to_string()
             .contains("release clock")
     );
     let (source, target, mut stamp) = fixture();
@@ -422,6 +425,7 @@ fn release_rate_overflow_and_preview_failures_preserve_original_drafts() {
         CompletedAutomationTake::open_on_control(&path, limits())
             .err()
             .unwrap()
+            .to_string()
             .contains("sample rates differ")
     );
     let event = AppliedEvent {
@@ -444,6 +448,7 @@ fn release_rate_overflow_and_preview_failures_preserve_original_drafts() {
         CompletedAutomationTake::open_on_control(&path, limits())
             .err()
             .unwrap()
+            .to_string()
             .contains("overflow")
     );
     let (events, end, _) = history(10, 0, 40, None, &[0, 10, 30]);

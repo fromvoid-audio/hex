@@ -12,6 +12,28 @@ pub(super) fn effective_mix(
         None => track.mix_at(frame),
     }
 }
+
+/// Snapshot the committed audible fader when a current track becomes detached.
+pub(super) fn detached_mix(
+    playback: &SessionPlayback,
+    track: &crate::Track,
+    index: usize,
+    frame: u64,
+) -> crate::PreparedTrackMix {
+    let mix = effective_mix(
+        track,
+        frame,
+        playback.revision.gain_recording_track(),
+        playback.gain_recording_override,
+    );
+    let recording = playback.gain_recording_override.is_some()
+        && playback.revision.gain_recording_track() == track.canonical_track_id();
+    if !track.has_gain_automation() && !recording && playback.track_faders[index].active() {
+        mix.with_channel_gain(playback.track_faders[index].current())
+    } else {
+        mix
+    }
+}
 impl SessionPlayback {
     pub(crate) fn gain_recording_ready(&self, track: u64) -> bool {
         self.gain_recording_clock(track).is_some()
@@ -28,6 +50,9 @@ impl SessionPlayback {
             return Err(Invalid(
                 "gain recording override must be finite and within 0..2",
             ));
+        }
+        if self.gain_recording_override == Some(gain) {
+            return Ok(());
         }
         self.gain_recording_override = Some(gain);
         Ok(())

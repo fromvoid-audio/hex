@@ -16,7 +16,10 @@ impl NativeAudioSink {
         allow_playing: bool,
     ) -> Result<(), String> {
         self.poll_section_edit();
-        if self.section_edit.is_some() || self.sampler_parameter.is_some() {
+        if self.section_edit.is_some()
+            || self.offline_section_edit.is_some()
+            || self.sampler_parameter.is_some()
+        {
             return Err("another arrangement edit is pending".into());
         }
         if !self
@@ -25,6 +28,25 @@ impl NativeAudioSink {
             .is_some_and(|source| source.context() == context)
         {
             return Err("arrangement audio context changed".into());
+        }
+        if self.output.is_none() {
+            // No output means no callback can render or move the cursor, so no
+            // fence is needed: the edit is stopped at the last control-side
+            // cursor and publishes offline as a fresh stopped install.
+            self.offline_section_edit = Some(self.offline_stopped_cursor());
+            return Ok(());
+        }
+        if let Some(control) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            && (control.status.device_fault.load(Acquire)
+                || control.status.render_fault.load(Acquire))
+        {
+            // A render fault recovers on this same output with the next applied
+            // publication, so the callback may resume mid-edit; recovery is the
+            // existing restart-audio path.
+            return Err("audio unavailable; restart audio to retry the arrangement edit".into());
         }
         let submitted = self
             .resident
@@ -59,6 +81,9 @@ impl NativeAudioSink {
     pub(super) fn section_edit_ready(
         &mut self,
     ) -> Option<Result<hex_session::service::ArrangementEditPosition, String>> {
+        if let Some(position) = self.offline_section_edit {
+            return Some(Ok(position));
+        }
         let pending = self.section_edit.as_ref()?;
         let Some(control) = self
             .output
@@ -117,6 +142,7 @@ impl NativeAudioSink {
         }
     }
     pub(super) fn cancel_section_edit(&mut self) {
+        self.offline_section_edit = None;
         if self
             .section_edit
             .as_ref()
@@ -154,5 +180,22 @@ impl NativeAudioSink {
             control.release_stopped_edit_fence(pending.fence);
             self.section_edit = None;
         }
+    }
+    /// The cursor control state knows without a callback: the retained offline
+    /// publication's stopped cursor, else the last relinquished output's.
+    fn offline_stopped_cursor(&self) -> hex_session::service::ArrangementEditPosition {
+        self.resident
+            .pending_cursor()
+            .unwrap_or(hex_session::service::ArrangementEditPosition {
+                frame: self.last_stopped_frame,
+                playing: false,
+                section_loop: None,
+            })
+    }
+    /// Take an offline stopped edit for retention without an output. Its
+    /// position is already in the Playback, so it installs as a fresh stopped
+    /// runtime when an output opens; no fence or callback custody exists.
+    pub(super) fn take_offline_section_edit(&mut self) -> bool {
+        self.offline_section_edit.take().is_some()
     }
 }

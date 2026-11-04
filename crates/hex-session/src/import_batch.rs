@@ -1,6 +1,6 @@
 //! Atomic control-side prepared audio imports. No filesystem or callback work.
 use crate::{PreparedImport, ResidentAsset, Session, SessionError};
-use hex_project::{Command, Created, MAX_ASSETS, Project, TrackId};
+use hex_project::{Command, Created, ExistingAudioPlacement, MAX_ASSETS, Project, TrackId};
 use std::{mem, sync::Arc};
 pub(crate) mod console;
 pub use console::ConsoleDestination;
@@ -8,17 +8,31 @@ pub(crate) use console::{ResolvedCell, normalize as normalize_imports};
 
 /// Immutable import intent captured before decode. Ordinary and Console callers
 /// retain Off; overwrite preserves the existing destination-specific placement law.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AudioImportOptions {
     pub warp: hex_project::AudioImportWarp,
     pub overwrite: bool,
+    /// Captured linear gain for newly created Arrangement or Console tracks.
+    pub new_track_gain: Option<f32>,
 }
 impl Default for AudioImportOptions {
     fn default() -> Self {
         Self {
             warp: hex_project::AudioImportWarp::Off,
             overwrite: true,
+            new_track_gain: None,
         }
+    }
+}
+impl AudioImportOptions {
+    pub(crate) fn validate(self) -> Result<(), SessionError> {
+        if self
+            .new_track_gain
+            .is_some_and(|gain| !gain.is_finite() || !(0.0..=2.0).contains(&gain))
+        {
+            return Err(SessionError::Invalid("gain must be finite and within 0..2"));
+        }
+        Ok(())
     }
 }
 
@@ -117,6 +131,7 @@ impl Session {
             &mut dyn FnMut() -> Result<(), SessionError>,
         ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        options.validate()?;
         admit()?;
         if self.project() != expected_project {
             return Err(SessionError::Invalid(
@@ -168,9 +183,15 @@ impl Session {
             .and_then(|member| member.path.file_stem())
             .map(|name| name.to_string_lossy())
             .unwrap_or_else(|| "imported audio".into());
-        let (mut commands, console_cell) =
-            console::prefix(self.project(), destination, count, &track_name)?;
-        let mut residents: Vec<ResidentAsset> = Vec::new();
+        let (mut commands, console_cell) = console::prefix(
+            self.project(),
+            destination,
+            count,
+            &track_name,
+            options.new_track_gain,
+        )?;
+        // One slot per member; `None` marks a member that reuses a resident asset.
+        let mut residents: Vec<Option<ResidentAsset>> = Vec::new();
         commands
             .try_reserve_exact(count)
             .map_err(|_| SessionError::Allocation)?;
@@ -196,12 +217,48 @@ impl Session {
             }
             let frames = u64::try_from(member.waveform.source_frames)
                 .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
+            if let Some(asset) = self.reusable_import_asset(&member) {
+                // An unchanged resident file adds no asset, PCM or waveform.
+                let placement = match destination {
+                    AudioBatchDestination::Console(_) => {
+                        let cell = console_cell
+                            .ok_or(SessionError::Invalid("console import target missing"))?;
+                        ExistingAudioPlacement::Session {
+                            track: cell.track,
+                            scene: cell.scene,
+                            name: crate::imported_clip_name(&member.path),
+                            source_start: 0,
+                            source_end: frames,
+                        }
+                    }
+                    AudioBatchDestination::Track { track, .. } => ExistingAudioPlacement::Clip {
+                        track,
+                        start: cursor,
+                        overwrite: options.overwrite,
+                    },
+                    AudioBatchDestination::NewTracks { before_track, .. } => {
+                        ExistingAudioPlacement::NewTrack {
+                            name: "imported audio".into(),
+                            before_track,
+                            start: cursor,
+                        }
+                    }
+                };
+                commands.push(Command::ImportExistingAudio { asset, placement });
+                if matches!(destination, AudioBatchDestination::Track { .. }) {
+                    cursor = cursor
+                        .checked_add(frames)
+                        .ok_or(SessionError::Invalid("timeline end overflow"))?;
+                }
+                residents.push(None);
+                continue;
+            }
             total_frames = total_frames
                 .checked_add(
                     member.additional_pcm_frames(
                         self.media
                             .values()
-                            .chain(residents.iter())
+                            .chain(residents.iter().flatten())
                             .flat_map(|m| [&m.source_audio, &m.audio]),
                     )?,
                 )
@@ -234,11 +291,7 @@ impl Session {
                     Command::ImportPreparedSessionAudioClip {
                         track: cell.track,
                         scene: cell.scene,
-                        name: member
-                            .path
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "imported audio".into()),
+                        name: crate::imported_clip_name(&member.path),
                         path: member.path,
                         source_sample_rate: member.source_sample_rate,
                         source_frames: member.source_frames,
@@ -286,12 +339,13 @@ impl Session {
             if matches!(destination, AudioBatchDestination::Track { .. }) {
                 cursor = end;
             }
-            residents.push(ResidentAsset {
+            residents.push(Some(ResidentAsset {
                 source_audio: member.source_audio,
                 audio: member.audio,
                 waveform: Arc::new(member.waveform),
                 frames,
-            });
+                file_identity: member.file_identity,
+            }));
         }
         let mut candidate_media = self.media_bank();
         // Peak summaries retain their exact PCM owner. Keep all preparation
@@ -305,15 +359,16 @@ impl Session {
         let legacy = self
             .media
             .values()
-            .chain(residents.iter())
+            .chain(residents.iter().flatten())
             .flat_map(|resident| [&resident.source_audio, &resident.audio])
             .collect::<Vec<_>>();
         let limits = self.native_reservation;
         let max_frames = self.max_resident_frames;
         let shutdown = &self.shutdown;
-        let (_, (created, revision)) = self.editor.execute_audio_imports_with_warp_prepared(
+        let (_, (created, revision)) = self.editor.execute_audio_imports_with_track_gain_prepared(
             commands,
             options.warp,
+            options.new_track_gain,
             |candidate, results| {
                 let created =
                     console::normalize(candidate, results, console_cell, residents.len())?;
@@ -322,6 +377,15 @@ impl Session {
                         return Err(SessionError::Invalid(
                             "audio batch did not create its asset",
                         ));
+                    };
+                    let Some(resident) = resident else {
+                        // A reused member must land on media that is already resident.
+                        if !candidate_media.contains_key(asset) {
+                            return Err(SessionError::Invalid(
+                                "reused audio import lost its resident media",
+                            ));
+                        }
+                        continue;
                     };
                     if candidate_media
                         .insert(*asset, resident.audio.clone())
@@ -356,7 +420,7 @@ impl Session {
         // the rejected path drops the private map and its unpublished PCM owners.
         *self.audio_clip_waveforms.get_mut() = candidate_waveforms.into_inner();
         for (result, resident) in created.iter().zip(residents) {
-            if let Created::Imported { asset, .. } = result {
+            if let (Created::Imported { asset, .. }, Some(resident)) = (result, resident) {
                 self.media.insert(*asset, resident);
             }
         }

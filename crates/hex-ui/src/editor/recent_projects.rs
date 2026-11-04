@@ -75,7 +75,7 @@ impl EditorView {
                 self.error = Some(
                     format!(
                         "could not load recent projects · {}",
-                        error.to_string().to_lowercase()
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                     )
                     .into(),
                 );
@@ -86,7 +86,12 @@ impl EditorView {
                     for path in self.recent_projects.projects.paths().iter().rev() {
                         if let Err(error) = merged.record_opened(path.clone()) {
                             self.recent_projects.writable = false;
-                            self.error = Some(error.to_string().to_lowercase().into());
+                            self.error = Some(
+                                hex_session::service::text::lowercase_outside_verbatim(
+                                    &error.to_string(),
+                                )
+                                .into(),
+                            );
                             break;
                         }
                     }
@@ -110,7 +115,7 @@ impl EditorView {
                 self.error = Some(
                     format!(
                         "could not add recent project · {}",
-                        error.to_string().to_lowercase()
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                     )
                     .into(),
                 );
@@ -174,7 +179,7 @@ impl EditorView {
             self.error = Some(
                 format!(
                     "could not save recent projects · {}",
-                    error.to_string().to_lowercase()
+                    hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                 )
                 .into(),
             );

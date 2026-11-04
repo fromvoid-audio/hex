@@ -17,7 +17,10 @@ fn reservation() -> crate::ResidentNativeReservation {
     }
 }
 fn receive(service: &Service) -> Event {
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap()
 }
 fn insertion(state: &ViewState) -> PluginEffectInsertion {
     PluginEffectInsertion {

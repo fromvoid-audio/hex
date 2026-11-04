@@ -189,6 +189,7 @@ fn retired_numeric_emitter_cannot_address_a_replacement_binding(cx: &mut TestApp
         cx.emit(NumericControlEvent {
             phase: NumericEventPhase::Begin,
             value: 0.0,
+            gesture: None,
         })
     });
     let before = editor.read_with(cx, |view, _| view.device_gesture.snapshot().unwrap());
@@ -199,7 +200,11 @@ fn retired_numeric_emitter_cannot_address_a_replacement_binding(cx: &mut TestApp
         NumericEventPhase::Cancel,
     ] {
         old_entity.update(cx, |_, cx| {
-            cx.emit(NumericControlEvent { phase, value: 0.25 })
+            cx.emit(NumericControlEvent {
+                phase,
+                value: 0.25,
+                gesture: None,
+            })
         });
         editor.read_with(cx, |view, _| {
             assert_eq!(view.device_gesture.snapshot(), Some(before));

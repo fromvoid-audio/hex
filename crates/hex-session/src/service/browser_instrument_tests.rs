@@ -2,16 +2,12 @@
 use super::*;
 use crate::device_gesture::{GestureKey, GestureRequest, GestureTarget};
 use hex_lattice_contract::{DeviceTypeId, ParameterValue};
-use std::time::{Duration, Instant};
 
 fn event(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match service.try_event() {
-            Ok(event) => return event,
-            Err(TryRecvError::Empty) if Instant::now() < deadline => thread::yield_now(),
-            Err(error) => panic!("browser instrument worker: {error}"),
-        }
+    // Blocks on the event channel; bounded only against hangs.
+    match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+        Ok(event) => event,
+        Err(error) => panic!("event: worker event absent: {error}"),
     }
 }
 
@@ -21,6 +17,7 @@ fn request(revision: u64, kind: &'static str) -> Request {
         revision,
         class: hex_engine::NativeDeviceClass::Instrument,
         type_id: DeviceTypeId::from_static(kind),
+        new_track_gain: None,
     }
 }
 
@@ -109,6 +106,7 @@ fn browser_enter_worker_refuses_unknown_wrong_class_and_stale_without_mutation()
                 revision,
                 class,
                 type_id: DeviceTypeId::from_static(kind),
+                new_track_gain: None,
             })
             .unwrap();
         let refused = event(&service);
@@ -208,6 +206,7 @@ fn existing_track_drops_rename_automatic_names_with_instruments_only() {
             class,
             DeviceTypeId::from_static(kind),
             ArrangementDeviceDestination::ExistingTrack { track, instrument },
+            Some(0.25),
         )
         .unwrap();
         if class == Effect {
@@ -215,6 +214,7 @@ fn existing_track_drops_rename_automatic_names_with_instruments_only() {
         }
         editor.execute(command).unwrap();
         let track = editor.project().track(track).unwrap();
+        assert_eq!(track.gain(), 1.0);
         (track.name().to_owned(), track.name_is_automatic())
     };
     let Ok(hex_project::Created::Track(default)) =
@@ -243,4 +243,55 @@ fn existing_track_drops_rename_automatic_names_with_instruments_only() {
         drop(&mut editor, custom, Instrument, "hex.instrument.sampler"),
         ("track 2".into(), false)
     );
+}
+
+#[test]
+fn device_track_requests_apply_captured_gain_atomically() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    let initial = event(&service).state;
+    for is_drop in [false, true] {
+        let revision = if is_drop {
+            service.submit(Request::Undo).unwrap();
+            event(&service).state.revision
+        } else {
+            initial.revision
+        };
+        let make_request = |gain| {
+            if is_drop {
+                Request::DropBrowserDeviceOnArrangement {
+                    project_generation: 0,
+                    revision,
+                    class: hex_engine::NativeDeviceClass::Effect,
+                    type_id: DeviceTypeId::from_static("hex.utility"),
+                    destination: ArrangementDeviceDestination::NewTrack { before_track: None },
+                    new_track_gain: Some(gain),
+                }
+            } else {
+                Request::InsertBrowserInstrumentTrack {
+                    project_generation: 0,
+                    revision,
+                    class: hex_engine::NativeDeviceClass::Instrument,
+                    type_id: DeviceTypeId::from_static("hex.instrument.sine"),
+                    new_track_gain: Some(gain),
+                }
+            }
+        };
+        service.submit(make_request(f32::NAN)).unwrap();
+        let refused = event(&service);
+        assert!(refused.error.is_some());
+        assert_eq!(refused.state.project.tracks(), initial.project.tracks());
+        assert_eq!(refused.state.revision, revision);
+        service.submit(make_request(0.25)).unwrap();
+        let inserted = event(&service);
+        assert!(inserted.error.is_none(), "{:?}", inserted.error);
+        assert_eq!(inserted.state.project.tracks()[0].gain(), 0.25);
+        let after = Arc::clone(&inserted.state.project);
+        service.submit(Request::Undo).unwrap();
+        assert_eq!(
+            event(&service).state.project.tracks(),
+            initial.project.tracks()
+        );
+        service.submit(Request::Redo).unwrap();
+        assert_eq!(event(&service).state.project, after);
+    }
 }

@@ -513,6 +513,7 @@ impl EditorView {
         start_playing: bool,
         section: Option<hex_session::arrangement_seek::SectionLaunch>,
     ) {
+        self.wake_poll();
         if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error = Some(
                 if section.is_some() {
@@ -711,9 +712,11 @@ impl EditorView {
             }
             Err(error) => {
                 self.error = Some(
-                    format!("could not prepare arrangement seek: {error:?}")
-                        .to_lowercase()
-                        .into(),
+                    format!(
+                        "could not prepare arrangement seek · {}",
+                        super::user_errors::seek_submit(&error)
+                    )
+                    .into(),
                 );
             }
         }
@@ -770,8 +773,8 @@ impl EditorView {
             Err(hex_session::service::SubmitError::Closed(_)) => {
                 self.error = Some("arrangement seek worker is unavailable".into());
             }
-            Err(hex_session::service::SubmitError::Busy(_)) => {
-                self.error = Some("arrangement seek worker is busy".into());
+            Err(hex_session::service::SubmitError::Busy(_, reason)) => {
+                self.error = Some(super::user_errors::busy(reason).into());
             }
         }
     }
@@ -1021,9 +1024,12 @@ impl EditorView {
             Err(error) => {
                 self.prepared_seek = None;
                 self.error = Some(
-                    format!("arrangement seek failed: {error:?}")
-                        .to_lowercase()
-                        .into(),
+                    format!(
+                        "arrangement seek failed · {}",
+                        super::user_errors::seek_preparation(&error)
+                    )
+                    .to_lowercase()
+                    .into(),
                 );
                 changed = true;
             }

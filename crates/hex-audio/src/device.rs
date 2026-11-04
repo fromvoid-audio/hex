@@ -6,6 +6,7 @@
 //! preserves finite range, integer output uses the native conversion law, and extra channels
 //! receive silence. Stream setup, reopen and final teardown stay on the lifecycle/control lane,
 //! not the callback.
+use crate::open_outcome::{BACKEND_CONVERTS_OUTPUT_RATE, OutputOpenError, negotiate_stream_rate};
 use crate::spectrum_worker::{
     SpectrumReader, SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker,
 };
@@ -62,6 +63,16 @@ pub(crate) enum PreparedOutputKind {
     WorkerReliable(WorkerOutputProfile),
 }
 impl PreparedOutputKind {
+    /// Whether the backend may convert this output's rate. A plugin bridge
+    /// fixes its physical quantum in device frames, which conversion breaks.
+    fn converts_rate(self) -> bool {
+        BACKEND_CONVERTS_OUTPUT_RATE
+            && !matches!(
+                self,
+                Self::Worker(WorkerOutputProfile::PluginBridge)
+                    | Self::WorkerReliable(WorkerOutputProfile::PluginBridge)
+            )
+    }
     fn physical_callback_request(
         self,
         supported: cpal::SupportedBufferSize,
@@ -86,6 +97,9 @@ pub struct WorkerPreparedOutput {
     pub sample_rate: u32,
     pub label: String,
     pub spectrum_error: Option<String>,
+    /// Default route this output opened on, when the backend reported it.
+    /// Compare with [`crate::OutputRouteWatch`] to follow route changes.
+    pub route: Option<crate::OutputRoute>,
 }
 impl WorkerPreparedOutput {
     /// Blocking device setup, intended only for the existing lifecycle worker.
@@ -134,6 +148,7 @@ pub(crate) struct Opened {
     label: String,
     spectrum: Option<SpectrumReader>,
     spectrum_error: Option<String>,
+    route: Option<crate::OutputRoute>,
 }
 impl Opened {
     pub(crate) fn into_legacy(self) -> Result<PreparedOutput, String> {
@@ -157,6 +172,7 @@ impl Opened {
             sample_rate: self.sample_rate,
             label: self.label,
             spectrum_error: self.spectrum_error,
+            route: self.route,
         })
     }
 }
@@ -164,7 +180,7 @@ pub(crate) fn open_prepared(
     expected_sample_rate: Option<u32>,
     lease: lifecycle::Lease,
     kind: PreparedOutputKind,
-) -> Result<Opened, String> {
+) -> Result<Opened, OutputOpenError> {
     let worker = matches!(
         kind,
         PreparedOutputKind::Worker(_) | PreparedOutputKind::WorkerReliable(_)
@@ -173,8 +189,13 @@ pub(crate) fn open_prepared(
         .default_output_device()
         .ok_or("no default audio output device")?;
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
+    let route = crate::output_route::route_of(&device);
     let mut config = supported.config();
-    validate_expected_rate(expected_sample_rate, config.sample_rate)?;
+    let device_rate = config.sample_rate;
+    // A converting backend runs the stream at the project rate; the device's
+    // nominal rate is left as the user set it (see `open_outcome`).
+    config.sample_rate =
+        negotiate_stream_rate(expected_sample_rate, device_rate, kind.converts_rate())?;
     if config.channels == 0 {
         return Err("output device has no channels".into());
     }
@@ -183,7 +204,7 @@ pub(crate) fn open_prepared(
         sample_format,
         cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16
     ) {
-        return Err(format!("unsupported output format: {sample_format:?}"));
+        return Err(format!("unsupported output format: {sample_format:?}").into());
     }
 
     // CPAL's CoreAudio fixed request changes a device-wide property. Make it
@@ -235,7 +256,7 @@ pub(crate) fn open_prepared(
                 lease,
                 spectrum_reaper,
             ));
-            return Err(error.to_string());
+            return Err(error.to_string().into());
         }
     };
     let action_outcomes = if matches!(kind, PreparedOutputKind::WorkerReliable(_)) {
@@ -246,7 +267,7 @@ pub(crate) fn open_prepared(
                     lease,
                     spectrum_reaper,
                 ));
-                return Err(error.to_owned());
+                return Err(error.to_owned().into());
             }
         }
     } else {
@@ -258,7 +279,7 @@ pub(crate) fn open_prepared(
                 lease,
                 spectrum_reaper,
             ));
-            return Err(error.to_string());
+            return Err(error.to_string().into());
         }
     }
     let root = control.native_candidate_root();
@@ -307,10 +328,17 @@ pub(crate) fn open_prepared(
     .map_err(|error| error.to_string())?;
     stream_owner.set_stream(stream);
     stream_owner.play()?;
-    let label = format!(
-        "coreaudio · {} hz · {} channels",
-        config.sample_rate, config.channels
-    );
+    let label = if config.sample_rate == device_rate {
+        format!(
+            "coreaudio · {} hz · {} channels",
+            config.sample_rate, config.channels
+        )
+    } else {
+        format!(
+            "coreaudio · {} hz converted to device {} hz · {} channels",
+            config.sample_rate, device_rate, config.channels
+        )
+    };
     Ok(Opened {
         stream: stream_owner,
         legacy: legacy_control,
@@ -321,6 +349,7 @@ pub(crate) fn open_prepared(
         label,
         spectrum,
         spectrum_error,
+        route,
     })
 }
 
@@ -338,17 +367,6 @@ fn bridge_callback_request(supported: cpal::SupportedBufferSize) -> Result<u16, 
         return Err("output device cannot provide a supported plugin callback size".into());
     }
     u16::try_from(frames).map_err(|_| "plugin callback size exceeds its supported range".into())
-}
-
-fn validate_expected_rate(expected: Option<u32>, actual: u32) -> Result<(), String> {
-    if let Some(expected) = expected {
-        if expected != actual {
-            return Err(format!(
-                "default output rate is {actual} hz; project requires {expected} hz"
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn build<T: SizedSample + FromSample<f32>>(
@@ -427,6 +445,9 @@ where
                 status.peak_left.store(peaks[0].to_bits(), Relaxed);
                 status.peak_right.store(peaks[1].to_bits(), Relaxed);
                 let elapsed = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+                status
+                    .cpu_meter
+                    .record(elapsed, data.len() / channels, rate);
                 status.callback_max_ns.fetch_max(elapsed, Relaxed);
                 let deadline = (data.len() / channels) as u64 * 1_000_000_000 / u64::from(rate);
                 if elapsed > deadline {
@@ -656,6 +677,7 @@ pub(crate) fn headless_worker_output_with_outcomes(
             sample_rate: rate,
             label: "headless constructor fixture".into(),
             spectrum_error: None,
+            route: None,
         },
         crate::worker_fixture::HeadlessBackend::new(data, errors),
     ))
@@ -663,7 +685,7 @@ pub(crate) fn headless_worker_output_with_outcomes(
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_host_chunk, finish_host_chunk, mono_mean, validate_expected_rate};
+    use super::{copy_host_chunk, finish_host_chunk, mono_mean};
     use crate::gain_recording::{AbortReason, Receipt, Target};
     use crate::prepared;
     use cpal::{FromSample, SizedSample};
@@ -673,13 +695,6 @@ mod tests {
         sync::{Arc, atomic::Ordering::Acquire},
         time::Instant,
     };
-
-    #[test]
-    fn recovery_rate_mismatch_is_rejected_before_stream_construction() {
-        assert!(validate_expected_rate(Some(48_000), 44_100).is_err());
-        assert!(validate_expected_rate(Some(48_000), 48_000).is_ok());
-        assert!(validate_expected_rate(None, 44_100).is_ok());
-    }
 
     #[test]
     fn finite_mono_extrema_have_representable_symmetric_means() {

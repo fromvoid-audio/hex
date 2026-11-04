@@ -33,6 +33,8 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
         focus_marker: text,
         dial_rail: color(PaletteRole::Border),
         hover: color(PaletteRole::Hover),
+        selection: color(PaletteRole::Secondary),
+        invalid: color(PaletteRole::Primary),
         font_size: 9.0,
         text_case: hex_widgets::TextCase::Lowercase,
     };
@@ -62,6 +64,12 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
         .map(|opacity| super::mix(style.rail, style.accent, opacity))
         .find(|fill| super::contrast_ratio(*fill, style.text) >= 4.5)
         .unwrap_or(style.rail);
+    // Text selection sits behind field text on `raised`; keep that text readable.
+    style.selection = [0.4, 0.3, 0.2, 0.1]
+        .into_iter()
+        .map(|opacity| super::mix(style.raised, style.accent, opacity))
+        .find(|fill| super::contrast_ratio(*fill, style.text) >= 4.5)
+        .unwrap_or(style.raised);
     style
 }
 
@@ -131,6 +139,9 @@ mod tests {
             assert_eq!(control.hover, color(PaletteRole::Hover));
             assert_eq!(control.focus_marker, palette.text.packed());
             assert_eq!(control.accent, palette.secondary.packed());
+            assert_eq!(control.invalid, palette.primary.packed());
+            assert_ne!(control.selection, control.raised);
+            assert!(super::super::contrast_ratio(control.selection, control.text) >= 4.5);
             assert_eq!(oscillator_identity_color(0), Some(0xe2cf25));
             assert_eq!(oscillator_identity_color(3), Some(0xf18428));
             assert_eq!(oscillator_identity_color(4), None);

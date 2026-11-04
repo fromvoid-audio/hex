@@ -106,13 +106,13 @@ fn audio_loop_change_with_limiter_preserves_samples_and_clock() {
             super::handoff::COMPENSATED_TIMING_CHANGED
         ))
     );
-    // Live: paused, the tempo edit applies at the kept frame; playing, audio
-    // restarts as Play-from at the same beat under the new map.
-    let paused_frame = paused.arrangement_frame();
+    // Live: paused or playing, the cursor keeps its beat under the new map
+    // (Pulse #4118); playing, audio restarts as Play-from at that beat.
+    assert_eq!(paused.arrangement_frame(), 600);
     let mut tempo_live = SessionPlayback::new(prepare(&tempo_changed)).unwrap();
     tempo_live.try_inherit_state_live_from(&mut paused).unwrap();
     assert!(!tempo_live.playing());
-    assert_eq!(tempo_live.arrangement_frame(), paused_frame);
+    assert_eq!(tempo_live.arrangement_frame(), 800);
     let mut running = SessionPlayback::new(prepare(&linear)).unwrap();
     running.apply(SessionPlaybackCommand::Play).unwrap();
     running.render(&mut [[0.0; 2]; 600]).unwrap();
@@ -508,6 +508,7 @@ fn shared_source_transport_loop_admits_one_aggregate_voice_and_release_envelope(
                 factory.max_release_tail_frames(),
                 factory.max_events_per_block(),
                 factory.max_active_occurrences(),
+                false,
             ),
             Ok(44),
             "each contributor stays below the 64 voice limit"
@@ -1018,12 +1019,42 @@ fn mutable_transport_admission_respects_lower_device_event_and_voice_limits() {
         .expect("fixture transport loop");
 
     assert_eq!(
-        super::transport_loop_admission::admit_track(track, region, 16, 1, 64),
+        super::transport_loop_admission::admit_track(track, region, 16, 1, 64, false),
         Err(SessionPlaybackError::MutableInstrumentLoopDensity)
     );
     assert_eq!(
-        super::transport_loop_admission::admit_track(track, region, 16, 256, 1),
+        super::transport_loop_admission::admit_track(track, region, 16, 256, 1, false),
         Err(SessionPlaybackError::MutableInstrumentLoopDensity)
+    );
+    assert_eq!(
+        super::transport_loop_admission::admit_track(track, region, 16, 256, 1, true),
+        Err(SessionPlaybackError::MutableInstrumentLoopDensity),
+        "two held voices exceed one stealing voice too"
+    );
+}
+
+#[test]
+fn stealing_transport_loop_admission_bounds_held_voices_not_seam_releases() {
+    // The single chased loop note releases for longer than its silent gap,
+    // so each wrap's fresh chase overlaps the previous release.
+    let revision = prepare_mutable(&transport_loop_project(false));
+    let track = &revision.arrangement().tracks()[0];
+    let region = revision
+        .arrangement()
+        .loop_region()
+        .expect("fixture transport loop");
+    let admit = |voices, steals| {
+        super::transport_loop_admission::admit_track(track, region, 30_000, 256, voices, steals)
+    };
+    assert_eq!(admit(64, false), Ok(2), "releases cross the seam");
+    assert_eq!(
+        admit(1, false),
+        Err(SessionPlaybackError::MutableInstrumentLoopDensity)
+    );
+    assert_eq!(
+        admit(1, true),
+        Ok(2),
+        "only one voice is ever held; the envelope keeps the release"
     );
 }
 
@@ -1469,21 +1500,40 @@ fn mutable_transport_wrap_pass_and_live_gate_survive_revision_handoff() {
     let changed_tempo = legacy_project_from_snapshot(changed_tempo).expect("valid tempo edit");
     let mut tempo_candidate = SessionPlayback::new(prepare_mutable(&changed_tempo))
         .expect("tempo-edited loop density admitted");
-    assert_eq!(
-        tempo_candidate.try_inherit_state_from(&mut tempo_active),
-        Err(SessionPlaybackError::MutableInstrumentActive),
-        "tempo edit must refuse while a chased loop gate is active"
+    // Pulse #4117: the tempo edit no longer refuses. The chased loop gate is
+    // released at the cut, keeping the same occurrence, and the remapped
+    // pre-cut onset is suppressed rather than chased again.
+    let chased = tempo_active.mutable_instruments[0]
+        .as_ref()
+        .expect("mutable runtime")
+        .proofs()
+        .find(|proof| proof.signature.key().loop_pass == 1 && !proof.note_off_sent)
+        .expect("chased loop gate")
+        .id;
+    tempo_candidate
+        .try_inherit_state_from(&mut tempo_active)
+        .expect("tempo edit keeps the chased loop gate's beat");
+    let proofs = |playback: &SessionPlayback| {
+        playback.mutable_instruments[0]
+            .as_ref()
+            .expect("carried mutable runtime")
+            .proofs()
+            .collect::<Vec<_>>()
+    };
+    let cut = tempo_candidate.performance_frame();
+    assert!(
+        proofs(&tempo_candidate)
+            .iter()
+            .any(|proof| proof.id == chased && proof.gate_end_frame == cut)
     );
-    assert_eq!(tempo_active.arrangement_loop_pass, 1);
-    let mut after_refusal = [[0.0; 2]; 128];
-    let mut uninterrupted = [[0.0; 2]; 128];
-    tempo_active
-        .render(&mut after_refusal)
-        .expect("old loop continues after tempo refusal");
-    tempo_reference
-        .render(&mut uninterrupted)
-        .expect("uninterrupted loop reference");
-    assert_eq!(after_refusal, uninterrupted);
+    tempo_candidate
+        .render(&mut [[0.0; 2]; 128])
+        .expect("render after the tempo edit");
+    assert!(
+        proofs(&tempo_candidate)
+            .iter()
+            .all(|proof| proof.id == chased && proof.note_off_sent)
+    );
     let mut successor = SessionPlayback::new(prepare_mutable(&project)).expect("same loop");
     successor
         .try_inherit_state_from(&mut active)

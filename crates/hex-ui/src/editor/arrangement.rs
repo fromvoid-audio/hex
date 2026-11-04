@@ -131,6 +131,7 @@ impl EditorView {
             return self.arrangement_surface(upper, returns, main, cx);
         };
         self.sync_track_layout(state.project.tracks());
+        let clip_move_guide = self.displayed_clip_move_guide_frame();
         let ruler_width = (f32::from(window.bounds().size.width)
             - self.browser_content_width(window)
             - self.track_header_width())
@@ -169,7 +170,7 @@ impl EditorView {
                 .flex_col()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
                 .children([overview])
-                .child(self.ruler(&state, ruler_width, cx))
+                .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
                 .child(super::loop_rail::view(
                     self,
                     &state,
@@ -239,7 +240,8 @@ impl EditorView {
         let rows_viewport = viewport;
         let rows_grid = grid.clone();
         let track_scale_factor = window.scale_factor();
-        let playhead = self.cursor_position();
+        // What you hear, not the scheduled cursor ahead of it by Main latency.
+        let playhead = self.audible_cursor_position();
         let rows_entity = cx.entity();
         let rows = list(self.track_scroll.list.clone(), move |index, _, cx| {
             rows_entity
@@ -308,7 +310,7 @@ impl EditorView {
                     ),
             );
         }
-        content = content.children(self.edit_cursor_layer(viewport));
+        content = content.children(self.edit_cursor_layer(viewport, clip_move_guide, cx));
         content = content.children(self.track_reorder_line());
         let upper = div()
             .flex()
@@ -316,7 +318,7 @@ impl EditorView {
             .flex_1()
             .min_h_0()
             .children([overview])
-            .child(self.ruler(&state, ruler_width, cx))
+            .child(self.ruler(&state, ruler_width, clip_move_guide, cx))
             .child(super::loop_rail::view(self, &state, viewport, &grid, cx))
             .children([self.arrangement_body(content, cx)])
             .children(super::gain_lane::view(
@@ -500,7 +502,7 @@ impl EditorView {
                                 cx.notify();
                                 return (true, false);
                             }
-                            if view.pointer_hits_priority_clip_control(x, y) {
+                            if view.pointer_hits_priority_clip_control(x, y, event.modifiers.alt) {
                                 return (false, false);
                             }
                             if event.click_count == 2
@@ -655,9 +657,7 @@ impl EditorView {
                 .filter(|drag| self.browser_audio_drag_is_current(drag))
                 .and_then(|drag| drag.insertion_line_y.get())
                 .or_else(|| {
-                    self.active_clip_drag
-                        .as_ref()
-                        .filter(|drag| self.drag_start_is_current(drag))
+                    self.displayed_clip_drag()
                         .and_then(|drag| drag.insertion_line_y.get())
                 })
         };
@@ -674,7 +674,12 @@ impl EditorView {
                             .right_0()
                             .top(px((relative_y - 1.0).max(0.0)))
                             .h(px(2.0))
-                            .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
+                            .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                            .children(
+                                self.displayed_clip_drag()
+                                    .filter(|drag| drag.alias_copy())
+                                    .map(|_| super::tracks::alias_drag_badge()),
+                            ),
                     );
                 }
             }
@@ -903,7 +908,13 @@ impl EditorView {
             }))
     }
 
-    fn ruler(&self, state: &ViewState, ruler_width: f32, cx: &mut Context<Self>) -> Div {
+    fn ruler(
+        &self,
+        state: &ViewState,
+        ruler_width: f32,
+        clip_move_guide: Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let viewport = self.visible_viewport(state.timeline_frames);
         let labels = div()
             .absolute()
@@ -947,7 +958,6 @@ impl EditorView {
                 .into()
             })
             .children([labels])
-            .children(self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Top))
             .children([canvas(
                 |_, _, _| (),
                 move |bounds, _, window, _cx| {
@@ -1034,7 +1044,13 @@ impl EditorView {
             .top_0()
             .bottom_0()
             .left_0()
-            .right_0()]);
+            .right_0()])
+            .children(self.edit_cursor_markers(
+                viewport,
+                hex_widgets::TimeMarkerEdge::Top,
+                clip_move_guide,
+                cx,
+            ));
         super::timeline_strip::ruler_surface()
             .debug_selector(|| "arrangement-time-ruler".into())
             .flex()

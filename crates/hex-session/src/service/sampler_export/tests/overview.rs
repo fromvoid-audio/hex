@@ -13,10 +13,7 @@ fn actual_worker_old_view_survives_new_open_remains_charged_until_last_reference
         16,
         1024,
         None,
-        Arc::new(|path, prepared, start, frames| {
-            hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                .map_err(|e| e.to_string())
-        }),
+        canonical_exporter(),
         None,
         Some(reservation()),
         budget.clone(),

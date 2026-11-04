@@ -16,7 +16,6 @@ struct Write {
 pub(crate) struct Plan {
     writes: Vec<Write>,
     explicit: bool,
-    inspect: bool,
 }
 fn shared(edit: &ClipEdit) -> bool {
     matches!(
@@ -56,6 +55,8 @@ impl Plan {
         let explicit = matches!(
             command,
             Command::DuplicateAliasClips(_)
+                | Command::DuplicateAliasClipsAt { .. }
+                | Command::DuplicateAliasClipToNewTrack { .. }
                 | Command::MakeClipsUnique(_)
                 | Command::ApplyClipSettingsToAliases(_)
                 | Command::DuplicateSessionCell { alias: true, .. }
@@ -64,24 +65,28 @@ impl Plan {
             return Ok(Self {
                 writes: Vec::new(),
                 explicit,
-                inspect: explicit,
             });
         }
         let inspect = match command.clip_scope() {
-            ClipCommandScope::Unrelated => matches!(
-                command,
-                Command::RemoveTrack(_)
-                    | Command::RemoveTracks(_)
-                    | Command::ImportPreparedAudioClipWithOverwrite { .. }
-                    | Command::ImportPreparedSessionAudioClip { .. }
-                    | Command::CommitArrangementBounce { .. }
-                    | Command::RemoveScene(_)
-                    | Command::ClearSessionCell { .. }
-                    | Command::SetSessionStopCell { .. }
-                    | Command::MoveSessionCell { .. }
-                    | Command::SetProjectTempo { .. }
-                    | Command::SetTempoPoint { .. }
-            ),
+            ClipCommandScope::Unrelated => {
+                matches!(
+                    command,
+                    Command::RemoveTrack(_)
+                        | Command::RemoveTracks(_)
+                        | Command::ImportPreparedAudioClipWithOverwrite { .. }
+                        | Command::ImportPreparedSessionAudioClip { .. }
+                        | Command::CommitArrangementBounce { .. }
+                        | Command::RemoveScene(_)
+                        | Command::ClearSessionCell { .. }
+                        | Command::SetSessionStopCell { .. }
+                        | Command::MoveSessionCell { .. }
+                        | Command::SetProjectTempo { .. }
+                        | Command::SetTempoPoint { .. }
+                ) || matches!(
+                    command,
+                    Command::ImportExistingAudio { placement, .. } if placement.may_replace_clips()
+                )
+            }
             ClipCommandScope::Property { edit, .. } => {
                 shared(&edit) || matches!(edit, ClipEdit::Delete)
             }
@@ -91,7 +96,6 @@ impl Plan {
             return Ok(Self {
                 writes: Vec::new(),
                 explicit,
-                inspect: false,
             });
         }
         let mut writes = Vec::new();
@@ -161,15 +165,15 @@ impl Plan {
                 });
             }
         }
-        Ok(Self {
-            writes,
-            explicit,
-            inspect,
-        })
+        Ok(Self { writes, explicit })
     }
     pub(crate) fn finish(self, project: &mut Project) -> Result<bool, Invalid> {
         let mut validate = self.explicit || !self.writes.is_empty();
-        if !self.inspect || !project.has_clip_aliases() {
+        // Every command reconciles membership, whatever its scope (Pulse
+        // #3966): section transforms, overwriting placements and conversions
+        // also remove, replace or re-kind members. The capture-time scope only
+        // bounds which shared writes are recorded.
+        if !project.has_clip_aliases() {
             return Ok(validate);
         }
         let original_members = project.aliases.members.len();
@@ -181,11 +185,14 @@ impl Plan {
             .members
             .iter()
             .filter_map(|(clip, source)| {
-                (!allowed.contains(source)
-                    && content(project, *clip).is_some_and(|current| {
-                        project.aliases.sources.get(source) != Some(&current)
-                    }))
-                .then_some(*clip)
+                let mismatched = match content(project, *clip) {
+                    Some(current) => project.aliases.sources.get(source) != Some(&current),
+                    // A plain audio clip that kept a MIDI member's ID (MIDI to
+                    // audio conversion) has no comparable content; prune drops
+                    // members whose clip is gone.
+                    None => project.clip(*clip).is_some(),
+                };
+                (!allowed.contains(source) && mismatched).then_some(*clip)
             })
             .collect();
         if !detached.is_empty() {

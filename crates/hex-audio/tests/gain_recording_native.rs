@@ -81,6 +81,48 @@ fn callback_scope(action: impl FnOnce()) {
 }
 
 #[test]
+fn unchanged_touch_input_survives_multiple_callback_quantums() {
+    let (mut control, mut callback, target) = fixture();
+    control.gain_recording.begin(target, 0.8).unwrap();
+    let mut output = [[0.0; 2]; 16];
+    for _ in 0..4 {
+        callback_scope(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+            callback.finish_gain_recording_quantum(true);
+        });
+        assert_eq!(output, [[0.2, -0.4]; 16]);
+    }
+    assert!(matches!(
+        control.gain_recording.try_receipt(),
+        Some(Receipt::Applied { gain: 0.8, .. })
+    ));
+    assert!(control.gain_recording.try_receipt().is_none());
+    control.gain_recording.change(0.4).unwrap();
+    callback_scope(|| {
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        callback.finish_gain_recording_quantum(true);
+    });
+    assert_eq!(output, [[0.1, -0.2]; 16]);
+    assert!(matches!(
+        control.gain_recording.try_receipt(),
+        Some(Receipt::Applied { gain: 0.4, .. })
+    ));
+    control.gain_recording.release().unwrap();
+    callback_scope(|| {
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+        callback.finish_gain_recording_quantum(true);
+    });
+    assert_eq!(output, [[0.0; 2]; 16]);
+    assert!(matches!(
+        control.gain_recording.try_receipt(),
+        Some(Receipt::Finished { .. })
+    ));
+}
+
+#[test]
 fn delivered_touch_quantums_record_absolute_gain_and_release_returns_to_saved_read() {
     let (mut control, mut callback, target) = fixture();
     control.gain_recording.begin(target, 0.8).unwrap();
