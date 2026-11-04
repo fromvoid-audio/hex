@@ -87,6 +87,31 @@ fn same_target_handoff_keeps_progress_and_retarget_starts_at_current_width() {
     assert!((reset[0] - 0.4375).abs() < 1.0e-6);
 }
 
+#[test]
+fn repeated_width_retargets_remain_continuous_at_supported_rates() {
+    for rate in [48_000, 192_000] {
+        let mut current = runtime(1.0, rate);
+        let mut last = render(current.as_mut(), 1, 1)[0];
+        for width in [4.0, 0.0, 3.0, 1.0, 4.0, 0.0] {
+            let mut next = runtime(width, rate);
+            next.copy_history_from(current.as_ref());
+            for frame in render(next.as_mut(), 64, 7) {
+                for channel in 0..2 {
+                    assert!(
+                        (frame[channel] - last[channel]).abs() < 0.005,
+                        "rate={rate} width={width} last={last:?} next={frame:?}"
+                    );
+                }
+                last = frame;
+            }
+            current = next;
+        }
+        let settled = render(current.as_mut(), rate as usize / 200, 64);
+        let last = settled.last().unwrap();
+        assert!((last[0] - 0.0625).abs() < 1.0e-6 && (last[1] - 0.0625).abs() < 1.0e-6);
+    }
+}
+
 /// Opt-in timing for repeated 64-frame retargets; no device deadline claim.
 #[test]
 #[ignore = "opt-in optimized width transition timing"]
