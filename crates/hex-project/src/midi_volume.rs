@@ -310,7 +310,7 @@ impl MidiClipVolume {
             if let Some((start, end)) = playback.loop_range() {
                 let first = end.raw() - playback.source_start().raw();
                 if absolute.is_some_and(|absolute| {
-                    absolute >= first && (absolute - first) % (end.raw() - start.raw()) == 0
+                    absolute >= first && (absolute - first).is_multiple_of(end.raw() - start.raw())
                 }) {
                     return self.gain_before(end);
                 }
