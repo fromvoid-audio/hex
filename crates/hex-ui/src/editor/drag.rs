@@ -980,8 +980,22 @@ impl super::EditorView {
             } else {
                 move_to_new_track_command(drag.clip, name, before_track, position)
             };
-            self.clear_clip_drag(drag.project_generation, drag.clip);
-            self.enqueue(Request::Edit(command));
+            let Some(source) = self
+                .state
+                .as_ref()
+                .map(|state| std::sync::Arc::clone(&state.project))
+            else {
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+                return;
+            };
+            self.pending_clip_move = self
+                .active_clip_drag
+                .take()
+                .map(|drag| super::pending_clip_move::Pending::new(drag, command.clone(), source));
+            if !self.enqueue(Request::Edit(command)) {
+                self.retire_pending_clip_move();
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+            }
         }
         cx.notify();
     }
