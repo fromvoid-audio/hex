@@ -134,6 +134,9 @@ pub(crate) fn isolated(
         let retain_contributors = !console_source
             && selected_is_receiver
             && selected_source_instrument_id.is_some()
+            // A whole-track receiver bounce prints only its own input; linked
+            // tracks continue through the retained live source after adoption.
+            && !matches!(target, BounceTarget::Track(_))
             && (in_place || !matches!(target, BounceTarget::Clips(_) | BounceTarget::Range(_)));
         snapshot.tracks.retain(|track| {
             track.id == selected_track_id
