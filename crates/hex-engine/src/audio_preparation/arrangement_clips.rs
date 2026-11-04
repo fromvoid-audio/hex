@@ -320,14 +320,14 @@ impl ArrangementClips {
             }
         }
         #[cfg(test)]
-        if self.mismatch {
-            if let Some(r) = self.rows.first_mut() {
-                r.binding.handle = r
-                    .binding
-                    .handle
-                    .checked_add(1)
-                    .ok_or(AudioStorageError::Overflow)?;
-            }
+        if self.mismatch
+            && let Some(r) = self.rows.first_mut()
+        {
+            r.binding.handle = r
+                .binding
+                .handle
+                .checked_add(1)
+                .ok_or(AudioStorageError::Overflow)?;
         }
         Ok(())
     }

@@ -474,11 +474,11 @@ impl TrackAssembly {
             return Err(AudioStorageError::SourceMismatch);
         }
         for (r, t) in self.rows.iter_mut().zip(project.tracks()) {
-            if let Some((metadata, contexts)) = samplers {
-                if let Some(config) = metadata.configuration(t.id()) {
-                    let _ = (config, contexts); // compile only after workspace admission
-                    r.source_mix = Some(PreparedTrackMix::identity());
-                }
+            if let Some((metadata, contexts)) = samplers
+                && let Some(config) = metadata.configuration(t.id())
+            {
+                let _ = (config, contexts); // compile only after workspace admission
+                r.source_mix = Some(PreparedTrackMix::identity());
             }
             r.gain
                 .fill(t.gain_envelope(), project.tempo_map())
@@ -510,14 +510,14 @@ impl TrackAssembly {
                 .ok_or(AudioStorageError::UnsupportedConstructor)?;
         }
         #[cfg(test)]
-        if self.mismatch {
-            if let Some(plan) = self.rows.first_mut().and_then(|r| r.pairs.first_mut()) {
-                plan.origin.handle = plan
-                    .origin
-                    .handle
-                    .checked_add(1)
-                    .ok_or(AudioStorageError::Overflow)?;
-            }
+        if self.mismatch
+            && let Some(plan) = self.rows.first_mut().and_then(|r| r.pairs.first_mut())
+        {
+            plan.origin.handle = plan
+                .origin
+                .handle
+                .checked_add(1)
+                .ok_or(AudioStorageError::Overflow)?;
         }
         Ok(())
     }
@@ -689,10 +689,10 @@ impl TrackAssembly {
             return Ok(());
         }
         let r = &mut self.rows[self.cursor];
-        if let Some(t) = r.track.as_mut() {
-            if r.sampler.present() {
-                r.sampler.restore(t)?;
-            }
+        if let Some(t) = r.track.as_mut()
+            && r.sampler.present()
+        {
+            r.sampler.restore(t)?;
         }
         if let Some(t) = &r.track {
             if r.installed_ordinal != Some(r.ordinal)
