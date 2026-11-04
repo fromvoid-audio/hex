@@ -552,6 +552,9 @@ impl OwnedProcessorRuntime for Runtime {
         self.pristine = false;
         true
     }
+    fn can_split_tail_input_from(&self, previous: &dyn OwnedProcessorRuntime) -> bool {
+        self.can_fork_timing_without_signal_history_from(previous)
+    }
     fn can_retarget_parameters_from(&self, old: &dyn OwnedProcessorRuntime) -> bool {
         self.can_inherit_from(old)
     }
