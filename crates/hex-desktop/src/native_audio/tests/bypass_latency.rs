@@ -801,3 +801,121 @@ fn parked_device_edit_cancels_if_document_changes_before_admission() {
     assert!(replacement.error.is_none(), "{:?}", replacement.error);
     assert!(replacement.project_replaced);
 }
+
+#[test]
+fn consecutive_device_gesture_changes_reach_the_resident_callback() {
+    use hex_session::device_gesture::{
+        GestureKey, GestureRequest, GestureTarget, ParameterId, ParameterValue,
+    };
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    let inserted = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state,
+    }));
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("utility device")
+    };
+    (applied, _) = h.applied(applied);
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    let begun = h.run(Request::DeviceGesture(GestureRequest::Begin {
+        key,
+        target: GestureTarget::DeviceParameter {
+            device,
+            parameter: ParameterId::new(1).unwrap(),
+        },
+    }));
+    assert!(begun.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+    let first = h.run(Request::DeviceGesture(GestureRequest::Change {
+        key,
+        sequence: 1,
+        value: ParameterValue::Float(1.5),
+    }));
+    assert!(first.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.submitted.is_none_or(|(revision, _)| revision <= applied) {
+        h.pump();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let first_revision = h.submitted.unwrap().0;
+    h.service
+        .submit(Request::DeviceGesture(GestureRequest::Change {
+            key,
+            sequence: 2,
+            value: ParameterValue::Float(2.0),
+        }))
+        .unwrap();
+    let wait = Instant::now() + Duration::from_millis(100);
+    let mut terminal = None;
+    while Instant::now() < wait {
+        h.pump();
+        if let Ok(event) = h.service.try_event()
+            && event.gesture_ack.is_some()
+        {
+            terminal = Some(event);
+            break;
+        }
+        std::thread::yield_now();
+    }
+    h.render();
+    let changed = terminal.unwrap_or_else(|| h.next());
+    assert!(
+        changed.gesture_ack.as_ref().is_some_and(|ack| ack.accepted),
+        "{:?}",
+        changed.gesture_ack
+    );
+    let (second_revision, metadata) = h.applied(first_revision);
+    assert_eq!(metadata.device_preview.unwrap().sequence, 2);
+    let third = h.run(Request::DeviceGesture(GestureRequest::Change {
+        key,
+        sequence: 3,
+        value: ParameterValue::Float(2.5),
+    }));
+    assert!(third.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h
+        .submitted
+        .is_none_or(|(revision, _)| revision <= second_revision)
+    {
+        h.pump();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    h.service
+        .submit(Request::DeviceGesture(GestureRequest::Commit {
+            key,
+            sequence: 4,
+            manual_edit: true,
+            value: ParameterValue::Float(2.5),
+        }))
+        .unwrap();
+    let refused = h.next();
+    assert!(
+        refused.gesture_ack.as_ref().is_some_and(|ack| {
+            ack.key == key && ack.sequence == 4 && !ack.accepted && ack.preview_retained
+        }),
+        "{:?}",
+        refused.gesture_ack
+    );
+    assert!(
+        refused
+            .active_device_gesture
+            .is_some_and(|snapshot| snapshot.key == key && snapshot.sequence == 3)
+    );
+}

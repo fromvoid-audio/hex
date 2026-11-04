@@ -2504,6 +2504,16 @@ fn run_worker(
                     Command::ToggleDeviceBypass { .. }
                         | Command::SetDeviceBypass { .. }
                         | Command::ReplaceDeviceState { .. }
+                ) | Request::DeviceGesture(
+                    GestureRequest::Change { .. }
+                        | GestureRequest::ChangePair { .. }
+                        | GestureRequest::ChangeSnapshot { .. }
+                        | GestureRequest::ChangeEqCreation { .. }
+                        | GestureRequest::Commit { .. }
+                        | GestureRequest::CommitPair { .. }
+                        | GestureRequest::CommitSnapshot { .. }
+                        | GestureRequest::CommitEqCreation { .. }
+                        | GestureRequest::Cancel { .. }
                 )
             ) {
             match events.defer_publication(queued) {
@@ -3496,6 +3506,24 @@ fn run_worker(
                 save_complete = true;
             }
         } else if let Some(reason) = barrier_failure {
+            if let Request::DeviceGesture(gesture) = &request {
+                gesture_request = true;
+                gesture_protocol_ack = true;
+                gesture_ack = Some(GestureAck {
+                    key: gesture.key(),
+                    phase: gesture.phase(),
+                    sequence: gesture.sequence(),
+                    accepted: false,
+                    preview_retained: matches!(
+                        gesture.phase(),
+                        crate::device_gesture::GesturePhase::Commit
+                            | crate::device_gesture::GesturePhase::Cancel
+                    ) && device_gesture
+                        .snapshot()
+                        .is_some_and(|active| active.key == gesture.key()),
+                    reason: Some(reason.clone()),
+                });
+            }
             sampler_edit_complete = match &request {
                 Request::SamplerEdit(edit) => Some(edit.request_id()),
                 _ => None,
