@@ -676,11 +676,12 @@ pub(super) fn push_source_range(
     let (Ok(start), Ok(end)) = (usize::try_from(start), usize::try_from(end)) else {
         return;
     };
-    if start < end && end <= available_frames {
-        if let Some(slot) = ranges.ranges.get_mut(ranges.len) {
-            *slot = start..end;
-            ranges.len += 1;
-        }
+    if start < end
+        && end <= available_frames
+        && let Some(slot) = ranges.ranges.get_mut(ranges.len)
+    {
+        *slot = start..end;
+        ranges.len += 1;
     }
 }
 
