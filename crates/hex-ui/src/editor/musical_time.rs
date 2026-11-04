@@ -546,21 +546,38 @@ fn ruler_candidates(
                     + usize::from(sampled_index < target_count % sampled_sections)
             };
             let quota = (quota as u64).min(section.landmark_count);
+            if quota == 0 {
+                continue;
+            }
+            // Keep landmarks on an origin-anchored musical subdivision. Evenly
+            // sampling the visible indices produces alternating gaps and makes
+            // labels jump when panning changes the first visible landmark.
+            let stride = section
+                .landmark_count
+                .div_ceil(quota)
+                .checked_next_power_of_two()
+                .unwrap_or(u64::MAX);
+            let last = section
+                .first_landmark
+                .saturating_add(section.landmark_count - 1);
+            // A short meter section can contain no stride-aligned landmark;
+            // retain one visible landmark rather than losing its fair share.
+            let first = section
+                .first_landmark
+                .div_ceil(stride)
+                .checked_mul(stride)
+                .filter(|first| *first <= last)
+                .unwrap_or(section.first_landmark);
             for sample in 0..quota {
-                let offset = if quota <= 1 {
-                    0
-                } else {
-                    let Ok(offset) = u64::try_from(
-                        u128::from(sample) * u128::from(section.landmark_count - 1)
-                            / u128::from(quota - 1),
-                    ) else {
-                        continue;
-                    };
-                    offset
+                let Some(landmark_index) = sample
+                    .checked_mul(stride)
+                    .and_then(|offset| first.checked_add(offset))
+                else {
+                    break;
                 };
-                let Some(landmark_index) = section.first_landmark.checked_add(offset) else {
-                    continue;
-                };
+                if landmark_index > last {
+                    break;
+                }
                 let raw_beat = u128::from(section.point_beat.raw())
                     + u128::from(landmark_index) * u128::from(section.beat_length);
                 let Ok(raw_beat) = u64::try_from(raw_beat) else {
@@ -1518,6 +1535,52 @@ mod tests {
                 .any(|tick| tick.frame == 63_000 && tick.label == "1.3.6")
         );
         assert!(fine.iter().all(|tick| !tick.label.contains('+')));
+    }
+
+    #[test]
+    fn ruler_landmarks_remain_even_and_anchored_while_panning_in_common_time() {
+        let project = Project::new(48_000).unwrap();
+        let viewport = Viewport {
+            start: 576_000,
+            length: 384_000,
+        };
+        let ticks = ruler_ticks(&project, viewport, 600.0);
+        let frames: Vec<_> = ticks.iter().map(|tick| tick.frame).collect();
+        let grid = grid_lines(&project, viewport, 600.0, SnapGrid::Adaptive);
+        assert!(
+            frames
+                .iter()
+                .all(|frame| grid.iter().any(|line| line.frame == *frame))
+        );
+        let gaps: Vec<_> = frames.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!(!gaps.is_empty());
+        assert!(
+            gaps.iter().all(|gap| *gap == gaps[0]),
+            "uneven ruler gaps: {frames:?}"
+        );
+        let panned = ruler_ticks(
+            &project,
+            Viewport {
+                start: viewport.start + 1_000,
+                ..viewport
+            },
+            600.0,
+        );
+        let overlap_end = viewport.end().unwrap();
+        let before: Vec<_> = ticks
+            .iter()
+            .filter(|tick| tick.frame >= viewport.start + 1_000 && tick.frame < overlap_end)
+            .map(|tick| tick.frame)
+            .collect();
+        let after: Vec<_> = panned
+            .iter()
+            .filter(|tick| tick.frame < overlap_end)
+            .map(|tick| tick.frame)
+            .collect();
+        assert_eq!(
+            before, after,
+            "panning changed landmarks in the shared range"
+        );
     }
 
     #[test]
