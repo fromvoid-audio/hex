@@ -164,6 +164,12 @@ pub trait OwnedProcessorRuntime: Any + Send {
     ) -> bool {
         false
     }
+    /// Explicitly authorize complementary input splitting between the old
+    /// and pristine new owners. A timing fork alone does not establish this
+    /// signal law. Unsupported or not-yet-validated providers return false.
+    fn can_split_tail_input_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {
+        false
+    }
     /// Commit-phase alternative when the host exclusively owns a retiring
     /// donor. It follows the same preflight as inherit_from. Providers may swap
     /// preallocated histories instead of copying them; the donor must not be
