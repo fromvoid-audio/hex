@@ -87,6 +87,89 @@ fn live_zero_tail_devices_bypass_without_a_step_in_the_actual_callback() {
 }
 
 #[test]
+fn live_saturator_bypass_without_a_step_in_the_actual_callback() {
+    let _native = native_fixture();
+    for kind in ["hex.saturator"] {
+        let files = Files::new();
+        let mut h = ResidentHarness::with_frame_limit(131_072);
+        h.next();
+        let (mut applied, _) = h.applied(0);
+        let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+        (applied, _) = h.applied(applied);
+        let track = imported.state.project.tracks()[0].id();
+        let state = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static(kind),
+        )
+        .unwrap()
+        .with_output_gain_db(6.0)
+        .unwrap();
+        let inserted = h.run(Request::Edit(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        }));
+        let Some(Created::Device(device)) = inserted.created else {
+            panic!("device")
+        };
+        (applied, _) = h.applied(applied);
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(0))
+            .unwrap();
+        for _ in 0..16 {
+            h.render();
+        }
+        let before = h.render();
+        let steady_step = before
+            .windows(2)
+            .map(|w| (w[1][0] - w[0][0]).abs())
+            .fold(0.0_f32, f32::max);
+        h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+        let after = h.render();
+        let first_revision = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire);
+        assert!(first_revision > applied);
+        assert!(
+            (after[0][0] - before[63][0]).abs() <= steady_step * 2.0 + 0.01,
+            "{kind}: {} -> {}",
+            before[63][0],
+            after[0][0]
+        );
+        for _ in 0..4 {
+            h.render();
+        }
+        let dry = h.render()[63][0];
+        assert!((dry - 0.25).abs() < 1e-3, "{kind}: {dry}");
+        h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+        let resumed = h.render();
+        assert!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(std::sync::atomic::Ordering::Acquire)
+                > first_revision
+        );
+        assert!(
+            (resumed[0][0] - dry).abs() < 0.01,
+            "{kind}: resumed {}",
+            resumed[0][0]
+        );
+    }
+}
+
+#[test]
 fn live_eq_bypass_transition_keeps_output_continuous() {
     let _native = native_fixture();
     for owner in 0..3 {
