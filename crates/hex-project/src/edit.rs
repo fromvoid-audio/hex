@@ -31,6 +31,8 @@ pub enum Command {
         name: String,
         before_track: Option<TrackId>,
         position: crate::ClipGroupPosition,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     /// Detach selected members without copying decoded media.
     MakeClipsUnique(Vec<ClipId>),
@@ -246,6 +248,14 @@ pub enum Command {
         state: hex_lattice_contract::NativeDeviceState,
         device_name: String,
     },
+    /// Create an automatically named device-bearing track with finite linear gain in `0..=2`.
+    InsertDefaultTrackWithDeviceAndGain {
+        before_track: Option<TrackId>,
+        slot: TrackDeviceSlot,
+        state: hex_lattice_contract::NativeDeviceState,
+        device_name: String,
+        gain: f32,
+    },
     /// Atomically splice a bounded touch span, preserving the underlying base curve.
     SpliceGainTouch {
         track: TrackId,
@@ -405,6 +415,11 @@ pub enum Command {
     },
     AddReturnTrack {
         name: String,
+    },
+    /// Create a return bus with finite linear gain in `0..=2` in one edit.
+    AddReturnTrackWithGain {
+        name: String,
+        gain: f32,
     },
     RemoveReturnTrack(ReturnId),
     RenameReturnTrack {
@@ -777,6 +792,8 @@ pub enum Command {
         name: String,
         before_track: Option<TrackId>,
         start: u64,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     /// Copy an Arrangement audio clip to a destination, replacing overlap atomically.
     CopyClipTo {
@@ -790,6 +807,8 @@ pub enum Command {
         name: String,
         before_track: Option<TrackId>,
         start: u64,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     /// Explicit source interval; changing the source interval resets loop phase to zero.
     TrimClip {
@@ -948,11 +967,15 @@ pub enum Command {
         source: ClipId,
         before_track: Option<TrackId>,
         scene: crate::SessionSceneTarget,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     CopyArrangementMidiToNewSessionTrack {
         source: ClipId,
         before_track: Option<TrackId>,
         scene: crate::SessionSceneTarget,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     MoveSessionCell {
         from_track: TrackId,
@@ -1149,6 +1172,8 @@ pub enum Command {
         name: String,
         before_track: Option<TrackId>,
         start: crate::BeatTime,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     /// Copy an Arrangement MIDI clip to a destination, replacing overlap atomically.
     CopyMidiClipTo {
@@ -1162,6 +1187,8 @@ pub enum Command {
         name: String,
         before_track: Option<TrackId>,
         start: crate::BeatTime,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     RemoveMidiClip(ClipId),
     DuplicateMidiClip(ClipId),
@@ -1260,6 +1287,22 @@ pub(crate) fn insert_track_before(
     let id = track.id();
     project.tracks.insert(index, track);
     Ok(id)
+}
+
+pub(crate) fn insert_track_before_with_gain(
+    project: &mut Project,
+    name: String,
+    before_track: Option<TrackId>,
+    gain: Option<f32>,
+) -> Result<TrackId, Invalid> {
+    if gain.is_some_and(|value| !value.is_finite() || !(0.0..=2.0).contains(&value)) {
+        return Err(Invalid("gain must be finite and within 0..2"));
+    }
+    let track = insert_track_before(project, name, before_track)?;
+    if let Some(gain) = gain {
+        project.track_mut(track)?.gain = gain;
+    }
+    Ok(track)
 }
 
 pub(crate) fn new_track(
@@ -1841,8 +1884,9 @@ impl Project {
                 name,
                 before_track,
                 position,
+                initial_gain,
             } => {
-                let track = insert_track_before(self, name, before_track)?;
+                let track = insert_track_before_with_gain(self, name, before_track, initial_gain)?;
                 crate::clip_duplicate::apply_alias_at(self, vec![clip], clip, track, position)
             }
             Command::MakeClipsUnique(clips) => crate::clip_alias_commands::unique(self, clips),
@@ -2049,6 +2093,7 @@ impl Project {
                 crate::device::apply(self, device_command)
             }
             return_command @ (Command::AddReturnTrack { .. }
+            | Command::AddReturnTrackWithGain { .. }
             | Command::RemoveReturnTrack(_)
             | Command::RenameReturnTrack { .. }
             | Command::ReturnGain { .. }
@@ -2116,8 +2161,9 @@ impl Project {
                 name,
                 before_track,
                 start,
+                initial_gain,
             } => {
-                let track = insert_track_before(self, name, before_track)?;
+                let track = insert_track_before_with_gain(self, name, before_track, initial_gain)?;
                 crate::clip_copy::midi_to(self, clip, track, start)?;
                 Ok(Created::Track(track))
             }
@@ -2354,6 +2400,29 @@ impl Project {
                 state,
                 device_name,
             ),
+            Command::InsertDefaultTrackWithDeviceAndGain {
+                before_track,
+                slot,
+                state,
+                device_name,
+                gain,
+            } => {
+                if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
+                    return Err(Invalid("gain must be finite and within 0..2"));
+                }
+                let Created::Track(track) = crate::track_name::insert_default_track_with_device(
+                    self,
+                    before_track,
+                    slot,
+                    state,
+                    device_name,
+                )?
+                else {
+                    return Err(Invalid("device track creation returned no track"));
+                };
+                self.track_mut(track)?.gain = gain;
+                Ok(Created::Track(track))
+            }
             Command::LoadInstrument {
                 track,
                 replacing,
@@ -2915,12 +2984,13 @@ impl Project {
                 name,
                 before_track,
                 start,
+                initial_gain,
             } => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
                 start
                     .checked_add(original.duration)
                     .ok_or(Invalid("timeline end overflow"))?;
-                let track = insert_track_before(self, name, before_track)?;
+                let track = insert_track_before_with_gain(self, name, before_track, initial_gain)?;
                 self.apply(Command::MoveClip { clip, track, start })?;
                 Ok(Created::Track(track))
             }
@@ -2950,8 +3020,9 @@ impl Project {
                 name,
                 before_track,
                 start,
+                initial_gain,
             } => {
-                let track = insert_track_before(self, name, before_track)?;
+                let track = insert_track_before_with_gain(self, name, before_track, initial_gain)?;
                 crate::clip_copy::audio_to(self, clip, track, start)?;
                 Ok(Created::Track(track))
             }

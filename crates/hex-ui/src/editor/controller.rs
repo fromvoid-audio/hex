@@ -3202,8 +3202,14 @@ impl EditorView {
             _ => {}
         }
         #[cfg(test)]
-        if let Request::DropBrowserDeviceOnArrangement { destination, .. } = &request {
+        if let Request::DropBrowserDeviceOnArrangement {
+            destination,
+            new_track_gain,
+            ..
+        } = &request
+        {
             self.last_enqueued_arrangement_device_drop = Some(*destination);
+            self.last_enqueued_device_track_gain = Some(*new_track_gain);
         }
         #[cfg(test)]
         if let Request::ConvertClip {

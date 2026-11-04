@@ -110,19 +110,85 @@ impl Pending {
                 },
             ) => (clips, anchor, track, position) == (c, a, t, p),
             (
+                Command::MoveClipToNewTrack {
+                    clip,
+                    name,
+                    before_track,
+                    start,
+                    initial_gain,
+                },
+                Command::MoveClipToNewTrack {
+                    clip: c,
+                    name: n,
+                    before_track: b,
+                    start: s,
+                    initial_gain: g,
+                },
+            )
+            | (
+                Command::CopyClipToNewTrack {
+                    clip,
+                    name,
+                    before_track,
+                    start,
+                    initial_gain,
+                },
+                Command::CopyClipToNewTrack {
+                    clip: c,
+                    name: n,
+                    before_track: b,
+                    start: s,
+                    initial_gain: g,
+                },
+            ) => (clip, name, before_track, start, initial_gain) == (c, n, b, s, g),
+            (
+                Command::MoveMidiClipToNewTrack {
+                    clip,
+                    name,
+                    before_track,
+                    start,
+                    initial_gain,
+                },
+                Command::MoveMidiClipToNewTrack {
+                    clip: c,
+                    name: n,
+                    before_track: b,
+                    start: s,
+                    initial_gain: g,
+                },
+            )
+            | (
+                Command::CopyMidiClipToNewTrack {
+                    clip,
+                    name,
+                    before_track,
+                    start,
+                    initial_gain,
+                },
+                Command::CopyMidiClipToNewTrack {
+                    clip: c,
+                    name: n,
+                    before_track: b,
+                    start: s,
+                    initial_gain: g,
+                },
+            ) => (clip, name, before_track, start, initial_gain) == (c, n, b, s, g),
+            (
                 Command::DuplicateAliasClipToNewTrack {
                     clip,
                     name,
                     before_track,
                     position,
+                    initial_gain,
                 },
                 Command::DuplicateAliasClipToNewTrack {
                     clip: c,
                     name: n,
                     before_track: b,
                     position: p,
+                    initial_gain: g,
                 },
-            ) => (clip, name, before_track, position) == (c, n, b, p),
+            ) => (clip, name, before_track, position, initial_gain) == (c, n, b, p, g),
             _ => false,
         }
     }

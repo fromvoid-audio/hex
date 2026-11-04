@@ -61,6 +61,7 @@ fn reorder_track_worker_preserves_cached_pcm_devices_and_one_history_edge() {
             revision: imported.state.revision,
             class: NativeDeviceClass::Instrument,
             type_id: DeviceTypeId::from_static("hex.instrument.sine"),
+            new_track_gain: None,
         },
     );
     let midi_track = midi.state.project.tracks()[1].id();
@@ -358,4 +359,72 @@ fn inserted_default_track_initial_gain_is_prepared_and_undoes_atomically() {
     assert_eq!(undo.state.project.snapshot(), expected);
     let redo = run(&service, Request::Redo);
     assert_eq!(redo.state.project.snapshot(), after);
+}
+
+#[test]
+fn inserted_device_track_initial_gain_is_prepared_and_undoes_atomically() {
+    let service = Service::new(48_000, 16, 32).unwrap();
+    next_event(&service);
+    let before = run(
+        &service,
+        Request::Edit(Command::InsertDefaultTrack { before_track: None }),
+    );
+    let anchor = before.state.project.tracks()[0].id();
+    let inserted = run(
+        &service,
+        Request::Edit(Command::InsertDefaultTrackWithDeviceAndGain {
+            before_track: Some(anchor),
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+            device_name: "sine".into(),
+            gain: 0.25,
+        }),
+    );
+    let Some(Created::Track(track)) = inserted.created else {
+        panic!("track")
+    };
+    assert_eq!(inserted.state.project.tracks()[0].id(), track);
+    assert_eq!(inserted.state.project.track(track).unwrap().gain(), 0.25);
+    assert!(
+        inserted
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .is_some()
+    );
+    assert_eq!(inserted.state.project.track(anchor).unwrap().gain(), 1.0);
+    assert!(inserted.playback.is_some());
+    let after = inserted.state.project.snapshot();
+    let undo = run(&service, Request::Undo);
+    let mut expected = before.state.project.snapshot();
+    expected.next_id = undo.state.project.snapshot().next_id;
+    assert_eq!(undo.state.project.snapshot(), expected);
+    let redo = run(&service, Request::Redo);
+    assert_eq!(redo.state.project.snapshot(), after);
+}
+
+#[test]
+fn inserted_return_initial_gain_is_prepared_and_undoes_atomically() {
+    let service = Service::new(48_000, 16, 32).unwrap();
+    let before = next_event(&service);
+    let added = run(
+        &service,
+        Request::Edit(Command::AddReturnTrackWithGain {
+            name: "return".into(),
+            gain: 0.25,
+        }),
+    );
+    assert!(added.error.is_none(), "{:?}", added.error);
+    assert_eq!(added.state.project.return_tracks()[0].gain(), 0.25);
+    assert!(added.playback.is_some());
+    let after = added.state.project.snapshot();
+    let undone = run(&service, Request::Undo);
+    assert_eq!(
+        undone.state.project.return_tracks(),
+        before.state.project.return_tracks()
+    );
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project.snapshot(), after);
 }

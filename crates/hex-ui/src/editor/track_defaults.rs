@@ -39,6 +39,13 @@ impl State {
         }
     }
 
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn set_test_state(&mut self, gain: f32, loading: bool, writable: bool) {
+        self.committed = TrackDefaults::new(gain).unwrap();
+        self.loading = loading;
+        self.writable = writable;
+    }
+
     pub(super) fn captured_gain(&self) -> Result<f32, &'static str> {
         if self.loading {
             return Err("track defaults are loading · retry shortly");
@@ -131,6 +138,18 @@ impl EditorView {
         })
         .detach();
         cx.notify();
+    }
+
+    pub(super) fn device_track_gain(
+        &self,
+        destination: hex_session::service::ArrangementDeviceDestination,
+    ) -> Result<Option<f32>, &'static str> {
+        match destination {
+            hex_session::service::ArrangementDeviceDestination::NewTrack { .. } => {
+                self.track_defaults.captured_gain().map(Some)
+            }
+            hex_session::service::ArrangementDeviceDestination::ExistingTrack { .. } => Ok(None),
+        }
     }
 
     pub(super) fn insert_default_track(&mut self, before_track: Option<TrackId>) {
@@ -293,6 +312,41 @@ mod tests {
             assert!(v.capture_audio_import_policy(make(console_new)).unwrap_err().contains("open settings"));
             assert!(v.capture_audio_import_policy(Request::Import(PathBuf::from("/legacy.wav"))).unwrap_err().contains("open settings"));
             assert!(matches!(v.capture_audio_import_policy(Request::ImportToTrack { path: PathBuf::from("/existing.wav"), track: target, start: 12 }).unwrap(), Request::ImportToTrack { track, start: 12, .. } if track == target));
+        });
+    }
+
+    #[gpui::test]
+    fn device_track_gain_captures_committed_value_and_preserves_existing_targets(
+        cx: &mut TestAppContext,
+    ) {
+        use hex_session::service::ArrangementDeviceDestination;
+        let (handle, editor, _, _, _) = super::super::loop_selection_ui_test::fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        wait(&editor, &mut visual);
+        editor.update(&mut visual, |view, _| {
+            let track = view.state.as_ref().unwrap().project.tracks()[0].id();
+            let new = ArrangementDeviceDestination::NewTrack { before_track: None };
+            let existing = ArrangementDeviceDestination::ExistingTrack {
+                track,
+                instrument: None,
+            };
+            view.track_defaults.committed = TrackDefaults::new(0.5).unwrap();
+            let captured = view.device_track_gain(new).unwrap();
+            view.track_defaults.committed = TrackDefaults::new(0.25).unwrap();
+            view.track_defaults.saving = true;
+            assert_eq!(captured, Some(0.5));
+            assert_eq!(view.device_track_gain(new).unwrap(), Some(0.25));
+            view.track_defaults.loading = true;
+            assert!(view.device_track_gain(new).unwrap_err().contains("loading"));
+            assert_eq!(view.device_track_gain(existing).unwrap(), None);
+            view.track_defaults.loading = false;
+            view.track_defaults.writable = false;
+            assert!(
+                view.device_track_gain(new)
+                    .unwrap_err()
+                    .contains("open settings")
+            );
+            assert_eq!(view.device_track_gain(existing).unwrap(), None);
         });
     }
 

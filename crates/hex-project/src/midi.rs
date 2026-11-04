@@ -1110,13 +1110,19 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             name,
             before_track,
             start,
+            initial_gain,
         } => {
             let length = project
                 .midi_clip(clip)
                 .ok_or(Invalid("midi clip no longer exists"))?
                 .length;
             validate_clip(start, length)?;
-            let track = super::edit::insert_track_before(project, name, before_track)?;
+            let track = super::edit::insert_track_before_with_gain(
+                project,
+                name,
+                before_track,
+                initial_gain,
+            )?;
             apply(project, Command::MoveMidiClip { clip, track, start })?;
             Ok(Created::Track(track))
         }

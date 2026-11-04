@@ -205,26 +205,37 @@ fn midi_clip_transfer_to_new_track_keeps_destination_empty_and_source_devices_ow
         };
         let before = editor.project().clone();
         let start = BeatTime::from_quarters(2).unwrap();
-        let destination = track(
-            editor
-                .execute(if copy {
-                    Command::CopyMidiClipToNewTrack {
-                        clip,
-                        name: "copied clip".into(),
-                        before_track: None,
-                        start,
-                    }
-                } else {
-                    Command::MoveMidiClipToNewTrack {
-                        clip,
-                        name: "moved clip".into(),
-                        before_track: None,
-                        start,
-                    }
-                })
-                .unwrap(),
-        );
+        let command = |gain| {
+            if copy {
+                Command::CopyMidiClipToNewTrack {
+                    initial_gain: Some(gain),
+                    clip,
+                    name: "copied clip".into(),
+                    before_track: None,
+                    start,
+                }
+            } else {
+                Command::MoveMidiClipToNewTrack {
+                    initial_gain: Some(gain),
+                    clip,
+                    name: "moved clip".into(),
+                    before_track: None,
+                    start,
+                }
+            }
+        };
+        for invalid in [f32::NAN, f32::INFINITY, -0.1, 2.1] {
+            assert!(editor.execute(command(invalid)).is_err());
+            assert_eq!(editor.project(), &before);
+        }
+        let refused = editor.execute_prepared(command(0.25), |_| {
+            Err::<(), _>(hex_project::Invalid("refused"))
+        });
+        assert!(refused.is_err());
+        assert_eq!(editor.project(), &before);
+        let destination = track(editor.execute(command(0.25)).unwrap());
         empty(editor.project(), destination);
+        assert_eq!(editor.project().track(destination).unwrap().gain(), 0.25);
         let retained = editor.project().track(source).unwrap();
         let original = before.track(source).unwrap();
         assert_eq!(retained.instrument(), original.instrument());
