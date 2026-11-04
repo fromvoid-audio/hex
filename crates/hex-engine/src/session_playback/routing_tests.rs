@@ -376,21 +376,38 @@ fn routed_midi_layout_edit_refuses_before_mutation_and_gain_edit_carries_effecti
         .unwrap();
     let mut candidate = SessionPlayback::new(prepare(&f, Some(revision.session()))).unwrap();
     candidate.try_inherit_state_from(&mut active).unwrap();
-    let mut oracle = fixture(false);
-    oracle
+    let mut first = fixture(false);
+    first
         .editor
         .execute(Command::Gain {
-            track: oracle.tracks[1],
-            gain: 0.5,
+            track: first.tracks[2],
+            gain: 0.0,
         })
         .unwrap();
-    let mut expected = start(prepare(&oracle, None), &oracle.clips[1..]);
-    render(&mut expected, 127, 63);
-    assert_pcm(
-        &render(&mut candidate, 320, 63),
-        &render(&mut expected, 320, 63),
-        1e-7,
-    );
+    let mut second = fixture(false);
+    second
+        .editor
+        .execute(Command::Gain {
+            track: second.tracks[1],
+            gain: 0.0,
+        })
+        .unwrap();
+    let mut first = start(prepare(&first, None), &first.clips[1..]);
+    let mut second = start(prepare(&second, None), &second.clips[1..]);
+    render(&mut first, 127, 63);
+    render(&mut second, 127, 63);
+    let first = render(&mut first, 320, 63);
+    let second = render(&mut second, 320, 63);
+    let expected: Vec<_> = first
+        .iter()
+        .zip(second)
+        .enumerate()
+        .map(|(index, (a, b))| {
+            let gain = 1.0 - 0.5 * (index + 1).min(240) as f32 / 240.0;
+            [a[0] * gain + b[0], a[1] * gain + b[1]]
+        })
+        .collect();
+    assert_pcm(&render(&mut candidate, 320, 63), &expected, 1e-7);
     active.apply(SessionPlaybackCommand::Stop).unwrap();
     changed.try_inherit_state_from(&mut active).unwrap();
 }

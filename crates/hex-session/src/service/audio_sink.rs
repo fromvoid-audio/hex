@@ -102,6 +102,35 @@ pub struct ResidentRuntimeLoop {
     pub source_context: Option<hex_engine::AudioSourceContext>,
     pub section_loop: Option<hex_project::LoopRegion>,
 }
+/// Read-only, output-bound observation of the one admitted resident graph.
+/// This is not a publication receipt, lease, or permission to mutate a graph.
+/// `publication_in_flight` is a snapshot of the publication reservation, not
+/// an admission guarantee: other owners and subsequent races can still refuse.
+/// Applied or refused revisions can be visible before that reservation clears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentPublicationReadiness {
+    NoOutput,
+    Idle {
+        output_identity: u64,
+        applied_revision: u64,
+        publication_in_flight: bool,
+    },
+    Pending {
+        submission: ResidentRuntimeLoop,
+        applied_revision: u64,
+        publication_in_flight: bool,
+    },
+    Applied {
+        submission: ResidentRuntimeLoop,
+        publication_in_flight: bool,
+    },
+    Refused {
+        submission: ResidentRuntimeLoop,
+        applied_revision: u64,
+        publication_in_flight: bool,
+    },
+}
+
 /// One callback-observed source and transport witness under the arrangement gate.
 #[derive(Clone, Copy, Debug)]
 pub struct ArrangementEditPosition {
@@ -326,6 +355,11 @@ pub trait WorkerAudioSink: Send {
     /// Resident mode, while cross-mode admission still borrows actual resident/retired owners.
     fn resident_publication_enabled(&self) -> bool {
         false
+    }
+    /// Observe the exact resident publication without granting graph custody.
+    /// The default denotes an output that does not support resident graphs.
+    fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
+        ResidentPublicationReadiness::NoOutput
     }
     /// Actual output/source/revision-bound loop, never the saved loop marker.
     /// None means no active ordinary output; offline edits remain available.
@@ -556,6 +590,7 @@ pub(super) struct WorkerEvents {
     startup_error: Option<String>,
     // At most one request parked on the stopped Arrangement lease (#4544).
     stopped_fence: super::stopped_arrangement::Fence,
+    publication_wait: Option<super::publication_wait::Wait>,
     // Consecutive request-wait iterations with no pending work (#4574).
     idle_polls: u32,
 }
@@ -591,17 +626,34 @@ impl WorkerEvents {
             self.section_phases = Some(phases);
         }
     }
+    /// Time a section request's post-transition view construction only when
+    /// its diagnostic phase record exists. The work remains on the worker.
+    pub(super) fn measure_section_view<T>(&mut self, build: impl FnOnce() -> T) -> T {
+        let started = self
+            .section_phases
+            .as_ref()
+            .map(|_| std::time::Instant::now());
+        let result = build();
+        if let (Some(phases), Some(started)) = (&mut self.section_phases, started) {
+            phases.view += started.elapsed();
+        }
+        result
+    }
     pub(super) fn begin_request(
         &mut self,
         document_intent: &Arc<std::sync::atomic::AtomicU64>,
         expected_intent: u64,
+        publication_waited: bool,
     ) {
         if let Some(audio) = self.audio.as_mut() {
-            audio.begin_request(RequestCancellation::new(
-                Arc::clone(&self.shutdown),
-                Arc::clone(document_intent),
-                expected_intent,
-            ));
+            audio.begin_request(
+                RequestCancellation::new(
+                    Arc::clone(&self.shutdown),
+                    Arc::clone(document_intent),
+                    expected_intent,
+                )
+                .after_publication_wait(publication_waited),
+            );
         }
     }
     pub(super) fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
@@ -654,6 +706,7 @@ impl WorkerEvents {
             last_verified_gain: None,
             startup_error: None,
             stopped_fence: Default::default(),
+            publication_wait: None,
             idle_polls: 0,
         }
     }
@@ -834,6 +887,26 @@ impl WorkerEvents {
             thread::sleep(Duration::from_millis(5));
         }
     }
+    /// Park one edit ahead of the FIFO while the current publication settles.
+    pub(super) fn defer_publication(&mut self, queued: QueuedRequest) -> Option<QueuedRequest> {
+        // A request that just completed its wait must dispatch without re-parking.
+        if queued.publication_wait_failure.is_some() {
+            return Some(queued);
+        }
+        let readiness = self
+            .audio
+            .as_mut()
+            .map_or(ResidentPublicationReadiness::NoOutput, |audio| {
+                audio.resident_publication_readiness()
+            });
+        match super::publication_wait::Wait::begin(queued, readiness) {
+            Ok(wait) => {
+                self.publication_wait = Some(wait);
+                None
+            }
+            Err(queued) => Some(queued),
+        }
+    }
     /// Begin the stopped Arrangement lease for a request that fences first;
     /// `None` parks it until the callback answers (see `stopped_arrangement`).
     pub(super) fn defer_stopped_fence(
@@ -908,6 +981,28 @@ impl WorkerEvents {
             && let Some(request) = self.next_request_while_fenced(requests, document_intent)
         {
             return Some(request);
+        }
+        while let Some(wait) = self.publication_wait.take() {
+            if self.shutdown.load(Ordering::Acquire) {
+                return None;
+            }
+            self.poll();
+            control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            );
+            let readiness = self
+                .audio
+                .as_mut()
+                .map_or(ResidentPublicationReadiness::NoOutput, |audio| {
+                    audio.resident_publication_readiness()
+                });
+            match wait.poll(readiness, document_intent.load(Ordering::Acquire)) {
+                Ok(request) => return Some(request),
+                Err(wait) => self.publication_wait = Some(wait),
+            }
+            thread::sleep(super::publication_wait::POLL);
         }
         control_poll(
             self.audio

@@ -609,3 +609,78 @@ fn option_drag_copies_device_to_another_track_header(cx: &mut TestAppContext) {
             .is_empty()
     });
 }
+
+#[gpui::test]
+fn browser_device_double_click_appends_once_and_preserves_history(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, _, _, _) = actor_utility_fixture();
+    let original = state.project.clone();
+    let (handle, editor) = header_window(cx, service, state, track, EditorMode::Arrangement);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.), px(700.)));
+    visual.run_until_parked();
+    let at = visual
+        .debug_bounds("browser-device-effect-hex.utility")
+        .unwrap()
+        .center();
+    for count in [1, 2] {
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: at,
+            button: MouseButton::Left,
+            click_count: count,
+            first_mouse: false,
+            modifiers: Modifiers::default(),
+        });
+        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    }
+    pump_until(&editor, cx, idle);
+    let changed = editor.read_with(cx, |view, _| {
+        assert!(view.error.is_none(), "{:?}", view.error);
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(track).unwrap().devices().len(), 2);
+        assert_eq!(
+            project.track(track).unwrap().devices()[0],
+            original.track(track).unwrap().devices()[0]
+        );
+        project.clone()
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, idle);
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(track), original.track(track));
+        assert_eq!(project.tracks().len(), original.tracks().len());
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, idle);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, changed)
+    });
+}
+
+#[gpui::test]
+fn browser_device_double_click_without_selected_track_is_refused(cx: &mut TestAppContext) {
+    let (service, state, track, _, _, _) = actor_utility_fixture();
+    let original = state.project.clone();
+    let (handle, editor) = header_window(cx, service, state, track, EditorMode::Arrangement);
+    editor.update(cx, |view, _| view.selected_track = None);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.), px(700.)));
+    visual.run_until_parked();
+    let at = visual
+        .debug_bounds("browser-device-effect-hex.utility")
+        .unwrap()
+        .center();
+    visual.simulate_event(gpui::MouseDownEvent {
+        position: at,
+        button: MouseButton::Left,
+        click_count: 2,
+        first_mouse: false,
+        modifiers: Modifiers::default(),
+    });
+    editor.read_with(cx, |view, _| {
+        assert!(view.error.is_some());
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+        assert_eq!(view.worker_requests_pending, 0);
+    });
+}

@@ -396,7 +396,7 @@ mixed-UTF-8 lines across both inline boundaries.
 registers `applicationShouldTerminate:`. When the app installed a handler with
 `App::on_should_quit`, the delegate runs it and returns NSTerminateLater; the app
 answers once with `App::reply_to_quit(bool)`, which sends
-`replyToApplicationShouldTerminate:` on a later main-queue turn so that a YES
+`replyToApplicationShouldTerminate:` on a later main run-loop turn so that a YES
 reply (and the synchronous `applicationWillTerminate:` shutdown) never runs
 inside an App borrow. Without a handler the delegate returns NSTerminateNow, so
 upstream behavior is unchanged; replies with no pending request are ignored and
@@ -413,3 +413,14 @@ unsafe Hex code. Changes are confined to `src/platform.rs`, `src/app.rs`,
 blocks were regenerated against the hash-verified published 0.2.2 sources.
 Dock Quit/logout/restart prompting and AppKit's modal-panel run-loop delivery
 during NSTerminateLater remain native user acceptance items.
+
+3 November quit-reply correction: `App::quit` invokes AppKit termination from
+the main dispatch queue. During `NSTerminateLater`, AppKit can run a nested
+main run loop while that queue remains occupied, so dispatching the reply to
+the same queue deadlocks. Schedule a copied Objective-C block in the main run
+loop's common modes and wake it instead; this retains the deferred App-borrow
+and one-reply contracts. Core Foundation copies the block before returning.
+The noninteractive `native_quit_probe` exercises the actual GPUI/AppKit path
+for acceptance and cancellation followed by acceptance; run it with
+`crates/hex-ui/tests/native_quit_test.py` after building the example. This uses the
+existing native dependency boundary and adds no unsafe Hex workspace code.

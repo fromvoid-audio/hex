@@ -291,3 +291,34 @@ fn sync_delay_uses_host_tempo_instead_of_default_120_bpm() {
         }
     }
 }
+
+#[test]
+fn delay_bypass_preserves_audible_continuity_on_track_return_and_main() {
+    for location in 0..3 {
+        let mut snapshot = delayed(location == 1, false).snapshot();
+        if location == 2 {
+            snapshot.main_devices = std::mem::take(&mut snapshot.tracks[0].devices);
+        }
+        let source = Project::from_snapshot(snapshot).unwrap();
+        let mut previous = playback(&source);
+        render(&mut previous, 700);
+        let mut reference = playback(&source);
+        render(&mut reference, 700);
+        let expected = render(&mut reference, 1)[0];
+        let mut changed = source.snapshot();
+        let devices = match location {
+            0 => &mut changed.tracks[0].devices,
+            1 => &mut changed.return_tracks[0].devices,
+            _ => &mut changed.main_devices,
+        };
+        devices[0].bypassed = true;
+        let changed = Project::from_snapshot(changed).unwrap();
+        let mut candidate =
+            SessionPlayback::new(revision(&changed, Arc::new(hex_devices::SineTable::new())))
+                .unwrap();
+        candidate.try_inherit_state_from(&mut previous).unwrap();
+        let after = render(&mut candidate, 256);
+        let step = (after[0][0] - expected[0]).abs();
+        assert!(step < 0.003, "location {location}: bypass step {step:?}");
+    }
+}

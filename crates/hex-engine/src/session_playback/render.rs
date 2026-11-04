@@ -529,11 +529,11 @@ impl SessionPlayback {
             keyboard.set_expression(selected);
         }
         let mut observer = observer;
-        if let Some(compensation) = self.compensation.as_mut() {
-            if compensation.delays.begin_transaction().is_err() {
-                self.fail_midi_capture_render();
-                return Err(SessionPlaybackError::DeviceRuntime);
-            }
+        if let Some(compensation) = self.compensation.as_mut()
+            && compensation.delays.begin_transaction().is_err()
+        {
+            self.fail_midi_capture_render();
+            return Err(SessionPlaybackError::DeviceRuntime);
         }
         if let Some(keyboard) = &mut self.computer_keyboard {
             keyboard.begin_block();
@@ -553,6 +553,9 @@ impl SessionPlayback {
                 .flatten()
                 .any(|tail| tail.output_active && tail.return_id().is_some());
         let ordinary_monitor = !self.playing && !main_tails_only;
+        let track_count = self.routes.len();
+        self.track_fader_scratch[..track_count].copy_from_slice(&self.track_faders[..track_count]);
+        self.live_gain_scratch = self.live_gain;
         let result = if self.playing {
             self.render_playing(output, pages, &mut observer, &mut capture, sources, foreign)
         } else if main_tails_only {
@@ -599,19 +602,22 @@ impl SessionPlayback {
                 capture.invalidate();
             }
         } else {
-            if let Some(compensation) = self.compensation.as_mut() {
-                if compensation.delays.commit_transaction().is_err() {
-                    self.fail_midi_capture_render();
-                    if let Some(keyboard) = &mut self.computer_keyboard {
-                        keyboard.rollback();
-                    }
-                    for keyboard in &mut self.current_sampler_keyboards {
-                        keyboard.rollback();
-                    }
-                    output.fill([0.0; 2]);
-                    return Err(SessionPlaybackError::DeviceRuntime);
+            if let Some(compensation) = self.compensation.as_mut()
+                && compensation.delays.commit_transaction().is_err()
+            {
+                self.fail_midi_capture_render();
+                if let Some(keyboard) = &mut self.computer_keyboard {
+                    keyboard.rollback();
                 }
+                for keyboard in &mut self.current_sampler_keyboards {
+                    keyboard.rollback();
+                }
+                output.fill([0.0; 2]);
+                return Err(SessionPlaybackError::DeviceRuntime);
             }
+            self.track_faders[..track_count]
+                .copy_from_slice(&self.track_fader_scratch[..track_count]);
+            self.live_gain = self.live_gain_scratch;
             if ordinary_monitor {
                 // Main-only draining never staged these source/tail buffers.
                 std::mem::swap(&mut self.releases, &mut self.release_scratch);
@@ -796,7 +802,6 @@ impl SessionPlayback {
                 self.prepare_resident_sources(
                     performance_frame,
                     arrangement_frame,
-                    arrangement_loop_pass,
                     count,
                     &mut resident_source_eligible,
                     &mut resident_analytic_eligible,
@@ -814,11 +819,11 @@ impl SessionPlayback {
             if current_first_frame {
                 chunk_frames = chunk_frames.min(1);
             }
-            if let Some(next) = next_route {
-                if next > performance_frame {
-                    let until = usize::try_from(next - performance_frame).unwrap_or(usize::MAX);
-                    chunk_frames = chunk_frames.min(until);
-                }
+            if let Some(next) = next_route
+                && next > performance_frame
+            {
+                let until = usize::try_from(next - performance_frame).unwrap_or(usize::MAX);
+                chunk_frames = chunk_frames.min(until);
             }
             if let Some(region) = region {
                 let until_wrap = if arrangement_frame < region.start() {
@@ -1260,7 +1265,9 @@ impl SessionPlayback {
         external: Option<hex_lattice::NativeExternalAutomation<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let region = self.active_loop_region();
-        let seam = self.loop_seam_at(arrangement_frame, arrangement_loop_pass);
+        let loop_fade = region.and_then(|region| {
+            crate::loop_seam::LoopEndFade::new(region, self.revision.arrangement().sample_rate())
+        });
         let revision = Arc::clone(&self.revision);
         let tracks = revision.arrangement().tracks();
         for scratch in &mut self.return_scratch {
@@ -1281,9 +1288,9 @@ impl SessionPlayback {
                 .get(index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             let capture_id = OutputCaptureId::Track(self.route_scratch[index].id);
-            let recording_override = self.gain_recording_override.filter(|_| {
-                self.revision.gain_recording_track() == Some(self.route_scratch[index].id)
-            });
+            let recording_track =
+                self.revision.gain_recording_track() == Some(self.route_scratch[index].id);
+            let recording_override = self.gain_recording_override.filter(|_| recording_track);
             let stateful_effects = self
                 .device_chains
                 .get(index)
@@ -1303,14 +1310,19 @@ impl SessionPlayback {
                     .iter()
                     .any(|k| k.track() == self.route_scratch[index].id);
             let shared_source = revision.source_routing().is_shared(index);
+            let smoothing = self.track_fader_scratch[index].active()
+                && !track.has_gain_automation()
+                && recording_override.is_none();
             let buffered = shared_source
                 || live_target
                 || stateful_effects
                 || mutable_active
                 || !track.sends().is_empty()
                 || track.has_gain_automation()
+                || smoothing
                 || self.device_metering;
-            let ordered = shared_source || live_target || track.requires_ordered_processing();
+            let ordered =
+                shared_source || live_target || smoothing || track.requires_ordered_processing();
             let already_mixed = self.device_metering
                 && !ordered
                 && !stateful_effects
@@ -1369,10 +1381,10 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
-                            raw: live_target || shared_source,
+                            raw: live_target || shared_source || smoothing,
+                            loop_fade,
                             timing: &timing,
                             table,
-                            seam,
                         },
                         &mut self.spans,
                         performance_frame,
@@ -1432,10 +1444,10 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
-                            raw: live_target || shared_source,
+                            raw: live_target || shared_source || smoothing,
+                            loop_fade,
                             timing: &timing,
                             table,
-                            seam,
                         },
                         &self.route_scratch,
                         self.historical_floor,
@@ -1596,9 +1608,9 @@ impl SessionPlayback {
                                 continuations: &self.analytic_continuations,
                                 index,
                                 raw: false,
+                                loop_fade,
                                 timing: &timing,
                                 table,
-                                seam,
                             },
                             &mut self.spans,
                             performance_frame,
@@ -1626,9 +1638,9 @@ impl SessionPlayback {
                             continuations: &self.analytic_continuations,
                             index,
                             raw: false,
+                            loop_fade,
                             timing: &timing,
                             table,
-                            seam,
                         },
                         &mut self.spans,
                         performance_frame,
@@ -1668,16 +1680,33 @@ impl SessionPlayback {
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 }
                 for (frame_index, source) in render_output.iter_mut().enumerate() {
-                    let mix = if let Some(gain) = recording_override {
-                        track.recording_mix(gain)
-                    } else if track.has_gain_automation() {
-                        track.mix_at(
-                            arrangement_frame
-                                .checked_add(frame_index as u64)
-                                .ok_or(SessionPlaybackError::ArithmeticOverflow)?,
+                    let content_frame = arrangement_frame
+                        .checked_add(frame_index as u64)
+                        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    let live_gain = if recording_track {
+                        self.live_gain_scratch.next(
+                            track,
+                            content_frame,
+                            recording_override,
+                            self.revision.arrangement().sample_rate(),
                         )
                     } else {
+                        None
+                    };
+                    let mix = if let Some(gain) = live_gain {
+                        track.recording_mix(gain)
+                    } else if track.has_gain_automation() {
+                        track.mix_at(content_frame)
+                    } else {
                         track.mix()
+                    };
+                    let mix = if track.has_gain_automation() || recording_override.is_some() {
+                        self.track_fader_scratch[index].follow(mix.channel_gain());
+                        mix
+                    } else if smoothing {
+                        mix.with_channel_gain(self.track_fader_scratch[index].next())
+                    } else {
+                        mix
                     };
                     let mix = if live_target {
                         mix.without_effects()
@@ -1746,18 +1775,9 @@ impl SessionPlayback {
                             &mut captured[..output.len()],
                             &self.analytic_continuations,
                             Some(self.revision.session().timing()),
+                            loop_fade,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                    if !track.source_mix().muted() {
-                        track.add_loop_seam_crossfade(
-                            seam,
-                            arrangement_frame,
-                            output,
-                            pages.as_deref_mut(),
-                            Some(&mut captured[..output.len()]),
-                            track.source_mix(),
-                        );
-                    }
                     if let Some(capture) = capture.as_mut() {
                         capture.add(capture_id, frame_offset, &captured[..output.len()])?;
                     }
@@ -1791,9 +1811,9 @@ impl SessionPlayback {
                         continuations: &self.analytic_continuations,
                         index,
                         raw: false,
+                        loop_fade,
                         timing: &timing,
                         table,
-                        seam,
                     },
                     &mut self.spans,
                     performance_frame,
@@ -2743,10 +2763,9 @@ struct RouteSourceContext<'a, T> {
     continuations: &'a [Option<hex_lattice::AnalyticContinuation>],
     index: usize,
     raw: bool,
+    loop_fade: Option<crate::loop_seam::LoopEndFade>,
     timing: &'a T,
     table: &'a hex_devices::SineTable,
-    /// The transport loop seam of a wrapped pass, for Arrangement audio.
-    seam: Option<crate::LoopSeam>,
 }
 
 #[derive(Clone, Copy)]
@@ -2888,9 +2907,9 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
         continuations,
         index,
         raw,
+        loop_fade,
         timing,
         table,
-        seam,
     } = context;
     let track = revision
         .arrangement()
@@ -2907,18 +2926,57 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
     };
     match route.owner {
         RouteOwner::Arrangement => {
+            if let Some(fade) =
+                loop_fade.filter(|fade| fade.intersects(arrangement_frame, output.len()))
+            {
+                if !matches!(stage, SourceStage::Instrument) {
+                    if output.len() > 256 {
+                        return Err(SessionPlaybackError::DeviceRuntime);
+                    }
+                    let mut scratch = [[0.0; 2]; 256];
+                    let audio = &mut scratch[..output.len()];
+                    if raw {
+                        track.render_raw_audio(arrangement_frame, audio, pages.as_deref_mut())
+                    } else if !source_mix.muted {
+                        if let Some(page_provider) = pages.as_deref_mut() {
+                            track.render_audio_additive_with_pages(
+                                arrangement_frame,
+                                audio,
+                                page_provider,
+                            )
+                        } else {
+                            track.render_audio_additive(arrangement_frame, audio)
+                        }
+                    } else {
+                        Ok(())
+                    }
+                    .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    fade.apply(arrangement_frame, audio);
+                    for (target, sample) in output.iter_mut().zip(audio.iter()) {
+                        target[0] += sample[0];
+                        target[1] += sample[1];
+                    }
+                }
+                if matches!(stage, SourceStage::Whole) && !source_mix.muted {
+                    track
+                        .render_instrument_additive_with_suppressions(
+                            arrangement_frame,
+                            performance_frame,
+                            output,
+                            suppressions,
+                            continuations,
+                            Some(revision.session().timing()),
+                        )
+                        .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                }
+                if !matches!(stage, SourceStage::Instrument) {
+                    return Ok(());
+                }
+            }
             if raw && matches!(stage, SourceStage::Audio) {
                 track
                     .render_raw_audio(arrangement_frame, output, pages.as_deref_mut())
                     .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                track.add_loop_seam_crossfade(
-                    seam,
-                    arrangement_frame,
-                    output,
-                    pages,
-                    None,
-                    crate::PreparedTrackMix::identity(),
-                );
                 return Ok(());
             }
             if raw && matches!(stage, SourceStage::Instrument) {
@@ -2988,22 +3046,6 @@ fn render_route_owner_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::Mi
                 ),
             }
             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-            // Whole skips a muted source mix; the audio stage renders it.
-            let audible = match stage {
-                SourceStage::Whole => !track.source_mix().muted(),
-                SourceStage::Audio => true,
-                SourceStage::Instrument => false,
-            };
-            if audible {
-                track.add_loop_seam_crossfade(
-                    seam,
-                    arrangement_frame,
-                    output,
-                    pages,
-                    None,
-                    track.source_mix(),
-                );
-            }
         }
         RouteOwner::Silence => {}
         RouteOwner::Session { clip, origin } => {

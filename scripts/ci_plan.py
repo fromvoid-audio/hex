@@ -623,7 +623,7 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
     if scope in {"rust", "ui"}:
         result["boundary"] = boundary_selection(root, selection_paths, inventory, affected)
     if profile == "health":
-        result["health"] = health_selection(paths, inventory)
+        result["health"] = health_selection(selection_paths, inventory)
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
     return result
 

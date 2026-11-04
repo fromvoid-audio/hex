@@ -296,7 +296,7 @@ diff --git a/src/app.rs b/src/app.rs
 +
 +    /// Hex patch: answer a termination request deferred by [`App::on_should_quit`]:
 +    /// `true` terminates, `false` cancels. Ignored when no request is pending.
-+    /// On macOS the reply is delivered on a later main-queue turn, outside any
++    /// On macOS the reply is delivered on a later main run-loop turn, outside any
 +    /// App borrow, because terminating runs the quit observers synchronously.
 +    pub fn reply_to_quit(&self, terminate: bool) {
 +        self.platform.reply_to_quit(terminate);
@@ -3178,12 +3178,22 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 -        NSUInteger, NSURL,
 +        NSArray, NSAutoreleasePool, NSBundle, NSData, NSInteger, NSPoint, NSProcessInfo, NSRange, NSRect,
 +        NSSize, NSString, NSUInteger, NSURL,
-@@ -45,0 +46 @@ use objc::{
+@@ -37,0 +38,3 @@ use core_foundation::{
++use core_foundation_sys::runloop::{
++    CFRunLoopGetMain, CFRunLoopRef, CFRunLoopWakeUp, kCFRunLoopCommonModes,
++};
+@@ -45,0 +49 @@ use objc::{
 +    rc::StrongPtr,
-@@ -53 +54 @@ use std::{
+@@ -53 +57 @@ use std::{
 -    ffi::{CStr, OsStr, c_void},
 +    ffi::{CStr, CString, OsStr, c_void},
-@@ -71,0 +73,62 @@ static mut APP_DELEGATE_CLASS: *const Class = ptr::null();
+@@ -64,0 +69,5 @@ use util::ResultExt;
++#[link(name = "CoreFoundation", kind = "framework")]
++unsafe extern "C" {
++    fn CFRunLoopPerformBlock(run_loop: CFRunLoopRef, mode: CFTypeRef, block: *const c_void);
++}
++
+@@ -71,0 +81,62 @@ static mut APP_DELEGATE_CLASS: *const Class = ptr::null();
 +/// A cached transparent cursor avoids NSCursor's process-wide hide count.
 +fn make_hidden_cursor() -> Option<StrongPtr> {
 +    unsafe {
@@ -3246,20 +3256,20 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +    }
 +}
 +
-@@ -96,0 +160,4 @@ unsafe fn build_classes() {
+@@ -96,0 +168,4 @@ unsafe fn build_classes() {
 +            decl.add_method(
 +                sel!(applicationShouldTerminate:),
 +                should_terminate as extern "C" fn(&mut Object, Sel, id) -> NSUInteger,
 +            );
-@@ -170,0 +238,2 @@ pub(crate) struct MacPlatformState {
+@@ -170,0 +246,2 @@ pub(crate) struct MacPlatformState {
 +    should_quit: Option<Box<dyn FnMut() -> bool>>,
 +    quit_request_pending: bool,
-@@ -179,0 +249,4 @@ pub(crate) struct MacPlatformState {
+@@ -179,0 +257,4 @@ pub(crate) struct MacPlatformState {
 +    hidden_cursor: Option<StrongPtr>,
 +    resize_left_bracket_cursor: Option<StrongPtr>,
 +    resize_right_bracket_cursor: Option<StrongPtr>,
 +    loop_cursor: Option<StrongPtr>,
-@@ -188,0 +262,10 @@ impl MacPlatform {
+@@ -188,0 +270,10 @@ impl MacPlatform {
 +    #[cfg(any(test, feature = "test-support"))]
 +    pub(crate) fn picker_directory_url_for_test(directory: &Path) -> Result<PathBuf> {
 +        unsafe {
@@ -3270,21 +3280,21 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +        }
 +    }
 +
-@@ -199,0 +283,5 @@ impl MacPlatform {
+@@ -199,0 +291,5 @@ impl MacPlatform {
 +        let (resize_left_bracket_cursor, resize_right_bracket_cursor) = if headless {
 +            (None, None)
 +        } else {
 +            (make_vector_cursor(LEFT_BRACKET_SVG), make_vector_cursor(RIGHT_BRACKET_SVG))
 +        };
-@@ -211,0 +300,2 @@ impl MacPlatform {
+@@ -211,0 +308,2 @@ impl MacPlatform {
 +            should_quit: None,
 +            quit_request_pending: false,
-@@ -221,0 +312,4 @@ impl MacPlatform {
+@@ -221,0 +320,4 @@ impl MacPlatform {
 +            hidden_cursor: if headless { None } else { make_hidden_cursor() },
 +            resize_left_bracket_cursor,
 +            resize_right_bracket_cursor,
 +            loop_cursor: if headless { None } else { make_vector_cursor(LOOP_SVG) },
-@@ -713,0 +808,9 @@ impl Platform for MacPlatform {
+@@ -713,0 +816,9 @@ impl Platform for MacPlatform {
 +        self.prompt_for_paths_with_directory(options, None)
 +    }
 +
@@ -3294,7 +3304,7 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +        directory: Option<&Path>,
 +    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
 +        let directory = directory.map(Path::to_owned);
-@@ -718,0 +822,9 @@ impl Platform for MacPlatform {
+@@ -718,0 +830,9 @@ impl Platform for MacPlatform {
 +                    if let Some(directory) = directory {
 +                        match ns_directory_url(&directory) {
 +                            Ok(url) => panel.setDirectoryURL(url),
@@ -3304,7 +3314,7 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +                            }
 +                        }
 +                    }
-@@ -772,3 +884,7 @@ impl Platform for MacPlatform {
+@@ -772,3 +892,7 @@ impl Platform for MacPlatform {
 -                    let path = ns_string(directory.to_string_lossy().as_ref());
 -                    let url = NSURL::fileURLWithPath_isDirectory_(nil, path, true.to_objc());
 -                    panel.setDirectoryURL(url);
@@ -3315,7 +3325,7 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +                            return;
 +                        }
 +                    }
-@@ -877,0 +994,38 @@ impl Platform for MacPlatform {
+@@ -877,0 +1002,33 @@ impl Platform for MacPlatform {
 +    fn on_should_quit(&self, callback: Box<dyn FnMut() -> bool>) {
 +        self.0.lock().should_quit = Some(callback);
 +    }
@@ -3326,35 +3336,30 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +            return;
 +        }
 +        drop(lock);
-+        // A YES reply terminates synchronously, running `applicationWillTerminate:`
-+        // and the app's quit observers; reply on a later main-queue turn so no
-+        // App borrow is held, as `quit` does.
-+        use super::dispatcher::{dispatch_get_main_queue, dispatch_sys::dispatch_async_f};
-+        let reply: unsafe extern "C" fn(*mut c_void) = if terminate {
-+            reply_terminate
-+        } else {
-+            reply_cancel
-+        };
++        // Termination may already be running on the main dispatch queue, so a
++        // queued dispatch block cannot run while AppKit waits for this reply.
++        // A later main run-loop turn also releases the App borrow before a YES
++        // reply synchronously invokes the quit observers.
++        let reply = ConcreteBlock::new(move || unsafe {
++            let app = NSApplication::sharedApplication(nil);
++            let answer = if terminate { YES } else { NO };
++            let _: () = msg_send![app, replyToApplicationShouldTerminate: answer];
++        })
++        .copy();
++        // Core Foundation copies the block before returning. The main run loop
++        // and its common-modes constant remain valid for the application's life.
 +        unsafe {
-+            dispatch_async_f(dispatch_get_main_queue(), ptr::null_mut(), Some(reply));
-+        }
-+
-+        unsafe extern "C" fn reply_terminate(_: *mut c_void) {
-+            unsafe {
-+                let app = NSApplication::sharedApplication(nil);
-+                let _: () = msg_send![app, replyToApplicationShouldTerminate: YES];
-+            }
-+        }
-+
-+        unsafe extern "C" fn reply_cancel(_: *mut c_void) {
-+            unsafe {
-+                let app = NSApplication::sharedApplication(nil);
-+                let _: () = msg_send![app, replyToApplicationShouldTerminate: NO];
-+            }
++            let run_loop = CFRunLoopGetMain();
++            CFRunLoopPerformBlock(
++                run_loop,
++                kCFRunLoopCommonModes as CFTypeRef,
++                &*reply as *const _ as *const c_void,
++            );
++            CFRunLoopWakeUp(run_loop);
 +        }
 +    }
 +
-@@ -973,2 +1127,18 @@ impl Platform for MacPlatform {
+@@ -973,2 +1130,18 @@ impl Platform for MacPlatform {
 -            let new_cursor: id = match style {
 -                CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
 +            let bracket_cursor = {
@@ -3375,16 +3380,16 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +            };
 +            let new_cursor: id = bracket_cursor.unwrap_or_else(|| match style {
 +                CursorStyle::Hidden | CursorStyle::Arrow => msg_send![class!(NSCursor), arrowCursor],
-@@ -980 +1150 @@ impl Platform for MacPlatform {
+@@ -980 +1153 @@ impl Platform for MacPlatform {
 -                CursorStyle::ResizeLeftRight => msg_send![class!(NSCursor), resizeLeftRightCursor],
 +                CursorStyle::ResizeLeftRight | CursorStyle::Loop => msg_send![class!(NSCursor), resizeLeftRightCursor],
-@@ -983,0 +1154,2 @@ impl Platform for MacPlatform {
+@@ -983,0 +1157,2 @@ impl Platform for MacPlatform {
 +                CursorStyle::ResizeLeftBracket => msg_send![class!(NSCursor), resizeLeftCursor],
 +                CursorStyle::ResizeRightBracket => msg_send![class!(NSCursor), resizeRightCursor],
-@@ -1008 +1180 @@ impl Platform for MacPlatform {
+@@ -1008 +1183 @@ impl Platform for MacPlatform {
 -            };
 +            });
-@@ -1420,0 +1593,30 @@ extern "C" fn should_handle_reopen(this: &mut Object, _: Sel, _: id, has_open_wi
+@@ -1420,0 +1596,30 @@ extern "C" fn should_handle_reopen(this: &mut Object, _: Sel, _: id, has_open_wi
 +// NSApplicationTerminateReply values.
 +const NS_TERMINATE_NOW: NSUInteger = 1;
 +const NS_TERMINATE_LATER: NSUInteger = 2;
@@ -3415,7 +3420,7 @@ diff --git a/src/platform/mac/platform.rs b/src/platform/mac/platform.rs
 +    }
 +}
 +
-@@ -1538,0 +1741,12 @@ unsafe fn ns_string(string: &str) -> id {
+@@ -1538,0 +1744,12 @@ unsafe fn ns_string(string: &str) -> id {
 +// NSURL copies the filesystem representation; no lossy display conversion.
 +unsafe fn ns_directory_url(directory: &Path) -> Result<id> {
 +    let bytes = CString::new(directory.as_os_str().as_bytes())

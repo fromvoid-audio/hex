@@ -22,6 +22,15 @@ pub(super) enum RuntimeOwnership {
     Foreign(ForeignRuntime),
 }
 impl RuntimeOwnership {
+    // The caller must retain the owner; this scalar does not provide custody.
+    pub(super) fn owned_identity(&self) -> Option<usize> {
+        match self {
+            Self::Owned(runtime) => {
+                Some(runtime.as_ref() as *const dyn OwnedProcessorRuntime as *const () as usize)
+            }
+            _ => None,
+        }
+    }
     pub(super) fn supports_parameter_automation(
         &self,
         parameter: hex_lattice_contract::ParameterId,
@@ -166,6 +175,21 @@ impl RuntimeOwnership {
             (Self::Owned(new), Self::Owned(old)) => new.can_inherit_from(old.as_ref()),
             _ => false,
         }
+    }
+    pub(super) fn can_fork_timing_without_signal_history_from(&self, old: &Self) -> bool {
+        matches!((self, old), (Self::Owned(new), Self::Owned(old))
+            if new.can_fork_timing_without_signal_history_from(old.as_ref()))
+    }
+    pub(super) fn fork_timing_without_signal_history_from(&mut self, old: &Self) -> bool {
+        match (self, old) {
+            (Self::Owned(new), Self::Owned(old)) => {
+                new.fork_timing_without_signal_history_from(old.as_ref())
+            }
+            _ => false,
+        }
+    }
+    pub(super) fn can_split_tail_input_from(&self, old: &Self) -> bool {
+        matches!((self, old), (Self::Owned(new), Self::Owned(old)) if new.can_split_tail_input_from(old.as_ref()))
     }
     pub(super) fn foreign_configuration_matches(&self, old: &Self) -> bool {
         match (self, old) {

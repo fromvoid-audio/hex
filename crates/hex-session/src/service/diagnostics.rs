@@ -130,7 +130,8 @@ impl Drop for DiagnosticActionScope {
 /// `fence` is the callback-observed `stopped_arrangement` lease, `edit` the
 /// canonical apply/commit around preparation, `prepare` the resident
 /// `prepare_transition`, `publish` the handoff to the native sink and `finish`
-/// the sink's edit terminal. These lie within the request's dispatched worker
+/// the sink's edit terminal, and `view` the post-transition view-state
+/// construction. These lie within the request's dispatched worker
 /// time (`worker_us`). `parked` is the time the request waited parked for its
 /// stopped-arrangement fence before dispatch (#4544), so it lies outside
 /// `worker_us`. Reported on `OutcomeReady` as `section_*_us`.
@@ -142,6 +143,7 @@ pub struct SectionPhases {
     pub prepare: Duration,
     pub publish: Duration,
     pub finish: Duration,
+    pub view: Duration,
 }
 
 pub(super) struct Hooks {
@@ -329,6 +331,7 @@ impl Hooks {
                 ("section_prepare_us", phases.prepare),
                 ("section_publish_us", phases.publish),
                 ("section_finish_us", phases.finish),
+                ("section_view_us", phases.view),
             ] {
                 description.field(name, format_args!("{}", value.as_micros()));
             }

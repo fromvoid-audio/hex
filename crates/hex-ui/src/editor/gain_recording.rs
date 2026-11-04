@@ -128,14 +128,13 @@ impl EditorView {
         self.gain_recorder.pending_gain = None;
         self.gain_recorder.binding = None;
         self.status = "preparing gain recording · playback starts before touch".into();
-        if let Some(audio) = self.audio.as_mut() {
-            if audio
+        if let Some(audio) = self.audio.as_mut()
+            && audio
                 .control
                 .command(hex_engine::PlaybackCommand::Play)
                 .is_err()
-            {
-                self.error = Some("play is queued; retry after pending transport controls".into());
-            }
+        {
+            self.error = Some("play is queued; retry after pending transport controls".into());
         }
         cx.notify();
     }
@@ -232,10 +231,11 @@ impl EditorView {
                 }
             }
         }
-        if self.gain_recorder.mode == Mode::Finishing && !self.gain_recorder.cancelled {
-            if let Err(reason) = audio.control.gain_release() {
-                self.error = Some(reason.into());
-            }
+        if self.gain_recorder.mode == Mode::Finishing
+            && !self.gain_recorder.cancelled
+            && let Err(reason) = audio.control.gain_release()
+        {
+            self.error = Some(reason.into());
         }
     }
     fn end_gain_touch(&mut self) {
@@ -255,10 +255,10 @@ impl EditorView {
         self.gain_recorder.pending_gain = None;
         self.gain_recorder.cancelled = true;
         if self.gain_recorder.target.is_some() {
-            if let Some(audio) = self.audio.as_mut() {
-                if let Err(reason) = audio.control.gain_cancel() {
-                    self.error = Some(reason.into());
-                }
+            if let Some(audio) = self.audio.as_mut()
+                && let Err(reason) = audio.control.gain_cancel()
+            {
+                self.error = Some(reason.into());
             }
             self.gain_recorder.mode = Mode::Finishing;
         } else {
@@ -342,21 +342,18 @@ impl EditorView {
             // Process already-delivered Finished below before retiring capture.
             // Device loss cannot erase a completed take awaiting control polling.
         }
-        if self.gain_recorder.mode == Mode::Arming {
-            if let Some((revision, reason)) = audio
+        if self.gain_recorder.mode == Mode::Arming
+            && let Some((revision, reason)) = audio
                 .control
                 .status()
                 .and_then(|status| status.rejected_revision())
-            {
-                if self.gain_recorder.audio_revision == Some(revision) {
-                    self.gain_recorder.mode = Mode::Idle;
-                    self.gain_recorder.pending_gain = None;
-                    self.gain_recorder.binding = None;
-                    self.error =
-                        Some(format!("gain recording arm refused · {}", reason.message()).into());
-                    return true;
-                }
-            }
+            && self.gain_recorder.audio_revision == Some(revision)
+        {
+            self.gain_recorder.mode = Mode::Idle;
+            self.gain_recorder.pending_gain = None;
+            self.gain_recorder.binding = None;
+            self.error = Some(format!("gain recording arm refused · {}", reason.message()).into());
+            return true;
         }
         for receipt in receipts {
             self.gain_receipt(receipt);
