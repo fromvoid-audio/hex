@@ -709,6 +709,26 @@ impl EditorView {
                 .w(px(1.0))
                 .bg(rgb(theme::color(theme::PaletteRole::Border))),
         );
+        // Keep the group cue anchored to the header edge, below clips and their
+        // interaction overlays, while the timeline scrolls independently.
+        clip_area = clip_area.children(
+            self.track_hierarchy_indent
+                .ancestors(track_id)
+                .iter()
+                .enumerate()
+                .map(|(depth, &(ancestor, color))| {
+                    div()
+                        .absolute()
+                        .right(px(1.0 + depth as f32 * 2.0))
+                        .top_0()
+                        .bottom_0()
+                        .w(px(2.0))
+                        .debug_selector(move || {
+                            format!("lane-group-rail-{}-{}", track_id.value(), ancestor.value())
+                        })
+                        .bg(gpui::Hsla::from(rgb(theme::element_colors(color).accent)).alpha(0.35))
+                }),
+        );
         clip_area = clip_area.child(
             div()
                 .absolute()
