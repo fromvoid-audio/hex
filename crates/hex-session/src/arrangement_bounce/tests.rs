@@ -105,7 +105,7 @@ fn isolated_bounce_retains_selected_alias_notes_and_excludes_console_members() {
         (BounceTarget::Clips(vec![clip]), 1),
     ] {
         let plan = original.plan_arrangement_bounce(&target, false).unwrap();
-        let projected = isolated(&original, &target, &plan[0]).unwrap();
+        let projected = isolated(&original, &target, &plan[0], false).unwrap();
         assert!(projected.session_cells().is_empty());
         assert_eq!(
             projected.midi_clip(clip).unwrap().notes(),
@@ -528,7 +528,7 @@ fn selected_source_isolation_excludes_other_clips_tracks_main_and_returns() {
         .plan_arrangement_bounce(&target, false)
         .unwrap()
         .remove(0);
-    let source = isolated(session.project(), &target, &item).unwrap();
+    let source = isolated(session.project(), &target, &item, false).unwrap();
     assert_eq!(source.tracks().len(), 1);
     assert!(source.main_devices().is_empty());
     assert!(source.return_tracks().is_empty());
@@ -569,7 +569,7 @@ fn selected_source_isolation_excludes_other_clips_tracks_main_and_returns() {
 }
 
 #[test]
-fn shared_receiver_bounce_keeps_midi_contributors_and_only_receiver_effects() {
+fn receiver_clip_bounce_excludes_shared_contributors_and_whole_track_refuses() {
     for whole_track in [false, true] {
         shared_receiver_bounce_case(whole_track);
     }
@@ -608,16 +608,6 @@ fn shared_receiver_bounce_case(whole_track: bool) {
     else {
         panic!("midi clip")
     };
-    session
-        .command(Command::AddMidiNote {
-            clip: contributor_clip,
-            start: BeatTime::ZERO,
-            duration: BeatTime::ONE,
-            pitch: 67,
-            channel: 0,
-            velocity: 96,
-        })
-        .unwrap();
     let receiver_effect = hex_engine::default_native_device_state_for_class(
         hex_engine::NativeDeviceClass::Effect,
         hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
@@ -638,30 +628,58 @@ fn shared_receiver_bounce_case(whole_track: bool) {
         })
         .unwrap();
 
+    // Capture a render before the other contributor starts feeding the source.
+    let receiver_only = session.compile_prepared_revision(None).unwrap();
+    session
+        .command(Command::AddMidiNote {
+            clip: contributor_clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 67,
+            channel: 0,
+            velocity: 96,
+        })
+        .unwrap();
+
     let target = if whole_track {
         BounceTarget::Track(receiver)
     } else {
         BounceTarget::Clips(vec![receiver_clip])
     };
+    if whole_track {
+        let before = session.project().clone();
+        let error = session
+            .bounce_arrangement(
+                target,
+                true,
+                &folder.0,
+                &hex_export::ExportControl::default(),
+                None,
+            )
+            .unwrap_err();
+        assert!(error.contains("linked tracks"), "{error}");
+        assert_eq!(session.project(), &before);
+        assert_eq!(std::fs::read_dir(&folder.0).unwrap().count(), 0);
+        return;
+    }
     let item = session
         .project()
         .plan_arrangement_bounce(&target, whole_track)
         .unwrap()
         .remove(0);
-    let isolated = isolated(session.project(), &target, &item).unwrap();
-    assert_eq!(isolated.tracks().len(), 2);
+    let isolated = isolated(session.project(), &target, &item, whole_track).unwrap();
+    assert_eq!(isolated.tracks().len(), if whole_track { 2 } else { 1 });
+    if !whole_track {
+        let existing_in_place = super::isolated(session.project(), &target, &item, true).unwrap();
+        assert!(existing_in_place.track(contributor).is_some());
+    }
     assert_eq!(
         isolated.native_source(source_id).unwrap().receiver(),
         Some(receiver)
     );
     let isolated_receiver = isolated.track(receiver).unwrap();
-    let isolated_contributor = isolated.track(contributor).unwrap();
     assert_eq!(isolated_receiver.source_id(), Some(source_id));
     assert_eq!(isolated_receiver.devices().len(), 1);
-    assert_eq!(isolated_contributor.source_id(), Some(source_id));
-    assert!(isolated_contributor.devices().is_empty());
-    assert!(isolated_contributor.clips().is_empty());
-    assert_eq!(isolated_contributor.midi_clips().len(), 1);
 
     let original = session.project().clone();
     let revision = session.compile_prepared_revision(None).unwrap();
@@ -681,7 +699,10 @@ fn shared_receiver_bounce_case(whole_track: bool) {
         .find_map(|track| track.clips().first())
         .expect("bounce creates an audio clip");
     let actual = session.audio(audio.asset()).unwrap().frames();
-    let expected = pcm(revision, (audio.start() + audio.duration()) as usize);
+    let expected = pcm(
+        if whole_track { revision } else { receiver_only },
+        (audio.start() + audio.duration()) as usize,
+    );
     let expected = &expected[audio.start() as usize..(audio.start() + audio.duration()) as usize];
     let error = actual
         .iter()
@@ -690,27 +711,617 @@ fn shared_receiver_bounce_case(whole_track: bool) {
         .map(|(a, b)| (a - b).abs())
         .fold(0.0_f32, f32::max);
     assert!(error < 1e-5, "shared receiver bounce PCM differs: {error}");
-    if whole_track {
-        let retained = session.project().native_source(source_id).unwrap();
-        assert_eq!(retained.receiver(), None);
-        assert!(
-            retained
-                .devices()
-                .eq(original.native_source(source_id).unwrap().devices())
-        );
-        let contributor_after = session.project().track(contributor).unwrap();
-        let contributor_before = original.track(contributor).unwrap();
-        assert_eq!(contributor_after.source_id(), Some(source_id));
-        assert_eq!(contributor_after.devices(), contributor_before.devices());
-        assert_eq!(contributor_after.clips(), contributor_before.clips());
+    if !whole_track {
         assert_eq!(
-            contributor_after.midi_clips(),
-            contributor_before.midi_clips()
+            session.project().native_source(source_id),
+            original.native_source(source_id)
         );
-        let receiver = session.project().track(receiver).unwrap();
-        assert!(receiver.instrument().is_none());
-        assert!(receiver.devices().is_empty());
-        let bounced = session.project().clone();
+        assert_eq!(
+            session.project().track(contributor),
+            original.track(contributor)
+        );
+        assert!(session.undo());
+        assert_eq!(
+            session.project().snapshot().tracks,
+            original.snapshot().tracks
+        );
+        assert_eq!(
+            session.project().native_sources(),
+            original.native_sources()
+        );
+    }
+}
+
+#[test]
+fn shared_source_range_bounces_keep_only_selected_tracks_causal_input() {
+    for choose_contributor in [false, true] {
+        let folder = Folder::new();
+        let (mut session, receiver, receiver_clip) = fixture();
+        let source = session
+            .project()
+            .track(receiver)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        let Created::Track(contributor) = session
+            .command(Command::AddMidiTrack {
+                name: "contributor".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        session
+            .command(Command::BindTrackSource {
+                track: contributor,
+                source: Some(source),
+            })
+            .unwrap();
+        let Created::Clip(contributor_clip) = session
+            .command(Command::PlaceMidiClip {
+                track: contributor,
+                start: BeatTime::ONE,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        session
+            .command(Command::AddMidiNote {
+                clip: contributor_clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 67,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        let selected = if choose_contributor {
+            contributor
+        } else {
+            receiver
+        };
+        let other_clip = if choose_contributor {
+            receiver_clip
+        } else {
+            contributor_clip
+        };
+        let original = session.project().clone();
+        if choose_contributor {
+            session
+                .command(Command::SetNativeSourceReceiver {
+                    source,
+                    track: Some(selected),
+                })
+                .unwrap();
+        }
+        session
+            .command(Command::SetClipActive {
+                clip: other_clip,
+                active: false,
+            })
+            .unwrap();
+        let reference = session.compile_prepared_revision(None).unwrap();
+        assert!(session.undo());
+        if choose_contributor {
+            assert!(session.undo());
+        }
+        assert_eq!(session.project(), &original);
+        let start = 30_000;
+        let end = 40_000;
+        let expected = pcm(reference, end as usize);
+        let expected = &expected[start as usize..end as usize];
+        assert!(
+            expected.iter().flatten().any(|sample| sample.abs() > 1e-5),
+            "preroll must retain an audible earlier note"
+        );
+        let revision = session.compile_prepared_revision(None).unwrap();
+        let range = hex_project::TimeRange::new(vec![selected], start, end).unwrap();
+        session
+            .bounce_arrangement(
+                BounceTarget::Range(range),
+                false,
+                &folder.0,
+                &hex_export::ExportControl::default(),
+                Some(&revision),
+            )
+            .unwrap();
+        let clip = session
+            .project()
+            .tracks()
+            .iter()
+            .find_map(|track| track.clips().first())
+            .expect("bounced clip");
+        let actual = session.audio(clip.asset()).unwrap().frames();
+        assert_eq!(actual.len(), expected.len());
+        let error = actual
+            .iter()
+            .flatten()
+            .zip(expected.iter().flatten())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            error < 1e-5,
+            "isolated range differs for contributor={choose_contributor}: {error}"
+        );
+        assert_eq!(
+            session.project().native_source(source),
+            original.native_source(source)
+        );
+        assert_eq!(session.project().track(receiver), original.track(receiver));
+        assert_eq!(
+            session.project().track(contributor),
+            original.track(contributor)
+        );
+        assert!(session.undo());
+        assert_eq!(
+            session.project().snapshot().tracks,
+            original.snapshot().tracks
+        );
+        assert_eq!(
+            session.project().native_sources(),
+            original.native_sources()
+        );
+    }
+}
+
+#[test]
+fn shared_contributor_selected_clip_renders_its_own_source_without_other_notes() {
+    let folder = Folder::new();
+    let (mut session, receiver, receiver_clip) = fixture();
+    let source = session
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(contributor) = session
+        .command(Command::AddMidiTrack {
+            name: "contributor".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    session
+        .command(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(clip) = session
+        .command(Command::PlaceMidiClip {
+            track: contributor,
+            start: BeatTime::ONE,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    session
+        .command(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 67,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let effect = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap()
+    .with_output_gain_db(-6.0)
+    .unwrap();
+    session
+        .command(Command::InsertDevice {
+            track: contributor,
+            before: None,
+            state: effect,
+        })
+        .unwrap();
+    let original = session.project().clone();
+    // Independent reference: temporarily route the live source to this track and
+    // disable the other track's clip, then compile before restoring the project.
+    session
+        .command(Command::SetNativeSourceReceiver {
+            source,
+            track: Some(contributor),
+        })
+        .unwrap();
+    session
+        .command(Command::SetClipActive {
+            clip: receiver_clip,
+            active: false,
+        })
+        .unwrap();
+    let reference = session.compile_prepared_revision(None).unwrap();
+    assert!(session.undo());
+    assert!(session.undo());
+    assert_eq!(session.project(), &original);
+    let revision = session.compile_prepared_revision(None).unwrap();
+    session
+        .bounce_arrangement(
+            BounceTarget::Clips(vec![clip]),
+            false,
+            &folder.0,
+            &hex_export::ExportControl::default(),
+            Some(&revision),
+        )
+        .unwrap();
+    let audio = session
+        .project()
+        .tracks()
+        .iter()
+        .find_map(|track| track.clips().first())
+        .expect("bounced audio");
+    let actual = session.audio(audio.asset()).unwrap().frames();
+    let start = audio.start() as usize;
+    let expected = pcm(reference, start + actual.len());
+    let expected = &expected[start..];
+    assert_eq!(actual.len(), expected.len());
+    assert!(
+        expected.iter().flatten().any(|sample| sample.abs() > 1e-5),
+        "reference must contain audible source output"
+    );
+    let error = actual
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(error < 1e-5, "isolated contributor PCM differs: {error}");
+    assert_eq!(
+        session.project().native_source(source),
+        original.native_source(source)
+    );
+    assert_eq!(session.project().track(receiver), original.track(receiver));
+    assert_eq!(
+        session.project().track(contributor),
+        original.track(contributor)
+    );
+    assert!(session.undo());
+    assert_eq!(
+        session.project().snapshot().tracks,
+        original.snapshot().tracks
+    );
+    assert_eq!(
+        session.project().native_sources(),
+        original.native_sources()
+    );
+}
+
+#[test]
+fn whole_contributor_bounce_preserves_shared_source_and_receiver() {
+    let folder = Folder::new();
+    let (mut session, receiver, receiver_clip) = fixture();
+    let source = session
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(contributor) = session
+        .command(Command::AddMidiTrack {
+            name: "contributor".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    session
+        .command(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(clip) = session
+        .command(Command::PlaceMidiClip {
+            track: contributor,
+            start: BeatTime::ONE,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    session
+        .command(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 67,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let effect = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap()
+    .with_output_gain_db(-6.0)
+    .unwrap();
+    session
+        .command(Command::InsertDevice {
+            track: contributor,
+            before: None,
+            state: effect,
+        })
+        .unwrap();
+    let original = session.project().clone();
+    // Independent reference: temporarily route the live source to this track and
+    // disable the other track's clip, then compile before restoring the project.
+    session
+        .command(Command::SetNativeSourceReceiver {
+            source,
+            track: Some(contributor),
+        })
+        .unwrap();
+    session
+        .command(Command::SetClipActive {
+            clip: receiver_clip,
+            active: false,
+        })
+        .unwrap();
+    let reference = session.compile_prepared_revision(None).unwrap();
+    assert!(session.undo());
+    assert!(session.undo());
+    assert_eq!(session.project(), &original);
+    let revision = session.compile_prepared_revision(None).unwrap();
+    session
+        .bounce_arrangement(
+            BounceTarget::Track(contributor),
+            true,
+            &folder.0,
+            &hex_export::ExportControl::default(),
+            Some(&revision),
+        )
+        .unwrap();
+    let audio = session
+        .project()
+        .tracks()
+        .iter()
+        .find_map(|track| track.clips().first())
+        .expect("bounced audio");
+    let actual = session.audio(audio.asset()).unwrap().frames();
+    let start = audio.start() as usize;
+    let expected = pcm(reference, start + actual.len());
+    let expected = &expected[start..];
+    assert_eq!(actual.len(), expected.len());
+    assert!(
+        expected.iter().flatten().any(|sample| sample.abs() > 1e-5),
+        "reference must contain audible source output"
+    );
+    let error = actual
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(error < 1e-5, "isolated contributor PCM differs: {error}");
+    assert_eq!(
+        session.project().native_source(source),
+        original.native_source(source)
+    );
+    assert_eq!(session.project().track(receiver), original.track(receiver));
+    let bounced = session.project().clone();
+    let bounced_track = session.project().track(contributor).unwrap();
+    assert!(bounced_track.instrument().is_none());
+    assert!(bounced_track.devices().is_empty());
+    assert!(session.undo());
+    assert_eq!(
+        session.project().snapshot().tracks,
+        original.snapshot().tracks
+    );
+    assert_eq!(
+        session.project().native_sources(),
+        original.native_sources()
+    );
+    assert!(session.redo());
+    assert_eq!(session.project(), &bounced);
+
+    let asset = session.project().track(contributor).unwrap().clips()[0].asset();
+    let audio_path = session.project().asset(asset).unwrap().path().to_path_buf();
+    let audio_bytes = fs::read(&audio_path).unwrap();
+    let project_path = folder.0.join("shared-bounce.hex");
+    hex_storage::save_new(&project_path, session.project()).unwrap();
+    let loaded = hex_storage::load(&project_path).unwrap();
+    assert_eq!(loaded, bounced);
+    assert_eq!(
+        loaded.native_source(source).unwrap().receiver(),
+        Some(receiver)
+    );
+    assert_eq!(loaded.track(contributor).unwrap().source_id(), None);
+    let decoded = loaded
+        .assets()
+        .map(|asset| {
+            (
+                asset.id(),
+                hex_media::decode_wav_file(
+                    asset.path(),
+                    hex_media::Limits::new(64 * 1024 * 1024 + 44, 2_000_000),
+                )
+                .unwrap(),
+            )
+        })
+        .collect();
+    let mut reopened = Session::from_loaded(loaded, 32, 2_000_000, decoded).unwrap();
+    assert_eq!(
+        reopened.audio(asset).unwrap().frames(),
+        session.audio(asset).unwrap().frames()
+    );
+    reopened.command(Command::RemoveTrack(contributor)).unwrap();
+    let Created::Track(replacement) = reopened
+        .command(Command::AddMidiTrack {
+            name: "replacement".into(),
+        })
+        .unwrap()
+    else {
+        panic!("replacement")
+    };
+    reopened
+        .command(Command::BindTrackSource {
+            track: replacement,
+            source: Some(source),
+        })
+        .unwrap();
+    assert_eq!(
+        reopened.project().native_source(source).unwrap().receiver(),
+        Some(receiver)
+    );
+    assert_eq!(
+        reopened.project().track(replacement).unwrap().source_id(),
+        Some(source)
+    );
+    assert_eq!(fs::read(audio_path).unwrap(), audio_bytes);
+}
+
+#[test]
+fn shared_contributor_console_midi_matches_isolated_routed_playback() {
+    for looping in [false, true] {
+        let folder = Folder::new();
+        let (mut session, receiver, receiver_clip) = fixture();
+        let source = session
+            .project()
+            .track(receiver)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        let Created::Track(contributor) = session
+            .command(Command::AddMidiTrack {
+                name: "contributor".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        session
+            .command(Command::BindTrackSource {
+                track: contributor,
+                source: Some(source),
+            })
+            .unwrap();
+        let Created::Clip(clip) = session
+            .command(Command::PlaceMidiClip {
+                track: contributor,
+                start: BeatTime::ONE,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        session
+            .command(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 67,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        let Created::Scene(scene) = session
+            .command(Command::AddScene {
+                name: "console".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let Created::SessionClip(cell) = session
+            .command(Command::CopyArrangementMidiToSession {
+                source: clip,
+                scene,
+            })
+            .unwrap()
+        else {
+            panic!("cell")
+        };
+        session
+            .command(Command::SetSessionMidiClipSource {
+                clip: cell,
+                source_length: BeatTime::ONE,
+                source_start: BeatTime::ZERO,
+                loop_start: BeatTime::ZERO,
+                loop_end: BeatTime::ONE,
+                looping,
+            })
+            .unwrap();
+        if looping {
+            session
+                .command(Command::SetClipActive {
+                    clip: cell,
+                    active: false,
+                })
+                .unwrap();
+        }
+        let original = session.project().clone();
+        let plan = original
+            .plan_arrangement_bounce(&BounceTarget::Track(contributor), true)
+            .unwrap();
+        let item = plan
+            .iter()
+            .find(|item| matches!(item.source, hex_project::BounceSource::Console { clip, .. } if clip == cell))
+            .unwrap();
+        let frames = item.end as usize;
+        session
+            .command(Command::SetNativeSourceReceiver {
+                source,
+                track: Some(contributor),
+            })
+            .unwrap();
+        session
+            .command(Command::SetClipActive {
+                clip: receiver_clip,
+                active: false,
+            })
+            .unwrap();
+        let expected = console_pcm(&session, cell, frames);
+        assert!(
+            expected.iter().flatten().any(|sample| sample.abs() > 1e-5),
+            "reference must be audible"
+        );
+        assert!(session.undo());
+        assert!(session.undo());
+        assert_eq!(session.project(), &original);
+        session
+            .bounce_arrangement(
+                BounceTarget::Track(contributor),
+                true,
+                &folder.0,
+                &hex_export::ExportControl::default(),
+                None,
+            )
+            .unwrap();
+        let bounced = session
+            .project()
+            .session_audio_clip(cell)
+            .expect("bounced cell");
+        assert_eq!(bounced.active(), !looping);
+        let actual = session.audio(bounced.asset()).unwrap().frames();
+        assert!(actual.len() >= frames);
+        let error = actual[..frames]
+            .iter()
+            .flatten()
+            .zip(expected.iter().flatten())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            error < 1e-5,
+            "console bounce differs for looping={looping}: {error}"
+        );
+        assert_eq!(
+            session.project().native_source(source),
+            original.native_source(source)
+        );
+        assert_eq!(session.project().track(receiver), original.track(receiver));
+        let after = session.project().clone();
         assert!(session.undo());
         assert_eq!(
             session.project().snapshot().tracks,
@@ -721,12 +1332,12 @@ fn shared_receiver_bounce_case(whole_track: bool) {
             original.native_sources()
         );
         assert!(session.redo());
-        assert_eq!(session.project(), &bounced);
+        assert_eq!(session.project(), &after);
     }
 }
 
 #[test]
-fn contributor_midi_clip_bounce_is_refused_instead_of_silently_baking_nothing() {
+fn contributor_console_midi_bounce_cancellation_preserves_project() {
     let (mut session, receiver, _) = fixture();
     let source_id = session
         .project()
@@ -758,22 +1369,55 @@ fn contributor_midi_clip_bounce_is_refused_instead_of_silently_baking_nothing() 
     else {
         panic!("midi clip")
     };
-    for (target, in_place) in [
-        (BounceTarget::Clips(vec![clip]), false),
-        (BounceTarget::Track(contributor), true),
-        (
-            BounceTarget::Range(hex_project::TimeRange::new(vec![contributor], 0, 48_000).unwrap()),
-            false,
-        ),
-    ] {
-        let item = session
+    assert!(
+        session
             .project()
-            .plan_arrangement_bounce(&target, in_place)
-            .unwrap()
-            .remove(0);
-        let error = isolated(session.project(), &target, &item).unwrap_err();
-        assert!(error.contains("bounce its receiver"), "{error}");
-    }
+            .plan_arrangement_bounce(&BounceTarget::Clips(vec![clip]), true)
+            .is_err()
+    );
+    assert!(
+        session
+            .project()
+            .plan_arrangement_bounce(
+                &BounceTarget::Range(
+                    hex_project::TimeRange::new(vec![contributor], 0, 48_000).unwrap()
+                ),
+                true,
+            )
+            .is_err()
+    );
+    let Created::Scene(scene) = session
+        .command(Command::AddScene {
+            name: "console".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    session
+        .command(Command::CreateSessionMidiClip {
+            track: contributor,
+            scene,
+            name: "console".into(),
+            source_length: BeatTime::ONE,
+        })
+        .unwrap();
+    let original = session.project().clone();
+    let folder = Folder::new();
+    let control = hex_export::ExportControl::default();
+    assert!(control.cancel());
+    let error = session
+        .bounce_arrangement(
+            BounceTarget::Track(contributor),
+            true,
+            &folder.0,
+            &control,
+            None,
+        )
+        .unwrap_err();
+    assert!(error.contains("cancelled"), "{error}");
+    assert_eq!(session.project(), &original);
+    assert_eq!(std::fs::read_dir(&folder.0).unwrap().count(), 0);
 }
 
 #[test]
@@ -849,7 +1493,7 @@ fn nonreceiver_audio_bounce_case(shared: bool) {
         .plan_arrangement_bounce(&target, false)
         .unwrap()
         .remove(0);
-    let isolated = isolated(session.project(), &target, &item).unwrap();
+    let isolated = isolated(session.project(), &target, &item, false).unwrap();
     assert_eq!(isolated.tracks().len(), 1);
     assert!(isolated.track(contributor).unwrap().source_id().is_none());
     assert_eq!(isolated.track(contributor).unwrap().clips().len(), 1);
@@ -1257,6 +1901,32 @@ fn whole_track_bounce_replaces_every_console_source_keeps_loops_cells_and_atomic
         });
         let original = session.project().clone();
         let original_bytes = fs::read(folder.0.join("original-console.wav")).unwrap();
+        if shared {
+            let error = session
+                .bounce_arrangement(
+                    BounceTarget::Track(track),
+                    true,
+                    &folder.0,
+                    &hex_export::ExportControl::default(),
+                    None,
+                )
+                .unwrap_err();
+            assert!(error.contains("linked tracks"), "{error}");
+            assert_eq!(session.project(), &original);
+            assert_eq!(
+                fs::read(folder.0.join("original-console.wav")).unwrap(),
+                original_bytes
+            );
+            assert_eq!(
+                session
+                    .project()
+                    .track(contributor.unwrap())
+                    .unwrap()
+                    .source_id(),
+                Some(source)
+            );
+            continue;
+        }
         let plan = original
             .plan_arrangement_bounce(&BounceTarget::Track(track), true)
             .unwrap();
@@ -1408,9 +2078,34 @@ fn whole_track_bounce_replaces_every_console_source_keeps_loops_cells_and_atomic
 
 #[test]
 fn whole_track_console_second_output_cancel_and_final_publication_fail_without_partial_changes() {
-    for failure in 0..3 {
+    for (failure, shared) in
+        (0..3).flat_map(|failure| [false, true].map(|shared| (failure, shared)))
+    {
         let folder = Folder::new();
         let (mut session, track, _) = console_fixture(&folder, true);
+        if shared {
+            let source = session.project().track(track).unwrap().source_id().unwrap();
+            let Created::Track(receiver) = session
+                .command(Command::AddMidiTrack {
+                    name: "receiver".into(),
+                })
+                .unwrap()
+            else {
+                panic!("receiver")
+            };
+            session
+                .command(Command::BindTrackSource {
+                    track: receiver,
+                    source: Some(source),
+                })
+                .unwrap();
+            session
+                .command(Command::SetNativeSourceReceiver {
+                    source,
+                    track: Some(receiver),
+                })
+                .unwrap();
+        }
         let original = session.project().clone();
         let resident = session.resident_frames;
         let media = session.media.len();
@@ -1610,7 +2305,7 @@ fn isolated_bounce_admits_projects_with_automatic_names_on_dropped_tracks() {
         BounceTarget::Range(hex_project::TimeRange::new(vec![track], 30_013, 50_007).unwrap()),
     ] {
         let plan = original.plan_arrangement_bounce(&target, false).unwrap();
-        let projected = isolated(&original, &target, &plan[0]).unwrap();
+        let projected = isolated(&original, &target, &plan[0], false).unwrap();
         assert!(projected.track(other).is_none());
         assert!(projected.snapshot().automatic_track_names.is_empty());
     }
