@@ -38,6 +38,16 @@ impl State {
             binding: None,
         }
     }
+
+    pub(super) fn captured_gain(&self) -> Result<f32, &'static str> {
+        if self.loading {
+            return Err("track defaults are loading · retry shortly");
+        }
+        if !self.writable {
+            return Err("track defaults could not be loaded · open settings for details");
+        }
+        Ok(self.committed.gain())
+    }
 }
 
 impl EditorView {
@@ -124,18 +134,16 @@ impl EditorView {
     }
 
     pub(super) fn insert_default_track(&mut self, before_track: Option<TrackId>) {
-        if self.track_defaults.loading {
-            self.error = Some("track defaults are loading · retry shortly".into());
-            return;
-        }
-        if !self.track_defaults.writable {
-            self.error =
-                Some("track defaults could not be loaded · open settings for details".into());
-            return;
-        }
+        let gain = match self.track_defaults.captured_gain() {
+            Ok(gain) => gain,
+            Err(error) => {
+                self.error = Some(error.into());
+                return;
+            }
+        };
         self.enqueue(Request::Edit(Command::InsertDefaultTrackWithGain {
             before_track,
-            gain: self.track_defaults.committed.gain(),
+            gain,
         }));
     }
 
@@ -227,7 +235,9 @@ mod tests {
         loop {
             visual.run_until_parked();
             if editor.read_with(&*visual, |view, _| {
-                !view.track_defaults.loading && !view.track_defaults.saving
+                !view.track_defaults.loading
+                    && !view.track_defaults.saving
+                    && !view.audio_import_settings.is_loading()
             }) {
                 return;
             }
@@ -237,6 +247,43 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    #[gpui::test]
+    fn arrangement_batch_import_captures_committed_gain_without_affecting_other_destinations(
+        cx: &mut TestAppContext,
+    ) {
+        use hex_session::import_batch::{AudioBatchDestination, ConsoleDestination};
+        use hex_session::import_batch_decode::AudioBatchContext;
+        let (handle, editor, _, _, _) = super::super::loop_selection_ui_test::fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        wait(&editor, &mut visual);
+        editor.update(&mut visual, |v, _| {
+            let target = v.state.as_ref().unwrap().project.tracks()[0].id();
+            let context = AudioBatchContext { project_generation: v.project_generation, revision: v.state.as_ref().unwrap().revision, active_gesture: false };
+            let make = |destination| Request::audio_batch(vec![PathBuf::from("/sample.wav")], destination, context).unwrap().0;
+            let destination = AudioBatchDestination::NewTracks { before_track: None, start: 42 };
+            v.track_defaults.committed = TrackDefaults::new(0.5).unwrap();
+            let captured = v.capture_audio_import_policy(make(destination)).unwrap();
+            v.track_defaults.committed = TrackDefaults::new(0.25).unwrap();
+            v.track_defaults.saving = true;
+            let during_save = v.capture_audio_import_policy(make(destination)).unwrap();
+            assert!(matches!(during_save, Request::ImportAudioBatch { options, .. } if options.new_track_gain == Some(0.25)));
+            v.track_defaults.saving = false;
+            assert!(matches!(captured, Request::ImportAudioBatch { options, .. } if options.new_track_gain == Some(0.5)));
+            v.track_defaults.loading = true;
+            assert!(v.capture_audio_import_policy(make(destination)).unwrap_err().contains("loading"));
+            let existing = v.capture_audio_import_policy(make(AudioBatchDestination::Track { track: target, start: 0 })).unwrap();
+            assert!(matches!(existing, Request::ImportAudioBatch { options, .. } if options.new_track_gain.is_none()));
+            let mut project = hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 2).unwrap();
+            let hex_project::Created::Scene(scene) = project.execute(Command::AddScene { name: "scene".into() }).unwrap() else { panic!("scene") };
+            let console = v.capture_audio_import_policy(make(AudioBatchDestination::Console(ConsoleDestination::Cell { track: target, scene }))).unwrap();
+            assert!(matches!(console, Request::ImportAudioBatch { options, .. } if options.new_track_gain.is_none()));
+            v.track_defaults.loading = false;
+            v.track_defaults.writable = false;
+            assert!(v.capture_audio_import_policy(make(destination)).unwrap_err().contains("open settings"));
+            assert!(matches!(v.capture_audio_import_policy(Request::Import(PathBuf::from("/legacy.wav"))).unwrap(), Request::Import(_)));
+        });
     }
 
     #[gpui::test]

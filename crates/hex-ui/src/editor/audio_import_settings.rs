@@ -130,14 +130,24 @@ fn capture(
 
 impl EditorView {
     pub(super) fn capture_audio_import_policy(&self, request: Request) -> Result<Request, String> {
-        self.audio_import_settings.capture(
+        let mut request = self.audio_import_settings.capture(
             request,
             AudioBatchContext {
                 project_generation: self.project_generation,
                 revision: self.state.as_ref().map_or(0, |state| state.revision),
                 active_gesture: self.device_gesture.snapshot().is_some(),
             },
-        )
+        )?;
+        if let Request::ImportAudioBatch {
+            destination: AudioBatchDestination::NewTracks { .. },
+            options,
+            ..
+        } = &mut request
+        {
+            options.new_track_gain =
+                Some(self.track_defaults.captured_gain().map_err(str::to_owned)?);
+        }
+        Ok(request)
     }
 
     pub(super) fn start_audio_import_preferences_load(&mut self, cx: &mut Context<Self>) {
