@@ -84,7 +84,7 @@ impl EditorView {
                 let id = track.id();
                 let (background, text) = super::track_gain::activator_colors(!track.muted());
                 let (solo_background, solo_text) =
-                    super::track_gain::activator_colors(track.soloed());
+                    super::track_gain::activator_colors(self.displayed_solo(id, track.soloed()));
                 strip = strip
                     .child(
                         toggle_button_with_style(

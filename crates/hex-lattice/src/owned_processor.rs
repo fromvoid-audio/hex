@@ -10,6 +10,11 @@ use std::{any::Any, sync::Arc};
 /// Control-prepared owned transaction factory, independent of the legacy twin
 /// factory. Construction is fallible and finishes before audio publication.
 pub trait PreparedOwnedProcessorRuntime: Send + Sync {
+    /// Opt in when the host can smoothly mix dry and processed output during
+    /// bypass changes while continuing this owner's existing signal history.
+    fn supports_smoothed_bypass(&self) -> bool {
+        false
+    }
     fn parameter_automation_descriptor(
         &self,
         _parameter: hex_lattice_contract::ParameterId,
@@ -145,6 +150,33 @@ pub trait OwnedProcessorRuntime: Any + Send {
         false
     }
     fn inherit_from(&mut self, _previous: &dyn OwnedProcessorRuntime) {}
+    /// Whether a pristine, empty successor can copy only time-varying control
+    /// state from the donor while the donor retains all signal history. This is
+    /// a non-mutating preflight; unsupported providers return false.
+    fn can_fork_timing_without_signal_history_from(
+        &self,
+        _previous: &dyn OwnedProcessorRuntime,
+    ) -> bool {
+        false
+    }
+    /// After the exact preflight succeeds, seed only the successor's scalar
+    /// timing/control state. Preserve the donor and leave all successor signal
+    /// history empty. No allocation, deallocation or blocking is permitted.
+    /// Return false without mutation if the preconditions no longer hold.
+    fn fork_timing_without_signal_history_from(
+        &mut self,
+        _previous: &dyn OwnedProcessorRuntime,
+    ) -> bool {
+        false
+    }
+    /// Explicitly authorize complementary input splitting between the old
+    /// and pristine new owners. A timing fork alone does not establish this
+    /// signal law. Providers that report dynamics meters must refuse until
+    /// those readings have a defined combined-signal contract. Unsupported or
+    /// not-yet-validated providers return false.
+    fn can_split_tail_input_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {
+        false
+    }
     /// Commit-phase alternative when the host exclusively owns a retiring
     /// donor. It follows the same preflight as inherit_from. Providers may swap
     /// preallocated histories instead of copying them; the donor must not be

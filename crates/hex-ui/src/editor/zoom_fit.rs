@@ -366,7 +366,7 @@ impl EditorView {
         super::waveform::button(
             if back { "↶" } else { "⤢" },
             if back {
-                "zoom back · x"
+                "zoom back · v"
             } else if target == Target::Arrange {
                 "fit time and selected tracks · z"
             } else {
