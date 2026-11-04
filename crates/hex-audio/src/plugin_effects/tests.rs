@@ -436,14 +436,22 @@ fn actual_native_bypass_handoff_retains_untrimmed_dry_history() {
             .render_with_foreign_processors(&mut output, None, None, None, &mut callback)
             .unwrap();
         callback.finish_host_callback(true).unwrap();
-        let expected: [[f32; 2]; 8] = std::array::from_fn(|i| {
-            let gain = if location == 1 { 2.0 } else { 1.0 };
-            [f.samples[i][0] * gain, f.samples[i][1] * gain]
-        });
-        assert_eq!(
-            output, expected,
-            "bypass uses the original dry source, not earlier wet input trim"
-        );
+        let input_gain = hex_lattice_contract::HostGain::from_millidb(6000)
+            .unwrap()
+            .linear();
+        for (i, actual) in output.iter().enumerate() {
+            let wet_mix = 1.0 - (i + 1) as f32 / 240.0;
+            for channel in 0..2 {
+                let dry = f.samples[i][channel];
+                let wet = dry * input_gain * 0.5; // SDK fixture's first processed quantum.
+                let expected =
+                    dry * (1.0 - wet_mix) + wet * wet_mix + if location == 1 { dry } else { 0.0 };
+                assert!(
+                    (actual[channel] - expected).abs() < 1e-5,
+                    "aligned bypass frame {i} channel {channel}: {actual:?} expected {expected}"
+                );
+            }
+        }
         let deadline = Instant::now() + Duration::from_secs(3);
         while worker.published_blocks_on_control() < 3 {
             assert!(Instant::now() < deadline);
