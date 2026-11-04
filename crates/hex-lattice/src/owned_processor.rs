@@ -166,7 +166,9 @@ pub trait OwnedProcessorRuntime: Any + Send {
     }
     /// Explicitly authorize complementary input splitting between the old
     /// and pristine new owners. A timing fork alone does not establish this
-    /// signal law. Unsupported or not-yet-validated providers return false.
+    /// signal law. Providers that report dynamics meters must refuse until
+    /// those readings have a defined combined-signal contract. Unsupported or
+    /// not-yet-validated providers return false.
     fn can_split_tail_input_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {
         false
     }
