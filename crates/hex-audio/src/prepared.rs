@@ -4895,15 +4895,9 @@ impl Callback {
             })
         });
         if let Some(mut active) = active {
-            active.playback.clear_gain_recording_override();
-            if let Some((track, gain)) = live {
-                if active
-                    .playback
-                    .set_gain_recording_override(track, gain)
-                    .is_err()
-                {
-                    self.gain_recording.abort(AbortReason::SourceChanged);
-                }
+            if active.playback.set_gain_recording_input(live).is_err() {
+                active.playback.clear_gain_recording_override();
+                self.gain_recording.abort(AbortReason::SourceChanged);
             }
         }
     }
