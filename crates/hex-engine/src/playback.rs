@@ -571,11 +571,18 @@ impl Playback {
         input: Arc<crate::computer_keyboard::ComputerKeyboardInput>,
         hint: Option<&crate::computer_keyboard::ComputerKeyboardTuningHint>,
     ) -> Result<(), Invalid> {
-        let canonical = project
+        let owner = project
             .tracks()
             .iter()
             .find(|candidate| candidate.id() == track)
-            .and_then(hex_project::Track::instrument)
+            .ok_or(Invalid("computer keyboard track is unavailable"))?;
+        if owner.retained_source_path() {
+            return Err(Invalid(
+                "computer keyboard cannot target a retained source path",
+            ));
+        }
+        let canonical = owner
+            .instrument()
             .ok_or(Invalid("computer keyboard track is unavailable"))?;
         let contributor = self
             .project
