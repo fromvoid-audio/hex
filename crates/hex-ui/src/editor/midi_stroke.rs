@@ -222,10 +222,10 @@ impl MidiStroke {
             baseline_probes: 0,
             cancelled: false,
         };
-        if let Some(id) = down_hit {
-            if !stroke.baseline_note_has_pitch(id, initial_cell.pitch) {
-                return Err(StrokeError::InvalidBaseline);
-            }
+        if let Some(id) = down_hit
+            && !stroke.baseline_note_has_pitch(id, initial_cell.pitch)
+        {
+            return Err(StrokeError::InvalidBaseline);
         }
         stroke
             .baseline_cache

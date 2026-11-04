@@ -615,10 +615,10 @@ impl EditorView {
         }
     }
     fn invalidate_track_size(&self, track: Option<TrackId>) {
-        if let Some(id) = track {
-            if let Some(index) = self.track_layout.tracks.iter().position(|t| *t == id) {
-                self.track_scroll.invalidate(index..index + 1, 1);
-            }
+        if let Some(id) = track
+            && let Some(index) = self.track_layout.tracks.iter().position(|t| *t == id)
+        {
+            self.track_scroll.invalidate(index..index + 1, 1);
         }
     }
     fn capture_track_resize(
