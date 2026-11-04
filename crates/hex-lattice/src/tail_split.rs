@@ -179,6 +179,10 @@ impl TailSplit {
         }
         // The old history must render wet even when it came from a bypassed
         // owner; its audible dry-to-wet interpolation is applied afterward.
+        let old_metering = previous.metering;
+        let new_metering = successor.metering;
+        previous.metering = false;
+        successor.metering = false;
         previous.bypassed = false;
         let old_result = NativeRuntimeChain::process_entry_with_foreign_inner(
             previous,
@@ -191,17 +195,21 @@ impl TailSplit {
             None,
         );
         previous.bypassed = self.old_bypassed;
-        old_result?;
-        NativeRuntimeChain::process_entry_with_foreign_inner(
-            successor,
-            new_output,
-            frame_offset,
-            clock,
-            clock,
-            &mut RefuseForeign,
-            None,
-            None,
-        )?;
+        previous.metering = old_metering;
+        let result = old_result.and_then(|()| {
+            NativeRuntimeChain::process_entry_with_foreign_inner(
+                successor,
+                new_output,
+                frame_offset,
+                clock,
+                clock,
+                &mut RefuseForeign,
+                None,
+                None,
+            )
+        });
+        successor.metering = new_metering;
+        result?;
         if self.old_bypassed {
             for (index, sample) in old_output.iter_mut().enumerate() {
                 for channel in 0..2 {
@@ -209,6 +217,34 @@ impl TailSplit {
                         + (sample[channel] - old_dry[index][channel]) * gains[index];
                 }
             }
+        }
+        if new_metering {
+            let mut meter_frames = [[0.0; 2]; 256];
+            let new_gain = if successor.bypassed {
+                1.0
+            } else {
+                successor.input_gain
+            };
+            for index in 0..input.len() {
+                for lane in 0..2 {
+                    let old_input = old_dry[index][lane];
+                    let wet_input = old_input * previous.input_gain;
+                    let metered_old = if self.old_bypassed {
+                        old_input + (wet_input - old_input) * gains[index]
+                    } else {
+                        wet_input
+                    };
+                    meter_frames[index][lane] =
+                        metered_old + (input[index][lane] * gains[index]) * new_gain;
+                }
+            }
+            successor.meter.observe_input(&meter_frames[..input.len()]);
+            for index in 0..input.len() {
+                for lane in 0..2 {
+                    meter_frames[index][lane] = old_output[index][lane] + new_output[index][lane];
+                }
+            }
+            successor.meter.observe_output(&meter_frames[..input.len()]);
         }
         Ok(())
     }
