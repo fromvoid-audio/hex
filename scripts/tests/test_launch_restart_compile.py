@@ -12,8 +12,8 @@ from unittest.mock import Mock, patch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import test_launch
-restart = test_launch.launch.restart
+import launch_restart_support
+restart = launch_restart_support.restart
 
 
 class CompiledHelperTests(unittest.TestCase):

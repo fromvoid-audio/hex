@@ -1132,6 +1132,7 @@ fn same_shell(
             soloed,
             devices,
             instrument,
+            retained_source_path,
             instrument_position,
             content,
             sends,
@@ -1157,6 +1158,7 @@ fn same_shell(
             && soloed == &b.soloed
             && devices == &b.devices
             && instrument == &b.instrument
+            && retained_source_path == &b.retained_source_path
             && instrument_position == &b.instrument_position
             && sends == &b.sends
             && base == &b.gain_lane.base

@@ -21,7 +21,6 @@ impl SessionPlayback {
         &mut self,
         performance_frame: u64,
         arrangement_frame: u64,
-        loop_pass: u64,
         frames: usize,
         eligible: &mut [bool; MAX_TRACKS],
         analytic: &mut [bool; MAX_TRACKS],
@@ -38,12 +37,19 @@ impl SessionPlayback {
             .take(4)
             .count()
             == 4;
+        let loop_fade = self
+            .active_loop_region_at(arrangement_frame)
+            .and_then(|region| {
+                crate::loop_seam::LoopEndFade::new(
+                    region,
+                    self.revision.arrangement().sample_rate(),
+                )
+            });
         eligible.fill(false);
         analytic.fill(false);
         let batch_analytic = self.suppression_scratch.is_empty()
             && self.analytic_continuations.iter().all(Option::is_none);
         let timing = timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor);
-        let seam = self.loop_seam_at(arrangement_frame, loop_pass);
         for (index, (route, scratch)) in self
             .route_scratch
             .iter()
@@ -93,9 +99,9 @@ impl SessionPlayback {
                             continuations: &self.analytic_continuations,
                             index,
                             raw: true,
+                            loop_fade: None,
                             timing: &timing,
                             table: self.revision.session().sine_table(),
-                            seam: None,
                         },
                         &self.route_scratch,
                         self.historical_floor,
@@ -150,14 +156,9 @@ impl SessionPlayback {
                             track
                                 .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
                                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                            track.add_loop_seam_crossfade::<dyn MediaPages>(
-                                seam,
-                                arrangement_frame,
-                                output,
-                                None,
-                                None,
-                                crate::PreparedTrackMix::identity(),
-                            );
+                            if let Some(fade) = loop_fade {
+                                fade.apply(arrangement_frame, output);
+                            }
                         }
                         *eligible
                             .get_mut(index)
@@ -210,9 +211,9 @@ impl SessionPlayback {
                             continuations: &self.analytic_continuations,
                             index,
                             raw: true,
+                            loop_fade: None,
                             timing: &timing,
                             table: self.revision.session().sine_table(),
-                            seam: None,
                         },
                         &mut self.spans,
                         performance_frame,
@@ -320,11 +321,18 @@ impl SessionPlayback {
         external: Option<hex_lattice::NativeExternalAutomation<'_>>,
         resident_source: Option<BatchedSources<'_>>,
     ) -> Result<(), SessionPlaybackError> {
+        let loop_fade = self
+            .active_loop_region_at(arrangement_frame)
+            .and_then(|region| {
+                crate::loop_seam::LoopEndFade::new(
+                    region,
+                    self.revision.arrangement().sample_rate(),
+                )
+            });
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
         self.push_compensated_stamp(performance_frame, arrangement_frame, loop_pass)?;
-        let seam = self.loop_seam_at(arrangement_frame, loop_pass);
         let grouped = self
             .compensation
             .as_ref()
@@ -401,9 +409,9 @@ impl SessionPlayback {
                                     // after the current graph returns to a fused mix.
                                     // The content-origin fader below owns that mix.
                                     raw: true,
+                                    loop_fade,
                                     timing: &timing,
                                     table: self.revision.session().sine_table(),
-                                    seam,
                                 },
                                 &mut self.spans,
                                 performance_frame,
@@ -445,9 +453,9 @@ impl SessionPlayback {
                                     continuations: &self.analytic_continuations,
                                     index,
                                     raw: true,
+                                    loop_fade: None,
                                     timing: &timing,
                                     table: self.revision.session().sine_table(),
-                                    seam: None,
                                 },
                                 &self.route_scratch,
                                 self.historical_floor,
@@ -616,12 +624,33 @@ impl SessionPlayback {
                             external,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                    let override_gain = self
-                        .gain_recording_override
-                        .filter(|_| self.revision.gain_recording_track() == Some(route.id));
-                    let mixed = compensation
-                        .fader(track, index, override_gain, processed)
-                        .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    let recording_track = self.revision.gain_recording_track() == Some(route.id);
+                    let override_gain = self.gain_recording_override.filter(|_| recording_track);
+                    let live_gain = if recording_track {
+                        compensation.fader_content_frame(index).and_then(|frame| {
+                            self.live_gain_scratch.next(
+                                track,
+                                frame,
+                                override_gain,
+                                self.revision.arrangement().sample_rate(),
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                    let mix = compensation.fader_mix(track, index, live_gain);
+                    let mixed = if let Some(mix) = mix {
+                        let fader = &mut self.track_fader_scratch[index];
+                        let mix = if track.has_gain_automation() || override_gain.is_some() {
+                            fader.follow(mix.channel_gain());
+                            mix
+                        } else {
+                            mix.with_channel_gain(fader.next())
+                        };
+                        mix.apply_frame(processed)
+                    } else {
+                        [0.0; 2]
+                    };
                     // Retired tails retain their old post-fader output; they do
                     // not re-enter current authored sends or feeds.
                     let routed = if let Some(detached) = detached.as_ref() {

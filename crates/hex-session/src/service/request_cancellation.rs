@@ -6,6 +6,8 @@ use std::sync::atomic::AtomicU64;
 
 pub(super) struct QueuedRequest {
     pub request: Request,
+    pub(super) publication_wait_failure: Option<&'static str>,
+    pub(super) publication_waited: bool,
     pub document_intent: u64,
     pub save_correlation: Option<super::SaveCorrelation>,
     pub diagnostic: Option<super::diagnostics::DiagnosticRequest>,
@@ -15,6 +17,8 @@ impl QueuedRequest {
     pub(super) fn continuation(request: Request, intent: &AtomicU64) -> Self {
         Self {
             request,
+            publication_wait_failure: None,
+            publication_waited: false,
             document_intent: intent.load(Ordering::Acquire),
             save_correlation: None,
             diagnostic: None,
@@ -31,6 +35,7 @@ pub struct RequestCancellation {
     shutdown: Arc<AtomicBool>,
     document_intent: Arc<AtomicU64>,
     expected_intent: u64,
+    publication_waited: bool,
 }
 impl RequestCancellation {
     pub(super) fn new(
@@ -42,7 +47,16 @@ impl RequestCancellation {
             shutdown,
             document_intent,
             expected_intent,
+            publication_waited: false,
         }
+    }
+    pub(super) fn after_publication_wait(mut self, waited: bool) -> Self {
+        self.publication_waited = waited;
+        self
+    }
+    /// Whether this request must recheck document intent at graph admission.
+    pub fn requires_publication_admission_check(&self) -> bool {
+        self.publication_waited
     }
     pub fn is_cancelled(&self) -> bool {
         self.shutdown.load(Ordering::Acquire)
@@ -109,6 +123,8 @@ impl Sender {
         };
         match self.channel.try_send(QueuedRequest {
             request,
+            publication_wait_failure: None,
+            publication_waited: false,
             document_intent: intent,
             save_correlation,
             diagnostic,

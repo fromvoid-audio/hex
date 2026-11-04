@@ -61,15 +61,14 @@ impl AudioContentView {
                 "audio directed window exceeds its retained placement",
             ));
         }
-        if let Some(p) = self.base_placement {
-            if matches!(p.outer_length, AudioDomainClock::Beats(_))
+        if let Some(p) = self.base_placement
+            && (matches!(p.outer_length, AudioDomainClock::Beats(_))
                 != matches!(edit.domain.clock, AudioDomainClock::Beats(_))
                 || p.outer_length.length() == 0
                 || (p.mode == AudioViewMode::Repeat
-                    && p.cycle_phase >= self.base_view_end - self.base_view_start)
-            {
-                return Err(Invalid("audio directed base placement is invalid"));
-            }
+                    && p.cycle_phase >= self.base_view_end - self.base_view_start))
+        {
+            return Err(Invalid("audio directed base placement is invalid"));
         }
         Ok(())
     }

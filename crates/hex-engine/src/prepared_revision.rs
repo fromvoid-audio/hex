@@ -161,6 +161,35 @@ impl std::fmt::Debug for PreparedRevision {
 
 impl PreparedRevision {
     #[cfg(test)]
+    pub(crate) fn test_install_retained_receiver(
+        &mut self,
+        canonical: &Project,
+        track: TrackId,
+    ) -> Result<(), Invalid> {
+        let mut arrangement = self.arrangement().as_ref().clone();
+        let index = arrangement
+            .tracks
+            .iter()
+            .position(|row| row.canonical_track_id() == Some(track))
+            .ok_or(Invalid("receiver track is missing"))?;
+        arrangement.tracks[index].source_input_enabled = false;
+        arrangement.tracks[index].instrument_output_gain = 0.5;
+        self.source_routing
+            .test_exclude_receiver_contribution(index)?;
+        let graph =
+            crate::signal_graph::SignalGraph::test_printed_branch(&arrangement, canonical, index)?;
+        arrangement.main_output_latency_frames = crate::main_chain::output_latency(
+            graph.main_latency(),
+            &arrangement.main_device_chain,
+        )?;
+        arrangement.signal_graph = Some(graph);
+        for row in &mut arrangement.tracks {
+            row.source_mix = crate::PreparedTrackMix::identity();
+        }
+        self.arrangement = crate::owned_shared::OwnedShared::new_owned(arrangement);
+        Ok(())
+    }
+    #[cfg(test)]
     pub(crate) fn test_install_group_graph(&mut self, canonical: &Project) {
         let mut arrangement = self.arrangement().as_ref().clone();
         arrangement.signal_graph =

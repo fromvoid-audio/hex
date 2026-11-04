@@ -35,6 +35,9 @@ use core_foundation::{
     runloop::CFRunLoopRun,
     string::{CFString, CFStringRef},
 };
+use core_foundation_sys::runloop::{
+    CFRunLoopGetMain, CFRunLoopRef, CFRunLoopWakeUp, kCFRunLoopCommonModes,
+};
 use ctor::ctor;
 use futures::channel::oneshot;
 use itertools::Itertools;
@@ -62,6 +65,11 @@ use std::{
 };
 use strum::IntoEnumIterator;
 use util::ResultExt;
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRunLoopPerformBlock(run_loop: CFRunLoopRef, mode: CFTypeRef, block: *const c_void);
+}
 
 #[allow(non_upper_case_globals)]
 const NSUTF8StringEncoding: NSUInteger = 4;
@@ -1001,31 +1009,26 @@ impl Platform for MacPlatform {
             return;
         }
         drop(lock);
-        // A YES reply terminates synchronously, running `applicationWillTerminate:`
-        // and the app's quit observers; reply on a later main-queue turn so no
-        // App borrow is held, as `quit` does.
-        use super::dispatcher::{dispatch_get_main_queue, dispatch_sys::dispatch_async_f};
-        let reply: unsafe extern "C" fn(*mut c_void) = if terminate {
-            reply_terminate
-        } else {
-            reply_cancel
-        };
+        // Termination may already be running on the main dispatch queue, so a
+        // queued dispatch block cannot run while AppKit waits for this reply.
+        // A later main run-loop turn also releases the App borrow before a YES
+        // reply synchronously invokes the quit observers.
+        let reply = ConcreteBlock::new(move || unsafe {
+            let app = NSApplication::sharedApplication(nil);
+            let answer = if terminate { YES } else { NO };
+            let _: () = msg_send![app, replyToApplicationShouldTerminate: answer];
+        })
+        .copy();
+        // Core Foundation copies the block before returning. The main run loop
+        // and its common-modes constant remain valid for the application's life.
         unsafe {
-            dispatch_async_f(dispatch_get_main_queue(), ptr::null_mut(), Some(reply));
-        }
-
-        unsafe extern "C" fn reply_terminate(_: *mut c_void) {
-            unsafe {
-                let app = NSApplication::sharedApplication(nil);
-                let _: () = msg_send![app, replyToApplicationShouldTerminate: YES];
-            }
-        }
-
-        unsafe extern "C" fn reply_cancel(_: *mut c_void) {
-            unsafe {
-                let app = NSApplication::sharedApplication(nil);
-                let _: () = msg_send![app, replyToApplicationShouldTerminate: NO];
-            }
+            let run_loop = CFRunLoopGetMain();
+            CFRunLoopPerformBlock(
+                run_loop,
+                kCFRunLoopCommonModes as CFTypeRef,
+                &*reply as *const _ as *const c_void,
+            );
+            CFRunLoopWakeUp(run_loop);
         }
     }
 

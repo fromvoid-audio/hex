@@ -148,7 +148,7 @@ impl PreparedExportPages for MemoryPages {
     ) -> Result<(), ExportError> {
         self.missed = false;
         let sources = &self.sources;
-        playback
+        let window = playback
             .visit_next_stream_chunk(frames, None, &mut |extent| {
                 let hex_engine::StreamResourceKey::Audio(key) = extent.source else {
                     return Err(hex_engine::Invalid("unexpected scalar stream demand"));
@@ -166,6 +166,9 @@ impl PreparedExportPages for MemoryPages {
                 Ok(())
             })
             .map_err(ExportError::Render)?;
+        if window.frames != frames {
+            return Err(ExportError::Invalid("linear export demand width differs"));
+        }
         Ok(())
     }
     fn complete_chunk(&mut self) -> Result<(), ExportError> {
@@ -261,6 +264,64 @@ fn assert_refused_atomically(
 }
 
 type Target = fn(TrackId, ClipId, ClipId) -> (BounceTarget, bool);
+
+#[test]
+fn latent_streamed_bounce_matches_resident_and_missing_pages_remain_atomic() {
+    let folder = Folder::new();
+    let path = folder.0.join("source.wav");
+    grouping::write_fixture(&path, 48_000, &source());
+    let limiter = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+    )
+    .unwrap();
+    let mut outputs = Vec::new();
+    for streamed in [false, true] {
+        let (mut session, track, clip, _) = fixture(&path, streamed);
+        session
+            .command(Command::InsertDevice {
+                track,
+                before: None,
+                state: limiter.clone(),
+            })
+            .unwrap();
+        assert!(
+            session
+                .compile_prepared_revision(None)
+                .unwrap()
+                .arrangement()
+                .main_latency_frames()
+                > 0
+        );
+        let output = bounce(
+            &mut session,
+            &folder.0.join(format!("latent-{streamed}")),
+            BounceTarget::Clips(vec![clip]),
+            false,
+            streamed.then_some(serving as StreamedBouncer),
+        )
+        .unwrap();
+        outputs.push(output);
+    }
+    assert_eq!(outputs[0], outputs[1]);
+    let (mut session, track, clip, _) = fixture(&path, true);
+    session
+        .command(Command::InsertDevice {
+            track,
+            before: None,
+            state: limiter,
+        })
+        .unwrap();
+    assert_refused_atomically(
+        &mut session,
+        &folder.0.join("latent-page-miss"),
+        BounceTarget::Clips(vec![clip]),
+        false,
+        Some(missing),
+        "page miss",
+        "latent page miss",
+    );
+}
 
 #[test]
 fn streamed_bounces_match_resident_spans_and_refuse_atomically_without_pages() {

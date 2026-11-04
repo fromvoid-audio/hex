@@ -67,7 +67,7 @@ impl SessionPlayback {
             visit,
             window: None,
         };
-        self.inherit_state_planned(previous, None, Some(&mut demand), true)?;
+        self.inherit_state_planned(previous, None, Some(&mut demand), true, false)?;
         demand
             .window
             .ok_or(SessionPlaybackError::ArithmeticOverflow)
@@ -77,13 +77,16 @@ impl SessionPlayback {
     /// Visitors borrow metadata only and must use preallocated storage on audio.
     /// A visitor refusal leaves this runtime unchanged; partial visitor storage
     /// is speculative and must be discarded. Paused/empty demand has width zero.
+    /// Linear offline runtimes include compensated paths; interactive closed
+    /// demand retains its existing restricted admission.
     pub fn visit_next_stream_chunk(
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
-        self.visit_stream_chunk_at(
+        self.visit_stream_chunk_in_scope(
+            self.linear_arrangement_export,
             &self.routes,
             self.performance_frame,
             self.arrangement_frame,
@@ -95,30 +98,6 @@ impl SessionPlayback {
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // Borrowed applied/planned clocks, no ownership snapshot.
-    pub(super) fn visit_stream_chunk_at(
-        &self,
-        routes: &[TrackRoute],
-        performance_frame: u64,
-        arrangement_frame: u64,
-        route_generation: u64,
-        loop_pass: u64,
-        playing: bool,
-        maximum_frames: usize,
-        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<StreamChunkWindow, Invalid> {
-        self.visit_stream_chunk_in_scope(
-            false,
-            routes,
-            performance_frame,
-            arrangement_frame,
-            route_generation,
-            loop_pass,
-            playing,
-            maximum_frames,
-            visit,
-        )
-    }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn visit_stream_chunk_in_scope(
         &self,
@@ -245,15 +224,10 @@ impl SessionPlayback {
             return Ok(window);
         }
         let region = self.active_loop_region_at(arrangement_frame);
-        let mut seam = None;
         if let Some(region) = region {
-            let pass;
-            (window.arrangement_frame, pass) =
+            (window.arrangement_frame, _) =
                 render::normalize_loop_cursor(window.arrangement_frame, region, loop_pass)
                     .map_err(|error| Invalid(error.diagnostic_message()))?;
-            seam =
-                crate::LoopSeam::for_pass(region, pass, self.revision.arrangement().sample_rate())
-                    .and_then(|seam| seam.overrun(window.arrangement_frame, usize::MAX));
             let until = if window.arrangement_frame < region.start() {
                 region.start() - window.arrangement_frame
             } else {
@@ -368,15 +342,6 @@ impl SessionPlayback {
                             window.frames,
                             &mut |extent| visit(extent.into()),
                         )?;
-                        // A wrapped pass's crossfade also reads past the loop
-                        // end (`crate::loop_seam`); pin that overrun with it.
-                        if let Some((overrun, count)) = seam {
-                            track.visit_stream_demand(
-                                overrun,
-                                count.min(window.frames),
-                                &mut |extent| visit(extent.into()),
-                            )?;
-                        }
                     }
                 }
                 RouteOwner::SessionAudio { clip, launch_frame } => {

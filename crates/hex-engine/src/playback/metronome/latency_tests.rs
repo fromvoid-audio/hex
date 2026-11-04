@@ -7,9 +7,22 @@ use std::{collections::BTreeMap, sync::Arc};
 /// A 48 kHz project whose Main limiter adds latency, with a one-sample
 /// transient on beat 1 (frame 24,000 at 120 bpm).
 fn main_latency_revision(loop_region: Option<LoopRegion>) -> (Arc<PreparedRevision>, u64) {
+    main_latency_revision_at_tempo(loop_region, 120_000_000, 24_000)
+}
+
+fn main_latency_revision_at_tempo(
+    loop_region: Option<LoopRegion>,
+    micro_bpm: u32,
+    beat_one_frame: u64,
+) -> (Arc<PreparedRevision>, u64) {
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
     use hex_project::{Command, Created, Editor};
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    editor
+        .execute(Command::SetProjectTempo {
+            tempo: hex_project::Tempo::new(micro_bpm).unwrap(),
+        })
+        .unwrap();
     let Created::Imported { track, asset, clip } = editor
         .execute(Command::ImportPreparedAudioTrack {
             name: "transient".into(),
@@ -27,7 +40,7 @@ fn main_latency_revision(loop_region: Option<LoopRegion>) -> (Arc<PreparedRevisi
         .execute(Command::MoveClip {
             clip,
             track,
-            start: 24_000,
+            start: beat_one_frame,
         })
         .unwrap();
     let definition = &hex_devices::limiter::DEFINITION;
@@ -116,19 +129,20 @@ fn onsets(signal: &[f32], threshold: f32, gap: usize) -> Vec<u64> {
 
 #[test]
 fn click_is_delayed_by_main_latency_to_meet_the_beat_aligned_transient() {
-    let (revision, latency) = main_latency_revision(None);
+    const BEAT_ONE: u64 = 4_800;
+    let (revision, latency) = main_latency_revision_at_tempo(None, 600_000_000, BEAT_ONE);
     assert_eq!(latency, 288);
     for block in [1, 63, 256, 1_024] {
-        let (click, music) = click_and_music(&revision, 26_000, block);
+        let (click, music) = click_and_music(&revision, 6_000, block);
         assert_eq!(
             onsets(&music, 0.01, 2_000),
-            vec![24_000 + latency],
+            vec![BEAT_ONE + latency],
             "block {block}"
         );
         // Beat 0 and beat 1 clicks sound exactly with the delayed music.
         assert_eq!(
             onsets(&click, 0.05, 2_000),
-            vec![latency, 24_000 + latency],
+            vec![latency, BEAT_ONE + latency],
             "block {block}"
         );
         assert!(

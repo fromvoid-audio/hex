@@ -18,6 +18,7 @@
 //! remain effective under queue pressure; final graph, source and endpoint destruction belongs on
 //! control.
 pub mod audio_diagnostics;
+pub mod cpu_meter;
 mod device;
 mod open_outcome;
 mod output_route;
@@ -242,6 +243,8 @@ pub mod prepared;
 #[cfg(feature = "allocation-probe")]
 pub mod worker_fixture;
 
+#[cfg(all(test, feature = "allocation-probe"))]
+mod auxiliary_allocation;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod eq_allocation;
 #[cfg(all(test, feature = "allocation-probe"))]
