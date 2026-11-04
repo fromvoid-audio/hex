@@ -1642,6 +1642,42 @@ mod tests {
     }
 
     #[test]
+    fn ruler_and_adaptive_grid_share_landmarks_across_zoom_pan_and_meter_changes() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::from_quarters(8).unwrap(),
+                tempo: Tempo::new(90_000_000).unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetMeterPoint {
+                beat: BeatTime::from_quarters(12).unwrap(),
+                meter: Meter::new(3, 4).unwrap(),
+            })
+            .unwrap();
+        let project = editor.project();
+        for (start, length, width) in [
+            (0, 96_000, 640.0),
+            (12_000, 192_000, 640.0),
+            (120_000, 384_000, 640.0),
+            (240_000, 768_000, 1_200.0),
+        ] {
+            let viewport = Viewport { start, length };
+            let grid = grid_lines(project, viewport, width, SnapGrid::Adaptive);
+            let ruler = ruler_ticks(project, viewport, width);
+            assert!(!ruler.is_empty() && !grid.is_empty());
+            for tick in ruler {
+                assert!(
+                    grid.iter().any(|line| line.frame == tick.frame),
+                    "ruler landmark {} is absent from grid at {viewport:?}",
+                    tick.frame
+                );
+            }
+        }
+    }
+
+    #[test]
     fn bounded_ruler_marks_quarter_positions_and_fragmentary_meter_changes() {
         let mut editor = Editor::new(Project::new(48_000).expect("project"), 32).expect("editor");
         let beat = BeatTime::from_ratio(3, 2).expect("meter beat");

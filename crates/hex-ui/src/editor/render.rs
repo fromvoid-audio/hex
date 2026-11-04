@@ -1389,6 +1389,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &DeleteClip, window, cx| {
+                if view.selection_delete_blocked() {
+                    return;
+                }
                 if view.delete_automation_point(window, cx) {
                     return;
                 }
