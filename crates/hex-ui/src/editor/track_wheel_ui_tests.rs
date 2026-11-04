@@ -267,3 +267,39 @@ fn option_wheel_centering_respects_scroll_endpoints(cx: &mut TestAppContext) {
         }
     }
 }
+
+#[gpui::test]
+fn option_wheel_centers_track_taller_than_viewport(cx: &mut TestAppContext) {
+    let (mut visual, editor, tracks) = fixture(cx, 40);
+    editor.update(&mut visual, |view, cx| {
+        view.track_scroll
+            .scroll_to_item(10, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let track = tracks[12];
+    for _ in 0..8 {
+        let at = bounds(&mut visual, "arrangement-track-header", track).center();
+        wheel(&mut visual, at, line(1.0), option());
+    }
+    visual.simulate_resize(size(px(1_280.0), px(620.0)));
+    visual.run_until_parked();
+    let viewport = editor.read_with(&visual, |view, _| view.track_scroll.list.viewport_bounds());
+    let row = bounds(&mut visual, "arrangement-track-header", track);
+    assert!(
+        row.size.height > viewport.size.height,
+        "fixture needs a taller row: {row:?} {viewport:?}"
+    );
+    let previous_height = row.size.height;
+    let name = bounds(&mut visual, "track-name-area", track);
+    assert!(name.center().y >= viewport.top() && name.center().y < viewport.bottom());
+    wheel(&mut visual, name.center(), line(-1.0), option());
+    let viewport = editor.read_with(&visual, |view, _| view.track_scroll.list.viewport_bounds());
+    let row = bounds(&mut visual, "arrangement-track-header", track);
+    // The existing height limit can clamp the row to the smaller viewport.
+    assert!(row.size.height < previous_height);
+    assert!(
+        (f32::from(row.center().y - viewport.center().y)).abs() <= 1.0,
+        "row {row:?}, viewport {viewport:?}"
+    );
+}
