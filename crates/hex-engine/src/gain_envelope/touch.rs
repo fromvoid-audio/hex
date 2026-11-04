@@ -36,7 +36,34 @@ pub(super) struct PreparedTouch {
     steps: Vec<Step>,
     duration: u64,
 }
+
+/// An authored target, not the evaluated intermediate gain of its ramp.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TouchTarget {
+    pub span: usize,
+    pub event: usize,
+    pub gain: f32,
+}
 impl PreparedTouch {
+    pub(super) fn target_at(&self, frame: u64) -> Option<TouchTarget> {
+        let span_index = self
+            .spans
+            .partition_point(|span| span.start <= frame)
+            .checked_sub(1)?;
+        let span = self.spans.get(span_index)?;
+        if frame >= span.end {
+            return None;
+        }
+        let steps = self.steps.get(span.steps.clone())?;
+        let event = steps
+            .partition_point(|step| step.frame <= frame)
+            .checked_sub(1)?;
+        Some(TouchTarget {
+            span: span_index,
+            event: span.steps.start + event,
+            gain: steps[event].gain,
+        })
+    }
     pub(super) fn preflight_bytes(lane: &GainLane) -> Option<usize> {
         let steps = lane
             .spans()

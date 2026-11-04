@@ -1505,14 +1505,17 @@ impl SignalRuntime {
         index: usize,
         override_gain: Option<f32>,
     ) -> Option<crate::PreparedTrackMix> {
-        let origin = self.delays.stamp_at_delay(
-            self.graph.plan.nodes()[self.graph.tracks[index].fader].output_arrival_frames,
-        )?;
-        let mix = override_gain.map_or_else(
-            || track.mix_at(origin.arrangement_frame),
-            |gain| track.recording_mix(gain),
-        );
+        let frame = self.fader_content_frame(index)?;
+        let mix =
+            override_gain.map_or_else(|| track.mix_at(frame), |gain| track.recording_mix(gain));
         Some(mix)
+    }
+    pub(crate) fn fader_content_frame(&self, index: usize) -> Option<u64> {
+        self.delays
+            .stamp_at_delay(
+                self.graph.plan.nodes()[self.graph.tracks[index].fader].output_arrival_frames,
+            )
+            .map(|origin| origin.arrangement_frame)
     }
     pub(crate) fn process_main(
         &self,

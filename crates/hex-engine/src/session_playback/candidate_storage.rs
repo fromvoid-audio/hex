@@ -19,6 +19,8 @@ impl SessionPlayback {
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
+            live_gain: _,
+            live_gain_scratch: _,
             native_parameter_state,
             compensation,
             device_metering: _,

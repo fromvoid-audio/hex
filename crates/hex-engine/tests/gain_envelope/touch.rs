@@ -676,7 +676,13 @@ fn armed_live_override_is_transient_absolute_and_transport_clears_it() {
         );
     }
     runtime.render(&mut output).unwrap();
-    assert_eq!(output, [[0.2, -0.4]; 4]);
+    assert_eq!(
+        output,
+        [1, 2, 3, 4].map(|n| {
+            let gain = ramp(0.0, 0.8, n);
+            [0.25 * gain, -0.5 * gain]
+        })
+    );
     runtime.apply(PlaybackCommand::Pause);
     runtime.render(&mut output).unwrap();
     assert_eq!(output, [[0.0; 2]; 4]);
@@ -686,7 +692,13 @@ fn armed_live_override_is_transient_absolute_and_transport_clears_it() {
     );
     runtime.apply(PlaybackCommand::Play);
     runtime.render(&mut output).unwrap();
-    assert_eq!(output, [[0.2, -0.4]; 4]);
+    assert_eq!(
+        output,
+        [5, 6, 7, 8].map(|n| {
+            let gain = ramp(0.0, 0.8, n);
+            [0.25 * gain, -0.5 * gain]
+        })
+    );
     runtime.clear_gain_recording_override();
     runtime.render(&mut output).unwrap();
     assert_eq!(output, [[0.0; 2]; 4]);
@@ -743,7 +755,13 @@ fn clearing_live_override_resumes_saved_base_and_touch_law() {
         .set_gain_recording_override(f.track.value(), 1.0)
         .unwrap();
     runtime.render(&mut output).unwrap();
-    assert_eq!(output, [[0.25, -0.5]; 4]);
+    assert_eq!(
+        output,
+        [1, 2, 3, 4].map(|n| {
+            let gain = ramp(0.5, 1.0, n);
+            [0.25 * gain, -0.5 * gain]
+        })
+    );
     runtime.clear_gain_recording_override();
     runtime.render(&mut output).unwrap();
     assert_eq!(
@@ -839,7 +857,7 @@ fn detached_effect_tail_freezes_live_override_instead_of_static_zero() {
         .unwrap();
     old.render(&mut [[0.0; 2]; 4]).unwrap();
     let mut snapshot = f.editor.project().snapshot();
-    snapshot.tracks[0].gain = 0.8;
+    snapshot.tracks[0].gain = ramp(0.0, 0.8, 4);
     let project = Project::from_snapshot(snapshot).unwrap();
     let mut samples = vec![[0.25, -0.5]; 64];
     samples[4..].fill([0.0; 2]);

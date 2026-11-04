@@ -4,6 +4,7 @@ use hex_project::{GainInterpolation, GainLane, GainPoint, Project, TempoMap};
 
 mod touch;
 use touch::PreparedTouch;
+pub(crate) use touch::TouchTarget;
 
 pub const MAX_PREPARED_GAIN_KNOTS: usize = 327_680;
 /// Combined prepared base-knot and touch-array allocation ceiling.
@@ -305,7 +306,10 @@ impl PreparedGainEnvelope {
             .value_at(frame)
             .unwrap_or_else(|| self.base_value_at(frame))
     }
-    fn base_value_at(&self, frame: u64) -> f32 {
+    pub(crate) fn touch_target_at(&self, frame: u64) -> Option<TouchTarget> {
+        self.touch.target_at(frame)
+    }
+    pub(crate) fn base_value_at(&self, frame: u64) -> f32 {
         base_gain_at(&self.knots, self.fallback, frame)
     }
     fn visit_segments(&self, mut start: u64, end: u64, visit: &mut impl FnMut(GainPreviewSegment)) {

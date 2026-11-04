@@ -1189,6 +1189,11 @@ impl Playback {
             runtime.clear_gain_recording_override();
         }
     }
+    pub fn release_gain_recording_override(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.release_gain_recording_override();
+        }
+    }
     /// Arrangement content frame, known Main delivery delay and actual content loop pass.
     /// Delivery delay excludes physical latency.
     pub fn gain_recording_clock(&self, track: u64) -> Option<(u64, u64, u64)> {
