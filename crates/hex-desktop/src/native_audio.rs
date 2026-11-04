@@ -127,6 +127,10 @@ pub(super) struct NativeAudioSink {
     output: Option<WorkerPreparedOutput>,
     output_generation: Option<u64>,
     output_identity: Option<u64>,
+    // Last worker-relinquished endpoint, retained until a fresh Lease opens.
+    // Sampler preflight may retire it before a replacement arrives. This
+    // identity retains no output, media, or native resource ownership.
+    relinquished_output_identity: Option<u64>,
     opening: Option<hex_audio::WorkerRecoveryOpen>,
     open_pending: bool,
     requested_rate: Option<u32>,
@@ -190,6 +194,7 @@ impl NativeAudioSink {
             output: None,
             output_generation: None,
             output_identity: None,
+            relinquished_output_identity: None,
             opening: None,
             open_pending: false,
             requested_rate: None,
@@ -220,6 +225,9 @@ impl NativeAudioSink {
         }
     }
     fn relinquish_output(&mut self) {
+        if let Some(identity) = self.output_identity {
+            self.relinquished_output_identity = Some(identity);
+        }
         self.plugins.output_closed();
         // Publication/StreamOwner relinquish before any event can backpressure.
         // All accepted construction stays inside Root's terminal/lifecycle book.
@@ -1334,9 +1342,10 @@ impl WorkerAudioSink for NativeAudioSink {
             if source.audio_mode() == DocumentAudioMode::VerifiedStreaming {
                 self.resident.discard_obsolete_pending(source.context());
             }
-            let old_output_identity = self.output_identity;
             self.relinquish_output();
-            if let Some(old_output_identity) = old_output_identity {
+            if self.pending_release_event.is_none()
+                && let Some(old_output_identity) = self.relinquished_output_identity
+            {
                 // The UI may hold this endpoint across the replacement; it must
                 // close it before a fresh output can take the lease.
                 self.pending_release_event = Some(EditorAudioEvent::OutputReleased {
@@ -1564,6 +1573,7 @@ impl WorkerAudioSink for NativeAudioSink {
         self.shutdown_sampler();
         self.relinquish_output();
         self.pending_release_event = None;
+        self.relinquished_output_identity = None;
         self.desired = None;
     }
 }

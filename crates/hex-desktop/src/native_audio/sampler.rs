@@ -91,6 +91,7 @@ impl NativeAudioSink {
         add(held, self.edit_hold())
     }
     pub(super) fn opened_output(&mut self, mut output: WorkerPreparedOutput) {
+        self.relinquished_output_identity = None;
         self.plugins.fresh_output();
         // Both production and headless factories must acquire the existing
         // exclusive Lease. Successful fresh construction proves old retirement;

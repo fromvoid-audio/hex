@@ -1,8 +1,7 @@
 //! Output release survives event-channel pressure and successive replacements.
 use super::*;
 
-#[test]
-fn queued_release_survives_two_replacements_and_blocks_reopen_until_delivered() {
+fn queued_release_after_replacements(already_relinquished: bool) {
     let service = hex_session::service::Service::new(48_000, 8, 1024).unwrap();
     let next = || {
         let deadline = Instant::now() + Duration::from_millis(500);
@@ -46,6 +45,10 @@ fn queued_release_survives_two_replacements_and_blocks_reopen_until_delivered() 
     }));
     sink.canonical_changed(first);
     sink.output_identity = Some(123);
+    if already_relinquished {
+        // Sampler preflight may retire its output before the replacement arrives.
+        sink.relinquish_output();
+    }
     sink.canonical_changed(Arc::clone(&snapshots[0]));
     sink.flush_events();
     sink.canonical_changed(Arc::clone(&snapshots[1]));
@@ -61,4 +64,16 @@ fn queued_release_survives_two_replacements_and_blocks_reopen_until_delivered() 
     assert!(
         matches!(receiver.try_recv().unwrap(), EditorAudioEvent::OutputReleased { project_generation, old_output_identity: 123 } if project_generation == snapshots[0].context().project_generation)
     );
+    sink.poll_open();
+    assert!(opened.load(std::sync::atomic::Ordering::Acquire));
+}
+
+#[test]
+fn queued_release_survives_two_replacements_and_blocks_reopen_until_delivered() {
+    queued_release_after_replacements(false);
+}
+
+#[test]
+fn replacement_releases_an_endpoint_already_relinquished_by_sampler_preflight() {
+    queued_release_after_replacements(true);
 }
