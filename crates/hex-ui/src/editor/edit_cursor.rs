@@ -9,28 +9,6 @@ use std::time::{Duration, Instant};
 
 const PULSE_PERIOD: Duration = Duration::from_millis(1_200);
 
-/// Keep the lock distinct from both the normal marker and the ruler surface.
-fn locked_marker_color(normal: u32, surface: u32, accent: u32) -> u32 {
-    let separation = |first: u32, second: u32| -> u32 {
-        [16, 8, 0]
-            .into_iter()
-            .map(|shift| ((first >> shift) & 0xff).abs_diff((second >> shift) & 0xff))
-            .sum()
-    };
-    let score = |color| separation(color, normal).min(separation(color, surface));
-    if score(accent) >= 96 {
-        accent
-    } else {
-        let light = 0x00c8ff;
-        let dark = 0x0057c2;
-        if score(light) >= score(dark) {
-            light
-        } else {
-            dark
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(super) struct EditCursor {
     pub(super) track: TrackId,
@@ -378,11 +356,7 @@ impl EditorView {
                     Endpoint::Point,
                     edge,
                     if locked.is_some() {
-                        locked_marker_color(
-                            theme::time_position_marker_color(),
-                            theme::color(theme::PaletteRole::Surface),
-                            theme::color(theme::PaletteRole::Secondary),
-                        )
+                        theme::locked_time_position_marker_color()
                     } else {
                         theme::time_position_marker_color()
                     },
@@ -579,13 +553,6 @@ impl EditorView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn locked_marker_remains_distinct_when_custom_accent_matches_normal() {
-        assert_ne!(locked_marker_color(0xffffff, 0x000000, 0xffffff), 0xffffff);
-        assert_ne!(locked_marker_color(0x000000, 0xffffff, 0x000000), 0x000000);
-        assert_ne!(locked_marker_color(0xffffff, 0x000000, 0x000000), 0x000000);
-        assert_eq!(locked_marker_color(0xffffff, 0x000000, 0x70e8e3), 0x70e8e3);
-    }
     #[test]
     fn cursor_pulse_interpolates_smoothly_and_uses_elapsed_time_without_drift() {
         let now = Instant::now();
