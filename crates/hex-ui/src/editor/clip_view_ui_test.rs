@@ -750,10 +750,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     editor.read_with(cx, |view, _| {
         assert!(matches!(
             view.last_enqueued_edit,
-            Some(Command::SetDeviceBypass {
-                device,
-                bypassed: true
-            }) if device == device_id
+            Some(Command::ToggleDeviceBypass { device }) if device == device_id
         ));
     });
 

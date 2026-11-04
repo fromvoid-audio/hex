@@ -55,6 +55,7 @@ pub mod device_gesture;
 mod device_snapshot;
 pub mod import_batch;
 pub mod import_batch_decode;
+mod import_reuse;
 mod recovered_source;
 mod resident_import;
 pub use recovered_source::{RecoveredSource, RecoverySourceError, recover_wav_to_new_source};
@@ -136,6 +137,8 @@ pub struct PreparedImport {
     source_audio: Audio,
     audio: Audio,
     waveform: Waveform,
+    /// Identity of the decoded file, used by `import_reuse` to match re-imports.
+    file_identity: Option<hex_media::SourceFileIdentity>,
 }
 
 impl PreparedImport {
@@ -189,6 +192,7 @@ impl PreparedImport {
         let audio = resample_with_version(decoded.audio(), project_rate, limits, version)?;
         let waveform = waveform::summarize(&audio, waveform::MAX_BINS)?;
         Ok(Self {
+            file_identity: decoded.file_identity(),
             path: decoded.path().to_path_buf(),
             source_sample_rate,
             source_frames,
@@ -204,11 +208,20 @@ impl PreparedImport {
     }
 }
 
+/// Session clip name for an imported file: its stem, else a generic label.
+fn imported_clip_name(path: &std::path::Path) -> String {
+    path.file_stem()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "imported audio".into())
+}
+
 struct ResidentAsset {
     source_audio: Audio,
     audio: Audio,
     waveform: Arc<Waveform>,
     frames: u64,
+    /// Identity of the decoded file, when known; in memory only, never saved.
+    file_identity: Option<hex_media::SourceFileIdentity>,
 }
 
 #[derive(Clone, Copy)]
@@ -648,6 +661,7 @@ impl Session {
                         audio,
                         waveform: Arc::new(waveform),
                         frames,
+                        file_identity: prepared.file_identity,
                     },
                 )
                 .is_some()
@@ -796,21 +810,10 @@ impl Session {
     fn commit_resident_import(
         &mut self,
         id: AssetId,
-        audio: Audio,
-        source_audio: Audio,
-        waveform: Waveform,
-        frames: u64,
+        resident: ResidentAsset,
         accounting: ResidentImportAccounting,
     ) {
-        self.media.insert(
-            id,
-            ResidentAsset {
-                source_audio,
-                audio,
-                waveform: Arc::new(waveform),
-                frames,
-            },
-        );
+        self.media.insert(id, resident);
         self.resident_frames = accounting.total_frames;
         self.resident_waveform_bins = accounting.total_waveform_bins;
         self.resident_waveform_bytes = accounting.total_waveform_bytes;
@@ -1310,6 +1313,19 @@ impl Session {
                 "prepared audio sample rate differs from project",
             ));
         }
+        if let Some(asset) = self.reusable_import_asset(&prepared) {
+            return self.import_existing_revision_using(
+                asset,
+                hex_project::ExistingAudioPlacement::NewTrack {
+                    name: "imported audio".into(),
+                    before_track,
+                    start,
+                },
+                previous,
+                import_reuse::prepare_resident_revision,
+            );
+        }
+        let file_identity = prepared.file_identity;
         if self.media.len() >= MAX_ASSETS {
             return Err(SessionError::Invalid("resident asset limit reached"));
         }
@@ -1395,6 +1411,7 @@ impl Session {
             audio: staged_audio,
             waveform: Arc::new(prepared.waveform),
             frames,
+            file_identity,
         };
         self.media.insert(asset_id, resident);
         self.resident_frames = new_resident_frames;
@@ -1476,6 +1493,22 @@ impl Session {
                 "prepared audio sample rate differs from project",
             ));
         }
+        // A bounce always commits its own rendered asset.
+        if bounce.is_none()
+            && let Some(asset) = self.reusable_import_asset(&prepared)
+        {
+            return self.import_existing_revision_using(
+                asset,
+                hex_project::ExistingAudioPlacement::Clip {
+                    track,
+                    start,
+                    overwrite,
+                },
+                previous,
+                prepare,
+            );
+        }
+        let file_identity = prepared.file_identity;
         if self.media.len() >= MAX_ASSETS {
             return Err(SessionError::Invalid("resident asset limit reached"));
         }
@@ -1580,6 +1613,7 @@ impl Session {
                 audio: staged_audio,
                 waveform: staged_waveform,
                 frames,
+                file_identity,
             },
         );
         self.resident_frames = new_resident_frames;
@@ -1603,6 +1637,23 @@ impl Session {
                 "prepared audio sample rate differs from project",
             ));
         }
+        if let Some(asset) = self.reusable_import_asset(&prepared) {
+            let source_end = u64::try_from(prepared.audio.frames().len())
+                .map_err(|_| SessionError::Invalid("prepared frame count exceeds project range"))?;
+            return self.import_existing_revision_using(
+                asset,
+                hex_project::ExistingAudioPlacement::Session {
+                    track,
+                    scene,
+                    name: imported_clip_name(&prepared.path),
+                    source_start: 0,
+                    source_end,
+                },
+                previous,
+                import_reuse::prepare_resident_revision,
+            );
+        }
+        let file_identity = prepared.file_identity;
         if self.media.len() >= MAX_ASSETS {
             return Err(SessionError::Invalid("resident asset limit reached"));
         }
@@ -1641,11 +1692,7 @@ impl Session {
             Command::ImportPreparedSessionAudioClip {
                 track,
                 scene,
-                name: prepared
-                    .path
-                    .file_stem()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "imported audio".into()),
+                name: imported_clip_name(&prepared.path),
                 path: prepared.path,
                 source_sample_rate: prepared.source_sample_rate,
                 source_frames: prepared.source_frames,
@@ -1683,10 +1730,13 @@ impl Session {
         )?;
         self.commit_resident_import(
             asset_id,
-            staged_audio,
-            prepared.source_audio,
-            prepared.waveform,
-            frames,
+            ResidentAsset {
+                source_audio: prepared.source_audio,
+                audio: staged_audio,
+                waveform: Arc::new(prepared.waveform),
+                frames,
+                file_identity,
+            },
             ResidentImportAccounting {
                 total_frames: new_resident_frames,
                 total_waveform_bins: new_resident_bins,
@@ -1985,12 +2035,19 @@ fn prepare_with_waveforms_using(
                 })
             })
             .count();
+        let repeat_roots = prepared
+            .arrangement()
+            .audio_clip_views()
+            .iter()
+            .filter(|view| view.repeat.is_some())
+            .count();
         let requested_bins = (262_144
             / prepared
                 .arrangement()
                 .audio_clip_views()
                 .len()
                 .saturating_add(preview_roots)
+                .saturating_add(repeat_roots)
                 .max(1))
         .clamp(1, 1_024);
         // A repeated view plays a shared root as a loop; its summary is still in

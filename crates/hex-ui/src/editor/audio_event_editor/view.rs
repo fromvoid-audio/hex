@@ -931,7 +931,9 @@ pub(in crate::editor) fn view(
             }),
         )
         .on_action(cx.trace(|view, _: &super::super::DeleteClip, _, cx| {
-            view.event_delete();
+            if !view.selection_delete_blocked() {
+                view.event_delete();
+            }
             cx.stop_propagation();
             cx.notify();
         }))

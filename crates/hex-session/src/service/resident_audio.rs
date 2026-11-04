@@ -1072,14 +1072,15 @@ pub(super) fn import_file(
     session: &mut Session,
     path: PathBuf,
     destination: AudioBatchDestination,
-    overwrite: bool,
+    options: crate::import_batch::AudioImportOptions,
     context: hex_engine::AudioSourceContext,
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
     current: &mut Option<Snapshot>,
     decode: &mut super::truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, SessionError> {
-    if !overwrite
+    options.validate()?;
+    if !options.overwrite
         && let AudioBatchDestination::Console(crate::import_batch::ConsoleDestination::Cell {
             track,
             scene,
@@ -1088,43 +1089,52 @@ pub(super) fn import_file(
     {
         return Err(SessionError::Invalid("session target cell is occupied"));
     }
-    let allowance = import_frame_allowance(session, sink, admission, current.as_ref())?;
-    if let Some(source) = decode.plan(session, &path, Some(allowance))? {
-        let expected = session.project().clone();
-        let mut accepted = None;
-        let (_, prepared) = session.import_verified_batch_revision(
-            vec![source],
-            destination,
-            &expected,
-            current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
-            overwrite,
-            || Ok(()),
-            |input, admit| {
-                let snapshot =
-                    prepare_import(input, context, sink, admission, current.as_ref(), admit)?;
-                let prepared = Arc::clone(&snapshot.prepared);
-                accepted = Some(snapshot);
-                Ok(prepared)
+    // An unchanged resident file needs no frame allowance, plan or decode; its
+    // member shares the resident asset's PCM (see `import_reuse`).
+    let reused = absolute_document_path(&path)
+        .ok()
+        .and_then(|absolute| session.unchanged_resident_import(&absolute));
+    let prepared = if let Some(prepared) = reused {
+        prepared
+    } else {
+        let allowance = import_frame_allowance(session, sink, admission, current.as_ref())?;
+        if let Some(source) = decode.plan(session, &path, Some(allowance))? {
+            let expected = session.project().clone();
+            let mut accepted = None;
+            let (_, prepared) = session.import_verified_batch_revision(
+                vec![source],
+                destination,
+                &expected,
+                current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
+                options,
+                || Ok(()),
+                |input, admit| {
+                    let snapshot =
+                        prepare_import(input, context, sink, admission, current.as_ref(), admit)?;
+                    let prepared = Arc::clone(&snapshot.prepared);
+                    accepted = Some(snapshot);
+                    Ok(prepared)
+                },
+            )?;
+            *current = accepted;
+            return Ok(prepared);
+        }
+        let output_limit = usize::try_from(allowance)
+            .map_err(|_| SessionError::Invalid("resident frame limit exceeds addressable range"))?;
+        if output_limit == 0 {
+            return Err(SessionError::Invalid("resident audio frame limit reached"));
+        }
+        let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
+        let decoded = decode.decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
+        PreparedImport::at_rate(
+            decoded,
+            session.project().sample_rate(),
+            ResampleLimits {
+                max_source_frames: IMPORT_FRAME_LIMIT,
+                max_output_frames: output_limit,
             },
-        )?;
-        *current = accepted;
-        return Ok(prepared);
-    }
-    let output_limit = usize::try_from(allowance)
-        .map_err(|_| SessionError::Invalid("resident frame limit exceeds addressable range"))?;
-    if output_limit == 0 {
-        return Err(SessionError::Invalid("resident audio frame limit reached"));
-    }
-    let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
-    let decoded = decode.decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
-    let prepared = PreparedImport::at_rate(
-        decoded,
-        session.project().sample_rate(),
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: output_limit,
-        },
-    )?;
+        )?
+    };
     let expected = session.project().clone();
     let mut accepted = None;
     let (_, prepared) = session.import_prepared_batch_revision_using(
@@ -1132,10 +1142,7 @@ pub(super) fn import_file(
         destination,
         &expected,
         current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
-        crate::import_batch::AudioImportOptions {
-            overwrite,
-            ..Default::default()
-        },
+        options,
         || Ok(()),
         |input, admit| {
             let snapshot =
@@ -2338,6 +2345,7 @@ pub(super) mod tests {
     mod bounce_tests;
     mod export_tests;
     mod fence_tests;
+    mod import_reuse_tests;
     mod plugin_effect_tests;
     mod source_binding_tests;
     use super::*;

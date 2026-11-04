@@ -29,6 +29,7 @@ fn track_clipboard_native_cut_refusal_preserves_clipboard_pcm_output_and_history
         &mut h,
         &mut revision,
         Request::InsertBrowserInstrumentTrack {
+            new_track_gain: None,
             project_generation: 0,
             revision: original.state.revision,
             class: hex_engine::NativeDeviceClass::Instrument,

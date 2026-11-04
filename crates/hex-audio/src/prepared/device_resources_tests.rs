@@ -438,8 +438,17 @@ fn shared_sampler_tuning_preview_cancel_keeps_actual_live_cursor_without_callbac
     let revision = control
         .publish_with_policy_and_context_generation(tuned, PublicationPolicy::InheritRuntime, 7)
         .unwrap();
-    for (i, frame) in block(&mut callback).iter().enumerate() {
-        assert_eq!(*frame, PCM[(7 + 2 * i) % 4].map(|sample| sample * 3.0));
+    // An octave up, the band-limited sampler (#4089) keeps only the 4-frame
+    // loop's mean; every other partial is at or above the output Nyquist.
+    // block() probes this pitched-up render for callback allocations. The
+    // cursor is checked by the unity segments on either side.
+    let mean: [f32; 2] = std::array::from_fn(|channel| {
+        PCM.iter().map(|frame| frame[channel]).sum::<f32>() / 4.0 * 3.0
+    });
+    for frame in block(&mut callback) {
+        for channel in 0..2 {
+            assert!((frame[channel] - mean[channel]).abs() < 3e-3, "{frame:?}");
+        }
     }
     assert_eq!(control.status.applied_revision.load(Acquire), revision);
     assert!(!input.is_cancelled());
@@ -584,6 +593,7 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
     );
     // Compatible edits use the ordinary same-output handoff. Repeated publication
     // must close the returned candidate's unused lease rather than accumulating it.
+    let mut current_gain = 1.0_f32;
     for (muted, gain) in [(true, 1.0), (false, 1.0), (false, 0.5), (false, 1.0)] {
         editor.execute(Command::Mute { track, muted }).unwrap();
         editor.execute(Command::Gain { track, gain }).unwrap();
@@ -595,13 +605,13 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
             )
             .unwrap();
         let output = block(&mut callback);
-        let expected = if muted { 0.0 } else { 0.25 * gain };
-        assert!(
-            output
-                .iter()
-                .flatten()
-                .all(|sample| (*sample - expected).abs() < 1e-6)
-        );
+        for (index, frame) in output.iter().enumerate() {
+            if current_gain != gain {
+                current_gain += (gain - current_gain) / (40 - index) as f32;
+            }
+            let expected = if muted { 0.0 } else { 0.25 * current_gain };
+            assert!(frame.iter().all(|sample| (*sample - expected).abs() < 1e-6));
+        }
         assert_eq!(control.status.applied_revision.load(Acquire), revision);
         assert_eq!(control.reclaim(), 1);
         assert_eq!(control.outstanding_device_resource_leases(), 1);

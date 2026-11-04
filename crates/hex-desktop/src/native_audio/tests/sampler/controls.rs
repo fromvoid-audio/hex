@@ -536,14 +536,31 @@ pub(super) fn exercise(
                 expected.get(i).copied().unwrap_or([0.0; 2])
             }
         };
-        for (i, frame) in output.iter().enumerate() {
-            for (a, e) in frame.iter().zip(expected_at(i)) {
+        // Pitched-up voices are band-limited (#4089); their reconstruction is
+        // owned and tested in hex-devices. Here they keep the literal duration
+        // (no frames past the region), stay finite and bounded by the gained
+        // source peak with kernel overshoot, and sound.
+        let pitched_up = pitch > 0.0;
+        let check = |frames: &[[f32; 2]], label: &str| {
+            if pitched_up {
                 assert!(
-                    (*a - e * gain as f32).abs() < 1e-6,
-                    "gain {gain} pitch {pitch} frame{i}: {frame:?}"
+                    frames[..expected.len()].iter().flatten().any(|a| *a != 0.0),
+                    "{label} gain {gain} pitch {pitch}: {frames:?}"
                 );
             }
-        }
+            for (i, frame) in frames.iter().enumerate() {
+                for (a, e) in frame.iter().zip(expected_at(i)) {
+                    let in_note = i < expected.len();
+                    let ok = if pitched_up && in_note {
+                        a.is_finite() && a.abs() <= gain as f32
+                    } else {
+                        (*a - e * gain as f32).abs() < 1e-6
+                    };
+                    assert!(ok, "{label} gain {gain} pitch {pitch} frame{i}: {frame:?}");
+                }
+            }
+        };
+        check(&output, "keyboard");
         visual.simulate_event(gpui::KeyUpEvent {
             keystroke: gpui::Keystroke::parse("a").unwrap(),
         });
@@ -604,14 +621,7 @@ pub(super) fn exercise(
                 .playing
                 .load(std::sync::atomic::Ordering::Acquire)
         );
-        for (i, frame) in arranged.iter().enumerate() {
-            for (a, e) in frame.iter().zip(expected_at(i)) {
-                assert!(
-                    (*a - e * gain as f32).abs() < 1e-6,
-                    "arrangement gain {gain} pitch {pitch} frame{i}: {frame:?}"
-                );
-            }
-        }
+        check(&arranged, "arrangement");
         drop(slot);
         visual.simulate_keystrokes("escape");
         for _ in 0..4 {

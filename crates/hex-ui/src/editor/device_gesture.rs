@@ -175,13 +175,13 @@ impl EditorView {
                 true
             }
             Err(SubmitError::Full(_)) => false,
-            Err(SubmitError::Busy(_)) => {
+            Err(SubmitError::Busy(_, reason)) => {
                 self.device_gesture.reset();
                 self.device_gesture_barriers.clear();
                 self.effect_bus_barrier.custody = None;
                 self.retire_tuning_library_device_terminal();
                 self.refuse_deferred_tuning_writes();
-                self.error = Some("an export is already pending".into());
+                self.error = Some(super::user_errors::busy(reason).into());
                 true
             }
             Err(SubmitError::Closed(_)) => {
@@ -572,6 +572,7 @@ mod tests {
                 frames: Some(256),
                 signal: hex_session::service::ExportSignal::Main,
                 control: control.clone(),
+                format: hex_session::service::ExportFormat::Pcm16,
                 overwrite: false,
             },
             Request::Undo,

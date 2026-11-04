@@ -571,6 +571,7 @@ mod tests {
             prepared,
             bypassed: false,
             input_gain: 1.0,
+            output_gain: 1.0,
         };
         let mut frames = [[0.5, -0.25]; 8];
         bank.begin_rendering(8).unwrap();
@@ -724,6 +725,7 @@ mod tests {
             prepared,
             bypassed: false,
             input_gain: 1.0,
+            output_gain: 1.0,
         };
         for block in 0..4_u64 {
             let mut frames = [[0.5, -0.25]; 8];

@@ -1,6 +1,36 @@
 //! Source-owned kernel continuity, separate from track-local effect history.
 use super::*;
 
+/// A short, already-releasing source must finish before another kernel for
+/// the same device is admitted. The callback can retry while the old graph
+/// renders; held live inputs and long releases retain the existing policy.
+pub(super) fn short_source_release_blocks_reenable(
+    revision: &PreparedRevision,
+    previous: &SessionPlayback,
+) -> bool {
+    let limit = u64::from(revision.arrangement().sample_rate().div_ceil(200));
+    revision.arrangement().tracks().iter().any(|track| {
+        track.receives_source_audio()
+            && track.instrument_slot_enabled()
+            && track.instrument_id.is_some_and(|device| {
+                previous
+                    .tail_mutable_instruments
+                    .iter()
+                    .flatten()
+                    .any(|tail| {
+                        tail.runtime.expression_identity == Some(device)
+                            && tail.runtime.max_release_tail_frames() <= limit
+                            && !tail.runtime.has_committed_live_occurrences()
+                            && tail.runtime.proofs().all(|note| {
+                                note.note_off_sent
+                                    || note.gate_end_frame <= previous.performance_frame
+                            })
+                            && !tail.runtime.committed_is_quiescent()
+                    })
+            })
+    })
+}
+
 pub(super) struct SharedSourceHandoff {
     pub(super) new_for_old: [usize; MAX_TRACKS],
     pub(super) retarget_for_old: [usize; MAX_TRACKS],
@@ -18,6 +48,7 @@ impl SharedSourceHandoff {
     pub(super) fn handles_new(&self, index: usize) -> bool {
         self.new_for_old.contains(&index) || self.retarget_for_old.contains(&index)
     }
+    #[allow(clippy::too_many_arguments)] // Explicit candidate/donor owners and timing facts.
     pub(super) fn prepare(
         revision: &PreparedRevision,
         runtimes: &[Option<MutableInstrumentTrackRuntime>],
@@ -25,6 +56,7 @@ impl SharedSourceHandoff {
         admission: Option<&crate::session_inventory::PreparedSessionMidiAdmission>,
         previous: &SessionPlayback,
         timing_changed: bool,
+        arrangement_tempo_remap: bool,
         spans: &mut MidiSpanBuffer,
     ) -> Result<Self, SessionPlaybackError> {
         let mut plan = Self {
@@ -104,7 +136,14 @@ impl SharedSourceHandoff {
                 }
                 continue;
             };
-            let exact = !timing_changed
+            // An edited base map cuts every held Arrangement gate at the cut
+            // (Pulse #4117); a proof from any other owner keeps stale frames.
+            let retimed = arrangement_tempo_remap
+                && super::arrangement_only_proofs(previous, old_runtime)
+                && routes
+                    .get(new_index)
+                    .is_some_and(|route| route.owner == RouteOwner::Arrangement);
+            let exact = (!timing_changed || retimed)
                 && previous
                     .revision
                     .retained_source_configuration_matches(revision, source);
@@ -452,11 +491,11 @@ pub(super) fn plan_release_audio_owner(
     if !source_track.instrument_bypassed {
         release.clip_gain *= f64::from(source_track.instrument_output_gain);
     }
-    release.mix = gain_recording::effective_mix(
+    release.mix = gain_recording::detached_mix(
+        previous,
         &previous.revision.arrangement().tracks()[old_receiver],
+        old_receiver,
         previous.arrangement_frame,
-        previous.revision.gain_recording_track(),
-        previous.gain_recording_override,
     );
     Ok(ReleaseAudioPlan {
         current_receiver: None,
@@ -1589,6 +1628,11 @@ mod tests {
                 reenabled.try_inherit_state_from(&mut disabled),
                 Err(SessionPlaybackError::MutableInstrumentActive)
             );
+            assert_eq!(
+                reenabled.try_inherit_state_live_from(&mut disabled),
+                Err(SessionPlaybackError::DeviceTransitionBusy),
+                "live publication must wait for the short original release"
+            );
             let mut actual = [[0.0; 2]; 32];
             let mut expected = actual;
             disabled.render(&mut actual).unwrap();
@@ -1604,6 +1648,61 @@ mod tests {
                     .any(|sample| sample.abs() > 0.001)
             );
             assert_eq!(actual[16..], [[0.0; 2]; 16]);
+            reenabled
+                .try_inherit_state_live_from(&mut disabled)
+                .unwrap();
+            let mut settled = [[0.0; 2]; 32];
+            reenabled.render(&mut settled).unwrap();
+            assert_eq!(
+                settled, [[0.0; 2]; 32],
+                "the old held note must not be chased"
+            );
+        });
+    }
+
+    #[test]
+    fn long_source_release_is_not_mistaken_for_a_short_retry() {
+        on_control(|| {
+            let mut f = fixture();
+            let instrument = f
+                .editor
+                .project()
+                .track(f.receiver)
+                .unwrap()
+                .instrument()
+                .unwrap();
+            let mut state =
+                hex_devices::sampler::state::SamplerState::from_native(instrument.state()).unwrap();
+            state.envelope.release_seconds = 0.1;
+            let state = state
+                .to_native()
+                .unwrap()
+                .with_asset_references(instrument.state().asset_references().to_vec())
+                .unwrap();
+            let device = instrument.id();
+            f.editor
+                .execute(Command::ReplaceDeviceState { device, state })
+                .unwrap();
+            let mut old = started(&f);
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device,
+                    bypassed: true,
+                })
+                .unwrap();
+            let mut disabled = playback(&f);
+            disabled.try_inherit_state_from(&mut old).unwrap();
+            f.editor
+                .execute(Command::SetDeviceBypass {
+                    device,
+                    bypassed: false,
+                })
+                .unwrap();
+            let candidate = playback(&f);
+            assert!(!short_source_release_blocks_reenable(
+                &candidate.revision,
+                &disabled
+            ));
         });
     }
 
@@ -2299,6 +2398,24 @@ mod tests {
                     );
                 }
             }
+            // An octave up, band-limited reconstruction (#4089) of the
+            // 4-frame loop keeps only its mean: every other partial lies at
+            // or above the output Nyquist. The cursor is checked by the
+            // literal unity segments on either side.
+            fn octave(runtime: &mut SessionPlayback, count: usize) {
+                let mut output = vec![[0.0; 2]; count];
+                for chunk in output.chunks_mut(3) {
+                    runtime.render(chunk).unwrap();
+                }
+                let mean: [f32; 2] = std::array::from_fn(|channel| {
+                    PCM.iter().map(|frame| frame[channel]).sum::<f32>() / 4.0 * 0.5
+                });
+                for frame in output {
+                    for channel in 0..2 {
+                        assert!((frame[channel] - mean[channel]).abs() < 1e-3, "{frame:?}");
+                    }
+                }
+            }
             let mut f = fixture();
             let neutral = f.editor.project().clone();
             let mut old = started(&f);
@@ -2318,7 +2435,7 @@ mod tests {
             tuned.try_inherit_state_from(&mut old).unwrap();
             assert_eq!(tuned.mutable_instruments.iter().flatten().count(), 1);
             assert!(tuned.tail_mutable_instruments.iter().all(Option::is_none));
-            literal(&mut tuned, 12, 2, 21);
+            octave(&mut tuned, 21);
             f.editor
                 .execute(Command::SetTuning(neutral.tuning()))
                 .unwrap();

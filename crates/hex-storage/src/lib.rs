@@ -4,7 +4,8 @@
 //!
 //! # Dependencies
 //! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2, plus
-//! libc errno/flags and rustix's safe exclusive rename for create-new publication.
+//! libc errno/flags, rustix's safe exclusive rename for create-new publication and its safe
+//! xattr calls to keep a replaced project's extended attributes.
 //!
 //! # Does not own
 //! Does not decode PCM, construct DSP, access callback state or silently convert unsupported
@@ -18,21 +19,23 @@ mod publication;
 pub mod text;
 pub mod tuning_library;
 pub use journal::{
-    Journal, JournalRestartOutcome, JournalRestartToken, journal_path, load_journal,
-    restart_journal,
+    Journal, JournalRestartOutcome, JournalRestartToken, MAX_UNTITLED_SLOTS, UntitledSlotClaim,
+    journal_path, load_journal, restart_journal, untitled_slot_path,
 };
 mod audio_edit;
+mod extended_attributes;
 mod replacement;
 mod schema;
 mod temporaries;
+pub use extended_attributes::MetadataWarning;
 pub use files::{
     FileToken, SaveNewOutcome, load, load_with_token, save_new, save_new_with_outcome,
     save_new_with_token,
 };
 use hex_project::Project;
 pub use replacement::{
-    RecoveryDocument, ReplaceOutcome, ReplaceWarning, load_recovery, recovery_path,
-    replace_confirmed, replace_existing,
+    PreparedReplacement, RecoveryDocument, ReplaceOutcome, ReplaceWarning, load_recovery,
+    prepare_replacement_within, recovery_path, replace_confirmed, replace_existing,
 };
 use std::{fmt, io, path::PathBuf};
 
@@ -62,17 +65,33 @@ pub const WARP_RESAMPLER_SCHEMA_VERSION: u32 = 65;
 /// Readers before schema66 refuse it as newer, so such a save needs consent.
 pub const CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION: u32 = 66;
 
+/// Schema written only for projects containing a saved native device state
+/// newer than schema66 readers decode (in practice a Sampler v3 state with a
+/// loop crossfade): the schema66-or-older layout, unchanged. See
+/// `schema::sampler_crossfade`. Readers before schema67 refuse it as newer, so
+/// such a save needs consent.
+pub const DEVICE_STATE_SCHEMA_VERSION: u32 = 67;
+
+/// Schema68 stores receiver-owned retained source paths; earlier readers refuse
+/// these projects, so overwriting an older-format file requires consent.
+pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = RETAINED_RECEIVER_SCHEMA_VERSION;
 
 /// Schema [`encode`] writes for `project`:
-/// [`CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION`] when a directed view names an
+/// [`RETAINED_RECEIVER_SCHEMA_VERSION`] when a retained source path is present,
+/// [`DEVICE_STATE_SCHEMA_VERSION`] when a device state is newer than schema66
+/// readers decode, [`CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION`] when a directed view names an
 /// explicit read law, [`WARP_RESAMPLER_SCHEMA_VERSION`]
 /// when content names an explicit warp resampler law,
 /// [`SINC_V2_SCHEMA_VERSION`] when it contains sinc v2 media, otherwise
 /// [`CURRENT_SCHEMA_VERSION`].
 pub fn schema_version_for(project: &Project) -> u32 {
-    if schema::content_view_resampler::contains_explicit(project) {
+    if schema::retained_receiver::contains(project) {
+        RETAINED_RECEIVER_SCHEMA_VERSION
+    } else if schema::sampler_crossfade::contains_newer_states(project) {
+        DEVICE_STATE_SCHEMA_VERSION
+    } else if schema::content_view_resampler::contains_explicit(project) {
         CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION
     } else if schema::warp_resampler::contains_explicit(project) {
         WARP_RESAMPLER_SCHEMA_VERSION
@@ -117,8 +136,15 @@ pub enum StorageError {
         source: io::Error,
     },
     Invalid(&'static str),
-    /// The document bytes differ from the snapshot captured when it was loaded.
+    /// The project document bytes differ from the snapshot captured when it was
+    /// loaded, typically because another hex instance or editor saved it. Its
+    /// message names the next steps: save as, then reopen or compare.
     Conflict {
+        path: PathBuf,
+    },
+    /// A recovery journal slot differs from the bytes this writer last owned.
+    /// The slot is left untouched; the open project stays in memory.
+    JournalConflict {
         path: PathBuf,
     },
     /// A complete destination exists, but cleanup or directory durability failed.
@@ -165,13 +191,18 @@ impl fmt::Display for StorageError {
             }
             Self::Json(error) => write!(f, "invalid project json: {error}"),
             Self::Invalid(reason) => f.write_str(reason),
-            Self::Conflict { path } => {
-                write!(
-                    f,
-                    "project changed outside hex at {}",
-                    crate::text::verbatim(path.display())
-                )
-            }
+            Self::Conflict { path } => write!(
+                f,
+                "project changed outside hex at {}; your version was not saved. \
+                 use save as to keep it under a new name, then reopen the original \
+                 to load or compare the outside changes",
+                crate::text::verbatim(path.display())
+            ),
+            Self::JournalConflict { path } => write!(
+                f,
+                "project changed outside hex at {}",
+                crate::text::verbatim(path.display())
+            ),
             Self::PublishedButNotDurable {
                 path,
                 operation,
@@ -201,7 +232,7 @@ impl std::error::Error for StorageError {
             Self::JournalLockRelease { source, .. } => Some(source),
             Self::Io(e) | Self::AutomationDraftBusy(e) => Some(e),
             Self::Json(e) => Some(e),
-            Self::Invalid(_) | Self::Conflict { .. } => None,
+            Self::Invalid(_) | Self::Conflict { .. } | Self::JournalConflict { .. } => None,
             Self::PublishedButNotDurable { source, .. }
             | Self::RecoveryBackupPublished { source, .. } => Some(source),
         }
@@ -231,12 +262,18 @@ impl From<serde_json::Error> for StorageError {
 /// v2 media is written as schema64 (see [`schema_version_for`]); every other
 /// project stays schema63, byte-compatible with older readers. Only content
 /// naming an explicit warp resampler law makes a project schema65, and only a
-/// directed view naming an explicit read law makes it schema66.
+/// directed view naming an explicit read law makes it schema66, and only a
+/// device state newer than schema66 readers decode makes it schema67. A retained
+/// receiver path makes it schema68; absent paths migrate as ordinary bindings.
 /// Schema59 is reserved and explicitly refused.
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if schema::content_view_resampler::contains_explicit(project) {
+    if schema::retained_receiver::contains(project) {
+        encode_document(&schema::retained_receiver::encode(project)?)
+    } else if schema::sampler_crossfade::contains_newer_states(project) {
+        encode_document(&schema::sampler_crossfade::encode(project)?)
+    } else if schema::content_view_resampler::contains_explicit(project) {
         encode_document(&schema::content_view_resampler::encode(project)?)
     } else if schema::warp_resampler::contains_explicit(project) {
         encode_document(&schema::warp_resampler::encode(project)?)
@@ -260,6 +297,12 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if schema::retained_receiver::contains(project) {
+        return Err(StorageError::Invalid(
+            "older schema cannot save a retained source path",
+        ));
+    }
+    schema::sampler_crossfade::require_older_states(project)?;
     schema::content_view_resampler::require_implied(project)?;
     schema::warp_resampler::require_implied(project)?;
     schema::conversion_v2::require_v1_conversions(project)?;
@@ -422,6 +465,8 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
+        RETAINED_RECEIVER_SCHEMA_VERSION => schema::retained_receiver::decode(bytes),
+        DEVICE_STATE_SCHEMA_VERSION => schema::sampler_crossfade::decode(bytes),
         CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION => schema::content_view_resampler::decode(bytes),
         WARP_RESAMPLER_SCHEMA_VERSION => schema::warp_resampler::decode(bytes),
         SINC_V2_SCHEMA_VERSION => schema::conversion_v2::decode(bytes),
@@ -465,6 +510,13 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
+    if header.version < DEVICE_STATE_SCHEMA_VERSION
+        && schema::sampler_crossfade::require_older_states(&project).is_err()
+    {
+        return Err(StorageError::Invalid(
+            "historical project schema contains a newer device state; original file unchanged",
+        ));
+    }
     if header.version < CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION
         && schema::content_view_resampler::require_implied(&project).is_err()
     {

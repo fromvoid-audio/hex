@@ -113,6 +113,16 @@ fn current_sampler_console_templates_construct_with_paired_storage() {
     assert!(config.matches_state(native));
     assert!(!config.matches_state(&native.clone().with_input_gain_db(-6.0).unwrap()));
     assert!(!config.matches_state(&native.clone().with_output_gain_db(-6.0).unwrap()));
+    // The captured saved version is part of the exact configuration.
+    let other_version = hex_lattice_contract::NativeDeviceState::new(
+        native.type_id(),
+        native.state_version() - 1,
+        native.payload().to_vec(),
+    )
+    .unwrap()
+    .with_host_metadata_from(native)
+    .unwrap();
+    assert!(!config.matches_state(&other_version));
     assert!(
         owner
             .inner

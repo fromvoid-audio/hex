@@ -570,9 +570,22 @@ pub fn validated_state_descriptors<D: NativeDeviceMetadata + ?Sized>(
     Ok(descriptors)
 }
 
+/// Per-definition optional auxiliary input; routing and buffer custody remain
+/// host-owned. An undeclared input is never inferred from device type or state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AuxiliaryInput {
+    #[default]
+    None,
+    Stereo,
+}
+
 /// Device metadata/state operations; implementations own their codec.
 pub trait NativeDeviceMetadata: Sync {
     fn type_id(&self) -> DeviceTypeId;
+    /// One optional stereo key input, or none for existing single-bus devices.
+    fn auxiliary_input(&self) -> AuxiliaryInput {
+        AuxiliaryInput::None
+    }
     /// Optional lowercase presentation name. The type identifier remains the
     /// stable storage/registry identity; unnamed definitions display that ID.
     fn display_name(&self) -> Option<&'static str> {

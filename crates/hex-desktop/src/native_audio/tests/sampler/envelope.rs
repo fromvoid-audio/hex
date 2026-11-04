@@ -37,6 +37,7 @@ pub(super) fn exercise(
         LoopEnabled,
         SamplerParameter::LoopStartFrame,
         SamplerParameter::LoopEndFrame,
+        SamplerParameter::LoopCrossfadeMs,
         AttackMs,
         DecayMs,
         SustainPercent,

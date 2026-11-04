@@ -573,6 +573,78 @@ fn run_direct_utility_edit_probe() -> Result<(), Box<dyn Error>> {
     control.reclaim();
     Ok(())
 }
+/// Pulse #4105: behind a sounding instrument, a stateful DC-remove Utility
+/// keeps the effect suffix nonquiescent. A gain edit on the following
+/// memoryless Utility is a static-matrix-only change, so the callback handoff
+/// retargets the suffix and ramps instead of retaining it as a tail; the
+/// published handoff and ramping blocks allocate and free nothing.
+#[test]
+fn instrument_suffix_static_matrix_handoff_is_allocation_free() -> Result<(), Box<dyn Error>> {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| run_instrument_suffix_matrix_probe().map_err(|e| e.to_string()))?
+        .join()
+        .map_err(|_| "instrument suffix allocation probe panicked")?
+        .map_err(Into::into)
+}
+fn run_instrument_suffix_matrix_probe() -> Result<(), Box<dyn Error>> {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let (project, track, _) = source()?;
+    let state = UTILITY_DEFINITION.default_state()?;
+    let mut snapshot = project.snapshot();
+    let device = snapshot.next_id;
+    snapshot.tracks[0]
+        .devices
+        .push(hex_project::DeviceSnapshot {
+            automation: Vec::new(),
+            comparison: None,
+            id: device,
+            bypassed: false,
+            state: state.clone(),
+        });
+    snapshot.next_id += 1;
+    let mut editor = Editor::new(Project::from_snapshot(snapshot)?, 16)?;
+    let devices = editor.project().track(track).ok_or("track")?.devices();
+    assert_eq!(devices.len(), 2);
+    let device = devices[1].id();
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "publish")?;
+    control
+        .command_with_ticket(PlaybackCommand::Play)
+        .map_err(|_| "play")?;
+    // The fixture note ends at frame 375; hand off while it still sounds.
+    let mut output = [[0.0; 2]; 256];
+    measured_block(&mut callback, &mut output);
+    assert!(output.iter().flatten().any(|v| v.abs() > 1e-6));
+    editor.execute(Command::ReplaceDeviceState {
+        device,
+        state: UTILITY_DEFINITION.patch_parameter(
+            &state,
+            parameter::GAIN,
+            ParameterValue::Float(0.25),
+        )?,
+    })?;
+    control
+        .publish(Playback::try_from_prepared_with_session(prepare(
+            editor.project(),
+        )?)?)
+        .map_err(|_| "replacement")?;
+    // Small blocks keep the 5 ms ramp active across several callbacks.
+    let mut small = [[0.0; 2]; 64];
+    for _ in 0..8 {
+        measured_block(&mut callback, &mut small);
+    }
+    assert!(control.status.rejected_revision().is_none());
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut output);
+    control.reclaim();
+    Ok(())
+}
 #[test]
 fn automated_auto_pan_callback_publication_and_late_failure_retry_are_allocation_free()
 -> Result<(), Box<dyn Error>> {

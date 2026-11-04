@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 #[path = "tests/group.rs"]
 mod group;
 
+#[path = "tests/split_recombination.rs"]
+mod split_recombination;
+
 #[path = "tests/aliases.rs"]
 mod aliases;
 #[path = "tests/content_resampler.rs"]
@@ -101,95 +104,6 @@ fn isolated(limit: usize, cache: usize, entries: usize) -> AudioTransformPrepara
         cache_limit: cache,
         entry_limit: entries,
         ..AudioTransformPreparation::default()
-    }
-}
-#[test]
-fn every_mode_split_recombines_exactly_with_root_pitch_phase_envelope_fades_and_tempo() {
-    for mode in [
-        None,
-        Some(WarpMode::RePitch),
-        Some(WarpMode::Beats {
-            preserve: hex_project::BeatsPreserve::Division(BeatTime::from_raw(
-                BeatTime::ONE.raw() / 4,
-            )),
-            tail: BeatsTail::Alternating,
-            decay: 75,
-        }),
-        Some(WarpMode::Beats {
-            preserve: hex_project::BeatsPreserve::Transients,
-            tail: BeatsTail::Forward,
-            decay: 100,
-        }),
-        Some(WarpMode::Tones { grain_ms: 40 }),
-        Some(WarpMode::Texture {
-            grain_ms: 40,
-            fluctuation: 60,
-            seed: 91,
-        }),
-        Some(WarpMode::Complex),
-        Some(WarpMode::ComplexPro {
-            formants: 75,
-            envelope: 128,
-        }),
-    ] {
-        let (mut editor, clip, media) = fixture(true);
-        let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
-        editor
-            .execute(Command::SetAudioClipPitch { clip, cents: 137 })
-            .unwrap();
-        editor
-            .execute(Command::SetAudioClipSourceGain {
-                clip,
-                points: vec![
-                    SourceGainPoint {
-                        frame: 0,
-                        gain_q16: 65_536,
-                    },
-                    SourceGainPoint {
-                        frame: 4_000,
-                        gain_q16: 16_384,
-                    },
-                    SourceGainPoint {
-                        frame: 8_000,
-                        gain_q16: 65_536,
-                    },
-                ],
-            })
-            .unwrap();
-        if let Some(mode) = mode {
-            let settings = default_audio_warp(
-                editor.project().clip(clip).unwrap(),
-                editor.project().tempo_map(),
-                mode,
-            )
-            .unwrap();
-            editor
-                .execute(Command::SetAudioClipWarp {
-                    clip,
-                    settings: Some(settings),
-                })
-                .unwrap();
-            editor
-                .execute(Command::SetTempoPoint {
-                    beat: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
-                    tempo: Tempo::new(90_000_000).unwrap(),
-                })
-                .unwrap();
-        }
-        let length = editor.project().clip(clip).unwrap().duration() as usize;
-        let unsplit = prepare(&editor, &media, &context);
-        let expected = render(&unsplit, 0, length, 127);
-        editor
-            .execute(Command::SplitClip { clip, frame: 3_137 })
-            .unwrap();
-        let split = prepare(&editor, &media, &context);
-        assert_eq!(render(&split, 0, length, 257), expected, "{mode:?}");
-        assert_eq!(
-            render(&split, 3_117, 509, 31),
-            expected[3_117..3_626],
-            "random seek {mode:?}"
-        );
-        assert!(context.cache_hits() >= 2);
     }
 }
 #[test]

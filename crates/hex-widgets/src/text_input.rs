@@ -484,10 +484,10 @@ impl TextInput {
         if !self.enabled {
             return;
         }
-        if let Some(text) = self.content.get(self.selected.clone()) {
-            if !text.is_empty() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
-            }
+        if let Some(text) = self.content.get(self.selected.clone())
+            && !text.is_empty()
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
         }
     }
 
@@ -495,11 +495,11 @@ impl TextInput {
         if !self.enabled {
             return;
         }
-        if let Some(text) = self.content.get(self.selected.clone()) {
-            if !text.is_empty() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
-                self.replace("", window, cx);
-            }
+        if let Some(text) = self.content.get(self.selected.clone())
+            && !text.is_empty()
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
+            self.replace("", window, cx);
         }
     }
 

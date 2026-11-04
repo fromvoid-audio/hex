@@ -87,18 +87,20 @@ pub(super) fn exercise_blocked_sampler_keyboard(
                 [-0.125, -0.125],
                 [0.0, 0.0],
             ],
-            [
-                [0.125, 0.125],
-                [-0.125, -0.125],
-                [0.125, 0.125],
-                [-0.125, -0.125],
-            ],
+            // The mono octave plays faster than unity, so it is band-limited
+            // (#4089): its decimated loop is DC plus a tone at the output
+            // Nyquist, which the kernel's stopband removes. Its steady state
+            // (after the first loop wrap) is the loop mean.
+            [[0.125, 0.125]; 4],
         )
     };
-    for i in 0..64 {
+    // Stereo voices both play at unity and stay literal; the band-limited mono
+    // octave is checked against its steady state within the kernel stopband.
+    let (tolerance, settled) = if stereo { (1e-6, 0) } else { (2e-3, 8) };
+    for i in settled..64 {
         for c in 0..2 {
             assert!(
-                (both[i][c] - root[i % 8][c] - octave[i % 4][c]).abs() < 1e-6,
+                (both[i][c] - root[i % 8][c] - octave[i % 4][c]).abs() < tolerance,
                 "both {i}: {:?}",
                 both[i]
             );
@@ -115,18 +117,30 @@ pub(super) fn exercise_blocked_sampler_keyboard(
             // The authored 2-frame release is raised to the prepared floor.
             let tail = root[i % 8][c] * super::floored_release_level(i, 2);
             assert!(
-                (released[i][c] - octave[i % 4][c] - tail).abs() < 1e-6,
+                (released[i][c] - octave[i % 4][c] - tail).abs() < tolerance,
                 "release {i}: {:?}",
                 released[i]
             );
         }
     }
     key(visual, "a", true);
+    // The held octave is past its onset here, so the first block repeats
+    // exactly from its settled frames.
+    let retriggered = render(h, true);
     assert_eq!(
-        render(h, true),
-        both,
+        retriggered[settled..],
+        both[settled..],
         "a fresh physical press retriggers alongside the held octave while Service is blocked"
     );
+    for i in 0..settled {
+        for c in 0..2 {
+            assert!(
+                (retriggered[i][c] - root[i % 8][c] - octave[i % 4][c]).abs() < tolerance,
+                "retrigger {i}: {:?}",
+                retriggered[i]
+            );
+        }
+    }
     visual.update(|w, _| w.blur());
     cx.background_executor
         .advance_clock(Duration::from_millis(16));
@@ -141,7 +155,7 @@ pub(super) fn exercise_blocked_sampler_keyboard(
         for (c, sample) in frame.iter().enumerate() {
             let expected = (root[i % 8][c] + octave[i % 4][c]) * super::floored_release_level(i, 2);
             assert!(
-                (sample - expected).abs() < 1e-6,
+                (sample - expected).abs() < tolerance,
                 "focus cancellation {i}: {:?}; {:?}",
                 frame,
                 cx.update(|cx| hex_ui::sampler_keyboard_test_status(window, cx))

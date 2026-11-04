@@ -1,5 +1,6 @@
 """Scope boundaries, input freshness, and zero-match qualification regressions."""
 import importlib.util
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -1073,7 +1074,8 @@ class BaseAdvanceCarryTests(unittest.TestCase):
                 "steps": [{"step_id": "affected-tests", "argv": ["cargo", "test", "-p", "ui"], "status": "passed",
                            "test_results": {"rust_passed_by_binary": [1]}}]}
 
-    def test_carry_basis_accepts_only_verbatim_disjoint_ordinary_base_advances(self):
+    @contextmanager
+    def carry_fixture(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             git = self.repository(root)
@@ -1104,18 +1106,39 @@ class BaseAdvanceCarryTests(unittest.TestCase):
                                         source=git("rev-parse", "HEAD"), metadata=self.metadata(root))
                 return plan.carry_basis(root, resolved, evidence, env={})
 
+            yield root, base, candidate, evidence, advance
+
+    def test_carry_basis_accepts_disjoint_ordinary_advance(self):
+        with self.carry_fixture() as (_, _, candidate, _, advance):
             basis = advance({"crates/core/src/lib.rs": "// advanced\n", "docs/a.md": "prose"})
             self.assertEqual(basis["delta_owners"], ["core"])
             self.assertEqual(basis["report_commit"], candidate)
-            for paths, then, message in (
-                    ({"crates/core/src/lib.rs": "// advanced\n"}, "crates/core/src/lib.rs", "verbatim"),
-                    ({"crates/core/src/lib.rs": "// advanced\n"}, "crates/ui/src/a.rs", "own path"),
-                    ({"rust-toolchain.toml": "[toolchain]\n"}, None, "toolchain"),
-                    ({"crates/core/Cargo.toml": "[package]\nname='core'\nversion='2'\n"}, None, "dependency"),
-                    ({"scripts/ci_plan.py": "# tool\n"}, None, "tooling")):
-                with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
-                    advance(paths, then=then)
-            git("checkout", "-q", "--detach", candidate)
+
+    def assert_carry_advance_refused(self, paths, then, message):
+        with self.carry_fixture() as (_, _, _, _, advance):
+            with self.assertRaisesRegex(ValueError, message):
+                advance(paths, then=then)
+
+    def test_carry_basis_rejects_nonverbatim_advance(self):
+        self.assert_carry_advance_refused({"crates/core/src/lib.rs": "// advanced\n"},
+                                          "crates/core/src/lib.rs", "verbatim")
+
+    def test_carry_basis_rejects_candidate_own_path_change(self):
+        self.assert_carry_advance_refused({"crates/core/src/lib.rs": "// advanced\n"},
+                                          "crates/ui/src/a.rs", "own path")
+
+    def test_carry_basis_rejects_toolchain_change(self):
+        self.assert_carry_advance_refused({"rust-toolchain.toml": "[toolchain]\n"}, None, "toolchain")
+
+    def test_carry_basis_rejects_dependency_change(self):
+        self.assert_carry_advance_refused({"crates/core/Cargo.toml": "[package]\nname='core'\nversion='2'\n"},
+                                          None, "dependency")
+
+    def test_carry_basis_rejects_tooling_change(self):
+        self.assert_carry_advance_refused({"scripts/ci_plan.py": "# tool\n"}, None, "tooling")
+
+    def test_carry_basis_rejects_invalid_report_and_native_inputs(self):
+        with self.carry_fixture() as (root, base, candidate, evidence, _):
             current = plan.resolve(root, profile="merge", base=base, source=candidate, metadata=self.metadata(root))
             for field, value in (("status", "failed"), ("stale", True), ("mode", "full"),
                                  ("native_acceptance_opt_in", None), ("steps", [])):
@@ -1164,10 +1187,99 @@ class BaseAdvanceCarryTests(unittest.TestCase):
 class MainHealthTests(unittest.TestCase):
     INVENTORY = BaseAdvanceCarryTests.INVENTORY
 
+    def profile_steps(self, profile, extra=None, workspace_change=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git = BaseAdvanceCarryTests.repository(self, root)
+            manifest = root / "Cargo.toml"
+            manifest.write_text('[workspace]\nmembers = ["crates/*"]\n')
+            git("add", "Cargo.toml")
+            git("commit", "-qm", "manifest base")
+            git("checkout", "-qb", "profile")
+            content = manifest.read_text()
+            if workspace_change:
+                content = content.replace('["crates/*"]', '["crates/*", "tools"]')
+            manifest.write_text(content + "\n" + profile)
+            if extra:
+                (root / extra).write_text("changed\n")
+            git("add", ".")
+            git("commit", "-qm", "profile change")
+            git("checkout", "-q", "main")
+            git("merge", "-q", "--no-ff", "--no-edit", "profile")
+            source = git("rev-parse", "HEAD")
+            resolved = plan.resolve(root, profile="health", base=source + "^1", source=source,
+                                    metadata=BaseAdvanceCarryTests.metadata(self, root))
+            return [(step.step_id, step.argv) for step in ci.planned_steps(resolved)]
+
+    def test_health_profile_codegen_selects_retuned_owner(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n')
+        self.assertIn(("health-tests", ("cargo", "test", "-p", "core", "--locked")), steps)
+
+    def test_health_profile_codegen_and_other_owner_select_both(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n',
+                                   "crates/ui/src/lib.rs")
+        self.assertIn(("health-tests", ("cargo", "test", "-p", "core", "-p", "ui", "--locked")), steps)
+
+    def test_health_two_retuned_profiles_select_both_owners(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n'
+                                   '[profile.dev.package.ui]\nopt-level = 1\n')
+        self.assertIn(("health-tests", ("cargo", "test", "-p", "core", "-p", "ui", "--locked")), steps)
+
+    def assert_workspace_profile(self, profile):
+        steps = self.profile_steps(profile)
+        self.assertIn(("health-tests", ("cargo", "test", "--workspace", "--locked")), steps)
+
+    def test_health_unsafe_package_profile_keeps_workspace(self):
+        self.assert_workspace_profile('[profile.dev.package.core]\ndebug-assertions = false\n')
+
+    def test_health_unknown_package_profile_keeps_workspace(self):
+        self.assert_workspace_profile('[profile.dev.package.unknown]\nopt-level = 1\n')
+
+    def test_health_workspace_profile_keeps_workspace(self):
+        self.assert_workspace_profile('[profile.release]\nlto = true\n')
+
+    def test_health_profile_with_lockfile_keeps_workspace(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n', "Cargo.lock")
+        self.assertIn(("health-tests", ("cargo", "test", "--workspace", "--locked")), steps)
+
+    def test_health_profile_with_workspace_change_keeps_workspace(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n',
+                                   workspace_change=True)
+        self.assertIn(("health-tests", ("cargo", "test", "--workspace", "--locked")), steps)
+
     def steps(self, paths):
         health = plan.health_selection(paths, self.INVENTORY)
         return [(s.step_id, s.argv) for s in ci.planned_steps(
-            {"health": health, "base": "b", "source": "s", "scope": "rust"})]
+            {"health": health, "base": "b", "source": "s", "scope": "rust",
+             "python_tests": {"mode": "comprehensive"}})]
+
+    def test_health_owned_tooling_resolves_to_selected_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git = BaseAdvanceCarryTests.repository(self, root)
+            (root / "scripts").mkdir()
+            script = root / "scripts/ci_plan.py"
+            script.write_text("# base\n")
+            git("add", ".")
+            git("commit", "-qm", "tool base")
+            script.write_text("# change\n")
+            git("commit", "-qam", "tool change")
+            source = git("rev-parse", "HEAD")
+            with patch.object(plan.python_tests, "available_modules",
+                              return_value=sorted(plan.python_tests.REVIEWED_MODULES)):
+                resolved = plan.resolve(root, profile="health", base=source + "^1", source=source,
+                                        metadata=BaseAdvanceCarryTests.metadata(self, root))
+            selection = resolved["python_tests"]
+            self.assertEqual(selection["mode"], "shared")
+            steps = {s.step_id: s for s in ci.planned_steps(resolved)}
+            self.assertEqual(steps["health-runner-tests"].argv, plan.python_tests.argv(selection))
+            self.assertTrue(steps["health-runner-tests"].requires_tests)
+
+    def test_health_tooling_refuses_empty_python_selection(self):
+        health = plan.health_selection(["scripts/ci_plan.py"], self.INVENTORY)
+        with self.assertRaises(ValueError):
+            ci.planned_steps({"health": health, "base": "b", "source": "s", "scope": "tooling",
+                              "python_tests": {"mode": "none"}})
 
     def test_health_tests_only_the_merged_owners_and_widens_for_unknown_inputs(self):
         fmt = ("format", ("cargo", "fmt", "--all", "--check"))

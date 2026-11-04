@@ -7,21 +7,28 @@ use gpui::{
     App, Bounds, Context, CursorStyle, Element, ElementId, Entity, EventEmitter, FocusHandle,
     Focusable, GlobalElementId, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PathBuilder, Pixels, Point, SharedString, Style, Subscription, Window, canvas,
-    div, point, prelude::*, px, rgb,
+    div, point, prelude::*, px, quad, rgb, size,
 };
 
 gpui::actions!(hex_response_graph, [RemoveNode, CancelPointer]);
 
-/// Install opt-in graph Backspace and held-pointer Escape bindings.
+/// Install opt-in graph deletion and held-pointer Escape bindings.
 pub fn bind_response_graph_keys(cx: &mut App) {
     cx.bind_keys([
         gpui::KeyBinding::new("backspace", RemoveNode, Some("hex_response_graph_remove")),
+        gpui::KeyBinding::new(
+            "x",
+            RemoveNode,
+            Some("hex_response_graph_remove && !hex_text_editing && !hex_text_input"),
+        ),
         gpui::KeyBinding::new("escape", CancelPointer, Some("hex_response_graph_remove")),
     ]);
 }
 
 mod axes;
 mod creation_hint;
+#[cfg(test)]
+mod node_appearance_tests;
 mod scroll;
 pub use axes::ResponseGraphAxes;
 pub use creation_hint::ResponseGraphCreationHint;
@@ -186,6 +193,9 @@ pub struct ResponseGraph {
     marquee: Option<MarqueePress>,
     creation_hint_resolver: Option<fn([f32; 2]) -> ResponseGraphCreationHint>,
     creation_hover: Option<creation_hint::Hover>,
+    circular_nodes: bool,
+    node_hover_pointer: Option<Point<Pixels>>,
+    hovered_node: Option<u32>,
     creation_hint_was_focused: bool,
     tab_navigation: bool,
     backspace_removal: bool,
@@ -254,6 +264,9 @@ impl ResponseGraph {
             marquee: None,
             creation_hint_resolver: None,
             creation_hover: None,
+            circular_nodes: false,
+            node_hover_pointer: None,
+            hovered_node: None,
             creation_hint_was_focused: false,
             tab_navigation: false,
             backspace_removal: false,
@@ -284,6 +297,32 @@ impl ResponseGraph {
     pub fn plot_bounds(&self) -> Option<Bounds<Pixels>> {
         self.bounds
             .map(|bounds| axes::plot_bounds(bounds, self.axes.is_some()))
+    }
+
+    /// Use circular node markers that fill on hover or selection. Input events
+    /// and hit targets remain the same as the default graph presentation.
+    pub fn set_circular_nodes(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.circular_nodes != enabled {
+            self.circular_nodes = enabled;
+            self.refresh_node_hover(cx);
+            cx.notify();
+        }
+    }
+
+    fn refresh_node_hover(&mut self, cx: &mut Context<Self>) {
+        let next = self
+            .circular_nodes
+            .then_some(self.node_hover_pointer)
+            .flatten()
+            .and_then(|pointer| self.pointer_hit(pointer))
+            .and_then(|(_, hit)| match hit {
+                creation_hint::Hit::Node(id) => Some(id),
+                creation_hint::Hit::Blank { .. } => None,
+            });
+        if self.hovered_node != next {
+            self.hovered_node = next;
+            cx.notify();
+        }
     }
 
     /// Allow blank plot presses to create one owner-defined point. Node hits
@@ -397,6 +436,7 @@ impl ResponseGraph {
             self.retire_missing_scroll_node(cx);
             self.style = style;
             self.refresh_creation_hint(cx);
+            self.refresh_node_hover(cx);
             cx.notify();
         }
         Ok(())
@@ -961,7 +1001,9 @@ impl ResponseGraph {
     ) {
         if self.backspace_removal
             && self.focus.is_focused(window)
-            && event.keystroke.key == "backspace"
+            && (event.keystroke.key == "backspace"
+                || (event.keystroke.key == "x"
+                    && event.keystroke.modifiers == Modifiers::default()))
         {
             // A focused empty/pending graph must not forward deletion to its
             // editor's track/clip action. Numeric/text siblings own their keys.
@@ -1156,6 +1198,8 @@ impl gpui::Render for ResponseGraph {
             output: self.style.muted,
         });
         let nodes = self.model.nodes.clone();
+        let circular_nodes = self.circular_nodes;
+        let hovered_node = self.hovered_node;
         let style = self.style;
         let axes = self.axes.clone();
         let labels = self
@@ -1196,10 +1240,16 @@ impl gpui::Render for ResponseGraph {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_move(cx.listener(|graph, event: &MouseMoveEvent, _, cx| {
                 graph.hover_creation_hint(event, cx);
+                if graph.circular_nodes {
+                    graph.node_hover_pointer = Some(event.position);
+                    graph.refresh_node_hover(cx);
+                }
             }))
             .on_hover(cx.listener(|graph, hovered: &bool, _, cx| {
                 if !hovered {
                     graph.clear_creation_hint(cx);
+                    graph.node_hover_pointer = None;
+                    graph.refresh_node_hover(cx);
                 }
             }))
             .on_scroll_wheel(cx.listener(|graph, event, window, cx| {
@@ -1216,6 +1266,7 @@ impl gpui::Render for ResponseGraph {
                             graph.bounds = Some(bounds);
                             if moved {
                                 graph.refresh_creation_hint(cx);
+                                graph.refresh_node_hover(cx);
                             }
                             if changed && graph.axes.is_some() {
                                 cx.notify();
@@ -1231,6 +1282,8 @@ impl gpui::Render for ResponseGraph {
                             analyzer_peak.as_deref(),
                             analyzer_style,
                             &nodes,
+                            circular_nodes,
+                            hovered_node,
                             style,
                             window,
                         );
@@ -1270,6 +1323,8 @@ fn paint_graph(
     analyzer_peak: Option<&[[f32; 2]]>,
     analyzer_style: ResponseGraphAnalyzerStyle,
     nodes: &[ResponseGraphNode],
+    circular_nodes: bool,
+    hovered_node: Option<u32>,
     style: ControlStyle,
     window: &mut Window,
 ) {
@@ -1351,6 +1406,16 @@ fn paint_graph(
             origin.y + height * (1.0 - node.position[1]),
         );
         let radius = px(if node.selected { 4.0 } else { 3.0 });
+        if circular_nodes {
+            window.paint_quad(circular_node_quad(
+                center,
+                radius,
+                *node,
+                hovered_node,
+                style,
+            ));
+            continue;
+        }
         let mut marker = PathBuilder::stroke(px(1.0));
         marker.move_to(point(center.x - radius, center.y));
         marker.line_to(point(center.x, center.y - radius));
@@ -1368,6 +1433,36 @@ fn paint_graph(
             );
         }
     }
+}
+
+fn circular_node_quad(
+    center: Point<Pixels>,
+    radius: Pixels,
+    node: ResponseGraphNode,
+    hovered_node: Option<u32>,
+    style: ControlStyle,
+) -> gpui::PaintQuad {
+    let color = if node.enabled {
+        style.accent
+    } else {
+        style.muted
+    };
+    let fill: gpui::Hsla = if node.selected || hovered_node == Some(node.id) {
+        rgb(color).into()
+    } else {
+        gpui::transparent_black()
+    };
+    quad(
+        Bounds::new(
+            point(center.x - radius, center.y - radius),
+            size(radius * 2.0, radius * 2.0),
+        ),
+        radius,
+        fill,
+        px(1.0),
+        rgb(color),
+        Default::default(),
+    )
 }
 
 fn paint_curve(

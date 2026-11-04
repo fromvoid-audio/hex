@@ -2,6 +2,7 @@
 use crate::{FileToken, JournalChange, StorageError, encode, replacement};
 mod restart;
 mod slot_lock;
+mod untitled_slot;
 use hex_project::Project;
 pub use restart::{JournalRestartOutcome, JournalRestartToken, restart_journal};
 use slot_lock::{SlotLock, lock_slot};
@@ -10,6 +11,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
+pub use untitled_slot::{MAX_UNTITLED_SLOTS, UntitledSlotClaim, untitled_slot_path};
 
 const MAGIC: &[u8; 8] = b"HEXJRNL\0";
 const LOCK_MAGIC: &[u8; 8] = b"HEXJLOC\0";
@@ -48,7 +50,7 @@ impl Journal {
     /// Claim an empty slot without adopting a checkpoint published by another writer.
     pub fn open_empty(path: PathBuf) -> Result<Self, StorageError> {
         if read(&path)?.is_some() {
-            return Err(StorageError::Conflict { path });
+            return Err(StorageError::JournalConflict { path });
         }
         Ok(Self { path, bytes: None })
     }
@@ -107,10 +109,19 @@ impl Journal {
         let result = (|| {
             if supersede {
                 let bytes = read(&self.path)?;
-                if let Some(bytes) = &bytes {
-                    let _ = decode(&self.path, bytes)?;
+                // Equal retained bytes were validated or produced by this
+                // owner. Name aliases depend on current filesystem identity,
+                // however, so only a direct name binding can reuse validation.
+                let reusable = bytes == self.bytes
+                    && bytes
+                        .as_deref()
+                        .is_none_or(|bytes| directly_bound(&self.path, bytes));
+                if !reusable {
+                    if let Some(bytes) = &bytes {
+                        let _ = decode(&self.path, bytes)?;
+                    }
+                    self.bytes = bytes;
                 }
-                self.bytes = bytes;
             }
             self.check()?;
             let mut bytes =
@@ -204,7 +215,7 @@ impl Journal {
 
     fn check(&self) -> Result<(), StorageError> {
         if read(&self.path)? != self.bytes {
-            return Err(StorageError::Conflict {
+            return Err(StorageError::JournalConflict {
                 path: self.path.clone(),
             });
         }
@@ -257,6 +268,25 @@ fn read(path: &Path) -> Result<Option<Vec<u8>>, StorageError> {
         ));
     }
     Ok(Some(crate::files::read_document(path)?))
+}
+
+// Cached bytes have already passed envelope validation. A direct byte-exact
+// name match is stable; aliases must go through decode's live same-file check.
+fn directly_bound(path: &Path, bytes: &[u8]) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(length) = bytes
+        .get(12..16)
+        .and_then(|raw| <[u8; 4]>::try_from(raw).ok())
+        .map(u32::from_le_bytes)
+    else {
+        return false;
+    };
+    let Some(end) = 24_usize.checked_add(length as usize) else {
+        return false;
+    };
+    bytes.get(24..end) == Some(name.as_bytes())
 }
 
 fn decode(path: &Path, bytes: &[u8]) -> Result<Project, StorageError> {
@@ -550,7 +580,7 @@ mod tests {
         let recreated = fs::read(&path).expect("new generation");
         assert!(matches!(
             journal.clear(),
-            Err(StorageError::Conflict { .. })
+            Err(StorageError::JournalConflict { .. })
         ));
         assert_eq!(
             fs::read(&path).expect("retry preserved new owner"),
@@ -612,13 +642,28 @@ mod tests {
         let second = Project::new(44_100).expect("second");
         let mut older = Journal::open(path.clone()).expect("open");
         older.checkpoint_latest(&first).expect("first checkpoint");
+        let mut previous = Journal::open(path.clone()).expect("observe first generation");
+        older.checkpoint_latest(&first).expect("repeat same owner");
+        assert_eq!(load_journal(&path).expect("repeated checkpoint"), first);
+        assert!(matches!(
+            previous.clear(),
+            Err(StorageError::JournalConflict { .. })
+        ));
         let mut newer = Journal::open(path.clone()).expect("new process");
         newer.checkpoint_latest(&second).expect("latest checkpoint");
         assert_eq!(load_journal(&path).expect("latest"), second);
-        assert!(matches!(older.clear(), Err(StorageError::Conflict { .. })));
+        let stale = older.clear();
+        assert!(matches!(&stale, Err(StorageError::JournalConflict { path: p }) if *p == path));
+        // Journal conflicts keep their recovery wording; project save-as guidance
+        // belongs only to document conflicts.
+        let message = stale
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.contains("changed outside hex") && !message.contains("save as"));
         assert!(matches!(
             older.checkpoint(&first),
-            Err(StorageError::Conflict { .. })
+            Err(StorageError::JournalConflict { .. })
         ));
         older
             .checkpoint_latest(&first)
@@ -632,13 +677,19 @@ mod tests {
         let mut same = Journal::open(path.clone()).expect("newer identical project");
         same.checkpoint_latest(&first)
             .expect("identical project gets distinct ownership");
-        assert!(matches!(older.clear(), Err(StorageError::Conflict { .. })));
+        assert!(matches!(
+            older.clear(),
+            Err(StorageError::JournalConflict { .. })
+        ));
         same.clear().expect("durable saved checkpoint clears slot");
         let mut after_clear = Journal::open(path.clone()).expect("new project after clear");
         after_clear
             .checkpoint_latest(&first)
             .expect("same content after clear");
-        assert!(matches!(older.clear(), Err(StorageError::Conflict { .. })));
+        assert!(matches!(
+            older.clear(),
+            Err(StorageError::JournalConflict { .. })
+        ));
         after_clear.clear().expect("new owner can clear");
         assert!(!path.exists());
     }
@@ -803,6 +854,25 @@ mod tests {
             },
         );
         panic!("child must terminate at injected boundary");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn previously_valid_alias_is_refused_if_its_original_binding_disappears() {
+        let dir = Temp::new();
+        let original = dir.0.join("original.hex-journal");
+        let alias = dir.0.join("alias.hex-journal");
+        let project = Project::new(48_000).expect("project");
+        Journal::open(original.clone())
+            .expect("open")
+            .checkpoint(&project)
+            .expect("checkpoint");
+        fs::hard_link(&original, &alias).expect("link journal under another name");
+        let mut adopted = Journal::open(alias.clone()).expect("valid same-file alias");
+        let bytes = fs::read(&alias).expect("original bytes");
+        fs::remove_file(&original).expect("remove original name");
+        assert!(adopted.checkpoint_latest(&project).is_err());
+        assert_eq!(fs::read(&alias).expect("preserved bytes"), bytes);
     }
 
     #[cfg(unix)]

@@ -53,14 +53,15 @@ fn absolute_cursor_before_and_after_loop_is_callback_allocation_free() -> Result
         .command(PlaybackCommand::PlayFrom(2))
         .map_err(|_| "pre-loop start failed")?;
     measured_block(&mut callback, &mut output);
+    // The loop's last sample fades to zero; its next attack stays unattenuated.
     assert_eq!(
         output,
-        [[3.0; 2], [4.0; 2], [5.0; 2], [6.0; 2], [7.0; 2], [8.0; 2]]
+        [[3.0; 2], [4.0; 2], [5.0; 2], [6.0; 2], [7.0; 2], [0.0; 2]]
     );
     measured_block(&mut callback, &mut output);
     assert_eq!(
         output,
-        [[5.0; 2], [6.0; 2], [7.0; 2], [8.0; 2], [5.0; 2], [6.0; 2]]
+        [[5.0; 2], [6.0; 2], [7.0; 2], [0.0; 2], [5.0; 2], [6.0; 2]]
     );
     control.request_shutdown();
     measured_shutdown(&mut callback, &mut output);

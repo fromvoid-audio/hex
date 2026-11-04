@@ -34,7 +34,7 @@ fn phase(elapsed: Duration) -> u128 {
 }
 
 fn visible(phase: u128) -> bool {
-    phase % 2 == 0
+    phase & 1 == 0
 }
 
 /// Time from `elapsed` until the next phase begins, plus slack.

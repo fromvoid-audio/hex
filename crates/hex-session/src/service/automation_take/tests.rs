@@ -135,11 +135,11 @@ fn history(
             replay.insert(content, *event);
         }
         content += 1;
-        if let Some(region) = region {
-            if content == region.end() {
-                content = region.start();
-                pass += 1;
-            }
+        if let Some(region) = region
+            && content == region.end()
+        {
+            content = region.start();
+            pass += 1;
         }
     }
     panic!("finite chronological oracle")

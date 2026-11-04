@@ -211,6 +211,15 @@ fn main_oracle(compensated: bool, frames: usize) -> Vec<[f32; 2]> {
     assert_eq!(expected[319], [0.5, -0.5]);
     expected
 }
+/// PCM16 export applies ±1 LSB TPDF dither, so each sample lands within one
+/// LSB of plain rounding.
+fn assert_pcm16_near(actual: i16, expected: f32, context: &str) {
+    let rounded = (expected.clamp(-1.0, 1.0) * 32_767.0).round() as i32;
+    assert!(
+        (i32::from(actual) - rounded).abs() <= 1,
+        "{context}: {actual} not within one lsb of {rounded}"
+    );
+}
 fn assert_pcm(path: &Path, expected: &[[f32; 2]]) {
     let bytes = fs::read(path).unwrap();
     assert_eq!(&bytes[0..4], b"RIFF");
@@ -219,8 +228,7 @@ fn assert_pcm(path: &Path, expected: &[[f32; 2]]) {
     for (sample, expected) in bytes[44..].chunks_exact(4).zip(expected) {
         for channel in 0..2 {
             let actual = i16::from_le_bytes([sample[channel * 2], sample[channel * 2 + 1]]);
-            let expected = (expected[channel] * 32767.0).round() as i16;
-            assert_eq!(actual, expected, "actual serialized PCM");
+            assert_pcm16_near(actual, expected[channel], "actual serialized PCM");
         }
     }
 }
@@ -350,11 +358,11 @@ fn main_bypass_and_remove_restore_raw_sum_with_exact_undo_redo() {
         let mut frames = [[0.0; 2]; 64];
         session.render(&mut frames).unwrap();
         assert_eq!(frames, [[0.6, -0.6]; 64]);
-        assert!(f.editor.undo());
+        assert!(f.editor.try_undo().unwrap());
         assert_eq!(f.editor.project().snapshot(), original);
-        assert!(f.editor.redo());
+        assert!(f.editor.try_redo().unwrap());
         assert_eq!(f.editor.project().snapshot(), changed);
-        assert!(f.editor.undo());
+        assert!(f.editor.try_undo().unwrap());
     }
 }
 
@@ -405,10 +413,7 @@ fn controlled_range_export_reconstructs_stateful_main_history_from_zero() {
         for (sample, expected) in bytes[44..].chunks_exact(4).zip(&full[128..192]) {
             for channel in 0..2 {
                 let actual = i16::from_le_bytes([sample[channel * 2], sample[channel * 2 + 1]]);
-                assert_eq!(
-                    actual,
-                    (expected[channel].clamp(-1.0, 1.0) * 32767.0).round() as i16
-                );
+                assert_pcm16_near(actual, expected[channel], "selected range PCM");
             }
         }
         assert_eq!(control.progress().processed_frames, 192);

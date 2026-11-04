@@ -5,6 +5,10 @@ use crate::{
 };
 use hex_engine::Audio;
 use hex_project::converted_frame_count;
+use std::sync::atomic::AtomicBool;
+
+/// Converted frames rendered between cooperative cancellation checks.
+const CANCEL_CHECK_OUTPUT_FRAMES: usize = 64 * 1024;
 
 /// Caller-owned bounds for one resampling operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +35,22 @@ pub fn resample_with_version(
     limits: ResampleLimits,
     version: ResampleVersion,
 ) -> Result<Audio, ImportError> {
+    resample_cancellable(source, target_rate, limits, version, &crate::NOT_CANCELLED)
+}
+
+/// [`resample_with_version`] with cooperative cancellation for superseded
+/// control work. `cancel` is polled before allocation and before each window
+/// of 65,536 converted frames; once observed, conversion stops and reports
+/// [`ImportError::Cancelled`]. Windows share one global phase, so the output
+/// is identical to an uninterrupted conversion.
+pub fn resample_cancellable(
+    source: &Audio,
+    target_rate: u32,
+    limits: ResampleLimits,
+    version: ResampleVersion,
+    cancel: &AtomicBool,
+) -> Result<Audio, ImportError> {
+    crate::cancelled(cancel)?;
     let source_frames = u64::try_from(source.frames().len())
         .map_err(|_| ImportError::Invalid("source frame count exceeds project range"))?;
     let max_source_frames = u64::try_from(limits.max_source_frames)
@@ -54,7 +74,16 @@ pub fn resample_with_version(
         .try_reserve_exact(output_capacity)
         .map_err(|_| ImportError::AllocationFailed)?;
     output.resize(output_capacity, [0.0; 2]);
-    plan.render_window(0, source.frames(), 0, &mut output)?;
+    let mut window_start = 0_u64;
+    for window in output.chunks_mut(CANCEL_CHECK_OUTPUT_FRAMES) {
+        crate::cancelled(cancel)?;
+        plan.render_window(0, source.frames(), window_start, window)?;
+        let count = u64::try_from(window.len())
+            .map_err(|_| ImportError::Invalid("output window frame count overflow"))?;
+        window_start = window_start
+            .checked_add(count)
+            .ok_or(ImportError::Invalid("output window range overflow"))?;
+    }
     Audio::new(target_rate, output)
         .map_err(|_| ImportError::Invalid("resampler produced invalid audio"))
 }
@@ -591,6 +620,38 @@ mod tests {
             cosine += f64::from(frame[channel]) * phase.cos();
         }
         2.0 * sine.hypot(cosine) / count
+    }
+
+    #[test]
+    fn windowed_cancellable_conversion_matches_one_window_and_honours_cancel() {
+        use std::sync::atomic::AtomicBool;
+        // Several cancellation windows; the global phase must be continuous.
+        let source = sine(44_100, 3 * CANCEL_CHECK_OUTPUT_FRAMES / 2, 997.0, false);
+        let limits = ResampleLimits {
+            max_source_frames: 1 << 20,
+            max_output_frames: 1 << 20,
+        };
+        let running = AtomicBool::new(false);
+        let windowed =
+            resample_cancellable(&source, 48_000, limits, ResampleVersion::V1, &running).unwrap();
+        let plan = ResamplePlan::with_kernel(
+            ResampleKernel::with_version(44_100, 48_000, ResampleVersion::V1).unwrap(),
+            source.frames().len() as u64,
+            u64::MAX,
+            u64::MAX,
+            usize::MAX,
+        )
+        .unwrap();
+        let mut whole = vec![[0.0; 2]; plan.output_frames() as usize];
+        plan.render_window(0, source.frames(), 0, &mut whole)
+            .unwrap();
+        assert!(whole.len() > CANCEL_CHECK_OUTPUT_FRAMES);
+        assert_eq!(windowed.frames(), whole.as_slice());
+        let cancel = AtomicBool::new(true);
+        assert!(matches!(
+            resample_cancellable(&source, 48_000, limits, ResampleVersion::V1, &cancel),
+            Err(ImportError::Cancelled)
+        ));
     }
 
     #[test]

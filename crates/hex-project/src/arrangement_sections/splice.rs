@@ -160,6 +160,7 @@ pub(super) fn duplicate(project: &mut Project, section: SectionId) -> Result<Cre
         return Err(Invalid("arrangement section limit reached"));
     }
     let mut copy = marker.clone();
+    copy.color = super::color::duplicate_color(project, section);
     copy.id = SectionId(0);
     copy.start = marker.end;
     copy.end = BeatTime::from_raw(
@@ -331,6 +332,7 @@ pub(super) fn preview_duplicate(
         return Err(Invalid("arrangement section limit reached"));
     }
     let mut copy = marker.clone();
+    copy.color = super::color::duplicate_color(project, section);
     copy.id = SectionId(0);
     copy.start = marker.end;
     copy.end = BeatTime::from_raw(

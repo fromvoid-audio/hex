@@ -54,7 +54,15 @@ pub(super) fn render_stems_using(
     control: &ExportControl,
 ) -> Result<ExportReport, ExportError> {
     render_stems_using_pages(
-        path, revision, resources, start, frames, stems, control, None,
+        path,
+        revision,
+        resources,
+        start,
+        frames,
+        stems,
+        ExportFormat::Pcm16,
+        control,
+        None,
     )
 }
 #[allow(clippy::too_many_arguments)] // Existing batch contract plus exact control-worker pages.
@@ -65,6 +73,7 @@ pub(super) fn render_stems_using_pages(
     start: u64,
     frames: u64,
     stems: &[Stem],
+    format: ExportFormat,
     control: &ExportControl,
     pages: Option<&mut dyn PreparedExportPages>,
 ) -> Result<ExportReport, ExportError> {
@@ -75,6 +84,7 @@ pub(super) fn render_stems_using_pages(
         start,
         frames,
         stems,
+        format,
         control,
         || {},
         pages,
@@ -97,6 +107,7 @@ fn render_stems_with_hook(
         start,
         frames,
         stems,
+        ExportFormat::Pcm16,
         control,
         before_publication,
         None,
@@ -111,6 +122,7 @@ fn render_stems_with_resources_and_hook(
     start: u64,
     frames: u64,
     stems: &[Stem],
+    format: ExportFormat,
     control: &ExportControl,
     before_publication: impl FnOnce(),
     mut pages: Option<&mut dyn PreparedExportPages>,
@@ -125,14 +137,15 @@ fn render_stems_with_resources_and_hook(
     start
         .checked_add(frames)
         .ok_or(ExportError::Invalid("frame range overflows"))?;
+    let frame_bytes = format.frame_bytes();
     let bytes = frames
-        .checked_mul(4)
+        .checked_mul(u64::from(frame_bytes))
         .and_then(|bytes| u32::try_from(bytes).ok())
-        .filter(|bytes| *bytes <= u32::MAX - 36)
+        .filter(|bytes| *bytes <= u32::MAX - format.riff_overhead())
         .ok_or(ExportError::Invalid("wav exceeds the RIFF size limit"))?;
     let rate = revision.arrangement().sample_rate();
     let byte_rate = rate
-        .checked_mul(4)
+        .checked_mul(frame_bytes)
         .filter(|_| rate > 0)
         .ok_or(ExportError::Invalid("invalid sample rate"))?;
     if path.file_name().is_none() {
@@ -187,11 +200,19 @@ fn render_stems_with_resources_and_hook(
             })?;
         staging.files.push(target);
         let mut writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
-        write_header(&mut writer, rate, bytes, byte_rate)?;
+        write_header_encoded(&mut writer, rate, bytes, byte_rate, format)?;
         writers.push(writer);
     }
     let mut buffers = vec![[[0.0; 2]; FRAMES_PER_BLOCK]; ordered.len()];
     let mut main = [[0.0; 2]; FRAMES_PER_BLOCK];
+    let mut clipped_samples = 0_u64;
+    let quantisers: Vec<_> = ordered
+        .iter()
+        .map(|stem| dither::Pcm16Quantiser::stem(stem.id))
+        .collect();
+    let frame_bytes = frame_bytes as usize;
+    let sample_bytes = frame_bytes / 2;
+    let mut position = start;
     let mut remaining = frames;
     while remaining > 0 {
         control.check()?;
@@ -216,25 +237,37 @@ fn render_stems_with_resources_and_hook(
                 .render_with_capture(&mut main[..count], &mut capture)
                 .map_err(ExportError::SessionRender)?;
         }
-        for (index, writer) in writers.iter_mut().enumerate() {
+        for ((index, writer), quantiser) in writers.iter_mut().enumerate().zip(&quantisers) {
             let output = capture
                 .output(index)
                 .ok_or(ExportError::Invalid("stem capture was not committed"))?;
-            let mut pcm = [0_u8; FRAMES_PER_BLOCK * 4];
-            for (frame, bytes) in output.iter().zip(pcm[..count * 4].chunks_exact_mut(4)) {
-                for (channel, sample) in frame.iter().enumerate() {
+            let mut encoded = [0_u8; FRAMES_PER_BLOCK * crate::format::MAX_FRAME_BYTES];
+            let frames = output.iter().zip(position..);
+            for ((frame, at), bytes) in
+                frames.zip(encoded[..count * frame_bytes].chunks_exact_mut(frame_bytes))
+            {
+                for ((channel, sample), out) in frame
+                    .iter()
+                    .enumerate()
+                    .zip(bytes.chunks_exact_mut(sample_bytes))
+                {
                     if !sample.is_finite() {
                         return Err(ExportError::Invalid("render produced a non-finite sample"));
                     }
-                    bytes[channel * 2..channel * 2 + 2].copy_from_slice(
-                        &((sample.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes(),
-                    );
+                    let over =
+                        crate::format::encode_sample(format, *quantiser, *sample, at, channel, out);
+                    clipped_samples += u64::from(over);
                 }
             }
-            write_all(writer, &pcm[..count * 4], "write staged stem samples")?;
+            write_all(
+                writer,
+                &encoded[..count * frame_bytes],
+                "write staged stem samples",
+            )?;
         }
         control.advance(count);
         remaining -= count as u64;
+        position = position.wrapping_add(count as u64);
     }
     for writer in &mut writers {
         control.check()?;
@@ -275,6 +308,8 @@ fn render_stems_with_resources_and_hook(
         sample_rate: rate,
         frames,
         data_bytes: bytes,
+        // Summed across every stem file in the batch.
+        clipped_samples,
         recovery_path: None,
         // Stem batches stage in their own directory, outside this sweep.
         stale_temporaries: StaleTemporaries::default(),
@@ -388,6 +423,53 @@ mod tests {
                 },
             ],
         )
+    }
+
+    #[test]
+    fn every_stem_file_uses_the_selected_export_format() {
+        let parent = std::env::temp_dir().join(format!(
+            "hex-stems-format-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&parent).unwrap();
+        let (revision, stems) = fixture();
+        for (format, tag, bits) in [
+            (ExportFormat::Pcm16, 1_u16, 16_u16),
+            (ExportFormat::Pcm24, 1, 24),
+            (ExportFormat::Float32, 3, 32),
+        ] {
+            let path = parent.join(format!("{format:?}"));
+            let report = crate::render_prepared_with_policy(
+                &path,
+                Arc::clone(&revision),
+                0,
+                257,
+                ExportSignal::Stems(stems.to_vec()),
+                format,
+                &ExportControl::default(),
+                &Publication::CreateNew,
+            )
+            .unwrap();
+            assert_eq!(report.data_bytes, 257 * format.frame_bytes());
+            assert_eq!(report.clipped_samples, 0);
+            for stem in &stems {
+                let bytes = fs::read(path.join(filename(stem))).unwrap();
+                let header = format.header_bytes() as usize;
+                assert_eq!(bytes.len(), header + 257 * format.frame_bytes() as usize);
+                let word = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+                assert_eq!(
+                    (word(20), word(32), word(34)),
+                    (tag, format.frame_bytes() as u16, bits)
+                );
+                assert_eq!(&bytes[header - 8..header - 4], b"data");
+                assert!(
+                    bytes[header..].iter().all(|byte| *byte == 0),
+                    "silent stems"
+                );
+            }
+        }
+        fs::remove_dir_all(parent).unwrap();
     }
 
     #[test]

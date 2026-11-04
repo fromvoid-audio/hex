@@ -11,6 +11,7 @@ use hex_session::service::{NativeDeviceState, ResidentEffectPreparation};
 use hex_session::service::{
     PluginEffectControl, PluginEffectPreparation, PluginEffectPreparationState,
 };
+mod degraded;
 mod restore;
 use restore::Restore;
 mod edits;
@@ -129,6 +130,8 @@ pub(super) struct Plugins {
     reopen: Option<Reopen>,
     edit: Option<AudioSourceContext>,
     pub(super) catalog: Option<std::path::PathBuf>,
+    degraded: degraded::DegradedReport<Binding>,
+    degraded_changed: Option<(u64, Vec<u64>)>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -195,6 +198,10 @@ impl Plugins {
         self.sources.clear();
         self.pool_held = false;
     }
+    /// The newest changed degraded vst3 device set and its output, once.
+    pub fn take_degraded_change(&mut self) -> Option<(u64, Vec<u64>)> {
+        self.degraded_changed.take()
+    }
     pub fn output_closed(&mut self) {
         self.configured = false;
         if let Some(restore) = self.restore.as_mut() {
@@ -251,6 +258,20 @@ impl Plugins {
         self.configured = true;
         self.pool_held = true;
         Ok(())
+    }
+    /// No insertion, restore, reopen, edit, queued source or retirement is
+    /// waiting for a worker poll (#4574). Accepted sources stay warm; their
+    /// degraded-endpoint observation tolerates the idle poll interval.
+    pub fn idle(&self) -> bool {
+        self.pending.is_none()
+            && self.restore.is_none()
+            && self.reopen.is_none()
+            && self.edit.is_none()
+            && self.degraded_changed.is_none()
+            && !self
+                .sources
+                .iter()
+                .any(|source| source.retiring || (source.queued && !source.accepted))
     }
     pub fn ready(&self) -> bool {
         // Session queries this only for its held insertion. No Root binding yet
@@ -388,6 +409,18 @@ impl Plugins {
             return;
         };
         self.poll_restore(control, context);
+        if let Some(output) = control.output_identity() {
+            let endpoints = self.sources.iter().map(|source| {
+                (
+                    source.binding,
+                    source.device,
+                    control.native_source_endpoint_status(source.binding),
+                )
+            });
+            if let Some(devices) = self.degraded.observe(output, endpoints) {
+                self.degraded_changed = Some((output, devices));
+            }
+        }
         #[cfg(all(test, feature = "allocation-probe"))]
         if let Some(observed) = self.completed.as_ref() {
             let count = self
@@ -400,61 +433,61 @@ impl Plugins {
                 observed.store(count, std::sync::atomic::Ordering::Release);
             }
         }
-        if let Some(pending) = self.pending.as_mut() {
-            if pending.result.is_none() {
-                if pending.operation.is_cancelled()
-                    || context.is_none_or(|current| {
-                        current.project_generation != pending.context.project_generation
-                    })
-                {
-                    pending.result = Some(Err("vst3 insertion cancelled · source changed".into()));
-                } else if let Some(source) = self
-                    .sources
-                    .iter_mut()
-                    .find(|s| s.binding == pending.binding)
-                {
-                    #[cfg(all(test, feature = "allocation-probe"))]
-                    let held = if matches!(
-                        control.native_source_preparation_progress(source.binding),
-                        Some(Progress::Facts(_))
-                    ) {
-                        let held = self
-                            .facts_gate
-                            .as_mut()
-                            .is_some_and(|gate| gate.held(source.binding));
-                        if !held {
-                            self.facts_gate = None;
-                        }
-                        held
-                    } else {
-                        false
-                    };
-                    #[cfg(not(all(test, feature = "allocation-probe")))]
-                    let held = false;
-                    #[cfg(not(all(test, feature = "allocation-probe")))]
-                    let presentation = None;
-                    #[cfg(all(test, feature = "allocation-probe"))]
-                    let presentation = self.presentation;
-                    let result = if held {
-                        Ok(None)
-                    } else {
-                        #[cfg(all(test, feature = "allocation-probe"))]
-                        {
-                            source.attempts = source.attempts.saturating_add(1);
-                        }
-                        self.host
-                            .as_ref()
-                            .ok_or_else(|| "qualified vst3 helper unavailable".to_owned())
-                            .and_then(|host| advance_source(host, presentation, control, source))
-                    };
-                    match result {
-                        Ok(Some(state)) => pending.result = Some(Ok(state)),
-                        Ok(None) => {}
-                        Err(error) => pending.result = Some(Err(bounded_error(error))),
+        if let Some(pending) = self.pending.as_mut()
+            && pending.result.is_none()
+        {
+            if pending.operation.is_cancelled()
+                || context.is_none_or(|current| {
+                    current.project_generation != pending.context.project_generation
+                })
+            {
+                pending.result = Some(Err("vst3 insertion cancelled · source changed".into()));
+            } else if let Some(source) = self
+                .sources
+                .iter_mut()
+                .find(|s| s.binding == pending.binding)
+            {
+                #[cfg(all(test, feature = "allocation-probe"))]
+                let held = if matches!(
+                    control.native_source_preparation_progress(source.binding),
+                    Some(Progress::Facts(_))
+                ) {
+                    let held = self
+                        .facts_gate
+                        .as_mut()
+                        .is_some_and(|gate| gate.held(source.binding));
+                    if !held {
+                        self.facts_gate = None;
                     }
+                    held
                 } else {
-                    pending.result = Some(Err("original vst3 source unavailable".into()));
+                    false
+                };
+                #[cfg(not(all(test, feature = "allocation-probe")))]
+                let held = false;
+                #[cfg(not(all(test, feature = "allocation-probe")))]
+                let presentation = None;
+                #[cfg(all(test, feature = "allocation-probe"))]
+                let presentation = self.presentation;
+                let result = if held {
+                    Ok(None)
+                } else {
+                    #[cfg(all(test, feature = "allocation-probe"))]
+                    {
+                        source.attempts = source.attempts.saturating_add(1);
+                    }
+                    self.host
+                        .as_ref()
+                        .ok_or_else(|| "qualified vst3 helper unavailable".to_owned())
+                        .and_then(|host| advance_source(host, presentation, control, source))
+                };
+                match result {
+                    Ok(Some(state)) => pending.result = Some(Ok(state)),
+                    Ok(None) => {}
+                    Err(error) => pending.result = Some(Err(bounded_error(error))),
                 }
+            } else {
+                pending.result = Some(Err("original vst3 source unavailable".into()));
             }
         }
         // Refused operations retain their original binding until actual report
@@ -665,10 +698,10 @@ fn advance_source(
             Err(reason) => return Err(reason.to_owned()),
         },
         Some(Progress::Effect { .. }) => {
-            if let Some((loaned, live)) = control.native_source_endpoint_status(source.binding) {
-                if !live || (source.queued && !loaned) {
-                    return Err("vst3 endpoint returned or stopped before publication".into());
-                }
+            if let Some((loaned, live)) = control.native_source_endpoint_status(source.binding)
+                && (!live || (source.queued && !loaned))
+            {
+                return Err("vst3 endpoint returned or stopped before publication".into());
             }
             if !source.queued {
                 match control.publish_native_source_endpoint(source.binding) {

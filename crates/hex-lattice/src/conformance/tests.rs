@@ -115,6 +115,114 @@ impl NativeDeviceDefinition for Fixture {
     }
 }
 struct Prepared(bool);
+
+struct AuxiliaryFixture;
+impl NativeDeviceMetadata for AuxiliaryFixture {
+    fn type_id(&self) -> DeviceTypeId {
+        ID
+    }
+    fn auxiliary_input(&self) -> hex_lattice_contract::AuxiliaryInput {
+        hex_lattice_contract::AuxiliaryInput::Stereo
+    }
+    fn state_version(&self) -> u32 {
+        1
+    }
+    fn descriptors(&self) -> &'static [ParameterDescriptor] {
+        DESCRIPTORS
+    }
+    fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        Fixture(Fault::None).default_state()
+    }
+    fn migrate_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        Fixture(Fault::None).migrate_state(state)
+    }
+    fn read_parameter(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<ParameterValue, DeviceContractError> {
+        Fixture(Fault::None).read_parameter(state, id)
+    }
+    fn patch_parameter(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+        value: ParameterValue,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        Fixture(Fault::None).patch_parameter(state, id, value)
+    }
+}
+impl NativeDeviceDefinition for AuxiliaryFixture {
+    fn prepare_matrix(
+        &self,
+        _state: &NativeDeviceState,
+    ) -> Result<StereoMatrix, DeviceContractError> {
+        Ok(StereoMatrix::identity())
+    }
+    fn prepare_processor(
+        &self,
+        _state: &NativeDeviceState,
+        _context: &crate::DevicePreparationContext<'_>,
+    ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        Ok(Some(Box::new(AuxiliaryPrepared)))
+    }
+}
+struct AuxiliaryPrepared;
+impl PreparedNativeProcessor for AuxiliaryPrepared {
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+    fn declared_runtime_bytes(&self) -> usize {
+        std::mem::size_of::<super::auxiliary::AuxiliaryProbe>()
+    }
+    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+        Box::new(super::auxiliary::AuxiliaryProbe::default())
+    }
+}
+
+#[test]
+fn auxiliary_capability_and_prepared_runtime_are_explicit() {
+    use hex_lattice_contract::AuxiliaryInput;
+    assert_eq!(Fixture(Fault::None).auxiliary_input(), AuxiliaryInput::None);
+    assert_eq!(AuxiliaryFixture.auxiliary_input(), AuxiliaryInput::Stereo);
+    let tuning = crate::TuningTable::default();
+    let context = crate::DevicePreparationContext {
+        sample_rate: 48000,
+        tuning: &tuning,
+        resources: &crate::EMPTY_DEVICE_RESOURCES,
+    };
+    let state = AuxiliaryFixture.default_state().unwrap();
+    let prepared = AuxiliaryFixture
+        .prepare_processor(&state, &context)
+        .unwrap()
+        .unwrap();
+    let mut runtime = prepared.create_runtime();
+    let mut main = [[2.0, 4.0]; 1];
+    let key = [[0.5, 0.25]; 1];
+    let mut silence = [[0.0; 2]; 1];
+    let block = crate::StereoAuxiliaryBlock::new(&mut main, Some(&key), &mut silence, 1).unwrap();
+    runtime
+        .process_block_with_auxiliary(block, None, None, false, &crate::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    assert_eq!(main, [[1.0, 1.0]]);
+
+    let mut legacy = Prepared(false).create_runtime();
+    let block = crate::StereoAuxiliaryBlock::new(&mut main, Some(&key), &mut silence, 1).unwrap();
+    assert!(matches!(
+        legacy.process_block_with_auxiliary(
+            block,
+            None,
+            None,
+            false,
+            &crate::EMPTY_DEVICE_RESOURCES
+        ),
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    ));
+    assert_eq!(main, [[1.0, 1.0]]);
+}
 impl PreparedNativeProcessor for Prepared {
     fn runtime_version(&self) -> u32 {
         1

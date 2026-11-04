@@ -1,8 +1,8 @@
 //! Bit-identity pin for the flexible EQ's steady-state (non-mode-switching)
-//! output. The digests were recorded from origin/main's `eq/runtime.rs`
-//! before the Pulse #4122 mode-fade work; the same render must stay
-//! bit-identical. The input is integer-generated noise (no libm), so the
-//! digest depends only on IEEE f32/f64 arithmetic.
+//! output. The digests cover the first 2000 frames, before the intentional
+//! gain retarget; they were recorded from the unmodified pre-smoothing EQ.
+//! The input is integer-generated noise (no libm), so the digest depends only
+//! on IEEE f32/f64 arithmetic.
 use super::*;
 
 fn preset(mode: u8, boost_db: f32) -> EqState {
@@ -99,7 +99,7 @@ fn render(mode: u8, rate: u32) -> u64 {
         live = next;
         offset = end;
     }
-    fnv(&frames)
+    fnv(&frames[..2000])
 }
 
 #[test]
@@ -118,9 +118,9 @@ fn steady_state_output_is_bit_identical_to_main() {
 }
 
 const MAIN_DIGESTS: [u64; 5] = [
-    0xc946_bf4d_256d_4447,
-    0x41cd_1b88_94a7_227b,
-    0x9a39_4b79_a01d_cce4,
-    0xe111_730e_6080_caa7,
-    0xee1c_4e87_fd7c_1928,
+    0x0c75_0d40_2083_e149,
+    0x747b_6b88_a5b5_ef63,
+    0xcf61_de15_0154_f583,
+    0xa570_d232_57bd_9da9,
+    0xd8fd_d4d6_9739_dfc5,
 ];
