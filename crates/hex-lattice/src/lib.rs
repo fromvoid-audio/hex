@@ -3796,6 +3796,13 @@ mod tests {
             .unwrap()
         };
         let old = chain(1, false, true, true, 0, 0.0);
+        let mut unsupported = chain(1, true, true, true, 0, 0.0);
+        assert!(!unsupported.can_fork_timing_without_signal_history_at(&old, 0));
+        assert!(
+            unsupported
+                .fork_timing_without_signal_history_at(&old, 0)
+                .is_err()
+        );
         let mut missing_configuration = chain(2, true, true, true, 0, 0.0);
         missing_configuration.entries[0].configuration = None;
         assert!(!missing_configuration.can_retarget_parameters_from_range(&old, 0..1));
