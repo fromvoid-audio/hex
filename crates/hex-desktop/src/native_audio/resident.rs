@@ -322,9 +322,18 @@ impl NativeAudioSink {
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         let native_publication = self.plugins.preparing_edit(metadata.context)
             || playback.foreign_nodes_on_control().next().is_some();
-        let edit_cancellation = native_publication
-            .then(|| self.request_cancellation.clone())
-            .flatten();
+        let edit_cancellation = self
+            .request_cancellation
+            .as_ref()
+            .filter(|cancellation| {
+                native_publication || cancellation.requires_publication_admission_check()
+            })
+            .cloned();
+        let cancellation_error = if native_publication {
+            "vst3 edit cancelled before admission"
+        } else {
+            "edit cancelled before admission"
+        };
         let publication_cancelled = || {
             edit_cancellation
                 .as_ref()
@@ -333,7 +342,7 @@ impl NativeAudioSink {
         let edit_admitted = std::cell::Cell::new(false);
         let mut guarded_admit = |resources: &[DeviceResourceAdmission<'_>]| {
             if !edit_admitted.get() && publication_cancelled() {
-                return Err("vst3 edit cancelled before admission".into());
+                return Err(cancellation_error.into());
             }
             admit(resources)?;
             edit_admitted.set(true);
@@ -573,7 +582,7 @@ impl NativeAudioSink {
                 if !edit_admitted.get() && publication_cancelled() {
                     return Err(ResidentPublicationRefusal {
                         playback: retained_playback,
-                        error: "vst3 edit cancelled before admission".into(),
+                        error: cancellation_error.into(),
                     });
                 }
                 let published = control.publish_with_admission_and_source_on_control(

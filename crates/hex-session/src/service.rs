@@ -2550,7 +2550,11 @@ fn run_worker(
             queued
         };
         events.begin_diagnostics(&queued, project_generation, revision);
-        events.begin_request(&document_intent, queued.document_intent);
+        events.begin_request(
+            &document_intent,
+            queued.document_intent,
+            queued.publication_waited,
+        );
         let save_correlation = queued.save_correlation;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
         let solo_request = matches!(
