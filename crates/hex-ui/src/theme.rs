@@ -98,7 +98,6 @@ pub(crate) const TIME_SELECTION_PREVIEW_OPACITY: f32 = 0.2;
 
 /// Explicit track membership stays quieter than time/clip selection overlays.
 pub(crate) const TRACK_SELECTION_OPACITY: f32 = 0.06;
-pub(crate) const TRACK_SELECTION_EDGE_OPACITY: f32 = 0.55;
 
 /// Editable palette roles used throughout the native UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
