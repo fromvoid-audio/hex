@@ -1066,14 +1066,13 @@ impl EditorView {
                     cx.listener(move |view, _, _, cx| {
                         let a = view.tuning.value.audition();
                         if let Ok(a) = Audition::new(wave, a.level(), a.attack_ms(), a.release_ms())
-                        {
-                            if let Ok(next) = ProjectTuning::new(
+                            && let Ok(next) = ProjectTuning::new(
                                 view.tuning.value.enabled(),
                                 view.tuning.value.scale(),
                                 a,
-                            ) {
-                                view.tuning_change(next, NumericEventPhase::Commit);
-                            }
+                            )
+                        {
+                            view.tuning_change(next, NumericEventPhase::Commit);
                         }
                         cx.notify();
                     }),

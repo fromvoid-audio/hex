@@ -685,19 +685,19 @@ pub(super) fn checkpoint_project(
         .as_ref()
         .is_none_or(|current| current.path() != path)
     {
-        if document.is_none() {
-            if let Some(parent) = path.parent() {
-                match std::fs::symlink_metadata(parent) {
-                    Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-                        return Err("recovery directory must be a real directory".into());
-                    }
-                    Err(error) if error.kind() != io::ErrorKind::NotFound => {
-                        return Err(error.to_string());
-                    }
-                    _ => {}
+        if document.is_none()
+            && let Some(parent) = path.parent()
+        {
+            match std::fs::symlink_metadata(parent) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                    return Err("recovery directory must be a real directory".into());
                 }
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                    return Err(error.to_string());
+                }
+                _ => {}
             }
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         if let Some(token) = hex_storage::JournalRestartToken::capture_readable(path.clone())
             .map_err(|e| e.to_string())?

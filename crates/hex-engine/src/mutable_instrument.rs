@@ -732,14 +732,14 @@ impl MutableInstrumentTrackRuntime {
     ) {
         let release_tail_frames = self.max_release_tail_frames();
         for occurrence in &mut self.primary {
-            if !occurrence.note_off_sent && occurrence.gate_end_frame > performance_frame {
-                if let Some(deadline) = cutoff(occurrence.signature)
+            if !occurrence.note_off_sent
+                && occurrence.gate_end_frame > performance_frame
+                && let Some(deadline) = cutoff(occurrence.signature)
                     .map(|deadline| deadline.max(performance_frame))
                     .filter(|deadline| *deadline < occurrence.gate_end_frame)
-                {
-                    occurrence.gate_end_frame = deadline;
-                    occurrence.quiet_deadline_frame = deadline.saturating_add(release_tail_frames);
-                }
+            {
+                occurrence.gate_end_frame = deadline;
+                occurrence.quiet_deadline_frame = deadline.saturating_add(release_tail_frames);
             }
         }
     }

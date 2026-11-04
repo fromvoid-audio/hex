@@ -248,12 +248,12 @@ pub(crate) fn render_streamed_page_span_captured(
     let mut voice = fades.map(|fades| fades.voice(source.key(), source_frame));
     for (offset, destination) in destination.iter_mut().take(available).enumerate() {
         let mut sample = frames[page_offset + offset];
-        if let Some((fade, fade_start)) = fade {
-            if let Some(frame) = timeline_frame.checked_add(offset as u64) {
-                let gain = fade.gain_at(frame.saturating_sub(fade_start));
-                sample[0] *= gain;
-                sample[1] *= gain;
-            }
+        if let Some((fade, fade_start)) = fade
+            && let Some(frame) = timeline_frame.checked_add(offset as u64)
+        {
+            let gain = fade.gain_at(frame.saturating_sub(fade_start));
+            sample[0] *= gain;
+            sample[1] *= gain;
         }
         if clip_gain != 1.0 {
             sample[0] *= clip_gain;
