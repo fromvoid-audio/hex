@@ -156,6 +156,7 @@ fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
 
 struct ResidentSink {
     inner: NativeAudioSink,
+    initial_rate: u32,
     refuse: Arc<AtomicBool>,
     budget_refuse: Arc<AtomicBool>,
     loop_witness_fault: Arc<AtomicU8>,
@@ -405,7 +406,10 @@ impl WorkerAudioSink for ResidentSink {
         self.inner.restart_audio(generation, request_id)
     }
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
-        self.inner.initialize(shutdown)
+        self.inner.initialize(shutdown)?;
+        // The fixture selects its canonical rate before device completion.
+        self.inner.requested_rate = Some(self.initial_rate);
+        Ok(self.initial_rate)
     }
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
         self.inner.canonical_changed(source);
@@ -636,6 +640,7 @@ impl ResidentHarness {
             recovery,
             Box::new(ResidentSink {
                 inner,
+                initial_rate: rate,
                 refuse: Arc::clone(&refuse),
                 budget_refuse: Arc::clone(&budget_refuse),
                 loop_witness_fault: Arc::clone(&loop_witness_fault),
@@ -967,11 +972,12 @@ impl ResidentHarness {
             // Stop advancing once the callback has installed the successor. Scalar UI delivery
             // may lag independently; spinning extra audio blocks here can exhaust short media
             // before its literal PCM oracle, without indicating a renderer failure.
-            if self
-                .audio
-                .as_ref()
-                .and_then(EditorAudio::status)
-                .is_none_or(|status| status.applied_revision.load(Acquire) <= after)
+            if self.callback.lock().unwrap().is_some()
+                && self
+                    .audio
+                    .as_ref()
+                    .and_then(EditorAudio::status)
+                    .is_none_or(|status| status.applied_revision.load(Acquire) <= after)
             {
                 self.render_worker_step();
             }
