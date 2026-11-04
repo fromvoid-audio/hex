@@ -362,12 +362,11 @@ pub(super) fn waveform_canvas(
                 .map(Arc::new)
             });
             #[cfg(all(test, feature = "ui-test-support"))]
-            if let Some(geometry) = &geometry {
-                if let Some(cache) = &cache
-                    && let Ok(mut cache) = cache.try_borrow_mut()
-                {
-                    cache.record_paint(bounds, paint.mask, geometry);
-                }
+            if let Some(geometry) = &geometry
+                && let Some(cache) = &cache
+                && let Ok(mut cache) = cache.try_borrow_mut()
+            {
+                cache.record_paint(bounds, paint.mask, geometry);
             }
             geometry
         },

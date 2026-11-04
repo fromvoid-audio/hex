@@ -476,7 +476,7 @@ pub(crate) fn valid_transport_buffer(
         .chain(callback.native_effect_quantum())
         .min()
         .is_none_or(|quantum| {
-            channels != 0 && samples % channels == 0 && samples / channels <= quantum
+            channels != 0 && samples.is_multiple_of(channels) && samples / channels <= quantum
         })
 }
 
