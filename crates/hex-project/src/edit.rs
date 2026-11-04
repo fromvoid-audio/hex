@@ -1161,6 +1161,8 @@ pub enum Command {
         name: String,
         before_track: Option<TrackId>,
         start: crate::BeatTime,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     /// Copy an Arrangement MIDI clip to a destination, replacing overlap atomically.
     CopyMidiClipTo {
@@ -1174,6 +1176,8 @@ pub enum Command {
         name: String,
         before_track: Option<TrackId>,
         start: crate::BeatTime,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     RemoveMidiClip(ClipId),
     DuplicateMidiClip(ClipId),
@@ -2144,8 +2148,9 @@ impl Project {
                 name,
                 before_track,
                 start,
+                initial_gain,
             } => {
-                let track = insert_track_before(self, name, before_track)?;
+                let track = insert_track_before_with_gain(self, name, before_track, initial_gain)?;
                 crate::clip_copy::midi_to(self, clip, track, start)?;
                 Ok(Created::Track(track))
             }

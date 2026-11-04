@@ -1607,6 +1607,7 @@ fn arrangement_clip_track_insertion_edits_compile_undo_and_round_trip() {
 
     service
         .submit(Request::Edit(Command::MoveMidiClipToNewTrack {
+            initial_gain: None,
             clip: midi_clip,
             name: "moved midi".into(),
             before_track: None,
