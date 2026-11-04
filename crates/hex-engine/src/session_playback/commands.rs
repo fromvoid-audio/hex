@@ -1035,7 +1035,7 @@ impl SessionPlayback {
                                         audio_track,
                                         source_frame,
                                         self.revision.gain_recording_track(),
-                                        self.gain_recording_override,
+                                        self.live_gain.audible(),
                                     ),
                                     continuation: keep_current_source.then_some(
                                         SessionContinuation {
@@ -1149,7 +1149,7 @@ impl SessionPlayback {
                             audio_track,
                             source_frame,
                             self.revision.gain_recording_track(),
-                            self.gain_recording_override,
+                            self.live_gain.audible(),
                         );
                         let clip_gain = super::clip_gain::at_cut(
                             self,

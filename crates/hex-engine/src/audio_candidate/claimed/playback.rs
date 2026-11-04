@@ -329,6 +329,13 @@ impl ClaimedAudioCandidateRuntime {
         playback.clear_gain_recording_override();
         true
     }
+    pub fn release_gain_recording_override(&mut self) -> bool {
+        let Some(playback) = self.current_playback_mut() else {
+            return false;
+        };
+        playback.release_gain_recording_override();
+        true
+    }
     pub fn gain_recording_clock(&self, track: u64) -> Option<(u64, u64, u64)> {
         self.current_playback()?.gain_recording_clock(track)
     }

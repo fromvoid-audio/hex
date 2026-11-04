@@ -378,7 +378,12 @@ impl RuntimeMut<'_> {
         match input {
             Some((track, gain)) => self.set_gain_recording_override(track, gain),
             None => {
-                self.clear_gain_recording_override();
+                match self {
+                    Self::Legacy(p) => p.release_gain_recording_override(),
+                    Self::Eligible(p) => {
+                        let _ = p.release_gain_recording_override();
+                    }
+                }
                 Ok(())
             }
         }
