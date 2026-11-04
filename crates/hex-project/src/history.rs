@@ -236,6 +236,22 @@ impl Editor {
         warp: crate::AudioImportWarp,
         prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
     ) -> Result<(Vec<Created>, T), E> {
+        self.execute_audio_imports_with_track_gain_prepared(commands, warp, None, prepare)
+    }
+
+    /// Apply an optional linear gain to tracks created by an Arrangement import.
+    /// Existing tracks and Console imports retain their authored gains. The gain
+    /// is captured before preparation and participates in the same undo step.
+    pub fn execute_audio_imports_with_track_gain_prepared<T, E: From<Invalid>>(
+        &mut self,
+        commands: Vec<Command>,
+        warp: crate::AudioImportWarp,
+        new_track_gain: Option<f32>,
+        prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
+    ) -> Result<(Vec<Created>, T), E> {
+        if new_track_gain.is_some_and(|gain| !gain.is_finite() || !(0.0..=2.0).contains(&gain)) {
+            return Err(E::from(Invalid("gain must be finite and within 0..2")));
+        }
         let arrangement = !commands.is_empty()
             && commands.iter().all(|command| {
                 matches!(
@@ -248,18 +264,39 @@ impl Editor {
                     Command::ImportExistingAudio { placement, .. } if placement.is_arrangement()
                 )
             });
+        if !arrangement
+            && new_track_gain.is_some()
+            && commands.iter().any(|command| {
+                matches!(command, Command::ImportPreparedAudioTrackAt { .. })
+                    || matches!(
+                        command,
+                        Command::ImportExistingAudio {
+                            placement: crate::ExistingAudioPlacement::NewTrack { .. },
+                            ..
+                        }
+                    )
+            })
+        {
+            return Err(E::from(Invalid(
+                "new track gain requires an arrangement import batch",
+            )));
+        }
         if !arrangement && warp != crate::AudioImportWarp::Off {
             return Err(E::from(Invalid(
                 "auto-warp requires arrangement audio imports",
             )));
         }
-        self.execute_batch_prepared(commands, arrangement.then_some(warp), prepare)
+        self.execute_batch_prepared(
+            commands,
+            arrangement.then_some((warp, new_track_gain)),
+            prepare,
+        )
     }
 
     fn execute_batch_prepared<T, E: From<Invalid>>(
         &mut self,
         commands: Vec<Command>,
-        arrangement_import: Option<crate::AudioImportWarp>,
+        arrangement_import: Option<(crate::AudioImportWarp, Option<f32>)>,
         prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
     ) -> Result<(Vec<Created>, T), E> {
         if commands.len() > crate::MAX_CLIPS {
@@ -271,8 +308,8 @@ impl Editor {
             .try_reserve_exact(commands.len())
             .map_err(|_| E::from(Invalid("could not reserve batch results")))?;
         let mut candidate = self.project.clone();
-        if let Some(warp) = arrangement_import {
-            results = candidate.apply_audio_imports(commands, warp)?;
+        if let Some((warp, new_track_gain)) = arrangement_import {
+            results = candidate.apply_audio_imports(commands, warp, new_track_gain)?;
         } else {
             let mut alias_changed = false;
             for mut command in commands {
