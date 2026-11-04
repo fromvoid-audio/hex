@@ -9,6 +9,53 @@ const FLAT: SpectrumSettings = SpectrumSettings {
 const FILL_FRAMES: usize = BASS_FFT_SIZE * 8 + 64;
 
 #[test]
+fn tone_on_noise_does_not_jump_at_tonality_threshold() {
+    let rate = 48_000;
+    let frequency = 4_000.0;
+    let mut seed = 1_u64;
+    let noise: Vec<[f32; 2]> = (0..FILL_FRAMES)
+        .map(|_| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let x = (((seed >> 40) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0) * 0.05;
+            [x, x]
+        })
+        .collect();
+    let index = point_index(rate, frequency).unwrap();
+    let levels = [0.00708, 0.00710].map(|amplitude| {
+        let mut frames = tone(rate, frequency, amplitude, 1.0, FILL_FRAMES);
+        for (frame, n) in frames.iter_mut().zip(&noise) {
+            frame[0] += n[0];
+            frame[1] += n[1];
+        }
+        analyze(rate, FLAT, &frames).bins_dbfs[index]
+    });
+    let jump = (levels[1] - levels[0]).abs();
+    assert!(
+        jump < 0.5,
+        "tone level changed {:.3} db for a tiny amplitude step: {levels:?}",
+        jump
+    );
+    let mut previous: Option<f32> = None;
+    let mut largest = 0.0f32;
+    for step in 0..=64 {
+        let amplitude = 0.006 + f64::from(step) * 0.00005;
+        let mut frames = tone(rate, frequency, amplitude, 1.0, FILL_FRAMES);
+        for (frame, n) in frames.iter_mut().zip(&noise) {
+            frame[0] += n[0];
+            frame[1] += n[1];
+        }
+        let level = analyze(rate, FLAT, &frames).bins_dbfs[index];
+        if let Some(last) = previous {
+            let change = (level - last).abs();
+            largest = largest.max(change);
+            assert!(change < 1.0, "{amplitude:.5}: {last:.3} -> {level:.3} dbfs");
+        }
+        previous = Some(level);
+    }
+    println!("worst step through tone/noise transition: {largest:.3} db");
+}
+
+#[test]
 fn calibrated_tone_moves_continuously_across_display_band_boundary() {
     let mut worst = 0.0f32;
     for rate in [44_100, 48_000, 96_000, 192_000] {
