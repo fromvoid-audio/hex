@@ -19,6 +19,7 @@ mod matrix_ramp;
 mod meter;
 mod owned_processor;
 mod parameter_automation;
+mod tail_split;
 pub use foreign_processor::{
     ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
 };
@@ -28,6 +29,7 @@ pub use parameter_automation::{
     ParameterAutomationBlock, ParameterAutomationLane, ParameterAutomationPoint,
     PreparedParameterAutomation, PreparedParameterAutomationLane, PreparedParameterAutomationPoint,
 };
+pub use tail_split::TailSplit;
 mod resources;
 mod runtime_ownership;
 use hex_lattice_contract::{
