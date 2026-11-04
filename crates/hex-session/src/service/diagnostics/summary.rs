@@ -1564,6 +1564,14 @@ pub(super) fn request(value: &Request) -> Description {
         } => {
             describe!("import_to_new_track"; ["path_redacted_bytes" => path.as_os_str().len(), "before_track" => before_track.map(|id| id.value()), "start" => start]; omitted="")
         }
+        Request::ImportToNewTrackWithGain {
+            path,
+            before_track,
+            start,
+            gain,
+        } => {
+            describe!("import_to_new_track_with_gain"; ["path_redacted_bytes" => path.as_os_str().len(), "before_track" => before_track.map(|id| id.value()), "start" => start, "gain" => gain]; omitted="")
+        }
         Request::ImportToSession { path, track, scene } => {
             describe!("import_to_session"; ["path_redacted_bytes" => path.as_os_str().len(), "track" => track.value(), "scene" => scene.value()]; omitted="")
         }
