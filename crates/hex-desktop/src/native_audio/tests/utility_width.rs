@@ -31,6 +31,15 @@ fn stereo_source(files: &Files) -> PathBuf {
 
 #[test]
 fn unautomated_width_gesture_preserves_callback_continuity() {
+    width_gesture(false);
+}
+
+#[test]
+fn width_gesture_with_balance_automation_preserves_callback_continuity() {
+    width_gesture(true);
+}
+
+fn width_gesture(automated: bool) {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(131_072);
@@ -53,6 +62,20 @@ fn unautomated_width_gesture_preserves_callback_continuity() {
         panic!("utility")
     };
     (applied, _) = h.applied(applied);
+    if automated {
+        h.run(Request::Edit(
+            hex_project::Command::ReplaceDeviceAutomation {
+                device,
+                parameter: ParameterId::from_static(2),
+                points: vec![hex_project::AutomationPoint {
+                    beat: hex_project::BeatTime::ZERO,
+                    value: hex_project::AutomationValue::new(0.5).unwrap(),
+                    outgoing: hex_project::AutomationInterpolation::Linear,
+                }],
+            },
+        ));
+        (applied, _) = h.applied(applied);
+    }
     h.audio
         .as_mut()
         .unwrap()
