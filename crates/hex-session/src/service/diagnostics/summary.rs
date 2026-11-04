@@ -564,6 +564,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::AddReturnTrack { name } => {
             describe!("add_return_track"; ["name_redacted_bytes" => name.len()]; omitted="")
         }
+        Command::AddReturnTrackWithGain { name, gain } => {
+            describe!("add_return_track_with_gain"; ["name_redacted_bytes" => name.len(), "gain" => gain]; omitted="")
+        }
         Command::RemoveReturnTrack(value0) => {
             describe!("remove_return_track"; ["value0" => value0.value()]; omitted="")
         }
