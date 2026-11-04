@@ -110,17 +110,17 @@ impl GainCopyCustody {
         if !self.can_install(destination) {
             return false;
         }
-        if self.authored != 0 {
-            if let Some(mix) = self.mix {
-                *destination = Some(PreparedGainEnvelope {
-                    knots: std::mem::take(&mut self.knots),
-                    mix,
-                    authored_points: self.authored,
-                    authored_units: self.authored,
-                    touch: PreparedTouch::default(),
-                    fallback: self.fallback,
-                });
-            }
+        if self.authored != 0
+            && let Some(mix) = self.mix
+        {
+            *destination = Some(PreparedGainEnvelope {
+                knots: std::mem::take(&mut self.knots),
+                mix,
+                authored_points: self.authored,
+                authored_units: self.authored,
+                touch: PreparedTouch::default(),
+                fallback: self.fallback,
+            });
         }
         self.phase = Phase::Transferred;
         true
