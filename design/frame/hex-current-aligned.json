@@ -2,7 +2,7 @@
   "version": 1,
   "id": "hex-yield-workstation",
   "name": "hex / orbital",
-  "revisionId": "hex-current-aligned-study-r79",
+  "revisionId": "hex-current-aligned-study-r80",
   "width": 1900,
   "height": 1120,
   "background": "#111111",
@@ -14098,14 +14098,16 @@
       },
       "utility-ref-input-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-output-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-input-title": {
@@ -30195,14 +30197,16 @@
       },
       "utility-ref-input-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-output-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-input-title": {
@@ -59730,14 +59734,16 @@
       },
       "utility-ref-input-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-output-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-input-title": {
@@ -96028,14 +96034,16 @@
       },
       "utility-ref-input-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-output-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-input-title": {
@@ -112125,14 +112133,16 @@
       },
       "utility-ref-input-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-output-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-input-title": {
@@ -128221,14 +128231,16 @@
       },
       "utility-ref-input-panel": {
         "style": {
-          "fill": "#2a2b2d",
-          "color": "#c3c9ca"
+          "fill": "#363636",
+          "color": "#c3c9ca",
+          "radius": 3
         }
       },
       "utility-ref-output-panel": {
         "style": {
-          "fill": "#2a2b2d",
-          "color": "#c3c9ca"
+          "fill": "#363636",
+          "color": "#c3c9ca",
+          "radius": 3
         }
       },
       "utility-ref-input-title": {
@@ -144312,14 +144324,16 @@
       },
       "utility-ref-input-panel": {
         "style": {
-          "fill": "#2a2b2d",
-          "color": "#c3c9ca"
+          "fill": "#363636",
+          "color": "#c3c9ca",
+          "radius": 3
         }
       },
       "utility-ref-output-panel": {
         "style": {
-          "fill": "#2a2b2d",
-          "color": "#c3c9ca"
+          "fill": "#363636",
+          "color": "#c3c9ca",
+          "radius": 3
         }
       },
       "utility-ref-input-title": {
@@ -160404,14 +160418,16 @@
       },
       "utility-ref-input-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-output-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-input-title": {
@@ -176309,14 +176325,16 @@
       },
       "utility-ref-input-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-output-panel": {
         "style": {
-          "fill": "#191919",
-          "color": "#c7c7c7"
+          "fill": "#363636",
+          "color": "#c7c7c7",
+          "radius": 3
         }
       },
       "utility-ref-input-title": {
@@ -192386,16 +192404,18 @@
       },
       "utility-ref-input-panel": {
         "style": {
-          "fill": "#191919",
+          "fill": "#363636",
           "color": "#c7c7c7",
-          "opacity": 0.45
+          "opacity": 0.45,
+          "radius": 3
         }
       },
       "utility-ref-output-panel": {
         "style": {
-          "fill": "#191919",
+          "fill": "#363636",
           "color": "#c7c7c7",
-          "opacity": 0.45
+          "opacity": 0.45,
+          "radius": 3
         }
       },
       "utility-ref-input-title": {
@@ -373414,16 +373434,16 @@
         "x": 349,
         "y": 841,
         "width": 73,
-        "height": 132
+        "height": 173
       },
       "style": {
-        "fill": "#29292b",
+        "fill": "#363636",
         "stroke": "none",
         "color": "#bcbfbd",
         "fontSize": 9,
         "fontFamily": "Ioskeley Mono",
         "padding": 0,
-        "radius": 1,
+        "radius": 3,
         "lineWidth": 1,
         "textAlign": "left"
       },
@@ -373436,16 +373456,16 @@
         "x": 425,
         "y": 841,
         "width": 76,
-        "height": 132
+        "height": 173
       },
       "style": {
-        "fill": "#29292b",
+        "fill": "#363636",
         "stroke": "none",
         "color": "#bcbfbd",
         "fontSize": 9,
         "fontFamily": "Ioskeley Mono",
         "padding": 0,
-        "radius": 1,
+        "radius": 3,
         "lineWidth": 1,
         "textAlign": "left"
       },
