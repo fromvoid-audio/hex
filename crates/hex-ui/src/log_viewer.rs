@@ -35,6 +35,8 @@ const WINDOWS: &[(&str, Option<u64>)] = &[
 const COPY_LIMIT: usize = 1024 * 1024;
 const COPY_CLIPPED: &str = "[excerpt clipped at 1 mib]\n";
 
+mod scrollbar;
+
 struct LogInputBindings;
 impl gpui::Global for LogInputBindings {}
 
@@ -83,6 +85,7 @@ struct Viewer {
     selection: Option<usize>,
     status: String,
     scroll: UniformListScrollHandle,
+    scrollbar: scrollbar::State,
 }
 impl Viewer {
     fn new(path: PathBuf, cx: &mut Context<Self>) -> Self {
@@ -127,6 +130,7 @@ impl Viewer {
             selection: None,
             status: "loading…".into(),
             scroll: UniformListScrollHandle::new(),
+            scrollbar: scrollbar::State::default(),
         };
         view.reload(cx);
         view
@@ -587,12 +591,19 @@ impl Render for Viewer {
                         control("copy selection")
                             .on_click(cx.listener(|view, _, _, cx| view.copy_selection(cx))),
                     )
-                    .child(control("bottom").on_click(cx.listener(|view, _, _, _cx| {
-                        if !view.rows.is_empty() {
-                            view.scroll
-                                .scroll_to_item(view.rows.len() - 1, gpui::ScrollStrategy::Bottom);
-                        }
-                    }))),
+                    .child(
+                        control("bottom")
+                            .debug_selector(|| "log-bottom".into())
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                if !view.rows.is_empty() {
+                                    view.scroll.scroll_to_item(
+                                        view.rows.len() - 1,
+                                        gpui::ScrollStrategy::Bottom,
+                                    );
+                                    cx.notify();
+                                }
+                            })),
+                    ),
             )
             .child(
                 div()
@@ -614,7 +625,14 @@ impl Render for Viewer {
                         self.page.saturating_add(1)
                     ))),
             )
-            .child(div().flex_1().min_h_0().child(list))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(div().flex_1().min_w_0().h_full().child(list))
+                    .child(self.log_scrollbar(cx)),
+            )
             .child(
                 div()
                     .id("log-detail")
@@ -860,15 +878,21 @@ mod tests {
     }
 
     #[cfg(feature = "ui-test-support")]
-    #[gpui::test]
-    fn viewer_navigates_older_and_newer_pages(cx: &mut gpui::TestAppContext) {
-        let dir = std::env::temp_dir().join(format!("hex-viewer-pages-{}", std::process::id()));
+    pub(super) fn paged_fixture(name: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("hex-viewer-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("session-200-1.log");
         let mut content =
             "session_started log_schema=3 segment=0 build=fixture\noldest\n".to_owned();
         content.push_str(&"newer\n".repeat(100_000));
         std::fs::write(&path, content).unwrap();
+        (dir, path)
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn viewer_navigates_older_and_newer_pages(cx: &mut gpui::TestAppContext) {
+        let (dir, path) = paged_fixture("pages");
         let handle = cx.add_window(|_, cx| Viewer::new(path.clone(), cx));
         cx.run_until_parked();
         let viewer = handle.root(cx).unwrap();
