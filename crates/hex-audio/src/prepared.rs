@@ -4895,21 +4895,23 @@ impl Callback {
             })
         });
         if let Some(mut active) = active {
-            active.playback.clear_gain_recording_override();
-            if let Some((track, gain)) = live {
-                if active
-                    .playback
-                    .set_gain_recording_override(track, gain)
-                    .is_err()
-                {
-                    self.gain_recording.abort(AbortReason::SourceChanged);
-                }
+            if active.playback.set_gain_recording_input(live).is_err() {
+                active.playback.clear_gain_recording_override();
+                self.gain_recording.abort(AbortReason::SourceChanged);
             }
         }
     }
     /// Confirm the exact converted output quantum; this is sink delivery, not
     /// physical loudspeaker playback. Failure discards the entire pending take.
     pub fn finish_gain_recording_quantum(&mut self, output_valid: bool) {
+        if !output_valid
+            && let Some(mut active) = self
+                .active
+                .as_mut()
+                .and_then(ActivePublication::current_mut)
+        {
+            active.playback.clear_gain_recording_override();
+        }
         let end = self
             .active
             .as_ref()

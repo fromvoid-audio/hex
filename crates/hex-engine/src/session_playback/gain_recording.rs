@@ -1,6 +1,112 @@
 //! One audio-owned transient fader; this does not record or acknowledge delivery.
 use super::*;
 use crate::Invalid;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum GainMode {
+    Read,
+    Touch,
+    Rejoin(Option<crate::gain_envelope::TouchTarget>),
+}
+
+/// One armed fader, copied before rendering so a failed block cannot advance it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct LiveGain {
+    mode: GainMode,
+    current: f32,
+    from: f32,
+    target: f32,
+    elapsed: u32,
+    duration: u32,
+}
+
+impl Default for LiveGain {
+    fn default() -> Self {
+        Self {
+            mode: GainMode::Read,
+            current: 0.0,
+            from: 0.0,
+            target: 0.0,
+            elapsed: 0,
+            duration: 1,
+        }
+    }
+}
+
+impl LiveGain {
+    pub(super) fn audible(&self) -> Option<f32> {
+        (!matches!(self.mode, GainMode::Read)).then_some(self.current)
+    }
+    fn retarget(&mut self, target: f32, force: bool, rate: u32) {
+        if force || self.target != target {
+            self.from = self.current;
+            self.target = target;
+            self.elapsed = 0;
+            self.duration = rate.div_ceil(200).max(1);
+        }
+    }
+
+    pub(super) fn next(
+        &mut self,
+        track: &crate::Track,
+        frame: u64,
+        desired: Option<f32>,
+        rate: u32,
+    ) -> Option<f32> {
+        if matches!(self.mode, GainMode::Read) && desired.is_none() {
+            return None;
+        }
+        let read = track.read_gain_at(frame)?;
+        match (self.mode, desired) {
+            (GainMode::Read, None) => return None,
+            (GainMode::Read, Some(target)) => {
+                self.current = track.read_gain_at(frame.saturating_sub(1)).unwrap_or(read);
+                self.retarget(target, true, rate);
+                self.mode = GainMode::Touch;
+            }
+            (_, Some(target)) => {
+                self.retarget(target, !matches!(self.mode, GainMode::Touch), rate);
+                self.mode = GainMode::Touch;
+            }
+            (mode, None) => {
+                let event = track.gain_touch_target_at(frame);
+                let previous = match mode {
+                    GainMode::Rejoin(previous) => previous,
+                    _ => None,
+                };
+                let changed = !matches!(mode, GainMode::Rejoin(_)) || event != previous;
+                if changed {
+                    let target = event
+                        .map(|event| event.gain)
+                        .or_else(|| {
+                            track.base_gain_at(
+                                frame.saturating_add(u64::from(rate.div_ceil(200).max(1) - 1)),
+                            )
+                        })
+                        .unwrap_or(read);
+                    let force = event.map(|event| event.span) != previous.map(|event| event.span);
+                    self.retarget(target, force || !matches!(mode, GainMode::Rejoin(_)), rate);
+                    self.mode = GainMode::Rejoin(event);
+                }
+            }
+        }
+        self.elapsed = self.elapsed.saturating_add(1).min(self.duration);
+        self.current = if self.elapsed == self.duration {
+            self.target
+        } else {
+            (f64::from(self.from)
+                + (f64::from(self.target) - f64::from(self.from)) * f64::from(self.elapsed)
+                    / f64::from(self.duration)) as f32
+        };
+        if matches!(self.mode, GainMode::Rejoin(_))
+            && self.elapsed == self.duration
+            && self.current == read
+        {
+            self.mode = GainMode::Read;
+        }
+        Some(self.current)
+    }
+}
 pub(super) fn effective_mix(
     track: &crate::Track,
     frame: u64,
@@ -20,6 +126,11 @@ pub(super) fn detached_mix(
     index: usize,
     frame: u64,
 ) -> crate::PreparedTrackMix {
+    if playback.revision.gain_recording_track() == track.canonical_track_id()
+        && let Some(gain) = playback.live_gain.audible()
+    {
+        return track.recording_mix(gain);
+    }
     let mix = effective_mix(
         track,
         frame,
@@ -51,10 +162,18 @@ impl SessionPlayback {
                 "gain recording override must be finite and within 0..2",
             ));
         }
+        if self.gain_recording_override == Some(gain) {
+            return Ok(());
+        }
         self.gain_recording_override = Some(gain);
         Ok(())
     }
     pub(crate) fn clear_gain_recording_override(&mut self) {
+        self.gain_recording_override = None;
+        self.live_gain = LiveGain::default();
+        self.live_gain_scratch = LiveGain::default();
+    }
+    pub(crate) fn release_gain_recording_override(&mut self) {
         self.gain_recording_override = None;
     }
     pub(crate) fn gain_recording_clock(&self, track: u64) -> Option<(u64, u64, u64)> {
@@ -178,9 +297,16 @@ mod tests {
         runtime
             .render_with_capture(&mut main, &mut capture)
             .unwrap();
-        assert_eq!(capture.output(0).unwrap(), [[0.1, -0.4]; 8]);
-        assert_eq!(capture.output(1).unwrap(), [[0.05, -0.2]; 8]);
-        assert_eq!(main, [[0.1 + 0.05, -0.4 - 0.2]; 8]);
+        for (index, frame) in main.iter().enumerate() {
+            let progress = (index + 1) as f32 / 240.0;
+            let track = capture.output(0).unwrap()[index];
+            let returned = capture.output(1).unwrap()[index];
+            for (channel, target) in [0.1, -0.4].into_iter().enumerate() {
+                assert!((track[channel] - target * progress).abs() < 1e-6);
+                assert!((returned[channel] - target * progress * 0.5).abs() < 1e-6);
+                assert!((frame[channel] - (track[channel] + returned[channel])).abs() < 1e-6);
+            }
+        }
     }
     #[test]
     fn group_gain_override_changes_only_its_submix_path() {
@@ -240,26 +366,66 @@ mod tests {
             .unwrap();
         let mut output = [[0.0; 2]; 8];
         runtime.render(&mut output).unwrap();
-        assert_eq!(output, [[0.25, -0.5]; 8]); // 0.5 submix + independent 0.5 send.
+        // The submix ramps while the independent send remains unchanged.
+        for (index, frame) in output.iter().enumerate() {
+            let gain = 1.0 - 0.5 * (index + 1) as f32 / 240.0;
+            assert!((frame[0] - (0.25 * gain + 0.125)).abs() < 1e-6);
+            assert!((frame[1] - (-0.5 * gain - 0.25)).abs() < 1e-6);
+        }
         assert_eq!(runtime.gain_recording_clock(group.value()), Some((8, 0, 0)));
     }
     #[test]
     fn gain_recording_fault_rolls_back_pcm_clock_and_stop_clears_override() {
         let (mut runtime, track) = armed();
+        let (mut oracle, oracle_track) = armed();
         runtime
             .set_gain_recording_override(track.value(), 0.8)
             .unwrap();
+        oracle
+            .set_gain_recording_override(oracle_track.value(), 0.8)
+            .unwrap();
+        runtime.render(&mut [[0.0; 2]; 8]).unwrap();
+        oracle.render(&mut [[0.0; 2]; 8]).unwrap();
+        let committed = runtime.live_gain;
+        let frame = runtime.arrangement_frame;
         runtime.arrangement_frame = u64::MAX - 300;
         let mut output = [[9.0; 2]; 512];
         assert!(runtime.render(&mut output).is_err());
         assert_eq!(output, [[0.0; 2]; 512]);
-        assert_eq!(runtime.performance_frame, 0);
+        assert_eq!(runtime.performance_frame, 8);
         assert_eq!(runtime.arrangement_frame, u64::MAX - 300);
+        assert_eq!(runtime.live_gain, committed);
+        runtime.arrangement_frame = frame;
+        let mut actual = [[0.0; 2]; 16];
+        let mut expected = actual;
+        runtime.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(actual, expected);
         // It is an already accepted control command. Native failure cancellation
         // must explicitly terminate the take; a failed render invents no receipt.
         assert_eq!(runtime.gain_recording_override, Some(0.8));
         runtime.apply(SessionPlaybackCommand::Stop).unwrap();
         assert_eq!(runtime.gain_recording_override, None);
         assert_eq!(runtime.gain_recording_clock(track.value()), Some((0, 0, 0)));
+    }
+
+    #[test]
+    fn detached_mix_freezes_the_audible_recording_level() {
+        let (mut runtime, track) = armed();
+        runtime
+            .set_gain_recording_override(track.value(), 0.8)
+            .unwrap();
+        runtime.render(&mut [[0.0; 2]; 16]).unwrap();
+        let source = &runtime.revision.arrangement().tracks()[0];
+        let actual = detached_mix(&runtime, source, 0, runtime.arrangement_frame);
+        let gain = 0.8 * 16.0 / 240.0;
+        let expected = source.recording_mix(gain);
+        for (actual, expected) in actual
+            .channel_gain()
+            .into_iter()
+            .zip(expected.channel_gain())
+        {
+            assert!((actual - expected).abs() < 1e-6);
+        }
     }
 }

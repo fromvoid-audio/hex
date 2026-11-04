@@ -169,20 +169,17 @@ impl ComputerKeyboardRuntime {
                 .iter()
                 .flatten()
                 .any(|after| after.id == voice.id && after.gate.is_some())
+                && let Some(source) = capture_source(binding, voice)
+                && capture
+                    .push(AcceptedMidiNote {
+                        source,
+                        occurrence_id: voice.id,
+                        performance_frame: frame,
+                        event: MidiCaptureEvent::Off,
+                    })
+                    .is_err()
             {
-                if let Some(source) = capture_source(binding, voice) {
-                    if capture
-                        .push(AcceptedMidiNote {
-                            source,
-                            occurrence_id: voice.id,
-                            performance_frame: frame,
-                            event: MidiCaptureEvent::Off,
-                        })
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
+                return;
             }
         }
         for voice in self
