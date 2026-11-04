@@ -595,6 +595,7 @@ impl Command {
             | Self::AddTrack { .. }
             | Self::InsertTrack { .. }
             | Self::InsertDefaultTrack { .. }
+            | Self::InsertDefaultTrackWithGain { .. }
             | Self::MoveTrackBefore { .. }
             | Self::MoveTracksBefore { .. }
             | Self::PasteTracks { .. }
