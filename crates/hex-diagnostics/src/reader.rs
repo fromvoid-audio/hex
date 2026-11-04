@@ -160,8 +160,8 @@ pub fn read_session_page(active: &Path, requested_page: usize) -> io::Result<Log
     let mut sequence_discontinuity = false;
     let mut truncated = false;
     for (path, text) in segments {
-        if snapshot.header.is_none() {
-            if let Some(line) = text
+        if snapshot.header.is_none()
+            && let Some(line) = text
                 .lines()
                 .next()
                 .filter(|line| line.starts_with("session_started "))
@@ -172,7 +172,6 @@ pub fn read_session_page(active: &Path, requested_page: usize) -> io::Result<Log
                 } else {
                     clipped
                 });
-            }
         }
         if let Some(segment) = text
             .lines()

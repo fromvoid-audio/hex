@@ -518,8 +518,9 @@ impl Catalog {
                     });
                 }
             }
-            if let Some(report) = &entry.last_good {
-                if let Some(discovery) = &report.discovery {
+            if let Some(report) = &entry.last_good
+                && let Some(discovery) = &report.discovery
+            {
                     for class in &discovery.classes {
                         if class.category != "Audio Module Class" {
                             continue;
@@ -565,7 +566,6 @@ impl Catalog {
                             },
                         });
                     }
-                }
             }
         }
         rows.sort_by(|a, b| (&a.module, a.cid).cmp(&(&b.module, b.cid)));
