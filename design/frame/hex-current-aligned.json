@@ -2,7 +2,7 @@
   "version": 1,
   "id": "hex-yield-workstation",
   "name": "hex / orbital",
-  "revisionId": "hex-current-aligned-study-r59",
+  "revisionId": "hex-current-aligned-study-r60",
   "width": 1900,
   "height": 1120,
   "background": "#111111",
@@ -1539,7 +1539,8 @@
         "style": {
           "fill": "#b85d4b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name0": {
@@ -3017,7 +3018,8 @@
         "style": {
           "fill": "#c27b3d",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name1": {
@@ -3374,7 +3376,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name2": {
@@ -3651,7 +3654,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name3": {
@@ -5023,7 +5027,8 @@
         "visible": true,
         "style": {
           "fill": "#4f9970",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name4": {
@@ -6214,7 +6219,8 @@
         "visible": true,
         "style": {
           "fill": "#799b50",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name5": {
@@ -7336,7 +7342,8 @@
         "style": {
           "fill": "#4f9970",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name6": {
@@ -8381,7 +8388,8 @@
         "style": {
           "fill": "#4d958b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name7": {
@@ -9580,7 +9588,8 @@
         "style": {
           "fill": "#9a6190",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name8": {
@@ -11058,7 +11067,8 @@
         "style": {
           "fill": "#b95f79",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name9": {
@@ -17508,7 +17518,8 @@
         "style": {
           "fill": "#b85d4b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name0": {
@@ -18986,7 +18997,8 @@
         "style": {
           "fill": "#c27b3d",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name1": {
@@ -19343,7 +19355,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name2": {
@@ -19620,7 +19633,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name3": {
@@ -20992,7 +21006,8 @@
         "visible": true,
         "style": {
           "fill": "#4f9970",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name4": {
@@ -22183,7 +22198,8 @@
         "visible": true,
         "style": {
           "fill": "#799b50",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name5": {
@@ -23305,7 +23321,8 @@
         "style": {
           "fill": "#4f9970",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name6": {
@@ -24350,7 +24367,8 @@
         "style": {
           "fill": "#4d958b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name7": {
@@ -25549,7 +25567,8 @@
         "style": {
           "fill": "#9a6190",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name8": {
@@ -27027,7 +27046,8 @@
         "style": {
           "fill": "#b95f79",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name9": {
@@ -33080,7 +33100,10 @@
         "visible": true
       },
       "aligned-header0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name0": {
         "visible": true
@@ -33733,7 +33756,10 @@
         "visible": true
       },
       "aligned-header1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name1": {
         "visible": true
@@ -33902,7 +33928,10 @@
         "visible": true
       },
       "aligned-header2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name2": {
         "visible": true
@@ -34035,7 +34064,10 @@
         "visible": true
       },
       "aligned-header3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name3": {
         "visible": true
@@ -34639,7 +34671,10 @@
         "visible": true
       },
       "aligned-header4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name4": {
         "visible": true
@@ -35165,7 +35200,10 @@
         "visible": true
       },
       "aligned-header5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name5": {
         "visible": true
@@ -35661,7 +35699,10 @@
         "visible": true
       },
       "aligned-header6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name6": {
         "visible": true
@@ -36124,7 +36165,10 @@
         "visible": true
       },
       "aligned-header7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name7": {
         "visible": true
@@ -36653,7 +36697,10 @@
         "visible": true
       },
       "aligned-header8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name8": {
         "visible": true
@@ -37302,7 +37349,10 @@
         "visible": true
       },
       "aligned-header9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name9": {
         "visible": true
@@ -39549,7 +39599,10 @@
         "visible": true
       },
       "aligned-header0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name0": {
         "visible": true
@@ -40202,7 +40255,10 @@
         "visible": true
       },
       "aligned-header1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name1": {
         "visible": true
@@ -40371,7 +40427,10 @@
         "visible": true
       },
       "aligned-header2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name2": {
         "visible": true
@@ -40504,7 +40563,10 @@
         "visible": true
       },
       "aligned-header3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name3": {
         "visible": true
@@ -41108,7 +41170,10 @@
         "visible": true
       },
       "aligned-header4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name4": {
         "visible": true
@@ -41634,7 +41699,10 @@
         "visible": true
       },
       "aligned-header5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name5": {
         "visible": true
@@ -42130,7 +42198,10 @@
         "visible": true
       },
       "aligned-header6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name6": {
         "visible": true
@@ -42593,7 +42664,10 @@
         "visible": true
       },
       "aligned-header7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name7": {
         "visible": true
@@ -43122,7 +43196,10 @@
         "visible": true
       },
       "aligned-header8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name8": {
         "visible": true
@@ -43771,7 +43848,10 @@
         "visible": true
       },
       "aligned-header9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name9": {
         "visible": true
@@ -46415,7 +46495,8 @@
         "style": {
           "fill": "#b85d4b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name0": {
@@ -47893,7 +47974,8 @@
         "style": {
           "fill": "#c27b3d",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name1": {
@@ -48250,7 +48332,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name2": {
@@ -48527,7 +48610,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name3": {
@@ -49899,7 +49983,8 @@
         "visible": true,
         "style": {
           "fill": "#4f9970",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name4": {
@@ -51090,7 +51175,8 @@
         "visible": true,
         "style": {
           "fill": "#799b50",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name5": {
@@ -52212,7 +52298,8 @@
         "style": {
           "fill": "#4f9970",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name6": {
@@ -53257,7 +53344,8 @@
         "style": {
           "fill": "#4d958b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name7": {
@@ -54456,7 +54544,8 @@
         "style": {
           "fill": "#9a6190",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name8": {
@@ -55934,7 +56023,8 @@
         "style": {
           "fill": "#b95f79",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name9": {
@@ -61987,7 +62077,10 @@
         "visible": true
       },
       "aligned-header0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name0": {
         "visible": true
@@ -62640,7 +62733,10 @@
         "visible": true
       },
       "aligned-header1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name1": {
         "visible": true
@@ -62809,7 +62905,10 @@
         "visible": true
       },
       "aligned-header2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name2": {
         "visible": true
@@ -62942,7 +63041,10 @@
         "visible": true
       },
       "aligned-header3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name3": {
         "visible": true
@@ -63546,7 +63648,10 @@
         "visible": true
       },
       "aligned-header4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name4": {
         "visible": true
@@ -64072,7 +64177,10 @@
         "visible": true
       },
       "aligned-header5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name5": {
         "visible": true
@@ -64568,7 +64676,10 @@
         "visible": true
       },
       "aligned-header6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name6": {
         "visible": true
@@ -65031,7 +65142,10 @@
         "visible": true
       },
       "aligned-header7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name7": {
         "visible": true
@@ -65560,7 +65674,10 @@
         "visible": true
       },
       "aligned-header8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name8": {
         "visible": true
@@ -66209,7 +66326,10 @@
         "visible": true
       },
       "aligned-header9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name9": {
         "visible": true
@@ -68478,7 +68598,10 @@
         "visible": true
       },
       "aligned-header0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name0": {
         "visible": true
@@ -69131,7 +69254,10 @@
         "visible": true
       },
       "aligned-header1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name1": {
         "visible": true
@@ -69300,7 +69426,10 @@
         "visible": true
       },
       "aligned-header2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name2": {
         "visible": true
@@ -69433,7 +69562,10 @@
         "visible": true
       },
       "aligned-header3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name3": {
         "visible": true
@@ -70037,7 +70169,10 @@
         "visible": true
       },
       "aligned-header4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name4": {
         "visible": true
@@ -70563,7 +70698,10 @@
         "visible": true
       },
       "aligned-header5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name5": {
         "visible": true
@@ -71059,7 +71197,10 @@
         "visible": true
       },
       "aligned-header6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name6": {
         "visible": true
@@ -71522,7 +71663,10 @@
         "visible": true
       },
       "aligned-header7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name7": {
         "visible": true
@@ -72051,7 +72195,10 @@
         "visible": true
       },
       "aligned-header8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name8": {
         "visible": true
@@ -72700,7 +72847,10 @@
         "visible": true
       },
       "aligned-header9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name9": {
         "visible": true
@@ -74969,7 +75119,10 @@
         "visible": true
       },
       "aligned-header0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name0": {
         "visible": true
@@ -75622,7 +75775,10 @@
         "visible": true
       },
       "aligned-header1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name1": {
         "visible": true
@@ -75791,7 +75947,10 @@
         "visible": true
       },
       "aligned-header2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name2": {
         "visible": true
@@ -75924,7 +76083,10 @@
         "visible": true
       },
       "aligned-header3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name3": {
         "visible": true
@@ -76528,7 +76690,10 @@
         "visible": true
       },
       "aligned-header4": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name4": {
         "visible": true
@@ -77054,7 +77219,10 @@
         "visible": true
       },
       "aligned-header5": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name5": {
         "visible": true
@@ -77550,7 +77718,10 @@
         "visible": true
       },
       "aligned-header6": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name6": {
         "visible": true
@@ -78013,7 +78184,10 @@
         "visible": true
       },
       "aligned-header7": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name7": {
         "visible": true
@@ -78542,7 +78716,10 @@
         "visible": true
       },
       "aligned-header8": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name8": {
         "visible": true
@@ -79191,7 +79368,10 @@
         "visible": true
       },
       "aligned-header9": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "cutCorner": 7
+        }
       },
       "aligned-track-name9": {
         "visible": true
@@ -81835,7 +82015,8 @@
         "style": {
           "fill": "#b85d4b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name0": {
@@ -83313,7 +83494,8 @@
         "style": {
           "fill": "#c27b3d",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name1": {
@@ -83670,7 +83852,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name2": {
@@ -83947,7 +84130,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name3": {
@@ -85319,7 +85503,8 @@
         "visible": true,
         "style": {
           "fill": "#4f9970",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name4": {
@@ -86510,7 +86695,8 @@
         "visible": true,
         "style": {
           "fill": "#799b50",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name5": {
@@ -87632,7 +87818,8 @@
         "style": {
           "fill": "#4f9970",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name6": {
@@ -88677,7 +88864,8 @@
         "style": {
           "fill": "#4d958b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name7": {
@@ -89876,7 +90064,8 @@
         "style": {
           "fill": "#9a6190",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name8": {
@@ -91354,7 +91543,8 @@
         "style": {
           "fill": "#b95f79",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name9": {
@@ -97804,7 +97994,8 @@
         "style": {
           "fill": "#b85d4b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name0": {
@@ -99282,7 +99473,8 @@
         "style": {
           "fill": "#c27b3d",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name1": {
@@ -99639,7 +99831,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name2": {
@@ -99916,7 +100109,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name3": {
@@ -101288,7 +101482,8 @@
         "visible": true,
         "style": {
           "fill": "#4f9970",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name4": {
@@ -102479,7 +102674,8 @@
         "visible": true,
         "style": {
           "fill": "#799b50",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name5": {
@@ -103601,7 +103797,8 @@
         "style": {
           "fill": "#4f9970",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name6": {
@@ -104646,7 +104843,8 @@
         "style": {
           "fill": "#4d958b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name7": {
@@ -105845,7 +106043,8 @@
         "style": {
           "fill": "#9a6190",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name8": {
@@ -107323,7 +107522,8 @@
         "style": {
           "fill": "#b95f79",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name9": {
@@ -113773,7 +113973,8 @@
         "style": {
           "fill": "#aba99c",
           "stroke": "#17181a",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name0": {
@@ -115251,7 +115452,8 @@
         "style": {
           "fill": "#c0b28a",
           "stroke": "#17181a",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name1": {
@@ -115608,7 +115810,8 @@
         "visible": true,
         "style": {
           "fill": "#98a9b8",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name2": {
@@ -115885,7 +116088,8 @@
         "visible": true,
         "style": {
           "fill": "#98a9b8",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name3": {
@@ -117257,7 +117461,8 @@
         "visible": true,
         "style": {
           "fill": "#a79f8c",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name4": {
@@ -118448,7 +118653,8 @@
         "visible": true,
         "style": {
           "fill": "#b4bec8",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name5": {
@@ -119570,7 +119776,8 @@
         "style": {
           "fill": "#a79f8c",
           "stroke": "#17181a",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name6": {
@@ -120615,7 +120822,8 @@
         "style": {
           "fill": "#8fa3ae",
           "stroke": "#17181a",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name7": {
@@ -121814,7 +122022,8 @@
         "style": {
           "fill": "#c4bfa9",
           "stroke": "#17181a",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name8": {
@@ -123292,7 +123501,8 @@
         "style": {
           "fill": "#929cab",
           "stroke": "#17181a",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name9": {
@@ -129736,7 +129946,8 @@
         "style": {
           "fill": "#5c9cb4",
           "stroke": "#17181a",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name0": {
@@ -131214,7 +131425,8 @@
         "style": {
           "fill": "#6593bb",
           "stroke": "#17181a",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name1": {
@@ -131571,7 +131783,8 @@
         "visible": true,
         "style": {
           "fill": "#69a9b0",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name2": {
@@ -131848,7 +132061,8 @@
         "visible": true,
         "style": {
           "fill": "#69a9b0",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name3": {
@@ -133220,7 +133434,8 @@
         "visible": true,
         "style": {
           "fill": "#6aa6bd",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name4": {
@@ -134411,7 +134626,8 @@
         "visible": true,
         "style": {
           "fill": "#7187b3",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name5": {
@@ -135533,7 +135749,8 @@
         "style": {
           "fill": "#6aa6bd",
           "stroke": "#17181a",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name6": {
@@ -136578,7 +136795,8 @@
         "style": {
           "fill": "#7ab0ba",
           "stroke": "#17181a",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name7": {
@@ -137777,7 +137995,8 @@
         "style": {
           "fill": "#7899ad",
           "stroke": "#17181a",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name8": {
@@ -139255,7 +139474,8 @@
         "style": {
           "fill": "#6393a5",
           "stroke": "#17181a",
-          "color": "#c3c9ca"
+          "color": "#c3c9ca",
+          "cutCorner": 7
         }
       },
       "aligned-track-name9": {
@@ -145699,7 +145919,8 @@
         "style": {
           "fill": "#b85d4b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name0": {
@@ -147177,7 +147398,8 @@
         "style": {
           "fill": "#c27b3d",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name1": {
@@ -147534,7 +147756,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name2": {
@@ -147811,7 +148034,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name3": {
@@ -149183,7 +149407,8 @@
         "visible": true,
         "style": {
           "fill": "#4f9970",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name4": {
@@ -150374,7 +150599,8 @@
         "visible": true,
         "style": {
           "fill": "#799b50",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name5": {
@@ -151496,7 +151722,8 @@
         "style": {
           "fill": "#4f9970",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name6": {
@@ -152541,7 +152768,8 @@
         "style": {
           "fill": "#4d958b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name7": {
@@ -153740,7 +153968,8 @@
         "style": {
           "fill": "#9a6190",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name8": {
@@ -155218,7 +155447,8 @@
         "style": {
           "fill": "#b95f79",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name9": {
@@ -161509,7 +161739,8 @@
         "style": {
           "fill": "#b85d4b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name0": {
@@ -162987,7 +163218,8 @@
         "style": {
           "fill": "#c27b3d",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name1": {
@@ -163344,7 +163576,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name2": {
@@ -163621,7 +163854,8 @@
         "visible": true,
         "style": {
           "fill": "#af9741",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name3": {
@@ -164993,7 +165227,8 @@
         "visible": true,
         "style": {
           "fill": "#4f9970",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name4": {
@@ -166184,7 +166419,8 @@
         "visible": true,
         "style": {
           "fill": "#799b50",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name5": {
@@ -167306,7 +167542,8 @@
         "style": {
           "fill": "#4f9970",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name6": {
@@ -168351,7 +168588,8 @@
         "style": {
           "fill": "#4d958b",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name7": {
@@ -169550,7 +169788,8 @@
         "style": {
           "fill": "#9a6190",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name8": {
@@ -171028,7 +171267,8 @@
         "style": {
           "fill": "#b95f79",
           "stroke": "#111111",
-          "color": "#c7c7c7"
+          "color": "#c7c7c7",
+          "cutCorner": 7
         }
       },
       "aligned-track-name9": {
@@ -315672,7 +315912,8 @@
         "color": "#c3c5c0",
         "fontSize": 10,
         "fontFamily": "Ioskeley Mono",
-        "padding": 0
+        "padding": 0,
+        "cutCorner": 7
       },
       "parentId": "aligned-current-study"
     },
@@ -320175,7 +320416,8 @@
         "color": "#c3c5c0",
         "fontSize": 10,
         "fontFamily": "Ioskeley Mono",
-        "padding": 0
+        "padding": 0,
+        "cutCorner": 7
       },
       "parentId": "aligned-current-study"
     },
@@ -323574,7 +323816,8 @@
         "color": "#c3c5c0",
         "fontSize": 10,
         "fontFamily": "Ioskeley Mono",
-        "padding": 0
+        "padding": 0,
+        "cutCorner": 7
       },
       "parentId": "aligned-current-study"
     },
@@ -324645,7 +324888,8 @@
         "color": "#c3c5c0",
         "fontSize": 10,
         "fontFamily": "Ioskeley Mono",
-        "padding": 0
+        "padding": 0,
+        "cutCorner": 7
       },
       "parentId": "aligned-current-study"
     },
@@ -328863,7 +329107,8 @@
         "color": "#c3c5c0",
         "fontSize": 10,
         "fontFamily": "Ioskeley Mono",
-        "padding": 0
+        "padding": 0,
+        "cutCorner": 7
       },
       "parentId": "aligned-current-study"
     },
@@ -332546,7 +332791,8 @@
         "color": "#c3c5c0",
         "fontSize": 10,
         "fontFamily": "Ioskeley Mono",
-        "padding": 0
+        "padding": 0,
+        "cutCorner": 7
       },
       "parentId": "aligned-current-study"
     },
@@ -336039,7 +336285,8 @@
         "color": "#c3c5c0",
         "fontSize": 10,
         "fontFamily": "Ioskeley Mono",
-        "padding": 0
+        "padding": 0,
+        "cutCorner": 7
       },
       "parentId": "aligned-current-study"
     },
@@ -339323,7 +339570,8 @@
         "color": "#c3c5c0",
         "fontSize": 10,
         "fontFamily": "Ioskeley Mono",
-        "padding": 0
+        "padding": 0,
+        "cutCorner": 7
       },
       "parentId": "aligned-current-study"
     },
@@ -343025,7 +343273,8 @@
         "color": "#c3c5c0",
         "fontSize": 10,
         "fontFamily": "Ioskeley Mono",
-        "padding": 0
+        "padding": 0,
+        "cutCorner": 7
       },
       "parentId": "aligned-current-study"
     },
@@ -347528,7 +347777,8 @@
         "color": "#c3c5c0",
         "fontSize": 10,
         "fontFamily": "Ioskeley Mono",
-        "padding": 0
+        "padding": 0,
+        "cutCorner": 7
       },
       "parentId": "aligned-current-study"
     },
