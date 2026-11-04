@@ -4,8 +4,10 @@ use super::*;
 mod bypass_latency;
 mod delay_bypass;
 mod limiter;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod plugins;
 mod recovery;
+mod release_custody;
 mod resident_authoring;
 mod resident_bounce;
 mod resident_eq_creation;
@@ -21,9 +23,12 @@ mod sampler;
 mod section_benchmark;
 mod solo_latency;
 mod stream_export;
+mod touch_recording;
 mod track_clipboard;
 mod track_reorder;
 mod transport_loop;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+mod unavailable_plugins;
 mod utility_width;
 mod verified_gain;
 mod worker_idle;
@@ -90,6 +95,7 @@ struct Observation {
     blocked: Option<AudioSourceContext>,
     fresh_before_input: Option<(EditorAudio, Arc<Mutex<Option<HeadlessBackend>>>)>,
     fresh_before_input_checked: bool,
+    fresh_replacement_hold_checked: bool,
     latest: Option<(AudioSourceContext, AudioCandidateDomainToken, usize)>,
     command_ready: Option<(AudioSourceContext, u64)>,
     change_source_after_capture: Option<PathBuf>,
@@ -348,22 +354,14 @@ impl WorkerAudioSink for ObservedSink {
             drop(audio);
             backend.lock().unwrap().take();
             self.inner.canonical_changed(source);
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while self.inner.output.is_none() {
-                self.inner.poll_open();
-                assert!(
-                    Instant::now() < deadline,
-                    "fresh output did not complete before input"
-                );
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            self.inner.poll_open();
             assert!(
                 self.inner.sampler.is_none(),
                 "old sampler must cancel before output opening"
             );
-            assert_eq!(
-                self.inner.output_hold.retained_bytes,
-                self.inner.policy.as_ref().unwrap().legacy_hold_bytes
+            assert!(
+                self.inner.output.is_none() && self.inner.pending_release_event.is_some(),
+                "a pre-input poll must wait for release delivery"
             );
             self.observation.lock().unwrap().fresh_before_input_checked = true;
             return;
@@ -506,6 +504,19 @@ impl WorkerAudioSink for ObservedSink {
             );
         }
         self.inner.poll();
+        if self.inner.output.is_some() {
+            let mut observation = self.observation.lock().unwrap();
+            if observation.fresh_before_input_checked && !observation.fresh_replacement_hold_checked
+            {
+                // The ordinary poll opens only after the UI can receive release.
+                // Retain the original fresh-output memory-policy assertion.
+                assert_eq!(
+                    self.inner.output_hold.retained_bytes,
+                    self.inner.policy.as_ref().unwrap().legacy_hold_bytes
+                );
+                observation.fresh_replacement_hold_checked = true;
+            }
+        }
         self.record_resident_submission();
         if let Some(context) = self.inner.last_context
             && let Some(domain) = self

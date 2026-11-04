@@ -661,27 +661,27 @@ impl EditorView {
                         .and_then(|drag| drag.insertion_line_y.get())
                 })
         };
-        if let Some(line_y) = insertion_line_y {
-            if let Some(bounds) = self.arrangement_bounds {
-                let relative_y = line_y - bounds.top;
-                if relative_y.is_finite() && relative_y >= 0.0 && relative_y < bounds.height {
-                    body = body.child(
-                        div()
-                            .id("track-insert-preview")
-                            .debug_selector(|| "track-insert-preview".to_owned())
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top(px((relative_y - 1.0).max(0.0)))
-                            .h(px(2.0))
-                            .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                            .children(
-                                self.displayed_clip_drag()
-                                    .filter(|drag| drag.alias_copy())
-                                    .map(|_| super::tracks::alias_drag_badge()),
-                            ),
-                    );
-                }
+        if let Some(line_y) = insertion_line_y
+            && let Some(bounds) = self.arrangement_bounds
+        {
+            let relative_y = line_y - bounds.top;
+            if relative_y.is_finite() && relative_y >= 0.0 && relative_y < bounds.height {
+                body = body.child(
+                    div()
+                        .id("track-insert-preview")
+                        .debug_selector(|| "track-insert-preview".to_owned())
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px((relative_y - 1.0).max(0.0)))
+                        .h(px(2.0))
+                        .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                        .children(
+                            self.displayed_clip_drag()
+                                .filter(|drag| drag.alias_copy())
+                                .map(|_| super::tracks::alias_drag_badge()),
+                        ),
+                );
             }
         }
         body.children(

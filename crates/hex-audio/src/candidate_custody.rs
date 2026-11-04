@@ -974,12 +974,13 @@ impl CandidateRoot {
                 Ok(()) => work.bank_drop_pending = false,
             }
             let mut bank = lock(&self.0.bank);
-            if let Some(slot) = bank.slots.get_mut(stamp.slot) {
-                if slot.incarnation == stamp.incarnation && slot.identity == Some(stamp.owner) {
-                    slot.phase = Phase::Vacant;
-                    slot.identity = None;
-                    slot.domain_count = 0;
-                }
+            if let Some(slot) = bank.slots.get_mut(stamp.slot)
+                && slot.incarnation == stamp.incarnation
+                && slot.identity == Some(stamp.owner)
+            {
+                slot.phase = Phase::Vacant;
+                slot.identity = None;
+                slot.domain_count = 0;
             }
             return;
         }
@@ -1066,13 +1067,12 @@ impl CandidateRoot {
             Ok(()) => work.metadata_drop_pending = false,
         }
         let mut bank = lock(&self.0.bank);
-        if let Some(slot) = bank.slots.get_mut(stamp.slot) {
-            if slot.incarnation == stamp.incarnation
-                && slot.identity == Some(stamp.owner)
-                && slot.ready.is_some()
-            {
-                slot.phase = Phase::Complete;
-            }
+        if let Some(slot) = bank.slots.get_mut(stamp.slot)
+            && slot.incarnation == stamp.incarnation
+            && slot.identity == Some(stamp.owner)
+            && slot.ready.is_some()
+        {
+            slot.phase = Phase::Complete;
         }
     }
     pub(crate) fn root_id(&self) -> u64 {

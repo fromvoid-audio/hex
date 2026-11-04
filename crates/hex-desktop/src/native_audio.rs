@@ -21,6 +21,10 @@ use std::sync::{
     mpsc::{self, SyncSender, TrySendError},
 };
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod plugins;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[path = "native_audio/plugins_unavailable.rs"]
 mod plugins;
 mod resident;
 mod resident_files;
@@ -103,6 +107,9 @@ pub(super) struct NativeAudioSink {
     // continues to use its separate verified constructor/driver.
     worker_owned_resident_graphs: bool,
     events: SyncSender<EditorAudioEvent>,
+    // A release is terminal custody for the old endpoint. While it is pending,
+    // no new output can open, so one bounded slot suffices across replacements.
+    pending_release_event: Option<EditorAudioEvent>,
     pending_open_event: Option<EditorAudioEvent>,
     pending_observation: Option<EditorAudioEvent>,
     // One coalesced status may wait behind an accepted ordinary submission. Status changes
@@ -124,6 +131,10 @@ pub(super) struct NativeAudioSink {
     output: Option<WorkerPreparedOutput>,
     output_generation: Option<u64>,
     output_identity: Option<u64>,
+    // Last worker-relinquished endpoint, retained until a fresh Lease opens.
+    // Sampler preflight may retire it before a replacement arrives. This
+    // identity retains no output, media, or native resource ownership.
+    relinquished_output_identity: Option<u64>,
     opening: Option<hex_audio::WorkerRecoveryOpen>,
     open_pending: bool,
     requested_rate: Option<u32>,
@@ -170,6 +181,7 @@ impl NativeAudioSink {
             resident: resident::Resident::default(),
             worker_owned_resident_graphs: true,
             events,
+            pending_release_event: None,
             pending_open_event: None,
             pending_observation: None,
             pending_status_observation: None,
@@ -186,6 +198,7 @@ impl NativeAudioSink {
             output: None,
             output_generation: None,
             output_identity: None,
+            relinquished_output_identity: None,
             opening: None,
             open_pending: false,
             requested_rate: None,
@@ -216,6 +229,9 @@ impl NativeAudioSink {
         }
     }
     fn relinquish_output(&mut self) {
+        if let Some(identity) = self.output_identity {
+            self.relinquished_output_identity = Some(identity);
+        }
         self.plugins.output_closed();
         // Publication/StreamOwner relinquish before any event can backpressure.
         // All accepted construction stays inside Root's terminal/lifecycle book.
@@ -259,7 +275,7 @@ impl NativeAudioSink {
         self.open_error = None;
     }
     fn poll_open(&mut self) {
-        if !self.open_pending {
+        if !self.open_pending || self.pending_release_event.is_some() {
             return;
         }
         let failure = hex_audio::audio_lifecycle_failure();
@@ -354,7 +370,8 @@ impl NativeAudioSink {
         }
     }
     fn deliver_open(&mut self) {
-        if self.sampler_blocks_client() {
+        if self.sampler_blocks_client() || self.pending_release_event.is_some() {
+            // The release must reach the UI before the next open result.
             return;
         }
         let Some(snapshot) = self.desired.as_ref() else {
@@ -476,6 +493,7 @@ impl NativeAudioSink {
     fn flush_events(&mut self) {
         let mut disconnected = false;
         for pending in [
+            &mut self.pending_release_event,
             &mut self.pending_open_event,
             &mut self.pending_observation,
             &mut self.pending_status_observation,
@@ -498,6 +516,7 @@ impl NativeAudioSink {
             }
         }
         if disconnected {
+            self.pending_release_event = None;
             self.relinquish_output();
         }
     }
@@ -592,20 +611,18 @@ impl NativeAudioSink {
             .preparation
             .as_ref()
             .is_some_and(|p| p.snapshot.key() != key)
+            && let Some(p) = self.preparation.as_mut()
         {
-            if let Some(p) = self.preparation.as_mut() {
-                control.cancel_audio_candidate_preparation(p.token);
-                p.cancelling = true;
-                if let Some(token) = p.domain {
-                    if let Some(domain) = self
-                        .domains
-                        .iter_mut()
-                        .flatten()
-                        .find(|d| d.token == token && !d.ready)
-                    {
-                        domain.request_retirement(control);
-                    }
-                }
+            control.cancel_audio_candidate_preparation(p.token);
+            p.cancelling = true;
+            if let Some(token) = p.domain
+                && let Some(domain) = self
+                    .domains
+                    .iter_mut()
+                    .flatten()
+                    .find(|d| d.token == token && !d.ready)
+            {
+                domain.request_retirement(control);
             }
         }
         if self.preparation.as_ref().is_some_and(|p| p.cancelling) {
@@ -965,15 +982,14 @@ impl NativeAudioSink {
         let key = pending.snapshot.key();
         control.cancel_audio_candidate_preparation(pending.token);
         pending.cancelling = true;
-        if let Some(token) = pending.domain {
-            if let Some(domain) = self
+        if let Some(token) = pending.domain
+            && let Some(domain) = self
                 .domains
                 .iter_mut()
                 .flatten()
                 .find(|d| d.token == token && !d.ready)
-            {
-                domain.request_retirement(control);
-            }
+        {
+            domain.request_retirement(control);
         }
         self.preparation = Some(pending);
         self.blocked = Some(context);
@@ -1083,14 +1099,13 @@ impl WorkerAudioSink for NativeAudioSink {
             .output
             .as_mut()
             .and_then(|output| output.publication.control())
-        {
-            if let Some(domain) = self.domains.iter().flatten().find(|domain| {
+            && let Some(domain) = self.domains.iter().flatten().find(|domain| {
                 domain.ready
                     && !domain.retiring
                     && domain.sources.covers_files(&input, domain.token, control)
-            }) {
-                return domain.sources.file_metadata(&input).map(Some);
-            }
+            })
+        {
+            return domain.sources.file_metadata(&input).map(Some);
         }
         let catalog = self.next_catalog;
         self.next_catalog = catalog
@@ -1332,6 +1347,16 @@ impl WorkerAudioSink for NativeAudioSink {
                 self.resident.discard_obsolete_pending(source.context());
             }
             self.relinquish_output();
+            if self.pending_release_event.is_none()
+                && let Some(old_output_identity) = self.relinquished_output_identity
+            {
+                // The UI may hold this endpoint across the replacement; it must
+                // close it before a fresh output can take the lease.
+                self.pending_release_event = Some(EditorAudioEvent::OutputReleased {
+                    project_generation: generation,
+                    old_output_identity,
+                });
+            }
             self.request_open(Some(source.sample_rate()), None);
         }
         if previous != Some(generation) {
@@ -1551,6 +1576,8 @@ impl WorkerAudioSink for NativeAudioSink {
     fn close(&mut self) {
         self.shutdown_sampler();
         self.relinquish_output();
+        self.pending_release_event = None;
+        self.relinquished_output_identity = None;
         self.desired = None;
     }
 }

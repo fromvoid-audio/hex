@@ -248,12 +248,12 @@ pub(crate) fn render_streamed_page_span_captured(
     let mut voice = fades.map(|fades| fades.voice(source.key(), source_frame));
     for (offset, destination) in destination.iter_mut().take(available).enumerate() {
         let mut sample = frames[page_offset + offset];
-        if let Some((fade, fade_start)) = fade {
-            if let Some(frame) = timeline_frame.checked_add(offset as u64) {
-                let gain = fade.gain_at(frame.saturating_sub(fade_start));
-                sample[0] *= gain;
-                sample[1] *= gain;
-            }
+        if let Some((fade, fade_start)) = fade
+            && let Some(frame) = timeline_frame.checked_add(offset as u64)
+        {
+            let gain = fade.gain_at(frame.saturating_sub(fade_start));
+            sample[0] *= gain;
+            sample[1] *= gain;
         }
         if clip_gain != 1.0 {
             sample[0] *= clip_gain;
@@ -1499,6 +1499,19 @@ impl Track {
         self.gain_envelope
             .as_ref()
             .map_or(self.mix, |envelope| envelope.mix_at(frame))
+    }
+    pub(crate) fn gain_touch_target_at(&self, frame: u64) -> Option<gain_envelope::TouchTarget> {
+        self.gain_envelope.as_ref()?.touch_target_at(frame)
+    }
+    pub(crate) fn base_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.base_value_at(frame))
+    }
+    pub(crate) fn read_gain_at(&self, frame: u64) -> Option<f32> {
+        self.gain_envelope
+            .as_ref()
+            .map(|envelope| envelope.value_at(frame))
     }
     pub fn mix(&self) -> PreparedTrackMix {
         self.mix

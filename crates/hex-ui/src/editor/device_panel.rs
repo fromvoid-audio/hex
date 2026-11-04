@@ -1461,11 +1461,11 @@ fn render_device_card_target(
                 _ => None,
             };
             let previous = payload.destination.get();
-            if let Some(target) = target.filter(|_| inside) {
-                if previous != Some(target) {
-                    payload.destination.set(Some(target));
-                    entity.update(cx, |_, cx| cx.notify());
-                }
+            if let Some(target) = target.filter(|_| inside)
+                && previous != Some(target)
+            {
+                payload.destination.set(Some(target));
+                entity.update(cx, |_, cx| cx.notify());
             }
         })
         .on_drop(

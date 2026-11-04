@@ -452,6 +452,18 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
             old_output_identity,
             target,
         } => format!("stage=output_relinquish output={old_output_identity} target={target:?}"),
+        E::OutputRebound {
+            project_generation,
+            output_identity,
+        } => {
+            format!("stage=output_rebound generation={project_generation} output={output_identity}")
+        }
+        E::OutputReleased {
+            project_generation,
+            old_output_identity,
+        } => format!(
+            "stage=output_released generation={project_generation} output={old_output_identity}"
+        ),
         E::OutputRouteChanged { output_identity } => {
             format!("stage=output_route_changed output={output_identity}")
         }

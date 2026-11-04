@@ -2713,10 +2713,10 @@ impl Callback {
     }
     #[cfg(all(test, feature = "allocation-probe"))]
     fn apply_candidate_action(&mut self, action: PlaybackAction) {
-        if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
-            if active.owner.test_apply_action(action).is_err() {
-                self.status.device_fault.store(true, Relaxed);
-            }
+        if let Some(ActivePublication::Candidate(active)) = self.active.as_mut()
+            && active.owner.test_apply_action(action).is_err()
+        {
+            self.status.device_fault.store(true, Relaxed);
         }
     }
     pub(crate) fn close_candidate_custody_on_control(&mut self) {
@@ -2910,19 +2910,19 @@ impl Callback {
                 ));
                 self.status.publication_pending.store(false, Release);
             }
-            if !self.retired.is_full() {
-                if let Some(publication) = self.deferred.take() {
-                    if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
-                        if cancellation.finish_for_shutdown() {
-                            self.reject_publication(
-                                publication.revision,
-                                PlaybackHandoffRejection::FreshRuntimeCancelled,
-                            );
-                        }
-                    }
-                    self.return_graph(publication);
-                    self.status.publication_pending.store(false, Release);
+            if !self.retired.is_full()
+                && let Some(publication) = self.deferred.take()
+            {
+                if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref()
+                    && cancellation.finish_for_shutdown()
+                {
+                    self.reject_publication(
+                        publication.revision,
+                        PlaybackHandoffRejection::FreshRuntimeCancelled,
+                    );
                 }
+                self.return_graph(publication);
+                self.status.publication_pending.store(false, Release);
             }
             if !self.retired.is_full() {
                 if let Some(mut active) = self
@@ -2938,46 +2938,46 @@ impl Callback {
                     self.return_graph(publication);
                 }
             }
-            if !self.retired.is_full() {
-                if let Ok(publication) = self.publications.pop() {
-                    let publication = match publication {
-                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        QueuedPublication::NativeEpoch { .. } => return,
-                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        QueuedPublication::Native(endpoint) => {
-                            self.return_publication(ReturnedPublication::Native(endpoint));
-                            return;
-                        }
-                        QueuedPublication::Domain(pages) => {
-                            self.return_publication(ReturnedPublication::Domain(pages));
-                            return;
-                        }
-                        QueuedPublication::Eligible(value) => {
-                            self.return_publication(ReturnedPublication::Eligible(
-                                value.reject_before_install(),
-                            ));
-                            self.status.publication_pending.store(false, Release);
-                            return;
-                        }
-                        QueuedPublication::Legacy(publication) => publication,
-                        QueuedPublication::Candidate(candidate) => {
-                            self.return_publication(ReturnedPublication::Candidate(
-                                candidate.reject_before_install(),
-                            ));
-                            return;
-                        }
-                    };
-                    if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref() {
-                        if cancellation.finish_for_shutdown() {
-                            self.reject_publication(
-                                publication.revision,
-                                PlaybackHandoffRejection::FreshRuntimeCancelled,
-                            );
-                        }
+            if !self.retired.is_full()
+                && let Ok(publication) = self.publications.pop()
+            {
+                let publication = match publication {
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    QueuedPublication::NativeEpoch { .. } => return,
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    QueuedPublication::Native(endpoint) => {
+                        self.return_publication(ReturnedPublication::Native(endpoint));
+                        return;
                     }
-                    self.return_graph(publication);
-                    self.status.publication_pending.store(false, Release);
+                    QueuedPublication::Domain(pages) => {
+                        self.return_publication(ReturnedPublication::Domain(pages));
+                        return;
+                    }
+                    QueuedPublication::Eligible(value) => {
+                        self.return_publication(ReturnedPublication::Eligible(
+                            value.reject_before_install(),
+                        ));
+                        self.status.publication_pending.store(false, Release);
+                        return;
+                    }
+                    QueuedPublication::Legacy(publication) => publication,
+                    QueuedPublication::Candidate(candidate) => {
+                        self.return_publication(ReturnedPublication::Candidate(
+                            candidate.reject_before_install(),
+                        ));
+                        return;
+                    }
+                };
+                if let Some(cancellation) = publication.fresh_runtime_cancellation.as_ref()
+                    && cancellation.finish_for_shutdown()
+                {
+                    self.reject_publication(
+                        publication.revision,
+                        PlaybackHandoffRejection::FreshRuntimeCancelled,
+                    );
                 }
+                self.return_graph(publication);
+                self.status.publication_pending.store(false, Release);
             }
             self.status.playing.store(false, Relaxed);
             if self.active.is_none()
@@ -3520,14 +3520,13 @@ impl Callback {
                         .as_mut()
                         .and_then(ActivePublication::stream_view)
                     {
-                        if let Some(mut successor) = next.stream_view() {
-                            if let Some(ticket) =
+                        if let Some(mut successor) = next.stream_view()
+                            && let Some(ticket) =
                                 successor.inherit_schedule_observation(&mut previous)
-                            {
-                                self.status
-                                    .stream_invalidated_schedule
-                                    .store(ticket, Release);
-                            }
+                        {
+                            self.status
+                                .stream_invalidated_schedule
+                                .store(ticket, Release);
                         }
                         previous.clear_stream_roles(&mut self.domain_pages);
                     }
@@ -4894,22 +4893,24 @@ impl Callback {
                 loop_pass,
             })
         });
-        if let Some(mut active) = active {
+        if let Some(mut active) = active
+            && active.playback.set_gain_recording_input(live).is_err()
+        {
             active.playback.clear_gain_recording_override();
-            if let Some((track, gain)) = live {
-                if active
-                    .playback
-                    .set_gain_recording_override(track, gain)
-                    .is_err()
-                {
-                    self.gain_recording.abort(AbortReason::SourceChanged);
-                }
-            }
+            self.gain_recording.abort(AbortReason::SourceChanged);
         }
     }
     /// Confirm the exact converted output quantum; this is sink delivery, not
     /// physical loudspeaker playback. Failure discards the entire pending take.
     pub fn finish_gain_recording_quantum(&mut self, output_valid: bool) {
+        if !output_valid
+            && let Some(mut active) = self
+                .active
+                .as_mut()
+                .and_then(ActivePublication::current_mut)
+        {
+            active.playback.clear_gain_recording_override();
+        }
         let end = self
             .active
             .as_ref()
