@@ -17,6 +17,7 @@ pub(crate) fn isolated(
     project: &Project,
     target: &BounceTarget,
     item: &BounceTrack,
+    in_place: bool,
 ) -> Result<Project, String> {
     let mut snapshot = project.snapshot();
     let selected_track_id = item.track.value();
@@ -113,8 +114,12 @@ pub(crate) fn isolated(
             );
         }
 
-        let retain_contributors =
-            !console_source && selected_is_receiver && selected_source_instrument_id.is_some();
+        // A non-in-place clip bounce prints only the selected contributor's
+        // input to the shared runtime, not the other tracks' mixed signal.
+        let retain_contributors = !console_source
+            && selected_is_receiver
+            && selected_source_instrument_id.is_some()
+            && (in_place || !matches!(target, BounceTarget::Clips(_)));
         snapshot.tracks.retain(|track| {
             track.id == selected_track_id
                 || (retain_contributors
@@ -318,7 +323,7 @@ impl Session {
                 {
                     return Err("bounce exceeds resident frame limit".into());
                 }
-                let source = isolated(self.project(), &target, item)?;
+                let source = isolated(self.project(), &target, item, in_place)?;
                 let revision = prepare(
                     self,
                     &source,
