@@ -626,6 +626,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::InsertDefaultTrack { before_track } => {
             describe!("insert_default_track"; ["before_track" => before_track.map(|id| id.value())]; omitted="")
         }
+        Command::InsertDefaultTrackWithGain { before_track, gain } => {
+            describe!("insert_default_track_with_gain"; ["before_track" => before_track.map(|id| id.value()), "gain" => gain]; omitted="")
+        }
         Command::InsertTrack { name, before_track } => {
             describe!("insert_track"; ["name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value())]; omitted="")
         }
