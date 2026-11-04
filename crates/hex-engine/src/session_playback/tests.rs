@@ -8545,6 +8545,91 @@ fn gain_only_handoff_preserves_route_clock_and_active_audio() {
 }
 
 #[test]
+fn track_gain_handoff_ramps_midi_before_summing() {
+    let registry = hex_devices::native_instrument_registry().unwrap();
+    let original = project(0.5, 0, 8 << 32);
+    let mut old = ordinary_mutable_playback(&original, &registry);
+    let mut reference = ordinary_mutable_playback(&original, &registry);
+    for playback in [&mut old, &mut reference] {
+        playback
+            .apply(SessionPlaybackCommand::LaunchClip {
+                clip: playback.revision.session().midi_clips()[0].id,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut [[0.0; 2]; 64]).unwrap();
+    }
+    let changed = project(0.75, 0, 8 << 32);
+    let mut next = ordinary_mutable_playback(&changed, &registry);
+    let source = old.revision.source_routing().source(0).unwrap();
+    assert!(
+        old.revision
+            .retained_source_configuration_matches(&next.revision, source)
+    );
+    next.try_inherit_state_from(&mut old).unwrap();
+    assert!(!next.releases.is_empty());
+    assert!(next.releases.iter().all(|release| {
+        release.location.tail_group().is_none()
+            && release
+                .source_origin
+                .is_some_and(|origin| origin.follows_current_configuration)
+    }));
+    assert!(next.track_faders[0].active(), "fader was not retargeted");
+    let mut actual = [[0.0; 2]; 256];
+    let mut expected = [[0.0; 2]; 256];
+    next.render(&mut actual).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert!(!next.track_faders[0].active(), "fader did not advance");
+    let duration = next.revision.arrangement().sample_rate().div_ceil(200) as usize;
+    for (index, (actual, reference)) in actual.iter().zip(expected).enumerate() {
+        let gain_ratio = 1.0 + 0.5 * ((index + 1).min(duration) as f32 / duration as f32);
+        for channel in 0..2 {
+            assert!(
+                (actual[channel] - reference[channel] * gain_ratio).abs() < 1e-5,
+                "frame {index} channel {channel}: actual {actual:?}, reference {reference:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn paused_keyboard_monitor_uses_the_track_fader_ramp() {
+    let project = project(1.0, 0, 8 << 32);
+    let revision = revision(&project, Arc::new(hex_devices::SineTable::new()));
+    let mut actual = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut reference = SessionPlayback::new(revision).unwrap();
+    for runtime in [&mut actual, &mut reference] {
+        let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        runtime.computer_keyboard = Some(Box::new(
+            crate::computer_keyboard::ComputerKeyboardRuntime::prepare(
+                &project,
+                project.tracks()[0].id(),
+                input,
+            )
+            .unwrap(),
+        ));
+        runtime.render(&mut [[0.0; 2]; 128]).unwrap();
+    }
+    actual.track_faders[0].retarget([0.0; 2], 48000);
+    let mut output = [[0.0; 2]; 256];
+    let mut expected = output;
+    actual.render(&mut output).unwrap();
+    reference.render(&mut expected).unwrap();
+    assert!(expected.iter().flatten().any(|sample| *sample != 0.0));
+    for (index, (output, expected)) in output.iter().zip(expected).enumerate() {
+        let gain = 1.0 - (index + 1).min(240) as f32 / 240.0;
+        for channel in 0..2 {
+            assert!(
+                (output[channel] - expected[channel] * gain).abs() < 1e-5,
+                "frame {index} channel {channel}: {output:?} vs {expected:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn carried_voice_audio_is_partition_invariant_after_tempo_handoff() {
     let table = Arc::new(hex_devices::SineTable::new());
     let original = project(0.5, 0, 8 << 32);

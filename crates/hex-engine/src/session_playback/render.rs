@@ -553,6 +553,8 @@ impl SessionPlayback {
                 .flatten()
                 .any(|tail| tail.output_active && tail.return_id().is_some());
         let ordinary_monitor = !self.playing && !main_tails_only;
+        let track_count = self.routes.len();
+        self.track_fader_scratch[..track_count].copy_from_slice(&self.track_faders[..track_count]);
         let result = if self.playing {
             self.render_playing(output, pages, &mut observer, &mut capture, sources, foreign)
         } else if main_tails_only {
@@ -612,6 +614,8 @@ impl SessionPlayback {
                     return Err(SessionPlaybackError::DeviceRuntime);
                 }
             }
+            self.track_faders[..track_count]
+                .copy_from_slice(&self.track_fader_scratch[..track_count]);
             if ordinary_monitor {
                 // Main-only draining never staged these source/tail buffers.
                 std::mem::swap(&mut self.releases, &mut self.release_scratch);
@@ -1304,14 +1308,19 @@ impl SessionPlayback {
                     .iter()
                     .any(|k| k.track() == self.route_scratch[index].id);
             let shared_source = revision.source_routing().is_shared(index);
+            let smoothing = self.track_fader_scratch[index].active()
+                && !track.has_gain_automation()
+                && recording_override.is_none();
             let buffered = shared_source
                 || live_target
                 || stateful_effects
                 || mutable_active
                 || !track.sends().is_empty()
                 || track.has_gain_automation()
+                || smoothing
                 || self.device_metering;
-            let ordered = shared_source || live_target || track.requires_ordered_processing();
+            let ordered =
+                shared_source || live_target || smoothing || track.requires_ordered_processing();
             let already_mixed = self.device_metering
                 && !ordered
                 && !stateful_effects
@@ -1370,7 +1379,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
-                            raw: live_target || shared_source,
+                            raw: live_target || shared_source || smoothing,
                             loop_fade,
                             timing: &timing,
                             table,
@@ -1433,7 +1442,7 @@ impl SessionPlayback {
                             suppressions: &self.suppression_scratch,
                             continuations: &self.analytic_continuations,
                             index,
-                            raw: live_target || shared_source,
+                            raw: live_target || shared_source || smoothing,
                             loop_fade,
                             timing: &timing,
                             table,
@@ -1679,6 +1688,18 @@ impl SessionPlayback {
                         )
                     } else {
                         track.mix()
+                    };
+                    let mix = if recording_override.is_some() {
+                        let fader = &mut self.track_fader_scratch[index];
+                        fader.retarget(mix.channel_gain(), revision.arrangement().sample_rate());
+                        mix.with_channel_gain(fader.next())
+                    } else if track.has_gain_automation() {
+                        self.track_fader_scratch[index].follow(mix.channel_gain());
+                        mix
+                    } else if smoothing {
+                        mix.with_channel_gain(self.track_fader_scratch[index].next())
+                    } else {
+                        mix
                     };
                     let mix = if live_target {
                         mix.without_effects()

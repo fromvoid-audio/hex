@@ -28,6 +28,7 @@ use std::{fmt, sync::Arc};
 mod candidate_storage;
 mod midi_capture;
 mod mutable_checkpoint;
+mod track_fader;
 mod transport_loop_admission;
 pub use mutable_checkpoint::{
     MAX_MUTABLE_RUNTIME_CHECKPOINT_STORE_BYTES, MAX_MUTABLE_RUNTIME_CHECKPOINTS,
@@ -492,6 +493,8 @@ pub struct SessionPlayback {
     stream_miss_fades: crate::StreamMissFades,
     routes: Vec<TrackRoute>,
     route_scratch: Vec<TrackRoute>,
+    track_faders: [track_fader::TrackFader; MAX_TRACKS],
+    track_fader_scratch: [track_fader::TrackFader; MAX_TRACKS],
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
     main_chain: hex_lattice::NativeRuntimeChain,
@@ -887,6 +890,8 @@ impl SessionPlayback {
             source_voice_envelopes: _,
             routes: _,
             route_scratch: _,
+            track_faders: _,
+            track_fader_scratch: _,
             device_chains,
             return_chains,
             main_chain,
@@ -1964,6 +1969,10 @@ impl SessionPlayback {
             }
         }
         let stream_miss_fades = crate::StreamMissFades::new(revision.arrangement().sample_rate());
+        let mut track_faders = [track_fader::TrackFader::new([1.0; 2]); MAX_TRACKS];
+        for (fader, track) in track_faders.iter_mut().zip(arrangement_tracks) {
+            *fader = track_fader::TrackFader::new(track.mix_at(0).channel_gain());
+        }
         Ok(Self {
             live_expression: None,
             computer_keyboard: None,
@@ -1988,6 +1997,8 @@ impl SessionPlayback {
             stream_miss_fades,
             routes,
             route_scratch,
+            track_faders,
+            track_fader_scratch: track_faders,
             device_chains,
             return_chains,
             main_chain,

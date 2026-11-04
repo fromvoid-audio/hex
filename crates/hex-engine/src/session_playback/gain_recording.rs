@@ -156,9 +156,22 @@ mod tests {
         runtime
             .render_with_capture(&mut main, &mut capture)
             .unwrap();
-        assert_eq!(capture.output(0).unwrap(), [[0.1, -0.4]; 8]);
-        assert_eq!(capture.output(1).unwrap(), [[0.05, -0.2]; 8]);
-        assert_eq!(main, [[0.1 + 0.05, -0.4 - 0.2]; 8]);
+        for (index, ((track, returned), main)) in capture
+            .output(0)
+            .unwrap()
+            .iter()
+            .zip(capture.output(1).unwrap())
+            .zip(main)
+            .enumerate()
+        {
+            let progress = (index + 1) as f32 / 240.0;
+            for channel in 0..2 {
+                let target = [0.1, -0.4][channel] * progress;
+                assert!((track[channel] - target).abs() < 1e-6);
+                assert!((returned[channel] - target * 0.5).abs() < 1e-6);
+                assert!((main[channel] - target * 1.5).abs() < 1e-6);
+            }
+        }
     }
     #[test]
     fn group_gain_override_changes_only_its_submix_path() {
@@ -218,7 +231,11 @@ mod tests {
             .unwrap();
         let mut output = [[0.0; 2]; 8];
         runtime.render(&mut output).unwrap();
-        assert_eq!(output, [[0.25, -0.5]; 8]); // 0.5 submix + independent 0.5 send.
+        for (index, frame) in output.iter().enumerate() {
+            let progress = (index + 1) as f32 / 240.0;
+            assert!((frame[0] - (0.375 - 0.125 * progress)).abs() < 1e-6);
+            assert!((frame[1] - (-0.75 + 0.25 * progress)).abs() < 1e-6);
+        }
         assert_eq!(runtime.gain_recording_clock(group.value()), Some((8, 0, 0)));
     }
     #[test]

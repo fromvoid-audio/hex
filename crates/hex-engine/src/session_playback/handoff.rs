@@ -4427,6 +4427,24 @@ impl SessionPlayback {
                 }
             }
         }
+        for (index, route) in self.route_scratch.iter().enumerate() {
+            let old_index = previous
+                .routes
+                .get(index)
+                .filter(|old| old.id == route.id)
+                .map(|_| index)
+                .or_else(|| previous.routes.iter().position(|old| old.id == route.id));
+            if let Some(old_index) = old_index {
+                self.track_faders[index] = previous.track_faders[old_index];
+                let track = &self.revision.arrangement().tracks()[index];
+                if !track.has_gain_automation() {
+                    self.track_faders[index].retarget(
+                        track.mix().channel_gain(),
+                        self.revision.arrangement().sample_rate(),
+                    );
+                }
+            }
+        }
         std::mem::swap(&mut self.routes, &mut self.route_scratch);
         self.analytic_continuations
             .copy_from_slice(&self.analytic_continuation_scratch);

@@ -627,9 +627,25 @@ impl SessionPlayback {
                     let override_gain = self
                         .gain_recording_override
                         .filter(|_| self.revision.gain_recording_track() == Some(route.id));
-                    let mixed = compensation
-                        .fader(track, index, override_gain, processed)
-                        .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    let mix = compensation.fader_mix(track, index, override_gain);
+                    let mixed = if let Some(mix) = mix {
+                        let fader = &mut self.track_fader_scratch[index];
+                        let mix = if override_gain.is_some() {
+                            fader.retarget(
+                                mix.channel_gain(),
+                                self.revision.arrangement().sample_rate(),
+                            );
+                            mix.with_channel_gain(fader.next())
+                        } else if track.has_gain_automation() {
+                            fader.follow(mix.channel_gain());
+                            mix
+                        } else {
+                            mix.with_channel_gain(fader.next())
+                        };
+                        mix.apply_frame(processed)
+                    } else {
+                        [0.0; 2]
+                    };
                     // Retired tails retain their old post-fader output; they do
                     // not re-enter current authored sends or feeds.
                     let routed = if let Some(detached) = detached.as_ref() {
