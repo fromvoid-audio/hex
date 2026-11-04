@@ -259,7 +259,7 @@ fn stamp(index: usize) -> TransportStamp {
     TransportStamp {
         tempo_micro_bpm: Some(123_000_000),
         performance_frame: index as u64,
-        transport_is_running: index % 3 != 0,
+        transport_is_running: !index.is_multiple_of(3),
         arrangement_frame: (index % 4) as u64,
         loop_pass: (index / 4) as u64,
         performance_beat_raw: (index as u64) << 30,
