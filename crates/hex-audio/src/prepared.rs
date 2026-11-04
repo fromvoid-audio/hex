@@ -653,6 +653,12 @@ impl Default for Status {
 }
 
 impl Status {
+    /// Snapshot of the publication reservation, not a guarantee that admission will succeed:
+    /// other actors may own admission, and the state can change immediately after this read.
+    pub fn publication_in_flight(&self) -> bool {
+        self.publication_pending.load(Acquire)
+    }
+
     #[cfg(feature = "allocation-probe")]
     pub(crate) fn headless_shutdown_requested(&self) -> bool {
         self.closing.load(Acquire)
