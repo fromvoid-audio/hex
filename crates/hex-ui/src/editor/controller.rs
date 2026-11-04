@@ -342,6 +342,40 @@ impl EditorView {
         self.audio_admission.reset_audio();
     }
 
+    /// Whether the current endpoint may stay open across a project replacement
+    /// until the worker reports `OutputRebound` or `OutputReleased`. Only an
+    /// idle Resident endpoint qualifies; anything else retires as before.
+    fn hold_audio_across_replacement(&self, next_generation: u64) -> bool {
+        self.audio.as_ref().is_some_and(|audio| {
+            audio.mode == hex_session::DocumentAudioMode::Resident
+                && audio.control.output_identity().is_some()
+                && audio.control.status().is_some()
+        }) && !self.gain_recorder.busy()
+            && self.pending_audio_result.as_ref().is_none_or(|pending| {
+                matches!(pending, PendingEditorAudioResult::Rebound { .. })
+                    || pending.project_generation() < next_generation
+            })
+    }
+
+    /// Keep the held endpoint for the current generation when the worker kept
+    /// that exact output; otherwise request a fresh one.
+    fn apply_output_rebound(&mut self, output_identity: u64) {
+        if self
+            .audio
+            .as_ref()
+            .and_then(|a| a.control.output_identity())
+            == Some(output_identity)
+        {
+            self.status = "audio ready".into();
+            self.reconcile_publication_observation();
+            return;
+        }
+        // The kept output has no live client here (it was already closed), so
+        // retire anything stale and reopen through the ordinary restart.
+        self.retire_audio_preserving_gain_take();
+        self.restart_audio_for_current_document();
+    }
+
     fn retain_future_audio_result(&mut self, result: PendingEditorAudioResult) {
         let slot_generation = self
             .pending_audio_result
@@ -697,6 +731,19 @@ impl EditorView {
                     old_output_identity,
                     target,
                 } => {
+                    if target.project_generation > self.project_generation
+                        && self
+                            .audio
+                            .as_ref()
+                            .and_then(|a| a.control.output_identity())
+                            == Some(old_output_identity)
+                    {
+                        // A replacement not yet installed here retires this
+                        // output; close it now so the fresh open can proceed.
+                        self.retire_audio_preserving_gain_take();
+                        changed = true;
+                        continue;
+                    }
                     if !relinquish_client_matches(
                         self.project_generation,
                         self.state.as_ref().map(|s| s.revision),
@@ -805,6 +852,45 @@ impl EditorView {
                     }
                     self.reconcile_publication_observation();
                     changed = true;
+                }
+                crate::EditorAudioEvent::OutputRebound {
+                    project_generation,
+                    output_identity,
+                } => {
+                    match audio_event_disposition(
+                        self.project_generation,
+                        self.pending_restart_request,
+                        project_generation,
+                        None,
+                    ) {
+                        AudioEventDisposition::Ignore => continue,
+                        AudioEventDisposition::Future => {
+                            // Keep the held endpoint; apply with the replacement.
+                            self.retain_future_audio_result(PendingEditorAudioResult::Rebound {
+                                project_generation,
+                                output_identity,
+                            });
+                            continue;
+                        }
+                        AudioEventDisposition::Current => {}
+                    }
+                    self.apply_output_rebound(output_identity);
+                    changed = true;
+                }
+                crate::EditorAudioEvent::OutputReleased {
+                    project_generation: _,
+                    old_output_identity,
+                } => {
+                    if self
+                        .audio
+                        .as_ref()
+                        .and_then(|a| a.control.output_identity())
+                        == Some(old_output_identity)
+                    {
+                        self.retire_audio_preserving_gain_take();
+                        self.status = "preparing audio output".into();
+                        changed = true;
+                    }
                 }
                 crate::EditorAudioEvent::Unavailable {
                     project_generation,
@@ -2173,8 +2259,12 @@ impl EditorView {
             self.retire_first_sampler_load();
             self.cancel_open_after_save();
             self.invalidate_prepared_seek();
-            self.retire_audio_preserving_gain_take();
             let next_generation = self.project_generation.saturating_add(1);
+            // A held endpoint stays open until the worker names the outcome
+            // (`OutputRebound`/`OutputReleased`) or a fresh result replaces it.
+            if !self.hold_audio_across_replacement(next_generation) {
+                self.retire_audio_preserving_gain_take();
+            }
             if self
                 .pending_audio_result
                 .as_ref()
@@ -2551,6 +2641,12 @@ impl EditorView {
                         self.status = message.clone();
                         self.error = Some(message.into());
                         self.pending_restart_request = None;
+                    }
+                    PendingEditorAudioResult::Rebound {
+                        project_generation,
+                        output_identity,
+                    } if project_generation == self.project_generation => {
+                        self.apply_output_rebound(output_identity);
                     }
                     result => result.close(),
                 }

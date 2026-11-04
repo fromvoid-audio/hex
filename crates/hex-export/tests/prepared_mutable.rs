@@ -287,7 +287,7 @@ impl MutableInstrumentRuntime for Runtime {
                 sum + level
             });
             let noise = if self.noise_floor {
-                if self.rendered_frames % 2 == 0 {
+                if self.rendered_frames.is_multiple_of(2) {
                     1e-5
                 } else {
                     -1e-5
