@@ -611,6 +611,124 @@ mod retained_source_batch_tests {
             assert_eq!(editor.project().track(receiver).unwrap().name(), "renamed");
         }
     }
+
+    fn add_peer(editor: &mut Editor, source: crate::SourceId) -> crate::TrackId {
+        let Created::Track(peer) = editor
+            .execute(Command::AddMidiTrack {
+                name: "peer".into(),
+            })
+            .unwrap()
+        else {
+            panic!("peer")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: peer,
+                source: Some(source),
+            })
+            .unwrap();
+        peer
+    }
+
+    fn group(editor: &mut Editor, tracks: &[crate::TrackId]) -> crate::TrackId {
+        let Created::Track(group) = editor
+            .execute(Command::GroupTracks {
+                tracks: crate::TrackSelectionIds::new(tracks).unwrap(),
+                name: "group".into(),
+            })
+            .unwrap()
+        else {
+            panic!("group")
+        };
+        group
+    }
+
+    #[test]
+    fn deleting_retained_receiver_cannot_strand_surviving_source_peers() {
+        for mode in 0..3 {
+            let (mut editor, receiver, source) = editor_with_receiver(true);
+            let peer = add_peer(&mut editor, source);
+            let target = if mode == 2 {
+                let inner = group(&mut editor, &[receiver]);
+                group(&mut editor, &[inner])
+            } else {
+                receiver
+            };
+            editor
+                .execute(Command::RenameTrack {
+                    track: peer,
+                    name: "changed".into(),
+                })
+                .unwrap();
+            assert!(editor.undo());
+            let before = editor.project().snapshot();
+            let undo = editor.can_undo();
+            let mut prepared = false;
+            let result = if mode == 1 {
+                editor
+                    .execute_many_prepared(vec![Command::RemoveTrack(target)], |_, _| {
+                        prepared = true;
+                        Ok::<(), Invalid>(())
+                    })
+                    .map(|_| ())
+            } else {
+                editor
+                    .execute_prepared(Command::RemoveTrack(target), |_| {
+                        prepared = true;
+                        Ok::<(), Invalid>(())
+                    })
+                    .map(|_| ())
+            };
+            assert!(result.is_err());
+            assert!(!prepared);
+            assert_eq!(editor.project().snapshot(), before);
+            assert_eq!(editor.can_undo(), undo);
+            assert!(editor.redo());
+            assert_eq!(editor.project().track(peer).unwrap().name(), "changed");
+        }
+    }
+
+    #[test]
+    fn retained_receiver_and_all_peers_can_be_deleted_together_and_undone() {
+        for grouped in [false, true] {
+            let (mut editor, receiver, source) = editor_with_receiver(true);
+            let peer = add_peer(&mut editor, source);
+            let group = grouped.then(|| {
+                let inner = group(&mut editor, &[receiver, peer]);
+                group(&mut editor, &[inner])
+            });
+            let before = editor.project().snapshot();
+            let command = match group {
+                Some(group) => Command::RemoveTrack(group),
+                None => Command::RemoveTracks(vec![receiver, peer]),
+            };
+            editor.execute(command).unwrap();
+            assert!(editor.project().track(receiver).is_none());
+            assert!(editor.project().track(peer).is_none());
+            assert_eq!(
+                editor.project().native_source(source).unwrap().receiver(),
+                None
+            );
+            assert!(editor.undo());
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(editor.redo());
+            assert!(editor.project().track(receiver).is_none());
+        }
+        let (mut editor, receiver, source) = editor_with_receiver(true);
+        editor.execute(Command::RemoveTrack(receiver)).unwrap();
+        assert_eq!(
+            editor.project().native_source(source).unwrap().receiver(),
+            None
+        );
+        let (mut ordinary, receiver, source) = editor_with_receiver(false);
+        let peer = add_peer(&mut ordinary, source);
+        ordinary.execute(Command::RemoveTrack(receiver)).unwrap();
+        assert!(ordinary.project().track(peer).is_some());
+        assert_eq!(
+            ordinary.project().native_source(source).unwrap().receiver(),
+            None
+        );
+    }
 }
 
 #[cfg(test)]
