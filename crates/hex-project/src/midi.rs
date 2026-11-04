@@ -599,6 +599,24 @@ pub(crate) fn validate_source_boundary(
     Ok(())
 }
 
+/// Bounded preflight shared with the history proof and sampler no-op gate.
+pub(crate) fn extended_update_source_length(
+    current: BeatTime,
+    updates: &[MidiNoteUpdate],
+) -> Result<BeatTime, Invalid> {
+    if updates.is_empty() || updates.len() > MAX_NOTES {
+        return Err(Invalid("invalid midi update batch size"));
+    }
+    updates.iter().try_fold(current, |length, update| {
+        let end = update
+            .start
+            .raw()
+            .checked_add(update.duration.raw())
+            .ok_or(Invalid("midi note end overflow"))?;
+        Ok(BeatTime::from_raw(length.raw().max(end)))
+    })
+}
+
 pub(crate) fn validate_note(
     start: BeatTime,
     duration: BeatTime,
@@ -630,6 +648,7 @@ pub(crate) fn validate_note(
 }
 
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, Invalid> {
+    let grow_source = matches!(&command, Command::UpdateMidiNotesWithSourceExtent { .. });
     match command {
         Command::ResizeMidiClipView { clip, operation } => {
             crate::midi_loop_resize::apply(project, clip, operation)
@@ -1018,16 +1037,22 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 },
             )
         }
-        Command::UpdateMidiNotes { clip, notes } => {
+        Command::UpdateMidiNotes { clip, notes }
+        | Command::UpdateMidiNotesWithSourceExtent { clip, notes } => {
             let target = project
                 .midi_source(clip)
                 .ok_or(Invalid("midi clip no longer exists"))?;
+            let source_length = if grow_source {
+                extended_update_source_length(target.source_length(), &notes)?
+            } else {
+                target.source_length()
+            };
             let indices = note_indices(target, notes.iter().map(|update| update.note))?;
             for update in &notes {
                 validate_note(
                     update.start,
                     update.duration,
-                    target.source_length,
+                    source_length,
                     update.pitch,
                     update.channel,
                     update.velocity,
@@ -1061,6 +1086,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 *retained = *gate;
             }
             let target = project.midi_source_mut(clip)?;
+            target.source_length = source_length;
             for (index, update) in indices.into_iter().zip(notes) {
                 let note = target
                     .notes

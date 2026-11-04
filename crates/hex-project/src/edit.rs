@@ -1145,6 +1145,13 @@ pub enum Command {
         clip: ClipId,
         notes: Vec<MidiNoteUpdate>,
     },
+    /// Update stable note identities, growing only the source extent to their
+    /// requested ends. Arrangement placement and playback/loop markers stay
+    /// fixed; ordinary UpdateMidiNotes retains its strict source boundary.
+    UpdateMidiNotesWithSourceExtent {
+        clip: ClipId,
+        notes: Vec<MidiNoteUpdate>,
+    },
     /// Atomically enable or disable existing notes without changing their geometry.
     SetMidiNotesActive {
         clip: ClipId,
@@ -2153,6 +2160,7 @@ impl Project {
             | Command::DuplicateMidiSourceRange { .. }
             | Command::UpdateMidiNote { .. }
             | Command::UpdateMidiNotes { .. }
+            | Command::UpdateMidiNotesWithSourceExtent { .. }
             | Command::SetMidiNotesActive { .. }
             | Command::RemoveMidiNote(_)
             | Command::RemoveMidiNotes { .. }
