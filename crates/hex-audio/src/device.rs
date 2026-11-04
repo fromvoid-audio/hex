@@ -1141,7 +1141,9 @@ mod tests {
             FIRST_WRITTEN as u64,
             Instant::now()
         ));
-        assert_eq!(output[..2], [0.2, -0.4]);
+        let first_gain = 1.0 - 0.2 / 240.0;
+        assert!((output[0] - 0.25 * first_gain).abs() < 1e-6);
+        assert!((output[1] + 0.5 * first_gain).abs() < 1e-6);
         assert_eq!(
             control.gain_recording.try_receipt(),
             Some(Receipt::Applied {

@@ -1615,11 +1615,20 @@ impl EditorView {
                 cx.notify();
                 return;
             };
+            let gain = match self.track_defaults.captured_gain() {
+                Ok(gain) => gain,
+                Err(error) => {
+                    self.error = Some(error.into());
+                    cx.notify();
+                    return;
+                }
+            };
             self.enqueue(Request::InsertBrowserInstrumentTrack {
                 project_generation: self.project_generation,
                 revision: state.revision,
                 class: hex_engine::NativeDeviceClass::Instrument,
                 type_id,
+                new_track_gain: Some(gain),
             });
             cx.notify();
             return;
@@ -2681,7 +2690,7 @@ impl EditorView {
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |view, _, window, cx| {
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
                     let Some(current) =
                         view.browser_history_index(&BrowserItemKey::Device(class, type_id), cx)
                     else {
@@ -2692,6 +2701,24 @@ impl EditorView {
                     view.browser.results_focused = true;
                     view.browser.results_focus.focus(window);
                     window.prevent_default();
+                    if event.click_count == 2 {
+                        let request = view
+                            .selected_track
+                            .ok_or("select a track before adding a device")
+                            .and_then(|track| {
+                                view.browser_device_append_request(track, class, type_id, cx)
+                            });
+                        match request {
+                            Ok(request) => {
+                                if view.enqueue_device_barrier(request) {
+                                    view.error = None;
+                                    view.status = "adding device to track".into();
+                                }
+                            }
+                            Err(reason) => view.error = Some(reason.into()),
+                        }
+                        cx.stop_propagation();
+                    }
                     cx.notify();
                 }),
             )

@@ -20,6 +20,13 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::compile::{PreparedAudioSourceRef, resolve_prepared, resolve_resident};
 
+fn requires_shared_source_admission(
+    receiver: Option<TrackId>,
+    contributors: impl IntoIterator<Item = TrackId>,
+) -> bool {
+    receiver.is_some_and(|receiver| contributors.into_iter().any(|track| track != receiver))
+}
+
 struct PreparedTrackInstrumentConfig {
     track: TrackId,
     config: Option<Arc<dyn PreparedNativeInstrument>>,
@@ -1161,7 +1168,12 @@ impl PreparedSessionInventory {
             .iter()
             .filter(|source| source.receiver().is_some())
         {
-            if project.source_contributors(source.id()).count() < 2 {
+            if !requires_shared_source_admission(
+                source.receiver(),
+                project
+                    .source_contributors(source.id())
+                    .map(|track| track.id()),
+            ) {
                 continue;
             }
             let mut source_work = SessionWorkEnvelope::default();
@@ -1517,7 +1529,12 @@ impl PreparedSessionInventory {
             .iter()
             .filter(|source| source.receiver().is_some() && !source.instrument().bypassed())
         {
-            if canonical.source_contributors(source.id()).count() < 2 {
+            if !requires_shared_source_admission(
+                source.receiver(),
+                canonical
+                    .source_contributors(source.id())
+                    .map(|track| track.id()),
+            ) {
                 continue;
             }
             let limits = self
@@ -1831,6 +1848,27 @@ mod tests {
                 velocity: 100,
             })
             .expect("add MIDI note");
+    }
+
+    #[test]
+    fn remote_single_contributor_requires_shared_source_admission() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let receiver = add_track(&mut editor, "receiver");
+        let contributor = add_track(&mut editor, "contributor");
+        assert!(!requires_shared_source_admission(Some(receiver), []));
+        assert!(!requires_shared_source_admission(
+            Some(receiver),
+            [receiver]
+        ));
+        assert!(requires_shared_source_admission(
+            Some(receiver),
+            [contributor]
+        ));
+        assert!(requires_shared_source_admission(
+            Some(receiver),
+            [receiver, contributor]
+        ));
+        assert!(!requires_shared_source_admission(None, [contributor]));
     }
 
     #[test]

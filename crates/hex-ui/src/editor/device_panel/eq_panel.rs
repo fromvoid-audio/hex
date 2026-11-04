@@ -1134,7 +1134,9 @@ fn handle_event(
     let (selected, bank) = (panel.selected, panel.bank);
     let group = panel.group.clone();
     if event.phase == ResponseGraphPhase::Remove {
-        if panel.creation.is_some() || current(view, device).as_ref() != Some(&panel.authored_state)
+        if view.selection_delete_blocked()
+            || panel.creation.is_some()
+            || current(view, device).as_ref() != Some(&panel.authored_state)
         {
             return;
         }

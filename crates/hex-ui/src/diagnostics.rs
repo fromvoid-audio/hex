@@ -3,8 +3,10 @@
 //! Coverage: existing action handlers (no new dispatch listeners), pre-dispatch
 //! editor keys including consumed shortcuts, root pointer down/up, and changes
 //! observed at the existing 16 ms poll in track/clip/scene selection, mode,
-//! viewport and browser query length. Semantic widget edits use exhaustive
-//! session request/command projections; transport attempts retain actual tickets.
+//! viewport and browser query length. Loop refusals record bounded gate names
+//! and section pointer captures record release/cancellation outcomes. Semantic
+//! widget edits use exhaustive session request/command projections; transport
+//! attempts retain actual tickets.
 //! This is a causal aid, not lossless input replay: intermediate view states,
 //! pointer moves/scroll deltas, OS file dialogs, text contents, and deferred-work
 //! UI parents are not captured. Unknown parents remain None. Callback application
@@ -200,6 +202,47 @@ pub(crate) fn record_group_selection(cx: &App, route: &str) {
             Level::Debug,
             Category::Ui,
             &format!("action_diag v=1 stage=group_selection {route}"),
+        );
+    }
+}
+
+/// One bounded control-side record per refused loop action; labels are static
+/// and contain no project names, paths, or user-entered text.
+pub(crate) fn record_loop_refusal(
+    cx: &App,
+    gates: &[(&'static str, bool)],
+    section_view_blocked: bool,
+    worker_pending: usize,
+    queued_pending: usize,
+    section_pending: bool,
+    stopped_edit_pending: bool,
+) {
+    if let Some(diagnostics) = cx.try_global::<SessionDiagnostics>()
+        && let (Ok(handle), Some(observer)) = (&diagnostics.handle, &diagnostics.action_observer)
+    {
+        let active = gates
+            .iter()
+            .filter_map(|(name, active)| active.then_some(*name))
+            .collect::<Vec<_>>()
+            .join(",");
+        let _ = handle.record_typed(Level::Debug, Category::Ui, &format!(
+            "action_diag v=1 stage=loop_refused gates={active} section_view_blocked={section_view_blocked} worker_pending={worker_pending} queued_pending={queued_pending} section_pending={section_pending} stopped_edit_pending={stopped_edit_pending} ui_action_id={:?}",
+            observer.current_ui_action()
+        ));
+    }
+}
+
+/// Capture terminal events omit pointer coordinates and source data.
+pub(crate) fn record_section_capture(cx: &App, outcome: &'static str) {
+    if let Some(Ok(handle)) = cx
+        .try_global::<SessionDiagnostics>()
+        .filter(|d| d.action_observer.is_some())
+        .map(|d| &d.handle)
+    {
+        let _ = handle.record_typed(
+            Level::Debug,
+            Category::Ui,
+            &format!("action_diag v=1 stage=section_capture outcome={outcome}"),
         );
     }
 }
@@ -534,6 +577,42 @@ pub(crate) fn record_state(cx: &mut App, status: &str, error: Option<&str>) -> O
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn loop_and_capture_diagnostics_respect_configuration_and_report_active_gates(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory =
+            std::env::temp_dir().join(format!("hex-ui-loop-gate-test-{}", std::process::id()));
+        let mut log = hex_diagnostics::SessionLog::start(directory).unwrap();
+        cx.update(|cx| {
+            install_session_log(cx, Ok(log.handle()));
+            install_action_diagnostics(cx, false);
+            record_loop_refusal(cx, &[("disabled", true)], false, 0, 0, false, false);
+            record_section_capture(cx, "disabled");
+            install_action_diagnostics(cx, true);
+            record_loop_refusal(
+                cx,
+                &[
+                    ("section_held", true),
+                    ("scrub", false),
+                    ("edit_pending", true),
+                ],
+                true,
+                2,
+                3,
+                true,
+                false,
+            );
+            record_section_capture(cx, "cancel");
+        });
+        log.shutdown().unwrap();
+        let contents = std::fs::read_to_string(log.path()).unwrap();
+        assert!(!contents.contains("disabled"));
+        assert!(contents.contains("stage=loop_refused gates=section_held,edit_pending"));
+        assert!(contents.contains("section_view_blocked=true worker_pending=2 queued_pending=3 section_pending=true stopped_edit_pending=false"));
+        assert!(contents.contains("stage=section_capture outcome=cancel"));
+    }
 
     #[gpui::test]
     fn view_snapshot_reuses_its_buffer_and_records_only_changes(cx: &mut gpui::TestAppContext) {
