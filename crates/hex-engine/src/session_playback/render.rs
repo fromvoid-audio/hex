@@ -1689,11 +1689,7 @@ impl SessionPlayback {
                     } else {
                         track.mix()
                     };
-                    let mix = if recording_override.is_some() {
-                        let fader = &mut self.track_fader_scratch[index];
-                        fader.retarget(mix.channel_gain(), revision.arrangement().sample_rate());
-                        mix.with_channel_gain(fader.next())
-                    } else if track.has_gain_automation() {
+                    let mix = if track.has_gain_automation() || recording_override.is_some() {
                         self.track_fader_scratch[index].follow(mix.channel_gain());
                         mix
                     } else if smoothing {

@@ -630,13 +630,7 @@ impl SessionPlayback {
                     let mix = compensation.fader_mix(track, index, override_gain);
                     let mixed = if let Some(mix) = mix {
                         let fader = &mut self.track_fader_scratch[index];
-                        let mix = if override_gain.is_some() {
-                            fader.retarget(
-                                mix.channel_gain(),
-                                self.revision.arrangement().sample_rate(),
-                            );
-                            mix.with_channel_gain(fader.next())
-                        } else if track.has_gain_automation() {
+                        let mix = if track.has_gain_automation() || override_gain.is_some() {
                             fader.follow(mix.channel_gain());
                             mix
                         } else {
