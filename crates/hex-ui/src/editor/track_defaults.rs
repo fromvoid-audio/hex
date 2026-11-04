@@ -1,4 +1,4 @@
-//! New empty-track gain preference and admission-time capture. Persistence runs
+//! New-track gain preference and admission-time capture. Persistence runs
 //! on a background executor; a pending or failed save never changes the value
 //! used by a creation request.
 use super::EditorView;
@@ -178,8 +178,8 @@ impl EditorView {
             )
             .and_then(|spec| {
                 NumericControlConfig::new(
-                    "new-empty-track-volume",
-                    theme::text("new empty track volume · db"),
+                    "new-track-volume",
+                    theme::text("new track volume · db"),
                     NumericControlKind::HorizontalSlider,
                     spec,
                     f64::from(self.track_defaults.committed.gain()),
@@ -221,7 +221,7 @@ impl EditorView {
                         div()
                             .w(px(190.0))
                             .text_xs()
-                            .child(theme::text("new empty track volume")),
+                            .child(theme::text("new track volume")),
                     )
                     .child(div().flex_1().children([binding.control.clone()])),
             );
@@ -366,7 +366,7 @@ mod tests {
         visual.simulate_keystrokes("cmd-,");
         visual.run_until_parked();
         let value = visual
-            .debug_bounds("new-empty-track-volume-value")
+            .debug_bounds("new-track-volume-value")
             .expect("settings gain control")
             .center();
         visual.simulate_mouse_down(value, MouseButton::Left, Modifiers::default());
