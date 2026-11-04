@@ -545,7 +545,7 @@ fn timing_only_fork_refuses_nonpristine_frozen_mismatched_or_open_runtimes() {
     let mut frozen_target = owned(8000, &frozen);
     let frozen_old = owned(8000, &frozen);
     let mut used = owned(8000, &configured);
-    render(used.as_mut(), &[[0.0; 2]; 1], &[1]);
+    render(used.as_mut(), &[[0.4, -0.2]; 1], &[1]);
     assert!(!used.can_fork_timing_without_signal_history_from(old.as_ref()));
     used.reset();
     for (next, donor) in [
