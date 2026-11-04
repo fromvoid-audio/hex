@@ -45,6 +45,7 @@ mod startup_failure_tests;
 pub use shutdown::{DROP_SHUTDOWN_BOUND, ShutdownError};
 mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
+mod publication_wait;
 mod resident_audio;
 mod resident_preview;
 mod resident_seek;
@@ -2495,6 +2496,24 @@ fn run_worker(
             control_lanes_pending(resident_seek.as_ref(), &export_lane)
         },
     ) {
+        let queued = if events.resident_publication_enabled()
+            && session.audio_mode() == DocumentAudioMode::Resident
+            && matches!(
+                &queued.request,
+                Request::Edit(
+                    Command::ToggleDeviceBypass { .. }
+                        | Command::SetDeviceBypass { .. }
+                        | Command::ReplaceDeviceState { .. }
+                )
+            ) {
+            match events.defer_publication(queued) {
+                Some(queued) => queued,
+                None => continue,
+            }
+        } else {
+            queued
+        };
+        let publication_wait_failure = queued.publication_wait_failure;
         // Requests whose handler takes the stopped Arrangement lease first begin
         // it here; a live callback that has not answered parks the request and
         // returns this worker to its loop (see `stopped_arrangement`, #4544).
@@ -3184,6 +3203,9 @@ fn run_worker(
             .err(),
             _ => None,
         });
+        if barrier_failure.is_none() {
+            barrier_failure = publication_wait_failure.map(str::to_owned);
+        }
         if save_correlation.is_some_and(|identity| {
             identity.project_generation != project_generation || identity.revision != revision
         }) {

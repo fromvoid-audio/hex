@@ -256,6 +256,11 @@ impl WorkerAudioSink for ObservedSink {
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
     }
+    fn resident_publication_readiness(
+        &mut self,
+    ) -> hex_session::service::ResidentPublicationReadiness {
+        self.inner.resident_publication_readiness()
+    }
     fn resident_admission(
         &self,
     ) -> [hex_engine::native_device_resources::DeviceResourceAdmission<'_>; 3] {

@@ -193,6 +193,11 @@ impl WorkerAudioSink for ResidentSink {
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
     }
+    fn resident_publication_readiness(
+        &mut self,
+    ) -> hex_session::service::ResidentPublicationReadiness {
+        self.inner.resident_publication_readiness()
+    }
     fn resident_admission(&self) -> [DeviceResourceAdmission<'_>; 3] {
         self.inner.resident_admission()
     }

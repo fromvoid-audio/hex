@@ -593,21 +593,138 @@ fn eq_bypass_waits_for_inflight_parameter_publication() {
         .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
         .unwrap();
     let wait = Instant::now() + Duration::from_millis(100);
+    let mut terminal = None;
     while Instant::now() < wait {
         h.pump();
-        if let Ok(event) = h.service.try_event() {
-            panic!(
-                "bypass must wait for the parameter publication, got {:?}",
-                event.error
-            );
+        if let Ok(event) = h.service.try_event()
+            && event.request_complete
+        {
+            assert!(event.error.is_none(), "{:?}", event.error);
+            terminal = Some(event);
+            break;
         }
         std::thread::yield_now();
     }
     h.render();
-    let event = h.next();
+    let event = terminal.unwrap_or_else(|| h.next());
     assert!(event.error.is_none(), "{:?}", event.error);
     assert!(event.state.project.device(device).unwrap().bypassed());
-    let (next, metadata) = h.applied(parameter_revision);
-    assert_eq!(metadata.context.editor_revision, event.state.revision);
-    assert!(next > parameter_revision);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h
+        .submitted
+        .is_none_or(|(revision, _)| revision <= parameter_revision)
+    {
+        h.pump();
+        assert!(
+            Instant::now() < deadline,
+            "bypass publication was not staged"
+        );
+        std::thread::yield_now();
+    }
+    let bypass_revision = h.submitted.unwrap().0;
+    h.service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    h.render();
+    let reversed = h.next();
+    assert!(reversed.error.is_none(), "{:?}", reversed.error);
+    assert!(!reversed.state.project.device(device).unwrap().bypassed());
+    let (next, metadata) = h.applied(bypass_revision);
+    assert_eq!(metadata.context.editor_revision, reversed.state.revision);
+    assert!(next > bypass_revision);
+}
+
+#[test]
+fn stop_remains_effective_while_a_device_edit_waits() {
+    use std::sync::atomic::Ordering::Acquire;
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let mut eq = hex_engine::eq::EqState {
+        output_gain: 2.0,
+        ..Default::default()
+    };
+    let inserted = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: eq.encode().unwrap(),
+    }));
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("eq device")
+    };
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    for _ in 0..8 {
+        h.render();
+    }
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
+    eq.output_gain = 3.0;
+    h.run(Request::Edit(Command::ReplaceDeviceState {
+        device,
+        state: eq.encode().unwrap(),
+    }));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.submitted.is_none_or(|(revision, _)| revision <= applied) {
+        h.pump();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    h.service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    let wait = Instant::now() + Duration::from_millis(50);
+    while Instant::now() < wait {
+        if let Ok(event) = h.service.try_event()
+            && event.request_complete
+        {
+            panic!("device request unexpectedly completed: {:?}", event.error);
+        }
+        std::thread::yield_now();
+    }
+    for _ in 0..32 {
+        h.service
+            .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+            .unwrap();
+    }
+    assert!(matches!(
+        h.service
+            .submit(Request::Edit(Command::ToggleDeviceBypass { device })),
+        Err(hex_session::service::SubmitError::Full(_))
+    ));
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    for _ in 0..8 {
+        h.render();
+    }
+    assert!(
+        !h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
 }
