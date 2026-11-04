@@ -8163,6 +8163,8 @@ mod clip_move_tests;
 #[cfg(test)]
 mod clip_paste_tests;
 #[cfg(test)]
+mod split_carry_tests;
+#[cfg(test)]
 #[path = "service/track_reorder_tests.rs"]
 mod track_reorder_tests;
 

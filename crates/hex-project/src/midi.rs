@@ -14,6 +14,8 @@
 //! playback always follows the existing loop interval. Source edits preserve that policy.
 //! Strict note edits remain inside the source; the explicit authoring command may grow
 //! extent to inserted note ends in the same transaction, without moving placement or loops.
+//! A split retains finite source windows when materializing a clipped sub-frame
+//! gate would lose its provenance; playable edges and authored notes remain intact.
 //! Copy-on-write identity tokens retain the actual source, preventing address reuse from making
 //! stale prepared artifacts appear current. The project Editor owns atomic history, not this view.
 use crate::edit::{Command, MidiNoteUpdate};
@@ -803,6 +805,31 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     let kept_start = absolute_start.max(beat.raw());
                     let kept_end = absolute_end.min(end);
                     if kept_start < kept_end {
+                        // Materializing a clipped carry as a new authored note
+                        // loses the fact that its gate was clipped. A positive
+                        // sub-frame fragment would then be rejected as an
+                        // unplayable authored note. Retain the existing finite
+                        // source window instead, so playback can distinguish
+                        // the clipped occurrence without dropping its data.
+                        let clipped = kept_end - kept_start < note.duration.raw();
+                        if note.active
+                            && clipped
+                            && project
+                                .tempo_map()
+                                .beat_to_frame(BeatTime::from_raw(kept_start))?
+                                == project
+                                    .tempo_map()
+                                    .beat_to_frame(BeatTime::from_raw(kept_end))?
+                        {
+                            let mut retained = original.clone();
+                            let window_start = retained.playback_offset.raw();
+                            let window_end = window_start
+                                .checked_add(retained.length.raw())
+                                .ok_or(Invalid("midi split source window overflow"))?;
+                            retained.content_view =
+                                Some(crate::ContentWindow::new(window_start, window_end, false)?);
+                            return crate::clip_reverse::split_midi(project, track, retained, beat);
+                        }
                         notes.push(MidiNote {
                             id: NoteId(0),
                             active: note.active,
