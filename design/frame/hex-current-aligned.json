@@ -2,7 +2,7 @@
   "version": 1,
   "id": "hex-yield-workstation",
   "name": "hex / orbital",
-  "revisionId": "hex-current-aligned-study-r80",
+  "revisionId": "hex-current-aligned-study-r81",
   "width": 1900,
   "height": 1120,
   "background": "#111111",
@@ -194518,7 +194518,7 @@
         "height": 12
       },
       "style": {
-        "fill": "#3b95df",
+        "fill": "#494949",
         "stroke": "none",
         "color": "#c3c5c0",
         "fontSize": 11,
