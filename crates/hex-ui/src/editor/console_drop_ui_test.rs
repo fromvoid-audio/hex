@@ -1080,6 +1080,45 @@ fn console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_sour
 }
 
 #[gpui::test]
+fn console_clip_new_track_refuses_unavailable_defaults_but_existing_cell_still_works(
+    cx: &mut TestAppContext,
+) {
+    for loading in [true, false] {
+        let (handle, editor, track, scene, _) = fixture(cx);
+        let source = arrangement_midi_source(cx, &editor, track);
+        let before = project(&editor, cx);
+        let mut visual = begin_arrangement_clip_in_console(cx, handle, &editor, source);
+        editor.update(&mut visual, |view, _| {
+            view.track_defaults.set_test_state(0.5, loading, false)
+        });
+        let at = bounds(
+            &mut visual,
+            format!("console-column-before-{}-{}", track.value(), scene.value()),
+        )
+        .center();
+        release(&mut visual, at);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.worker_requests_pending, 0);
+            assert!(view.error.as_deref().unwrap().contains(if loading {
+                "loading"
+            } else {
+                "open settings"
+            }));
+            assert!(view.active_clip_drag.is_none());
+        });
+        assert_eq!(project(&editor, cx), before);
+        editor.update(cx, |view, _| view.error = None);
+        assert!(drop_actual_arrangement_midi(
+            cx, handle, &editor, source, track, scene
+        ));
+        assert_eq!(
+            project(&editor, cx).track(track).unwrap().gain(),
+            before.track(track).unwrap().gain()
+        );
+    }
+}
+
+#[gpui::test]
 fn console_column_real_arrangement_midi_copies_source_with_one_history_step(
     cx: &mut TestAppContext,
 ) {
@@ -1087,17 +1126,26 @@ fn console_column_real_arrangement_midi_copies_source_with_one_history_step(
     let source = arrangement_midi_source(cx, &editor, track);
     let before = project(&editor, cx);
     let mut visual = begin_arrangement_clip_in_console(cx, handle, &editor, source);
+    editor.update(&mut visual, |view, _| {
+        view.track_defaults.set_test_state(0.5, false, true);
+        view.error = Some("previous preference error".into());
+    });
     let at = bounds(
         &mut visual,
         format!("console-column-before-{}-{}", track.value(), scene.value()),
     )
     .center();
     release(&mut visual, at);
+    editor.read_with(&visual, |view, _| assert!(view.error.is_none()));
+    editor.update(&mut visual, |view, _| {
+        view.track_defaults.set_test_state(0.25, false, true)
+    });
     editor.read_with(&visual, |view, _| assert!(view.active_clip_drag.is_none()));
     receive_worker(&editor, cx);
     let after = project(&editor, cx);
     assert_eq!(after.tracks().len(), before.tracks().len() + 1);
     let born = &after.tracks()[0];
+    assert_eq!(born.gain(), 0.5);
     assert!(born.instrument().is_none());
     let Some(hex_project::SessionCellContent::Midi(copy)) = after.session_cell(born.id(), scene)
     else {
@@ -1218,15 +1266,22 @@ fn console_column_real_arrangement_audio_copies_plain_source_and_refuses_process
         cx.notify();
     });
     let mut visual = begin_arrangement_clip_in_console(cx, handle, &editor, source);
+    editor.update(&mut visual, |view, _| {
+        view.track_defaults.set_test_state(0.5, false, true)
+    });
     let at = bounds(
         &mut visual,
         format!("console-column-tail-{}", scene.value()),
     )
     .center();
     release(&mut visual, at);
+    editor.update(&mut visual, |view, _| {
+        view.track_defaults.set_test_state(0.25, false, true)
+    });
     receive_worker(&editor, cx);
     let after = project(&editor, cx);
     assert_eq!(after.tracks().len(), 2);
+    assert_eq!(after.tracks()[1].gain(), 0.5);
     let Some(hex_project::SessionCellContent::Audio(copy)) =
         after.session_cell(after.tracks()[1].id(), scene)
     else {
