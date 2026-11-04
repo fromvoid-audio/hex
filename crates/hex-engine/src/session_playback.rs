@@ -965,18 +965,17 @@ impl SessionPlayback {
             visit(1, index, owner.is_some())?;
         }
         for (index, owner) in mutable_instruments.iter().enumerate() {
-            if let Some(owner) = owner {
-                if self.revision.resource_scope.is_none()
+            if let Some(owner) = owner
+                && (self.revision.resource_scope.is_none()
                     || !owner.is_concrete_current_sampler()
                     || self
                         .revision
                         .arrangement()
                         .tracks()
                         .get(index)
-                        .is_none_or(|t| t.instrument_id != owner.expression_identity)
-                {
-                    return Err(crate::AudioStorageError::UnsupportedGraph);
-                }
+                        .is_none_or(|t| t.instrument_id != owner.expression_identity))
+            {
+                return Err(crate::AudioStorageError::UnsupportedGraph);
             }
             visit(2, index, owner.is_some())?;
         }

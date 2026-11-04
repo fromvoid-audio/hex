@@ -529,11 +529,11 @@ impl SessionPlayback {
             keyboard.set_expression(selected);
         }
         let mut observer = observer;
-        if let Some(compensation) = self.compensation.as_mut() {
-            if compensation.delays.begin_transaction().is_err() {
-                self.fail_midi_capture_render();
-                return Err(SessionPlaybackError::DeviceRuntime);
-            }
+        if let Some(compensation) = self.compensation.as_mut()
+            && compensation.delays.begin_transaction().is_err()
+        {
+            self.fail_midi_capture_render();
+            return Err(SessionPlaybackError::DeviceRuntime);
         }
         if let Some(keyboard) = &mut self.computer_keyboard {
             keyboard.begin_block();
@@ -602,18 +602,18 @@ impl SessionPlayback {
                 capture.invalidate();
             }
         } else {
-            if let Some(compensation) = self.compensation.as_mut() {
-                if compensation.delays.commit_transaction().is_err() {
-                    self.fail_midi_capture_render();
-                    if let Some(keyboard) = &mut self.computer_keyboard {
-                        keyboard.rollback();
-                    }
-                    for keyboard in &mut self.current_sampler_keyboards {
-                        keyboard.rollback();
-                    }
-                    output.fill([0.0; 2]);
-                    return Err(SessionPlaybackError::DeviceRuntime);
+            if let Some(compensation) = self.compensation.as_mut()
+                && compensation.delays.commit_transaction().is_err()
+            {
+                self.fail_midi_capture_render();
+                if let Some(keyboard) = &mut self.computer_keyboard {
+                    keyboard.rollback();
                 }
+                for keyboard in &mut self.current_sampler_keyboards {
+                    keyboard.rollback();
+                }
+                output.fill([0.0; 2]);
+                return Err(SessionPlaybackError::DeviceRuntime);
             }
             self.track_faders[..track_count]
                 .copy_from_slice(&self.track_fader_scratch[..track_count]);
@@ -819,11 +819,11 @@ impl SessionPlayback {
             if current_first_frame {
                 chunk_frames = chunk_frames.min(1);
             }
-            if let Some(next) = next_route {
-                if next > performance_frame {
-                    let until = usize::try_from(next - performance_frame).unwrap_or(usize::MAX);
-                    chunk_frames = chunk_frames.min(until);
-                }
+            if let Some(next) = next_route
+                && next > performance_frame
+            {
+                let until = usize::try_from(next - performance_frame).unwrap_or(usize::MAX);
+                chunk_frames = chunk_frames.min(until);
             }
             if let Some(region) = region {
                 let until_wrap = if arrangement_frame < region.start() {
