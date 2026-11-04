@@ -99,7 +99,16 @@ pub(crate) fn isolated(
                 _ => std::collections::BTreeSet::new(),
             })
             .ok_or("bounce track changed")?;
+        let render_contributor = !in_place
+            && matches!(target, BounceTarget::Clips(_))
+            && !selected_is_receiver
+            && selected_source_instrument_id.is_some()
+            && item
+                .clips
+                .iter()
+                .any(|clip| selected_midi.contains(&clip.value()));
         if !selected_is_receiver
+            && !render_contributor
             && (item
                 .clips
                 .iter()
@@ -155,6 +164,21 @@ pub(crate) fn isolated(
                 }
             }
         }
+        if render_contributor {
+            // The copied graph gets its own receiver; the canonical source and
+            // live graph retain their original receiver and state.
+            let source = snapshot
+                .native_sources
+                .iter_mut()
+                .find(|source| {
+                    source
+                        .devices
+                        .get(source.instrument_index)
+                        .is_some_and(|device| Some(device.id) == selected_source_instrument_id)
+                })
+                .ok_or("bounce source changed")?;
+            source.receiver = Some(selected_track_id);
+        }
         for (index, track) in snapshot.tracks.iter_mut().enumerate() {
             if index == track_index {
                 track.gain = 1.0;
@@ -164,7 +188,7 @@ pub(crate) fn isolated(
                 track.gain_envelope.clear();
                 track.gain_touch_spans.clear();
                 track.sends.clear();
-                if !selected_is_receiver {
+                if !selected_is_receiver && !render_contributor {
                     let audio_clips = track.audio_clips_mut().map_err(|e| e.to_string())?.clone();
                     track.instrument = None;
                     track.instrument_position = None;
