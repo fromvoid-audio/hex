@@ -56,6 +56,39 @@ fn tone_on_noise_does_not_jump_at_tonality_threshold() {
 }
 
 #[test]
+fn mixed_bass_mid_and_high_tones_remain_calibrated_over_noise() {
+    let rate = 48_000;
+    let components = [(70.0, 0.2), (1_000.0, 0.1), (9_000.0, 0.05)];
+    let mut seed = 9_u64;
+    let mut frames = vec![[0.0f32; 2]; FILL_FRAMES];
+    for frame in &mut frames {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let noise = (((seed >> 40) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0) * 0.002;
+        *frame = [noise, noise];
+    }
+    for (frequency, amplitude) in components {
+        for (frame, signal) in
+            frames
+                .iter_mut()
+                .zip(tone(rate, frequency, amplitude, 1.0, FILL_FRAMES))
+        {
+            frame[0] += signal[0];
+            frame[1] += signal[1];
+        }
+    }
+    let result = analyze(rate, FLAT, &frames);
+    for (frequency, amplitude) in components {
+        let point = point_index(rate, frequency).unwrap();
+        let expected = (20.0 * amplitude.log10()) as f32;
+        let actual = result.bins_dbfs[point];
+        assert!(
+            (actual - expected).abs() < 0.6,
+            "{frequency} hz: expected {expected:.2}, got {actual:.2} dbfs"
+        );
+    }
+}
+
+#[test]
 fn calibrated_tone_moves_continuously_across_display_band_boundary() {
     let mut worst = 0.0f32;
     for rate in [44_100, 48_000, 96_000, 192_000] {
