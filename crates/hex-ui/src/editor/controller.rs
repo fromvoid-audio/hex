@@ -752,10 +752,9 @@ impl EditorView {
                         .pending_audio_result
                         .as_ref()
                         .is_some_and(|pending| pending.project_generation() <= project_generation)
+                        && let Some(previous) = self.pending_audio_result.take()
                     {
-                        if let Some(previous) = self.pending_audio_result.take() {
-                            previous.close();
-                        }
+                        previous.close();
                     }
                     let new_identity = audio.control.output_identity();
                     if self
@@ -780,22 +779,22 @@ impl EditorView {
                     self.document_audio_mode = audio.mode;
                     self.audio = Some(audio);
                     let mut recovery_status = None;
-                    if restart_request.is_some() {
-                        if let Some(generation) = self.pending_recovery_generation {
-                            self.recovery.opened(generation);
-                            match self.document_audio_mode {
-                                hex_session::DocumentAudioMode::Resident => {
-                                    if self.enqueue(Request::RestorePlayback { generation }) {
-                                        recovery_status = Some("restoring audio graph");
-                                    } else {
-                                        self.fail_audio_recovery(
-                                            "audio opened but graph restore was not admitted",
-                                        );
-                                    }
+                    if restart_request.is_some()
+                        && let Some(generation) = self.pending_recovery_generation
+                    {
+                        self.recovery.opened(generation);
+                        match self.document_audio_mode {
+                            hex_session::DocumentAudioMode::Resident => {
+                                if self.enqueue(Request::RestorePlayback { generation }) {
+                                    recovery_status = Some("restoring audio graph");
+                                } else {
+                                    self.fail_audio_recovery(
+                                        "audio opened but graph restore was not admitted",
+                                    );
                                 }
-                                hex_session::DocumentAudioMode::VerifiedStreaming => {
-                                    recovery_status = Some("preparing streamed audio");
-                                }
+                            }
+                            hex_session::DocumentAudioMode::VerifiedStreaming => {
+                                recovery_status = Some("preparing streamed audio");
                             }
                         }
                     }
@@ -843,10 +842,9 @@ impl EditorView {
                         .pending_audio_result
                         .as_ref()
                         .is_some_and(|pending| pending.project_generation() <= project_generation)
+                        && let Some(previous) = self.pending_audio_result.take()
                     {
-                        if let Some(previous) = self.pending_audio_result.take() {
-                            previous.close();
-                        }
+                        previous.close();
                     }
                     self.retire_audio_preserving_gain_take();
                     if self
@@ -1939,10 +1937,10 @@ impl EditorView {
                 && !status.render_fault.load(Relaxed)
                 && !status.shutdown_complete.load(Acquire)
         }) {
-            if let Some(identity) = audio.control.output_identity() {
-                if let Some(status) = audio.control.status() {
-                    visible_change |= self.session_routes.poll(identity, status);
-                }
+            if let Some(identity) = audio.control.output_identity()
+                && let Some(status) = audio.control.status()
+            {
+                visible_change |= self.session_routes.poll(identity, status);
             }
         } else {
             self.session_routes.clear();
@@ -2181,10 +2179,9 @@ impl EditorView {
                 .pending_audio_result
                 .as_ref()
                 .is_some_and(|pending| pending.project_generation() < next_generation)
+                && let Some(pending) = self.pending_audio_result.take()
             {
-                if let Some(pending) = self.pending_audio_result.take() {
-                    pending.close();
-                }
+                pending.close();
             }
             if self
                 .pending_restart_request
@@ -2343,12 +2340,10 @@ impl EditorView {
                     self.cancel_computer_keyboard();
                     self.computer_keyboard.suspended = true;
                 }
-                if audition_ok {
-                    if let Err(error) = self.trigger_prepared_midi_audition() {
-                        self.error = Some(error.to_string().into());
-                        self.cancel_computer_keyboard();
-                        return None;
-                    }
+                if audition_ok && let Err(error) = self.trigger_prepared_midi_audition() {
+                    self.error = Some(error.to_string().into());
+                    self.cancel_computer_keyboard();
+                    return None;
                 }
                 if let Some(playback) = event.playback {
                     let previous_reset = self
@@ -2515,51 +2510,49 @@ impl EditorView {
                 .pending_audio_result
                 .as_ref()
                 .is_some_and(|pending| pending.project_generation() <= self.project_generation)
+                && let Some(pending) = self.pending_audio_result.take()
             {
-                if let Some(pending) = self.pending_audio_result.take() {
-                    match pending {
-                        PendingEditorAudioResult::Opened {
-                            project_generation,
-                            restart_request,
-                            mut audio,
-                        } if audio_event_disposition(
-                            self.project_generation,
-                            self.pending_restart_request,
-                            project_generation,
-                            restart_request,
-                        ) == AudioEventDisposition::Current =>
-                        {
-                            if self.audio.as_ref().is_some_and(|old| {
-                                old.control.has_action_outcomes() && old.control.status().is_none()
-                            }) {
-                                audio.control.close();
-                                self.error = Some(
-                                    "waiting for previous audio outcomes · retry audio".into(),
-                                );
-                            } else {
-                                self.document_audio_mode = audio.mode;
-                                self.audio = Some(audio);
-                            }
-                            self.pending_restart_request = None;
+                match pending {
+                    PendingEditorAudioResult::Opened {
+                        project_generation,
+                        restart_request,
+                        mut audio,
+                    } if audio_event_disposition(
+                        self.project_generation,
+                        self.pending_restart_request,
+                        project_generation,
+                        restart_request,
+                    ) == AudioEventDisposition::Current =>
+                    {
+                        if self.audio.as_ref().is_some_and(|old| {
+                            old.control.has_action_outcomes() && old.control.status().is_none()
+                        }) {
+                            audio.control.close();
+                            self.error =
+                                Some("waiting for previous audio outcomes · retry audio".into());
+                        } else {
+                            self.document_audio_mode = audio.mode;
+                            self.audio = Some(audio);
                         }
-                        PendingEditorAudioResult::Unavailable {
-                            project_generation,
-                            restart_request,
-                            error,
-                        } if audio_event_disposition(
-                            self.project_generation,
-                            self.pending_restart_request,
-                            project_generation,
-                            restart_request,
-                        ) == AudioEventDisposition::Current =>
-                        {
-                            let message = super::audio_unavailable::unavailable_message(&error);
-                            self.status = message.clone();
-                            self.error = Some(message.into());
-                            self.pending_restart_request = None;
-                        }
-                        result => result.close(),
+                        self.pending_restart_request = None;
                     }
+                    PendingEditorAudioResult::Unavailable {
+                        project_generation,
+                        restart_request,
+                        error,
+                    } if audio_event_disposition(
+                        self.project_generation,
+                        self.pending_restart_request,
+                        project_generation,
+                        restart_request,
+                    ) == AudioEventDisposition::Current =>
+                    {
+                        let message = super::audio_unavailable::unavailable_message(&error);
+                        self.status = message.clone();
+                        self.error = Some(message.into());
+                        self.pending_restart_request = None;
+                    }
+                    result => result.close(),
                 }
             }
             self.device_gesture.reset();
@@ -3278,21 +3271,20 @@ impl EditorView {
             options,
             ..
         } = &request
+            && let [path] = paths.as_slice()
         {
-            if let [path] = paths.as_slice() {
-                match destination {
-                    hex_session::import_batch::AudioBatchDestination::Console(_) => {}
-                    hex_session::import_batch::AudioBatchDestination::Track { track, start } => {
-                        self.last_enqueued_import_to_track =
-                            Some((path.clone(), *track, *start, options.overwrite))
-                    }
-                    hex_session::import_batch::AudioBatchDestination::NewTracks {
-                        before_track,
-                        start,
-                    } => {
-                        self.last_enqueued_import_to_new_track =
-                            Some((path.clone(), *before_track, *start))
-                    }
+            match destination {
+                hex_session::import_batch::AudioBatchDestination::Console(_) => {}
+                hex_session::import_batch::AudioBatchDestination::Track { track, start } => {
+                    self.last_enqueued_import_to_track =
+                        Some((path.clone(), *track, *start, options.overwrite))
+                }
+                hex_session::import_batch::AudioBatchDestination::NewTracks {
+                    before_track,
+                    start,
+                } => {
+                    self.last_enqueued_import_to_new_track =
+                        Some((path.clone(), *before_track, *start))
                 }
             }
         }
