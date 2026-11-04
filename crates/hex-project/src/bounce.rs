@@ -165,6 +165,20 @@ impl Project {
                     "cannot independently bounce console cells while another shared-source contributor has midi",
                 ));
             }
+            // Clearing a receiver would silence every other linked track even
+            // when it currently has no clips. Keep their source route intact.
+            if track.source_id().is_some_and(|source| {
+                self.native_source(source)
+                    .is_some_and(|definition| definition.receiver() == Some(*id))
+                    && self
+                        .tracks()
+                        .iter()
+                        .any(|peer| peer.id() != *id && peer.source_id() == Some(source))
+            }) {
+                return Err(Invalid(
+                    "cannot bounce this shared source receiver · unlink or reroute linked tracks first",
+                ));
+            }
             if track.clips().iter().any(|c| !c.active())
                 || track.midi_clips().iter().any(|c| !c.active())
             {
@@ -596,6 +610,92 @@ fn midi_frames(project: &Project, clip: &crate::MidiClip) -> Result<(u64, u64), 
 mod tests {
     use super::*;
     use crate::{BeatTime, TrackDeviceSlot, default_instrument_state};
+
+    #[test]
+    fn whole_track_bounce_refuses_to_disconnect_other_source_contributors() {
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(receiver) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "receiver".into(),
+                before_track: None,
+                slot: TrackDeviceSlot::Instrument,
+                state: default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("receiver")
+        };
+        editor
+            .execute(Command::PlaceMidiClip {
+                track: receiver,
+                start: BeatTime::ONE,
+                length: BeatTime::ONE,
+            })
+            .unwrap();
+        let source = editor
+            .project()
+            .track(receiver)
+            .unwrap()
+            .source_id()
+            .unwrap();
+        let item = editor
+            .project()
+            .plan_arrangement_bounce(&BounceTarget::Track(receiver), true)
+            .unwrap()
+            .remove(0);
+        let Created::Track(peer) = editor
+            .execute(Command::AddMidiTrack {
+                name: "linked".into(),
+            })
+            .unwrap()
+        else {
+            panic!("peer")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: peer,
+                source: Some(source),
+            })
+            .unwrap();
+        editor
+            .execute(Command::Gain {
+                track: peer,
+                gain: 0.5,
+            })
+            .unwrap();
+        assert!(editor.undo());
+        let original = editor.project().clone();
+        let err = editor
+            .project()
+            .plan_arrangement_bounce(&BounceTarget::Track(receiver), true)
+            .unwrap_err();
+        assert!(err.to_string().contains("linked tracks"), "{err}");
+        let err = editor
+            .execute(Command::CommitArrangementBounce {
+                target: BounceTarget::Track(receiver),
+                in_place: true,
+                adoption: BounceAdoption::NewTracks,
+                files: vec![BounceFile {
+                    source: BounceSource::Arrangement,
+                    track: receiver,
+                    start: item.start,
+                    frames: item.end - item.start,
+                    path: "bounced.wav".into(),
+                }],
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("linked tracks"), "{err}");
+        assert_eq!(editor.project(), &original);
+        assert!(editor.can_redo());
+        assert_eq!(
+            editor.project().native_source(source).unwrap().receiver(),
+            Some(receiver)
+        );
+        assert_eq!(
+            editor.project().track(peer).unwrap().source_id(),
+            Some(source)
+        );
+    }
 
     #[test]
     fn in_place_bounce_unlinks_receiver_but_retains_source_across_history() {
