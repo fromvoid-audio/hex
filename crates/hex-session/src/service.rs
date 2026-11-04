@@ -2911,7 +2911,8 @@ fn run_worker(
                     | Command::MoveMidiClipWithOverwrite { .. }
                     | Command::CopyClipTo { .. }
                     | Command::CopyMidiClipTo { .. } => true,
-                    Command::MoveClipsWithOverwrite { clips, .. } => {
+                    Command::MoveClipsWithOverwrite { clips, .. }
+                    | Command::DuplicateAliasClipsAt { clips, .. } => {
                         !clips.is_empty() && clips.len() <= hex_project::MAX_CLIPS
                     }
                     _ => false,

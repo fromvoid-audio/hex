@@ -17,6 +17,14 @@ pub enum TrackDeviceSlot {
 pub enum Command {
     /// Copy Arrangement placements while retaining explicit shared content.
     DuplicateAliasClips(Vec<ClipId>),
+    /// Duplicate a selected Arrangement group as aliases at one destination.
+    /// Refuse any destination that would change an original member.
+    DuplicateAliasClipsAt {
+        clips: Vec<ClipId>,
+        anchor: ClipId,
+        track: TrackId,
+        position: crate::ClipGroupPosition,
+    },
     /// Detach selected members without copying decoded media.
     MakeClipsUnique(Vec<ClipId>),
     /// Copy current local clip settings to its group, preserving every placement.
@@ -1800,6 +1808,12 @@ impl Project {
     pub(crate) fn apply(&mut self, command: Command) -> Result<Created, Invalid> {
         match command {
             Command::DuplicateAliasClips(clips) => crate::clip_duplicate::apply_alias(self, clips),
+            Command::DuplicateAliasClipsAt {
+                clips,
+                anchor,
+                track,
+                position,
+            } => crate::clip_duplicate::apply_alias_at(self, clips, anchor, track, position),
             Command::MakeClipsUnique(clips) => crate::clip_alias_commands::unique(self, clips),
             Command::ApplyClipSettingsToAliases(clip) => {
                 crate::clip_alias_commands::apply_settings(self, clip)

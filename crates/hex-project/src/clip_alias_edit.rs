@@ -55,6 +55,7 @@ impl Plan {
         let explicit = matches!(
             command,
             Command::DuplicateAliasClips(_)
+                | Command::DuplicateAliasClipsAt { .. }
                 | Command::MakeClipsUnique(_)
                 | Command::ApplyClipSettingsToAliases(_)
                 | Command::DuplicateSessionCell { alias: true, .. }

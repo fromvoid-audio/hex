@@ -709,3 +709,153 @@ fn conversion_section_delete_and_overwrite_detach_members_and_keep_the_project_r
             .unwrap_or_else(|error| panic!("{case}: reopen after edit refused: {error:?}"));
     }
 }
+
+#[test]
+fn alias_at_destination_preserves_originals_and_has_one_history_step() {
+    use crate::ClipGroupPosition;
+    let (mut editor, source_track, midi) = midi();
+    let Created::Track(target) = editor
+        .execute(Command::AddTrack {
+            name: "target".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Clip(replaced) = editor
+        .execute(Command::PlaceMidiClip {
+            track: target,
+            start: beat(8),
+            length: beat(1),
+        })
+        .unwrap()
+    else {
+        panic!("destination clip")
+    };
+    let mut before = editor.project().snapshot();
+    let Created::Clips { first: alias, last } = editor
+        .execute(Command::DuplicateAliasClipsAt {
+            clips: vec![midi],
+            anchor: midi,
+            track: target,
+            position: ClipGroupPosition::Midi(beat(8)),
+        })
+        .unwrap()
+    else {
+        panic!("alias")
+    };
+    assert_eq!(alias, last);
+    assert_eq!(
+        editor.project().track(source_track).unwrap().midi_clips()[0].id(),
+        midi
+    );
+    assert_eq!(
+        editor.project().track(target).unwrap().midi_clips()[0].id(),
+        alias
+    );
+    assert_eq!(editor.project().midi_clip(alias).unwrap().start(), beat(8));
+    assert!(
+        editor.project().midi_clip(replaced).is_none(),
+        "unrelated destination overlap is replaced"
+    );
+    assert_eq!(
+        editor.project().clip_alias(midi),
+        editor.project().clip_alias(alias)
+    );
+    let after = editor.project().snapshot();
+    before.next_id = after.next_id;
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+    editor
+        .execute(Command::AddMidiNote {
+            clip: alias,
+            start: beat(2),
+            duration: beat(1),
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().midi_clip(midi).unwrap().notes(),
+        editor.project().midi_clip(alias).unwrap().notes()
+    );
+}
+
+#[test]
+fn alias_at_refuses_overlapping_originals_and_invalid_destinations_atomically() {
+    use crate::ClipGroupPosition;
+    let (mut editor, track, clip) = midi();
+    let before = editor.project().snapshot();
+    for (target, position) in [
+        (track, beat(1)),
+        (track, beat(0)),
+        (TrackId(u64::MAX), beat(8)),
+    ] {
+        assert!(
+            editor
+                .execute(Command::DuplicateAliasClipsAt {
+                    clips: vec![clip],
+                    anchor: clip,
+                    track: target,
+                    position: ClipGroupPosition::Midi(position),
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), before);
+    }
+}
+
+#[test]
+fn audio_alias_at_other_track_shares_content_without_moving_original() {
+    use crate::ClipGroupPosition;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+    let Created::Imported { clip, track, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "source".into(),
+            path: "source.wav".into(),
+            sample_rate: 48_000,
+            frames: 48_000,
+        })
+        .unwrap()
+    else {
+        panic!("audio")
+    };
+    let Created::Track(target) = editor
+        .execute(Command::AddTrack {
+            name: "target".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let mut before = editor.project().snapshot();
+    let Created::Clips { first: alias, .. } = editor
+        .execute(Command::DuplicateAliasClipsAt {
+            clips: vec![clip],
+            anchor: clip,
+            track: target,
+            position: ClipGroupPosition::Audio(96_000),
+        })
+        .unwrap()
+    else {
+        panic!("alias")
+    };
+    assert_eq!(editor.project().track(track).unwrap().clips()[0].start(), 0);
+    assert_eq!(
+        editor.project().track(target).unwrap().clips()[0].start(),
+        96_000
+    );
+    assert_eq!(
+        editor.project().clip_alias(clip),
+        editor.project().clip_alias(alias)
+    );
+    let after = editor.project().snapshot();
+    before.next_id = after.next_id;
+    assert!(editor.undo());
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+}
