@@ -10,6 +10,7 @@
 //! Does not own canonical edits, device I/O, host source leases or foreign-code containment. A
 //! resource view or declaration never grants host publication or lifetime authority.
 mod aux_input;
+mod bypass_ramp;
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 pub use aux_input::{AuxiliaryBlockError, StereoAuxiliaryBlock};
@@ -163,6 +164,11 @@ pub use instrument_runtime::{
 /// lookahead; `None` means the latency is unknown. Filter phase/group delay,
 /// audio-interface latency and intended effect tails are not declared here.
 pub trait PreparedNativeProcessor: Send + Sync {
+    /// Opt in only when continuing active processing during a brief wet/dry
+    /// bypass transition preserves the device's history and tail semantics.
+    fn supports_smoothed_bypass(&self) -> bool {
+        false
+    }
     fn parameter_automation_descriptor(
         &self,
         _parameter: hex_lattice_contract::ParameterId,
@@ -627,6 +633,9 @@ struct RuntimeEntry {
     configuration: Option<std::sync::Arc<NativeDeviceState>>,
     output_tail: OutputTail,
     algorithmic_latency_frames: Option<u32>,
+    supports_smoothed_bypass: bool,
+    committed_bypass_ramp: bypass_ramp::BypassRamp,
+    scratch_bypass_ramp: bypass_ramp::BypassRamp,
     runtime: RuntimeOwnership,
 }
 
@@ -751,6 +760,9 @@ impl<'a> NativeRuntimeEntryStorage<'a> {
             configuration: _,
             output_tail: _,
             algorithmic_latency_frames: _,
+            supports_smoothed_bypass: _,
+            committed_bypass_ramp: _,
+            scratch_bypass_ramp: _,
             runtime: _,
         } = entry;
         NativeRuntimeEntryStorage { entry }
@@ -965,6 +977,9 @@ impl NativeRuntimeChain {
             {
                 return Err(DeviceContractError::UnsupportedProcessingClass);
             }
+            let supports_smoothed_bypass = instance.definition.as_ref().is_none_or(|factory| {
+                matches!(factory, PreparedProcessorFactory::Legacy(value) if value.supports_smoothed_bypass())
+            });
             let runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
             for &parameter in instance.automation.parameter_ids() {
                 if instance.definition.as_ref().is_none_or(|factory| {
@@ -1007,6 +1022,9 @@ impl NativeRuntimeChain {
                 configuration: instance.configuration,
                 output_tail,
                 algorithmic_latency_frames: latency,
+                supports_smoothed_bypass,
+                committed_bypass_ramp: bypass_ramp::BypassRamp::INACTIVE,
+                scratch_bypass_ramp: bypass_ramp::BypassRamp::INACTIVE,
                 runtime,
             });
         }
@@ -1235,6 +1253,10 @@ impl NativeRuntimeChain {
     /// Whether a same-position range has exact immutable processor
     /// configuration identity, in addition to its prepared processing
     /// semantics. Missing synthetic identities compare conservatively false.
+    /// Zero-latency processors explicitly supporting smoothed bypass may
+    /// differ in bypass state; their history stays with the live chain. The
+    /// same rule applies to memoryless matrix entries. Foreign sources retain
+    /// their separate aligned-bypass identity contract.
     /// Revision handoff can call this on the audio callback; it can inspect up to
     /// `range.len() * MAX_NATIVE_DEVICE_STATE_BYTES` payload bytes in the
     /// worst case; the shared payload allocations themselves are not copied.
@@ -1260,6 +1282,14 @@ impl NativeRuntimeChain {
                     // This compares graph views only. The host must separately
                     // retain/admit the actual endpoint and its dry history.
                     && (left.bypassed == right.bypassed
+                        || (left.algorithmic_latency_frames == Some(0)
+                            && right.algorithmic_latency_frames == Some(0)
+                            && left.supports_smoothed_bypass
+                            && right.supports_smoothed_bypass
+                            && left.input_gain == right.input_gain
+                            && left.output_gain == right.output_gain
+                            && !matches!(left.runtime, RuntimeOwnership::Foreign(_))
+                            && !matches!(right.runtime, RuntimeOwnership::Foreign(_)))
                         || matches!((&left.runtime, &right.runtime),
                             (RuntimeOwnership::Foreign(left), RuntimeOwnership::Foreign(right))
                                 if left.prepared == right.prepared))
@@ -1555,6 +1585,7 @@ impl NativeRuntimeChain {
         excluded_old_range: std::ops::Range<usize>,
     ) {
         self.inherit_matrix_ramps(previous, &excluded_old_range);
+        self.inherit_bypass_ramps(previous, &excluded_old_range);
         for entry in &mut self.entries {
             if let Some((index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
                 Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
@@ -1592,6 +1623,7 @@ impl NativeRuntimeChain {
         excluded: std::ops::Range<usize>,
     ) {
         self.inherit_matrix_ramps(previous, &excluded);
+        self.inherit_bypass_ramps(previous, &excluded);
         for entry in &mut self.entries {
             if let Some((index, old)) = previous.entries.iter_mut().enumerate().find(|(_, old)| {
                 Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
@@ -1632,6 +1664,47 @@ impl NativeRuntimeChain {
         }
     }
 
+    fn inherit_bypass_ramps(&mut self, previous: &Self, excluded: &std::ops::Range<usize>) {
+        for entry in &mut self.entries {
+            let old = previous
+                .entries
+                .iter()
+                .enumerate()
+                .find(|(_, old)| Self::same_runtime_identity(entry, old));
+            let ramp = match old {
+                Some((index, old))
+                    if !excluded.contains(&index)
+                        && entry.algorithmic_latency_frames == Some(0)
+                        && old.algorithmic_latency_frames == Some(0)
+                        && entry.supports_smoothed_bypass
+                        && old.supports_smoothed_bypass
+                        && entry.input_gain == old.input_gain
+                        && entry.output_gain == old.output_gain
+                        && !matches!(entry.runtime, RuntimeOwnership::Foreign(_))
+                        && !matches!(old.runtime, RuntimeOwnership::Foreign(_))
+                        && entry.matrix == old.matrix
+                        && entry.automation == old.automation
+                        && match (&entry.configuration, &old.configuration) {
+                            (Some(a), Some(b)) => {
+                                std::sync::Arc::ptr_eq(a, b) || a.processing_eq(b)
+                            }
+                            _ => false,
+                        } =>
+                {
+                    bypass_ramp::BypassRamp::inherited(
+                        old.committed_bypass_ramp,
+                        old.bypassed,
+                        entry.bypassed,
+                        entry.sample_rate,
+                    )
+                }
+                _ => bypass_ramp::BypassRamp::INACTIVE,
+            };
+            entry.committed_bypass_ramp = ramp;
+            entry.scratch_bypass_ramp = ramp;
+        }
+    }
+
     /// Enter a residual-output owner after complete admission preflight. Owned
     /// sustain/freeze providers can release their held input-independent cycle;
     /// history and all storage stay with this chain until control retirement.
@@ -1647,6 +1720,7 @@ impl NativeRuntimeChain {
         for entry in &mut self.entries {
             entry.scratch_host_gains = entry.committed_host_gains;
             entry.scratch_matrix_ramp = entry.committed_matrix_ramp;
+            entry.scratch_bypass_ramp = entry.committed_bypass_ramp;
             entry.runtime.begin();
         }
     }
@@ -2190,6 +2264,92 @@ impl NativeRuntimeChain {
         input: Option<NativeTransientValue>,
         external: Option<NativeExternalAutomation<'_>>,
     ) -> Result<(), DeviceContractError> {
+        if !entry.scratch_bypass_ramp.is_active() {
+            return Self::process_entry_with_foreign_inner(
+                entry,
+                frames,
+                frame_offset,
+                clock,
+                output_clock,
+                foreign,
+                input,
+                external,
+            );
+        }
+        let mut offset = 0;
+        while entry.scratch_bypass_ramp.is_active() && offset < frames.len() {
+            const CHUNK: usize = 64;
+            let count = (frames.len() - offset)
+                .min(CHUNK)
+                .min(entry.scratch_bypass_ramp.remaining());
+            let end = offset + count;
+            let mut dry = [[0.0; 2]; CHUNK];
+            dry[..count].copy_from_slice(&frames[offset..end]);
+            let shifted_clock = clock.map(|clock| OffsetClock { clock, offset });
+            let shifted_output_clock = output_clock.map(|clock| OffsetClock { clock, offset });
+            let shifted_frame_offset = frame_offset
+                .checked_add(offset)
+                .ok_or(DeviceContractError::InvalidDescriptor)?;
+            let bypassed = entry.bypassed;
+            entry.bypassed = false;
+            let result = Self::process_entry_with_foreign_inner(
+                entry,
+                &mut frames[offset..end],
+                shifted_frame_offset,
+                shifted_clock
+                    .as_ref()
+                    .map(|c| c as &dyn NativeInstrumentClock),
+                shifted_output_clock
+                    .as_ref()
+                    .map(|c| c as &dyn NativeInstrumentClock),
+                foreign,
+                input,
+                external,
+            );
+            entry.bypassed = bypassed;
+            result?;
+            for (wet, dry) in frames[offset..end].iter_mut().zip(&dry[..count]) {
+                let mix = entry.scratch_bypass_ramp.next(bypassed);
+                for channel in 0..2 {
+                    wet[channel] = dry[channel] + (wet[channel] - dry[channel]) * mix;
+                }
+            }
+            offset = end;
+        }
+        if offset == frames.len() {
+            return Ok(());
+        }
+        let shifted_clock = clock.map(|clock| OffsetClock { clock, offset });
+        let shifted_output_clock = output_clock.map(|clock| OffsetClock { clock, offset });
+        Self::process_entry_with_foreign_inner(
+            entry,
+            &mut frames[offset..],
+            frame_offset
+                .checked_add(offset)
+                .ok_or(DeviceContractError::InvalidDescriptor)?,
+            shifted_clock
+                .as_ref()
+                .map(|c| c as &dyn NativeInstrumentClock),
+            shifted_output_clock
+                .as_ref()
+                .map(|c| c as &dyn NativeInstrumentClock),
+            foreign,
+            input,
+            external,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_entry_with_foreign_inner(
+        entry: &mut RuntimeEntry,
+        frames: &mut [StereoFrame],
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        output_clock: Option<&dyn NativeInstrumentClock>,
+        foreign: &mut dyn ForeignProcessors,
+        input: Option<NativeTransientValue>,
+        external: Option<NativeExternalAutomation<'_>>,
+    ) -> Result<(), DeviceContractError> {
         let external = external.filter(|window| {
             !entry.automation_frozen
                 && window.identity.owner() == entry.owner
@@ -2373,6 +2533,7 @@ impl NativeRuntimeChain {
         for entry in &mut self.entries {
             entry.committed_host_gains = entry.scratch_host_gains;
             entry.committed_matrix_ramp = entry.scratch_matrix_ramp;
+            entry.committed_bypass_ramp = entry.scratch_bypass_ramp;
             entry.runtime.commit();
             let reading = entry.runtime.take_dynamics_meter();
             if let Some(reading) = reading.filter(|_| entry.metering && !entry.bypassed) {
@@ -2385,6 +2546,7 @@ impl NativeRuntimeChain {
         for entry in &mut self.entries {
             entry.scratch_host_gains = entry.committed_host_gains;
             entry.scratch_matrix_ramp = entry.committed_matrix_ramp;
+            entry.scratch_bypass_ramp = entry.committed_bypass_ramp;
             entry.runtime.rollback();
         }
     }
@@ -2396,6 +2558,8 @@ impl NativeRuntimeChain {
             entry.scratch_host_gains = entry.committed_host_gains;
             entry.committed_matrix_ramp = matrix_ramp::MatrixRamp::INACTIVE;
             entry.scratch_matrix_ramp = matrix_ramp::MatrixRamp::INACTIVE;
+            entry.committed_bypass_ramp = bypass_ramp::BypassRamp::INACTIVE;
+            entry.scratch_bypass_ramp = bypass_ramp::BypassRamp::INACTIVE;
             entry.runtime.reset();
         }
     }
@@ -3437,7 +3601,10 @@ mod tests {
         assert!(old.configuration_matches_range(&same_content, 0..1));
         assert!(!old.configuration_matches_range(&changed, 0..1));
         assert!(!old.configuration_matches_range(&missing, 0..1));
-        assert!(!old.configuration_matches_range(&bypassed, 0..1));
+        assert!(
+            old.configuration_matches_range(&bypassed, 0..1),
+            "zero-latency bypass retains its live chain"
+        );
         assert!(!old.configuration_matches_range(&same_content, 0..2));
         assert!(
             !old.configuration_matches_range(&same_content, std::ops::Range { start: 1, end: 0 })

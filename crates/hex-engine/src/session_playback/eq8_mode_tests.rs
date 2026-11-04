@@ -39,6 +39,42 @@ fn largest_step(frames: &[[f32; 2]]) -> f32 {
         .fold(0.0, f32::max)
 }
 
+#[test]
+fn live_eq8_bypass_inherits_sounding_filter_without_detached_tail_or_click() {
+    let table = Arc::new(hex_devices::SineTable::new());
+    let original = project_with_eq8(0);
+    let original_revision = revision(&original, Arc::clone(&table));
+    let mut previous = SessionPlayback::new(Arc::clone(&original_revision)).unwrap();
+    previous.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut before = vec![[0.0; 2]; 2048];
+    previous.render(&mut before).unwrap();
+    let device = original.tracks()[0].devices()[0].id();
+    let mut editor = Editor::new(original, 8).unwrap();
+    editor
+        .execute(Command::ToggleDeviceBypass { device })
+        .unwrap();
+    let changed = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            Some(original_revision.session()),
+        )
+        .unwrap(),
+    );
+    let mut next = SessionPlayback::new(changed).unwrap();
+    next.try_inherit_state_from(&mut previous).unwrap();
+    assert_eq!(next.tail_groups.iter().flatten().count(), 0);
+    let mut after = vec![[0.0; 2]; 512];
+    next.render(&mut after).unwrap();
+    let boundary = (after[0][0] - before[2047][0]).abs();
+    let steady = largest_step(&before[1024..]);
+    assert!(
+        boundary <= steady * 1.5,
+        "bypass step {boundary}, steady {steady}"
+    );
+}
+
 /// Prepare the editor's project after switching the EQ8 to `mode`.
 fn switch_mode(
     editor: &mut Editor,

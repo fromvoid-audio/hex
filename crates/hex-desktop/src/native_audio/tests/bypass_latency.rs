@@ -4,6 +4,108 @@ use super::*;
 use hex_project::{Command, Created};
 
 #[test]
+fn live_eq_bypass_transition_keeps_output_continuous() {
+    let _native = native_fixture();
+    for owner in 0..3 {
+        let files = Files::new();
+        let mut h = ResidentHarness::with_frame_limit(131_072);
+        h.next();
+        let (mut applied, _) = h.applied(0);
+        let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+        (applied, _) = h.applied(applied);
+        let track = imported.state.project.tracks()[0].id();
+        let mut eq = hex_engine::eq::EqState {
+            output_gain: 2.0,
+            ..Default::default()
+        };
+        eq.add(
+            hex_engine::eq::Node::new(hex_engine::eq::NodeId::new(1).unwrap(), 1_000.0, 6.0, 0)
+                .unwrap(),
+        )
+        .unwrap();
+        let state = eq.encode().unwrap();
+        let command = match owner {
+            0 => Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            },
+            1 => {
+                let added = h.run(Request::Edit(Command::AddReturnTrack {
+                    name: "return".into(),
+                }));
+                (applied, _) = h.applied(applied);
+                let Some(Created::ReturnTrack(return_track)) = added.created else {
+                    panic!("return")
+                };
+                h.run(Request::Edit(Command::SetReturnSend {
+                    track,
+                    return_track,
+                    gain: 1.0,
+                }));
+                (applied, _) = h.applied(applied);
+                Command::InsertReturnDevice {
+                    return_track,
+                    before: None,
+                    state,
+                }
+            }
+            _ => Command::InsertMainDevice {
+                before: None,
+                state,
+            },
+        };
+        let inserted = h.run(Request::Edit(command));
+        let Some(Created::Device(device)) = inserted.created else {
+            panic!("EQ device")
+        };
+        (applied, _) = h.applied(applied);
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::PlayFrom(0))
+            .unwrap();
+        for _ in 0..16 {
+            h.render();
+        }
+        let before = h.render()[63][0];
+        h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+        let after = h.render();
+        let revision = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire);
+        assert!(revision > applied, "bypass must reach the callback");
+        assert!(
+            (after[0][0] - before).abs() < 0.02,
+            "discontinuity: {before} -> {}",
+            after[0][0]
+        );
+        for _ in 0..4 {
+            h.render();
+        }
+        let dry = h.render()[63][0];
+        assert!((dry - if owner == 1 { 0.5 } else { 0.25 }).abs() < 1e-3);
+        h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+        let resumed = h.render();
+        assert!(
+            (resumed[0][0] - dry).abs() < 0.02,
+            "resume discontinuity: {dry} -> {}",
+            resumed[0][0]
+        );
+        for _ in 0..4 {
+            h.render();
+        }
+        assert!((h.render()[63][0] - if owner == 1 { 0.75 } else { 0.5 }).abs() < 1e-3);
+    }
+}
+
+#[test]
 fn recovery_enabled_bypass_reaches_pumped_callback_and_reports_terminal_timing() {
     let _native = native_fixture();
     let files = Files::new();
@@ -67,7 +169,9 @@ fn recovery_enabled_bypass_reaches_pumped_callback_and_reports_terminal_timing()
                     .applied_revision
                     .load(std::sync::atomic::Ordering::Acquire);
                 if revision > applied {
-                    let expected = if bypassed { 0.25 } else { enabled };
+                    let from = if bypassed { enabled } else { 0.25 };
+                    let target = if bypassed { 0.25 } else { enabled };
+                    let expected = from + (target - from) * (64.0 / 240.0);
                     assert!(
                         (output[63][0] - expected).abs() < 1e-4,
                         "iteration={iteration}, output={}, expected={expected}",
@@ -89,6 +193,9 @@ fn recovery_enabled_bypass_reaches_pumped_callback_and_reports_terminal_timing()
                 if iteration >= 2 {
                     audio_times.push(audio);
                     terminal_times.push(terminal);
+                }
+                for _ in 0..3 {
+                    h.render();
                 }
                 break;
             }
@@ -185,7 +292,9 @@ fn utility_bypass_publication_reaches_next_pumped_callback() {
             event.state.project.device(device).unwrap().bypassed(),
             bypassed
         );
-        let expected = if bypassed { 0.25 } else { enabled };
+        let from = if bypassed { enabled } else { 0.25 };
+        let target = if bypassed { 0.25 } else { enabled };
+        let expected = from + (target - from) * (64.0 / 240.0);
         assert!(
             (output[63][0] - expected).abs() < 1e-4,
             "bypassed={bypassed} output={:?}",
@@ -193,6 +302,9 @@ fn utility_bypass_publication_reaches_next_pumped_callback() {
         );
         if iteration >= 2 {
             times.push(started.elapsed().as_micros());
+        }
+        for _ in 0..3 {
+            h.render();
         }
         applied = next;
     }
