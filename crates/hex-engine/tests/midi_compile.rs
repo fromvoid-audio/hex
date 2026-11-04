@@ -1856,3 +1856,124 @@ fn frame_range_copy_keeps_a_touching_midi_source_exact() {
     );
     assert_eq!(midi_events(editor.project()).unwrap(), events);
 }
+
+#[test]
+fn arrangement_split_preserves_playability_of_a_subframe_carry() {
+    for (rate, bpm) in [
+        (44_100, 120_000_000),
+        (48_000, 120_000_000),
+        (44_100, 137_000_000),
+        (48_000, 137_000_000),
+    ] {
+        let (mut editor, track) = setup_at_rate(rate);
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(bpm).unwrap(),
+            })
+            .unwrap();
+        let frame = editor
+            .project()
+            .tempo_map()
+            .beat_to_frame(BeatTime::ONE)
+            .unwrap();
+        let cut = editor.project().tempo_map().frame_to_beat(frame).unwrap();
+        let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(2, 1));
+        for (start, duration, pitch) in [
+            (BeatTime::ZERO, BeatTime::from_raw(cut.raw() + 1), 60),
+            (BeatTime::from_raw(cut.raw() + 100), beat(1, 64), 64),
+        ] {
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start,
+                    duration,
+                    pitch,
+                    channel: 0,
+                    velocity: 100,
+                })
+                .unwrap();
+        }
+        let edges = |project: &Project| {
+            midi_events(project)
+                .unwrap()
+                .into_iter()
+                .map(|event| {
+                    (
+                        event.frame,
+                        event.kind,
+                        event.pitch,
+                        event.channel,
+                        event.velocity,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = edges(editor.project());
+        editor
+            .execute(Command::SplitTracksAtFrame {
+                tracks: vec![track],
+                frame,
+            })
+            .unwrap();
+        assert_eq!(
+            edges(editor.project()),
+            before,
+            "the subframe carry adds no edges at {rate} Hz and {bpm} microbpm"
+        );
+        let after = editor.project().snapshot();
+        assert!(editor.undo());
+        assert_eq!(edges(editor.project()), before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+        assert_eq!(edges(editor.project()), before);
+    }
+}
+
+#[test]
+fn subframe_carry_fallback_keeps_other_crossing_gates_balanced() {
+    let (mut editor, track) = setup();
+    let clip = add_clip(&mut editor, track, BeatTime::ZERO, beat(2, 1));
+    for (start, duration, pitch) in [
+        (
+            BeatTime::ZERO,
+            BeatTime::from_raw(BeatTime::ONE.raw() + 1),
+            60,
+        ),
+        (beat(3, 4), beat(1, 2), 70),
+    ] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration,
+                pitch,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+    }
+    let frame = editor
+        .project()
+        .tempo_map()
+        .beat_to_frame(BeatTime::ONE)
+        .unwrap();
+    editor
+        .execute(Command::SplitTracksAtFrame {
+            tracks: vec![track],
+            frame,
+        })
+        .unwrap();
+    let edges: Vec<_> = midi_events(editor.project())
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.pitch == 70)
+        .map(|event| (event.frame, event.kind))
+        .collect();
+    assert_eq!(edges.len(), 4);
+    assert_eq!(edges[0].1, MidiEventKind::NoteOn);
+    assert_eq!(edges[1], (frame, MidiEventKind::NoteOff));
+    assert_eq!(edges[2], (frame, MidiEventKind::NoteOn));
+    assert_eq!(edges[3].1, MidiEventKind::NoteOff);
+    assert!(edges[0].0 < frame && edges[3].0 > frame);
+}

@@ -3,6 +3,7 @@ use super::{CancelClipName, CommitClipName, EditorMode, EditorView, RenameClip, 
 use crate::theme;
 use gpui::{
     App, AppContext, Context, Entity, KeyBinding, Subscription, Window, div, prelude::*, px, rgb,
+    rgba,
 };
 use hex_project::{ClipId, Command, SessionCellContent};
 use hex_session::service::Request;
@@ -329,6 +330,8 @@ fn clip_name_surface(fill: u32) -> gpui::Div {
         .text_xs()
         .line_height(px(14.0))
         .bg(rgb(fill))
+        .border_b(px(0.5))
+        .border_color(rgba((text << 8) | 0x70))
         .text_color(rgb(text))
 }
 

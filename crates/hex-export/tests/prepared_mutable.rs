@@ -382,7 +382,16 @@ fn prepared_hybrid_with_state(
     arrangement_loop: bool,
     state: NativeDeviceState,
 ) -> (Arc<PreparedRevision>, AssetId) {
-    let mut editor = Editor::new(Project::new(RATE).expect("project"), 8).expect("editor");
+    prepared_hybrid_with_state_at_rate(transport_loop, session_loop, arrangement_loop, state, RATE)
+}
+fn prepared_hybrid_with_state_at_rate(
+    transport_loop: bool,
+    session_loop: bool,
+    arrangement_loop: bool,
+    state: NativeDeviceState,
+    rate: u32,
+) -> (Arc<PreparedRevision>, AssetId) {
+    let mut editor = Editor::new(Project::new(rate).expect("project"), 8).expect("editor");
     let track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "hybrid".into(),
@@ -481,13 +490,13 @@ fn prepared_hybrid_with_state(
     let audio_frames = (0..512)
         .map(|index| [index as f32 / 2048.0, -(index as f32) / 4096.0])
         .collect();
-    let audio = Audio::new(RATE, audio_frames).expect("audio");
+    let audio = Audio::new(rate, audio_frames).expect("audio");
     let imported = editor
         .execute(Command::ImportPreparedAudioClip {
             track,
             start: 0,
             path: PathBuf::from("/fixture/hybrid.wav"),
-            source_sample_rate: RATE,
+            source_sample_rate: rate,
             source_frames: 512,
             playback_frames: 512,
             conversion_version: IDENTITY_CONVERSION,
@@ -777,9 +786,16 @@ fn linear_export_owner_rejects_session_routes_and_state_inheritance_both_ways() 
 
 #[test]
 fn arrangement_bounce_caps_actual_nonquiescent_tail_and_preserves_destinations() {
+    const TAIL_RATE: u32 = 8_000;
     let dir = TestDir::new();
     let path = dir.0.join("capped-tail.wav");
-    let (revision, _) = prepared_hybrid_using(false, false, false, true);
+    let (revision, _) = prepared_hybrid_with_state_at_rate(
+        false,
+        false,
+        false,
+        NativeDeviceState::new(FIXTURE_TYPE, 1, vec![2]).unwrap(),
+        TAIL_RATE,
+    );
     let report = hex_export::render_arrangement_bounce_new(
         &path,
         revision,
@@ -790,7 +806,7 @@ fn arrangement_bounce_caps_actual_nonquiescent_tail_and_preserves_destinations()
         &hex_export::ExportControl::default(),
     )
     .expect("unfinished tail is a successful capped bounce");
-    assert_eq!(report.frames, 320 + u64::from(RATE) * 30);
+    assert_eq!(report.frames, 320 + u64::from(TAIL_RATE) * 30);
     assert_eq!(report.data_bytes, report.frames as u32 * 8);
     let bytes = fs::read(&path).unwrap();
     assert_eq!(
@@ -802,7 +818,10 @@ fn arrangement_bounce_caps_actual_nonquiescent_tail_and_preserves_destinations()
         3,
         "float WAV"
     );
-    assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), RATE);
+    assert_eq!(
+        u32::from_le_bytes(bytes[24..28].try_into().unwrap()),
+        TAIL_RATE
+    );
     assert!(
         bytes[bytes.len() - 8..]
             .chunks_exact(4)
@@ -837,13 +856,15 @@ fn arrangement_bounce_caps_actual_nonquiescent_tail_and_preserves_destinations()
 
 #[test]
 fn arrangement_bounce_keeps_a_naturally_ending_tail_beyond_ten_seconds() {
+    const TAIL_RATE: u32 = 8_000;
     let dir = TestDir::new();
     let path = dir.0.join("natural-tail.wav");
-    let (revision, _) = prepared_hybrid_with_state(
+    let (revision, _) = prepared_hybrid_with_state_at_rate(
         false,
         false,
         false,
         NativeDeviceState::new(FIXTURE_TYPE, 1, vec![3]).unwrap(),
+        TAIL_RATE,
     );
     let report = hex_export::render_arrangement_bounce_new(
         &path,
@@ -855,10 +876,10 @@ fn arrangement_bounce_keeps_a_naturally_ending_tail_beyond_ten_seconds() {
         &hex_export::ExportControl::default(),
     )
     .expect("a twelve-second release finishes naturally");
-    assert!(report.frames > u64::from(RATE) * 12);
-    assert!(report.frames < u64::from(RATE) * 13);
+    assert!(report.frames > u64::from(TAIL_RATE) * 12);
+    assert!(report.frames < u64::from(TAIL_RATE) * 13);
     let bytes = fs::read(&path).unwrap();
-    let late = hex_export::FLOAT32_WAV_HEADER_BYTES as usize + RATE as usize * 11 * 8;
+    let late = hex_export::FLOAT32_WAV_HEADER_BYTES as usize + TAIL_RATE as usize * 11 * 8;
     assert!(
         bytes[late..late + 8]
             .chunks_exact(4)
@@ -873,12 +894,14 @@ fn arrangement_bounce_keeps_a_naturally_ending_tail_beyond_ten_seconds() {
 
 #[test]
 fn arrangement_bounce_ignores_quiet_noise_without_trimming_selected_content() {
+    const TAIL_RATE: u32 = 8_000;
     let dir = TestDir::new();
-    let (revision, _) = prepared_hybrid_with_state(
+    let (revision, _) = prepared_hybrid_with_state_at_rate(
         false,
         false,
         false,
         NativeDeviceState::new(FIXTURE_TYPE, 1, vec![4]).unwrap(),
+        TAIL_RATE,
     );
     let path = dir.0.join("quiet-tail.wav");
     let report = hex_export::render_arrangement_bounce_new(
@@ -923,12 +946,14 @@ fn arrangement_bounce_ignores_quiet_noise_without_trimming_selected_content() {
 
 #[test]
 fn arrangement_bounce_keeps_a_late_one_channel_echo_across_quiet_noise() {
+    const TAIL_RATE: u32 = 8_000;
     let dir = TestDir::new();
-    let (revision, _) = prepared_hybrid_with_state(
+    let (revision, _) = prepared_hybrid_with_state_at_rate(
         false,
         false,
         false,
         NativeDeviceState::new(FIXTURE_TYPE, 1, vec![5]).unwrap(),
+        TAIL_RATE,
     );
     let path = dir.0.join("late-echo.wav");
     let report = hex_export::render_arrangement_bounce_new(
@@ -941,10 +966,10 @@ fn arrangement_bounce_keeps_a_late_one_channel_echo_across_quiet_noise() {
         &hex_export::ExportControl::default(),
     )
     .unwrap();
-    let echo_frame = u64::from(RATE) * 12;
+    let echo_frame = u64::from(TAIL_RATE) * 12;
     assert_eq!(
         report.frames,
-        echo_frame + 1 + u64::from(RATE) / 20,
+        echo_frame + 1 + u64::from(TAIL_RATE) / 20,
         "retain fifty milliseconds after the late echo"
     );
     let bytes = fs::read(path).unwrap();

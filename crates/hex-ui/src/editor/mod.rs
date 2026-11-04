@@ -147,6 +147,7 @@ mod midi_pan;
 mod midi_pitch_zoom;
 mod midi_recording;
 mod missing_media;
+mod track_defaults;
 mod user_errors;
 #[cfg(feature = "ui-test-support")]
 pub(crate) use midi_recording::pressure_fixture::exercise as midi_pressure_fixture;
@@ -752,6 +753,7 @@ pub(super) struct EnqueuedNativeDeviceDrop {
 
 pub(super) struct EditorView {
     service: Service,
+    solo_observation: Option<hex_session::service::SoloViewObservation>,
     transport_trace: Option<crate::diagnostics::TransportTrace>,
     audio: Option<crate::EditorAudio>,
     retired_action_outcomes: Option<hex_audio::prepared::ActionOutcomeReader>,
@@ -1004,6 +1006,8 @@ pub(super) struct EditorView {
     last_enqueued_arrangement_device_drop:
         Option<hex_session::service::ArrangementDeviceDestination>,
     #[cfg(test)]
+    last_enqueued_device_track_gain: Option<Option<f32>>,
+    #[cfg(test)]
     last_enqueued_native_device_drop: Option<EnqueuedNativeDeviceDrop>,
     #[cfg(test)]
     last_time_request: Option<(&'static str, Option<(TrackId, u64)>)>,
@@ -1026,6 +1030,7 @@ pub(super) struct EditorView {
     missing_media: Option<missing_media::Panel>,
     theme_settings: theme_settings::ThemeSettingsState,
     audio_import_settings: audio_import_settings::State,
+    track_defaults: track_defaults::State,
     tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
@@ -1035,6 +1040,8 @@ pub(super) struct EditorView {
     /// The selected clip whose in-clip cursor a loop enable retired; the loop
     /// start then keeps outranking that clip's play start until a new click.
     loop_start_over_clip: Option<ClipId>,
+    /// Successful selection-loop start, fenced by the user's selection intent.
+    selection_loop_start: Option<(u64, hex_project::LoopRegion)>,
     detail_context: Option<detail_context::DetailContext>,
     clip_paint_gesture: Option<clip_paint::ClipPaintGesture>,
     time_selection: Option<time_selection::TimeSelection>,
@@ -1488,6 +1495,9 @@ impl EditorView {
         let audio_import_settings = audio_import_settings::State::new(
             theme_preferences_path.with_file_name("audio-import.json"),
         );
+        let track_defaults = track_defaults::State::new(
+            theme_preferences_path.with_file_name("track-defaults.json"),
+        );
         let controller_input = controller_input::ControllerInput::new(
             theme_preferences_path.with_file_name("midi-input.json"),
         );
@@ -1496,6 +1506,7 @@ impl EditorView {
         let mut view = Self {
             transport_trace: crate::diagnostics::TransportTrace::from_app(cx),
             service,
+            solo_observation: None,
             audio,
             retired_action_outcomes: None,
             retired_action_message: None,
@@ -1730,6 +1741,8 @@ impl EditorView {
             #[cfg(test)]
             last_enqueued_arrangement_device_drop: None,
             #[cfg(test)]
+            last_enqueued_device_track_gain: None,
+            #[cfg(test)]
             last_time_request: None,
             #[cfg(test)]
             last_transport_command: None,
@@ -1750,11 +1763,13 @@ impl EditorView {
             missing_media: None,
             theme_settings,
             audio_import_settings,
+            track_defaults,
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
             edit_cursor: None,
             edit_cursor_in_selected_clip: None,
             loop_start_over_clip: None,
+            selection_loop_start: None,
             detail_context: None,
             clip_paint_gesture: None,
             time_selection: None,
@@ -1780,6 +1795,7 @@ impl EditorView {
         view.start_project_directory_load(cx);
         view.start_theme_preferences_load(cx);
         view.start_audio_import_preferences_load(cx);
+        view.start_track_defaults_load(cx);
         view.start_controller_preferences_load(cx);
         view
     }
@@ -1872,6 +1888,16 @@ impl EditorView {
     }
 
     fn playback_start_frame(&self) -> u64 {
+        if let Some((epoch, region)) = self.selection_loop_start
+            && self.selection_intent_epoch == Some(epoch)
+            && self
+                .state
+                .as_ref()
+                .and_then(|state| state.project.loop_region())
+                == Some(region)
+        {
+            return region.start();
+        }
         // The user's placed position wins, even outside an enabled loop; the
         // acknowledged canonical loop only supplies a start when none is placed.
         // Enabling the loop retires an earlier point cursor (Pulse #3838).
@@ -1893,6 +1919,39 @@ impl EditorView {
             .and_then(|state| state.project.loop_region())
             .filter(|region| region.enabled())
             .map_or(0, |region| region.start())
+    }
+
+    fn observe_solo_view(&mut self, view: hex_session::service::SoloViewObservation) -> bool {
+        if view.project_generation != self.project_generation
+            || self
+                .state
+                .as_ref()
+                .is_none_or(|state| state.revision != view.previous_revision)
+            || view.revision != view.previous_revision.saturating_add(1)
+        {
+            return false;
+        }
+        self.solo_observation = Some(view);
+        true
+    }
+
+    fn displayed_solo(&self, track: TrackId, canonical: bool) -> bool {
+        self.solo_observation
+            .as_ref()
+            .filter(|view| {
+                view.project_generation == self.project_generation
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == view.previous_revision)
+            })
+            .and_then(|view| {
+                view.tracks
+                    .iter()
+                    .find(|(id, _)| *id == track)
+                    .map(|(_, soloed)| *soloed)
+            })
+            .unwrap_or(canonical)
     }
 
     pub(super) fn toggle_solo(&mut self, track: TrackId, exclusive: bool) {
@@ -1975,9 +2034,7 @@ impl EditorView {
     }
 
     pub(super) fn add_track(&mut self) {
-        self.enqueue(Request::Edit(Command::InsertDefaultTrack {
-            before_track: self.new_track_insertion_anchor(),
-        }));
+        self.insert_default_track(self.new_track_insertion_anchor());
     }
 
     pub(super) fn remove_track(&mut self, cx: &mut Context<Self>) {

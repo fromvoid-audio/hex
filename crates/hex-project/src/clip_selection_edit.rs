@@ -523,6 +523,8 @@ impl Command {
             | Self::GroupClips(_)
             | Self::DuplicateClips(_)
             | Self::DuplicateAliasClips(_)
+            | Self::DuplicateAliasClipsAt { .. }
+            | Self::DuplicateAliasClipToNewTrack { .. }
             | Self::MakeClipsUnique(_)
             | Self::ApplyClipSettingsToAliases(_)
             | Self::DuplicateSessionCell { .. }
@@ -548,6 +550,7 @@ impl Command {
             | Self::SetTrackColor { .. }
             | Self::InsertTrackWithDevice { .. }
             | Self::InsertDefaultTrackWithDevice { .. }
+            | Self::InsertDefaultTrackWithDeviceAndGain { .. }
             | Self::SpliceGainTouch { .. }
             | Self::SpliceGainTouchBatch { .. }
             | Self::ReplaceTrackGainEnvelope { .. }
@@ -579,6 +582,7 @@ impl Command {
             | Self::CompareDevice { .. }
             | Self::ReplaceDeviceComparison { .. }
             | Self::AddReturnTrack { .. }
+            | Self::AddReturnTrackWithGain { .. }
             | Self::RemoveReturnTrack(..)
             | Self::RenameReturnTrack { .. }
             | Self::ReturnGain { .. }
@@ -593,6 +597,7 @@ impl Command {
             | Self::AddTrack { .. }
             | Self::InsertTrack { .. }
             | Self::InsertDefaultTrack { .. }
+            | Self::InsertDefaultTrackWithGain { .. }
             | Self::MoveTrackBefore { .. }
             | Self::MoveTracksBefore { .. }
             | Self::PasteTracks { .. }

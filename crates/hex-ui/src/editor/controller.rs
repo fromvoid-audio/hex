@@ -1071,6 +1071,9 @@ impl EditorView {
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
+        if let Ok(view) = self.service.try_solo_view() {
+            visible_change |= self.observe_solo_view(view);
+        }
         visible_change |= self.poll_retired_action_outcomes();
         if self.retired_action_outcomes.is_none()
             && self.audio.as_ref().is_some_and(|audio| {
@@ -2119,6 +2122,13 @@ impl EditorView {
             // admission, an input target, or any pending publication owner.
             return None;
         }
+        if self
+            .solo_observation
+            .as_ref()
+            .is_some_and(|view| event.project_replaced || event.state.revision >= view.revision)
+        {
+            self.solo_observation = None;
+        }
         if event.request_complete && event.error.is_some() {
             self.cancel_new_preparation();
         }
@@ -2456,6 +2466,14 @@ impl EditorView {
             .and_then(|state| state.project.loop_region())
             .is_some_and(|region| region.enabled());
         self.state = Some(event.state);
+        if self.selection_loop_start.is_some_and(|(_, region)| {
+            self.state
+                .as_ref()
+                .and_then(|state| state.project.loop_region())
+                != Some(region)
+        }) {
+            self.selection_loop_start = None;
+        }
         if !event.project_replaced {
             self.retire_point_cursor_on_loop_enable(loop_was_enabled);
         }
@@ -2546,6 +2564,7 @@ impl EditorView {
             self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
             self.loop_start_over_clip = None;
+            self.selection_loop_start = None;
             self.clip_paint_gesture = None;
             self.cancel_section_pointer();
             self.time_selection = None;
@@ -3183,8 +3202,14 @@ impl EditorView {
             _ => {}
         }
         #[cfg(test)]
-        if let Request::DropBrowserDeviceOnArrangement { destination, .. } = &request {
+        if let Request::DropBrowserDeviceOnArrangement {
+            destination,
+            new_track_gain,
+            ..
+        } = &request
+        {
             self.last_enqueued_arrangement_device_drop = Some(*destination);
+            self.last_enqueued_device_track_gain = Some(*new_track_gain);
         }
         #[cfg(test)]
         if let Request::ConvertClip {
@@ -3282,6 +3307,12 @@ impl EditorView {
             path,
             before_track,
             start,
+        }
+        | Request::ImportToNewTrackWithGain {
+            path,
+            before_track,
+            start,
+            ..
         } = &request
         {
             self.last_enqueued_import_to_new_track = Some((path.clone(), *before_track, *start));
@@ -3336,6 +3367,7 @@ impl EditorView {
                 | Request::ImportToTrack { .. }
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
+                | Request::ImportToNewTrackWithGain { .. }
                 | Request::ImportToSession { .. }
                 | Request::RecoverTruncatedImport(_)
                 | Request::RelinkMedia(_)
