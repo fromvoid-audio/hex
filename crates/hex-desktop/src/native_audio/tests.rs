@@ -4,6 +4,7 @@ use super::*;
 mod bypass_latency;
 mod delay_bypass;
 mod limiter;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod plugins;
 mod recovery;
 mod resident_authoring;
@@ -25,6 +26,8 @@ mod touch_recording;
 mod track_clipboard;
 mod track_reorder;
 mod transport_loop;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+mod unavailable_plugins;
 mod utility_width;
 mod verified_gain;
 mod worker_idle;
