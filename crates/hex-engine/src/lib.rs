@@ -121,7 +121,6 @@ pub use gain_envelope::{
     MAX_PREPARED_GAIN_BYTES, MAX_PREPARED_GAIN_KNOTS,
 };
 mod clip_index;
-#[cfg(test)]
 mod loop_seam;
 mod stream_miss_fade;
 pub use stream_miss_fade::{STREAM_MISS_FADE_VOICES, StreamMissFades};
@@ -1665,6 +1664,7 @@ impl Track {
         capture: &mut [Frame],
         continuations: &[Option<hex_lattice::AnalyticContinuation>],
         timing: Option<&dyn prepared_tempo::MidiTempoBreaks>,
+        loop_fade: Option<loop_seam::LoopEndFade>,
     ) -> Result<(), Invalid> {
         self.require_volume_timing(timing)?;
         let end_frame = start_frame
@@ -1676,7 +1676,42 @@ impl Track {
             return Err(Invalid("capture length mismatch"));
         }
         if !self.source_mix.muted {
-            self.render_audio_range_captured(start_frame, end_frame, output, pages, Some(capture));
+            if let Some(fade) = loop_fade.filter(|fade| fade.intersects(start_frame, output.len()))
+            {
+                if output.len() > 256 {
+                    return Err(Invalid("captured source range exceeds render chunk"));
+                }
+                let mut audio = [[0.0; 2]; 256];
+                let mut audio_capture = [[0.0; 2]; 256];
+                let count = output.len();
+                self.render_audio_range_captured(
+                    start_frame,
+                    end_frame,
+                    &mut audio[..count],
+                    pages,
+                    Some(&mut audio_capture[..count]),
+                );
+                fade.apply(start_frame, &mut audio[..count]);
+                fade.apply(start_frame, &mut audio_capture[..count]);
+                for ((out, captured), (sample, tap)) in output
+                    .iter_mut()
+                    .zip(capture.iter_mut())
+                    .zip(audio.iter().zip(audio_capture.iter()))
+                {
+                    out[0] += sample[0];
+                    out[1] += sample[1];
+                    captured[0] += tap[0];
+                    captured[1] += tap[1];
+                }
+            } else {
+                self.render_audio_range_captured(
+                    start_frame,
+                    end_frame,
+                    output,
+                    pages,
+                    Some(capture),
+                );
+            }
             self.render_instrument_range_with_suppressions(
                 (start_frame, end_frame),
                 output,

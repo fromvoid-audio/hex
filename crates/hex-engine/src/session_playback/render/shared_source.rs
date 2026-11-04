@@ -150,6 +150,7 @@ pub(super) fn render_source_instrument_chunk<T: crate::prepared_tempo::MidiTempo
                 continuations: context.continuations,
                 index,
                 raw: true,
+                loop_fade: None,
                 timing: context.timing,
                 table: context.table,
             },

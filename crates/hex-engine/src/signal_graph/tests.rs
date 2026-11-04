@@ -392,6 +392,11 @@ fn resident_compensated_windows_match_independent_loop_pcm() {
         } else {
             source[timeline]
         };
+        if (19..24).contains(&timeline) {
+            let gain = (23 - timeline) as f32 / 4.0;
+            output[0] *= gain;
+            output[1] *= gain;
+        }
     }
     assert_eq!(actual, expected);
     for partition in [1, 17, 64, 256] {
@@ -827,7 +832,11 @@ fn gain_uses_delayed_content_frame_and_loop_history_survives_wrap() {
         } else {
             let origin = (index - 7) % 8;
             let gain = if origin < 3 { 0.5 } else { 1.0 };
-            [f.samples[origin][0] * gain, f.samples[origin][1] * gain]
+            let fade = if origin == 7 { 0.0 } else { 1.0 };
+            [
+                f.samples[origin][0] * fade * gain,
+                f.samples[origin][1] * fade * gain,
+            ]
         };
         assert_eq!(*frame, expected, "frame {index}");
     }
