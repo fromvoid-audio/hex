@@ -541,17 +541,18 @@ fn move_to_new_track_command(
     name: String,
     before_track: Option<TrackId>,
     position: ClipPosition,
+    gain: f32,
 ) -> Command {
     match position {
         ClipPosition::Audio { start, .. } => Command::MoveClipToNewTrack {
-            initial_gain: None,
+            initial_gain: Some(gain),
             clip,
             name,
             before_track,
             start,
         },
         ClipPosition::Midi { start, .. } => Command::MoveMidiClipToNewTrack {
-            initial_gain: None,
+            initial_gain: Some(gain),
             clip,
             name,
             before_track,
@@ -565,17 +566,18 @@ fn copy_to_new_track_command(
     name: String,
     before_track: Option<TrackId>,
     position: ClipPosition,
+    gain: f32,
 ) -> Command {
     match position {
         ClipPosition::Audio { start, .. } => Command::CopyClipToNewTrack {
-            initial_gain: None,
+            initial_gain: Some(gain),
             clip,
             name,
             before_track,
             start,
         },
         ClipPosition::Midi { start, .. } => Command::CopyMidiClipToNewTrack {
-            initial_gain: None,
+            initial_gain: Some(gain),
             clip,
             name,
             before_track,
@@ -932,6 +934,15 @@ impl super::EditorView {
             cx.notify();
             return;
         }
+        let gain = match self.track_defaults.captured_gain() {
+            Ok(gain) => gain,
+            Err(error) => {
+                self.error = Some(error.into());
+                self.clear_clip_drag(drag.project_generation, drag.clip);
+                cx.notify();
+                return;
+            }
+        };
         let count = self
             .state
             .as_ref()
@@ -939,7 +950,7 @@ impl super::EditorView {
         let name = format!("track {}", count + 1);
         if drag.alias_copy() {
             let command = Command::DuplicateAliasClipToNewTrack {
-                initial_gain: None,
+                initial_gain: Some(gain),
                 clip: drag.clip,
                 name,
                 before_track,
@@ -976,9 +987,9 @@ impl super::EditorView {
             }
         } else {
             let command = if drag.copy_modifier.get() {
-                copy_to_new_track_command(drag.clip, name, before_track, position)
+                copy_to_new_track_command(drag.clip, name, before_track, position, gain)
             } else {
-                move_to_new_track_command(drag.clip, name, before_track, position)
+                move_to_new_track_command(drag.clip, name, before_track, position, gain)
             };
             let Some(source) = self
                 .state

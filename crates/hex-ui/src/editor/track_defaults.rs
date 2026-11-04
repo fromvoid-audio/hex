@@ -39,6 +39,13 @@ impl State {
         }
     }
 
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn set_test_state(&mut self, gain: f32, loading: bool, writable: bool) {
+        self.committed = TrackDefaults::new(gain).unwrap();
+        self.loading = loading;
+        self.writable = writable;
+    }
+
     pub(super) fn captured_gain(&self) -> Result<f32, &'static str> {
         if self.loading {
             return Err("track defaults are loading · retry shortly");
