@@ -362,12 +362,11 @@ pub(super) fn waveform_canvas(
                 .map(Arc::new)
             });
             #[cfg(all(test, feature = "ui-test-support"))]
-            if let Some(geometry) = &geometry {
-                if let Some(cache) = &cache
-                    && let Ok(mut cache) = cache.try_borrow_mut()
-                {
-                    cache.record_paint(bounds, paint.mask, geometry);
-                }
+            if let Some(geometry) = &geometry
+                && let Some(cache) = &cache
+                && let Ok(mut cache) = cache.try_borrow_mut()
+            {
+                cache.record_paint(bounds, paint.mask, geometry);
             }
             geometry
         },
@@ -676,11 +675,12 @@ pub(super) fn push_source_range(
     let (Ok(start), Ok(end)) = (usize::try_from(start), usize::try_from(end)) else {
         return;
     };
-    if start < end && end <= available_frames {
-        if let Some(slot) = ranges.ranges.get_mut(ranges.len) {
-            *slot = start..end;
-            ranges.len += 1;
-        }
+    if start < end
+        && end <= available_frames
+        && let Some(slot) = ranges.ranges.get_mut(ranges.len)
+    {
+        *slot = start..end;
+        ranges.len += 1;
     }
 }
 

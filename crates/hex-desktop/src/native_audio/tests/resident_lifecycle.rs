@@ -96,6 +96,15 @@ fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -
     // both actual headless carriers and the old Client, then wait for the real exclusive Lease.
     h.release_relinquished_output();
     h.wait_fresh_output(old_output);
+    // The worker named the retired endpoint before opening the fresh one.
+    let generation = event
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context()
+        .project_generation;
+    assert_eq!(h.released.last(), Some(&(generation, old_output)));
     assert!(
         h.audio
             .as_ref()
@@ -652,13 +661,23 @@ fn production_default_verified_gestures_rebase_barriers_and_restore_use_verified
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
+    // A changed static device matrix ramps over `rate.div_ceil(200)` frames
+    // (Pulse #4101); 8 blocks of 64 frames cover that ramp up to 96 kHz.
     let assert_pcm = |h: &mut ResidentHarness, sample: f32| {
         let deadline = Instant::now() + Duration::from_secs(10);
+        let mut ramp_blocks = 0;
         loop {
             let pcm = h.render();
             if pcm.iter().flatten().any(|value| *value != 0.0) {
-                assert_eq!(pcm, [[sample; 2]; 64]);
-                return;
+                if pcm == [[sample; 2]; 64] {
+                    return;
+                }
+                ramp_blocks += 1;
+                assert!(
+                    ramp_blocks <= 8,
+                    "output did not settle at {sample}: {pcm:?}"
+                );
+                continue;
             }
             // Verified source identity/admission ACK precedes asynchronous page readiness.
             assert!(

@@ -20,6 +20,20 @@ impl Default for Envelope {
     }
 }
 
+/// Prepared release floor: about 2 ms at the output rate, at least one frame.
+///
+/// A gated note-off ramps linearly from its held level to zero over at least
+/// this many frames, so the largest per-frame step at release is
+/// `held / release_frames` (at most 1/96 of full scale at 48 kHz) and note-off
+/// never hard-cuts. Only the prepared value changes; authored
+/// `release_seconds` is kept, so saved state is unaffected. The declared
+/// runtime tail and voice lifetimes follow through `release_frames()`.
+pub(super) const RELEASE_FLOOR_SECONDS: f64 = 0.002;
+
+pub(super) fn release_floor_frames(rate: u32) -> u64 {
+    ((RELEASE_FLOOR_SECONDS * f64::from(rate)).round() as u64).max(1)
+}
+
 impl Envelope {
     pub(super) fn prepare(self, rate: u32) -> Result<PreparedEnvelope, Invalid> {
         if !finite_range(self.attack_seconds, 0.0, 60.0)
@@ -34,7 +48,7 @@ impl Envelope {
             attack: frames(self.attack_seconds),
             decay: frames(self.decay_seconds),
             sustain: self.sustain,
-            release: frames(self.release_seconds),
+            release: frames(self.release_seconds).max(release_floor_frames(rate)),
         })
     }
 }

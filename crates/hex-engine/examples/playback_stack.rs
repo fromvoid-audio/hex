@@ -428,7 +428,7 @@ fn project_fixture(
 }
 
 fn format_bytes(bytes: usize) -> String {
-    if bytes >= 1024 * 1024 && bytes % (1024 * 1024) == 0 {
+    if bytes >= 1024 * 1024 && bytes.is_multiple_of(1024 * 1024) {
         format!("{} MiB", bytes / (1024 * 1024))
     } else if bytes >= 1024 {
         format!("{} KiB", bytes / 1024)

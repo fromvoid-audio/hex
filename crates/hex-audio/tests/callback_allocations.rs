@@ -14,6 +14,8 @@ mod project_tuning;
 #[path = "../../hex-engine/examples/support/session_audio_fixture.rs"]
 #[allow(dead_code)]
 mod session_audio_fixture;
+#[path = "callback_allocations/transport_fade.rs"]
+mod transport_fade;
 use probe::{compare_output, measured_block, measured_shutdown};
 
 use allocation_counter::{AllocationInfo, measure};
@@ -1554,6 +1556,92 @@ fn auto_pan_prepared_callback_and_parameter_handoff_are_allocation_free()
 }
 
 #[test]
+fn bypassed_limiter_and_delay_block_paths_are_callback_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    let mut editor = Editor::new(Project::new(RATE)?, 8)?;
+    let track = match editor.execute(Command::AddTrack {
+        name: "bypassed limiter delay allocation probe".into(),
+    })? {
+        Created::Track(track) => track,
+        _ => return Err("expected audio track".into()),
+    };
+    let asset = match editor.execute(Command::AddAsset {
+        path: "memory/bypassed-limiter-delay.wav".into(),
+        sample_rate: RATE,
+        frames: (BLOCK * 2) as u64,
+    })? {
+        Created::Asset(asset) => asset,
+        _ => return Err("expected audio asset".into()),
+    };
+    editor.execute(Command::PlaceClip {
+        track,
+        asset,
+        start: 0,
+        duration: (BLOCK * 2) as u64,
+        source_offset: 0,
+        source_length: (BLOCK * 2) as u64,
+        looping: false,
+    })?;
+    // BLOCK exceeds the Limiter's bounded bypass scratch, so the chunked path runs.
+    for type_id in ["hex.limiter", "hex.delay"] {
+        let state = hex_engine::default_native_device_state(DeviceTypeId::new(type_id)?)?;
+        let Created::Device(device) = editor.execute(Command::InsertDevice {
+            track,
+            before: None,
+            state,
+        })?
+        else {
+            return Err("expected native device".into());
+        };
+        editor.execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })?;
+    }
+    let media = BTreeMap::from([(
+        asset,
+        Audio::new(
+            RATE,
+            (0..BLOCK * 2)
+                .map(|frame| {
+                    let sample = (frame % 53) as f32 / 64.0 - 0.4;
+                    [sample, sample * -0.5]
+                })
+                .collect(),
+        )?,
+    )]);
+    let revision = Arc::new(PreparedRevision::prepare(
+        editor.project(),
+        &media,
+        Arc::new(SineTable::new()),
+        None,
+    )?);
+    let mut oracle = Renderer::new(revision.arrangement());
+    oracle.play();
+    let mut expected = [[0.0; 2]; BLOCK];
+    let (mut control, mut callback) = prepared::channel(RATE)?;
+    control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(
+            &revision,
+        ))?)
+        .map_err(|_| "initial playback publication failed")?;
+    control
+        .command(PlaybackCommand::Play)
+        .map_err(|_| "Play command admission failed")?;
+    let mut actual = [[0.0; 2]; BLOCK];
+    for _ in 0..2 {
+        oracle.render(&mut expected)?;
+        measured_block(&mut callback, &mut actual);
+        compare_output(&actual, &expected);
+    }
+    assert!(actual.iter().flatten().any(|sample| sample.abs() > 1.0e-6));
+    control.request_shutdown();
+    measured_shutdown(&mut callback, &mut actual);
+    control.reclaim();
+    Ok(())
+}
+
+#[test]
 fn play_from_callback_is_allocation_free_and_renders_from_requested_frame()
 -> Result<(), Box<dyn Error>> {
     let workload = fixture::fixture(false)?;
@@ -1661,7 +1749,34 @@ fn shared_and_distinct_session_audio_callback_blocks_are_allocation_free()
         }
         assert!(control.command(PlaybackCommand::Pause).is_err());
         measured_block(&mut callback, &mut output[..257]);
-        assert_scene_audio_oracle(&output[..257], &workload, workload.scene_b, 0)?;
+        // The scene A instance that had played 257 frames fades out over the
+        // shared 128-frame declick; the burst's later same-frame launches
+        // never sounded and leave no release.
+        let incoming = fixture::finite_session_oracle(
+            &workload.project,
+            &workload.media,
+            workload.scene_b,
+            0,
+            257,
+        )?;
+        let outgoing = fixture::finite_session_oracle(
+            &workload.project,
+            &workload.media,
+            workload.scene_a,
+            257,
+            128,
+        )?;
+        for (offset, (actual, incoming)) in output[..257].iter().zip(&incoming).enumerate() {
+            let gain = 128_usize.saturating_sub(offset) as f32 / 128.0;
+            let released = outgoing.get(offset).copied().unwrap_or([0.0; 2]);
+            for channel in 0..2 {
+                let expected = incoming[channel] + released[channel] * gain;
+                assert!(
+                    (actual[channel] - expected).abs() <= 1e-5 * expected.abs().max(1.0),
+                    "burst frame {offset}: {actual:?} != {expected}"
+                );
+            }
+        }
 
         control.request_shutdown();
         measured_shutdown(&mut callback, &mut output[..128]);
@@ -1767,13 +1882,51 @@ fn prepared_edits_inherit_through_a_full_retirement_ring_without_callback_alloca
             revision as u64 + 1
         );
         measured_block(&mut callback, &mut output);
-        assert_project_audio_oracle(
-            &output,
+        // Only the first track's gain changes. Interpolate two independent
+        // static project renders to account for its ongoing 5 ms ramp, including
+        // the following source edit while that ramp is still in progress.
+        let mut original_gain = Editor::new(project.clone(), 1)?;
+        original_gain.execute(Command::Gain {
+            track: workload.tracks[0],
+            gain: workload.project.snapshot().tracks[0].gain,
+        })?;
+        let elapsed = 128 * revision as u64;
+        let before = fixture::finite_session_oracle(
+            original_gain.project(),
+            &workload.media,
+            workload.scene_a,
+            elapsed,
+            output.len(),
+        )?;
+        let after = fixture::finite_session_oracle(
             project,
             &workload.media,
             workload.scene_a,
-            128 * revision as u64,
+            elapsed,
+            output.len(),
         )?;
+        let ramp_frames = RATE.div_ceil(200) as usize;
+        let expected: Vec<Frame> = before
+            .iter()
+            .zip(&after)
+            .enumerate()
+            .map(|(offset, (a, b))| {
+                let progress = ((revision - 1) * output.len() + offset + 1).min(ramp_frames) as f32
+                    / ramp_frames as f32;
+                [
+                    a[0] + (b[0] - a[0]) * progress,
+                    a[1] + (b[1] - a[1]) * progress,
+                ]
+            })
+            .collect();
+        for (frame, (actual, expected)) in output.iter().zip(&expected).enumerate() {
+            for channel in 0..2 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 1e-5,
+                    "frame {frame}, channel {channel}: {actual:?} != {expected:?}"
+                );
+            }
+        }
         assert_eq!(
             control
                 .status
@@ -3083,7 +3236,12 @@ fn legacy_fallback_owns_persistent_stateful_renderer_off_callback() -> Result<()
     assert_eq!(output, expected_handoff);
 
     oracle = inherited;
-    oracle.apply(PlaybackCommand::Seek(0));
+    // The callback declicks a queued Seek while playing (#4140).
+    oracle
+        .try_apply_declicked_action(hex_engine::playback::PlaybackAction::Transport(
+            PlaybackCommand::Seek(0),
+        ))
+        .map_err(|_| "oracle Seek refused")?;
     let mut expected_seek = [[0.0; 2]; 128];
     oracle.render(&mut expected_seek)?;
     control
@@ -3092,7 +3250,12 @@ fn legacy_fallback_owns_persistent_stateful_renderer_off_callback() -> Result<()
     measured_block(&mut callback, &mut output);
     assert_eq!(output, expected_seek);
 
-    oracle.apply(PlaybackCommand::Stop);
+    // The callback declicks a queued Stop over this 128-frame block (#4151).
+    oracle
+        .try_apply_declicked_action(hex_engine::playback::PlaybackAction::Transport(
+            PlaybackCommand::Stop,
+        ))
+        .map_err(|_| "oracle Stop refused")?;
     let mut expected_stop = [[1.0; 2]; 128];
     oracle.render(&mut expected_stop)?;
     control

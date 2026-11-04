@@ -14,6 +14,7 @@ use std::{
     fs::File,
     io::{self, Read},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 mod adpcm;
@@ -39,13 +40,36 @@ mod verified_stream_tests;
 #[cfg(test)]
 mod resample_plan_tests;
 
-const READ_CHUNK_BYTES: usize = 16 * 1024;
+#[cfg(test)]
+mod resample_quality_tests;
 
-pub use resample::{ResampleLimits, ResamplePlan, resample};
-pub use resample_kernel::{ResampleKernel, ResampleKernelDataLayout};
+const READ_CHUNK_BYTES: usize = 16 * 1024;
+/// Decoded PCM frames between cooperative cancellation checks.
+const CANCEL_CHECK_FRAMES: usize = 64 * 1024;
+
+/// Never-set flag for callers that do not offer cooperative cancellation.
+static NOT_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+/// Relaxed is sufficient: the flag carries no data, and a late observation
+/// only costs one further bounded chunk of work.
+fn cancelled(cancel: &AtomicBool) -> Result<(), ImportError> {
+    if cancel.load(Ordering::Relaxed) {
+        Err(ImportError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+pub use resample::{
+    ResampleLimits, ResamplePlan, resample, resample_cancellable, resample_with_version,
+};
+pub use resample_kernel::{
+    ResampleKernel, ResampleKernelDataLayout, ResampleVersion, V2_STOPBAND_DB,
+};
 pub use stream::{WavFrameReader, WavReaderLimits};
 pub use verified_stream::{
-    VERIFIED_WAV_PAGE_BYTES, VerifiedReaderDataLayout, VerifiedWavReader, VerifiedWavReaderLimits,
+    VERIFIED_WAV_PAGE_BYTES, VerifiedReaderDataLayout, VerifiedWavManifest, VerifiedWavReader,
+    VerifiedWavReaderLimits,
 };
 
 /// Caller-owned resource ceilings for a single import operation.
@@ -148,7 +172,7 @@ impl fmt::Display for ImportError {
             Self::LimitExceeded(reason) => write!(f, "media limit exceeded: {reason}"),
             Self::AllocationFailed => f.write_str("could not allocate media buffer"),
             Self::SourceChanged => f.write_str("source file changed while it was being read"),
-            Self::Cancelled => f.write_str("media verification cancelled"),
+            Self::Cancelled => f.write_str("media operation cancelled"),
         }
     }
 }
@@ -182,13 +206,28 @@ pub fn decode_wav_file(
     path: impl AsRef<Path>,
     limits: Limits,
 ) -> Result<DecodedAudio, ImportError> {
+    decode_wav_file_cancellable(path, limits, &NOT_CANCELLED)
+}
+
+/// [`decode_wav_file`] with cooperative cancellation for superseded control
+/// work. `cancel` is polled before each 16 KiB read and every 65,536 decoded
+/// PCM frames; once observed, the decode stops and reports
+/// [`ImportError::Cancelled`]. Block-compressed (ADPCM) payloads are polled
+/// before each window of whole blocks spanning at most 65,536 frames (one
+/// block when a block is larger).
+pub fn decode_wav_file_cancellable(
+    path: impl AsRef<Path>,
+    limits: Limits,
+    cancel: &AtomicBool,
+) -> Result<DecodedAudio, ImportError> {
+    cancelled(cancel)?;
     let path = path.as_ref().to_path_buf();
     let mut file = File::open(&path)?;
     let before = file_identity::Observation::of(&file.metadata()?);
-    let bytes = read_bounded(&mut file, limits.max_file_bytes)?;
+    let bytes = read_bounded(&mut file, limits.max_file_bytes, cancel)?;
     let after = file_identity::Observation::of(&file.metadata()?);
     let file_identity = file_identity::stable_identity(before, after, bytes.len())?;
-    let (audio, sample_rate, frames) = decode_wav_inner(&bytes, limits.max_frames)?;
+    let (audio, sample_rate, frames) = wav::decode(&bytes, limits.max_frames, cancel)?;
     Ok(DecodedAudio {
         path,
         audio,
@@ -210,11 +249,11 @@ pub fn recover_wav_file(
     let path = path.as_ref().to_path_buf();
     let mut file = File::open(&path)?;
     let before = file_identity::Observation::of(&file.metadata()?);
-    let bytes = read_bounded(&mut file, limits.max_file_bytes)?;
+    let bytes = read_bounded(&mut file, limits.max_file_bytes, &NOT_CANCELLED)?;
     let after = file_identity::Observation::of(&file.metadata()?);
     let file_identity = file_identity::stable_identity(before, after, bytes.len())?;
     let ((audio, sample_rate, frames), truncation) =
-        wav::decode_recoverable(&bytes, limits.max_frames)?;
+        wav::decode_recoverable(&bytes, limits.max_frames, &NOT_CANCELLED)?;
     Ok((
         DecodedAudio {
             path,
@@ -232,17 +271,18 @@ pub fn decode_wav(bytes: &[u8], limits: Limits) -> Result<Audio, ImportError> {
     if bytes.len() > limits.max_file_bytes {
         return Err(ImportError::LimitExceeded("input bytes"));
     }
-    decode_wav_inner(bytes, limits.max_frames).map(|(audio, _, _)| audio)
+    wav::decode(bytes, limits.max_frames, &NOT_CANCELLED).map(|(audio, _, _)| audio)
 }
 
-fn decode_wav_inner(bytes: &[u8], max_frames: usize) -> Result<(Audio, u32, usize), ImportError> {
-    wav::decode(bytes, max_frames)
-}
-
-fn read_bounded(reader: &mut impl Read, max_bytes: usize) -> Result<Vec<u8>, ImportError> {
+fn read_bounded(
+    reader: &mut impl Read,
+    max_bytes: usize,
+    cancel: &AtomicBool,
+) -> Result<Vec<u8>, ImportError> {
     let mut bytes = Vec::new();
     let mut chunk = [0_u8; READ_CHUNK_BYTES];
     loop {
+        cancelled(cancel)?;
         let remaining = max_bytes.saturating_sub(bytes.len());
         let read_limit = remaining.saturating_add(1).min(chunk.len());
         let count = reader.read(&mut chunk[..read_limit])?;

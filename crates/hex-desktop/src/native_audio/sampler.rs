@@ -91,6 +91,7 @@ impl NativeAudioSink {
         add(held, self.edit_hold())
     }
     pub(super) fn opened_output(&mut self, mut output: WorkerPreparedOutput) {
+        self.relinquished_output_identity = None;
         self.plugins.fresh_output();
         // Both production and headless factories must acquire the existing
         // exclusive Lease. Successful fresh construction proves old retirement;
@@ -153,7 +154,7 @@ impl NativeAudioSink {
                     Ok(())
                 });
             if let Err(error) = configured {
-                self.open_error = Some(error);
+                self.open_error = Some(error.into());
                 return;
             }
         }
@@ -210,18 +211,16 @@ impl NativeAudioSink {
             PREFLIGHT.store(false, Release);
             state.preflight_slot = false;
         }
-        if was_draining {
-            if let Ok(policy) = &self.policy {
-                let control = Hold {
-                    retained_bytes: policy.control_backing_quote,
-                    construction_bytes: policy.control_backing_quote,
-                    ..Hold::default()
-                };
-                if self.output.is_some() {
-                    self.output_hold = add(self.output_hold, control);
-                } else if self.open_pending || self.opening.is_some() {
-                    self.retired_sampler_hold = add(self.retired_sampler_hold, control);
-                }
+        if was_draining && let Ok(policy) = &self.policy {
+            let control = Hold {
+                retained_bytes: policy.control_backing_quote,
+                construction_bytes: policy.control_backing_quote,
+                ..Hold::default()
+            };
+            if self.output.is_some() {
+                self.output_hold = add(self.output_hold, control);
+            } else if self.open_pending || self.opening.is_some() {
+                self.retired_sampler_hold = add(self.retired_sampler_hold, control);
             }
         }
         state.hold = Hold::default();
@@ -244,7 +243,7 @@ impl NativeAudioSink {
             self.pending_open_event = Some(EditorAudioEvent::Unavailable {
                 project_generation: context.project_generation,
                 restart_request: self.restart_request,
-                error,
+                error: error.into(),
             });
         } else {
             self.observe(
@@ -282,10 +281,8 @@ impl NativeAudioSink {
         if clean && !disturbed {
             self.resume_sampler_forwarding();
         }
-        if clean {
-            if let Some(state) = self.sampler.as_mut() {
-                state.phase = Phase::Refused;
-            }
+        if clean && let Some(state) = self.sampler.as_mut() {
+            state.phase = Phase::Refused;
         }
         if disturbed {
             self.relinquish_output();
@@ -293,7 +290,7 @@ impl NativeAudioSink {
                 self.pending_open_event = Some(EditorAudioEvent::Unavailable {
                     project_generation: context.project_generation,
                     restart_request: self.restart_request,
-                    error,
+                    error: error.into(),
                 });
             }
         } else if let Some(context) = context {
@@ -487,7 +484,7 @@ impl NativeAudioSink {
         }
         if state.phase == Phase::Draining && self.output.is_none() {
             if let Some(error) = self.open_error.take() {
-                self.sampler_refused(error);
+                self.sampler_refused(error.to_string());
             }
             return;
         }
@@ -591,16 +588,16 @@ impl NativeAudioSink {
     }
     pub(super) fn shutdown_sampler(&mut self) {
         self.shutdown_edit();
-        if !self.clean_preflight() {
-            if let Some(state) = self.sampler.as_mut() {
-                // The exclusive preflight slot remains closed until process exit.
-                // Failed owner cleanup is never retried by a destructor.
-                let mut quarantine = FAILED_PREFLIGHT
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if quarantine.is_none() {
-                    *quarantine = state.cell.take();
-                }
+        if !self.clean_preflight()
+            && let Some(state) = self.sampler.as_mut()
+        {
+            // The exclusive preflight slot remains closed until process exit.
+            // Failed owner cleanup is never retried by a destructor.
+            let mut quarantine = FAILED_PREFLIGHT
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if quarantine.is_none() {
+                *quarantine = state.cell.take();
             }
         }
     }

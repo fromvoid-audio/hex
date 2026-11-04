@@ -36,8 +36,10 @@ pub(super) enum TitlebarControl {
 
 pub(super) fn title_bar(
     title: impl AsRef<str>,
+    cpu_meter: impl IntoElement,
     on_control: impl Fn(TitlebarControl) -> Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
 ) -> Stateful<Div> {
+    let title_inset = crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET);
     let controls = [
         (TitlebarControl::Close, "close window", 0xe65c4f),
         (TitlebarControl::Minimize, "minimize window", 0xd8a63b),
@@ -108,9 +110,7 @@ pub(super) fn title_bar(
         .justify_center()
         // Equal padding on both sides keeps the title centered while protecting
         // the first row beneath macOS traffic lights.
-        .px(px(
-            crate::build_info::HEADER_INSET.max(theme::TITLEBAR_LEADING_INSET)
-        ))
+        .px(px(title_inset + 68.0))
         .border_b_1()
         .border_color(rgb(theme::color(theme::PaletteRole::Border)))
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
@@ -131,6 +131,7 @@ pub(super) fn title_bar(
                 .h_full()
                 .flex()
                 .items_center()
+                .children([cpu_meter])
                 .child(crate::build_info::editor_label()),
         )
         .child(
@@ -193,6 +194,50 @@ mod ui_tests {
     };
     use hex_project::Project;
     use std::sync::Arc;
+
+    #[gpui::test]
+    fn cpu_meter_click_resets_the_visible_overload(cx: &mut TestAppContext) {
+        let (handle, editor) = super::super::clip_drag_ui_test::editor_window(
+            cx,
+            Project::new(48_000).expect("project"),
+            Arc::default(),
+        );
+        editor.update(cx, |view, cx| {
+            let now = std::time::Instant::now();
+            let sample = hex_audio::cpu_meter::CpuSample {
+                elapsed: 10,
+                budget: 100,
+                peak: 10_000,
+                frames: 256,
+                rate: 48_000,
+            };
+            view.cpu_meter.observe(Some((1, sample, 0)), now);
+            view.cpu_meter.observe(Some((1, sample, 1)), now);
+            assert!(view.cpu_meter.warning());
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let bounds = visual.debug_bounds("editor-cpu-meter").expect("cpu meter");
+        let position = point(
+            bounds.origin.x + bounds.size.width / 2.0,
+            bounds.origin.y + bounds.size.height / 2.0,
+        );
+        visual.simulate_event(MouseDownEvent {
+            position,
+            modifiers: Default::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        visual.simulate_event(MouseUpEvent {
+            position,
+            modifiers: Default::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+        assert!(!editor.read_with(cx, |view, _| view.cpu_meter.warning()));
+    }
 
     #[gpui::test]
     fn title_double_click_never_toggles_fullscreen(cx: &mut TestAppContext) {
@@ -279,6 +324,9 @@ mod ui_tests {
             let version = visual
                 .debug_bounds("application-build-version")
                 .expect("build version remains visible at minimum width");
+            let cpu = visual
+                .debug_bounds("editor-cpu-meter")
+                .expect("cpu meter remains visible at minimum width");
             let debug = visual
                 .debug_bounds("open-session-log")
                 .expect("debug button remains visible beside the version");
@@ -320,7 +368,8 @@ mod ui_tests {
             );
             assert!((toolbar_top - title_bottom).abs() < 1.0);
             assert!((title_center - window_center).abs() < 1.0);
-            assert!(title_label.origin.x + title_label.size.width + px(8.0) <= version.origin.x);
+            assert!(title_label.origin.x + title_label.size.width + px(8.0) <= cpu.origin.x);
+            assert!(cpu.origin.x + cpu.size.width <= version.origin.x);
             assert!(version.size.width > px(0.0));
             assert!(
                 (f32::from(window.origin.x + window.size.width - help.origin.x - help.size.width)
@@ -601,11 +650,11 @@ mod ui_tests {
                 std::time::Instant::now() < deadline,
                 "startup failure never surfaced"
             );
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| assert!(v.state.is_none()));
-        assert!(visual.debug_bounds("project loading").is_some());
+        assert!(visual.debug_bounds("project loading").is_none());
         assert!(visual.debug_bounds("editor-status-message").is_some());
     }
     #[gpui::test]

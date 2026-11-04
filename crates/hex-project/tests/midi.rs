@@ -377,6 +377,7 @@ fn moving_midi_clip_to_new_hybrid_track_preserves_clip_and_note_ids_in_one_step(
 
     let Created::Track(inserted) = editor
         .execute(Command::MoveMidiClipToNewTrack {
+            initial_gain: None,
             clip,
             name: "track 3".into(),
             before_track: Some(anchor),

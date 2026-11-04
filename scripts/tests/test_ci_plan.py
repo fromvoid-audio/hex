@@ -1,5 +1,6 @@
 """Scope boundaries, input freshness, and zero-match qualification regressions."""
 import importlib.util
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -862,6 +863,17 @@ class TestShardTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             passed = [int(n) for n in re.findall(r"test result: ok\. (\d+) passed;", run.stdout)]
             self.assertEqual((len(passed), sum(passed)), (3, 5))  # cwd is the package directory
+            (root / "src/lib.rs").write_text(
+                "#[cfg(test)] mod tests {\n" + tests
+                + "mod child { #[test] fn nested() {} }\n}\n")
+            filtered = subprocess.run(
+                [sys.executable, str(SCRIPTS / "test_shards.py"), "--shards", "3",
+                 "--filter", "tests::", "--", "cargo", "test", "--offline"],
+                cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(filtered.returncode, 0, filtered.stdout + filtered.stderr)
+            passed = [int(n) for n in re.findall(r"test result: ok\. (\d+) passed;", filtered.stdout)]
+            self.assertEqual(sum(passed), 6)
+            self.assertIn("tests::child::nested ... ok", filtered.stdout)
             (root / "src/lib.rs").write_text("#[cfg(test)] mod tests {\n" + tests + "#[test] fn broken() { panic!() }\n}\n")
             failed = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
             self.assertEqual(failed.returncode, 1)
@@ -1062,7 +1074,8 @@ class BaseAdvanceCarryTests(unittest.TestCase):
                 "steps": [{"step_id": "affected-tests", "argv": ["cargo", "test", "-p", "ui"], "status": "passed",
                            "test_results": {"rust_passed_by_binary": [1]}}]}
 
-    def test_carry_basis_accepts_only_verbatim_disjoint_ordinary_base_advances(self):
+    @contextmanager
+    def carry_fixture(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             git = self.repository(root)
@@ -1093,18 +1106,39 @@ class BaseAdvanceCarryTests(unittest.TestCase):
                                         source=git("rev-parse", "HEAD"), metadata=self.metadata(root))
                 return plan.carry_basis(root, resolved, evidence, env={})
 
+            yield root, base, candidate, evidence, advance
+
+    def test_carry_basis_accepts_disjoint_ordinary_advance(self):
+        with self.carry_fixture() as (_, _, candidate, _, advance):
             basis = advance({"crates/core/src/lib.rs": "// advanced\n", "docs/a.md": "prose"})
             self.assertEqual(basis["delta_owners"], ["core"])
             self.assertEqual(basis["report_commit"], candidate)
-            for paths, then, message in (
-                    ({"crates/core/src/lib.rs": "// advanced\n"}, "crates/core/src/lib.rs", "verbatim"),
-                    ({"crates/core/src/lib.rs": "// advanced\n"}, "crates/ui/src/a.rs", "own path"),
-                    ({"rust-toolchain.toml": "[toolchain]\n"}, None, "toolchain"),
-                    ({"crates/core/Cargo.toml": "[package]\nname='core'\nversion='2'\n"}, None, "dependency"),
-                    ({"scripts/ci_plan.py": "# tool\n"}, None, "tooling")):
-                with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
-                    advance(paths, then=then)
-            git("checkout", "-q", "--detach", candidate)
+
+    def assert_carry_advance_refused(self, paths, then, message):
+        with self.carry_fixture() as (_, _, _, _, advance):
+            with self.assertRaisesRegex(ValueError, message):
+                advance(paths, then=then)
+
+    def test_carry_basis_rejects_nonverbatim_advance(self):
+        self.assert_carry_advance_refused({"crates/core/src/lib.rs": "// advanced\n"},
+                                          "crates/core/src/lib.rs", "verbatim")
+
+    def test_carry_basis_rejects_candidate_own_path_change(self):
+        self.assert_carry_advance_refused({"crates/core/src/lib.rs": "// advanced\n"},
+                                          "crates/ui/src/a.rs", "own path")
+
+    def test_carry_basis_rejects_toolchain_change(self):
+        self.assert_carry_advance_refused({"rust-toolchain.toml": "[toolchain]\n"}, None, "toolchain")
+
+    def test_carry_basis_rejects_dependency_change(self):
+        self.assert_carry_advance_refused({"crates/core/Cargo.toml": "[package]\nname='core'\nversion='2'\n"},
+                                          None, "dependency")
+
+    def test_carry_basis_rejects_tooling_change(self):
+        self.assert_carry_advance_refused({"scripts/ci_plan.py": "# tool\n"}, None, "tooling")
+
+    def test_carry_basis_rejects_invalid_report_and_native_inputs(self):
+        with self.carry_fixture() as (root, base, candidate, evidence, _):
             current = plan.resolve(root, profile="merge", base=base, source=candidate, metadata=self.metadata(root))
             for field, value in (("status", "failed"), ("stale", True), ("mode", "full"),
                                  ("native_acceptance_opt_in", None), ("steps", [])):
@@ -1153,10 +1187,99 @@ class BaseAdvanceCarryTests(unittest.TestCase):
 class MainHealthTests(unittest.TestCase):
     INVENTORY = BaseAdvanceCarryTests.INVENTORY
 
+    def profile_steps(self, profile, extra=None, workspace_change=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git = BaseAdvanceCarryTests.repository(self, root)
+            manifest = root / "Cargo.toml"
+            manifest.write_text('[workspace]\nmembers = ["crates/*"]\n')
+            git("add", "Cargo.toml")
+            git("commit", "-qm", "manifest base")
+            git("checkout", "-qb", "profile")
+            content = manifest.read_text()
+            if workspace_change:
+                content = content.replace('["crates/*"]', '["crates/*", "tools"]')
+            manifest.write_text(content + "\n" + profile)
+            if extra:
+                (root / extra).write_text("changed\n")
+            git("add", ".")
+            git("commit", "-qm", "profile change")
+            git("checkout", "-q", "main")
+            git("merge", "-q", "--no-ff", "--no-edit", "profile")
+            source = git("rev-parse", "HEAD")
+            resolved = plan.resolve(root, profile="health", base=source + "^1", source=source,
+                                    metadata=BaseAdvanceCarryTests.metadata(self, root))
+            return [(step.step_id, step.argv) for step in ci.planned_steps(resolved)]
+
+    def test_health_profile_codegen_selects_retuned_owner(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n')
+        self.assertIn(("health-tests", ("cargo", "test", "-p", "core", "--locked")), steps)
+
+    def test_health_profile_codegen_and_other_owner_select_both(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n',
+                                   "crates/ui/src/lib.rs")
+        self.assertIn(("health-tests", ("cargo", "test", "-p", "core", "-p", "ui", "--locked")), steps)
+
+    def test_health_two_retuned_profiles_select_both_owners(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n'
+                                   '[profile.dev.package.ui]\nopt-level = 1\n')
+        self.assertIn(("health-tests", ("cargo", "test", "-p", "core", "-p", "ui", "--locked")), steps)
+
+    def assert_workspace_profile(self, profile):
+        steps = self.profile_steps(profile)
+        self.assertIn(("health-tests", ("cargo", "test", "--workspace", "--locked")), steps)
+
+    def test_health_unsafe_package_profile_keeps_workspace(self):
+        self.assert_workspace_profile('[profile.dev.package.core]\ndebug-assertions = false\n')
+
+    def test_health_unknown_package_profile_keeps_workspace(self):
+        self.assert_workspace_profile('[profile.dev.package.unknown]\nopt-level = 1\n')
+
+    def test_health_workspace_profile_keeps_workspace(self):
+        self.assert_workspace_profile('[profile.release]\nlto = true\n')
+
+    def test_health_profile_with_lockfile_keeps_workspace(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n', "Cargo.lock")
+        self.assertIn(("health-tests", ("cargo", "test", "--workspace", "--locked")), steps)
+
+    def test_health_profile_with_workspace_change_keeps_workspace(self):
+        steps = self.profile_steps('[profile.dev.package.core]\nopt-level = 1\n',
+                                   workspace_change=True)
+        self.assertIn(("health-tests", ("cargo", "test", "--workspace", "--locked")), steps)
+
     def steps(self, paths):
         health = plan.health_selection(paths, self.INVENTORY)
         return [(s.step_id, s.argv) for s in ci.planned_steps(
-            {"health": health, "base": "b", "source": "s", "scope": "rust"})]
+            {"health": health, "base": "b", "source": "s", "scope": "rust",
+             "python_tests": {"mode": "comprehensive"}})]
+
+    def test_health_owned_tooling_resolves_to_selected_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git = BaseAdvanceCarryTests.repository(self, root)
+            (root / "scripts").mkdir()
+            script = root / "scripts/ci_plan.py"
+            script.write_text("# base\n")
+            git("add", ".")
+            git("commit", "-qm", "tool base")
+            script.write_text("# change\n")
+            git("commit", "-qam", "tool change")
+            source = git("rev-parse", "HEAD")
+            with patch.object(plan.python_tests, "available_modules",
+                              return_value=sorted(plan.python_tests.REVIEWED_MODULES)):
+                resolved = plan.resolve(root, profile="health", base=source + "^1", source=source,
+                                        metadata=BaseAdvanceCarryTests.metadata(self, root))
+            selection = resolved["python_tests"]
+            self.assertEqual(selection["mode"], "shared")
+            steps = {s.step_id: s for s in ci.planned_steps(resolved)}
+            self.assertEqual(steps["health-runner-tests"].argv, plan.python_tests.argv(selection))
+            self.assertTrue(steps["health-runner-tests"].requires_tests)
+
+    def test_health_tooling_refuses_empty_python_selection(self):
+        health = plan.health_selection(["scripts/ci_plan.py"], self.INVENTORY)
+        with self.assertRaises(ValueError):
+            ci.planned_steps({"health": health, "base": "b", "source": "s", "scope": "tooling",
+                              "python_tests": {"mode": "none"}})
 
     def test_health_tests_only_the_merged_owners_and_widens_for_unknown_inputs(self):
         fmt = ("format", ("cargo", "fmt", "--all", "--check"))
@@ -1435,25 +1558,47 @@ class ModuleScopeTests(unittest.TestCase):
             (root / "crates/owner/src/plain.rs").write_text('include!("generated.rs");\n')
             self.assertEqual(select("crates/owner/src/parent/child.rs"), {})
 
-    def test_module_roots_skip_untouched_unnamed_submodules_but_never_leave_nothing(self):
+    def test_changed_module_roots_run_the_complete_test_subtree(self):
+        root = SCRIPTS.parent
+        for owner, path, prefix, child in (
+            ("hex-session", "crates/hex-session/src/service.rs", "service::", "format_upgrade_tests"),
+            ("hex-ui", "crates/hex-ui/src/editor/save.rs", "editor::save::", "ui_tests"),
+        ):
+            with self.subTest(owner=owner):
+                inventory = [{"name": owner, "manifest": f"crates/{owner}/Cargo.toml",
+                              "features": {}, "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+                filters = plan.module_test_filters(root, [path], inventory, [owner])
+                self.assertEqual(filters, {owner: [prefix]})
+                modules = plan.module_paths(root / f"crates/{owner}/src")
+                self.assertIn(prefix + child, modules.values())
+                boundary = {"kind": "packages", "tests": [], "test_packages": [owner],
+                            "lint_packages": [owner], "single_run": {}, "module_filters": filters}
+                steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner],
+                                          "boundary": boundary, "cargo_inventory": inventory,
+                                          "paths": [path]})
+                selected = [step for step in steps if ci.runs_rust_tests(step.argv)]
+                self.assertTrue(selected)
+                for step in selected:
+                    self.assertIn(prefix, step.argv)
+                    self.assertNotIn("--skip", step.argv)
+
+    def test_reuse_rejects_a_report_that_skipped_a_child_subtree(self):
+        inventory = [{"name": "hex-session", "manifest": "crates/hex-session/Cargo.toml",
+                      "features": {}, "dependencies": [], "targets": [{"kind": ["lib"]}]}]
+        boundary = {"kind": "packages", "tests": [], "test_packages": ["hex-session"],
+                    "lint_packages": ["hex-session"], "single_run": {},
+                    "module_filters": {"hex-session": ["service::"]}}
+        old_plan = {"scope": "rust", "affected_packages": ["hex-session"],
+                    "boundary": boundary, "cargo_inventory": inventory, "paths": []}
+        steps = ci.planned_steps(old_plan)
+        entries = [{"step_id": step.step_id, "argv": list(step.argv)} for step in steps]
+        test = next(entry for entry, step in zip(entries, steps) if ci.runs_rust_tests(step.argv))
+        test["argv"].extend(["--skip", "service::format_upgrade_tests::"])
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            inventory = self.crate(root)
-            parent = "crates/owner/src/parent.rs"
-            filters = plan.module_test_filters(root, [parent], inventory, ["owner"])
-            self.assertEqual(filters, {"owner": ["parent::"]})
-            skips = lambda lines, *extra: plan.module_test_skips(
-                root, [parent, *extra], inventory, ["owner"], filters, {parent: lines})
-            # parent.rs has its own test: an edit naming no child skips both children.
-            self.assertEqual(skips("fn helper_changed() {}"),
-                             {"owner": ["parent::child::", "parent::untested::"]})
-            # Naming a child (or touching its file) keeps it.
-            self.assertEqual(skips("use child::Thing;"), {"owner": ["parent::untested::"]})
-            self.assertEqual(skips("fn x() {}", "crates/owner/src/parent/child.rs"),
-                             {"owner": ["parent::untested::"]})
-            # Without the root's own tests and with no kept child tests, nothing is skipped.
-            (root / parent).write_text("mod child;\nmod untested;\n")
-            self.assertEqual(skips("fn helper_changed() {}"), {})
+            report = Path(directory) / "report.json"
+            report.write_text(json.dumps({"plan": old_plan, "steps": entries}))
+            with self.assertRaisesRegex(ValueError, "complete required configurations"):
+                ci.reusable_plan(Path(directory), {}, report)
 
     def test_runtime_consumer_owner_gets_module_filters_and_doc_examples_gate_doctests(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1471,13 +1616,13 @@ class ModuleScopeTests(unittest.TestCase):
         boundary = {"kind": "packages", "tests": [], "test_packages": ["hex-session"],
                     "lint_packages": ["hex-session"], "single_run": {"hex-session": "source-overview-test-support"},
                     "module_filters": {"hex-session": ["service::"]},
-                    "module_skips": {"hex-session": ["service::other::"]}, "doc_example_owners": []}
+                    "doc_example_owners": []}
         steps = {s.step_id: s for s in ci.planned_steps({
             "scope": "rust", "affected_packages": ["hex-session"], "boundary": boundary,
             "cargo_inventory": inventory, "paths": []})}
         self.assertNotIn("module-doctests-hex-session", steps)
         feature = next(s for s in steps.values() if ci.runs_rust_tests(s.argv))
-        self.assertEqual(feature.argv[-3:], ("service::", "--skip", "service::other::"))
+        self.assertEqual(feature.argv[-1], "service::")
         steps = {s.step_id: s for s in ci.planned_steps({
             "scope": "rust", "affected_packages": ["hex-session"],
             "boundary": {**boundary, "doc_example_owners": ["hex-session"]},

@@ -941,3 +941,156 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
         .is_err()
     );
 }
+
+fn refusal_prefix(config: &Configuration, sequence: u64, operation: u64, reason: u8) -> Vec<u8> {
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    let frames = sequence * u64::from(config.quantum);
+    for word in [sequence, frames, operation] {
+        body.extend(word.to_le_bytes());
+    }
+    body.push(reason);
+    body
+}
+
+fn refusal_body(config: &Configuration, sequence: u64, operation: u64, observed: u32) -> Vec<u8> {
+    let mut body = refusal_prefix(config, sequence, operation, 1);
+    body.extend(observed.to_le_bytes());
+    body
+}
+
+#[test]
+fn capture_refusal_binds_exact_operation_and_reports_lowercase_limit() {
+    let config = config();
+    let limit = hex_plugin_state::MAX_OPAQUE_BYTES as u32;
+    let body = refusal_body(&config, 3, 2, limit + 1);
+    let refusal = capture_refusal(&body, &config, 3, 2).unwrap();
+    assert_eq!(
+        refusal,
+        StateCaptureRefusal::ExceedsLimit {
+            observed_bytes: limit + 1
+        }
+    );
+    let message = crate::Error::CaptureRefused(refusal).to_string();
+    assert_eq!(
+        message,
+        "plugin state exceeds the 4000-byte limit · not saved · plugin keeps running"
+    );
+    // Stale operation, PCM prefix, epoch and identity mismatches are malformed.
+    assert!(capture_refusal(&body, &config, 3, 1).is_err());
+    assert!(capture_refusal(&body, &config, 2, 2).is_err());
+    assert!(capture_refusal(&body, &config, 3, 0).is_err());
+    let mut other = config.clone();
+    other.binding.epoch += 1;
+    assert!(capture_refusal(&body, &other, 3, 2).is_err());
+    for end in 0..body.len() {
+        assert!(capture_refusal(&body[..end], &config, 3, 2).is_err());
+    }
+    let mut trailing = body.clone();
+    trailing.push(0);
+    assert!(capture_refusal(&trailing, &config, 3, 2).is_err());
+    let mut reason = body.clone();
+    reason[58] = 3;
+    assert!(
+        capture_refusal(&reason, &config, 3, 2).is_err(),
+        "unknown reason"
+    );
+    for observed in [0, limit] {
+        assert!(
+            capture_refusal(&refusal_body(&config, 3, 2, observed), &config, 3, 2).is_err(),
+            "a state that fits is never refused as oversized: {observed}"
+        );
+    }
+}
+
+#[test]
+fn still_changing_refusal_is_exact_fieldless_and_versioned() {
+    let config = config();
+    let body = refusal_prefix(&config, 3, 2, 2);
+    let refusal = capture_refusal(&body, &config, 3, 2).unwrap();
+    assert_eq!(refusal, StateCaptureRefusal::StillChanging);
+    assert_eq!(
+        crate::Error::CaptureRefused(refusal).to_string(),
+        "plugin state kept changing during capture · not saved · plugin keeps running"
+    );
+    // Reason 2 carries no fields; a stale operation or prefix is malformed.
+    let mut trailing = body.clone();
+    trailing.extend(0_u32.to_le_bytes());
+    assert!(capture_refusal(&trailing, &config, 3, 2).is_err());
+    assert!(capture_refusal(&body, &config, 3, 1).is_err());
+    assert!(capture_refusal(&body, &config, 4, 2).is_err());
+    // The version 01 frame (reason 1 only) is no longer a refusal frame.
+    assert_eq!(&CAPTURE_REFUSAL_MAGIC, b"HXVICR02");
+}
+
+#[test]
+fn live_capture_reply_separates_refusal_from_terminal_frames() {
+    let config = config();
+    let refusal = refusal_prefix(&config, 9, 2, 2);
+    assert!(matches!(
+        live_capture_reply(&CAPTURE_REFUSAL_MAGIC, &refusal, &config, 9, 2),
+        Err(crate::Error::CaptureRefused(
+            StateCaptureRefusal::StillChanging
+        ))
+    ));
+    // A refusal for another operation is malformed, never a retirement.
+    assert!(matches!(
+        live_capture_reply(&CAPTURE_REFUSAL_MAGIC, &refusal, &config, 9, 3),
+        Err(crate::Error::Protocol(_))
+    ));
+    assert!(matches!(
+        live_capture_reply(b"HXVICR01", &refusal, &config, 9, 2),
+        Err(crate::Error::Protocol(
+            "missing live capture acknowledgement"
+        ))
+    ));
+    let mut pending = Vec::new();
+    stamp(&mut pending, config.binding);
+    for word in [9_u64, 72, 2] {
+        pending.extend(word.to_le_bytes());
+    }
+    pending.extend([0, 0, 0]);
+    assert!(matches!(
+        live_capture_reply(b"HXVLCA01", &pending, &config, 9, 2),
+        Ok(None)
+    ));
+}
+
+#[test]
+fn refusal_frame_reads_through_the_channel_and_keeps_its_successor() {
+    use crate::channel::{Channel, Packet, end_after};
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    let config = config();
+    let (stream, mut peer) = UnixStream::pair().unwrap();
+    let refusal = refusal_body(&config, 9, 2, 6000);
+    peer.write_all(&control(CAPTURE_REFUSAL_MAGIC, &refusal).unwrap())
+        .unwrap();
+    let mut pending = Vec::new();
+    stamp(&mut pending, config.binding);
+    for word in [9_u64, 72, 3] {
+        pending.extend(word.to_le_bytes());
+    }
+    pending.extend([0, 0, 0]);
+    peer.write_all(&control(*b"HXVLCA01", &pending).unwrap())
+        .unwrap();
+    drop(peer);
+    let mut channel = Channel::new(stream).unwrap();
+    let mut packet = Packet::new();
+    let until = end_after(std::time::Duration::from_secs(2)).unwrap();
+    channel.read(&mut packet, until, &mut || Ok(())).unwrap();
+    assert_eq!(packet.magic(), CAPTURE_REFUSAL_MAGIC);
+    assert_eq!(
+        capture_refusal(packet.body().unwrap(), &config, 9, 2).unwrap(),
+        StateCaptureRefusal::ExceedsLimit {
+            observed_bytes: 6000
+        }
+    );
+    channel.read(&mut packet, until, &mut || Ok(())).unwrap();
+    assert_eq!(packet.magic(), b"HXVLCA01");
+    assert_eq!(
+        live_captured_state(packet.body().unwrap(), &config, 9, 3).unwrap(),
+        None,
+        "the next capture operation still exchanges on the same channel"
+    );
+}

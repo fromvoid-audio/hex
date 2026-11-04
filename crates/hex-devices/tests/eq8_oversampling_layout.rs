@@ -26,12 +26,14 @@ fn actual_eq_twin_storage_and_complete_shared_ownership_exceeded_original_cap() 
         .unwrap()
         .unwrap();
     assert_eq!(prepared.declared_runtime_bytes(), size_of::<Eq8Runtime>());
-    assert_eq!(size_of::<Eq8Runtime>(), 3792);
+    // 3792 bytes until the channel-mode crossfade (Pulse #4106) added 3744,
+    // including the outgoing audition branch.
+    assert_eq!(size_of::<Eq8Runtime>(), 7536);
     assert_eq!(
         (size_of::<kernel::History>(), align_of::<kernel::History>()),
         (632, 8)
     );
-    assert_eq!(size_of::<ProposedEqTwin>(), 4424);
+    assert_eq!(size_of::<ProposedEqTwin>(), 8168);
     // Historical 4 KiB refusal evidence remains true; the current 64 KiB
     // per-twin policy does not itself admit this private prototype.
     assert!(size_of::<ProposedEqTwin>() > 4_096);
@@ -46,7 +48,7 @@ fn actual_eq_twin_storage_and_complete_shared_ownership_exceeded_original_cap() 
         eq: eq.clone(),
         fir: kernel::History::new(96000).unwrap(),
     });
-    assert_eq!(size_of_val(&*a) + size_of_val(&*b), 8848);
+    assert_eq!(size_of_val(&*a) + size_of_val(&*b), 16336);
     assert_eq!(size_of_val(&a) + size_of_val(&b), 16);
     assert_eq!(kernel::weights_bytes(), 128);
     assert_eq!(size_of_val(&*prepared), 40);
@@ -64,8 +66,8 @@ fn actual_eq_twin_storage_and_complete_shared_ownership_exceeded_original_cap() 
         size_of::<Eq8Runtime>(),
         size_of::<kernel::History>(),
         size_of::<ProposedEqTwin>(),
-        4424 - 4096,
-        8848,
+        8168 - 4096,
+        16336,
         16,
         kernel::weights_bytes(),
         shared_target

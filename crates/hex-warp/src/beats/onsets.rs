@@ -41,7 +41,7 @@ fn refine(
     let mut maximum = 0.0_f64;
     let mut sum = 0.0;
     for at in start..end {
-        if (at - start) % block == 0 {
+        if (at - start).is_multiple_of(block) {
             work.check(block * 16)?;
         }
         let x = innovation(input, at);
@@ -59,7 +59,7 @@ fn refine(
     // Earliest substantial change, not the frame center or a later peak in a
     // noisy attack. Both channels share this one physical onset decision.
     for at in start..end {
-        if (at - start) % block == 0 {
+        if (at - start).is_multiple_of(block) {
             work.check(block * 16)?;
         }
         if innovation(input, at) >= threshold {
@@ -176,11 +176,14 @@ pub(super) fn detect(
             mean[band] += 0.05 * delta;
             deviation[band] += 0.05 * (delta.abs() - deviation[band]);
         }
-        if count >= 3 && last_score > 0.0 && last_score >= before_score && last_score > score {
-            if let Some(at) = refine(input, center - hop as u64, half as u64, work)? {
-                work.check(starts.len() as u64)?;
-                insert(starts, at, u64::from((input.sample_rate / 1000).max(1)))?;
-            }
+        if count >= 3
+            && last_score > 0.0
+            && last_score >= before_score
+            && last_score > score
+            && let Some(at) = refine(input, center - hop as u64, half as u64, work)?
+        {
+            work.check(starts.len() as u64)?;
+            insert(starts, at, u64::from((input.sample_rate / 1000).max(1)))?;
         }
         before_score = last_score;
         last_score = score;
@@ -202,6 +205,7 @@ mod tests {
             used: 0,
             scratch: 0,
             base_scratch: 0,
+            resampler: Resampler::V1,
         };
         work.scratch(scratch(rate) + MAX_POINTS * 8).unwrap();
         detect(

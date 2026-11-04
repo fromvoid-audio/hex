@@ -1,6 +1,15 @@
 //! Worker-owned recovery availability and explicitly confirmed slot replacement.
 use super::*;
 
+#[cfg(test)]
+type CheckpointGate = (
+    PathBuf,
+    std::sync::mpsc::SyncSender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+#[cfg(test)]
+static CHECKPOINT_GATE: std::sync::Mutex<Vec<CheckpointGate>> = std::sync::Mutex::new(Vec::new());
+
 /// Persistent query, independent of the most recent command's status/error.
 /// Working-project edits can commit even while automatic recovery is unavailable.
 #[derive(Debug)]
@@ -83,6 +92,20 @@ impl RecoveryTracker {
         changed: bool,
     ) -> Result<Option<PathBuf>, String> {
         let path = checkpoint_path(context.document, context.untitled)?;
+        #[cfg(test)]
+        {
+            let gate = {
+                let mut gates = CHECKPOINT_GATE.lock().unwrap();
+                gates
+                    .iter()
+                    .position(|(target, _, _)| *target == path)
+                    .map(|index| gates.remove(index))
+            };
+            if let Some((_, entered, release)) = gate {
+                let _ = entered.send(());
+                let _ = release.recv_timeout(std::time::Duration::from_millis(500));
+            }
+        }
         if self
             .failure
             .as_ref()
@@ -223,16 +246,10 @@ mod tests {
         }
     }
     fn next(service: &Service) -> Event {
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if let Ok(event) = service.try_event() {
-                return event;
-            }
-            assert!(
-                std::time::Instant::now() < until,
-                "recovery worker completion"
-            );
-            std::thread::yield_now();
+        // Blocks on the event channel; bounded only against hangs.
+        match service.events.recv_timeout(crate::test_wait::HANG_BOUND) {
+            Ok(event) => event,
+            Err(error) => panic!("next: worker event absent: {error}"),
         }
     }
     fn intent(event: &Event) -> RecoveryRestart {
@@ -242,6 +259,144 @@ mod tests {
             revision: event.state.revision,
             failure_id: failure.id,
         }
+    }
+
+    #[test]
+    fn solo_view_precedes_recovery_terminal_without_claiming_durability() {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "hex-solo-recovery-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "first".into(),
+            }))
+            .unwrap();
+        let added = next(&service);
+        let track = added.state.project.tracks()[0].id();
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::Edit(Command::ToggleSolo {
+                track,
+                exclusive: true,
+            }))
+            .unwrap();
+        entered
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let visible = loop {
+            if let Ok(view) = service.try_solo_view() {
+                break view;
+            }
+            assert!(std::time::Instant::now() < deadline, "no solo observation");
+            std::thread::yield_now();
+        };
+        assert!(visible.tracks.contains(&(track, true)));
+        assert!(matches!(
+            service.try_event(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        release.send(()).unwrap();
+        let complete = next(&service);
+        assert!(complete.request_complete && complete.error.is_none());
+        assert_eq!(visible.revision, complete.state.revision);
+        assert_eq!(
+            hex_storage::load_journal(&path).unwrap(),
+            *complete.state.project
+        );
+        service.shutdown(std::time::Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn solo_observation_does_not_hide_a_recovery_conflict() {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "hex-solo-conflict-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("untitled.hex-journal");
+        let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "first".into(),
+            }))
+            .unwrap();
+        let added = next(&service);
+        let track = added.state.project.tracks()[0].id();
+        let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
+        let (release, release_rx) = std::sync::mpsc::sync_channel(1);
+        CHECKPOINT_GATE
+            .lock()
+            .unwrap()
+            .push((path.clone(), entered_tx, release_rx));
+        service
+            .submit(Request::Edit(Command::ToggleSolo {
+                track,
+                exclusive: true,
+            }))
+            .unwrap();
+        entered
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .unwrap();
+        let view = service.try_solo_view().unwrap();
+        assert!(view.tracks.contains(&(track, true)));
+        std::fs::write(&path, b"other writer").unwrap();
+        release.send(()).unwrap();
+        let terminal = next(&service);
+        assert!(terminal.request_complete && terminal.error.is_some());
+        assert!(terminal.recovery_failure.is_some());
+        assert!(terminal.state.project.track(track).unwrap().soloed());
+        assert_eq!(std::fs::read(&path).unwrap(), b"other writer");
+        service.shutdown(std::time::Duration::from_secs(2)).unwrap();
+        drop(service);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn unread_solo_observation_never_blocks_later_terminals() {
+        let mut service = Service::new(48_000, 16, 8_000_000).unwrap();
+        next(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "first".into(),
+            }))
+            .unwrap();
+        let added = next(&service);
+        let track = added.state.project.tracks()[0].id();
+        for expected in [true, false] {
+            service
+                .submit(Request::Edit(Command::ToggleSolo {
+                    track,
+                    exclusive: true,
+                }))
+                .unwrap();
+            let terminal = next(&service);
+            assert!(terminal.request_complete && terminal.error.is_none());
+            assert_eq!(
+                terminal.state.project.track(track).unwrap().soloed(),
+                expected
+            );
+        }
+        let retained = service.try_solo_view().unwrap();
+        assert!(retained.tracks.contains(&(track, true)));
+        service.shutdown(std::time::Duration::from_secs(2)).unwrap();
     }
 
     #[test]

@@ -20,11 +20,41 @@ pub enum ProjectSource {
     },
 }
 
-/// Native application singleton, shared by development and review bundles.
-/// No fallback to another user's directory when HOME is unavailable.
+/// Slot 0 of the native application's untitled recovery directory, shared by
+/// development and review bundles; its parent anchors derived media folders.
+/// Running instances each claim their own slot with
+/// [`claim_untitled_recovery_slot`]. No fallback to another user's directory
+/// when HOME is unavailable.
 pub fn untitled_recovery_path() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME").ok_or("home directory is unavailable")?;
     Ok(PathBuf::from(home).join("Library/Application Support/hex/recovery/untitled.hex-journal"))
+}
+
+/// Claim this instance's own untitled recovery slot so concurrent hex
+/// instances never checkpoint over each other's untitled work (Pulse #3948).
+pub fn claim_untitled_recovery_slot() -> Result<hex_storage::UntitledSlotClaim, String> {
+    let slot = untitled_recovery_path()?;
+    let directory = slot.parent().ok_or("recovery directory is unavailable")?;
+    claim_untitled_slot_in(directory)
+}
+
+/// Create a missing recovery directory (refusing a symbolic link or file in its
+/// place, as checkpointing does) and claim an unowned slot inside it.
+fn claim_untitled_slot_in(directory: &Path) -> Result<hex_storage::UntitledSlotClaim, String> {
+    match std::fs::symlink_metadata(directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err("recovery directory must be a real directory".into());
+        }
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            return Err(hex_storage::text::lowercase_outside_verbatim(
+                &error.to_string(),
+            ));
+        }
+        _ => {}
+    }
+    std::fs::create_dir_all(directory)
+        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
+    hex_storage::UntitledSlotClaim::claim(directory).map_err(|error| error.to_string())
 }
 
 /// A readable journal left by a session that ended without saving or discarding
@@ -36,12 +66,27 @@ pub struct LeftoverRecovery {
     pub source: ProjectSource,
     pub journal: PathBuf,
     fingerprint: (u64, Option<std::time::SystemTime>),
+    /// Held while another ended instance's slot is offered (Pulse #4575), so
+    /// no other launching instance adopts or offers it meanwhile.
+    foreign: Option<std::sync::Arc<hex_storage::UntitledSlotClaim>>,
 }
 impl LeftoverRecovery {
     /// False once anything rewrote the slot after detection, for example this
     /// session's own first checkpoint; recovering then would open the wrong work.
     pub fn unchanged(&self) -> bool {
         fingerprint(&self.journal).is_some_and(|current| current == self.fingerprint)
+    }
+
+    /// The source to open when the user chooses recover. This instance's own
+    /// slot opens in place. A slot left by another ended instance is first set
+    /// aside into kept copies (never deleted) and the kept copy is opened, so
+    /// its work is not offered again; it stays reachable through
+    /// `kept_journal` if opening fails.
+    pub fn recover_source(&self) -> Result<ProjectSource, String> {
+        if self.foreign.is_none() {
+            return Ok(self.source.clone());
+        }
+        self.discard().map(ProjectSource::Journal)
     }
 
     /// Explicit, confirmed discard: the journal moves into a kept-copies folder
@@ -104,7 +149,29 @@ pub fn leftover_recovery(untitled: &Path, document: Option<&Path>) -> Option<Lef
         source,
         journal,
         fingerprint: before,
+        foreign: None,
     })
+}
+
+/// Every readable untitled leftover a launch should offer (Pulse #4575): this
+/// instance's own slot first, then each slot other ended instances left in the
+/// same directory. Live-owned slots are never included; foreign leftovers stay
+/// claimed by the returned offers until they are dropped. Unreadable foreign
+/// journals are released untouched.
+pub fn untitled_leftovers(own: &Path) -> Vec<LeftoverRecovery> {
+    let mut found: Vec<_> = leftover_recovery(own, None).into_iter().collect();
+    if let Some(directory) = own.parent() {
+        found.extend(
+            hex_storage::UntitledSlotClaim::claim_leftovers(directory, own)
+                .into_iter()
+                .filter_map(|claim| {
+                    let mut leftover = leftover_recovery(claim.path(), None)?;
+                    leftover.foreign = Some(std::sync::Arc::new(claim));
+                    Some(leftover)
+                }),
+        );
+    }
+    found
 }
 
 pub(super) type OpenCandidate = (Session, PathBuf, Option<DocumentHandle>, bool);
@@ -236,9 +303,21 @@ pub(super) fn open_source_with_limits(
     // factual file inputs with its admitted offline graph; the fresh output
     // verifies its real catalog and delivers the endpoint before queue submission.
     // File facts alone never promise page readiness or callback application.
+    // A plain asset past the per-file resident decode caps was imported as a
+    // streamed file; reopening must keep it file-backed even when the total
+    // working set would otherwise fit (Pulse #3949).
+    let oversized_plain_asset = online_assets(&project).any(|asset| {
+        asset.original_source().is_none()
+            && !asset_requires_resident_processing(&project, asset.id())
+            && crate::verified_import::exceeds_resident_decode(
+                &asset_media_path(&project_dir, asset),
+                asset.source_frames(),
+            )
+            .unwrap_or(false)
+    });
     let ordinary_file_backed = mode == DocumentAudioMode::Resident
         && reservation.is_some()
-        && required_pcm > frame_allowance;
+        && (required_pcm > frame_allowance || oversized_plain_asset);
     if mode == DocumentAudioMode::VerifiedStreaming {
         let reservation = reservation
             .ok_or("verified source reservation is required")?
@@ -260,12 +339,10 @@ pub(super) fn open_source_with_limits(
         .with_shutdown(Arc::clone(&current.shutdown));
         // Verify every retained asset, including unused records, without decoding PCM.
         for asset in online_assets(&project) {
-            let path = if asset.path().is_absolute() {
-                asset.path().to_path_buf()
-            } else {
-                project_dir.join(asset.path())
-            };
-            let source = candidate.verify_import(path).map_err(|e| e.to_string())?;
+            let path = asset_media_path(&project_dir, asset);
+            let source = candidate
+                .verify_asset(path, asset)
+                .map_err(|e| e.to_string())?;
             if !source.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
             }
@@ -301,11 +378,7 @@ pub(super) fn open_source_with_limits(
     // Load unreferenced assets too: the editor can place them later. Missing
     // media is either offline (recorded on the project) or rejects the candidate.
     for asset in online_assets(&project) {
-        let media_path = if asset.path().is_absolute() {
-            asset.path().to_path_buf()
-        } else {
-            project_dir.join(asset.path())
-        };
+        let media_path = asset_media_path(&project_dir, asset);
         if current.shutdown.load(Ordering::Acquire) {
             return Err("project open cancelled".into());
         }
@@ -314,7 +387,7 @@ pub(super) fn open_source_with_limits(
             && let Some(candidate) = file_candidate.as_mut()
         {
             let file = candidate
-                .verify_import(media_path)
+                .verify_asset(media_path, asset)
                 .map_err(|e| e.to_string())?;
             if !file.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
@@ -451,7 +524,7 @@ pub(super) fn open_source_with_limits(
         } else {
             remaining_frames
         };
-        let prepared = PreparedImport::at_rate(
+        let prepared = PreparedImport::for_conversion(
             decoded,
             project.sample_rate(),
             ResampleLimits {
@@ -459,6 +532,7 @@ pub(super) fn open_source_with_limits(
                 max_output_frames: usize::try_from(output_allowance)
                     .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?,
             },
+            asset.conversion_version(),
         )
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
         remaining_frames = remaining_frames
@@ -540,6 +614,14 @@ pub(super) fn open_source_with_limits(
     ))
 }
 
+fn asset_media_path(project_dir: &Path, asset: &hex_project::Asset) -> PathBuf {
+    if asset.path().is_absolute() {
+        asset.path().to_path_buf()
+    } else {
+        project_dir.join(asset.path())
+    }
+}
+
 fn online_assets(project: &Project) -> impl Iterator<Item = &hex_project::Asset> {
     project
         .assets()
@@ -603,19 +685,19 @@ pub(super) fn checkpoint_project(
         .as_ref()
         .is_none_or(|current| current.path() != path)
     {
-        if document.is_none() {
-            if let Some(parent) = path.parent() {
-                match std::fs::symlink_metadata(parent) {
-                    Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-                        return Err("recovery directory must be a real directory".into());
-                    }
-                    Err(error) if error.kind() != io::ErrorKind::NotFound => {
-                        return Err(error.to_string());
-                    }
-                    _ => {}
+        if document.is_none()
+            && let Some(parent) = path.parent()
+        {
+            match std::fs::symlink_metadata(parent) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                    return Err("recovery directory must be a real directory".into());
                 }
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                    return Err(error.to_string());
+                }
+                _ => {}
             }
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         if let Some(token) = hex_storage::JournalRestartToken::capture_readable(path.clone())
             .map_err(|e| e.to_string())?
@@ -668,51 +750,238 @@ pub(super) fn project_for_save(
     session: &Session,
     document_base: Option<&Path>,
 ) -> Result<hex_project::Project, String> {
-    let mut snapshot = session.project().snapshot();
-    for (metadata, asset) in session.project().assets().zip(&mut snapshot.assets) {
-        if metadata.id().value() != asset.id {
-            return Err("save source inventory differs from canonical project".into());
-        }
-        if session.native_assets.contains(metadata.id()) {
-            let source = session
-                .native_source(metadata.id())
-                .ok_or("native original source is unavailable for saving")?;
-            if source.sample_rate() != asset.source_sample_rate
-                || source
-                    .resident_frames()
-                    .and_then(|pcm| u64::try_from(pcm.len()).ok())
-                    != Some(asset.source_frames)
-            {
-                return Err("native original source differs from canonical media metadata".into());
+    SaveImage::capture(session, document_base)?.materialize()
+}
+
+/// Owned save input after control-side media custody and identity checks.
+/// It contains no Session, native resource handle, or borrowed path and can be
+/// transferred to a worker before validating/materializing the project.
+pub(super) struct SaveImage {
+    snapshot: hex_project::Snapshot,
+}
+
+impl SaveImage {
+    pub(super) fn capture(session: &Session, document_base: Option<&Path>) -> Result<Self, String> {
+        let mut snapshot = session.project().snapshot();
+        for (metadata, asset) in session.project().assets().zip(&mut snapshot.assets) {
+            if metadata.id().value() != asset.id {
+                return Err("save source inventory differs from canonical project".into());
             }
-            let facts = session
-                .native_assets
-                .original_source_facts_on_control(metadata.id())
-                .map_err(|e| SessionError::from(e).to_string())?;
-            if asset
-                .original_source
-                .is_some_and(|expected| expected != facts)
-            {
-                return Err("native original content differs from saved source identity".into());
+            if session.native_assets.contains(metadata.id()) {
+                let source = session
+                    .native_source(metadata.id())
+                    .ok_or("native original source is unavailable for saving")?;
+                if source.sample_rate() != asset.source_sample_rate
+                    || source
+                        .resident_frames()
+                        .and_then(|pcm| u64::try_from(pcm.len()).ok())
+                        != Some(asset.source_frames)
+                {
+                    return Err(
+                        "native original source differs from canonical media metadata".into(),
+                    );
+                }
+                let facts = session
+                    .native_assets
+                    .original_source_facts_on_control(metadata.id())
+                    .map_err(|e| SessionError::from(e).to_string())?;
+                if asset
+                    .original_source
+                    .is_some_and(|expected| expected != facts)
+                {
+                    return Err("native original content differs from saved source identity".into());
+                }
+                asset.original_source = Some(facts);
+            } else if asset.original_source.is_some() {
+                return Err("saved device-original media has no admitted native source".into());
             }
-            asset.original_source = Some(facts);
-        } else if asset.original_source.is_some() {
-            return Err("saved device-original media has no admitted native source".into());
+            if !asset.path.is_absolute() {
+                let base = document_base.ok_or_else(|| {
+                    "relative media path has no project directory; refusing ambiguous save"
+                        .to_owned()
+                })?;
+                asset.path = base.join(&asset.path);
+            }
         }
-        if !asset.path.is_absolute() {
-            let base = document_base.ok_or_else(|| {
-                "relative media path has no project directory; refusing ambiguous save".to_owned()
-            })?;
-            asset.path = base.join(&asset.path);
-        }
+        Ok(Self { snapshot })
     }
-    hex_project::Project::from_snapshot(snapshot)
-        .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
+
+    pub(super) fn materialize(self) -> Result<hex_project::Project, String> {
+        hex_project::Project::from_snapshot(self.snapshot)
+            .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
+    }
 }
 
 fn checkpoint_path(document: Option<&DocumentHandle>, untitled: &Path) -> Result<PathBuf, String> {
     match document {
         Some(handle) => hex_storage::journal_path(&handle.path).map_err(|e| e.to_string()),
         None => Ok(untitled.to_path_buf()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn captured_save_image_moves_to_worker_and_keeps_its_original_revision() {
+        let mut session = Session::new(48_000, 8, 1024).unwrap();
+        session
+            .command(Command::AddTrack {
+                name: "first".into(),
+            })
+            .unwrap();
+        let expected = project_for_save(&session, None).unwrap();
+        let image = SaveImage::capture(&session, None).unwrap();
+        session
+            .command(Command::AddTrack {
+                name: "later".into(),
+            })
+            .unwrap();
+        let materialized = std::thread::spawn(move || image.materialize())
+            .join()
+            .unwrap()
+            .unwrap();
+        assert_eq!(materialized, expected);
+        assert_eq!(
+            hex_storage::encode(&materialized).unwrap(),
+            hex_storage::encode(&expected).unwrap()
+        );
+        assert_ne!(materialized, *session.project());
+    }
+
+    #[test]
+    fn captured_save_image_rebases_relative_offline_media_without_changing_session() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported { asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "source".into(),
+                path: "samples/source.wav".into(),
+                sample_rate: 48_000,
+                frames: 8,
+            })
+            .unwrap()
+        else {
+            panic!("audio fixture");
+        };
+        let project = editor
+            .project()
+            .clone()
+            .with_offline_assets([asset])
+            .unwrap();
+        let session = Session::from_loaded(project, 8, 1024, Vec::new()).unwrap();
+        assert!(SaveImage::capture(&session, None).is_err());
+        let base = std::env::temp_dir().join("hex-save-image-test");
+        let image = SaveImage::capture(&session, Some(&base)).unwrap();
+        let mut snapshot = session.project().snapshot();
+        snapshot.assets[0].path = base.join("samples/source.wav");
+        let expected = Project::from_snapshot(snapshot).unwrap();
+        let materialized = std::thread::spawn(move || image.materialize())
+            .join()
+            .unwrap()
+            .unwrap();
+        assert_eq!(materialized, expected);
+        assert_eq!(
+            hex_storage::encode(&materialized).unwrap(),
+            hex_storage::encode(&expected).unwrap()
+        );
+        assert_eq!(
+            session.project().asset(asset).unwrap().path(),
+            Path::new("samples/source.wav")
+        );
+        assert_eq!(session.project().offline_assets().count(), 1);
+    }
+
+    fn scratch() -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        std::env::temp_dir().join(format!(
+            "hex-untitled-claim-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    /// Regression for #3948: each instance gets its own untitled slot in a
+    /// freshly created recovery directory, starting with the historical name.
+    #[test]
+    fn concurrent_claims_create_the_directory_and_never_share_a_slot() {
+        let root = scratch();
+        let directory = root.join("recovery");
+        let first = claim_untitled_slot_in(&directory).unwrap();
+        let second = claim_untitled_slot_in(&directory).unwrap();
+        assert_eq!(first.path(), directory.join("untitled.hex-journal"));
+        assert_eq!(second.path(), directory.join("untitled-2.hex-journal"));
+        drop((first, second));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn leave(path: &Path, rate: u32) {
+        hex_storage::Journal::open_empty(path.to_path_buf())
+            .unwrap()
+            .checkpoint(&Project::new(rate).unwrap())
+            .unwrap();
+    }
+
+    /// Regression for #4575: one launch offers every unowned untitled
+    /// leftover, never a live instance's slot, and recovering a foreign slot
+    /// sets it aside so it is not offered again.
+    #[test]
+    fn launch_offers_every_unowned_leftover_and_sets_recovered_foreign_slots_aside() {
+        let root = scratch();
+        let directory = root.join("recovery");
+        let live = claim_untitled_slot_in(&directory).unwrap();
+        leave(live.path(), 48_000);
+        let slot = |index| hex_storage::untitled_slot_path(&directory, index);
+        leave(&slot(1), 44_100);
+        leave(&slot(2), 96_000);
+        std::fs::write(slot(3), b"not a journal").unwrap();
+        let own = claim_untitled_slot_in(&directory).unwrap();
+        assert_eq!(own.path(), slot(1), "own slot adopts the first leftover");
+
+        let found = untitled_leftovers(own.path());
+        let journals: Vec<_> = found.iter().map(|found| found.journal.clone()).collect();
+        assert_eq!(journals, [slot(1), slot(2)]);
+        assert!(found[0].foreign.is_none());
+        assert!(
+            matches!(found[0].recover_source(), Ok(ProjectSource::Journal(path)) if path == slot(1))
+        );
+        let Ok(ProjectSource::Journal(kept)) = found[1].recover_source() else {
+            panic!("foreign leftover opens its kept copy");
+        };
+        assert!(!slot(2).exists(), "no longer offered");
+        assert_eq!(
+            hex_storage::load_journal(&kept).unwrap(),
+            Project::new(96_000).unwrap()
+        );
+        assert_eq!(std::fs::read(slot(3)).unwrap(), b"not a journal");
+        assert_eq!(
+            hex_storage::load_journal(live.path()).unwrap(),
+            Project::new(48_000).unwrap(),
+            "live slot untouched"
+        );
+        drop(found);
+        let again: Vec<_> = untitled_leftovers(own.path())
+            .into_iter()
+            .map(|found| found.journal)
+            .collect();
+        assert_eq!(again, [slot(1)]);
+        drop((live, own));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_recovery_directory_is_refused_without_following_it() {
+        let root = scratch();
+        std::fs::create_dir(&root).unwrap();
+        let target = root.join("elsewhere");
+        std::fs::create_dir(&target).unwrap();
+        let directory = root.join("recovery");
+        std::os::unix::fs::symlink(&target, &directory).unwrap();
+        let error = claim_untitled_slot_in(&directory).unwrap_err();
+        assert_eq!(error, "recovery directory must be a real directory");
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

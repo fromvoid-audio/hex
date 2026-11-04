@@ -390,11 +390,11 @@ impl NumericSpec {
             ));
         }
         let mut formatted = format!("{:.*}", usize::from(self.precision), value);
-        if let Some(unit) = &self.unit {
-            if !unit.is_empty() {
-                formatted.push(' ');
-                formatted.push_str(unit);
-            }
+        if let Some(unit) = &self.unit
+            && !unit.is_empty()
+        {
+            formatted.push(' ');
+            formatted.push_str(unit);
         }
         Ok(formatted)
     }
@@ -637,6 +637,15 @@ mod tests {
         assert_eq!(spec.parse(" 1.25 db ").unwrap(), 1.25);
         assert!(spec.parse("nan").is_err());
         assert!(spec.parse("2.01 db").is_err());
+    }
+
+    #[test]
+    fn absent_and_empty_units_do_not_add_a_separator() {
+        for unit in [None, Some("")] {
+            let spec = NumericSpec::new(0.0, 2.0, 1.25, NumericScale::Linear, 2, unit).unwrap();
+            assert_eq!(spec.format(1.25).unwrap(), "1.25");
+            assert_eq!(spec.parse("1.25").unwrap(), 1.25);
+        }
     }
 
     #[test]

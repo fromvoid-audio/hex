@@ -1,9 +1,13 @@
 //! Output completion alone is substituted. Session, verified readers, source
 //! domains, graph preparation, publication and callback are production paths.
 use super::*;
+mod bypass_latency;
+mod delay_bypass;
 mod limiter;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod plugins;
 mod recovery;
+mod release_custody;
 mod resident_authoring;
 mod resident_bounce;
 mod resident_eq_creation;
@@ -14,13 +18,20 @@ mod resident_preview;
 mod resident_reverb;
 mod resident_routes;
 mod resident_sections;
+mod resident_streamed_bounce;
 mod sampler;
 mod section_benchmark;
+mod solo_latency;
 mod stream_export;
+mod touch_recording;
 mod track_clipboard;
 mod track_reorder;
 mod transport_loop;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+mod unavailable_plugins;
+mod utility_width;
 mod verified_gain;
+mod worker_idle;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;
 use hex_session::service::{Event, Request};
@@ -31,6 +42,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// 64-frame blocks covering the queued Pause/Stop declick fade at rates up
+/// to 96 kHz (256 frames; Pulse #4151), so oracles assert the settled
+/// transport after it rather than in the first block.
+const FADE_BLOCKS: usize = 256_usize.div_ceil(64);
 static NEXT: AtomicU64 = AtomicU64::new(0);
 // The actual native constructor retains the process-wide output lease.
 static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
@@ -80,6 +95,7 @@ struct Observation {
     blocked: Option<AudioSourceContext>,
     fresh_before_input: Option<(EditorAudio, Arc<Mutex<Option<HeadlessBackend>>>)>,
     fresh_before_input_checked: bool,
+    fresh_replacement_hold_checked: bool,
     latest: Option<(AudioSourceContext, AudioCandidateDomainToken, usize)>,
     command_ready: Option<(AudioSourceContext, u64)>,
     change_source_after_capture: Option<PathBuf>,
@@ -235,6 +251,9 @@ impl WorkerAudioSink for ObservedSink {
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         self.inner.streamed_exporter()
     }
+    fn streamed_bouncer(&self) -> Option<hex_session::StreamedBouncer> {
+        self.inner.streamed_bouncer()
+    }
 
     fn resident_runtime_loop(
         &mut self,
@@ -244,6 +263,11 @@ impl WorkerAudioSink for ObservedSink {
     }
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
+    }
+    fn resident_publication_readiness(
+        &mut self,
+    ) -> hex_session::service::ResidentPublicationReadiness {
+        self.inner.resident_publication_readiness()
     }
     fn resident_admission(
         &self,
@@ -330,22 +354,14 @@ impl WorkerAudioSink for ObservedSink {
             drop(audio);
             backend.lock().unwrap().take();
             self.inner.canonical_changed(source);
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while self.inner.output.is_none() {
-                self.inner.poll_open();
-                assert!(
-                    Instant::now() < deadline,
-                    "fresh output did not complete before input"
-                );
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            self.inner.poll_open();
             assert!(
                 self.inner.sampler.is_none(),
                 "old sampler must cancel before output opening"
             );
-            assert_eq!(
-                self.inner.output_hold.retained_bytes,
-                self.inner.policy.as_ref().unwrap().legacy_hold_bytes
+            assert!(
+                self.inner.output.is_none() && self.inner.pending_release_event.is_some(),
+                "a pre-input poll must wait for release delivery"
             );
             self.observation.lock().unwrap().fresh_before_input_checked = true;
             return;
@@ -488,6 +504,19 @@ impl WorkerAudioSink for ObservedSink {
             );
         }
         self.inner.poll();
+        if self.inner.output.is_some() {
+            let mut observation = self.observation.lock().unwrap();
+            if observation.fresh_before_input_checked && !observation.fresh_replacement_hold_checked
+            {
+                // The ordinary poll opens only after the UI can receive release.
+                // Retain the original fresh-output memory-policy assertion.
+                assert_eq!(
+                    self.inner.output_hold.retained_bytes,
+                    self.inner.policy.as_ref().unwrap().legacy_hold_bytes
+                );
+                observation.fresh_replacement_hold_checked = true;
+            }
+        }
         self.record_resident_submission();
         if let Some(context) = self.inner.last_context
             && let Some(domain) = self
@@ -599,7 +628,7 @@ impl Harness {
                     Ok(Some(output))
                 }
                 Err(error) if error == "audio output is open or still shutting down" => Ok(None),
-                Err(error) => Err(error),
+                Err(error) => Err(error.into()),
             }
         }));
         let observation = Arc::new(Mutex::new(Observation::default()));
@@ -897,11 +926,27 @@ fn unavailable_output_keeps_canonical_editing_and_saving_available(retained_fail
 }
 
 #[test]
+fn initial_open_shutdown_wins_over_expired_deadline() {
+    let _native = native_fixture();
+    let (events, _audio_events) = mpsc::sync_channel(1);
+    let mut sink = NativeAudioSink::new(events);
+    sink.lifecycle_status = Some(|| None);
+    sink.output_factory = Some(Box::new(|_| {
+        panic!("cancelled startup must not open audio")
+    }));
+    sink.startup_open_deadline = Duration::ZERO;
+    assert_eq!(
+        sink.initialize(&AtomicBool::new(true)),
+        Err("audio startup cancelled".into())
+    );
+}
+
+#[test]
 fn hung_initial_open_times_out_to_offline_editing() {
+    let _native = native_fixture();
     let (events, audio_events) = mpsc::sync_channel(1);
     let mut sink = NativeAudioSink::new(events);
     sink.lifecycle_status = Some(|| None);
-    // An opener that never completes: every poll reports still pending.
     sink.output_factory = Some(Box::new(|_| Ok(None)));
     sink.startup_open_deadline = Duration::from_millis(50);
     let service = Service::with_audio_sink_and_native_reservation(
@@ -1220,12 +1265,15 @@ fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_dom
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let output = h.render();
+        h.render();
         let status = h.audio.as_ref().unwrap().status().unwrap();
         if status.stream_applied_command_prefix.load(Acquire) == play {
-            // The real upsampler has a source-start boundary response. The
-            // end of this block and the next complete block are constant PCM.
-            assert!(output[63].iter().all(|s| (*s - 0.25).abs() < 0.0001));
+            // The real upsampler has a source-start boundary response: sinc v2
+            // (new imports) reaches 64 source frames, 128 project frames at
+            // 24k→48k. The block after that response is constant PCM.
+            h.render();
+            let settled = h.render();
+            assert!(settled.iter().flatten().all(|s| (*s - 0.25).abs() < 0.0001));
             break;
         }
         assert!(
@@ -1276,10 +1324,23 @@ fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_dom
         .control
         .command_with_ticket(PlaybackCommand::Pause)
         .unwrap();
+    // The Pause fades out first, then freezes the cursor at its audible end.
+    for _ in 0..FADE_BLOCKS {
+        h.render();
+    }
+    let paused = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    assert!(paused > 12288 + 64 && paused <= 12288 + 64 + 256);
     for _ in 0..2 {
         assert_eq!(h.render(), [[0.0; 2]; 64]);
         let status = h.audio.as_ref().unwrap().status().unwrap();
-        assert_eq!(status.position.load(Acquire), 12288 + 64);
+        assert_eq!(status.position.load(Acquire), paused);
         assert_eq!(status.stream_applied_command_prefix.load(Acquire), pause);
         assert!(!status.playing.load(Acquire));
     }
