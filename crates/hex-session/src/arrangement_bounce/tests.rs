@@ -569,7 +569,7 @@ fn selected_source_isolation_excludes_other_clips_tracks_main_and_returns() {
 }
 
 #[test]
-fn receiver_clip_bounce_excludes_shared_contributors_without_changing_whole_track_bounce() {
+fn receiver_clip_bounce_excludes_shared_contributors_and_whole_track_refuses() {
     for whole_track in [false, true] {
         shared_receiver_bounce_case(whole_track);
     }
@@ -646,6 +646,22 @@ fn shared_receiver_bounce_case(whole_track: bool) {
     } else {
         BounceTarget::Clips(vec![receiver_clip])
     };
+    if whole_track {
+        let before = session.project().clone();
+        let error = session
+            .bounce_arrangement(
+                target,
+                true,
+                &folder.0,
+                &hex_export::ExportControl::default(),
+                None,
+            )
+            .unwrap_err();
+        assert!(error.contains("linked tracks"), "{error}");
+        assert_eq!(session.project(), &before);
+        assert_eq!(std::fs::read_dir(&folder.0).unwrap().count(), 0);
+        return;
+    }
     let item = session
         .project()
         .plan_arrangement_bounce(&target, whole_track)
@@ -664,13 +680,6 @@ fn shared_receiver_bounce_case(whole_track: bool) {
     let isolated_receiver = isolated.track(receiver).unwrap();
     assert_eq!(isolated_receiver.source_id(), Some(source_id));
     assert_eq!(isolated_receiver.devices().len(), 1);
-    if whole_track {
-        let isolated_contributor = isolated.track(contributor).unwrap();
-        assert_eq!(isolated_contributor.source_id(), Some(source_id));
-        assert!(isolated_contributor.devices().is_empty());
-        assert!(isolated_contributor.clips().is_empty());
-        assert_eq!(isolated_contributor.midi_clips().len(), 1);
-    }
 
     let original = session.project().clone();
     let revision = session.compile_prepared_revision(None).unwrap();
@@ -720,39 +729,6 @@ fn shared_receiver_bounce_case(whole_track: bool) {
             session.project().native_sources(),
             original.native_sources()
         );
-    }
-    if whole_track {
-        let retained = session.project().native_source(source_id).unwrap();
-        assert_eq!(retained.receiver(), None);
-        assert!(
-            retained
-                .devices()
-                .eq(original.native_source(source_id).unwrap().devices())
-        );
-        let contributor_after = session.project().track(contributor).unwrap();
-        let contributor_before = original.track(contributor).unwrap();
-        assert_eq!(contributor_after.source_id(), Some(source_id));
-        assert_eq!(contributor_after.devices(), contributor_before.devices());
-        assert_eq!(contributor_after.clips(), contributor_before.clips());
-        assert_eq!(
-            contributor_after.midi_clips(),
-            contributor_before.midi_clips()
-        );
-        let receiver = session.project().track(receiver).unwrap();
-        assert!(receiver.instrument().is_none());
-        assert!(receiver.devices().is_empty());
-        let bounced = session.project().clone();
-        assert!(session.undo());
-        assert_eq!(
-            session.project().snapshot().tracks,
-            original.snapshot().tracks
-        );
-        assert_eq!(
-            session.project().native_sources(),
-            original.native_sources()
-        );
-        assert!(session.redo());
-        assert_eq!(session.project(), &bounced);
     }
 }
 
@@ -1422,6 +1398,32 @@ fn whole_track_bounce_replaces_every_console_source_keeps_loops_cells_and_atomic
         });
         let original = session.project().clone();
         let original_bytes = fs::read(folder.0.join("original-console.wav")).unwrap();
+        if shared {
+            let error = session
+                .bounce_arrangement(
+                    BounceTarget::Track(track),
+                    true,
+                    &folder.0,
+                    &hex_export::ExportControl::default(),
+                    None,
+                )
+                .unwrap_err();
+            assert!(error.contains("linked tracks"), "{error}");
+            assert_eq!(session.project(), &original);
+            assert_eq!(
+                fs::read(folder.0.join("original-console.wav")).unwrap(),
+                original_bytes
+            );
+            assert_eq!(
+                session
+                    .project()
+                    .track(contributor.unwrap())
+                    .unwrap()
+                    .source_id(),
+                Some(source)
+            );
+            continue;
+        }
         let plan = original
             .plan_arrangement_bounce(&BounceTarget::Track(track), true)
             .unwrap();
