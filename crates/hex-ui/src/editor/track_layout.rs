@@ -5,7 +5,8 @@
 //! ownership. Main shares the row-height and rollback map;
 //! its top resize edge preserves the pinned bottom. Stable track IDs survive topology changes;
 //! project replacement clears both layouts. Plain H belongs to this workspace
-//! only while the computer MIDI keyboard is disabled. Held sizing uses the shared
+//! only while the computer MIDI keyboard is disabled. Command-H resets track
+//! heights and exits overview without changing the pinned main row. Held sizing uses the shared
 //! Window pointer lease; its local snapshot owns complete cancellation rollback.
 use super::{
     EditorView,
@@ -165,23 +166,37 @@ fn single_row_move(old: &[TrackId], new: &[TrackId]) -> Option<(usize, usize)> {
 }
 
 impl EditorView {
-    /// Arrangement-only A/H/Q after child input; modifiers, text and capture retain ownership.
+    /// Arrangement-only A/H/Q after child input; text and capture retain ownership.
     pub(super) fn arrangement_view_key(
         &mut self,
         event: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !matches!(event.keystroke.key.as_str(), "a" | "h" | "q")
-            || event.keystroke.modifiers != Modifiers::default()
+        let reset = event.keystroke.key == "h"
+            && event.keystroke.modifiers
+                == (Modifiers {
+                    platform: true,
+                    ..Modifiers::default()
+                });
+        if (!reset
+            && (!matches!(event.keystroke.key.as_str(), "a" | "h" | "q")
+                || event.keystroke.modifiers != Modifiers::default()
+                || self.computer_keyboard.enabled))
             || event.is_held
-            || self.computer_keyboard.enabled
             || !(self.focus.is_focused(window)
                 || self.track_header_focused(window)
                 || self.section_focus_toggle_focused(window, cx))
             || !self.arrangement_view_change_available(cx)
         {
             return false;
+        }
+        if reset {
+            self.track_layout.heights.retain(|row, _| *row == Row::Main);
+            self.track_layout.overview = None;
+            self.track_scroll.remeasure();
+            cx.notify();
+            return true;
         }
         if event.keystroke.key == "a" {
             return self.toggle_automation_view(cx);
