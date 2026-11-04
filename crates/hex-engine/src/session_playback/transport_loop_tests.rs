@@ -1617,3 +1617,50 @@ fn live_loop_edit_during_a_held_arrangement_note_restarts_at_the_cursor() {
         );
     }
 }
+
+#[test]
+fn live_loop_edit_away_from_wrap_keeps_held_note_output_continuous() {
+    let project = transport_loop_project(false);
+    let mut changed = project.snapshot();
+    changed.loop_region = Some(LoopRegion::new(24_000, 120_000, true).expect("new loop"));
+    let changed = legacy_project_from_snapshot(changed).expect("valid new bounds");
+    let mut active = SessionPlayback::new(prepare_mutable(&project)).expect("old loop");
+    let mut reference = SessionPlayback::new(prepare_mutable(&project)).expect("reference loop");
+    for playback in [&mut active, &mut reference] {
+        playback
+            .apply(SessionPlaybackCommand::Play)
+            .expect("play");
+    }
+    let mut prefix = vec![[0.0; 2]; 30_000];
+    let mut reference_prefix = prefix.clone();
+    active.render(&mut prefix).expect("render to edit");
+    reference
+        .render(&mut reference_prefix)
+        .expect("render reference");
+    assert_eq!(prefix, reference_prefix);
+    assert!(
+        active.mutable_instruments[0]
+            .as_ref()
+            .expect("mutable runtime")
+            .proofs()
+            .any(|proof| !proof.note_off_sent)
+    );
+
+    let mut successor = SessionPlayback::new(prepare_mutable(&changed)).expect("new loop");
+    successor
+        .try_inherit_state_live_from(&mut active)
+        .expect("live handoff");
+    let mut actual = [[0.0; 2]; 256];
+    let mut expected = actual;
+    successor.render(&mut actual).expect("render successor");
+    reference
+        .render(&mut expected)
+        .expect("render uninterrupted");
+    let max_difference = actual
+        .iter()
+        .flatten()
+        .zip(expected.iter().flatten())
+        .map(|(actual, expected)| (actual - expected).abs())
+        .fold(0.0_f32, f32::max);
+    assert_eq!(max_difference, 0.0, "loop edit changed held-note output");
+}
