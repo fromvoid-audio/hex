@@ -1,4 +1,6 @@
 //! Visible track peaks from the currently applied playback observation.
+mod scale;
+
 use super::EditorView;
 use crate::theme;
 use gpui::{Div, prelude::*, px};
@@ -85,7 +87,11 @@ impl State {
 
 fn decay_level(level: f32, decay: f32) -> f32 {
     let next = level * decay;
-    if next < 0.001 { 0.0 } else { next }
+    if next < scale::FLOOR_AMPLITUDE {
+        0.0
+    } else {
+        next
+    }
 }
 
 fn selected_console_meter(project: &Project, selected: Option<TrackId>) -> Option<TrackId> {
@@ -191,7 +197,6 @@ impl EditorView {
                 continue;
             };
             let next = peak.max(decay_level(*entry, decay));
-            let next = if next < 0.001 { 0.0 } else { next };
             changed |= next != *entry;
             *entry = next;
         }
@@ -208,7 +213,6 @@ impl EditorView {
                     continue;
                 };
                 let next = peak.max(decay_level(*entry, decay));
-                let next = if next < 0.001 { 0.0 } else { next };
                 changed |= next != *entry;
                 *entry = next;
             }
@@ -232,9 +236,14 @@ pub(super) fn render_return(id: ReturnId, peak: f32, height: f32) -> Div {
 fn render_meter(id: String, peak: f32, height: f32) -> Div {
     let colors = theme::meter_colors();
     let level = hex_widgets::MeterLevel::from_amplitude(peak, false);
-    let fraction = hex_widgets::MeterLevel::fraction_from_amplitude(peak);
-    hex_widgets::level_meter(
-        id.into(),
+    let fraction = scale::fraction(peak);
+    let description = format!(
+        "output peak {} · scale −70 to +6 dbfs · line at 0 dbfs",
+        scale::readout(peak)
+    );
+    let unity_selector = format!("{id}-unity");
+    let meter = hex_widgets::level_meter(
+        id.clone().into(),
         fraction,
         peak > 1.0,
         hex_widgets::LevelMeterStyle {
@@ -243,8 +252,30 @@ fn render_meter(id: String, peak: f32, height: f32) -> Div {
             above: colors.clipping,
         },
     )
+    .child(
+        gpui::div()
+            .debug_selector(move || unity_selector.clone())
+            .absolute()
+            .top(gpui::relative(6.0 / 76.0))
+            .w_full()
+            .h(px(1.0))
+            .bg(gpui::rgb(theme::color(theme::PaletteRole::Muted))),
+    )
     .w(px(6.0))
     .h(px((height - 8.0).clamp(10.0, 42.0)))
+    .id(gpui::SharedString::from(id))
+    .tooltip(move |_, cx| {
+        cx.new(|_| super::transport::MiniTooltip {
+            kind: crate::tooltips::Kind::Identification,
+            description: description.clone().into(),
+        })
+        .into()
+    });
+    gpui::div()
+        .w(px(6.0))
+        .h(px((height - 8.0).clamp(10.0, 42.0)))
+        .flex_shrink_0()
+        .child(meter)
 }
 
 #[cfg(test)]
@@ -252,6 +283,68 @@ mod tests {
     use super::*;
     use hex_project::{Command, Created, Editor, Project};
     use std::time::Duration;
+
+    #[test]
+    fn decay_keeps_the_new_finite_floor_without_changing_its_rate() {
+        assert_eq!(decay_level(0.001, 0.5), 0.0005);
+        assert_eq!(
+            decay_level(scale::FLOOR_AMPLITUDE, 1.0),
+            scale::FLOOR_AMPLITUDE
+        );
+        assert_eq!(decay_level(scale::FLOOR_AMPLITUDE, 0.5), 0.0);
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn compact_and_expanded_meter_geometry_has_headroom_and_a_unity_mark(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{Context, IntoElement, Render, VisualTestContext, Window};
+        struct Fixture {
+            peak: f32,
+            height: f32,
+        }
+        impl Render for Fixture {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                gpui::div().size_full().child(render_meter(
+                    "scale-probe".into(),
+                    self.peak,
+                    self.height,
+                ))
+            }
+        }
+        let handle = cx.add_window(|_, _| Fixture {
+            peak: 0.0,
+            height: 18.0,
+        });
+        let view = handle.root(cx).unwrap();
+        let mut visual = VisualTestContext::from_window(*handle, cx);
+        for height in [18.0, 50.0] {
+            for (peak, expected) in [
+                (0.0, 0.0),
+                (scale::FLOOR_AMPLITUDE, 0.0),
+                (1.0, 70.0 / 76.0),
+                (10_f32.powf(6.0 / 20.0), 1.0),
+                (100.0, 1.0),
+            ] {
+                view.update(&mut visual, |view, cx| {
+                    view.peak = peak;
+                    view.height = height;
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                let well = visual.debug_bounds("scale-probe").unwrap();
+                assert_eq!(well.size.width, px(6.0));
+                assert_eq!(well.size.height, px((height - 8.0).clamp(10.0, 42.0)));
+                let fill = visual
+                    .debug_bounds("scale-probe-fill")
+                    .map_or(0.0, |b| f32::from(b.size.height));
+                assert!((fill - f32::from(well.size.height) * expected).abs() < 0.1);
+                let unity = visual.debug_bounds("scale-probe-unity").unwrap();
+                assert!(unity.top() >= well.top() && unity.bottom() <= well.bottom());
+            }
+        }
+    }
 
     #[test]
     fn clearing_meters_keeps_the_per_tick_staging_capacity() {
