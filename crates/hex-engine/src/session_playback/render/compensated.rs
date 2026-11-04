@@ -624,10 +624,21 @@ impl SessionPlayback {
                             external,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                    let override_gain = self
-                        .gain_recording_override
-                        .filter(|_| self.revision.gain_recording_track() == Some(route.id));
-                    let mix = compensation.fader_mix(track, index, override_gain);
+                    let recording_track = self.revision.gain_recording_track() == Some(route.id);
+                    let override_gain = self.gain_recording_override.filter(|_| recording_track);
+                    let live_gain = if recording_track {
+                        compensation.fader_content_frame(index).and_then(|frame| {
+                            self.live_gain_scratch.next(
+                                track,
+                                frame,
+                                override_gain,
+                                self.revision.arrangement().sample_rate(),
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                    let mix = compensation.fader_mix(track, index, live_gain);
                     let mixed = if let Some(mix) = mix {
                         let fader = &mut self.track_fader_scratch[index];
                         let mix = if track.has_gain_automation() || override_gain.is_some() {
