@@ -259,10 +259,9 @@ impl ComputerKeyboardRuntime {
                 .input
                 .lease()
                 .and_then(|input| input.live_notes.as_ref())
+                && let Some(batch) = &self.live_batch
             {
-                if let Some(batch) = &self.live_batch {
-                    let _ = input.fail_activation(batch.activation);
-                }
+                let _ = input.fail_activation(batch.activation);
             }
             self.release_hardware(None, events, len);
             return Ok(());

@@ -176,7 +176,10 @@ pub(super) fn detect(
             mean[band] += 0.05 * delta;
             deviation[band] += 0.05 * (delta.abs() - deviation[band]);
         }
-        if count >= 3 && last_score > 0.0 && last_score >= before_score && last_score > score
+        if count >= 3
+            && last_score > 0.0
+            && last_score >= before_score
+            && last_score > score
             && let Some(at) = refine(input, center - hop as u64, half as u64, work)?
         {
             work.check(starts.len() as u64)?;

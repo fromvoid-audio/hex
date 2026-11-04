@@ -165,13 +165,13 @@ pub fn read_session_page(active: &Path, requested_page: usize) -> io::Result<Log
                 .lines()
                 .next()
                 .filter(|line| line.starts_with("session_started "))
-            {
-                let clipped: String = line.chars().take(4096).collect();
-                snapshot.header = Some(if clipped.len() < line.len() {
-                    format!("{clipped} [header clipped]")
-                } else {
-                    clipped
-                });
+        {
+            let clipped: String = line.chars().take(4096).collect();
+            snapshot.header = Some(if clipped.len() < line.len() {
+                format!("{clipped} [header clipped]")
+            } else {
+                clipped
+            });
         }
         if let Some(segment) = text
             .lines()

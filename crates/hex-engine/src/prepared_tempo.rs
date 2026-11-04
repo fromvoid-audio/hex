@@ -471,10 +471,11 @@ impl PeriodicSessionTempoView<'_> {
 
     fn scoped_local_inverse(&self, frame: u64) -> Result<BeatTime, PreparedTempoError> {
         let candidate = self.canonical.frame_to_beat(frame);
-        if let Ok(beat) = candidate {
-            if beat >= self.cycle.start_beat && beat < self.cycle.end_beat {
-                return Ok(beat);
-            }
+        if let Ok(beat) = candidate
+            && beat >= self.cycle.start_beat
+            && beat < self.cycle.end_beat
+        {
+            return Ok(beat);
         }
         let lower = self.canonical.beat_lower_bound_for_frame(frame)?;
         let upper_frame = frame.checked_add(1).ok_or(PreparedTempoError::FrameToBeat(
