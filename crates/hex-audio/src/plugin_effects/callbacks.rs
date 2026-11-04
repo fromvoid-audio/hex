@@ -55,7 +55,7 @@ impl NativeEffectEntry {
     ) -> Result<(), DeviceContractError> {
         if !self.staged {
             if self.callback.begin_host_callback(extent).is_err() {
-                self.callback.pass_through_revoked(frames);
+                self.callback.pass_through_revoked(node, frames);
                 return Ok(());
             }
             self.staged = true;
@@ -217,6 +217,9 @@ impl NativeEffectCallbacks {
     }
 }
 impl ForeignProcessors for NativeEffectCallbacks {
+    fn returns_post_trim(&self, _node: ForeignProcessorNode<'_>) -> bool {
+        true
+    }
     fn process_segment(
         &mut self,
         node: ForeignProcessorNode<'_>,

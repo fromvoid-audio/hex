@@ -45,6 +45,11 @@ impl BypassMix {
         if self.remaining == 0 {
             if bypassed {
                 wet.copy_from_slice(dry);
+            } else if output_gain != 1.0 {
+                for frame in wet.iter_mut() {
+                    frame[0] *= output_gain;
+                    frame[1] *= output_gain;
+                }
             }
             return;
         }
@@ -59,15 +64,9 @@ impl BypassMix {
                 }
             }
             for channel in 0..2 {
-                // The chain applies output gain only when enabled. Return
-                // pre-trim PCM so both endpoints meet at the same audible
-                // level on either side of a bypass change.
-                let post_trim = dry[channel] * self.dry_gain + wet[channel] * self.wet_gain;
-                wet[channel] = if bypassed {
-                    post_trim
-                } else {
-                    post_trim / output_gain
-                };
+                wet[channel] = (f64::from(dry[channel]) * f64::from(self.dry_gain)
+                    + f64::from(wet[channel]) * f64::from(self.wet_gain))
+                    as f32;
             }
         }
     }
@@ -92,7 +91,7 @@ mod tests {
         let dry = [[0.25, -0.25]; 1];
         let mut wet = [[0.5, -0.5]; 1];
         mix.process(&mut wet, &dry, false, 48_000, 2.0);
-        let before = wet[0][0] * 2.0;
+        let before = wet[0][0];
         let mut next = [[0.5, -0.5]; 1];
         mix.process(&mut next, &dry, true, 48_000, 0.5);
         let expected = before + (0.25 - before) / 240.0;

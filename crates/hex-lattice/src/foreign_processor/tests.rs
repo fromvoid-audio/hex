@@ -68,7 +68,6 @@ impl ForeignProcessors for BorrowedEndpoint {
         ));
         assert_eq!(node.prepared.quantum_frames(), 8);
         assert_eq!(node.input_gain, 10.0);
-        assert_eq!(node.output_gain, self.configuration.output_gain_linear());
         assert_eq!(frame_offset, self.next);
         self.next += frames.len();
         self.segments += 1;
@@ -106,6 +105,49 @@ fn endpoint(instance: &PreparedRuntimeInstance) -> BorrowedEndpoint {
         revoked: false,
         rejections: 0,
         drained: false,
+    }
+}
+
+#[test]
+fn post_trim_endpoint_applies_output_trim_once_and_keeps_bypass_dry() {
+    struct PostTrim;
+    impl ForeignProcessors for PostTrim {
+        fn returns_post_trim(&self, _: ForeignProcessorNode<'_>) -> bool {
+            true
+        }
+        fn process_segment(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [StereoFrame],
+            _: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            if !node.bypassed {
+                for frame in frames {
+                    frame[0] *= node.output_gain;
+                    frame[1] *= node.output_gain;
+                }
+            }
+            Ok(())
+        }
+        fn reject_callback(&mut self) {}
+    }
+    for bypassed in [false, true] {
+        let instance = declaration(ProcessorChainOwner::Track(5), bypassed);
+        let gain = instance
+            .configuration
+            .as_ref()
+            .unwrap()
+            .output_gain_linear();
+        let mut chain = NativeRuntimeChain::new_prepared(vec![instance]).unwrap();
+        let mut frames = [[0.25, -0.5]];
+        chain.begin_block();
+        chain
+            .process_range_with_foreign(0..1, &mut frames, 0, None, None, &mut PostTrim)
+            .unwrap();
+        chain.commit_block();
+        let expected = if bypassed { 1.0 } else { gain };
+        assert!((frames[0][0] - 0.25 * expected).abs() < 1e-7);
     }
 }
 
@@ -389,11 +431,7 @@ fn parameter_capability_default_refuses_nonempty_without_silent_loss_and_preserv
         prepared: PreparedForeignProcessor::new(8, 3, 16).unwrap(),
         bypassed: false,
         input_gain: 10.0,
-        output_gain: declaration
-            .configuration
-            .as_ref()
-            .unwrap()
-            .output_gain_linear(),
+        output_gain: 0.1,
     };
     let mut frames = [[1.0, -0.5]; 2];
     endpoint
