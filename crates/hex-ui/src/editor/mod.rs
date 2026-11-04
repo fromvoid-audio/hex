@@ -1006,6 +1006,8 @@ pub(super) struct EditorView {
     last_enqueued_arrangement_device_drop:
         Option<hex_session::service::ArrangementDeviceDestination>,
     #[cfg(test)]
+    last_enqueued_device_track_gain: Option<Option<f32>>,
+    #[cfg(test)]
     last_enqueued_native_device_drop: Option<EnqueuedNativeDeviceDrop>,
     #[cfg(test)]
     last_time_request: Option<(&'static str, Option<(TrackId, u64)>)>,
@@ -1738,6 +1740,8 @@ impl EditorView {
             last_enqueued_native_device_drop: None,
             #[cfg(test)]
             last_enqueued_arrangement_device_drop: None,
+            #[cfg(test)]
+            last_enqueued_device_track_gain: None,
             #[cfg(test)]
             last_time_request: None,
             #[cfg(test)]

@@ -1615,12 +1615,20 @@ impl EditorView {
                 cx.notify();
                 return;
             };
+            let gain = match self.track_defaults.captured_gain() {
+                Ok(gain) => gain,
+                Err(error) => {
+                    self.error = Some(error.into());
+                    cx.notify();
+                    return;
+                }
+            };
             self.enqueue(Request::InsertBrowserInstrumentTrack {
                 project_generation: self.project_generation,
                 revision: state.revision,
                 class: hex_engine::NativeDeviceClass::Instrument,
                 type_id,
-                new_track_gain: None,
+                new_track_gain: Some(gain),
             });
             cx.notify();
             return;
