@@ -160,6 +160,7 @@ pub(super) fn render_body(
         let entity = cx.new(|cx| {
             let mut graph =
                 ResponseGraph::new(cx, format!("eq-response-{}", device.value()), style);
+            graph.set_circular_nodes(true, cx);
             graph.set_editable(true, cx);
             graph.set_tab_navigation(true, cx);
             graph.set_creation_enabled(true);
