@@ -1571,6 +1571,50 @@ impl NativeRuntimeChain {
             && a.sample_rate == b.sample_rate
     }
 
+    /// Check whether one exact processor can seed a pristine successor with
+    /// timing/control state while its donor retains all signal history. This
+    /// does not transfer custody and unsupported providers refuse.
+    pub fn can_fork_timing_without_signal_history_at(&self, previous: &Self, index: usize) -> bool {
+        let Some((new, old)) = self.entries.get(index).zip(previous.entries.get(index)) else {
+            return false;
+        };
+        Self::same_runtime_identity(new, old)
+            && new.input_gain == old.input_gain
+            && new.output_gain == old.output_gain
+            && new.matrix == old.matrix
+            && new.automation == old.automation
+            && match (&new.configuration, &old.configuration) {
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b) || a.processing_eq(b),
+                _ => false,
+            }
+            && new
+                .runtime
+                .can_fork_timing_without_signal_history_from(&old.runtime)
+    }
+
+    /// Seed the checked successor without moving or copying donor signal history.
+    /// Refusal leaves both runtime owners untouched; all work is bounded and
+    /// provider implementations must not allocate, block or destroy storage.
+    pub fn fork_timing_without_signal_history_at(
+        &mut self,
+        previous: &Self,
+        index: usize,
+    ) -> Result<(), DeviceContractError> {
+        if !self.can_fork_timing_without_signal_history_at(previous, index) {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        let Some((new, old)) = self.entries.get_mut(index).zip(previous.entries.get(index)) else {
+            return Err(DeviceContractError::InvalidDescriptor);
+        };
+        if !new
+            .runtime
+            .fork_timing_without_signal_history_from(&old.runtime)
+        {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        Ok(())
+    }
+
     /// Copy compatible histories to both twins after a successful preflight.
     /// Identity also includes the stable device type, runtime version and rate;
     /// persisted state versions may change while physical history is retained.

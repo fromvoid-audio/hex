@@ -461,3 +461,185 @@ fn block_bypass_matches_single_frame_history_across_tempo_change() {
         assert!(a.iter().any(|frame| *frame != [0.0; 2]));
     }
 }
+
+#[test]
+fn timing_only_fork_keeps_modulation_and_separates_signal_history() {
+    let configured = state(&[
+        (LEFT_SYNC, ParameterValue::Bool(false)),
+        (TIME, ParameterValue::Float(10.0)),
+        (FEEDBACK, ParameterValue::Float(0.6)),
+        (DRY_WET, ParameterValue::Float(1.0)),
+        (FILTER, ParameterValue::Bool(true)),
+        (HIGH_QUALITY, ParameterValue::Bool(false)),
+        (SMOOTHING, ParameterValue::Choice(2)),
+        (LFO_DELAY, ParameterValue::Float(0.8)),
+        (LFO_FILTER, ParameterValue::Float(0.5)),
+        (LFO_RATE, ParameterValue::Float(13.0)),
+        (FREQUENCY, ParameterValue::Float(400.0)),
+        (WIDTH, ParameterValue::Float(2.0)),
+    ]);
+    let mut old = owned(8000, &configured);
+    let mut next = owned(8000, &configured);
+    let mut reference = owned(8000, &configured);
+    let source: Vec<_> = (0..3500)
+        .map(|i| {
+            let x = ((i as f32) * 0.13).sin() * 0.4;
+            [x, -x]
+        })
+        .collect();
+    assert_eq!(
+        render(old.as_mut(), &source[..3000], &[127]),
+        render(reference.as_mut(), &source[..3000], &[127])
+    );
+    assert!(next.can_fork_timing_without_signal_history_from(old.as_ref()));
+    assert!(next.fork_timing_without_signal_history_from(old.as_ref()));
+    assert!(!next.can_fork_timing_without_signal_history_from(old.as_ref()));
+    assert!(next.committed_is_quiescent());
+    for (frame, &input) in source[3000..].iter().enumerate() {
+        let gain = (frame as f32 / 40.0).min(1.0);
+        let mut a = [input.map(|v| v * (1.0 - gain))];
+        let mut b = [input.map(|v| v * gain)];
+        let mut expected = [input];
+        old.begin_block();
+        next.begin_block();
+        reference.begin_block();
+        old.process_block(&mut a, &EMPTY_DEVICE_RESOURCES);
+        if frame < 110 {
+            next.process_bypassed_block_with_clock(&mut b, None, &EMPTY_DEVICE_RESOURCES);
+        } else {
+            next.process_block(&mut b, &EMPTY_DEVICE_RESOURCES);
+        }
+        reference.process_block(&mut expected, &EMPTY_DEVICE_RESOURCES);
+        old.commit_block();
+        next.commit_block();
+        reference.commit_block();
+        if frame == 0 || frame >= 110 {
+            for lane in 0..2 {
+                let combined = a[0][lane] + b[0][lane];
+                assert!(
+                    (combined - expected[0][lane]).abs() < 2e-6,
+                    "frame={frame}, lane={lane}, got {combined}, expected {}",
+                    expected[0][lane]
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn timing_only_fork_refuses_nonpristine_frozen_mismatched_or_open_runtimes() {
+    let configured = free(10.0, 0.6);
+    let mut old = owned(8000, &configured);
+    let mut reference = owned(8000, &configured);
+    let warm = [[0.2, -0.1]; 100];
+    render(old.as_mut(), &warm, &[100]);
+    render(reference.as_mut(), &warm, &[100]);
+    let frozen = DEFINITION
+        .patch_parameter(&configured, FREEZE, ParameterValue::Bool(true))
+        .unwrap();
+    let changed = DEFINITION
+        .patch_parameter(&configured, FEEDBACK, ParameterValue::Float(0.5))
+        .unwrap();
+    let mut wrong_rate = owned(16000, &configured);
+    let mut wrong_settings = owned(8000, &changed);
+    let mut frozen_target = owned(8000, &frozen);
+    let frozen_old = owned(8000, &frozen);
+    let mut used = owned(8000, &configured);
+    render(used.as_mut(), &[[0.0; 2]; 1], &[1]);
+    assert!(!used.can_fork_timing_without_signal_history_from(old.as_ref()));
+    used.reset();
+    for (next, donor) in [
+        (&mut wrong_rate, &old),
+        (&mut wrong_settings, &old),
+        (&mut frozen_target, &frozen_old),
+        (&mut used, &old),
+    ] {
+        assert!(!next.can_fork_timing_without_signal_history_from(donor.as_ref()));
+        assert!(!next.fork_timing_without_signal_history_from(donor.as_ref()));
+    }
+    let mut open_target = owned(8000, &configured);
+    old.begin_block();
+    assert!(!open_target.can_fork_timing_without_signal_history_from(old.as_ref()));
+    assert!(!open_target.fork_timing_without_signal_history_from(old.as_ref()));
+    old.rollback_block();
+    assert!(open_target.can_fork_timing_without_signal_history_from(old.as_ref()));
+    assert!(open_target.fork_timing_without_signal_history_from(old.as_ref()));
+    assert_eq!(
+        render(old.as_mut(), &[[0.0; 2]; 200], &[17]),
+        render(reference.as_mut(), &[[0.0; 2]; 200], &[17])
+    );
+}
+
+#[test]
+fn timing_only_fork_preserves_rollback_and_exact_host_identity() {
+    let configured = free(10.0, 0.6);
+    let mut old = owned(8000, &configured);
+    let mut next = owned(8000, &configured);
+    let mut reference = owned(8000, &configured);
+    render(old.as_mut(), &[[0.2, -0.1]; 160], &[80]);
+    assert!(next.fork_timing_without_signal_history_from(old.as_ref()));
+    assert!(reference.fork_timing_without_signal_history_from(old.as_ref()));
+    next.begin_block();
+    let mut discarded = [[0.9, 0.4]; 37];
+    next.process_block(&mut discarded, &EMPTY_DEVICE_RESOURCES);
+    next.rollback_block();
+    let input = [[0.2, -0.1]; 200];
+    assert_eq!(
+        render(next.as_mut(), &input, &[19]),
+        render(reference.as_mut(), &input, &[19])
+    );
+
+    let factory = DEFINITION
+        .prepare_runtime_factory(
+            &configured,
+            &DevicePreparationContext {
+                sample_rate: 8000,
+                tuning: &TuningTable::default(),
+                resources: &EMPTY_DEVICE_RESOURCES,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let chain = |device_id, bypassed| {
+        hex_lattice::NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
+            automation: Default::default(),
+            meter: Default::default(),
+            owner: hex_lattice::ProcessorChainOwner::Main,
+            device_id,
+            device_type: DeviceTypeId::from_static("hex.delay"),
+            matrix: hex_lattice::StereoMatrix::identity(),
+            bypassed,
+            sample_rate: 8000,
+            configuration: Some(Arc::new(configured.clone())),
+            definition: Some(factory.clone()),
+        }])
+        .unwrap()
+    };
+    let mut donor = chain(1, false);
+    donor.begin_block();
+    let mut warm = [[0.2, -0.1]; 100];
+    donor.process_block(&mut warm).unwrap();
+    donor.commit_block();
+    let mut wrong = chain(2, true);
+    assert!(!wrong.can_fork_timing_without_signal_history_at(&donor, 0));
+    assert!(
+        wrong
+            .fork_timing_without_signal_history_at(&donor, 0)
+            .is_err()
+    );
+    let matching_wrong = chain(2, false);
+    assert!(wrong.can_fork_timing_without_signal_history_at(&matching_wrong, 0));
+    let mut successor = chain(1, true);
+    assert!(successor.can_fork_timing_without_signal_history_at(&donor, 0));
+    assert!(
+        successor
+            .fork_timing_without_signal_history_at(&donor, 0)
+            .is_ok()
+    );
+    assert!(!successor.can_fork_timing_without_signal_history_at(&donor, 0));
+    assert!(
+        successor
+            .fork_timing_without_signal_history_at(&donor, 1)
+            .is_err()
+    );
+}
