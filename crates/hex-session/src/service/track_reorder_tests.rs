@@ -404,3 +404,27 @@ fn inserted_device_track_initial_gain_is_prepared_and_undoes_atomically() {
     let redo = run(&service, Request::Redo);
     assert_eq!(redo.state.project.snapshot(), after);
 }
+
+#[test]
+fn inserted_return_initial_gain_is_prepared_and_undoes_atomically() {
+    let service = Service::new(48_000, 16, 32).unwrap();
+    let before = next_event(&service);
+    let added = run(
+        &service,
+        Request::Edit(Command::AddReturnTrackWithGain {
+            name: "return".into(),
+            gain: 0.25,
+        }),
+    );
+    assert!(added.error.is_none(), "{:?}", added.error);
+    assert_eq!(added.state.project.return_tracks()[0].gain(), 0.25);
+    assert!(added.playback.is_some());
+    let after = added.state.project.snapshot();
+    let undone = run(&service, Request::Undo);
+    assert_eq!(
+        undone.state.project.return_tracks(),
+        before.state.project.return_tracks()
+    );
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project.snapshot(), after);
+}

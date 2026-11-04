@@ -582,6 +582,7 @@ impl Command {
             | Self::CompareDevice { .. }
             | Self::ReplaceDeviceComparison { .. }
             | Self::AddReturnTrack { .. }
+            | Self::AddReturnTrackWithGain { .. }
             | Self::RemoveReturnTrack(..)
             | Self::RenameReturnTrack { .. }
             | Self::ReturnGain { .. }

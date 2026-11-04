@@ -416,6 +416,11 @@ pub enum Command {
     AddReturnTrack {
         name: String,
     },
+    /// Create a return bus with finite linear gain in `0..=2` in one edit.
+    AddReturnTrackWithGain {
+        name: String,
+        gain: f32,
+    },
     RemoveReturnTrack(ReturnId),
     RenameReturnTrack {
         return_track: ReturnId,
@@ -2088,6 +2093,7 @@ impl Project {
                 crate::device::apply(self, device_command)
             }
             return_command @ (Command::AddReturnTrack { .. }
+            | Command::AddReturnTrackWithGain { .. }
             | Command::RemoveReturnTrack(_)
             | Command::RenameReturnTrack { .. }
             | Command::ReturnGain { .. }
