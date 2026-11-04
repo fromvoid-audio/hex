@@ -2816,7 +2816,8 @@ impl EditorView {
             ));
         }
         if !active_trim_preview
-            && self.track_height(track) > super::track_layout::HEADER_ONLY_HEIGHT
+            && (self.track_height(track) > super::track_layout::HEADER_ONLY_HEIGHT
+                || self.fade_curve_active(clip_id))
         {
             let handles = self.fade_handles(
                 state,
