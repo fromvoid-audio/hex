@@ -75,6 +75,133 @@ fn live_eq8_bypass_inherits_sounding_filter_without_detached_tail_or_click() {
     );
 }
 
+#[test]
+fn combined_live_parameter_edit_and_bypass_preserves_filter_history_and_continuity() {
+    for owner in 0..3 {
+        let table = Arc::new(hex_devices::SineTable::new());
+        let mut snapshot = project_with_eq8(0).snapshot();
+        if owner != 0 {
+            let device = snapshot.tracks[0].devices.remove(0);
+            if owner == 1 {
+                let return_id = snapshot.next_id;
+                snapshot.next_id += 1;
+                snapshot.tracks[0]
+                    .sends
+                    .push(hex_project::SendLevelSnapshot {
+                        return_track: return_id,
+                        gain: 1.0,
+                    });
+                snapshot
+                    .return_tracks
+                    .push(hex_project::ReturnTrackSnapshot {
+                        id: return_id,
+                        name: "return".into(),
+                        gain: 1.0,
+                        muted: false,
+                        devices: vec![device],
+                    });
+            } else {
+                snapshot.main_devices.push(device);
+            }
+        }
+        let original = Project::from_snapshot(snapshot).unwrap();
+        let original_revision = revision(&original, Arc::clone(&table));
+        let mut previous = SessionPlayback::new(Arc::clone(&original_revision)).unwrap();
+        previous.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut before = vec![[0.0; 2]; 2048];
+        previous.render(&mut before).unwrap();
+        let device = match owner {
+            0 => original.tracks()[0].devices()[0].id(),
+            1 => original.return_tracks()[0].devices()[0].id(),
+            _ => original.main_devices()[0].id(),
+        };
+        let edited_state = EQ8_DEFINITION
+            .patch_parameter(
+                &eq8_state(0),
+                parameter::gain(0, 0),
+                ParameterValue::Float(-12.0),
+            )
+            .unwrap();
+        let mut editor = Editor::new(original, 8).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: edited_state,
+            })
+            .unwrap();
+        editor
+            .execute(Command::ToggleDeviceBypass { device })
+            .unwrap();
+        let changed = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::clone(&table),
+                Some(original_revision.session()),
+            )
+            .unwrap(),
+        );
+        let mut next = SessionPlayback::new(changed).unwrap();
+        next.try_inherit_state_from(&mut previous).unwrap();
+        assert_eq!(
+            next.tail_groups.iter().flatten().count(),
+            0,
+            "a compatible retarget must not detach the old filter"
+        );
+        assert!(next.return_effect_tails.slots().iter().all(Option::is_none));
+        let mut after = [[0.0; 2]; 64];
+        next.render(&mut after).unwrap();
+        let boundary = (after[0][0] - before[2047][0]).abs();
+        let steady = largest_step(&before[1024..]);
+        assert!(
+            boundary <= steady * 1.5,
+            "combined change step {boundary}, steady {steady}"
+        );
+        let edited_state = EQ8_DEFINITION
+            .patch_parameter(
+                &eq8_state(0),
+                parameter::gain(0, 0),
+                ParameterValue::Float(6.0),
+            )
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device,
+                state: edited_state,
+            })
+            .unwrap();
+        editor
+            .execute(Command::ToggleDeviceBypass { device })
+            .unwrap();
+        let reversed_revision = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &BTreeMap::new(),
+                Arc::clone(&table),
+                Some(original_revision.session()),
+            )
+            .unwrap(),
+        );
+        let mut reversed = SessionPlayback::new(reversed_revision).unwrap();
+        reversed.try_inherit_state_from(&mut next).unwrap();
+        assert!(reversed.tail_groups.iter().all(Option::is_none));
+        assert!(
+            reversed
+                .return_effect_tails
+                .slots()
+                .iter()
+                .all(Option::is_none)
+        );
+        let mut resumed = [[0.0; 2]; 64];
+        reversed.render(&mut resumed).unwrap();
+        let reversal = (resumed[0][0] - after[63][0]).abs();
+        assert!(
+            reversal <= steady * 1.5,
+            "owner {owner}: combined rapid reversal step {reversal}, steady {steady}"
+        );
+    }
+}
+
 /// Prepare the editor's project after switching the EQ8 to `mode`.
 fn switch_mode(
     editor: &mut Editor,
