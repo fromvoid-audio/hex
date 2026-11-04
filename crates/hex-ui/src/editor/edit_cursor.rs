@@ -129,6 +129,7 @@ impl EditorView {
             .is_some_and(|region| region.enabled());
         if loop_was_enabled
             || !loop_enabled
+            || self.pending_selection_loop_has_newer_intent()
             || self.edit_cursor.is_none()
             || self.normalized_time_selection().is_some()
             || self.time_selection_gesture.is_some()

@@ -153,6 +153,22 @@ pub(super) fn delete(project: &mut Project, section: SectionId) -> Result<Create
     Ok(Created::None)
 }
 
+// Preview and publication choose from the same finite persisted palette. Refuse
+// instead of silently producing an indistinguishable duplicate once it is full.
+fn duplicate_color(project: &Project) -> Result<ElementColor, Invalid> {
+    ElementColor::ALL
+        .into_iter()
+        .find(|color| {
+            project
+                .arrangement_sections
+                .iter()
+                .all(|section| section.color != *color)
+        })
+        .ok_or(Invalid(
+            "no unused section color; change or remove a section color before duplicating",
+        ))
+}
+
 pub(super) fn duplicate(project: &mut Project, section: SectionId) -> Result<Created, Invalid> {
     let index = section_index(project, section)?;
     let marker = project.arrangement_sections[index].clone();
@@ -160,6 +176,7 @@ pub(super) fn duplicate(project: &mut Project, section: SectionId) -> Result<Cre
         return Err(Invalid("arrangement section limit reached"));
     }
     let mut copy = marker.clone();
+    copy.color = duplicate_color(project)?;
     copy.id = SectionId(0);
     copy.start = marker.end;
     copy.end = BeatTime::from_raw(
@@ -331,6 +348,7 @@ pub(super) fn preview_duplicate(
         return Err(Invalid("arrangement section limit reached"));
     }
     let mut copy = marker.clone();
+    copy.color = duplicate_color(project)?;
     copy.id = SectionId(0);
     copy.start = marker.end;
     copy.end = BeatTime::from_raw(

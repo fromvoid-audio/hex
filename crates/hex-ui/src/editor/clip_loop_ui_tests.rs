@@ -937,3 +937,108 @@ fn warped_looping_clip_right_edge_extends_by_repeats_instead_of_cancelling(
         });
     }
 }
+
+#[gpui::test]
+fn option_repeat_edge_has_priority_over_a_covering_time_selection(cx: &mut TestAppContext) {
+    for (midi, boundary) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut f = fixture(cx, midi);
+        f.editor.update(&mut f.visual, |view, cx| {
+            let state = view.state.as_ref().unwrap();
+            let track = state
+                .project
+                .tracks()
+                .iter()
+                .find(|track| {
+                    if midi {
+                        track.midi_clips().iter().any(|clip| clip.id() == f.clip)
+                    } else {
+                        track.clips().iter().any(|clip| clip.id() == f.clip)
+                    }
+                })
+                .unwrap()
+                .id();
+            let clip_end = if midi {
+                state.midi_preview.get(f.clip).unwrap().frame_end
+            } else {
+                let clip = state.project.clip(f.clip).unwrap();
+                clip.start() + clip.duration()
+            };
+            view.time_selection = Some(super::super::time_selection::TimeSelection {
+                anchor_track: track,
+                end_track: track,
+                anchor_frame: 0,
+                end_frame: if boundary {
+                    clip_end
+                } else {
+                    state.timeline_frames
+                },
+            });
+            cx.notify();
+        });
+        f.visual.run_until_parked();
+        let down = f.visual.debug_bounds(right_edge(&f)).unwrap().center();
+        let selection_handle = f
+            .visual
+            .debug_bounds(Box::leak(
+                format!(
+                    "time-selection-handle-{}",
+                    f.editor.read_with(&f.visual, |view, _| view
+                        .time_selection
+                        .unwrap()
+                        .anchor_track
+                        .value())
+                )
+                .into_boxed_str(),
+            ))
+            .unwrap();
+        let away = point(
+            selection_handle.left() + px(5.0),
+            selection_handle.center().y,
+        );
+        f.visual
+            .simulate_mouse_move(away, None, Modifiers::default());
+        let option = Modifiers {
+            alt: true,
+            ..Default::default()
+        };
+        f.visual.simulate_modifiers_change(option);
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::OpenHand),
+            "range remains movable away from the clip edge"
+        );
+        f.visual.simulate_mouse_move(down, None, option);
+        f.visual.run_until_parked();
+        assert_eq!(
+            f.visual.rendered_cursor_style(),
+            Some(gpui::CursorStyle::Loop),
+            "midi={midi}"
+        );
+        let target = drag(&mut f, "outer", 70.0, Modifiers::default());
+        f.editor.read_with(&f.visual, |view, _| {
+            assert!(
+                view.time_selection_gesture.is_none() && view.time_range_move_gesture.is_none()
+            );
+            assert!(if midi {
+                view.active_midi_trim_drag.is_some()
+            } else {
+                view.active_trim_drag.is_some()
+            });
+        });
+        f.visual
+            .simulate_mouse_up(target, MouseButton::Left, option);
+        f.visual.run_until_parked();
+        f.editor
+            .read_with(&f.visual, |view, _| assert!(view.pending_trim.is_some()));
+        pump(&f.editor, &mut f.visual);
+        f.editor.read_with(&f.visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert!(if midi {
+                project.midi_clip(f.clip).unwrap().looping()
+            } else {
+                loop_handles::audio_repeats(project.clip(f.clip).unwrap())
+            });
+        });
+    }
+}

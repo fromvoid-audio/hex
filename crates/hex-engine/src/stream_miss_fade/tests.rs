@@ -220,9 +220,20 @@ fn a_loop_wrap_out_of_a_miss_starts_a_fresh_voice() {
         start(&mut playback);
         // RESUME is never reached inside the loop: page 1 stays missing.
         let output = render(&mut playback, &mut pages, block, 5_000 + 3 * 4_000);
-        let step = largest_step(&output);
-        assert!(step <= BOUND, "block {block}: step {step}");
+        let step = output
+            .windows(2)
+            .enumerate()
+            .filter(|(i, _)| ![5_000, 9_000, 13_000].contains(&(i + 1)))
+            .map(|(_, pair)| (pair[1][0] - pair[0][0]).abs())
+            .fold(0.0, f32::max);
+        assert!(step <= BOUND, "block {block}: non-wrap step {step}");
         for wrap in [5_000, 9_000, 13_000] {
+            assert_eq!(output[wrap - 1], [0.0; 2], "block {block}");
+            assert_eq!(
+                output[wrap],
+                [LEVEL, -LEVEL],
+                "full authored start: block {block}"
+            );
             // Each pass reaches full level again in page 0 and fades out
             // again at the page 1 miss.
             assert_eq!(output[wrap + 2 * F], [LEVEL, -LEVEL], "block {block}");

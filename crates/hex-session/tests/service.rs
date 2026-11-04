@@ -1570,6 +1570,7 @@ fn arrangement_clip_track_insertion_edits_compile_undo_and_round_trip() {
 
     service
         .submit(Request::Edit(Command::MoveClipToNewTrack {
+            initial_gain: Some(0.25),
             clip: audio_clip,
             name: "moved audio".into(),
             before_track: Some(original_tracks[2]),
@@ -1583,6 +1584,10 @@ fn arrangement_clip_track_insertion_edits_compile_undo_and_round_trip() {
         other => panic!("unexpected move result: {other:?}"),
     };
     assert_eq!(audio_moved.state.project.tracks()[2].id(), audio_track);
+    assert_eq!(
+        audio_moved.state.project.track(audio_track).unwrap().gain(),
+        0.25
+    );
     let moved_audio = &audio_moved
         .state
         .project
@@ -1602,6 +1607,7 @@ fn arrangement_clip_track_insertion_edits_compile_undo_and_round_trip() {
 
     service
         .submit(Request::Edit(Command::MoveMidiClipToNewTrack {
+            initial_gain: None,
             clip: midi_clip,
             name: "moved midi".into(),
             before_track: None,
@@ -1962,6 +1968,7 @@ fn arrangement_catalog_drop_routes_all_destinations_and_is_one_undo() {
             });
             service
                 .submit(Request::DropBrowserDeviceOnArrangement {
+                    new_track_gain: None,
                     project_generation: 0,
                     revision: baseline.state.revision,
                     class,
@@ -2057,6 +2064,7 @@ fn arrangement_catalog_drop_refuses_stale_catalog_and_captured_targets_atomicall
     for refusal in 0..5 {
         service
             .submit(Request::DropBrowserDeviceOnArrangement {
+                new_track_gain: None,
                 project_generation: u64::from(refusal == 0),
                 revision: baseline.state.revision + u64::from(refusal == 1),
                 class: NativeDeviceClass::Instrument,
@@ -2104,6 +2112,7 @@ fn arrangement_catalog_drop_refuses_stale_catalog_and_captured_targets_atomicall
     ] {
         service
             .submit(Request::DropBrowserDeviceOnArrangement {
+                new_track_gain: None,
                 project_generation: 0,
                 revision: removed.state.revision,
                 class: NativeDeviceClass::Effect,

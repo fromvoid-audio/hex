@@ -1,6 +1,7 @@
 //! Output completion alone is substituted. Session, verified readers, source
 //! domains, graph preparation, publication and callback are production paths.
 use super::*;
+mod bypass_latency;
 mod limiter;
 mod plugins;
 mod recovery;
@@ -17,6 +18,7 @@ mod resident_sections;
 mod resident_streamed_bounce;
 mod sampler;
 mod section_benchmark;
+mod solo_latency;
 mod stream_export;
 mod track_clipboard;
 mod track_reorder;
@@ -253,6 +255,11 @@ impl WorkerAudioSink for ObservedSink {
     }
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
+    }
+    fn resident_publication_readiness(
+        &mut self,
+    ) -> hex_session::service::ResidentPublicationReadiness {
+        self.inner.resident_publication_readiness()
     }
     fn resident_admission(
         &self,
