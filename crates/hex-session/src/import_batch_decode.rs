@@ -245,6 +245,7 @@ impl AudioBatchImport {
         if context.active_gesture {
             return Err(AudioBatchError::ContextChanged);
         }
+        options.validate()?;
         let count = paths.len();
         if count != control.total {
             return Err(SessionError::Invalid("audio batch control count differs").into());
@@ -599,7 +600,7 @@ impl AudioBatchImport {
             self.destination,
             &self.project,
             previous,
-            self.options.overwrite,
+            self.options,
             || {
                 if let Err(error) = self.check(current) {
                     admission_error = Some(error);

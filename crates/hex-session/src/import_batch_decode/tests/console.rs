@@ -499,3 +499,59 @@ fn failed_new_column_decode_cancel_or_stale_context_creates_no_track_scene_asset
         }
     }
 }
+
+#[test]
+fn captured_new_track_gain_does_not_change_an_existing_console_track() {
+    let files = Files::new();
+    let path = files.wav("console.wav", 48_000, 128, 8192);
+    let (mut s, track, scene) = fixture(DocumentAudioMode::Resident);
+    s.command(Command::Gain { track, gain: 0.8 }).unwrap();
+    let op = AudioBatchImport::capture_with_control(
+        vec![path],
+        AudioBatchDestination::Console(ConsoleDestination::Cell { track, scene }),
+        &s,
+        context(),
+        Arc::new(AudioBatchControl::new(1).unwrap()),
+        crate::import_batch::AudioImportOptions {
+            new_track_gain: Some(0.25),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    op.run(&mut s, None, context).unwrap();
+    assert_eq!(s.project().track(track).unwrap().gain(), 0.8);
+}
+
+#[test]
+fn captured_gain_applies_to_new_verified_streaming_tracks() {
+    let files = Files::new();
+    let path = files.wav("verified.wav", 48_000, 128, 8192);
+    let (mut s, existing, _) = fixture(DocumentAudioMode::VerifiedStreaming);
+    let existing_gain = s.project().track(existing).unwrap().gain();
+    let op = AudioBatchImport::capture_with_control(
+        vec![path],
+        AudioBatchDestination::NewTracks {
+            before_track: None,
+            start: 0,
+        },
+        &s,
+        context(),
+        Arc::new(AudioBatchControl::new(1).unwrap()),
+        crate::import_batch::AudioImportOptions {
+            new_track_gain: Some(0.25),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (created, _) = op.run(&mut s, None, context).unwrap();
+    let Created::Imported { track, asset, .. } = created[0] else {
+        panic!("import")
+    };
+    assert_eq!(s.project().track(track).unwrap().gain(), 0.25);
+    assert_eq!(s.project().track(existing).unwrap().gain(), existing_gain);
+    assert!(s.verified_sources.contains_key(&asset));
+    assert!(s.undo_prepared_revision(None).unwrap().is_some());
+    assert!(s.project().track(track).is_none());
+    assert!(s.redo_prepared_revision(None).unwrap().is_some());
+    assert_eq!(s.project().track(track).unwrap().gain(), 0.25);
+}
