@@ -347,6 +347,7 @@ impl Session {
             destination,
             sources.len(),
             &track_name,
+            options.new_track_gain,
         )?;
         commands
             .try_reserve_exact(sources.len())

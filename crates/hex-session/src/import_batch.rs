@@ -12,7 +12,7 @@ pub(crate) use console::{ResolvedCell, normalize as normalize_imports};
 pub struct AudioImportOptions {
     pub warp: hex_project::AudioImportWarp,
     pub overwrite: bool,
-    /// Captured linear gain for newly created Arrangement tracks only.
+    /// Captured linear gain for newly created Arrangement or Console tracks.
     pub new_track_gain: Option<f32>,
 }
 impl Default for AudioImportOptions {
@@ -183,8 +183,13 @@ impl Session {
             .and_then(|member| member.path.file_stem())
             .map(|name| name.to_string_lossy())
             .unwrap_or_else(|| "imported audio".into());
-        let (mut commands, console_cell) =
-            console::prefix(self.project(), destination, count, &track_name)?;
+        let (mut commands, console_cell) = console::prefix(
+            self.project(),
+            destination,
+            count,
+            &track_name,
+            options.new_track_gain,
+        )?;
         // One slot per member; `None` marks a member that reuses a resident asset.
         let mut residents: Vec<Option<ResidentAsset>> = Vec::new();
         commands
