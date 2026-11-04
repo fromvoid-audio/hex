@@ -377,6 +377,7 @@ struct MeterSection {
     beat_length: u64,
     first_landmark: u64,
     landmark_count: u64,
+    regular_demand: u64,
 }
 
 struct RulerCandidates {
@@ -473,6 +474,9 @@ fn ruler_candidates(
                             beat_length,
                             first_landmark,
                             landmark_count: last_landmark - first_landmark + 1,
+                            // Count conservatively across any viewport phase so
+                            // crossing a candidate edge does not change stride.
+                            regular_demand: (effective_end - effective_start) / beat_length + 1,
                         });
                     }
                 }
@@ -554,7 +558,7 @@ fn ruler_candidates(
             // Only the ruler thins to an origin-anchored stride. Grid and snap
             // consumers retain their existing visible-candidate sampling.
             let stride = section
-                .landmark_count
+                .regular_demand
                 .div_ceil(quota)
                 .checked_next_power_of_two()
                 .unwrap_or(u64::MAX);
@@ -1599,6 +1603,32 @@ mod tests {
             before, after,
             "panning changed landmarks in the shared range"
         );
+    }
+
+    #[test]
+    fn ruler_stride_does_not_change_at_visible_count_threshold() {
+        let project = Project::new(48_000).unwrap();
+        let viewport = Viewport {
+            start: 0,
+            length: 319_200,
+        };
+        let panned = Viewport {
+            start: 12_000,
+            ..viewport
+        };
+        let before = ruler_ticks(&project, viewport, 600.0);
+        let after = ruler_ticks(&project, panned, 600.0);
+        let overlapping_before: Vec<_> = before
+            .iter()
+            .filter(|tick| tick.frame >= panned.start)
+            .map(|tick| tick.frame)
+            .collect();
+        let overlapping_after: Vec<_> = after
+            .iter()
+            .filter(|tick| tick.frame < viewport.end().unwrap())
+            .map(|tick| tick.frame)
+            .collect();
+        assert_eq!(overlapping_before, overlapping_after);
     }
 
     #[test]
