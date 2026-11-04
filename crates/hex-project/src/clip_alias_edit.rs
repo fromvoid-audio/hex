@@ -56,6 +56,7 @@ impl Plan {
             command,
             Command::DuplicateAliasClips(_)
                 | Command::DuplicateAliasClipsAt { .. }
+                | Command::DuplicateAliasClipToNewTrack { .. }
                 | Command::MakeClipsUnique(_)
                 | Command::ApplyClipSettingsToAliases(_)
                 | Command::DuplicateSessionCell { alias: true, .. }

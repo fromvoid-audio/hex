@@ -25,6 +25,13 @@ pub enum Command {
         track: TrackId,
         position: crate::ClipGroupPosition,
     },
+    /// Insert one Arrangement track and place a linked copy in a single edit.
+    DuplicateAliasClipToNewTrack {
+        clip: ClipId,
+        name: String,
+        before_track: Option<TrackId>,
+        position: crate::ClipGroupPosition,
+    },
     /// Detach selected members without copying decoded media.
     MakeClipsUnique(Vec<ClipId>),
     /// Copy current local clip settings to its group, preserving every placement.
@@ -1814,6 +1821,15 @@ impl Project {
                 track,
                 position,
             } => crate::clip_duplicate::apply_alias_at(self, clips, anchor, track, position),
+            Command::DuplicateAliasClipToNewTrack {
+                clip,
+                name,
+                before_track,
+                position,
+            } => {
+                let track = insert_track_before(self, name, before_track)?;
+                crate::clip_duplicate::apply_alias_at(self, vec![clip], clip, track, position)
+            }
             Command::MakeClipsUnique(clips) => crate::clip_alias_commands::unique(self, clips),
             Command::ApplyClipSettingsToAliases(clip) => {
                 crate::clip_alias_commands::apply_settings(self, clip)
