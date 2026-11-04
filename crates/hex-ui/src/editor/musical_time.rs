@@ -517,9 +517,12 @@ fn ruler_candidates(
     // deterministic order as adaptive coarsening. Over-budget section sampling
     // below retains its existing evenly spaced section identities.
     let demand = |index: usize| {
-        sections[index]
-            .landmark_count
-            .min((target_count.min(MAX_GRID_LINES) + 1) as u64) as usize
+        let count = if matches!(target_grid, LandmarkDensity::Ruler(_)) {
+            sections[index].regular_demand
+        } else {
+            sections[index].landmark_count
+        };
+        count.min((target_count.min(MAX_GRID_LINES) + 1) as u64) as usize
     };
     let (level, mut remainder) = if section_count <= target_count {
         capped_fair_share(section_count, target_count, demand)
@@ -551,11 +554,15 @@ fn ruler_candidates(
                 target_count / sampled_sections
                     + usize::from(sampled_index < target_count % sampled_sections)
             };
-            let quota = (quota as u64).min(section.landmark_count);
+            let regular = matches!(target_grid, LandmarkDensity::Ruler(_));
+            let quota = if regular {
+                quota as u64
+            } else {
+                (quota as u64).min(section.landmark_count)
+            };
             if quota == 0 {
                 continue;
             }
-            let regular = matches!(target_grid, LandmarkDensity::Ruler(_));
             // Only the ruler thins to an origin-anchored stride. Grid and snap
             // consumers retain their existing visible-candidate sampling.
             let stride = section
@@ -1609,27 +1616,29 @@ mod tests {
     #[test]
     fn ruler_stride_does_not_change_at_visible_count_threshold() {
         let project = Project::new(48_000).unwrap();
-        let viewport = Viewport {
-            start: 0,
-            length: 319_200,
-        };
-        let panned = Viewport {
-            start: 12_000,
-            ..viewport
-        };
-        let before = ruler_ticks(&project, viewport, 600.0);
-        let after = ruler_ticks(&project, panned, 600.0);
-        let overlapping_before: Vec<_> = before
-            .iter()
-            .filter(|tick| tick.frame >= panned.start)
-            .map(|tick| tick.frame)
-            .collect();
-        let overlapping_after: Vec<_> = after
-            .iter()
-            .filter(|tick| tick.frame < viewport.end().unwrap())
-            .map(|tick| tick.frame)
-            .collect();
-        assert_eq!(overlapping_before, overlapping_after);
+        for length in [295_200, 319_200] {
+            let viewport = Viewport { start: 0, length };
+            let panned = Viewport {
+                start: 12_000,
+                ..viewport
+            };
+            let before = ruler_ticks(&project, viewport, 600.0);
+            let after = ruler_ticks(&project, panned, 600.0);
+            let overlapping_before: Vec<_> = before
+                .iter()
+                .filter(|tick| tick.frame >= panned.start)
+                .map(|tick| tick.frame)
+                .collect();
+            let overlapping_after: Vec<_> = after
+                .iter()
+                .filter(|tick| tick.frame < viewport.end().unwrap())
+                .map(|tick| tick.frame)
+                .collect();
+            assert_eq!(
+                overlapping_before, overlapping_after,
+                "viewport length {length}"
+            );
+        }
     }
 
     #[test]
