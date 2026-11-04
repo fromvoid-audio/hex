@@ -643,13 +643,17 @@ impl WorkerEvents {
         &mut self,
         document_intent: &Arc<std::sync::atomic::AtomicU64>,
         expected_intent: u64,
+        publication_waited: bool,
     ) {
         if let Some(audio) = self.audio.as_mut() {
-            audio.begin_request(RequestCancellation::new(
-                Arc::clone(&self.shutdown),
-                Arc::clone(document_intent),
-                expected_intent,
-            ));
+            audio.begin_request(
+                RequestCancellation::new(
+                    Arc::clone(&self.shutdown),
+                    Arc::clone(document_intent),
+                    expected_intent,
+                )
+                .after_publication_wait(publication_waited),
+            );
         }
     }
     pub(super) fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {

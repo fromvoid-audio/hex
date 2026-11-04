@@ -728,3 +728,76 @@ fn stop_remains_effective_while_a_device_edit_waits() {
             .load(Acquire)
     );
 }
+
+#[test]
+fn parked_device_edit_cancels_if_document_changes_before_admission() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let mut eq = hex_engine::eq::EqState {
+        output_gain: 2.0,
+        ..Default::default()
+    };
+    let inserted = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: eq.encode().unwrap(),
+    }));
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("eq device")
+    };
+    (applied, _) = h.applied(applied);
+    eq.output_gain = 3.0;
+    h.run(Request::Edit(Command::ReplaceDeviceState {
+        device,
+        state: eq.encode().unwrap(),
+    }));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while h.submitted.is_none_or(|(revision, _)| revision <= applied) {
+        h.pump();
+        assert!(Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    h.service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    // Ensure the worker has time to park before the callback applies the predecessor.
+    let wait = Instant::now() + Duration::from_millis(50);
+    while Instant::now() < wait {
+        if let Ok(event) = h.service.try_event()
+            && event.request_complete
+        {
+            panic!("early terminal: {:?}", event.error);
+        }
+        std::thread::yield_now();
+    }
+    let (entered, resume, _) = h.probe_next_native_publication();
+    h.render();
+    entered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("edit reached pre-admission gate");
+    h.service
+        .submit(Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        })
+        .unwrap();
+    resume.send(()).unwrap();
+    let edit = h.next();
+    assert!(
+        edit.error
+            .as_deref()
+            .is_some_and(|error| error.contains("cancel")),
+        "{:?}",
+        edit.error
+    );
+    assert!(!edit.state.project.device(device).unwrap().bypassed());
+    let replacement = h.next();
+    assert!(replacement.error.is_none(), "{:?}", replacement.error);
+    assert!(replacement.project_replaced);
+}

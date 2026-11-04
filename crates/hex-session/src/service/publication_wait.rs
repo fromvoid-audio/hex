@@ -17,7 +17,7 @@ pub(super) struct Wait {
 impl Wait {
     #[allow(clippy::result_large_err)] // Return exact request custody without an extra allocation.
     pub(super) fn begin(
-        request: QueuedRequest,
+        mut request: QueuedRequest,
         readiness: ResidentPublicationReadiness,
     ) -> Result<Self, QueuedRequest> {
         let (output, submission, busy) = match readiness {
@@ -43,6 +43,7 @@ impl Wait {
         if !busy {
             return Err(request);
         }
+        request.publication_waited = true;
         Ok(Self {
             request,
             output,
