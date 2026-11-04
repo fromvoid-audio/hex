@@ -584,6 +584,21 @@ fn device_backspace_keeps_eq_graph_removal_local(cx: &mut TestAppContext) {
                 .bypassed()
         );
     });
+    pump_until(&editor, cx, settled);
+    let before_modal = editor.read_with(cx, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    editor.update(cx, |view, _| view.close_prompt_open = true);
+    visual.simulate_keystrokes("x");
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(settled(view), "a modal must not enqueue node removal");
+        assert_eq!(
+            view.state.as_ref().unwrap().project.snapshot(),
+            before_modal
+        );
+    });
+    editor.update(cx, |view, _| view.close_prompt_open = false);
     visual.simulate_keystrokes("x");
     editor.read_with(cx, |view, _| {
         assert!(
