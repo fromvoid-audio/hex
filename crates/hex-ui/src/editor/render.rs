@@ -1536,7 +1536,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &ToggleLoop, window, cx| {
-                view.toggle_active_loop_shortcut(window);
+                view.toggle_active_loop_shortcut(window, cx);
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &ZoomIn, _, cx| {
