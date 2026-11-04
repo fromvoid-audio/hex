@@ -28,7 +28,8 @@
     "midi note previews use dark bars on the full clip-color background",
     "element colors: #b85d4b, #c27b3d, #af9741, #799b50, #4f9970, #4d958b, #9a6190, #b95f79",
     "accented clip shades: #ce7967, #d79659, #c5ae5b, #95b56b, #6bb68b, #6bb3aa, #b780ad, #d37c94",
-    "normal clip shades: #914539, #975c2c, #897329, #597637, #347450, #31746c, #764569, #91435b"
+    "normal clip shades: #9d594f, #a26e43, #968241, #6b854d, #4a8363, #48837c, #85597a, #9d586d",
+    "group and section clips use a distinct darker tier of their element colors"
   ],
   "tokens": {
     "palette": [
@@ -120,14 +121,14 @@
         "#285b82"
       ],
       "clips": [
-        "#914539",
-        "#975c2c",
-        "#897329",
-        "#597637",
-        "#347450",
-        "#31746c",
-        "#764569",
-        "#91435b"
+        "#9d594f",
+        "#a26e43",
+        "#968241",
+        "#6b854d",
+        "#4a8363",
+        "#48837c",
+        "#85597a",
+        "#9d586d"
       ],
       "accentedClips": [
         "#ce7967",

@@ -2,7 +2,7 @@
   "version": 1,
   "id": "hex-yield-workstation",
   "name": "hex / orbital",
-  "revisionId": "hex-current-aligned-study-r83",
+  "revisionId": "hex-current-aligned-study-r88",
   "width": 1900,
   "height": 1120,
   "background": "#111111",
@@ -1627,14 +1627,14 @@
       "aligned-clip-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -2185,14 +2185,14 @@
       "aligned-clip-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -3100,14 +3100,14 @@
       "aligned-clip-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -3140,14 +3140,14 @@
       "aligned-clip-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -3724,14 +3724,14 @@
       "aligned-clip-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -4226,14 +4226,14 @@
       "aligned-clip-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -5091,14 +5091,14 @@
       "aligned-clip-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -5649,14 +5649,14 @@
       "aligned-clip-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -6277,14 +6277,14 @@
       "aligned-clip-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
@@ -7394,14 +7394,14 @@
       "aligned-clip-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -7568,14 +7568,14 @@
       "aligned-clip-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -8762,14 +8762,14 @@
       "aligned-clip-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
@@ -9628,14 +9628,14 @@
       "aligned-clip-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -10186,14 +10186,14 @@
       "aligned-clip-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -11101,14 +11101,14 @@
       "aligned-clip-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -11603,14 +11603,14 @@
       "aligned-clip-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -12204,7 +12204,7 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -12212,13 +12212,13 @@
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -12226,13 +12226,13 @@
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -12240,13 +12240,13 @@
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -12254,7 +12254,7 @@
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -15310,28 +15310,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -15976,16 +15976,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -16075,11 +16087,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -16087,11 +16099,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -16099,11 +16111,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -16111,11 +16123,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -16144,11 +16156,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -16156,35 +16168,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -17805,14 +17805,14 @@
       "aligned-clip-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -18363,14 +18363,14 @@
       "aligned-clip-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -19278,14 +19278,14 @@
       "aligned-clip-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -19318,14 +19318,14 @@
       "aligned-clip-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -19902,14 +19902,14 @@
       "aligned-clip-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -20404,14 +20404,14 @@
       "aligned-clip-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -21269,14 +21269,14 @@
       "aligned-clip-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -21827,14 +21827,14 @@
       "aligned-clip-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -22455,14 +22455,14 @@
       "aligned-clip-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
@@ -23572,14 +23572,14 @@
       "aligned-clip-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -23746,14 +23746,14 @@
       "aligned-clip-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -24940,14 +24940,14 @@
       "aligned-clip-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
@@ -25806,14 +25806,14 @@
       "aligned-clip-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -26364,14 +26364,14 @@
       "aligned-clip-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -27279,14 +27279,14 @@
       "aligned-clip-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -27781,14 +27781,14 @@
       "aligned-clip-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -28382,7 +28382,7 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -28390,13 +28390,13 @@
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -28404,13 +28404,13 @@
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -28418,13 +28418,13 @@
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -28432,7 +28432,7 @@
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -31488,28 +31488,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -32154,16 +32154,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -32253,11 +32265,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -32265,11 +32277,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -32277,11 +32289,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -32289,11 +32301,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -32322,11 +32334,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -32334,35 +32346,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -38281,53 +38281,53 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -38351,28 +38351,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -38999,16 +38999,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -39098,11 +39110,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -39110,11 +39122,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -39122,11 +39134,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -39134,11 +39146,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -39167,11 +39179,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -39179,35 +39191,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -45126,53 +45126,53 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -45196,28 +45196,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -45844,16 +45844,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -45943,11 +45955,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -45955,11 +45967,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -45967,11 +45979,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -45979,11 +45991,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -46012,11 +46024,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -46024,35 +46036,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -47673,14 +47673,14 @@
       "aligned-clip-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -48231,14 +48231,14 @@
       "aligned-clip-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -49146,14 +49146,14 @@
       "aligned-clip-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -49186,14 +49186,14 @@
       "aligned-clip-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -49770,14 +49770,14 @@
       "aligned-clip-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -50272,14 +50272,14 @@
       "aligned-clip-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -51137,14 +51137,14 @@
       "aligned-clip-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -51695,14 +51695,14 @@
       "aligned-clip-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -52323,14 +52323,14 @@
       "aligned-clip-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
@@ -53440,14 +53440,14 @@
       "aligned-clip-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -53614,14 +53614,14 @@
       "aligned-clip-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -54808,14 +54808,14 @@
       "aligned-clip-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
@@ -55674,14 +55674,14 @@
       "aligned-clip-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -56232,14 +56232,14 @@
       "aligned-clip-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -57147,14 +57147,14 @@
       "aligned-clip-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -57649,14 +57649,14 @@
       "aligned-clip-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -58250,7 +58250,7 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -58258,13 +58258,13 @@
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -58272,13 +58272,13 @@
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -58286,13 +58286,13 @@
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -58300,7 +58300,7 @@
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -61356,28 +61356,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -62022,16 +62022,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -62121,11 +62133,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -62133,11 +62145,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -62145,11 +62157,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -62157,11 +62169,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -62190,11 +62202,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -62202,35 +62214,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -68149,53 +68149,53 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -68219,28 +68219,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -68867,16 +68867,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -68966,11 +68978,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -68978,11 +68990,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -68990,11 +69002,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -69002,11 +69014,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -69035,11 +69047,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -69047,35 +69059,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -75016,53 +75016,53 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -75086,28 +75086,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -75734,16 +75734,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -75833,11 +75845,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -75845,11 +75857,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -75857,11 +75869,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -75869,11 +75881,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -75902,11 +75914,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -75914,35 +75926,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -81883,53 +81883,53 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -81953,28 +81953,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -82601,16 +82601,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -82700,11 +82712,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -82712,11 +82724,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -82724,11 +82736,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -82736,11 +82748,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -82769,11 +82781,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -82781,35 +82793,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -84430,14 +84430,14 @@
       "aligned-clip-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -84988,14 +84988,14 @@
       "aligned-clip-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -85903,14 +85903,14 @@
       "aligned-clip-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -85943,14 +85943,14 @@
       "aligned-clip-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -86527,14 +86527,14 @@
       "aligned-clip-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -87029,14 +87029,14 @@
       "aligned-clip-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -87894,14 +87894,14 @@
       "aligned-clip-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -88452,14 +88452,14 @@
       "aligned-clip-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -89080,14 +89080,14 @@
       "aligned-clip-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
@@ -90197,14 +90197,14 @@
       "aligned-clip-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -90371,14 +90371,14 @@
       "aligned-clip-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -91565,14 +91565,14 @@
       "aligned-clip-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
@@ -92431,14 +92431,14 @@
       "aligned-clip-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -92989,14 +92989,14 @@
       "aligned-clip-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -93904,14 +93904,14 @@
       "aligned-clip-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -94406,14 +94406,14 @@
       "aligned-clip-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -95007,7 +95007,7 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -95015,13 +95015,13 @@
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -95029,13 +95029,13 @@
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -95043,13 +95043,13 @@
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -95057,7 +95057,7 @@
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -98113,28 +98113,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -98779,16 +98779,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -98878,11 +98890,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -98890,11 +98902,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -98902,11 +98914,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -98914,11 +98926,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -98947,11 +98959,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -98959,35 +98971,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -100608,14 +100608,14 @@
       "aligned-clip-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -101166,14 +101166,14 @@
       "aligned-clip-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -102081,14 +102081,14 @@
       "aligned-clip-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -102121,14 +102121,14 @@
       "aligned-clip-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -102705,14 +102705,14 @@
       "aligned-clip-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -103207,14 +103207,14 @@
       "aligned-clip-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -104072,14 +104072,14 @@
       "aligned-clip-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -104630,14 +104630,14 @@
       "aligned-clip-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -105258,14 +105258,14 @@
       "aligned-clip-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
@@ -106375,14 +106375,14 @@
       "aligned-clip-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -106549,14 +106549,14 @@
       "aligned-clip-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -107743,14 +107743,14 @@
       "aligned-clip-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
@@ -108609,14 +108609,14 @@
       "aligned-clip-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -109167,14 +109167,14 @@
       "aligned-clip-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -110082,14 +110082,14 @@
       "aligned-clip-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -110584,14 +110584,14 @@
       "aligned-clip-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -111185,7 +111185,7 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -111193,13 +111193,13 @@
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -111207,13 +111207,13 @@
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -111221,13 +111221,13 @@
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -111235,7 +111235,7 @@
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -114291,28 +114291,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -114957,16 +114957,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -115056,11 +115068,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -115068,11 +115080,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -115080,11 +115092,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -115092,11 +115104,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -115125,11 +115137,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -115137,35 +115149,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -127363,7 +127363,7 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111",
           "color": "#c3c9ca"
         }
@@ -127371,13 +127371,13 @@
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111",
           "color": "#c3c9ca"
         }
@@ -127385,13 +127385,13 @@
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111",
           "color": "#c3c9ca"
         }
@@ -127399,13 +127399,13 @@
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111",
           "color": "#c3c9ca"
         }
@@ -127413,7 +127413,7 @@
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -130463,28 +130463,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -131129,16 +131129,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -131228,11 +131240,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -131240,11 +131252,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -131252,11 +131264,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -131264,11 +131276,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -131297,11 +131309,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -131309,35 +131321,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -143535,7 +143535,7 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111",
           "color": "#c3c9ca"
         }
@@ -143543,13 +143543,13 @@
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111",
           "color": "#c3c9ca"
         }
@@ -143557,13 +143557,13 @@
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111",
           "color": "#c3c9ca"
         }
@@ -143571,13 +143571,13 @@
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111",
           "color": "#c3c9ca"
         }
@@ -143585,7 +143585,7 @@
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -146635,28 +146635,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -147301,16 +147301,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -147400,11 +147412,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -147412,11 +147424,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -147424,11 +147436,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -147436,11 +147448,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -147469,11 +147481,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -147481,35 +147493,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -149130,14 +149130,14 @@
       "aligned-clip-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -149688,14 +149688,14 @@
       "aligned-clip-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -150603,14 +150603,14 @@
       "aligned-clip-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -150643,14 +150643,14 @@
       "aligned-clip-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -151227,14 +151227,14 @@
       "aligned-clip-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -151729,14 +151729,14 @@
       "aligned-clip-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -152594,14 +152594,14 @@
       "aligned-clip-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -153152,14 +153152,14 @@
       "aligned-clip-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -153780,14 +153780,14 @@
       "aligned-clip-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
@@ -154897,14 +154897,14 @@
       "aligned-clip-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -155071,14 +155071,14 @@
       "aligned-clip-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -156265,14 +156265,14 @@
       "aligned-clip-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
@@ -157131,14 +157131,14 @@
       "aligned-clip-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -157689,14 +157689,14 @@
       "aligned-clip-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -158604,14 +158604,14 @@
       "aligned-clip-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -159106,14 +159106,14 @@
       "aligned-clip-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -159707,7 +159707,7 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -159715,13 +159715,13 @@
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -159729,13 +159729,13 @@
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -159743,13 +159743,13 @@
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -159757,7 +159757,7 @@
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -162813,28 +162813,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -163479,16 +163479,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -163578,11 +163590,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -163590,11 +163602,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -163602,11 +163614,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -163614,11 +163626,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -163647,11 +163659,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -163659,35 +163671,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -165149,14 +165149,14 @@
       "aligned-clip-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -165707,14 +165707,14 @@
       "aligned-clip-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -166622,14 +166622,14 @@
       "aligned-clip-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -166662,14 +166662,14 @@
       "aligned-clip-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -167246,14 +167246,14 @@
       "aligned-clip-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -167748,14 +167748,14 @@
       "aligned-clip-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -168613,14 +168613,14 @@
       "aligned-clip-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -169171,14 +169171,14 @@
       "aligned-clip-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -169799,14 +169799,14 @@
       "aligned-clip-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
@@ -170916,14 +170916,14 @@
       "aligned-clip-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -171090,14 +171090,14 @@
       "aligned-clip-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -172284,14 +172284,14 @@
       "aligned-clip-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
@@ -173150,14 +173150,14 @@
       "aligned-clip-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -173708,14 +173708,14 @@
       "aligned-clip-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -174623,14 +174623,14 @@
       "aligned-clip-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -175125,14 +175125,14 @@
       "aligned-clip-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -175726,7 +175726,7 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -175734,13 +175734,13 @@
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -175748,13 +175748,13 @@
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -175762,13 +175762,13 @@
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -175776,7 +175776,7 @@
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -178778,28 +178778,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -179444,16 +179444,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -179543,11 +179555,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -179555,11 +179567,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -179567,11 +179579,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -179579,11 +179591,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -179612,11 +179624,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -179624,35 +179636,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -181273,14 +181273,14 @@
       "aligned-clip-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -181831,14 +181831,14 @@
       "aligned-clip-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-0-2": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#9d594f",
           "color": "#c7c7c7"
         }
       },
@@ -182746,14 +182746,14 @@
       "aligned-clip-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-0": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -182786,14 +182786,14 @@
       "aligned-clip-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-1-2": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#a26e43",
           "color": "#c7c7c7"
         }
       },
@@ -183370,14 +183370,14 @@
       "aligned-clip-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-0": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -183872,14 +183872,14 @@
       "aligned-clip-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-3-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#968241",
           "color": "#c7c7c7"
         }
       },
@@ -184737,14 +184737,14 @@
       "aligned-clip-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-0": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -185295,14 +185295,14 @@
       "aligned-clip-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-4-2": {
         "visible": false,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -185923,14 +185923,14 @@
       "aligned-clip-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-5-0": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#6b854d",
           "color": "#c7c7c7"
         }
       },
@@ -187040,14 +187040,14 @@
       "aligned-clip-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-0": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -187214,14 +187214,14 @@
       "aligned-clip-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-6-2": {
         "visible": true,
         "style": {
-          "fill": "#347450",
+          "fill": "#4a8363",
           "color": "#c7c7c7"
         }
       },
@@ -188408,14 +188408,14 @@
       "aligned-clip-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-7-2": {
         "visible": true,
         "style": {
-          "fill": "#31746c",
+          "fill": "#48837c",
           "color": "#c7c7c7"
         }
       },
@@ -189274,14 +189274,14 @@
       "aligned-clip-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-0": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -189832,14 +189832,14 @@
       "aligned-clip-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-8-2": {
         "visible": true,
         "style": {
-          "fill": "#764569",
+          "fill": "#85597a",
           "color": "#c7c7c7"
         }
       },
@@ -190747,14 +190747,14 @@
       "aligned-clip-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-0": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -191249,14 +191249,14 @@
       "aligned-clip-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
       "aligned-clip-top-9-2": {
         "visible": true,
         "style": {
-          "fill": "#91435b",
+          "fill": "#9d586d",
           "color": "#c7c7c7"
         }
       },
@@ -191850,7 +191850,7 @@
       "aligned-section0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -191858,13 +191858,13 @@
       "aligned-section-t0": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -191872,13 +191872,13 @@
       "aligned-section-t1": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -191886,13 +191886,13 @@
       "aligned-section-t2": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-section3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111",
           "color": "#c7c7c7"
         }
@@ -191900,7 +191900,7 @@
       "aligned-section-t3": {
         "visible": true,
         "style": {
-          "color": "#111111"
+          "color": "#d3d3d3"
         }
       },
       "aligned-main-track": {
@@ -194998,28 +194998,28 @@
       "aligned-section-header-0": {
         "visible": true,
         "style": {
-          "fill": "#914539",
+          "fill": "#44201b",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-1": {
         "visible": true,
         "style": {
-          "fill": "#975c2c",
+          "fill": "#472c15",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-2": {
         "visible": true,
         "style": {
-          "fill": "#897329",
+          "fill": "#413613",
           "stroke": "#111111"
         }
       },
       "aligned-section-header-3": {
         "visible": true,
         "style": {
-          "fill": "#597637",
+          "fill": "#2a371a",
           "stroke": "#111111"
         }
       },
@@ -195664,16 +195664,28 @@
         "visible": true
       },
       "section-play-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "section-play-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "radius": 5
+        }
       },
       "track-disclosure-0": {
         "visible": true,
@@ -195763,11 +195775,11 @@
       "group-section-percussion-0": {
         "visible": true
       },
-      "group-section-play-percussion-0": {
-        "visible": true
-      },
       "group-section-name-percussion-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-0": {
         "visible": true
@@ -195775,11 +195787,11 @@
       "group-section-percussion-1": {
         "visible": true
       },
-      "group-section-play-percussion-1": {
-        "visible": true
-      },
       "group-section-name-percussion-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-1": {
         "visible": true
@@ -195787,11 +195799,11 @@
       "group-section-percussion-2": {
         "visible": true
       },
-      "group-section-play-percussion-2": {
-        "visible": true
-      },
       "group-section-name-percussion-2": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-2": {
         "visible": true
@@ -195799,11 +195811,11 @@
       "group-section-percussion-3": {
         "visible": true
       },
-      "group-section-play-percussion-3": {
-        "visible": true
-      },
       "group-section-name-percussion-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-percussion-3": {
         "visible": true
@@ -195832,11 +195844,11 @@
       "group-section-drums-0": {
         "visible": true
       },
-      "group-section-play-drums-0": {
-        "visible": true
-      },
       "group-section-name-drums-0": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-0": {
         "visible": true
@@ -195844,35 +195856,23 @@
       "group-section-drums-1": {
         "visible": true
       },
-      "group-section-play-drums-1": {
-        "visible": true
-      },
       "group-section-name-drums-1": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-1": {
-        "visible": true
-      },
-      "group-section-drums-2": {
-        "visible": true
-      },
-      "group-section-play-drums-2": {
-        "visible": true
-      },
-      "group-section-name-drums-2": {
-        "visible": true
-      },
-      "group-section-divider-drums-2": {
         "visible": true
       },
       "group-section-drums-3": {
         "visible": true
       },
-      "group-section-play-drums-3": {
-        "visible": true
-      },
       "group-section-name-drums-3": {
-        "visible": true
+        "visible": true,
+        "style": {
+          "color": "#d3d3d3"
+        }
       },
       "group-section-divider-drums-3": {
         "visible": true
@@ -374155,7 +374155,7 @@
         "height": 54
       },
       "style": {
-        "fill": "#914539",
+        "fill": "#44201b",
         "stroke": "#111111",
         "color": "#c3c5c0",
         "fontSize": 10,
@@ -374196,7 +374196,7 @@
         "height": 13
       },
       "style": {
-        "fill": "#914539",
+        "fill": "#44201b",
         "stroke": "#111111",
         "color": "#c3c5c0",
         "fontSize": 10,
@@ -374219,7 +374219,7 @@
       "style": {
         "fill": "#222222",
         "stroke": "none",
-        "radius": 1,
+        "radius": 5,
         "color": "#d0d0d0",
         "fontFamily": "Ioskeley Mono",
         "fontSize": 7,
@@ -374240,7 +374240,7 @@
       "style": {
         "fill": "none",
         "stroke": "none",
-        "color": "#111111",
+        "color": "#d3d3d3",
         "fontSize": 9,
         "fontFamily": "Ioskeley Mono",
         "padding": 0,
@@ -374259,7 +374259,7 @@
         "height": 54
       },
       "style": {
-        "fill": "#975c2c",
+        "fill": "#472c15",
         "stroke": "#111111",
         "color": "#c3c5c0",
         "fontSize": 10,
@@ -374300,7 +374300,7 @@
         "height": 13
       },
       "style": {
-        "fill": "#975c2c",
+        "fill": "#472c15",
         "stroke": "#111111",
         "color": "#c3c5c0",
         "fontSize": 10,
@@ -374323,7 +374323,7 @@
       "style": {
         "fill": "#222222",
         "stroke": "none",
-        "radius": 1,
+        "radius": 5,
         "color": "#d0d0d0",
         "fontFamily": "Ioskeley Mono",
         "fontSize": 7,
@@ -374344,7 +374344,7 @@
       "style": {
         "fill": "none",
         "stroke": "none",
-        "color": "#111111",
+        "color": "#d3d3d3",
         "fontSize": 9,
         "fontFamily": "Ioskeley Mono",
         "padding": 0,
@@ -374363,7 +374363,7 @@
         "height": 54
       },
       "style": {
-        "fill": "#897329",
+        "fill": "#413613",
         "stroke": "#111111",
         "color": "#c3c5c0",
         "fontSize": 10,
@@ -374404,7 +374404,7 @@
         "height": 13
       },
       "style": {
-        "fill": "#897329",
+        "fill": "#413613",
         "stroke": "#111111",
         "color": "#c3c5c0",
         "fontSize": 10,
@@ -374427,7 +374427,7 @@
       "style": {
         "fill": "#222222",
         "stroke": "none",
-        "radius": 1,
+        "radius": 5,
         "color": "#d0d0d0",
         "fontFamily": "Ioskeley Mono",
         "fontSize": 7,
@@ -374448,7 +374448,7 @@
       "style": {
         "fill": "none",
         "stroke": "none",
-        "color": "#111111",
+        "color": "#d3d3d3",
         "fontSize": 9,
         "fontFamily": "Ioskeley Mono",
         "padding": 0,
@@ -374467,7 +374467,7 @@
         "height": 54
       },
       "style": {
-        "fill": "#597637",
+        "fill": "#2a371a",
         "stroke": "#111111",
         "color": "#c3c5c0",
         "fontSize": 10,
@@ -374508,7 +374508,7 @@
         "height": 13
       },
       "style": {
-        "fill": "#597637",
+        "fill": "#2a371a",
         "stroke": "#111111",
         "color": "#c3c5c0",
         "fontSize": 10,
@@ -374531,7 +374531,7 @@
       "style": {
         "fill": "#222222",
         "stroke": "none",
-        "radius": 1,
+        "radius": 5,
         "color": "#d0d0d0",
         "fontFamily": "Ioskeley Mono",
         "fontSize": 7,
@@ -374552,7 +374552,7 @@
       "style": {
         "fill": "none",
         "stroke": "none",
-        "color": "#111111",
+        "color": "#d3d3d3",
         "fontSize": 9,
         "fontFamily": "Ioskeley Mono",
         "padding": 0,
@@ -380106,7 +380106,7 @@
       "bounds": {
         "x": 338,
         "y": 277,
-        "width": 220,
+        "width": 200,
         "height": 51
       },
       "points": [
@@ -380115,15 +380115,15 @@
           0
         ],
         [
-          220,
+          200,
           0
         ],
         [
-          220,
+          200,
           46
         ],
         [
-          215,
+          195,
           51
         ],
         [
@@ -380136,32 +380136,9 @@
         "fontSize": 9,
         "padding": 0,
         "color": "#c7c7c7",
-        "fill": "#897329",
+        "fill": "#413613",
         "stroke": "#111111",
         "lineWidth": 1
-      }
-    },
-    {
-      "id": "group-section-play-percussion-0",
-      "type": "container",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 340,
-        "y": 278.5,
-        "width": 10,
-        "height": 10
-      },
-      "text": "▶",
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 7,
-        "padding": 0,
-        "color": "#d0d0d0",
-        "fill": "#222222",
-        "stroke": "none",
-        "radius": 1,
-        "textAlign": "center",
-        "verticalAlign": "middle"
       }
     },
     {
@@ -380169,9 +380146,9 @@
       "type": "text",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 355,
+        "x": 342,
         "y": 278,
-        "width": 197,
+        "width": 190,
         "height": 11
       },
       "text": "percussion 1",
@@ -380179,7 +380156,7 @@
         "fontFamily": "Ioskeley Mono",
         "fontSize": 9,
         "padding": 0,
-        "color": "#111111",
+        "color": "#d3d3d3",
         "fill": "none",
         "stroke": "none",
         "verticalAlign": "middle"
@@ -380192,7 +380169,7 @@
       "bounds": {
         "x": 338,
         "y": 290,
-        "width": 220,
+        "width": 200,
         "height": 0
       },
       "points": [
@@ -380201,7 +380178,7 @@
           0
         ],
         [
-          220,
+          200,
           0
         ]
       ],
@@ -380220,9 +380197,9 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 558,
+        "x": 553,
         "y": 277,
-        "width": 332,
+        "width": 315,
         "height": 51
       },
       "points": [
@@ -380231,15 +380208,15 @@
           0
         ],
         [
-          332,
+          315,
           0
         ],
         [
-          332,
+          315,
           46
         ],
         [
-          327,
+          310,
           51
         ],
         [
@@ -380252,32 +380229,9 @@
         "fontSize": 9,
         "padding": 0,
         "color": "#c7c7c7",
-        "fill": "#897329",
+        "fill": "#413613",
         "stroke": "#111111",
         "lineWidth": 1
-      }
-    },
-    {
-      "id": "group-section-play-percussion-1",
-      "type": "container",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 560,
-        "y": 278.5,
-        "width": 10,
-        "height": 10
-      },
-      "text": "▶",
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 7,
-        "padding": 0,
-        "color": "#d0d0d0",
-        "fill": "#222222",
-        "stroke": "none",
-        "radius": 1,
-        "textAlign": "center",
-        "verticalAlign": "middle"
       }
     },
     {
@@ -380285,9 +380239,9 @@
       "type": "text",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 575,
+        "x": 557,
         "y": 278,
-        "width": 309,
+        "width": 305,
         "height": 11
       },
       "text": "percussion 2",
@@ -380295,7 +380249,7 @@
         "fontFamily": "Ioskeley Mono",
         "fontSize": 9,
         "padding": 0,
-        "color": "#111111",
+        "color": "#d3d3d3",
         "fill": "none",
         "stroke": "none",
         "verticalAlign": "middle"
@@ -380306,9 +380260,9 @@
       "type": "line",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 558,
+        "x": 553,
         "y": 290,
-        "width": 332,
+        "width": 315,
         "height": 0
       },
       "points": [
@@ -380317,7 +380271,7 @@
           0
         ],
         [
-          332,
+          315,
           0
         ]
       ],
@@ -380336,9 +380290,9 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 890,
+        "x": 888,
         "y": 277,
-        "width": 368,
+        "width": 330,
         "height": 51
       },
       "points": [
@@ -380347,15 +380301,15 @@
           0
         ],
         [
-          368,
+          330,
           0
         ],
         [
-          368,
+          330,
           46
         ],
         [
-          363,
+          325,
           51
         ],
         [
@@ -380368,32 +380322,9 @@
         "fontSize": 9,
         "padding": 0,
         "color": "#c7c7c7",
-        "fill": "#897329",
+        "fill": "#413613",
         "stroke": "#111111",
         "lineWidth": 1
-      }
-    },
-    {
-      "id": "group-section-play-percussion-2",
-      "type": "container",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 892,
-        "y": 278.5,
-        "width": 10,
-        "height": 10
-      },
-      "text": "▶",
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 7,
-        "padding": 0,
-        "color": "#d0d0d0",
-        "fill": "#222222",
-        "stroke": "none",
-        "radius": 1,
-        "textAlign": "center",
-        "verticalAlign": "middle"
       }
     },
     {
@@ -380401,9 +380332,9 @@
       "type": "text",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 907,
+        "x": 892,
         "y": 278,
-        "width": 345,
+        "width": 320,
         "height": 11
       },
       "text": "percussion 3",
@@ -380411,7 +380342,7 @@
         "fontFamily": "Ioskeley Mono",
         "fontSize": 9,
         "padding": 0,
-        "color": "#111111",
+        "color": "#d3d3d3",
         "fill": "none",
         "stroke": "none",
         "verticalAlign": "middle"
@@ -380422,9 +380353,9 @@
       "type": "line",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 890,
+        "x": 888,
         "y": 290,
-        "width": 368,
+        "width": 330,
         "height": 0
       },
       "points": [
@@ -380433,7 +380364,7 @@
           0
         ],
         [
-          368,
+          330,
           0
         ]
       ],
@@ -380454,7 +380385,7 @@
       "bounds": {
         "x": 1258,
         "y": 277,
-        "width": 310,
+        "width": 260,
         "height": 51
       },
       "points": [
@@ -380463,15 +380394,15 @@
           0
         ],
         [
-          310,
+          260,
           0
         ],
         [
-          310,
+          260,
           46
         ],
         [
-          305,
+          255,
           51
         ],
         [
@@ -380484,32 +380415,9 @@
         "fontSize": 9,
         "padding": 0,
         "color": "#c7c7c7",
-        "fill": "#897329",
+        "fill": "#413613",
         "stroke": "#111111",
         "lineWidth": 1
-      }
-    },
-    {
-      "id": "group-section-play-percussion-3",
-      "type": "container",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 1260,
-        "y": 278.5,
-        "width": 10,
-        "height": 10
-      },
-      "text": "▶",
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 7,
-        "padding": 0,
-        "color": "#d0d0d0",
-        "fill": "#222222",
-        "stroke": "none",
-        "radius": 1,
-        "textAlign": "center",
-        "verticalAlign": "middle"
       }
     },
     {
@@ -380517,9 +380425,9 @@
       "type": "text",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1275,
+        "x": 1262,
         "y": 278,
-        "width": 287,
+        "width": 250,
         "height": 11
       },
       "text": "percussion 4",
@@ -380527,7 +380435,7 @@
         "fontFamily": "Ioskeley Mono",
         "fontSize": 9,
         "padding": 0,
-        "color": "#111111",
+        "color": "#d3d3d3",
         "fill": "none",
         "stroke": "none",
         "verticalAlign": "middle"
@@ -380540,7 +380448,7 @@
       "bounds": {
         "x": 1258,
         "y": 290,
-        "width": 310,
+        "width": 260,
         "height": 0
       },
       "points": [
@@ -380549,7 +380457,7 @@
           0
         ],
         [
-          310,
+          260,
           0
         ]
       ],
@@ -380703,7 +380611,7 @@
       "bounds": {
         "x": 338,
         "y": 379,
-        "width": 220,
+        "width": 200,
         "height": 51
       },
       "points": [
@@ -380712,15 +380620,15 @@
           0
         ],
         [
-          220,
+          200,
           0
         ],
         [
-          220,
+          200,
           46
         ],
         [
-          215,
+          195,
           51
         ],
         [
@@ -380733,32 +380641,9 @@
         "fontSize": 9,
         "padding": 0,
         "color": "#c7c7c7",
-        "fill": "#347450",
+        "fill": "#183725",
         "stroke": "#111111",
         "lineWidth": 1
-      }
-    },
-    {
-      "id": "group-section-play-drums-0",
-      "type": "container",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 340,
-        "y": 380.5,
-        "width": 10,
-        "height": 10
-      },
-      "text": "▶",
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 7,
-        "padding": 0,
-        "color": "#d0d0d0",
-        "fill": "#222222",
-        "stroke": "none",
-        "radius": 1,
-        "textAlign": "center",
-        "verticalAlign": "middle"
       }
     },
     {
@@ -380766,9 +380651,9 @@
       "type": "text",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 355,
+        "x": 342,
         "y": 380,
-        "width": 197,
+        "width": 190,
         "height": 11
       },
       "text": "drums 1",
@@ -380776,7 +380661,7 @@
         "fontFamily": "Ioskeley Mono",
         "fontSize": 9,
         "padding": 0,
-        "color": "#111111",
+        "color": "#d3d3d3",
         "fill": "none",
         "stroke": "none",
         "verticalAlign": "middle"
@@ -380789,7 +380674,7 @@
       "bounds": {
         "x": 338,
         "y": 392,
-        "width": 220,
+        "width": 200,
         "height": 0
       },
       "points": [
@@ -380798,7 +380683,7 @@
           0
         ],
         [
-          220,
+          200,
           0
         ]
       ],
@@ -380818,238 +380703,6 @@
       "parentId": "aligned-current-study",
       "bounds": {
         "x": 558,
-        "y": 379,
-        "width": 332,
-        "height": 51
-      },
-      "points": [
-        [
-          0,
-          0
-        ],
-        [
-          332,
-          0
-        ],
-        [
-          332,
-          46
-        ],
-        [
-          327,
-          51
-        ],
-        [
-          0,
-          51
-        ]
-      ],
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 9,
-        "padding": 0,
-        "color": "#c7c7c7",
-        "fill": "#347450",
-        "stroke": "#111111",
-        "lineWidth": 1
-      }
-    },
-    {
-      "id": "group-section-play-drums-1",
-      "type": "container",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 560,
-        "y": 380.5,
-        "width": 10,
-        "height": 10
-      },
-      "text": "▶",
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 7,
-        "padding": 0,
-        "color": "#d0d0d0",
-        "fill": "#222222",
-        "stroke": "none",
-        "radius": 1,
-        "textAlign": "center",
-        "verticalAlign": "middle"
-      }
-    },
-    {
-      "id": "group-section-name-drums-1",
-      "type": "text",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 575,
-        "y": 380,
-        "width": 309,
-        "height": 11
-      },
-      "text": "drums 2",
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 9,
-        "padding": 0,
-        "color": "#111111",
-        "fill": "none",
-        "stroke": "none",
-        "verticalAlign": "middle"
-      }
-    },
-    {
-      "id": "group-section-divider-drums-1",
-      "type": "line",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 558,
-        "y": 392,
-        "width": 332,
-        "height": 0
-      },
-      "points": [
-        [
-          0,
-          0
-        ],
-        [
-          332,
-          0
-        ]
-      ],
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 9,
-        "padding": 0,
-        "color": "#c7c7c7",
-        "fill": "none",
-        "stroke": "#242424",
-        "lineWidth": 1
-      }
-    },
-    {
-      "id": "group-section-drums-2",
-      "type": "container",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 890,
-        "y": 379,
-        "width": 368,
-        "height": 51
-      },
-      "points": [
-        [
-          0,
-          0
-        ],
-        [
-          368,
-          0
-        ],
-        [
-          368,
-          46
-        ],
-        [
-          363,
-          51
-        ],
-        [
-          0,
-          51
-        ]
-      ],
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 9,
-        "padding": 0,
-        "color": "#c7c7c7",
-        "fill": "#347450",
-        "stroke": "#111111",
-        "lineWidth": 1
-      }
-    },
-    {
-      "id": "group-section-play-drums-2",
-      "type": "container",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 892,
-        "y": 380.5,
-        "width": 10,
-        "height": 10
-      },
-      "text": "▶",
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 7,
-        "padding": 0,
-        "color": "#d0d0d0",
-        "fill": "#222222",
-        "stroke": "none",
-        "radius": 1,
-        "textAlign": "center",
-        "verticalAlign": "middle"
-      }
-    },
-    {
-      "id": "group-section-name-drums-2",
-      "type": "text",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 907,
-        "y": 380,
-        "width": 345,
-        "height": 11
-      },
-      "text": "drums 3",
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 9,
-        "padding": 0,
-        "color": "#111111",
-        "fill": "none",
-        "stroke": "none",
-        "verticalAlign": "middle"
-      }
-    },
-    {
-      "id": "group-section-divider-drums-2",
-      "type": "line",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 890,
-        "y": 392,
-        "width": 368,
-        "height": 0
-      },
-      "points": [
-        [
-          0,
-          0
-        ],
-        [
-          368,
-          0
-        ]
-      ],
-      "style": {
-        "fontFamily": "Ioskeley Mono",
-        "fontSize": 9,
-        "padding": 0,
-        "color": "#c7c7c7",
-        "fill": "none",
-        "stroke": "#242424",
-        "lineWidth": 1
-      }
-    },
-    {
-      "id": "group-section-drums-3",
-      "type": "container",
-      "parentId": "aligned-current-study",
-      "bounds": {
-        "x": 1258,
         "y": 379,
         "width": 310,
         "height": 51
@@ -381081,32 +380734,102 @@
         "fontSize": 9,
         "padding": 0,
         "color": "#c7c7c7",
-        "fill": "#347450",
+        "fill": "#183725",
         "stroke": "#111111",
         "lineWidth": 1
       }
     },
     {
-      "id": "group-section-play-drums-3",
+      "id": "group-section-name-drums-1",
+      "type": "text",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 562,
+        "y": 380,
+        "width": 300,
+        "height": 11
+      },
+      "text": "drums 2",
+      "style": {
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#d3d3d3",
+        "fill": "none",
+        "stroke": "none",
+        "verticalAlign": "middle"
+      }
+    },
+    {
+      "id": "group-section-divider-drums-1",
+      "type": "line",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 558,
+        "y": 392,
+        "width": 310,
+        "height": 0
+      },
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          310,
+          0
+        ]
+      ],
+      "style": {
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7",
+        "fill": "none",
+        "stroke": "#242424",
+        "lineWidth": 1
+      }
+    },
+    {
+      "id": "group-section-drums-3",
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1260,
-        "y": 380.5,
-        "width": 10,
-        "height": 10
+        "x": 1258,
+        "y": 379,
+        "width": 260,
+        "height": 51
       },
-      "text": "▶",
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          260,
+          0
+        ],
+        [
+          260,
+          46
+        ],
+        [
+          255,
+          51
+        ],
+        [
+          0,
+          51
+        ]
+      ],
       "style": {
         "fontFamily": "Ioskeley Mono",
-        "fontSize": 7,
+        "fontSize": 9,
         "padding": 0,
-        "color": "#d0d0d0",
-        "fill": "#222222",
-        "stroke": "none",
-        "radius": 1,
-        "textAlign": "center",
-        "verticalAlign": "middle"
+        "color": "#c7c7c7",
+        "fill": "#183725",
+        "stroke": "#111111",
+        "lineWidth": 1
       }
     },
     {
@@ -381114,9 +380837,9 @@
       "type": "text",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1275,
+        "x": 1262,
         "y": 380,
-        "width": 287,
+        "width": 250,
         "height": 11
       },
       "text": "drums 4",
@@ -381124,7 +380847,7 @@
         "fontFamily": "Ioskeley Mono",
         "fontSize": 9,
         "padding": 0,
-        "color": "#111111",
+        "color": "#d3d3d3",
         "fill": "none",
         "stroke": "none",
         "verticalAlign": "middle"
@@ -381137,7 +380860,7 @@
       "bounds": {
         "x": 1258,
         "y": 392,
-        "width": 310,
+        "width": 260,
         "height": 0
       },
       "points": [
@@ -381146,7 +380869,7 @@
           0
         ],
         [
-          310,
+          260,
           0
         ]
       ],
@@ -383942,7 +383665,7 @@
     "sectionPlay": "section play controls are illustrative in the Frame prototype.",
     "trackDisclosure": "track disclosure controls are illustrative in the Frame prototype.",
     "deviceToggle": "adjust illustrates on and off states in Frame; no audio processing is controlled by the prototype.",
-    "groupSections": "group clips use section-style headers and previews derived from the member tracks; launch controls are illustrative."
+    "groupSections": "group clips cover the span of their member clips and show miniature member content; empty spans have no group clip."
   },
   "themeDefinitions": {
     "galaxy-nebula": {
@@ -383954,14 +383677,14 @@
         "#285b82"
       ],
       "clips": [
-        "#914539",
-        "#975c2c",
-        "#897329",
-        "#597637",
-        "#347450",
-        "#31746c",
-        "#764569",
-        "#91435b"
+        "#9d594f",
+        "#a26e43",
+        "#968241",
+        "#6b854d",
+        "#4a8363",
+        "#48837c",
+        "#85597a",
+        "#9d586d"
       ],
       "accentedClips": [
         "#ce7967",
