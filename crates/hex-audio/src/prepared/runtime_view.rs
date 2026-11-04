@@ -370,6 +370,19 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.set_gain_recording_override(track, gain),
         }
     }
+    /// Apply one desired input without clearing a still-active override.
+    pub(super) fn set_gain_recording_input(
+        &mut self,
+        input: Option<(u64, f32)>,
+    ) -> Result<(), Invalid> {
+        match input {
+            Some((track, gain)) => self.set_gain_recording_override(track, gain),
+            None => {
+                self.clear_gain_recording_override();
+                Ok(())
+            }
+        }
+    }
     pub(super) fn select_processor_audition(
         &mut self,
         identity: PostNodeIdentity,
