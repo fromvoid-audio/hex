@@ -338,6 +338,9 @@ struct PreparedGate {
 }
 
 impl PreparedNativeProcessor for PreparedGate {
+    fn supports_smoothed_bypass(&self) -> bool {
+        true
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
