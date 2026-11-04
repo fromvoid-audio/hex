@@ -47,10 +47,11 @@ opt-level = 2
 opt-level = 1
 
 # Keep the full-rate Delay impulse and long-tail oracle under the per-test
-# budget without reducing its rates or history coverage. Debug assertions and
-# overflow checks remain enabled (Pulse #4153).
+# budget without reducing its rates or history coverage. At opt-level 1 it took
+# 4.20 s; opt-level 2 took 0.52 s on the same active machine (4 November 2026).
+# Debug assertions and overflow checks remain enabled (Pulse #4153, #4838).
 [profile.dev.package.hex-devices]
-opt-level = 1
+opt-level = 2
 
 # Long verified-source import/reopen regressions preserve their real multi-million
 # frame fixtures while staying within the per-test budget. Debug assertions and
