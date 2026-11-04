@@ -551,6 +551,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::SetDeviceBypass { device, bypassed } => {
             describe!("set_device_bypass"; ["device" => device.value(), "bypassed" => bypassed]; omitted="")
         }
+        Command::ToggleDeviceBypass { device } => {
+            describe!("toggle_device_bypass"; ["device" => device.value()]; omitted="")
+        }
         Command::CompareDevice { device, .. } => {
             describe!("compare_device"; ["device" => device.value()]; omitted="expected,action")
         }

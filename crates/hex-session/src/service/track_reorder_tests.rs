@@ -428,3 +428,40 @@ fn inserted_return_initial_gain_is_prepared_and_undoes_atomically() {
     let redone = run(&service, Request::Redo);
     assert_eq!(redone.state.project.snapshot(), after);
 }
+
+#[test]
+fn queued_device_bypass_toggles_apply_in_order_and_undo_individually() {
+    let service = Service::new(48_000, 16, 32).unwrap();
+    next_event(&service);
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    let inserted = run(
+        &service,
+        Request::Edit(Command::InsertMainDevice {
+            before: None,
+            state,
+        }),
+    );
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("device")
+    };
+    service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    service
+        .submit(Request::Edit(Command::ToggleDeviceBypass { device }))
+        .unwrap();
+    let first = next_event(&service);
+    let second = next_event(&service);
+    assert!(first.error.is_none() && second.error.is_none());
+    assert!(first.state.project.device(device).unwrap().bypassed());
+    assert!(!second.state.project.device(device).unwrap().bypassed());
+    assert!(first.playback.is_some() && second.playback.is_some());
+    let undo = run(&service, Request::Undo);
+    assert!(undo.state.project.device(device).unwrap().bypassed());
+    let redo = run(&service, Request::Redo);
+    assert!(!redo.state.project.device(device).unwrap().bypassed());
+}
