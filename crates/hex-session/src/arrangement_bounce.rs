@@ -99,14 +99,20 @@ pub(crate) fn isolated(
                 _ => std::collections::BTreeSet::new(),
             })
             .ok_or("bounce track changed")?;
+        let has_selected_midi = item
+            .clips
+            .iter()
+            .any(|clip| selected_midi.contains(&clip.value()));
+        // For a range, earlier notes may still be sounding at its start. Keep
+        // the selected track's MIDI for causal preroll, excluding its peers.
         let render_contributor = !in_place
-            && matches!(target, BounceTarget::Clips(_))
             && !selected_is_receiver
             && selected_source_instrument_id.is_some()
-            && item
-                .clips
-                .iter()
-                .any(|clip| selected_midi.contains(&clip.value()));
+            && match target {
+                BounceTarget::Clips(_) => has_selected_midi,
+                BounceTarget::Range(_) => !selected_midi.is_empty(),
+                _ => false,
+            };
         if !selected_is_receiver
             && !render_contributor
             && (item
@@ -123,12 +129,12 @@ pub(crate) fn isolated(
             );
         }
 
-        // A non-in-place clip bounce prints only the selected contributor's
-        // input to the shared runtime, not the other tracks' mixed signal.
+        // Clip and range bounces print only the selected track's input to
+        // the shared runtime, not the other tracks' mixed signal.
         let retain_contributors = !console_source
             && selected_is_receiver
             && selected_source_instrument_id.is_some()
-            && (in_place || !matches!(target, BounceTarget::Clips(_)));
+            && (in_place || !matches!(target, BounceTarget::Clips(_) | BounceTarget::Range(_)));
         snapshot.tracks.retain(|track| {
             track.id == selected_track_id
                 || (retain_contributors
