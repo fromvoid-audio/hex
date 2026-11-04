@@ -21,6 +21,10 @@ use std::sync::{
     mpsc::{self, SyncSender, TrySendError},
 };
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod plugins;
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[path = "native_audio/plugins_unavailable.rs"]
 mod plugins;
 mod resident;
 mod resident_files;
