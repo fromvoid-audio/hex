@@ -10,6 +10,11 @@ use std::{any::Any, sync::Arc};
 /// Control-prepared owned transaction factory, independent of the legacy twin
 /// factory. Construction is fallible and finishes before audio publication.
 pub trait PreparedOwnedProcessorRuntime: Send + Sync {
+    /// Opt in when the host can smoothly mix dry and processed output during
+    /// bypass changes while continuing this owner's existing signal history.
+    fn supports_smoothed_bypass(&self) -> bool {
+        false
+    }
     fn parameter_automation_descriptor(
         &self,
         _parameter: hex_lattice_contract::ParameterId,

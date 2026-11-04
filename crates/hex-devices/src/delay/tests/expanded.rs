@@ -680,6 +680,58 @@ fn split_test_chain_with_meter(
 }
 
 #[test]
+fn owned_delay_bypass_retargets_from_the_audible_mix_across_handoffs() {
+    fn render(
+        chain: &mut hex_lattice::NativeRuntimeChain,
+        frames: usize,
+        block: usize,
+    ) -> Vec<StereoFrame> {
+        let mut output = vec![[0.25; 2]; frames];
+        for chunk in output.chunks_mut(block) {
+            chain.begin_block();
+            chain.process_block(chunk).unwrap();
+            chain.commit_block();
+        }
+        output
+    }
+    fn run(block: usize) -> Vec<StereoFrame> {
+        let configured = state(&[
+            (LEFT_SYNC, ParameterValue::Bool(false)),
+            (TIME, ParameterValue::Float(10.0)),
+            (FEEDBACK, ParameterValue::Float(0.5)),
+            (DRY_WET, ParameterValue::Float(1.0)),
+            (FILTER, ParameterValue::Bool(false)),
+            (HIGH_QUALITY, ParameterValue::Bool(false)),
+        ]);
+        let mut old = split_test_chain(&configured, false);
+        let warm = render(&mut old, 1600, block);
+        let mut off = split_test_chain(&configured, true);
+        assert!(off.configuration_matches_range(&old, 0..1));
+        off.transfer_history_from(&mut old);
+        let mut result = vec![*warm.last().unwrap()];
+        result.extend(render(&mut off, 13, block));
+        let mut unchanged = split_test_chain(&configured, true);
+        unchanged.transfer_history_from(&mut off);
+        result.extend(render(&mut unchanged, 5, block));
+        let mut on = split_test_chain(&configured, false);
+        on.transfer_history_from(&mut unchanged);
+        // A failed render must not consume any of the reversal ramp.
+        on.begin_block();
+        on.process_block(&mut [[0.25; 2]; 7]).unwrap();
+        on.rollback_block();
+        result.extend(render(&mut on, 100, block));
+        result
+    }
+    let reference = run(1);
+    for pair in reference.windows(2) {
+        assert!((pair[1][0] - pair[0][0]).abs() < 0.007, "{pair:?}");
+    }
+    for block in [17, 64, 256] {
+        assert_eq!(run(block), reference, "block size {block}");
+    }
+}
+
+#[test]
 fn tail_split_meter_observes_the_combined_signal() {
     for initial_bypass in [false, true] {
         for gain in [-6000, 0, 6000] {
