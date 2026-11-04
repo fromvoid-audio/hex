@@ -544,6 +544,7 @@ fn move_to_new_track_command(
 ) -> Command {
     match position {
         ClipPosition::Audio { start, .. } => Command::MoveClipToNewTrack {
+            initial_gain: None,
             clip,
             name,
             before_track,
@@ -566,6 +567,7 @@ fn copy_to_new_track_command(
 ) -> Command {
     match position {
         ClipPosition::Audio { start, .. } => Command::CopyClipToNewTrack {
+            initial_gain: None,
             clip,
             name,
             before_track,

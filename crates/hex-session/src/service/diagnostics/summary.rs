@@ -881,8 +881,9 @@ pub(super) fn command(value: &Command) -> Description {
             name,
             before_track,
             start,
+            initial_gain,
         } => {
-            describe!("move_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start" => start]; omitted="")
+            describe!("move_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start" => start, "initial_gain" => initial_gain]; omitted="")
         }
         Command::CopyClipTo { clip, track, start } => {
             describe!("copy_clip_to"; ["clip" => clip.value(), "track" => track.value(), "start" => start]; omitted="")
@@ -892,8 +893,9 @@ pub(super) fn command(value: &Command) -> Description {
             name,
             before_track,
             start,
+            initial_gain,
         } => {
-            describe!("copy_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start" => start]; omitted="")
+            describe!("copy_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start" => start, "initial_gain" => initial_gain]; omitted="")
         }
         Command::TrimClip {
             clip,

@@ -785,6 +785,8 @@ pub enum Command {
         name: String,
         before_track: Option<TrackId>,
         start: u64,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     /// Copy an Arrangement audio clip to a destination, replacing overlap atomically.
     CopyClipTo {
@@ -798,6 +800,8 @@ pub enum Command {
         name: String,
         before_track: Option<TrackId>,
         start: u64,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     /// Explicit source interval; changing the source interval resets loop phase to zero.
     TrimClip {
@@ -1268,6 +1272,22 @@ pub(crate) fn insert_track_before(
     let id = track.id();
     project.tracks.insert(index, track);
     Ok(id)
+}
+
+pub(crate) fn insert_track_before_with_gain(
+    project: &mut Project,
+    name: String,
+    before_track: Option<TrackId>,
+    gain: Option<f32>,
+) -> Result<TrackId, Invalid> {
+    if gain.is_some_and(|value| !value.is_finite() || !(0.0..=2.0).contains(&value)) {
+        return Err(Invalid("gain must be finite and within 0..2"));
+    }
+    let track = insert_track_before(project, name, before_track)?;
+    if let Some(gain) = gain {
+        project.track_mut(track)?.gain = gain;
+    }
+    Ok(track)
 }
 
 pub(crate) fn new_track(
@@ -2946,12 +2966,13 @@ impl Project {
                 name,
                 before_track,
                 start,
+                initial_gain,
             } => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
                 start
                     .checked_add(original.duration)
                     .ok_or(Invalid("timeline end overflow"))?;
-                let track = insert_track_before(self, name, before_track)?;
+                let track = insert_track_before_with_gain(self, name, before_track, initial_gain)?;
                 self.apply(Command::MoveClip { clip, track, start })?;
                 Ok(Created::Track(track))
             }
@@ -2981,8 +3002,9 @@ impl Project {
                 name,
                 before_track,
                 start,
+                initial_gain,
             } => {
-                let track = insert_track_before(self, name, before_track)?;
+                let track = insert_track_before_with_gain(self, name, before_track, initial_gain)?;
                 crate::clip_copy::audio_to(self, clip, track, start)?;
                 Ok(Created::Track(track))
             }

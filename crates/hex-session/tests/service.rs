@@ -1570,6 +1570,7 @@ fn arrangement_clip_track_insertion_edits_compile_undo_and_round_trip() {
 
     service
         .submit(Request::Edit(Command::MoveClipToNewTrack {
+            initial_gain: Some(0.25),
             clip: audio_clip,
             name: "moved audio".into(),
             before_track: Some(original_tracks[2]),
@@ -1583,6 +1584,10 @@ fn arrangement_clip_track_insertion_edits_compile_undo_and_round_trip() {
         other => panic!("unexpected move result: {other:?}"),
     };
     assert_eq!(audio_moved.state.project.tracks()[2].id(), audio_track);
+    assert_eq!(
+        audio_moved.state.project.track(audio_track).unwrap().gain(),
+        0.25
+    );
     let moved_audio = &audio_moved
         .state
         .project
