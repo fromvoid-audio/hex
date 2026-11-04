@@ -402,6 +402,26 @@ fn title_label(title: String, warning: bool) -> Div {
         .child(theme::text(title))
 }
 
+fn retained_source_path_label(track: &hex_project::Track) -> Option<&'static str> {
+    track
+        .retained_source_path()
+        .then_some("source path · printed audio bypasses")
+}
+
+fn retained_source_path_badge(label: &'static str) -> Div {
+    let background = theme::color(theme::PaletteRole::Surface);
+    div()
+        .debug_selector(|| "retained-source-path".into())
+        .flex_shrink()
+        .min_w_0()
+        .truncate()
+        .text_color(rgb(theme::readable_text(
+            background,
+            theme::color(theme::PaletteRole::SecondaryText),
+        )))
+        .child(theme::text(label))
+}
+
 pub(super) fn control_style() -> ControlStyle {
     theme::control_style()
 }
@@ -1086,6 +1106,11 @@ fn render_track(
         .overflow_x_scroll()
         .overflow_y_hidden();
     chain = navigation::rail(view, chain);
+    if retained_source_path_label(track).is_some() {
+        chain = chain
+            .border_t_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)));
+    }
     let chain_entity = cx.entity();
     let visible_chain_bounds = std::rc::Rc::new(std::cell::RefCell::new(None));
     let chain_visible_bounds = visible_chain_bounds.clone();
@@ -1245,8 +1270,12 @@ fn render_track(
         .px(px(5.0))
         .text_xs()
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-        .child(track_name_view)
-        .child(add_button);
+        .child(track_name_view);
+    if let Some(label) = retained_source_path_label(track) {
+        let element = retained_source_path_badge(label);
+        header = header.child(element);
+    }
+    header = header.child(add_button);
     if effect_catalog.is_err() || instrument_catalog.is_err() {
         header = header.child(menu_message("device catalog unavailable"));
     }

@@ -134,6 +134,9 @@ pub(crate) fn isolated(
         let retain_contributors = !console_source
             && selected_is_receiver
             && selected_source_instrument_id.is_some()
+            // A whole-track receiver bounce prints only its own input; linked
+            // tracks continue through the retained live source after adoption.
+            && !matches!(target, BounceTarget::Track(_))
             && (in_place || !matches!(target, BounceTarget::Clips(_) | BounceTarget::Range(_)));
         snapshot.tracks.retain(|track| {
             track.id == selected_track_id
@@ -246,6 +249,26 @@ pub(crate) fn isolated(
             source.receiver = None;
         }
     }
+    // The isolated copy can drop a retained receiver or strip its instrument.
+    // Keep the role only when its original receiver and source still match;
+    // rebinding a temporary contributor never transfers the retained role.
+    snapshot.retained_source_paths.retain(|id| {
+        snapshot
+            .tracks
+            .iter()
+            .find(|track| track.id == *id)
+            .is_some_and(|track| {
+                track.instrument.as_ref().is_some_and(|instrument| {
+                    snapshot.native_sources.iter().any(|source| {
+                        source.receiver == Some(*id)
+                            && source
+                                .devices
+                                .get(source.instrument_index)
+                                .is_some_and(|device| device.id == instrument.id)
+                    })
+                })
+            })
+    });
     snapshot.session = Default::default();
     snapshot.return_tracks.clear();
     snapshot.main_devices.clear();

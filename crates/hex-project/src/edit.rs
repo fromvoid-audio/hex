@@ -401,6 +401,10 @@ pub enum Command {
         device: DeviceId,
         bypassed: bool,
     },
+    /// Toggle the device's current canonical bypass state as one history edit.
+    ToggleDeviceBypass {
+        device: DeviceId,
+    },
     /// Compare provider settings without changing bypass, routing or host trims.
     CompareDevice {
         device: DeviceId,
@@ -1334,6 +1338,7 @@ pub(crate) fn new_track(
         soloed: false,
         devices: Vec::new(),
         instrument: None,
+        retained_source_path: false,
         instrument_position: None,
         content: TrackContent::default(),
         sends: Vec::new(),
@@ -2088,6 +2093,7 @@ impl Project {
             | Command::ReplaceDeviceState { .. }
             | Command::ReplaceDeviceStateWithIdentityReservation { .. }
             | Command::SetDeviceBypass { .. }
+            | Command::ToggleDeviceBypass { .. }
             | Command::CompareDevice { .. }
             | Command::ReplaceDeviceComparison { .. }) => {
                 crate::device::apply(self, device_command)

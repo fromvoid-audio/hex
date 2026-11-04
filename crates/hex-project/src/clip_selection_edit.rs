@@ -579,6 +579,7 @@ impl Command {
             | Self::ReplaceDeviceState { .. }
             | Self::ReplaceDeviceStateWithIdentityReservation { .. }
             | Self::SetDeviceBypass { .. }
+            | Self::ToggleDeviceBypass { .. }
             | Self::CompareDevice { .. }
             | Self::ReplaceDeviceComparison { .. }
             | Self::AddReturnTrack { .. }

@@ -3,6 +3,39 @@ use crate::MidiTiming;
 mod shared_sources;
 use shared_sources::SharedSourceHandoff;
 
+/// Retained-path creation/removal needs the stopped bounce fence and a fresh
+/// graph. Do not let an ordinary handoff preserve voices or tails across it.
+fn retained_path_roles_match(old: &PreparedRevision, new: &PreparedRevision) -> bool {
+    let retained = |revision: &PreparedRevision, index: usize| {
+        revision.source_routing().source(index).is_some()
+            && !revision.source_routing().contributes(index)
+    };
+    let matches = |a: &PreparedRevision, b: &PreparedRevision| {
+        a.arrangement()
+            .tracks()
+            .iter()
+            .enumerate()
+            .all(|(index, track)| {
+                if !retained(a, index) {
+                    return true;
+                }
+                track
+                    .canonical_track_id()
+                    .and_then(|id| {
+                        b.arrangement()
+                            .tracks()
+                            .iter()
+                            .position(|candidate| candidate.canonical_track_id() == Some(id))
+                    })
+                    .is_some_and(|other| {
+                        retained(b, other)
+                            && a.source_routing().source(index) == b.source_routing().source(other)
+                    })
+            })
+    };
+    matches(old, new) && matches(new, old)
+}
+
 /// One physical foreign endpoint cannot process both current input and an old
 /// tail in the same callback. Fresh local scalar history cannot reset or clone
 /// that external source. Compare exact bindings, including root and epoch,
@@ -328,7 +361,7 @@ impl SessionPlayback {
         &mut self,
         previous: &mut Self,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned(previous, None, None, false)
+        self.inherit_state_planned(previous, None, None, false, false)
     }
     /// Live publication policy (Pulse #3770): see `inherit_state_planned`.
     pub(super) fn inherit_state_live(
@@ -336,7 +369,13 @@ impl SessionPlayback {
         previous: &mut Self,
         groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        self.inherit_state_planned(previous, groups, None, true)
+        self.inherit_state_planned(previous, groups, None, true, false)
+    }
+    pub(super) fn inherit_state_fenced_restart(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        self.inherit_state_planned(previous, None, None, true, true)
     }
     /// With `live`, a transition the strict planner cannot prove (an unproven
     /// mutable chase, a changed MIDI source layout, compensated timing or tails,
@@ -352,7 +391,15 @@ impl SessionPlayback {
         groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
         mut demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
         live: bool,
+        fenced_restart: bool,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if !(retained_path_roles_match(&previous.revision, &self.revision)
+            || fenced_restart && live && self.live_restart && self.candidate_admission_open)
+        {
+            return Err(SessionPlaybackError::Arrangement(
+                "retained source path changes require stopped graph replacement",
+            ));
+        }
         if live && self.live_restart && self.candidate_admission_open {
             return self.inherit_state_planned_once(previous, None, demand, true);
         }

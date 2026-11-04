@@ -3415,14 +3415,29 @@ impl Callback {
                     .as_mut()
                     .and_then(ActivePublication::legacy_mut)
                     .map(|previous| {
-                        next.playback.try_inherit_runtime_in_control_context(
-                            &mut previous.playback,
-                            next.explicit_control_context
-                                .then_some(next.control_context_generation),
-                            previous
-                                .explicit_control_context
-                                .then_some(previous.control_context_generation),
-                        )
+                        let generation = next
+                            .explicit_control_context
+                            .then_some(next.control_context_generation);
+                        let previous_generation = previous
+                            .explicit_control_context
+                            .then_some(previous.control_context_generation);
+                        if matches!(next.policy, PublicationPolicy::InheritUnderArrangement(_))
+                            && next.streams.is_none()
+                            && previous.streams.is_none()
+                            && next.playback.live_restart_requested()
+                        {
+                            next.playback.try_restart_runtime_under_arrangement_fence(
+                                &mut previous.playback,
+                                generation,
+                                previous_generation,
+                            )
+                        } else {
+                            next.playback.try_inherit_runtime_in_control_context(
+                                &mut previous.playback,
+                                generation,
+                                previous_generation,
+                            )
+                        }
                     })
             };
             match handoff {
@@ -5225,6 +5240,7 @@ mod tests {
         }
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5400,6 +5416,7 @@ mod tests {
         let make_state = || state.clone();
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5534,6 +5551,7 @@ mod tests {
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -5687,6 +5705,7 @@ mod tests {
         const FRAMES: u64 = 512;
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -10176,6 +10195,7 @@ mod tests {
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -10894,6 +10914,7 @@ mod tests {
         };
         let project = CanonicalProject::from_legacy_snapshot(Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),

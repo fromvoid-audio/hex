@@ -1,6 +1,7 @@
 //! Output completion alone is substituted. Session, verified readers, source
 //! domains, graph preparation, publication and callback are production paths.
 use super::*;
+mod bypass_latency;
 mod limiter;
 mod plugins;
 mod recovery;

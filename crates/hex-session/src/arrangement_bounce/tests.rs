@@ -569,6 +569,259 @@ fn selected_source_isolation_excludes_other_clips_tracks_main_and_returns() {
 }
 
 #[test]
+fn retained_source_roles_follow_isolated_track_and_audio_group_projections() {
+    let (session, receiver, _) = fixture_at_rate(8_000);
+    let mut editor = hex_project::Editor::new(session.project().clone(), 32).unwrap();
+    let source = session
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: "fixture.wav".into(),
+            sample_rate: 8_000,
+            frames: 32,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    let mut clips = Vec::new();
+    for start in [0, 64] {
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceClip {
+                track: receiver,
+                asset,
+                start,
+                duration: 32,
+                source_offset: 0,
+                source_length: 32,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!("audio clip")
+        };
+        clips.push(clip);
+    }
+    let Created::Track(peer) = editor
+        .execute(Command::AddMidiTrack {
+            name: "peer".into(),
+        })
+        .unwrap()
+    else {
+        panic!("peer")
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: peer,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(peer_clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: peer,
+            start: BeatTime::ONE,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("peer clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip: peer_clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 67,
+            velocity: 100,
+            channel: 0,
+        })
+        .unwrap();
+    let ordinary = editor.project().clone();
+    let mut snapshot = ordinary.snapshot();
+    snapshot.retained_source_paths.push(receiver.value());
+    let retained = Project::from_snapshot(snapshot).unwrap();
+    let original = retained.snapshot();
+    let samples = vec![[0.25, -0.5]; 32];
+    let media = std::collections::BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(8_000, samples.clone()).unwrap(),
+    )]);
+    let render = |project: &Project, frames| {
+        pcm(
+            Arc::new(
+                hex_engine::PreparedRevision::prepare(project, &media, session.sine_table(), None)
+                    .unwrap(),
+            ),
+            frames,
+        )
+    };
+
+    let target = BounceTarget::Track(peer);
+    let item = ordinary
+        .plan_arrangement_bounce(&target, true)
+        .unwrap()
+        .remove(0);
+    let expected = isolated(&ordinary, &target, &item, true).unwrap();
+    let projected = isolated(&retained, &target, &item, true).unwrap();
+    assert!(projected.track(receiver).is_none());
+    assert!(!projected.track(peer).unwrap().retained_source_path());
+    assert_eq!(
+        projected.native_source(source).unwrap().receiver(),
+        Some(peer)
+    );
+    let expected_audio = render(&expected, 9_000);
+    assert!(
+        expected_audio
+            .iter()
+            .flatten()
+            .any(|sample| sample.abs() > 1e-5)
+    );
+    assert_eq!(render(&projected, 9_000), expected_audio);
+
+    let target = BounceTarget::Clips(vec![clips[0]]);
+    let item = retained
+        .plan_arrangement_bounce(&target, false)
+        .unwrap()
+        .remove(0);
+    let projected = isolated(&retained, &target, &item, false).unwrap();
+    assert!(projected.track(receiver).unwrap().retained_source_path());
+    assert_eq!(
+        projected.native_source(source).unwrap().receiver(),
+        Some(receiver)
+    );
+    assert_eq!(render(&projected, 32), samples);
+
+    let target = BounceTarget::AudioGroup { clips, range: None };
+    let item = retained
+        .plan_arrangement_bounce(&target, true)
+        .unwrap()
+        .remove(0);
+    let projected = isolated(&retained, &target, &item, true).unwrap();
+    assert!(!projected.track(receiver).unwrap().retained_source_path());
+    assert!(projected.track(receiver).unwrap().instrument().is_none());
+    assert_eq!(projected.native_source(source).unwrap().receiver(), None);
+    let rendered = render(&projected, 96);
+    assert_eq!(&rendered[..32], samples);
+    assert_eq!(&rendered[32..64], &[[0.0; 2]; 32]);
+    assert_eq!(&rendered[64..], samples);
+    assert_eq!(retained.snapshot(), original);
+    assert_eq!(editor.project(), &ordinary);
+}
+
+#[test]
+fn whole_receiver_projection_excludes_peer_midi_before_source_processing() {
+    let (mut session, receiver, _) = fixture_at_rate(8_000);
+    let source = session
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let effect = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_lattice_contract::DeviceTypeId::from_static("hex.saturator"),
+    )
+    .unwrap();
+    session
+        .command(Command::InsertDevice {
+            track: receiver,
+            before: None,
+            state: effect,
+        })
+        .unwrap();
+    let target = BounceTarget::Track(receiver);
+    let item = session
+        .project()
+        .plan_arrangement_bounce(&target, true)
+        .unwrap()
+        .remove(0);
+    let reference = session.compile_prepared_revision(None).unwrap();
+    for (pitch, start) in [(67, BeatTime::ZERO), (72, BeatTime::ONE)] {
+        let Created::Track(peer) = session
+            .command(Command::AddMidiTrack {
+                name: "peer".into(),
+            })
+            .unwrap()
+        else {
+            panic!("peer")
+        };
+        session
+            .command(Command::BindTrackSource {
+                track: peer,
+                source: Some(source),
+            })
+            .unwrap();
+        let Created::Clip(clip) = session
+            .command(Command::PlaceMidiClip {
+                track: peer,
+                start,
+                length: BeatTime::from_quarters(2).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        session
+            .command(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(2).unwrap(),
+                pitch,
+                velocity: 110,
+                channel: 0,
+            })
+            .unwrap();
+    }
+    let original = session.project().snapshot();
+    let mixed = session.compile_prepared_revision(None).unwrap();
+    let projected = isolated(session.project(), &target, &item, true).unwrap();
+    assert_eq!(projected.tracks().len(), 1);
+    assert_eq!(projected.track(receiver).unwrap().source_id(), Some(source));
+    assert_eq!(
+        projected.native_source(source),
+        session.project().native_source(source)
+    );
+    assert_eq!(
+        projected.track(receiver).unwrap().devices(),
+        session.project().track(receiver).unwrap().devices()
+    );
+    let waveforms = std::cell::RefCell::new(session.audio_clip_waveforms().unwrap());
+    let prepared = Arc::new(
+        crate::prepare_with_waveforms(
+            &projected,
+            &session.media_bank(),
+            session.sine_table(),
+            None,
+            &session.audio_transforms,
+            &waveforms,
+        )
+        .unwrap(),
+    );
+    let frames = usize::try_from(item.end + 1_000).unwrap();
+    let expected = pcm(reference, frames);
+    let actual = pcm(prepared, frames);
+    let mixed = pcm(mixed, frames);
+    assert!(
+        expected
+            .iter()
+            .zip(&mixed)
+            .any(|(a, b)| (a[0] - b[0]).abs() > 1e-5),
+        "peer input must affect the mixed reference"
+    );
+    assert!(
+        expected
+            .iter()
+            .zip(&actual)
+            .all(|(a, b)| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6)
+    );
+    assert_eq!(session.project().snapshot(), original);
+}
+
+#[test]
 fn receiver_clip_bounce_excludes_shared_contributors_and_whole_track_refuses() {
     for whole_track in [false, true] {
         shared_receiver_bounce_case(whole_track);
