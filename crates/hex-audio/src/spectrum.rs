@@ -13,7 +13,8 @@
 //!   bins produce a continuous curve rather than stair steps;
 //! - or, where a tonal peak stands well above its local noise reference
 //!   (a cell-averaging detector with guard bins), that peak's level after
-//!   log-parabolic interpolation, which removes Hann scalloping loss.
+//!   log-parabolic interpolation, which removes Hann scalloping loss. A
+//!   continuous confidence blend avoids a hard jump near the detector threshold.
 //!
 //! A configurable slope tilts the result around 1 kHz. Time-domain display
 //! behavior (attack, release, peak hold) is owned by [`SpectrumBallistics`].
@@ -52,8 +53,10 @@ const CROSSOVER_BINS: f64 = 32.0;
 const GUARD_BINS: usize = 3;
 /// Reference bins averaged on each side of the guard.
 const REFERENCE_BINS: usize = 8;
-/// A candidate must exceed its local reference mean by 15 dB to be tonal.
-const TONAL_RATIO: f64 = 31.622_776_601_683_79;
+/// Blend tonal correction over 12..18 dB above the local noise reference.
+/// A hard classifier makes a tiny input change jump the display by many dB.
+const TONAL_LOW_RATIO: f64 = 15.848_931_924_611_133;
+const TONAL_HIGH_RATIO: f64 = 63.095_734_448_019_33;
 const SILENT_POWER: f64 = 1.0e-12;
 /// Smoothed (non-tonal) power is expressed per this bandwidth, the finest
 /// bass-stage resolution at any supported rate (4000 Hz / 2048). Broadband
@@ -345,14 +348,24 @@ impl Stage {
             if count < REFERENCE_BINS {
                 continue;
             }
-            let reference = (self.prefix[left_end.max(left_start)] - self.prefix[left_start]
+            let reference = ((self.prefix[left_end.max(left_start)] - self.prefix[left_start]
                 + self.prefix[right_end]
                 - self.prefix[right_start])
-                / count as f64;
-            if peak < reference * TONAL_RATIO {
+                / count as f64)
+                .max(0.0);
+            let low = reference * TONAL_LOW_RATIO;
+            let high = reference * TONAL_HIGH_RATIO;
+            if peak <= low {
                 continue;
             }
+            let confidence = if high <= low {
+                1.0
+            } else {
+                let t = ((peak - low) / (high - low)).clamp(0.0, 1.0);
+                t * t * (3.0 - 2.0 * t)
+            };
             let (offset, level) = hann_peak(self.power[bin - 1], peak, self.power[bin + 1]);
+            let level = level * confidence;
             let frequency = (bin as f64 + offset) * self.resolution_hz;
             if (MIN_FREQUENCY_HZ..maximum).contains(&frequency) {
                 let position = (frequency / MIN_FREQUENCY_HZ).ln() * log_scale;
