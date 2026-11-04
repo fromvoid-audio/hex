@@ -299,6 +299,7 @@ impl EditorView {
         &self,
         viewport: super::viewport::Viewport,
         edge: hex_widgets::TimeMarkerEdge,
+        guide: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
         use hex_widgets::{TimeMarkerEndpoint as Endpoint, time_position_marker};
@@ -306,10 +307,11 @@ impl EditorView {
         let cursor = self
             .edit_cursor
             .filter(|cursor| cursor.generation == self.project_generation);
-        let cursor = cursor.or(locked)?;
+        let cursor = cursor.or(locked);
+        let cursor_frame = cursor.map(|cursor| cursor.frame).or(guide)?;
         let (start, end) = self
             .time_selection
-            .map_or((cursor.frame, cursor.frame), |selection| {
+            .map_or((cursor_frame, cursor_frame), |selection| {
                 (
                     selection.anchor_frame.min(selection.end_frame),
                     selection.anchor_frame.max(selection.end_frame),
@@ -319,11 +321,15 @@ impl EditorView {
             hex_widgets::TimeMarkerEdge::Top => "top",
             hex_widgets::TimeMarkerEdge::Bottom => "bottom",
         };
-        if locked.is_none() && start == end && self.selected_clip_play_start().is_some() {
+        if guide.is_none()
+            && locked.is_none()
+            && start == end
+            && self.selected_clip_play_start().is_some()
+        {
             return None;
         }
         let mut markers = Vec::new();
-        if start != end {
+        if guide.is_none() && start != end {
             for (frame, endpoint, name) in [
                 (start, Endpoint::Start, "start"),
                 (end, Endpoint::End, "end"),
@@ -341,8 +347,23 @@ impl EditorView {
                 }
             }
         }
+        if let Some(frame) = guide
+            && let Some(marker) = viewport.fraction(frame).and_then(|position| {
+                time_position_marker(
+                    format!("clip-move-guide-{edge_name}").into(),
+                    position,
+                    Endpoint::Point,
+                    edge,
+                    theme::time_position_marker_color(),
+                )
+            })
+        {
+            markers.push(marker.into_any_element());
+        }
         let point = locked.or_else(|| {
-            (start == end && self.selected_clip_play_start().is_none()).then_some(cursor)
+            (guide.is_none() && start == end && self.selected_clip_play_start().is_none())
+                .then_some(cursor)
+                .flatten()
         });
         if let Some(point) = point
             && let Some(marker) = viewport.fraction(point.frame).and_then(|position| {
@@ -397,10 +418,11 @@ impl EditorView {
     pub(super) fn edit_cursor_layer(
         &self,
         viewport: super::viewport::Viewport,
+        guide: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
         let markers =
-            self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Bottom, cx)?;
+            self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Bottom, guide, cx)?;
         Some(
             div()
                 .absolute()
