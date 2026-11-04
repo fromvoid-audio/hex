@@ -1,8 +1,9 @@
 //! Bounded immutable contributor/receiver routing for retained native sources.
 //!
-//! A binding contributes MIDI; it does not authorize a second generator or audio
-//! path. Only the explicit receiver injects the combined source output into its
-//! existing local chain. A control-allocated scalar table avoids large revision
+//! A binding identifies a source; its contributor role is independent and does
+//! not authorize a second generator or audio path. Only the explicit receiver
+//! injects the combined source output into its existing local chain. A
+//! control-allocated scalar table avoids large revision
 //! copies on preparation stacks. Reads perform no callback map construction,
 //! allocation or ownership transfer; the existing revision owns reclamation.
 use crate::Invalid;
@@ -14,6 +15,7 @@ use hex_project::{MAX_TRACKS, Project, SourceId, TrackId};
 struct SourceRoutingData {
     tracks: [Option<TrackId>; MAX_TRACKS],
     sources: [Option<SourceId>; MAX_TRACKS],
+    contributes: [bool; MAX_TRACKS],
     receivers: [Option<u16>; MAX_TRACKS],
     contributors: [u16; MAX_TRACKS],
     ranges: [(u16, u16); MAX_TRACKS],
@@ -26,6 +28,7 @@ impl Default for SourceRoutingData {
         Self {
             tracks: [None; MAX_TRACKS],
             sources: [None; MAX_TRACKS],
+            contributes: [false; MAX_TRACKS],
             receivers: [None; MAX_TRACKS],
             contributors: [0; MAX_TRACKS],
             ranges: [(0, 0); MAX_TRACKS],
@@ -41,14 +44,23 @@ impl SourceRoutingData {
     fn finish(&mut self) -> Result<(), Invalid> {
         self.shared = [false; MAX_TRACKS];
         for index in 0..self.len {
+            if self.contributes[index] && self.sources[index].is_none() {
+                return Err(Invalid("source contributor binding is missing"));
+            }
             if let Some(source) = self.sources[index] {
+                if !self.contributes[index] && self.receivers[index].map(usize::from) != Some(index)
+                {
+                    return Err(Invalid(
+                        "noncontributing source binding must be the receiver",
+                    ));
+                }
                 let mut count = 0;
                 for other in 0..self.len {
                     if self.sources[other] == Some(source) {
                         if self.receivers[other] != self.receivers[index] {
                             return Err(Invalid("source contributors disagree on receiver"));
                         }
-                        count += 1;
+                        count += usize::from(self.contributes[other]);
                     }
                 }
                 self.shared[index] = count > 1;
@@ -67,13 +79,15 @@ impl SourceRoutingData {
                         return Err(Invalid("source receiver has conflicting sources"));
                     }
                     source = Some(bound);
-                    let slot = self
-                        .contributors
-                        .get_mut(next)
-                        .ok_or(Invalid("source contributor limit reached"))?;
-                    *slot = u16::try_from(contributor)
-                        .map_err(|_| Invalid("source contributor index overflow"))?;
-                    next += 1;
+                    if self.contributes[contributor] {
+                        let slot = self
+                            .contributors
+                            .get_mut(next)
+                            .ok_or(Invalid("source contributor limit reached"))?;
+                        *slot = u16::try_from(contributor)
+                            .map_err(|_| Invalid("source contributor index overflow"))?;
+                        next += 1;
+                    }
                 }
             }
             let end =
@@ -83,7 +97,7 @@ impl SourceRoutingData {
             {
                 return Err(Invalid("source receiver has a different binding"));
             }
-            if end - begin > 1 || (end > begin && self.sources[receiver] != source) {
+            if end - begin > 1 || (end > begin && !self.contributes[receiver]) {
                 self.shared[receiver] = true;
                 for &contributor in &self.contributors[usize::from(begin)..usize::from(end)] {
                     self.shared[usize::from(contributor)] = true;
@@ -127,6 +141,7 @@ impl PreparedSourceRouting {
         for (index, track) in project.tracks().iter().enumerate() {
             plan.tracks[index] = Some(track.id());
             plan.sources[index] = track.source_id();
+            plan.contributes[index] = track.source_id().is_some();
             if let Some(source_id) = track.source_id() {
                 let source = project
                     .native_source(source_id)
@@ -156,7 +171,7 @@ impl PreparedSourceRouting {
     ) -> Result<Self, Invalid> {
         let mut routing = Self::prepare(canonical)?;
         for (index, track) in arrangement.tracks().iter().enumerate() {
-            if routing.source(index).is_some() {
+            if routing.contributes(index) {
                 let id = track
                     .canonical_track_id()
                     .ok_or(Invalid("source track id is missing"))?;
@@ -216,11 +231,19 @@ impl PreparedSourceRouting {
             .copied()
             .flatten()
     }
-    pub fn receiver_index(&self, contributor_index: usize) -> Option<usize> {
+    /// Whether this bound track contributes MIDI to its source.
+    pub fn contributes(&self, track_index: usize) -> bool {
+        self.data
+            .as_ref()
+            .and_then(|data| data.contributes.get(track_index))
+            .copied()
+            .unwrap_or(false)
+    }
+    pub fn receiver_index(&self, track_index: usize) -> Option<usize> {
         self.data
             .as_ref()?
             .receivers
-            .get(contributor_index)
+            .get(track_index)
             .copied()
             .flatten()
             .map(usize::from)
@@ -312,8 +335,10 @@ mod tests {
     fn receiver_and_contributor_roles_are_independent() {
         let mut data = shared_plan();
         data.sources[0] = None;
+        data.contributes[0] = false;
         data.receivers[0] = None;
         data.sources[2] = None;
+        data.contributes[2] = false;
         data.receivers[2] = None;
         data.finish().unwrap();
         let routing = PreparedSourceRouting {
@@ -329,11 +354,62 @@ mod tests {
     }
 
     #[test]
+    fn bound_receiver_retains_source_without_contributing_midi() {
+        let mut data = shared_plan();
+        let source = data.sources[0];
+        data.contributes[0] = false;
+        data.sources[2] = None;
+        data.contributes[2] = false;
+        data.receivers[2] = None;
+        data.finish().unwrap();
+        let routing = PreparedSourceRouting {
+            data: Some(Box::new(data)),
+        };
+        assert_eq!(routing.source(0), source);
+        assert!(!routing.contributes(0));
+        assert!(routing.contributes(1));
+        assert_eq!(routing.receiver_index(0), Some(0));
+        assert_eq!(routing.contributors(0), &[1]);
+        assert!(routing.is_shared(0));
+        assert!(routing.is_shared(1));
+    }
+
+    #[test]
+    fn retained_receiver_ranges_exclude_its_midi_and_validate_roles() {
+        let mut data = shared_plan();
+        data.contributes[0] = false;
+        data.finish().unwrap();
+        assert_eq!(&data.contributors[..2], &[1, 2]);
+        assert_eq!(data.ranges[0], (0, 2));
+        assert!(data.shared[0] && data.shared[1] && data.shared[2]);
+
+        for index in [1, 2] {
+            data.sources[index] = None;
+            data.receivers[index] = None;
+            data.contributes[index] = false;
+        }
+        data.finish().unwrap();
+        assert_eq!(data.ranges[0], (0, 0));
+        assert!(!data.shared[0]);
+        assert!(data.sources[0].is_some());
+
+        data.contributes[1] = true;
+        assert!(data.finish().is_err(), "unbound contributor must refuse");
+        data.contributes[1] = false;
+        data.receivers[0] = None;
+        assert!(
+            data.finish().is_err(),
+            "only a receiver may hold a noncontributing binding"
+        );
+    }
+
+    #[test]
     fn contributor_ranges_cover_bound_remote_and_unassigned_receivers() {
         let mut data = shared_plan();
         data.finish().unwrap();
         assert_eq!(&data.contributors[..3], &[0, 1, 2]);
         data.sources[0] = None;
+        data.contributes[0] = false;
         data.receivers[0] = None;
         data.finish().unwrap();
         assert_eq!(&data.contributors[..2], &[1, 2]);
@@ -347,7 +423,9 @@ mod tests {
         assert!(data.finish().is_err());
         data.receivers[1] = None;
         data.sources[1] = None;
+        data.contributes[1] = false;
         data.sources[2] = None;
+        data.contributes[2] = false;
         data.finish().unwrap();
         assert!(data.ranges[..data.len].iter().all(|range| *range == (0, 0)));
         assert!(!data.shared[..data.len].iter().any(|shared| *shared));
