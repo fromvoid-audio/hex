@@ -1665,6 +1665,7 @@ impl Project {
         &mut self,
         commands: Vec<Command>,
         warp: crate::AudioImportWarp,
+        new_track_gain: Option<f32>,
     ) -> Result<Vec<Created>, Invalid> {
         let count = commands.len();
         let mut incoming = Vec::new();
@@ -1688,6 +1689,9 @@ impl Project {
                     conversion_version,
                 } => {
                     let track = insert_track_before(self, name, before_track)?;
+                    if let Some(gain) = new_track_gain {
+                        self.track_mut(track)?.gain = gain;
+                    }
                     let asset = self.add_import_asset(
                         track,
                         path,
@@ -1733,7 +1737,13 @@ impl Project {
                             name,
                             before_track,
                             start,
-                        } => (insert_track_before(self, name, before_track)?, start),
+                        } => {
+                            let track = insert_track_before(self, name, before_track)?;
+                            if let Some(gain) = new_track_gain {
+                                self.track_mut(track)?.gain = gain;
+                            }
+                            (track, start)
+                        }
                         crate::ExistingAudioPlacement::Clip { track, start, .. } => {
                             self.track(track).ok_or(Invalid("track no longer exists"))?;
                             (track, start)
