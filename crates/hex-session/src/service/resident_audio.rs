@@ -1105,7 +1105,10 @@ pub(super) fn import_file(
                 destination,
                 &expected,
                 current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
-                overwrite,
+                crate::import_batch::AudioImportOptions {
+                    overwrite,
+                    ..Default::default()
+                },
                 || Ok(()),
                 |input, admit| {
                     let snapshot =
