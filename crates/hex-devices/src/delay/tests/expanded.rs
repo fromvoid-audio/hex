@@ -963,6 +963,24 @@ fn tail_split_refuses_frozen_changed_and_invalid_buffers_without_losing_history(
             )
             .is_err()
     );
+    let oversized = [[0.3, 0.1]; 257];
+    let mut oversized_old = [[7.0; 2]; 257];
+    let mut oversized_next = [[8.0; 2]; 257];
+    assert!(
+        split
+            .process(
+                &mut old,
+                &mut next,
+                &oversized,
+                &mut oversized_old,
+                &mut oversized_next,
+                0,
+                None
+            )
+            .is_err()
+    );
+    assert_eq!(oversized_old, [[7.0; 2]; 257]);
+    assert_eq!(oversized_next, [[8.0; 2]; 257]);
     other_next.rollback_block();
     old.rollback_block();
     next.rollback_block();
