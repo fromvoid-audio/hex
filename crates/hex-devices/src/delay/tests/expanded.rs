@@ -739,9 +739,9 @@ fn tail_split_meter_observes_the_combined_signal() {
                 (peaks.input - actual[0]).abs() < 1e-6,
                 "bypass={initial_bypass} gain={gain}"
             );
-            for lane in 0..2 {
+            for (metered, actual) in peaks.output.iter().zip(actual) {
                 assert!(
-                    (peaks.output[lane] - actual[lane].abs()).abs() < 1e-6,
+                    (metered - actual.abs()).abs() < 1e-6,
                     "bypass={initial_bypass} gain={gain}"
                 );
             }
