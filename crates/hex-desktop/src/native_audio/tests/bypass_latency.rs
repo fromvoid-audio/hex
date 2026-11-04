@@ -399,3 +399,89 @@ fn utility_bypass_publication_reaches_next_pumped_callback() {
         times[19]
     );
 }
+
+#[test]
+fn eq_edit_then_bypass_reaches_the_actual_callback_smoothly() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let mut eq = hex_engine::eq::EqState {
+        output_gain: 2.0,
+        ..Default::default()
+    };
+    eq.add(
+        hex_engine::eq::Node::new(hex_engine::eq::NodeId::new(1).unwrap(), 1_000.0, 6.0, 0)
+            .unwrap(),
+    )
+    .unwrap();
+    let inserted = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: eq.encode().unwrap(),
+    }));
+    let Some(Created::Device(device)) = inserted.created else {
+        panic!("eq device")
+    };
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    for _ in 0..16 {
+        h.render();
+    }
+    h.render();
+    eq.output_gain = 3.0;
+    h.run(Request::Edit(Command::ReplaceDeviceState {
+        device,
+        state: eq.encode().unwrap(),
+    }));
+    (applied, _) = h.applied(applied);
+    for _ in 0..4 {
+        h.render();
+    }
+    let before = h.render()[63][0];
+    let final_event = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let (next, metadata) = loop {
+        h.pump();
+        if let Some((next, metadata)) = h.submitted.filter(|(next, metadata)| {
+            *next > applied && metadata.context.editor_revision == final_event.state.revision
+        }) {
+            break (next, metadata);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "bypass publication was not staged"
+        );
+        std::thread::yield_now();
+    };
+    let after = h.render();
+    assert_eq!(metadata.context.editor_revision, final_event.state.revision);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire),
+        next
+    );
+    assert!(
+        (after[0][0] - before).abs() < 0.02,
+        "edit then bypass jumped: {before} -> {}",
+        after[0][0]
+    );
+    for _ in 0..4 {
+        h.render();
+    }
+    assert!((h.render()[63][0] - 0.25).abs() < 1e-3);
+}
