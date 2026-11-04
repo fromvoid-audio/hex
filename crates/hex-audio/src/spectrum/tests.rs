@@ -8,6 +8,30 @@ const FLAT: SpectrumSettings = SpectrumSettings {
 /// Enough frames to fill the bass ring at every supported decimation.
 const FILL_FRAMES: usize = BASS_FFT_SIZE * 8 + 64;
 
+#[test]
+fn calibrated_tone_moves_continuously_across_display_band_boundary() {
+    let mut worst = 0.0f32;
+    for rate in [44_100, 48_000, 96_000, 192_000] {
+        for target in [500.0, 1_000.0, 5_000.0] {
+            let point = point_index(rate, target).unwrap();
+            let edge = band_bounds(rate, point).1;
+            let lower = analyze(rate, FLAT, &tone(rate, edge - 0.1, 0.5, 1.0, FILL_FRAMES));
+            let upper = analyze(rate, FLAT, &tone(rate, edge + 0.1, 0.5, 1.0, FILL_FRAMES));
+            for index in [point, point + 1] {
+                let change = (lower.bins_dbfs[index] - upper.bins_dbfs[index]).abs();
+                worst = worst.max(change);
+                assert!(
+                    change < 1.0,
+                    "{rate} hz, {edge:.1} hz, point {index}: {change:.2} db jump"
+                );
+            }
+            assert!((peak(&lower).1 + 6.0206).abs() < 0.5);
+            assert!((peak(&upper).1 + 6.0206).abs() < 0.5);
+        }
+    }
+    println!("worst point change across a 0.2 hz tone step: {worst:.3} db");
+}
+
 fn tone(
     rate: u32,
     frequency: f64,
