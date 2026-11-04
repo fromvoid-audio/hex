@@ -120,6 +120,8 @@ fn delay_tail_split_prepare_render_and_retire_are_allocation_free() {
         let mut warm = [[0.2, -0.1]; 128];
         old.process_block(&mut warm).unwrap();
         old.commit_block();
+        old.set_metering(true);
+        next.set_metering(true);
         let input = [[0.2, -0.1]; 64];
         let mut old_output = [[0.0; 2]; 64];
         let mut new_output = [[0.0; 2]; 64];
