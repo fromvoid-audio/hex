@@ -493,6 +493,7 @@ fn equal_state_and_device_id_cannot_select_another_actual_native_epoch() {
         prepared: first.prepared(),
         bypassed: false,
         input_gain: 1.0,
+        output_gain: 1.0,
     };
     let mut refused = Ok(());
     let measured = allocation_counter::measure(|| {
@@ -1098,6 +1099,7 @@ fn actual_tail_drain_waits_for_final_acceptance_and_preserves_last_bridge_sample
             prepared: config.prepared,
             bypassed: false,
             input_gain: 1.0,
+            output_gain: 1.0,
         };
         let (mut worker, mut callback) = effect.into_parts();
         assert!(!callback.reported_tail_is_drained());

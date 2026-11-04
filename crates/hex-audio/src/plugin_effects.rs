@@ -368,13 +368,23 @@ impl NativeEffectCallback {
     /// endpoint's unchanged declared latency, so the graph stays aligned. No
     /// transport work is staged. An oversized segment, which the graph never
     /// produces, is silenced rather than written past fixed storage.
-    pub(crate) fn pass_through_revoked(&mut self, frames: &mut [[f32; 2]]) {
-        if frames.len() > MAX_FRAMES {
+    pub(crate) fn pass_through_revoked(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        frames: &mut [[f32; 2]],
+    ) {
+        if frames.len() > MAX_FRAMES || !node.output_gain.is_finite() || node.output_gain < 0.0 {
             frames.fill([0.0; 2]);
             return;
         }
         self.advance_dry(frames);
         frames.copy_from_slice(&self.dry_output[..frames.len()]);
+        if !node.bypassed {
+            for frame in frames {
+                frame[0] *= node.output_gain;
+                frame[1] *= node.output_gain;
+            }
+        }
     }
     /// Push `frames` into the dry history and record the aligned dry output.
     fn advance_dry(&mut self, frames: &[[f32; 2]]) {
@@ -428,6 +438,9 @@ impl NativeEffectCallback {
     }
 }
 impl ForeignProcessors for NativeEffectCallback {
+    fn returns_post_trim(&self, _node: ForeignProcessorNode<'_>) -> bool {
+        true
+    }
     fn process_segment(
         &mut self,
         node: ForeignProcessorNode<'_>,
@@ -449,6 +462,8 @@ impl ForeignProcessors for NativeEffectCallback {
             || frames.len() > MAX_FRAMES
             || !node.input_gain.is_finite()
             || node.input_gain < 0.0
+            || !node.output_gain.is_finite()
+            || node.output_gain < 0.0
         {
             self.reject_callback();
             return Err(DeviceContractError::ForeignProcessingUnavailable);
@@ -482,12 +497,23 @@ impl ForeignProcessors for NativeEffectCallback {
             // The transport revoked only this endpoint's epoch. Leave the
             // aligned dry input so a containing carrier can keep rendering.
             frames.copy_from_slice(&self.dry_output[..frames.len()]);
+            if !node.bypassed {
+                for frame in frames.iter_mut() {
+                    frame[0] *= node.output_gain;
+                    frame[1] *= node.output_gain;
+                }
+            }
             return Err(DeviceContractError::ForeignProcessingFailed);
         }
         // Both paths advance. Refusal irreversibly revokes this epoch, so dry
         // and foreign history are never rolled back or replayed.
         if node.bypassed {
             frames.copy_from_slice(&self.dry_output[..frames.len()]);
+        } else if node.output_gain != 1.0 {
+            for frame in frames {
+                frame[0] *= node.output_gain;
+                frame[1] *= node.output_gain;
+            }
         }
         Ok(())
     }

@@ -2389,6 +2389,7 @@ impl NativeRuntimeChain {
                 entry.meter.observe_input(frames);
             }
         }
+        let mut foreign_applies_output_gain = false;
         if let RuntimeOwnership::Foreign(runtime) = &mut entry.runtime {
             let configuration = entry
                 .configuration
@@ -2403,7 +2404,13 @@ impl NativeRuntimeChain {
                 prepared: runtime.prepared,
                 bypassed: entry.bypassed,
                 input_gain: entry.input_gain,
+                output_gain: if entry.automation_frozen {
+                    entry.committed_host_gains[1]
+                } else {
+                    entry.output_gain
+                },
             };
+            foreign_applies_output_gain = foreign.returns_post_trim(node);
             // A failed stage supplies no new observation. Invalidate scratch
             // first so an earlier quiet state cannot mask renewed input.
             runtime.scratch_drained = false;
@@ -2463,8 +2470,14 @@ impl NativeRuntimeChain {
                 entry.runtime.process_with_clock(frames, clock)?;
             }
         }
-        if !entry.bypassed {
+        if !entry.bypassed && !foreign_applies_output_gain {
             Self::apply_host_gain(entry, frames, output_clock, false, input, external)?;
+        } else if !entry.bypassed && !frames.is_empty() {
+            entry.scratch_host_gains[1] = if entry.automation_frozen {
+                entry.committed_host_gains[1]
+            } else {
+                entry.output_gain
+            };
         }
         if entry.metering {
             entry.meter.observe_output(frames);
