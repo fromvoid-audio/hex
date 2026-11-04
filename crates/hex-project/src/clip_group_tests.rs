@@ -1610,3 +1610,70 @@ fn all_midi_group_moves_by_exact_beats_at_non_integer_frame_tempo() {
     assert_eq!(first.length(), four);
     assert_eq!(second.length(), four);
 }
+
+#[test]
+fn destination_alias_group_keeps_members_and_relative_placement() {
+    let mut f = fixture();
+    let before = f.editor.project().snapshot();
+    let Created::Clips { first, last } = f
+        .editor
+        .execute(Command::DuplicateAliasClipsAt {
+            clips: vec![f.audio, f.midi],
+            anchor: f.audio,
+            track: f.tracks[0],
+            position: ClipGroupPosition::Audio(288_000),
+        })
+        .unwrap()
+    else {
+        panic!("alias group")
+    };
+    assert_ne!(first, last);
+    assert!(f.editor.project().clip(f.audio).is_some());
+    assert!(f.editor.project().midi_clip(f.midi).is_some());
+    let copied_audio = f
+        .editor
+        .project()
+        .track(f.tracks[0])
+        .unwrap()
+        .clips()
+        .iter()
+        .find(|clip| clip.id() != f.audio)
+        .unwrap();
+    let copied_midi = f
+        .editor
+        .project()
+        .track(f.tracks[1])
+        .unwrap()
+        .midi_clips()
+        .iter()
+        .find(|clip| clip.id() != f.midi)
+        .unwrap();
+    assert_eq!(copied_audio.start(), 288_000);
+    let project = f.editor.project();
+    assert_eq!(
+        project
+            .tempo_map()
+            .beat_to_frame(copied_midi.start())
+            .unwrap(),
+        project
+            .tempo_map()
+            .beat_to_frame(project.midi_clip(f.midi).unwrap().start())
+            .unwrap()
+            + 240_000,
+    );
+    assert_eq!(
+        f.editor.project().clip_alias(copied_audio.id()),
+        f.editor.project().clip_alias(f.audio)
+    );
+    assert_eq!(
+        f.editor.project().clip_alias(copied_midi.id()),
+        f.editor.project().clip_alias(f.midi)
+    );
+    let after = f.editor.project().snapshot();
+    let mut expected = before;
+    expected.next_id = after.next_id;
+    assert!(f.editor.undo());
+    assert_eq!(f.editor.project().snapshot(), expected);
+    assert!(f.editor.redo());
+    assert_eq!(f.editor.project().snapshot(), after);
+}

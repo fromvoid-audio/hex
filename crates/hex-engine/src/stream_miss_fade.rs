@@ -30,7 +30,7 @@
 //! Seek, transport loop wrap, clip loop wrap, scene launch and any other
 //! source discontinuity therefore reset by construction, with no command
 //! hook. Transport action fades and Session audio releases own their edges;
-//! Arrangement loop wraps retain authored discontinuities. A graph replacement keeps
+//! Arrangement loop ends have a separate source-level fade. A graph replacement keeps
 //! the table, so a voice that continues the same source key and position
 //! across the handoff keeps its fade; a new source generation is a new voice.
 //! When more voices sound than the table holds, the least recently touched

@@ -234,6 +234,38 @@ fn ordinary_positive_latency_demand_actions_and_handoff_match_resident_without_r
             .is_err(),
         "constructor demand must retain its closed-family refusal"
     );
+    let mut offline =
+        crate::SessionPlayback::new_finite_arrangement_bounce(Arc::clone(&streamed), None, 512)
+            .unwrap();
+    let mut offline_oracle =
+        crate::SessionPlayback::new_finite_arrangement_bounce(Arc::clone(&resident), None, 512)
+            .unwrap();
+    offline.apply(SessionPlaybackCommand::Play).unwrap();
+    offline_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    for count in [1, 3, 17, 256] {
+        let mut extents = Vec::new();
+        let window = offline
+            .visit_next_stream_chunk(count, None, &mut |extent| {
+                extents.push(extent);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(window.frames, count);
+        let mut observed = vec![[0.0; 2]; count];
+        let mut expected = observed.clone();
+        offline
+            .render_with_pages(
+                &mut observed,
+                &mut Pages {
+                    samples: &f.samples,
+                    key,
+                    extents: &extents,
+                },
+            )
+            .unwrap();
+        offline_oracle.render(&mut expected).unwrap();
+        assert_eq!(observed, expected);
+    }
     let context = crate::AudioSourceContext {
         project_generation: 9,
         editor_revision: 2,

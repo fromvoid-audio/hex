@@ -77,13 +77,16 @@ impl SessionPlayback {
     /// Visitors borrow metadata only and must use preallocated storage on audio.
     /// A visitor refusal leaves this runtime unchanged; partial visitor storage
     /// is speculative and must be discarded. Paused/empty demand has width zero.
+    /// Linear offline runtimes include compensated paths; interactive closed
+    /// demand retains its existing restricted admission.
     pub fn visit_next_stream_chunk(
         &self,
         maximum_frames: usize,
         playing: Option<bool>,
         visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
     ) -> Result<StreamChunkWindow, Invalid> {
-        self.visit_stream_chunk_at(
+        self.visit_stream_chunk_in_scope(
+            self.linear_arrangement_export,
             &self.routes,
             self.performance_frame,
             self.arrangement_frame,
@@ -95,30 +98,6 @@ impl SessionPlayback {
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // Borrowed applied/planned clocks, no ownership snapshot.
-    pub(super) fn visit_stream_chunk_at(
-        &self,
-        routes: &[TrackRoute],
-        performance_frame: u64,
-        arrangement_frame: u64,
-        route_generation: u64,
-        loop_pass: u64,
-        playing: bool,
-        maximum_frames: usize,
-        visit: &mut impl FnMut(StreamResourceExtent) -> Result<(), Invalid>,
-    ) -> Result<StreamChunkWindow, Invalid> {
-        self.visit_stream_chunk_in_scope(
-            false,
-            routes,
-            performance_frame,
-            arrangement_frame,
-            route_generation,
-            loop_pass,
-            playing,
-            maximum_frames,
-            visit,
-        )
-    }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn visit_stream_chunk_in_scope(
         &self,

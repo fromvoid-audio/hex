@@ -1071,6 +1071,9 @@ impl EditorView {
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
+        if let Ok(view) = self.service.try_solo_view() {
+            visible_change |= self.observe_solo_view(view);
+        }
         visible_change |= self.poll_retired_action_outcomes();
         if self.retired_action_outcomes.is_none()
             && self.audio.as_ref().is_some_and(|audio| {
@@ -2118,6 +2121,13 @@ impl EditorView {
             // duplicate old proof or mismatched source cannot advance authoring,
             // admission, an input target, or any pending publication owner.
             return None;
+        }
+        if self
+            .solo_observation
+            .as_ref()
+            .is_some_and(|view| event.project_replaced || event.state.revision >= view.revision)
+        {
+            self.solo_observation = None;
         }
         if event.request_complete && event.error.is_some() {
             self.cancel_new_preparation();

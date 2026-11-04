@@ -639,7 +639,7 @@ fn return_headers_share_track_geometry_without_redundant_section_chrome(cx: &mut
                 assert_eq!(header.size, ordinary.size);
                 assert_eq!(header.right(), ordinary.right());
                 if count == 1 {
-                    // The minimum window correctly clamps headers to 176px.
+                    // The minimum window clamps headers to the shared minimum.
                     // Give the shared width owner room for a real resize.
                     visual.simulate_resize(size(px(1280.0), px(800.0)));
                     visual.run_until_parked();
