@@ -1197,8 +1197,9 @@ pub(super) fn command(value: &Command) -> Description {
             name,
             before_track,
             start,
+            initial_gain,
         } => {
-            describe!("move_midi_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start_beats_q32" => start.raw()]; omitted="")
+            describe!("move_midi_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start_beats_q32" => start.raw(), "initial_gain" => initial_gain]; omitted="")
         }
         Command::CopyMidiClipTo { clip, track, start } => {
             describe!("copy_midi_clip_to"; ["clip" => clip.value(), "track" => track.value(), "start_beats_q32" => start.raw()]; omitted="")
@@ -1208,8 +1209,9 @@ pub(super) fn command(value: &Command) -> Description {
             name,
             before_track,
             start,
+            initial_gain,
         } => {
-            describe!("copy_midi_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start_beats_q32" => start.raw()]; omitted="")
+            describe!("copy_midi_clip_to_new_track"; ["clip" => clip.value(), "name_redacted_bytes" => name.len(), "before_track" => before_track.map(|id| id.value()), "start_beats_q32" => start.raw(), "initial_gain" => initial_gain]; omitted="")
         }
         Command::RemoveMidiClip(value0) => {
             describe!("remove_midi_clip"; ["value0" => value0.value()]; omitted="")

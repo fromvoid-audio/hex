@@ -94,6 +94,7 @@ fn all_creation_routes_choose_unused_hues_and_keep_history() {
             start: 0,
         },
         Command::CopyMidiClipToNewTrack {
+            initial_gain: None,
             clip: midi_clip,
             name: "copied midi".into(),
             before_track: None,
@@ -123,6 +124,7 @@ fn all_creation_routes_choose_unused_hues_and_keep_history() {
             start: 0,
         },
         Command::MoveMidiClipToNewTrack {
+            initial_gain: None,
             clip: midi_clip,
             name: "moved midi".into(),
             before_track: None,

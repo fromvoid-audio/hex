@@ -551,6 +551,7 @@ fn move_to_new_track_command(
             start,
         },
         ClipPosition::Midi { start, .. } => Command::MoveMidiClipToNewTrack {
+            initial_gain: None,
             clip,
             name,
             before_track,
@@ -574,6 +575,7 @@ fn copy_to_new_track_command(
             start,
         },
         ClipPosition::Midi { start, .. } => Command::CopyMidiClipToNewTrack {
+            initial_gain: None,
             clip,
             name,
             before_track,
