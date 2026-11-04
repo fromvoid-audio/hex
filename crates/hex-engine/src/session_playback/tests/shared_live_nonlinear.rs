@@ -411,3 +411,152 @@ fn shared_mutable_source_keeps_one_nonlinear_history_for_clips_and_live_input() 
     assert_eq!(constructions.load(Ordering::Relaxed), 2);
     MUTABLE_RUNTIME_CREATE_COUNTER.with(|counter| *counter.borrow_mut() = None);
 }
+
+#[test]
+fn retained_receiver_keeps_one_mutable_source_for_peer_and_refuses_own_keyboard() {
+    let (ordinary, receiver, contributor) = shared_project();
+    let mut snapshot = ordinary.snapshot();
+    snapshot.retained_source_paths.push(receiver.value());
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let definition = SaturatingDefinition {
+        inner: MutableFeedbackDefinition {
+            metadata: ContinuityInstrumentDefinition {
+                id: hex_lattice_contract::DeviceTypeId::from_static(
+                    "test.instrument.mutable.feedback",
+                ),
+                levels: [1.0, 1.0],
+                release_frames: 8,
+            },
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let prepared = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            &project,
+            &BTreeMap::new(),
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap(),
+    );
+    let mut playback = Playback::try_from_prepared_with_session(prepared).unwrap();
+    let input = Arc::new(crate::computer_keyboard::ComputerKeyboardInput::default());
+    assert!(
+        playback
+            .prepare_computer_keyboard(&project, receiver, Arc::clone(&input))
+            .is_err()
+    );
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    playback
+        .prepare_computer_keyboard(&project, contributor, Arc::clone(&input))
+        .unwrap();
+    playback.apply(PlaybackCommand::Play);
+    let mut oracle = NonlinearOracle {
+        voices: [None; 4],
+        feedback: 0.0,
+        tail_left: 0,
+    };
+    oracle.note_on(0);
+    oracle.note_on(1);
+    render_and_compare(&mut playback, &mut oracle, 24, &[1, 7, 3, 19]);
+}
+
+#[test]
+fn retained_role_change_refuses_live_handoff_without_touching_old_source() {
+    let (ordinary, receiver, _) = shared_project();
+    let mut snapshot = ordinary.snapshot();
+    snapshot.retained_source_paths.push(receiver.value());
+    let retained = Project::from_snapshot(snapshot).unwrap();
+    let definition = SaturatingDefinition {
+        inner: MutableFeedbackDefinition {
+            metadata: ContinuityInstrumentDefinition {
+                id: hex_lattice_contract::DeviceTypeId::from_static(
+                    "test.instrument.mutable.feedback",
+                ),
+                levels: [1.0, 1.0],
+                release_frames: 8,
+            },
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let prepare = |project| {
+        Arc::new(
+            PreparedRevision::prepare_with_instrument_registry(
+                project,
+                &BTreeMap::new(),
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap(),
+        )
+    };
+    let mut old = SessionPlayback::new(prepare(&ordinary)).unwrap();
+    let mut candidate = SessionPlayback::new(prepare(&retained)).unwrap();
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut first = [[0.0; 2]; 8];
+    old.render(&mut first).unwrap();
+    assert!(matches!(
+        candidate.inherit_state_live(&mut old, None),
+        Err(SessionPlaybackError::Arrangement(
+            "retained source path changes require stopped graph replacement"
+        ))
+    ));
+    let mut next = [[0.0; 2]; 8];
+    old.render(&mut next).unwrap();
+    let mut oracle = NonlinearOracle {
+        voices: [None; 4],
+        feedback: 0.0,
+        tail_left: 0,
+    };
+    oracle.note_on(0);
+    oracle.note_on(1);
+    for actual in first.into_iter().chain(next) {
+        let expected = oracle.next_sample();
+        assert!(
+            (actual[0] - expected[0]).abs() < 0.000_01
+                && (actual[1] - expected[1]).abs() < 0.000_01
+        );
+    }
+}
+
+#[test]
+fn retained_receiver_with_no_peers_suppresses_own_mutable_midi() {
+    let (ordinary, receiver, contributor) = shared_project();
+    let mut editor = Editor::new(ordinary, 32).unwrap();
+    editor.execute(Command::RemoveTrack(contributor)).unwrap();
+    let mut snapshot = editor.project().snapshot();
+    snapshot.retained_source_paths.push(receiver.value());
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let definition = SaturatingDefinition {
+        inner: MutableFeedbackDefinition {
+            metadata: ContinuityInstrumentDefinition {
+                id: hex_lattice_contract::DeviceTypeId::from_static(
+                    "test.instrument.mutable.feedback",
+                ),
+                levels: [1.0, 1.0],
+                release_frames: 8,
+            },
+        },
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            &project,
+            &BTreeMap::new(),
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap(),
+    );
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    playback.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut output = [[1.0; 2]; 32];
+    playback.render(&mut output).unwrap();
+    assert_eq!(output, [[0.0; 2]; 32]);
+}

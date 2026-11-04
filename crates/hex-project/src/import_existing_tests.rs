@@ -205,7 +205,18 @@ fn console_member_places_existing_asset_without_a_new_asset() {
         "console imports stay unwarped"
     );
     assert_eq!(editor.project(), &before);
-    imports(&mut editor, vec![session(scene)], AudioImportWarp::Off).expect("console import");
+    editor
+        .execute_audio_imports_with_track_gain_prepared(
+            vec![session(scene)],
+            AudioImportWarp::Off,
+            Some(0.25),
+            |_, _| Ok::<_, Invalid>(()),
+        )
+        .expect("console import");
+    assert_eq!(
+        editor.project().track(track).expect("console track").gain(),
+        before.track(track).expect("original track").gain()
+    );
     assert_eq!(editor.project().assets().count(), 1);
     assert!(matches!(
         editor.project().session_cell(track, scene),
@@ -284,4 +295,129 @@ fn missing_offline_and_device_assets_are_refused_atomically() {
         .original_source =
         Some(OriginalSourceFacts::new(OriginalSourceFacts::LAW_VERSION, [7; 32]).expect("facts"));
     refuse(device, source);
+}
+
+#[test]
+fn captured_gain_applies_only_to_new_import_tracks_and_undoes_atomically() {
+    let (mut editor, track, asset) = fixture();
+    editor
+        .execute(Command::Gain { track, gain: 0.8 })
+        .expect("existing gain");
+    let before = editor.project().clone();
+    let commands = vec![
+        Command::ImportPreparedAudioTrackAt {
+            name: "fresh".into(),
+            before_track: None,
+            start: 0,
+            path: PathBuf::from("fresh.wav"),
+            source_sample_rate: 48_000,
+            source_frames: 50,
+            playback_frames: 50,
+            conversion_version: 0,
+        },
+        reuse(
+            asset,
+            ExistingAudioPlacement::NewTrack {
+                name: "reused".into(),
+                before_track: None,
+                start: 0,
+            },
+        ),
+        new_import(track, 200, "another.wav", 50, false),
+    ];
+    let (created, ()) = editor
+        .execute_audio_imports_with_track_gain_prepared(
+            commands,
+            AudioImportWarp::Off,
+            Some(0.25),
+            |candidate, results| {
+                for result in &results[..2] {
+                    let (new_track, _, _) = imported(result);
+                    assert_eq!(candidate.track(new_track).expect("new track").gain(), 0.25);
+                }
+                Ok::<_, Invalid>(())
+            },
+        )
+        .expect("batch");
+    assert_eq!(
+        editor
+            .project()
+            .track(track)
+            .expect("existing track")
+            .gain(),
+        0.8
+    );
+    for result in &created[..2] {
+        assert_eq!(
+            editor
+                .project()
+                .track(imported(result).0)
+                .expect("new track")
+                .gain(),
+            0.25
+        );
+    }
+    let after = editor.project().clone();
+    assert!(editor.undo());
+    assert_eq!(content(editor.project()), content(&before));
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &after);
+}
+
+#[test]
+fn captured_gain_refusal_preserves_project_and_redo() {
+    let (mut editor, track, asset) = fixture();
+    editor
+        .execute(Command::Gain { track, gain: 0.8 })
+        .expect("gain");
+    assert!(editor.undo());
+    let before = editor.project().clone();
+    let command = || {
+        reuse(
+            asset,
+            ExistingAudioPlacement::NewTrack {
+                name: "reused".into(),
+                before_track: None,
+                start: 0,
+            },
+        )
+    };
+    for gain in [f32::NAN, f32::INFINITY, -0.1, 2.1] {
+        assert!(
+            editor
+                .execute_audio_imports_with_track_gain_prepared(
+                    vec![command()],
+                    AudioImportWarp::Off,
+                    Some(gain),
+                    |_, _| Ok::<_, Invalid>(()),
+                )
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before);
+        assert!(editor.can_redo());
+    }
+    assert!(
+        editor
+            .execute_audio_imports_with_track_gain_prepared(
+                vec![command()],
+                AudioImportWarp::Off,
+                Some(0.25),
+                |_, _| Err::<(), _>(Invalid("refused")),
+            )
+            .is_err()
+    );
+    assert_eq!(editor.project(), &before);
+    assert!(editor.can_redo());
+    assert!(
+        editor
+            .execute_audio_imports_with_track_gain_prepared(
+                vec![command(), Command::Gain { track, gain: 0.5 }],
+                AudioImportWarp::Off,
+                Some(0.25),
+                |_, _| Ok::<_, Invalid>(()),
+            )
+            .is_err()
+    );
+    assert_eq!(editor.project(), &before);
+    assert!(editor.can_redo());
 }

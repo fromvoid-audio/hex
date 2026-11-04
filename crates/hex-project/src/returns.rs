@@ -48,21 +48,8 @@ impl ReturnTrack {
 
 pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Created, Invalid> {
     match command {
-        Command::AddReturnTrack { name } => {
-            crate::edit::name_valid(&name)?;
-            if project.returns.len() >= MAX_RETURN_TRACKS {
-                return Err(Invalid("return track limit reached"));
-            }
-            let id = ReturnId(project.allocate_id()?);
-            project.returns.push(ReturnTrack {
-                id,
-                name,
-                gain: 1.0,
-                muted: false,
-                devices: Vec::new(),
-            });
-            Ok(crate::Created::ReturnTrack(id))
-        }
+        Command::AddReturnTrack { name } => add_return(project, name, 1.0),
+        Command::AddReturnTrackWithGain { name, gain } => add_return(project, name, gain),
         Command::RemoveReturnTrack(id) => {
             let index = project
                 .returns
@@ -206,6 +193,23 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
         }
         _ => Err(Invalid("command is not a return-track edit")),
     }
+}
+
+fn add_return(project: &mut Project, name: String, gain: f32) -> Result<crate::Created, Invalid> {
+    validate_gain(gain)?;
+    crate::edit::name_valid(&name)?;
+    if project.returns.len() >= MAX_RETURN_TRACKS {
+        return Err(Invalid("return track limit reached"));
+    }
+    let id = ReturnId(project.allocate_id()?);
+    project.returns.push(ReturnTrack {
+        id,
+        name,
+        gain,
+        muted: false,
+        devices: Vec::new(),
+    });
+    Ok(crate::Created::ReturnTrack(id))
 }
 
 fn validate_gain(gain: f32) -> Result<(), Invalid> {
