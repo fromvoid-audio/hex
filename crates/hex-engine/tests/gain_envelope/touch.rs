@@ -44,6 +44,208 @@ fn quarter(numerator: u64, denominator: u64) -> BeatTime {
     BeatTime::from_raw(BeatTime::ONE.raw() * numerator / denominator)
 }
 
+fn ramp(from: f32, target: f32, elapsed: usize) -> f32 {
+    if elapsed >= 240 {
+        return target;
+    }
+    (f64::from(from) + (f64::from(target) - f64::from(from)) * elapsed as f64 / 240.0) as f32
+}
+
+#[test]
+fn recorded_touch_ramps_rapid_changes_and_release_consistently_after_seek() {
+    let mut f = fixture(1024);
+    let at = |frame| f.editor.project().tempo_map().frame_to_beat(frame).unwrap();
+    let start = at(64);
+    let changed = at(128);
+    let end = at(512);
+    splice(
+        &mut f,
+        0,
+        span(start, end, 1, &[(start, 0.8), (changed, 0.2)]),
+    );
+    let value = |frame: usize| {
+        if frame < 64 {
+            0.0
+        } else if frame < 128 {
+            0.8 * (frame - 63) as f32 / 240.0
+        } else if frame < 512 {
+            let from = 0.8 * 64.0 / 240.0;
+            from + (0.2 - from) * (frame - 127).min(240) as f32 / 240.0
+        } else {
+            0.2 * (1.0 - (frame - 511).min(240) as f32 / 240.0)
+        }
+    };
+    let expected: Vec<_> = (0..1024)
+        .map(|frame| [0.25 * value(frame), -0.5 * value(frame)])
+        .collect();
+    let revision = revision(&f);
+    let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = vec![[0.0; 2]; 1024];
+    for block in actual.chunks_mut(37) {
+        runtime.render(block).unwrap();
+    }
+    for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+        for channel in 0..2 {
+            assert!(
+                (actual[channel] - expected[channel]).abs() < 1e-6,
+                "frame {index}: {actual:?} != {expected:?}"
+            );
+        }
+    }
+    let mut seek = SessionPlayback::new(revision).unwrap();
+    seek.apply(SessionPlaybackCommand::Seek(200)).unwrap();
+    seek.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut after_seek = [[0.0; 2]; 64];
+    seek.render(&mut after_seek).unwrap();
+    assert_eq!(&after_seek, &actual[200..264]);
+    let preview = GainAutomationPreview::prepare(f.editor.project()).unwrap();
+    for frame in [0, 64, 127, 128, 367, 511, 512, 751, 900] {
+        assert!((preview.value_at(f.track, frame as u64).unwrap() - value(frame)).abs() < 1e-6);
+    }
+    let mut segments = Vec::new();
+    assert!(preview.visit_segments(f.track, 0, 1024, |segment| segments.push(segment)));
+    for segment in segments {
+        for frame in segment.start_frame..segment.end_frame {
+            let fraction = (frame - segment.start_frame) as f64
+                / (segment.end_frame - segment.start_frame) as f64;
+            let displayed = (f64::from(segment.start_gain)
+                + f64::from(segment.end_gain - segment.start_gain) * fraction)
+                as f32;
+            assert!(
+                (displayed - value(frame as usize)).abs() < 1e-6,
+                "preview frame {frame}"
+            );
+        }
+    }
+}
+
+#[test]
+fn interrupted_touch_return_lands_on_read_without_anticipating_the_next_span() {
+    let mut f = fixture(1024);
+    let at = |frame| f.editor.project().tempo_map().frame_to_beat(frame).unwrap();
+    let (b64, b80, b96, b128, b200, b256, b320, b400) = (
+        at(64),
+        at(80),
+        at(96),
+        at(128),
+        at(200),
+        at(256),
+        at(320),
+        at(400),
+    );
+    lane(
+        &mut f,
+        vec![
+            point(BeatTime::ZERO, 0.1, GainInterpolation::Linear),
+            point(b256, 0.4, GainInterpolation::Step),
+            point(b320, 0.9, GainInterpolation::Step),
+        ],
+    );
+    splice(
+        &mut f,
+        0,
+        span(b64, b128, 1, &[(b64, 0.8), (b80, 0.8), (b96, 0.8)]),
+    );
+    splice(&mut f, 1, span(b200, b400, 2, &[(b200, 0.4)]));
+    let preview = GainAutomationPreview::prepare(f.editor.project()).unwrap();
+    let base_before = (0.1_f64 + (0.4_f64 - 0.1_f64) * 63.0 / 256.0) as f32;
+    let first_end = ramp(base_before, 0.8, 64);
+    let before_second = ramp(first_end, 0.9, 72);
+    let second_end = ramp(before_second, 0.4, 200);
+    let expected = |frame: u64| match frame {
+        64..=127 => ramp(base_before, 0.8, (frame - 63) as usize),
+        128..=199 => ramp(first_end, 0.9, (frame - 127) as usize),
+        200..=399 => ramp(before_second, 0.4, (frame - 199) as usize),
+        400..=639 => ramp(second_end, 0.9, (frame - 399) as usize),
+        _ => 0.9,
+    };
+    for frame in [
+        64, 80, 96, 127, 128, 199, 200, 256, 320, 399, 400, 638, 639, 640,
+    ] {
+        let actual = preview.value_at(f.track, frame).unwrap();
+        assert!(
+            (actual - expected(frame)).abs() < 1e-6,
+            "frame {frame}: {actual} != {}",
+            expected(frame)
+        );
+    }
+    let mut segments = Vec::new();
+    assert!(preview.visit_segments(f.track, 64, 641, |segment| segments.push(segment)));
+    for segment in segments {
+        for frame in segment.start_frame..segment.end_frame {
+            let fraction = (frame - segment.start_frame) as f64
+                / (segment.end_frame - segment.start_frame) as f64;
+            let displayed = (f64::from(segment.start_gain)
+                + f64::from(segment.end_gain - segment.start_gain) * fraction)
+                as f32;
+            assert!(
+                (displayed - expected(frame)).abs() < 1e-6,
+                "preview frame {frame}"
+            );
+        }
+    }
+}
+
+#[test]
+fn spliced_touch_fragment_starts_from_the_preceding_audible_gain() {
+    let mut f = fixture(1024);
+    let at = |frame| f.editor.project().tempo_map().frame_to_beat(frame).unwrap();
+    let (start, cut, resume, end) = (at(64), at(128), at(192), at(512));
+    splice(&mut f, 0, span(start, end, 1, &[(start, 0.8)]));
+    splice(&mut f, 1, span(cut, resume, 2, &[(cut, 0.4)]));
+    let preview = GainAutomationPreview::prepare(f.editor.project()).unwrap();
+    let first_end = ramp(0.0, 0.8, 64);
+    let second_end = ramp(first_end, 0.4, 64);
+    for (frame, expected) in [
+        (127, first_end),
+        (128, ramp(first_end, 0.4, 1)),
+        (191, second_end),
+        (192, ramp(second_end, 0.8, 1)),
+    ] {
+        assert!(
+            (preview.value_at(f.track, frame).unwrap() - expected).abs() < 1e-6,
+            "frame {frame}"
+        );
+    }
+}
+
+#[test]
+fn touch_ramp_duration_scales_with_sample_rate() {
+    for rate in [44_100, 48_000, 96_000] {
+        let mut editor = Editor::new(Project::new(rate).unwrap(), 8).unwrap();
+        let Created::Imported { track, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: "source".into(),
+                path: "memory.wav".into(),
+                source_sample_rate: rate,
+                source_frames: 2048,
+                playback_frames: 2048,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        editor.execute(Command::Gain { track, gain: 0.0 }).unwrap();
+        let end = editor.project().tempo_map().frame_to_beat(1024).unwrap();
+        let mut recorded = span(BeatTime::ZERO, end, 1, &[(BeatTime::ZERO, 0.8)]);
+        recorded.context.sample_rate = rate;
+        editor
+            .execute(Command::SpliceGainTouch {
+                track,
+                expected_epoch: 0,
+                span: recorded,
+            })
+            .unwrap();
+        let preview = GainAutomationPreview::prepare(editor.project()).unwrap();
+        let duration = u64::from(rate.div_ceil(200));
+        assert!((preview.value_at(track, 0).unwrap() - 0.8 / duration as f32).abs() < 1e-6);
+        assert_eq!(preview.value_at(track, duration - 1), Some(0.8));
+        assert_eq!(preview.value_at(track, 1024 + duration - 1), Some(0.0));
+    }
+}
+
 #[test]
 fn touch_read_preserves_tempo_split_base_ramps_and_adjacent_half_open_spans() {
     let mut f = fixture(72002);
@@ -82,21 +284,28 @@ fn touch_read_preserves_tempo_split_base_ramps_and_adjacent_half_open_spans() {
         base
     );
     let preview = GainAutomationPreview::prepare(f.editor.project()).unwrap();
-    let expected_gain = |frame: usize| {
-        if (12000..18000).contains(&frame) {
-            0.9
-        } else if (18000..24000).contains(&frame) {
-            0.4
-        } else if (24000..48000).contains(&frame) {
-            0.7
-        } else if (48000..60000).contains(&frame) {
-            1.8
-        } else if frame <= 24000 {
+    let base_gain = |frame: usize| {
+        if frame <= 24000 {
             (frame as f64 / 24000.0) as f32
         } else if frame < 72000 {
             (1.0 + (frame - 24000) as f64 / 48000.0) as f32
         } else {
             2.0
+        }
+    };
+    let expected_gain = |frame: usize| {
+        if (12000..18000).contains(&frame) {
+            ramp(base_gain(11999), 0.9, frame - 11999)
+        } else if (18000..24000).contains(&frame) {
+            ramp(0.9, 0.4, frame - 17999)
+        } else if (24000..48000).contains(&frame) {
+            ramp(0.4, 0.7, frame - 23999)
+        } else if (48000..60000).contains(&frame) {
+            ramp(0.7, 1.8, frame - 47999)
+        } else if (60000..60240).contains(&frame) {
+            ramp(1.8, base_gain(60239), frame - 59999)
+        } else {
+            base_gain(frame)
         }
     };
     let expected: Vec<_> = (0..f.frames)
@@ -198,7 +407,11 @@ fn touch_steps_share_frames_later_beat_wins_end_returns_static_and_collapsed_spa
     );
     let expected: Vec<_> = (0..16)
         .map(|frame| {
-            let gain = if frame < 4 { 1.2 } else { 0.6 };
+            let gain = if frame < 4 {
+                ramp(0.6, 1.2, frame + 1)
+            } else {
+                ramp(ramp(0.6, 1.2, 4), 0.6, frame - 3)
+            };
             [0.25 * gain, -0.5 * gain]
         })
         .collect();
@@ -223,9 +436,15 @@ fn touch_steps_share_frames_later_beat_wins_end_returns_static_and_collapsed_spa
     }
     assert_eq!(actual, expected);
     let preview = GainAutomationPreview::prepare(f.editor.project()).unwrap();
-    assert_eq!(preview.value_at(f.track, 3), Some(1.2));
-    assert_eq!(preview.value_at(f.track, 4), Some(0.6));
-    assert_eq!(preview.value_at(f.track, 8), Some(0.6));
+    assert_eq!(preview.value_at(f.track, 3), Some(ramp(0.6, 1.2, 4)));
+    assert_eq!(
+        preview.value_at(f.track, 4),
+        Some(ramp(ramp(0.6, 1.2, 4), 0.6, 1))
+    );
+    assert_eq!(
+        preview.value_at(f.track, 8),
+        Some(ramp(ramp(0.6, 1.2, 4), 0.6, 5))
+    );
 }
 
 #[test]
@@ -271,7 +490,13 @@ fn touch_gain_drives_track_and_post_fader_send_capture_once() {
         .render_with_capture(&mut main, &mut capture)
         .unwrap();
     for (frame, main_frame) in main.iter().enumerate() {
-        let gain = if (3..17).contains(&frame) { 0.8 } else { 0.0 };
+        let gain = if frame < 3 {
+            0.0
+        } else if frame < 17 {
+            ramp(0.0, 0.8, frame - 2)
+        } else {
+            ramp(ramp(0.0, 0.8, 14), 0.0, frame - 16)
+        };
         let expected = [0.25 * gain, -0.5 * gain];
         assert_eq!(capture.output(0).unwrap()[frame], expected);
         assert_eq!(capture.output(1).unwrap()[frame], expected.map(|v| v * 0.5));
@@ -309,7 +534,7 @@ fn detached_effect_tail_freezes_touch_gain_and_current_splice_preserves_history(
     old.render(&mut [[0.0; 2]; 4]).unwrap();
     let mut snapshot = f.editor.project().snapshot();
     snapshot.tracks[0].gain_touch_spans.clear();
-    snapshot.tracks[0].gain = 0.75;
+    snapshot.tracks[0].gain = ramp(0.0, 0.75, 5);
     let project = Project::from_snapshot(snapshot).unwrap();
     let mut samples = vec![[0.25, -0.5]; 64];
     samples[4..].fill([0.0; 2]);
@@ -390,7 +615,13 @@ fn session_source_launch_keeps_arrangement_touch_timing_instead_of_restarting_la
         .unwrap();
     let mut actual = [[0.0; 2]; 4];
     runtime.render(&mut actual).unwrap();
-    assert_eq!(actual, [[0.2, -0.4], [0.2, -0.4], [0.0; 2], [0.0; 2]]);
+    let gains = [
+        ramp(0.0, 0.8, 3),
+        ramp(0.0, 0.8, 4),
+        ramp(ramp(0.0, 0.8, 4), 0.0, 1),
+        ramp(ramp(0.0, 0.8, 4), 0.0, 2),
+    ];
+    assert_eq!(actual, gains.map(|gain| [0.25 * gain, -0.5 * gain]));
 }
 
 #[test]
@@ -515,9 +746,21 @@ fn clearing_live_override_resumes_saved_base_and_touch_law() {
     assert_eq!(output, [[0.25, -0.5]; 4]);
     runtime.clear_gain_recording_override();
     runtime.render(&mut output).unwrap();
-    assert_eq!(output, [[0.1875, -0.375]; 4]);
+    assert_eq!(
+        output,
+        [5, 6, 7, 8].map(|elapsed| {
+            let gain = ramp(0.5, 0.75, elapsed);
+            [0.25 * gain, -0.5 * gain]
+        })
+    );
     runtime.render(&mut output).unwrap();
-    assert_eq!(output, [[0.125, -0.25]; 4]);
+    assert_eq!(
+        output,
+        [1, 2, 3, 4].map(|elapsed| {
+            let gain = ramp(ramp(0.5, 0.75, 8), 0.5, elapsed);
+            [0.25 * gain, -0.5 * gain]
+        })
+    );
 }
 
 #[test]
@@ -675,6 +918,23 @@ fn section_splices_preserve_linear_left_limits_and_relocated_touch_provenance() 
         .unwrap();
     let new = f.editor.project();
     let preview = GainAutomationPreview::prepare(new).unwrap();
+    let near_touch_transition = |project: &Project, frame: u64| {
+        project
+            .track(f.track)
+            .unwrap()
+            .gain_lane()
+            .spans()
+            .iter()
+            .any(|span| {
+                std::iter::once(span.start)
+                    .chain(span.steps.iter().map(|step| step.beat))
+                    .chain(std::iter::once(span.end))
+                    .any(|beat| {
+                        let boundary = project.tempo_map().beat_to_frame(beat).unwrap();
+                        frame >= boundary && frame < boundary.saturating_add(240)
+                    })
+            })
+    };
     for numerator in 0..48 {
         let at = quarter(numerator, 4);
         let mapped = permutation.map_beat(at).unwrap();
@@ -684,6 +944,11 @@ fn section_splices_preserve_linear_left_limits_and_relocated_touch_provenance() 
         let after = preview
             .value_at(f.track, new.tempo_map().beat_to_frame(mapped).unwrap())
             .unwrap();
+        if near_touch_transition(&old, old.tempo_map().beat_to_frame(at).unwrap())
+            || near_touch_transition(new, new.tempo_map().beat_to_frame(mapped).unwrap())
+        {
+            continue;
+        }
         assert!(
             (after - before).abs() < 1e-6,
             "beat {numerator}/4: {before} vs {after}"
@@ -704,6 +969,9 @@ fn section_splices_preserve_linear_left_limits_and_relocated_touch_provenance() 
             } else {
                 frame
             };
+            if near_touch_transition(&old, frame) || near_touch_transition(new, destination) {
+                continue;
+            }
             let expected = old_preview.value_at(f.track, frame).unwrap();
             let actual = compiled.arrangement().tracks()[0]
                 .prepared_gain_at(destination)

@@ -81,6 +81,40 @@ fn callback_scope(action: impl FnOnce()) {
 }
 
 #[test]
+fn touch_recording_rapid_retarget_and_release_are_click_free() {
+    let (mut control, mut callback, target) = fixture();
+    let mut captured = Vec::new();
+    control.gain_recording.begin(target, 0.8).unwrap();
+    for operation in 0..3 {
+        if operation == 1 {
+            control.gain_recording.change(0.2).unwrap();
+        } else if operation == 2 {
+            control.gain_recording.release().unwrap();
+        }
+        let mut output = [[0.0; 2]; 16];
+        callback_scope(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+            callback.finish_gain_recording_quantum(true);
+        });
+        captured.extend(output);
+    }
+    assert!(captured.iter().flatten().any(|sample| sample.abs() > 1e-5));
+    let mut previous = [0.0_f32; 2];
+    for (index, frame) in captured.iter().enumerate() {
+        for channel in 0..2 {
+            assert!(
+                (frame[channel] - previous[channel]).abs() < 0.005,
+                "frame {index}, channel {channel}: {} -> {}",
+                previous[channel],
+                frame[channel]
+            );
+        }
+        previous = *frame;
+    }
+}
+
+#[test]
 fn delivered_touch_quantums_record_absolute_gain_and_release_returns_to_saved_read() {
     let (mut control, mut callback, target) = fixture();
     control.gain_recording.begin(target, 0.8).unwrap();
