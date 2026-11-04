@@ -1059,6 +1059,11 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
             .id(),
         device
     );
+    // The active preview approaches its target over 5 ms. Compare settled
+    // blocks so this test isolates refusal rather than ramp progress.
+    for _ in 0..4 {
+        h.render();
+    }
     let preview_pcm = h.render();
     assert!(preview_pcm.iter().flatten().any(|sample| *sample != 0.0));
     h.refuse.store(true, std::sync::atomic::Ordering::Release);
@@ -1113,6 +1118,9 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
     assert!(cancelled.device_preview.is_none());
     assert_eq!(cancelled.state.project, loaded.state.project);
     assert_eq!(cancelled.state.revision, loaded.state.revision);
+    for _ in 0..4 {
+        h.render();
+    }
     assert_eq!(
         h.render(),
         preview_pcm.map(|frame| frame.map(|sample| sample * 2.0))
@@ -1307,6 +1315,10 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     assert_eq!(metadata.device_preview, Some(identity));
     assert_eq!(metadata.computer_keyboard_request, Some(9));
     assert_eq!(keyboard.device_preview.as_ref().unwrap().identity, identity);
+    // The preview was published while stopped; monitoring advances its ramp.
+    for _ in 0..4 {
+        h.render();
+    }
     assert_eq!(
         h.render(),
         [[0.125; 2]; 64],
