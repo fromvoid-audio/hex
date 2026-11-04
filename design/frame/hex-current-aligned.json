@@ -2,7 +2,7 @@
   "version": 1,
   "id": "hex-yield-workstation",
   "name": "hex / orbital",
-  "revisionId": "hex-current-aligned-study-r65",
+  "revisionId": "hex-current-aligned-study-r67",
   "width": 1900,
   "height": 1120,
   "background": "#111111",
@@ -16002,7 +16002,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -16011,10 +16011,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     },
@@ -31999,7 +32005,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -32008,10 +32014,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     },
@@ -38576,7 +38588,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -38585,10 +38597,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     },
@@ -45153,7 +45171,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -45162,10 +45180,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     },
@@ -61150,7 +61174,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -61159,10 +61183,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     },
@@ -67727,7 +67757,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -67736,10 +67766,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     },
@@ -74326,7 +74362,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -74335,10 +74371,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     },
@@ -80925,7 +80967,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -80934,10 +80976,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     },
@@ -96922,7 +96970,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -96931,10 +96979,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     },
@@ -112919,7 +112973,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -112928,10 +112982,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     },
@@ -128910,7 +128970,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -128919,10 +128979,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     },
@@ -144901,7 +144967,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -144910,10 +144976,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     },
@@ -160898,7 +160970,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -160907,10 +160979,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     },
@@ -176682,7 +176760,7 @@
       "device-meter-outline-left": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-left": {
@@ -176691,10 +176769,16 @@
       "device-meter-outline-right": {
         "visible": true,
         "style": {
-          "stroke": "#f0f3f4"
+          "stroke": "#555b5e"
         }
       },
       "device-meter-peak-right": {
+        "visible": true
+      },
+      "device-meter-clip-level-left": {
+        "visible": true
+      },
+      "device-meter-clip-level-right": {
         "visible": true
       }
     }
@@ -363441,7 +363525,7 @@
         "color": "#c7c7c7",
         "lineWidth": 0.4,
         "fill": "none",
-        "stroke": "#f0f3f4"
+        "stroke": "#555b5e"
       }
     },
     {
@@ -363481,7 +363565,7 @@
         "color": "#c7c7c7",
         "lineWidth": 0.4,
         "fill": "none",
-        "stroke": "#f0f3f4"
+        "stroke": "#555b5e"
       }
     },
     {
@@ -363502,6 +363586,44 @@
         "lineWidth": 1,
         "fill": "#d5e7ec",
         "stroke": "none"
+      }
+    },
+    {
+      "id": "device-meter-clip-level-left",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 510,
+        "y": 832.5,
+        "width": 2,
+        "height": 0.7
+      },
+      "style": {
+        "fill": "#d8dfe1",
+        "stroke": "none",
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7"
+      }
+    },
+    {
+      "id": "device-meter-clip-level-right",
+      "type": "container",
+      "parentId": "aligned-current-study",
+      "bounds": {
+        "x": 514,
+        "y": 832.5,
+        "width": 2,
+        "height": 0.7
+      },
+      "style": {
+        "fill": "#d8dfe1",
+        "stroke": "none",
+        "fontFamily": "Ioskeley Mono",
+        "fontSize": 9,
+        "padding": 0,
+        "color": "#c7c7c7"
       }
     }
   ],
