@@ -441,9 +441,11 @@ pub trait WorkerAudioSink: Send {
         ) -> Result<(), String>,
     ) {
     }
-    /// Negotiate the initial device rate on the lifecycle lane. An error leaves
-    /// editing available at the explicit offline rate of 48000 Hz. Observe the
-    /// shutdown flag while awaiting that lane; never wait for a UI response.
+    /// Start audio without waiting for device opening and return the initial
+    /// canonical project rate. Polling owns delayed completion and errors; an
+    /// opened output must honor this rate without retiming intervening edits.
+    /// An immediate failure leaves editing available at 48000 Hz. Observe
+    /// shutdown before starting; never await a device or UI response here.
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String>;
     /// Called before the corresponding canonical event can block on UI delivery.
     /// On generation replacement relinquish the previous publication/output

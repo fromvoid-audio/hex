@@ -320,6 +320,11 @@ enum PendingEditorAudioResult {
         restart_request: Option<u64>,
         error: hex_audio::OutputOpenError,
     },
+    /// The worker kept the held output for a replacement not yet installed.
+    Rebound {
+        project_generation: u64,
+        output_identity: u64,
+    },
 }
 
 impl PendingEditorAudioResult {
@@ -329,6 +334,9 @@ impl PendingEditorAudioResult {
                 project_generation, ..
             }
             | Self::Unavailable {
+                project_generation, ..
+            }
+            | Self::Rebound {
                 project_generation, ..
             } => *project_generation,
         }
