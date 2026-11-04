@@ -202,6 +202,19 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
         );
     }
     if mode == super::EditorMode::Arrangement {
+        for id in &ids {
+            let rail = Box::leak(
+                format!("track-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
+            );
+            let header =
+                Box::leak(format!("arrangement-track-header-{}", id.value()).into_boxed_str());
+            let rail = visual
+                .debug_bounds(rail)
+                .expect("member has its group rail");
+            let header = visual.debug_bounds(header).unwrap();
+            assert_eq!(f32::from(rail.size.width), 4.0);
+            assert!(f32::from(rail.size.height) >= f32::from(header.size.height) - 2.0);
+        }
         let fold = Box::leak(format!("group-fold-{}", group.value()).into_boxed_str());
         let click_fold = |visual: &mut VisualTestContext| {
             let point = visual.debug_bounds(fold).unwrap().center();
@@ -226,6 +239,10 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
             let selector =
                 Box::leak(format!("arrangement-track-header-{}", id.value()).into_boxed_str());
             assert!(visual.debug_bounds(selector).is_none());
+            let rail = Box::leak(
+                format!("track-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
+            );
+            assert!(visual.debug_bounds(rail).is_none());
         }
         click_fold(&mut visual);
         editor.read_with(&visual, |view, _| {
@@ -281,6 +298,12 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
     for id in &ids {
         let selector = Box::leak(format!("track-hierarchy-indent-{}", id.value()).into_boxed_str());
         assert!(visual.debug_bounds(selector).is_none());
+        if mode == super::EditorMode::Arrangement {
+            let rail = Box::leak(
+                format!("track-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
+            );
+            assert!(visual.debug_bounds(rail).is_none());
+        }
     }
     visual.simulate_keystrokes("cmd-z");
     receive(&mut visual, &editor);

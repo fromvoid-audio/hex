@@ -1820,6 +1820,24 @@ impl EditorView {
         let click_focus = header_focus.clone();
         let header_height = self.track_body_height(track_id);
         let expanded_header = header_height > TRACK_ROW_HEIGHT;
+        let group_rails = self
+            .track_hierarchy_indent
+            .ancestors(track_id)
+            .iter()
+            .enumerate()
+            .map(|(depth, &(ancestor, color))| {
+                div()
+                    .absolute()
+                    .left(px(depth as f32 * super::track_hierarchy_indent::RAIL_WIDTH))
+                    .top(px(1.0))
+                    .bottom_0()
+                    .w(px(super::track_hierarchy_indent::RAIL_WIDTH))
+                    .debug_selector(move || {
+                        format!("track-group-rail-{}-{}", track_id.value(), ancestor.value())
+                    })
+                    .bg(rgb(theme::element_colors(color).accent))
+            })
+            .collect::<Vec<_>>();
         let header = super::track_header::surface(
             ("arrangement-track-header", track_id.value()),
             self.track_header_width(),
@@ -1856,10 +1874,11 @@ impl EditorView {
         )
         .children(self.track_resize_handles(track_id, cx))
         .relative()
+        .children(group_rails)
         .child(
             div()
                 .absolute()
-                .left_0()
+                .left(px(hierarchy_indent))
                 .top(px(1.0))
                 .bottom_0()
                 .w(px(4.0))
