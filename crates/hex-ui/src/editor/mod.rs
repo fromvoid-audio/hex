@@ -1036,6 +1036,8 @@ pub(super) struct EditorView {
     /// The selected clip whose in-clip cursor a loop enable retired; the loop
     /// start then keeps outranking that clip's play start until a new click.
     loop_start_over_clip: Option<ClipId>,
+    /// Successful selection-loop start, fenced by the user's selection intent.
+    selection_loop_start: Option<(u64, hex_project::LoopRegion)>,
     detail_context: Option<detail_context::DetailContext>,
     clip_paint_gesture: Option<clip_paint::ClipPaintGesture>,
     time_selection: Option<time_selection::TimeSelection>,
@@ -1757,6 +1759,7 @@ impl EditorView {
             edit_cursor: None,
             edit_cursor_in_selected_clip: None,
             loop_start_over_clip: None,
+            selection_loop_start: None,
             detail_context: None,
             clip_paint_gesture: None,
             time_selection: None,
@@ -1874,6 +1877,16 @@ impl EditorView {
     }
 
     fn playback_start_frame(&self) -> u64 {
+        if let Some((epoch, region)) = self.selection_loop_start
+            && self.selection_intent_epoch == Some(epoch)
+            && self
+                .state
+                .as_ref()
+                .and_then(|state| state.project.loop_region())
+                == Some(region)
+        {
+            return region.start();
+        }
         // The user's placed position wins, even outside an enabled loop; the
         // acknowledged canonical loop only supplies a start when none is placed.
         // Enabling the loop retires an earlier point cursor (Pulse #3838).
