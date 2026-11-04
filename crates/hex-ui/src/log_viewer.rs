@@ -5,7 +5,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window,
     WindowBounds, WindowOptions, div, prelude::*, px, rgb, size, uniform_list,
 };
-use hex_diagnostics::reader::{LogFilter, LogSnapshot, read_session_page};
+use hex_diagnostics::reader::{LogFilter, LogLine, LogSnapshot, read_session_page};
 use hex_widgets::{TextInput, TextInputChanged, TextInputConfig, TextInputKind};
 use std::{
     path::{Path, PathBuf},
@@ -432,6 +432,23 @@ fn list_sessions(active: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// Recorded classification only: message words never imply a severity. The
+/// reader assigns legacy events its documented info default. Untyped lines
+/// remain context; a writer loss record has its own explicit warning label.
+fn level_badge(line: &LogLine) -> (&'static str, hex_project::ElementColor) {
+    use hex_project::ElementColor;
+    match line.event.as_ref().map(|event| event.level.as_str()) {
+        Some("error") => ("error", ElementColor::Red),
+        Some("warn") => ("warn", ElementColor::Amber),
+        Some("info") => ("info", ElementColor::Blue),
+        Some("debug") => ("debug", ElementColor::Gray),
+        Some("trace") => ("trace", ElementColor::Gray),
+        Some(_) => ("other", ElementColor::Gray),
+        None if line.text.starts_with("diagnostics_loss ") => ("loss", ElementColor::Amber),
+        None => ("context", ElementColor::Gray),
+    }
+}
+
 impl Render for Viewer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.snapshot.clone();
@@ -458,6 +475,28 @@ impl Render for Viewer {
                         let selected = selection
                             .as_ref()
                             .is_some_and(|range| range.contains(&index));
+                        let background = theme::color(if selected {
+                            theme::PaletteRole::Hover
+                        } else {
+                            theme::PaletteRole::Background
+                        });
+                        let foreground = theme::readable_text(
+                            background,
+                            theme::color(theme::PaletteRole::Text),
+                        );
+                        let secondary = theme::readable_text(
+                            background,
+                            theme::color(theme::PaletteRole::Muted),
+                        );
+                        let (level, color) = level_badge(line);
+                        let badge = theme::element_colors(color);
+                        let category: String = line
+                            .event
+                            .as_ref()
+                            .map_or("—", |event| event.category.as_str())
+                            .chars()
+                            .take(24)
+                            .collect();
                         Some(
                             div()
                                 .id(("log-line", index))
@@ -469,17 +508,39 @@ impl Render for Viewer {
                                 .gap(px(8.0))
                                 .px(px(8.0))
                                 .overflow_hidden()
-                                .bg(rgb(theme::color(if selected {
-                                    theme::PaletteRole::Hover
-                                } else {
-                                    theme::PaletteRole::Background
-                                })))
+                                .bg(rgb(background))
+                                .text_color(rgb(foreground))
                                 .child(
                                     div()
                                         .w(px(92.0))
                                         .flex_shrink_0()
-                                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                                        .text_color(rgb(secondary))
                                         .child(theme::text(time)),
+                                )
+                                .child(
+                                    div()
+                                        .debug_selector(move || format!("log-level-{index}"))
+                                        .w(px(60.0))
+                                        .h(px(18.0))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded(px(2.0))
+                                        .bg(rgb(badge.accent))
+                                        .text_color(rgb(badge.accent_text))
+                                        .child(theme::text(level)),
+                                )
+                                .child(
+                                    div()
+                                        .debug_selector(move || format!("log-category-{index}"))
+                                        .w(px(80.0))
+                                        .flex_shrink_0()
+                                        .truncate()
+                                        .text_color(rgb(secondary))
+                                        .child(theme::text(hex_session::service::text::verbatim(
+                                            category,
+                                        ))),
                                 )
                                 .child(
                                     div()
@@ -895,6 +956,64 @@ mod tests {
             assert_eq!(view.page, 0);
             assert!(view.has_older);
         });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn severity_badges_keep_rows_readable_and_copy_original_records(cx: &mut gpui::TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("hex-viewer-levels-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session-400-1.log");
+        let mut content = "session_started log_schema=3 segment=0 build=fixture\n".to_owned();
+        for (index, level) in ["error", "warn", "info", "debug", "trace", "future"]
+            .iter()
+            .enumerate()
+        {
+            let sequence = index + 1;
+            content.push_str(&format!("event level={level} category=audio unix_nanos={sequence} elapsed_nanos={sequence} sequence={sequence} truncated=false message=\"original {level} Message\"\n"));
+        }
+        content.push_str("older untyped context\ndiagnostics_loss queue_full=1\n");
+        std::fs::write(&path, &content).unwrap();
+        let handle = cx.add_window(|_, cx| Viewer::new(path.clone(), cx));
+        cx.run_until_parked();
+        let viewer = handle.root(cx).unwrap();
+        let visual = &mut gpui::VisualTestContext::from_window(*handle, cx);
+        for width in [850.0, 1200.0] {
+            visual.simulate_resize(gpui::size(px(width), px(600.0)));
+            visual.run_until_parked();
+            for index in 0..9 {
+                let row = visual
+                    .debug_bounds(Box::leak(format!("log-row-{index}").into_boxed_str()))
+                    .unwrap();
+                let badge = visual
+                    .debug_bounds(Box::leak(format!("log-level-{index}").into_boxed_str()))
+                    .expect("every record has an explicit level or context label");
+                let category = visual
+                    .debug_bounds(Box::leak(format!("log-category-{index}").into_boxed_str()))
+                    .unwrap();
+                let message = visual
+                    .debug_bounds(Box::leak(format!("log-message-{index}").into_boxed_str()))
+                    .unwrap();
+                assert!(badge.left() >= row.left() && badge.bottom() <= row.bottom());
+                assert!(badge.right() <= category.left() && category.right() <= message.left());
+                assert!(message.right() <= row.right());
+                visual.simulate_click(row.center(), gpui::Modifiers::default());
+                visual.run_until_parked();
+                viewer.update(visual, |view, cx| view.copy_selection(cx));
+                visual.run_until_parked();
+                viewer.read_with(visual, |view, cx| {
+                    assert_eq!(view.selection, Some(index));
+                    let original = &view.snapshot.as_ref().unwrap().lines[index].text;
+                    assert_eq!(original, content.lines().nth(index).unwrap());
+                    let copied = cx.read_from_clipboard().unwrap().text().unwrap();
+                    assert!(
+                        copied.ends_with(&format!("{original}\n")),
+                        "copy keeps original case and structured fields"
+                    );
+                });
+            }
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
