@@ -150,44 +150,6 @@
         "#9a6190",
         "#b95f79"
       ]
-    },
-    "galaxy-starlight": {
-      "label": "starlight",
-      "primary": "#d8c37d",
-      "secondary": [
-        "#d1dbe6",
-        "#8aa8ca",
-        "#aaaabe"
-      ],
-      "clips": [
-        "#aba99c",
-        "#c0b28a",
-        "#98a9b8",
-        "#b4bec8",
-        "#a79f8c",
-        "#8fa3ae",
-        "#c4bfa9",
-        "#929cab"
-      ]
-    },
-    "galaxy-cyan": {
-      "label": "cyan galaxy",
-      "primary": "#46c5dd",
-      "secondary": [
-        "#728fe1",
-        "#77d3d0",
-        "#a3b0dd"
-      ],
-      "clips": [
-        "#5c9cb4",
-        "#6593bb",
-        "#69a9b0",
-        "#7187b3",
-        "#6aa6bd",
-        "#7ab0ba",
-        "#7899ad",
-        "#6393a5"
-      ]
     }
   }
 }
