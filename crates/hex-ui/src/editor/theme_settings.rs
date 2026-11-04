@@ -1656,7 +1656,10 @@ mod tests {
                     ))
                     .unwrap();
                 match request {
-                    hex_session::service::Request::Import(_) => hex_project::AudioImportWarp::Off,
+                    hex_session::service::Request::Import(_)
+                    | hex_session::service::Request::ImportToNewTrackWithGain { .. } => {
+                        hex_project::AudioImportWarp::Off
+                    }
                     hex_session::service::Request::ImportAudioBatch { options, .. } => options.warp,
                     _ => panic!("arrangement import did not retain its policy"),
                 }
