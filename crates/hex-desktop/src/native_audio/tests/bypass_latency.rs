@@ -485,3 +485,68 @@ fn eq_edit_then_bypass_reaches_the_actual_callback_smoothly() {
     }
     assert!((h.render()[63][0] - 0.25).abs() < 1e-3);
 }
+
+#[test]
+fn publication_observation_tracks_worker_callback_admission_and_application() {
+    use hex_session::service::{ResidentPublicationReadiness, ResidentRuntimeLoop};
+    use std::sync::atomic::Ordering::Acquire;
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    let state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap();
+    h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state,
+    }));
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.submitted.is_none_or(|(revision, _)| revision <= applied) {
+        h.pump();
+        assert!(std::time::Instant::now() < end, "publication not submitted");
+        std::thread::yield_now();
+    }
+    let (revision, metadata) = h.submitted.unwrap();
+    let audio = h.audio.as_ref().unwrap();
+    let submission = ResidentRuntimeLoop {
+        output_identity: audio.control.output_identity().unwrap(),
+        audio_revision: revision,
+        source_context: Some(metadata.context),
+        section_loop: None,
+    };
+    let observe = |h: &ResidentHarness| {
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        super::super::resident::classify_publication(
+            submission.output_identity,
+            status.applied_revision.load(Acquire),
+            status.rejected_revision().map(|(revision, _)| revision),
+            status.publication_in_flight(),
+            Some(submission),
+        )
+    };
+    assert_eq!(
+        observe(&h),
+        ResidentPublicationReadiness::Pending {
+            submission,
+            applied_revision: applied,
+            publication_in_flight: true,
+        }
+    );
+    h.render();
+    assert_eq!(
+        observe(&h),
+        ResidentPublicationReadiness::Applied {
+            submission,
+            publication_in_flight: false,
+        }
+    );
+}

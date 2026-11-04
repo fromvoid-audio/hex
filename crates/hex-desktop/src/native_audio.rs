@@ -982,6 +982,11 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn resident_publication_readiness(
+        &mut self,
+    ) -> hex_session::service::ResidentPublicationReadiness {
+        NativeAudioSink::resident_publication_readiness(self)
+    }
     fn capture_plugin_states_for_save(
         &mut self,
         input: hex_session::service::PluginStateSaveInput<'_>,

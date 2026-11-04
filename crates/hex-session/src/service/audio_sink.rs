@@ -102,6 +102,35 @@ pub struct ResidentRuntimeLoop {
     pub source_context: Option<hex_engine::AudioSourceContext>,
     pub section_loop: Option<hex_project::LoopRegion>,
 }
+/// Read-only, output-bound observation of the one admitted resident graph.
+/// This is not a publication receipt, lease, or permission to mutate a graph.
+/// `publication_in_flight` is a snapshot of the publication reservation, not
+/// an admission guarantee: other owners and subsequent races can still refuse.
+/// Applied or refused revisions can be visible before that reservation clears.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResidentPublicationReadiness {
+    NoOutput,
+    Idle {
+        output_identity: u64,
+        applied_revision: u64,
+        publication_in_flight: bool,
+    },
+    Pending {
+        submission: ResidentRuntimeLoop,
+        applied_revision: u64,
+        publication_in_flight: bool,
+    },
+    Applied {
+        submission: ResidentRuntimeLoop,
+        publication_in_flight: bool,
+    },
+    Refused {
+        submission: ResidentRuntimeLoop,
+        applied_revision: u64,
+        publication_in_flight: bool,
+    },
+}
+
 /// One callback-observed source and transport witness under the arrangement gate.
 #[derive(Clone, Copy, Debug)]
 pub struct ArrangementEditPosition {
@@ -326,6 +355,11 @@ pub trait WorkerAudioSink: Send {
     /// Resident mode, while cross-mode admission still borrows actual resident/retired owners.
     fn resident_publication_enabled(&self) -> bool {
         false
+    }
+    /// Observe the exact resident publication without granting graph custody.
+    /// The default denotes an output that does not support resident graphs.
+    fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
+        ResidentPublicationReadiness::NoOutput
     }
     /// Actual output/source/revision-bound loop, never the saved loop marker.
     /// None means no active ordinary output; offline edits remain available.

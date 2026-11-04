@@ -60,7 +60,8 @@ pub use audio_sink::{
     NativeSamplerRetryFacts, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
     ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
+    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
+    ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
