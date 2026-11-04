@@ -1072,14 +1072,15 @@ pub(super) fn import_file(
     session: &mut Session,
     path: PathBuf,
     destination: AudioBatchDestination,
-    overwrite: bool,
+    options: crate::import_batch::AudioImportOptions,
     context: hex_engine::AudioSourceContext,
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
     current: &mut Option<Snapshot>,
     decode: &mut super::truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, SessionError> {
-    if !overwrite
+    options.validate()?;
+    if !options.overwrite
         && let AudioBatchDestination::Console(crate::import_batch::ConsoleDestination::Cell {
             track,
             scene,
@@ -1105,7 +1106,7 @@ pub(super) fn import_file(
                 destination,
                 &expected,
                 current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
-                overwrite,
+                options,
                 || Ok(()),
                 |input, admit| {
                     let snapshot =
@@ -1141,10 +1142,7 @@ pub(super) fn import_file(
         destination,
         &expected,
         current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
-        crate::import_batch::AudioImportOptions {
-            overwrite,
-            ..Default::default()
-        },
+        options,
         || Ok(()),
         |input, admit| {
             let snapshot =

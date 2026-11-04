@@ -19,6 +19,128 @@ fn snapshot(v: &VisualTestContext, e: &Entity<EditorView>) -> hex_project::Snaps
     e.read_with(v, |e, _| e.state.as_ref().unwrap().project.snapshot())
 }
 
+#[gpui::test]
+fn g_groups_focused_track_headers_with_undo_and_redo(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 2, false);
+    select(&mut visual, ids[0], false);
+    select(&mut visual, ids[1], true);
+    let before = snapshot(&visual, &editor);
+    visual.simulate_keystrokes("g");
+    editor.read_with(&visual, |view, _| {
+        assert!(matches!(
+            view.last_enqueued_edit,
+            Some(hex_project::Command::GroupTracks { .. })
+        ));
+    });
+    receive(&mut visual, &editor);
+    let after = snapshot(&visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        let group = project
+            .tracks()
+            .iter()
+            .find(|track| track.is_group())
+            .unwrap();
+        for id in &ids {
+            assert_eq!(project.track(*id).unwrap().parent_group(), Some(group.id()));
+        }
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Undo))
+    });
+    receive(&mut visual, &editor);
+    let mut restored = snapshot(&visual, &editor);
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Redo))
+    });
+    receive(&mut visual, &editor);
+    assert_eq!(snapshot(&visual, &editor), after);
+}
+
+#[gpui::test]
+fn g_groups_session_track_headers(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 2, false);
+    select(&mut visual, ids[0], false);
+    select(&mut visual, ids[1], true);
+    editor.update(&mut visual, |view, cx| {
+        view.mode = super::EditorMode::Session;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let selector = Box::leak(format!("session-track-{}", ids[1].value()).into_boxed_str());
+    let at = visual.debug_bounds(selector).unwrap().center();
+    visual.simulate_click(
+        at,
+        Modifiers {
+            platform: true,
+            ..Default::default()
+        },
+    );
+    visual.simulate_click(
+        at,
+        Modifiers {
+            platform: true,
+            ..Default::default()
+        },
+    );
+    visual.simulate_keystrokes("g");
+    editor.read_with(&visual, |view, _| {
+        assert!(matches!(
+            view.last_enqueued_edit,
+            Some(hex_project::Command::GroupTracks { .. })
+        ));
+    });
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.state.as_ref().unwrap().project.has_group_tracks());
+    });
+}
+
+#[gpui::test]
+fn g_does_not_group_a_single_track_or_track_name_edit(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 2, false);
+    select(&mut visual, ids[0], false);
+    let before = snapshot(&visual, &editor);
+    visual.simulate_keystrokes("g");
+    assert_eq!(snapshot(&visual, &editor), before);
+    select(&mut visual, ids[1], true);
+    visual.simulate_keystrokes("cmd-r g");
+    editor.read_with(&visual, |view, _| {
+        assert!(view.track_name.is_editing());
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+        assert!(!matches!(
+            view.last_enqueued_edit,
+            Some(hex_project::Command::GroupTracks { .. })
+        ));
+    });
+}
+
+#[gpui::test]
+fn g_refuses_tracks_with_different_parents_without_partial_group(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 3, false);
+    select(&mut visual, ids[0], false);
+    select(&mut visual, ids[1], true);
+    visual.simulate_keystrokes("g");
+    receive(&mut visual, &editor);
+    select(&mut visual, ids[0], false);
+    select(&mut visual, ids[2], true);
+    let before = snapshot(&visual, &editor);
+    visual.simulate_keystrokes("g");
+    editor.read_with(&visual, |view, _| {
+        assert!(view.worker_requests_pending > 0);
+    });
+    editor.update(&mut visual, |view, cx| {
+        let event = super::track_reorder_ui_test::next(&view.service);
+        assert!(event.error.is_some());
+        view.receive(event);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(snapshot(&visual, &editor), before);
+}
+
 fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
     let (mut visual, editor, ids) = live_tracks(cx, 2, false);
     select(&mut visual, ids[0], false);
@@ -80,6 +202,19 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
         );
     }
     if mode == super::EditorMode::Arrangement {
+        for id in &ids {
+            let rail = Box::leak(
+                format!("track-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
+            );
+            let header =
+                Box::leak(format!("arrangement-track-header-{}", id.value()).into_boxed_str());
+            let rail = visual
+                .debug_bounds(rail)
+                .expect("member has its group rail");
+            let header = visual.debug_bounds(header).unwrap();
+            assert_eq!(f32::from(rail.size.width), 4.0);
+            assert!(f32::from(rail.size.height) >= f32::from(header.size.height) - 2.0);
+        }
         let fold = Box::leak(format!("group-fold-{}", group.value()).into_boxed_str());
         let click_fold = |visual: &mut VisualTestContext| {
             let point = visual.debug_bounds(fold).unwrap().center();
@@ -104,6 +239,10 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
             let selector =
                 Box::leak(format!("arrangement-track-header-{}", id.value()).into_boxed_str());
             assert!(visual.debug_bounds(selector).is_none());
+            let rail = Box::leak(
+                format!("track-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
+            );
+            assert!(visual.debug_bounds(rail).is_none());
         }
         click_fold(&mut visual);
         editor.read_with(&visual, |view, _| {
@@ -159,6 +298,12 @@ fn group_track_header_menu(cx: &mut TestAppContext, mode: super::EditorMode) {
     for id in &ids {
         let selector = Box::leak(format!("track-hierarchy-indent-{}", id.value()).into_boxed_str());
         assert!(visual.debug_bounds(selector).is_none());
+        if mode == super::EditorMode::Arrangement {
+            let rail = Box::leak(
+                format!("track-group-rail-{}-{}", id.value(), group.value()).into_boxed_str(),
+            );
+            assert!(visual.debug_bounds(rail).is_none());
+        }
     }
     visual.simulate_keystrokes("cmd-z");
     receive(&mut visual, &editor);

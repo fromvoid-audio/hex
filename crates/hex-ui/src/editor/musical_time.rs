@@ -320,7 +320,7 @@ pub(super) fn ruler_ticks(
         start_beat,
         last_beat,
         target_count,
-        LandmarkDensity::Adaptive(&resolution),
+        LandmarkDensity::Ruler(&resolution),
     );
     let mut candidates = ruler_candidates.ticks;
     candidates.sort_by_key(|tick| tick.frame);
@@ -377,6 +377,7 @@ struct MeterSection {
     beat_length: u64,
     first_landmark: u64,
     landmark_count: u64,
+    regular_demand: u64,
 }
 
 struct RulerCandidates {
@@ -391,6 +392,7 @@ struct RulerCandidates {
 enum LandmarkDensity<'a> {
     Meter,
     Adaptive(&'a AdaptiveGridResolution<'a>),
+    Ruler(&'a AdaptiveGridResolution<'a>),
     #[cfg(test)]
     Fixed(u64),
 }
@@ -454,7 +456,7 @@ fn ruler_candidates(
                 let meter_beat_length =
                     (4_u64 * BeatTime::ONE.raw()) / u64::from(point.meter().denominator());
                 let beat_length = match target_grid {
-                    LandmarkDensity::Adaptive(resolution) => {
+                    LandmarkDensity::Adaptive(resolution) | LandmarkDensity::Ruler(resolution) => {
                         resolution.step(point.beat(), meter_beat_length)
                     }
                     #[cfg(test)]
@@ -472,6 +474,10 @@ fn ruler_candidates(
                             beat_length,
                             first_landmark,
                             landmark_count: last_landmark - first_landmark + 1,
+                            // Count conservatively across any viewport phase so
+                            // crossing a candidate edge does not change stride.
+                            regular_demand: ((effective_end - effective_start) / beat_length)
+                                .saturating_add(1),
                         });
                     }
                 }
@@ -511,9 +517,12 @@ fn ruler_candidates(
     // deterministic order as adaptive coarsening. Over-budget section sampling
     // below retains its existing evenly spaced section identities.
     let demand = |index: usize| {
-        sections[index]
-            .landmark_count
-            .min((target_count.min(MAX_GRID_LINES) + 1) as u64) as usize
+        let count = if matches!(target_grid, LandmarkDensity::Ruler(_)) {
+            sections[index].regular_demand
+        } else {
+            sections[index].landmark_count
+        };
+        count.min((target_count.min(MAX_GRID_LINES) + 1) as u64) as usize
     };
     let (level, mut remainder) = if section_count <= target_count {
         capped_fair_share(section_count, target_count, demand)
@@ -545,21 +554,59 @@ fn ruler_candidates(
                 target_count / sampled_sections
                     + usize::from(sampled_index < target_count % sampled_sections)
             };
-            let quota = (quota as u64).min(section.landmark_count);
+            let regular = matches!(target_grid, LandmarkDensity::Ruler(_));
+            let quota = if regular {
+                quota as u64
+            } else {
+                (quota as u64).min(section.landmark_count)
+            };
+            if quota == 0 {
+                continue;
+            }
+            // Only the ruler thins to an origin-anchored stride. Grid and snap
+            // consumers retain their existing visible-candidate sampling.
+            let stride = section
+                .regular_demand
+                .div_ceil(quota)
+                .checked_next_power_of_two()
+                .unwrap_or(u64::MAX);
+            let last = section
+                .first_landmark
+                .saturating_add(section.landmark_count - 1);
+            let first = section
+                .first_landmark
+                .div_ceil(stride)
+                .checked_mul(stride)
+                .filter(|first| *first <= last)
+                .unwrap_or(section.first_landmark);
             for sample in 0..quota {
-                let offset = if quota <= 1 {
-                    0
+                let landmark_index = if regular {
+                    let Some(index) = sample
+                        .checked_mul(stride)
+                        .and_then(|offset| first.checked_add(offset))
+                    else {
+                        break;
+                    };
+                    if index > last {
+                        break;
+                    }
+                    index
                 } else {
-                    let Ok(offset) = u64::try_from(
-                        u128::from(sample) * u128::from(section.landmark_count - 1)
-                            / u128::from(quota - 1),
-                    ) else {
+                    let offset = if quota <= 1 {
+                        0
+                    } else {
+                        let Ok(offset) = u64::try_from(
+                            u128::from(sample) * u128::from(section.landmark_count - 1)
+                                / u128::from(quota - 1),
+                        ) else {
+                            continue;
+                        };
+                        offset
+                    };
+                    let Some(index) = section.first_landmark.checked_add(offset) else {
                         continue;
                     };
-                    offset
-                };
-                let Some(landmark_index) = section.first_landmark.checked_add(offset) else {
-                    continue;
+                    index
                 };
                 let raw_beat = u128::from(section.point_beat.raw())
                     + u128::from(landmark_index) * u128::from(section.beat_length);
@@ -1518,6 +1565,116 @@ mod tests {
                 .any(|tick| tick.frame == 63_000 && tick.label == "1.3.6")
         );
         assert!(fine.iter().all(|tick| !tick.label.contains('+')));
+    }
+
+    #[test]
+    fn ruler_landmarks_remain_even_and_anchored_while_panning_in_common_time() {
+        let project = Project::new(48_000).unwrap();
+        let viewport = Viewport {
+            start: 576_000,
+            length: 384_000,
+        };
+        let ticks = ruler_ticks(&project, viewport, 600.0);
+        let frames: Vec<_> = ticks.iter().map(|tick| tick.frame).collect();
+        let grid = grid_lines(&project, viewport, 600.0, SnapGrid::Adaptive);
+        assert!(
+            frames
+                .iter()
+                .all(|frame| grid.iter().any(|line| line.frame == *frame))
+        );
+        let gaps: Vec<_> = frames.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!(!gaps.is_empty());
+        assert!(
+            gaps.iter().all(|gap| *gap == gaps[0]),
+            "uneven ruler gaps: {frames:?}"
+        );
+        let panned = ruler_ticks(
+            &project,
+            Viewport {
+                start: viewport.start + 1_000,
+                ..viewport
+            },
+            600.0,
+        );
+        let overlap_end = viewport.end().unwrap();
+        let before: Vec<_> = ticks
+            .iter()
+            .filter(|tick| tick.frame >= viewport.start + 1_000 && tick.frame < overlap_end)
+            .map(|tick| tick.frame)
+            .collect();
+        let after: Vec<_> = panned
+            .iter()
+            .filter(|tick| tick.frame < overlap_end)
+            .map(|tick| tick.frame)
+            .collect();
+        assert_eq!(
+            before, after,
+            "panning changed landmarks in the shared range"
+        );
+    }
+
+    #[test]
+    fn ruler_stride_does_not_change_at_visible_count_threshold() {
+        let project = Project::new(48_000).unwrap();
+        for length in [295_200, 319_200] {
+            let viewport = Viewport { start: 0, length };
+            let panned = Viewport {
+                start: 12_000,
+                ..viewport
+            };
+            let before = ruler_ticks(&project, viewport, 600.0);
+            let after = ruler_ticks(&project, panned, 600.0);
+            let overlapping_before: Vec<_> = before
+                .iter()
+                .filter(|tick| tick.frame >= panned.start)
+                .map(|tick| tick.frame)
+                .collect();
+            let overlapping_after: Vec<_> = after
+                .iter()
+                .filter(|tick| tick.frame < viewport.end().unwrap())
+                .map(|tick| tick.frame)
+                .collect();
+            assert_eq!(
+                overlapping_before, overlapping_after,
+                "viewport length {length}"
+            );
+        }
+    }
+
+    #[test]
+    fn ruler_and_adaptive_grid_share_landmarks_across_zoom_pan_and_meter_changes() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::from_quarters(8).unwrap(),
+                tempo: Tempo::new(90_000_000).unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetMeterPoint {
+                beat: BeatTime::from_quarters(12).unwrap(),
+                meter: Meter::new(3, 4).unwrap(),
+            })
+            .unwrap();
+        let project = editor.project();
+        for (start, length, width) in [
+            (0, 96_000, 640.0),
+            (12_000, 192_000, 640.0),
+            (120_000, 384_000, 640.0),
+            (240_000, 768_000, 1_200.0),
+        ] {
+            let viewport = Viewport { start, length };
+            let grid = grid_lines(project, viewport, width, SnapGrid::Adaptive);
+            let ruler = ruler_ticks(project, viewport, width);
+            assert!(!ruler.is_empty() && !grid.is_empty());
+            for tick in ruler {
+                assert!(
+                    grid.iter().any(|line| line.frame == tick.frame),
+                    "ruler landmark {} is absent from grid at {viewport:?}",
+                    tick.frame
+                );
+            }
+        }
     }
 
     #[test]

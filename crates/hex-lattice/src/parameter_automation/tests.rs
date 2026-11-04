@@ -557,6 +557,39 @@ fn memoryless_host_chain_runs_without_provider_optin_and_freezes_only_committed_
 }
 
 #[test]
+fn bypass_transition_preserves_automation_clock_across_internal_chunks() {
+    let mut active = host_chain(false);
+    let mut wet = [[1.0, 0.5]; 300];
+    active.begin_block();
+    active
+        .process_range_with_clock(0..1, &mut wet, Some(&Clock), Some(&Clock))
+        .unwrap();
+    active.commit_block();
+
+    let mut old = host_chain(false);
+    let mut bypass = host_chain(true);
+    assert!(bypass.configuration_matches_range(&old, 0..1));
+    bypass.transfer_history_from(&mut old);
+    let mut actual = [[1.0, 0.5]; 300];
+    bypass.begin_block();
+    bypass
+        .process_range_with_clock(0..1, &mut actual, Some(&Clock), Some(&Clock))
+        .unwrap();
+    bypass.commit_block();
+    for (index, (actual, wet)) in actual.iter().zip(wet).enumerate() {
+        let mix = 1.0 - ((index + 1).min(240) as f32 / 240.0);
+        for channel in 0..2 {
+            let dry = if channel == 0 { 1.0 } else { 0.5 };
+            let expected = dry + (wet[channel] - dry) * mix;
+            assert!(
+                (actual[channel] - expected).abs() < 1e-5,
+                "frame {index} channel {channel}: {actual:?} expected {expected}"
+            );
+        }
+    }
+}
+
+#[test]
 fn host_gain_uses_exact_integer_law_and_rejects_malformed_prepared_points() {
     let target = DeviceAutomationTarget::HostInputGain;
     let make = |normalized| {

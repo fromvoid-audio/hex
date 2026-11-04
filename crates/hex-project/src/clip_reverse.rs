@@ -333,6 +333,7 @@ mod tests {
         ] {
             assert!(
                 e.execute(Command::CopyArrangementMidiToNewSessionTrack {
+                    initial_gain: None,
                     source: clip,
                     before_track: None,
                     scene: target,

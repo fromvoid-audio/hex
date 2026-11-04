@@ -128,6 +128,24 @@ fn play(
 }
 
 #[test]
+fn loop_end_fades_without_softening_the_next_attack() {
+    let (looped, asset) = project(Some((LOOP_START, LOOP_END)));
+    let samples = vec![[1.0, -1.0]; CLIP];
+    let total = LOOP_END as usize + 64;
+    let output = play(&mut resident(&looped, asset, &samples), 256, total, None);
+    assert_eq!(output[LOOP_END as usize - 1], [0.0, 0.0]);
+    assert_eq!(output[LOOP_END as usize], samples[LOOP_START as usize]);
+    let mut pages = Pages {
+        key: StreamSourceKey::new(31, asset),
+        samples: &samples,
+    };
+    assert_eq!(
+        play(&mut streamed(&looped, asset), 64, total, Some(&mut pages)),
+        output
+    );
+}
+
+#[test]
 fn wrapped_audio_matches_the_authored_loop_at_every_block_size() {
     let (looped, asset) = project(Some((LOOP_START, LOOP_END)));
     let samples = stepped_dc(true);
@@ -161,9 +179,7 @@ fn wrapped_audio_matches_the_authored_loop_at_every_block_size() {
 }
 
 #[test]
-fn content_continuous_across_the_seam_plays_without_a_dip() {
-    // A period that divides the loop length: the material past the loop end
-    // is exactly the material at its start.
+fn continuous_material_only_changes_in_the_short_end_envelope() {
     const PERIOD: usize = 600;
     let (looped, asset) = project(Some((2_400, 8_400)));
     let period: Vec<Frame> = (0..PERIOD)
@@ -176,18 +192,61 @@ fn content_continuous_across_the_seam_plays_without_a_dip() {
     let frames = 8_400 + 2 * 6_000;
     for block in [1, 64, 512] {
         let output = play(&mut resident(&looped, asset, &samples), block, frames, None);
-        // The un-looped continuation repeats the same period.
-        let deviation = output
-            .iter()
-            .enumerate()
-            .map(|(i, frame)| {
-                let expected = period[i % PERIOD];
-                (frame[0] - expected[0])
-                    .abs()
-                    .max((frame[1] - expected[1]).abs())
-            })
-            .fold(0.0, f32::max);
-        assert_eq!(deviation, 0.0, "block {block}");
+        for (i, sample) in output.iter().enumerate() {
+            let position = if i < 8_400 {
+                i
+            } else {
+                2_400 + (i - 8_400) % 6_000
+            };
+            let distance = 8_400 - position;
+            let gain = if distance <= 128 {
+                (distance - 1) as f32 / 127.0
+            } else {
+                1.0
+            };
+            let expected = [samples[position][0] * gain, samples[position][1] * gain];
+            assert!(
+                (sample[0] - expected[0]).abs() < 1e-6 && (sample[1] - expected[1]).abs() < 1e-6,
+                "frame {i}, block {block}"
+            );
+        }
+    }
+}
+
+#[test]
+fn short_loops_keep_their_start_and_end_without_block_dependence() {
+    for length in [1, 2, 3, 64, 128, 129, 256] {
+        let start = 2_400;
+        let end = start + length;
+        let (looped, asset) = project(Some((start, end)));
+        let samples = vec![[1.0, -1.0]; CLIP];
+        let frames = end as usize + length as usize * 3;
+        let reference = play(&mut resident(&looped, asset, &samples), 1, frames, None);
+        for wrap in (end as usize..frames).step_by(length as usize) {
+            assert_eq!(reference[wrap], [1.0, -1.0], "length {length}");
+            if length > 1 {
+                assert_eq!(reference[wrap - 1], [0.0, 0.0], "length {length}");
+            }
+        }
+        for block in [64, 512] {
+            assert_eq!(
+                play(&mut resident(&looped, asset, &samples), block, frames, None),
+                reference
+            );
+            let mut pages = Pages {
+                key: StreamSourceKey::new(31, asset),
+                samples: &samples,
+            };
+            assert_eq!(
+                play(
+                    &mut streamed(&looped, asset),
+                    block,
+                    frames,
+                    Some(&mut pages)
+                ),
+                reference
+            );
+        }
     }
 }
 
@@ -264,13 +323,12 @@ fn streamed_demand_only_pins_audio_read_after_wrap() {
 }
 
 #[test]
-fn a_latent_graph_preserves_the_authored_seam_after_latency() {
+fn a_latent_graph_delays_the_end_fade_and_preserves_the_next_attack() {
     const LATENCY: usize = 7;
     // Keep three wraps and a loop longer than the fade, while making the
     // one-frame reference inexpensive. Its period is unaligned to both blocks.
     const START: u64 = 41;
     const END: u64 = 642;
-    const EDGE: usize = 341;
     const LENGTH: usize = (END - START) as usize;
     const FRAMES: usize = END as usize + 3 * LENGTH - 100;
     let mut f = crate::signal_graph::tests::fixture(&[&[LATENCY as u32]], CLIP);
@@ -281,15 +339,7 @@ fn a_latent_graph_preserves_the_authored_seam_after_latency() {
             enabled: true,
         })
         .unwrap();
-    let samples: Vec<Frame> = (0..CLIP)
-        .map(|frame| {
-            if frame < EDGE {
-                [1.0, -1.0]
-            } else {
-                [0.0, 0.0]
-            }
-        })
-        .collect();
+    let samples = vec![[1.0, -1.0]; CLIP];
     for audio in f.media.values_mut() {
         *audio = Audio::new(RATE, samples.clone()).unwrap();
     }
@@ -309,4 +359,31 @@ fn a_latent_graph_preserves_the_authored_seam_after_latency() {
             "block {block}"
         );
     }
+}
+
+#[test]
+#[ignore = "release timing evidence; run explicitly"]
+fn profile_loop_render() {
+    use std::time::Instant;
+    let (looped, asset) = project(Some((LOOP_START, LOOP_END)));
+    let samples = vec![[0.25, -0.25]; CLIP];
+    let mut playback = resident(&looped, asset, &samples);
+    playback
+        .try_apply_declicked_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    let mut block = [[0.0; 2]; 256];
+    for _ in 0..100 {
+        playback.render(&mut block).unwrap();
+    }
+    let mut times = Vec::with_capacity(2000);
+    for _ in 0..2000 {
+        let start = Instant::now();
+        playback.render(&mut block).unwrap();
+        times.push(start.elapsed().as_nanos());
+    }
+    times.sort_unstable();
+    eprintln!(
+        "loop render 48k/256 1 resident track: p50={}ns p95={}ns p99={}ns",
+        times[1000], times[1900], times[1980]
+    );
 }
