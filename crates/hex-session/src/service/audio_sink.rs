@@ -590,6 +590,7 @@ pub(super) struct WorkerEvents {
     startup_error: Option<String>,
     // At most one request parked on the stopped Arrangement lease (#4544).
     stopped_fence: super::stopped_arrangement::Fence,
+    publication_wait: Option<super::publication_wait::Wait>,
     // Consecutive request-wait iterations with no pending work (#4574).
     idle_polls: u32,
 }
@@ -642,13 +643,17 @@ impl WorkerEvents {
         &mut self,
         document_intent: &Arc<std::sync::atomic::AtomicU64>,
         expected_intent: u64,
+        publication_waited: bool,
     ) {
         if let Some(audio) = self.audio.as_mut() {
-            audio.begin_request(RequestCancellation::new(
-                Arc::clone(&self.shutdown),
-                Arc::clone(document_intent),
-                expected_intent,
-            ));
+            audio.begin_request(
+                RequestCancellation::new(
+                    Arc::clone(&self.shutdown),
+                    Arc::clone(document_intent),
+                    expected_intent,
+                )
+                .after_publication_wait(publication_waited),
+            );
         }
     }
     pub(super) fn ordinary_source_reservation(&self) -> Option<crate::SourcePlanReservation> {
@@ -701,6 +706,7 @@ impl WorkerEvents {
             last_verified_gain: None,
             startup_error: None,
             stopped_fence: Default::default(),
+            publication_wait: None,
             idle_polls: 0,
         }
     }
@@ -881,6 +887,26 @@ impl WorkerEvents {
             thread::sleep(Duration::from_millis(5));
         }
     }
+    /// Park one edit ahead of the FIFO while the current publication settles.
+    pub(super) fn defer_publication(&mut self, queued: QueuedRequest) -> Option<QueuedRequest> {
+        // A request that just completed its wait must dispatch without re-parking.
+        if queued.publication_wait_failure.is_some() {
+            return Some(queued);
+        }
+        let readiness = self
+            .audio
+            .as_mut()
+            .map_or(ResidentPublicationReadiness::NoOutput, |audio| {
+                audio.resident_publication_readiness()
+            });
+        match super::publication_wait::Wait::begin(queued, readiness) {
+            Ok(wait) => {
+                self.publication_wait = Some(wait);
+                None
+            }
+            Err(queued) => Some(queued),
+        }
+    }
     /// Begin the stopped Arrangement lease for a request that fences first;
     /// `None` parks it until the callback answers (see `stopped_arrangement`).
     pub(super) fn defer_stopped_fence(
@@ -955,6 +981,28 @@ impl WorkerEvents {
             && let Some(request) = self.next_request_while_fenced(requests, document_intent)
         {
             return Some(request);
+        }
+        while let Some(wait) = self.publication_wait.take() {
+            if self.shutdown.load(Ordering::Acquire) {
+                return None;
+            }
+            self.poll();
+            control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            );
+            let readiness = self
+                .audio
+                .as_mut()
+                .map_or(ResidentPublicationReadiness::NoOutput, |audio| {
+                    audio.resident_publication_readiness()
+                });
+            match wait.poll(readiness, document_intent.load(Ordering::Acquire)) {
+                Ok(request) => return Some(request),
+                Err(wait) => self.publication_wait = Some(wait),
+            }
+            thread::sleep(super::publication_wait::POLL);
         }
         control_poll(
             self.audio
