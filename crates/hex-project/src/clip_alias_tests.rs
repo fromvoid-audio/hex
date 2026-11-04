@@ -889,20 +889,30 @@ fn alias_to_new_track_is_atomic_for_audio_and_midi() {
             ClipGroupPosition::Audio(96_000)
         };
         let mut before = editor.project().snapshot();
-        let Created::Clips { first: alias, last } = editor
-            .execute(Command::DuplicateAliasClipToNewTrack {
-                clip: original,
-                name: "new track".into(),
-                before_track: Some(first_track),
-                position,
-            })
-            .unwrap()
-        else {
+        let command = |gain| Command::DuplicateAliasClipToNewTrack {
+            initial_gain: Some(gain),
+            clip: original,
+            name: "new track".into(),
+            before_track: Some(first_track),
+            position,
+        };
+        for invalid in [f32::NAN, f32::INFINITY, -0.1, 2.1] {
+            assert!(editor.execute(command(invalid)).is_err());
+            assert_eq!(editor.project().snapshot(), before);
+        }
+        assert!(
+            editor
+                .execute_prepared(command(0.25), |_| Err::<(), _>(crate::Invalid("refused")))
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), before);
+        let Created::Clips { first: alias, last } = editor.execute(command(0.25)).unwrap() else {
             panic!("alias")
         };
         assert_eq!(alias, last);
         assert_eq!(editor.project().tracks().len(), 2);
         assert_ne!(editor.project().tracks()[0].id(), first_track);
+        assert_eq!(editor.project().tracks()[0].gain(), 0.25);
         assert_eq!(
             editor.project().clip_alias(original),
             editor.project().clip_alias(alias)
@@ -935,6 +945,7 @@ fn alias_to_new_track_refuses_bad_anchor_or_position_without_mutation() {
         assert!(
             editor
                 .execute(Command::DuplicateAliasClipToNewTrack {
+                    initial_gain: None,
                     clip,
                     name: "new".into(),
                     before_track: anchor,
@@ -960,6 +971,7 @@ fn alias_to_new_track_respects_track_capacity_without_mutation() {
     assert!(
         editor
             .execute(Command::DuplicateAliasClipToNewTrack {
+                initial_gain: None,
                 clip,
                 name: "new".into(),
                 before_track: None,

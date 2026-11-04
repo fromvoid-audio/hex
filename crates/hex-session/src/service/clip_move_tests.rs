@@ -229,6 +229,7 @@ fn new_track_alias_is_revision_checked_and_undoable_in_one_step() {
         panic!("clip")
     };
     let command = Command::DuplicateAliasClipToNewTrack {
+        initial_gain: Some(0.25),
         clip,
         name: "new".into(),
         before_track: None,
@@ -256,6 +257,7 @@ fn new_track_alias_is_revision_checked_and_undoable_in_one_step() {
         panic!("alias")
     };
     assert_eq!(result.state.project.tracks().len(), 2);
+    assert_eq!(result.state.project.tracks()[1].gain(), 0.25);
     assert_eq!(
         result.state.project.clip_alias(clip),
         result.state.project.clip_alias(alias)
