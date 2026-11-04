@@ -4,6 +4,13 @@ use crate::{DocumentAudioMode, SourcePlanReservation};
 use std::{fs, io::Write, sync::atomic::AtomicU64};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+/// Browser audition as a fresh browser prepares it.
+fn prepare_sample_preview(path: &Path, rate: u32) -> Result<hex_engine::Audio, String> {
+    PreviewSources::default()
+        .prepare_playback(path, rate, &AtomicBool::new(false))
+        .map_err(|failure| failure.to_string())
+}
 struct Files(PathBuf);
 impl Files {
     fn new() -> Self {
@@ -212,9 +219,11 @@ fn preview_refuses_source_replaced_after_fixed_frame_probe() {
     .unwrap();
     let replacement = files.adpcm_wav("replacement.wav", 4);
     fs::rename(replacement, &path).unwrap();
-    let error = decode_preview_source(&path, Some(reader))
-        .map(|_| ())
-        .unwrap_err();
+    let error =
+        super::browser_preview::decode_probed_source(&path, Some(reader), &AtomicBool::new(false))
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
     assert!(
         error.contains("audio file changed") && error.contains("retry"),
         "{error}"

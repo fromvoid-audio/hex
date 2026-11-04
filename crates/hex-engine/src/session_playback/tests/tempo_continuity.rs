@@ -396,52 +396,124 @@ fn tempo_remap_with_instrument_reenable_releases_suppression_at_new_loop_end() {
     assert_eq!(output[until_wrap], [0.2; 2]);
 }
 
+/// Pulse #4117: a running base-tempo edit releases a held native mutable
+/// Arrangement voice at the donor's cut (NoteOff at the first candidate
+/// frame), keeps the beat, and never chases or retriggers the cut note. A
+/// voice already releasing keeps its tail exactly.
 #[test]
-fn tempo_remap_refuses_a_still_releasing_mutable_instrument_atomically() {
+fn tempo_remap_releases_held_mutable_instrument_at_the_cut_across_block_sizes() {
     use hex_lattice::NativeInstrumentDefinition;
 
+    const RELEASE: u64 = 128;
     let definition = MutableFeedbackDefinition {
         metadata: ContinuityInstrumentDefinition {
             id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.tempo.release"),
             levels: [0.2, 0.4],
-            release_frames: 128,
+            release_frames: RELEASE,
         },
     };
     let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
-    let old_project = with_test_instrument(&project(1.0, 0, 1 << 32), definition.metadata.id, 0);
-    let mut edited = Editor::new(old_project.clone(), 8).unwrap();
-    edited
-        .execute(Command::SetTempoPoint {
-            beat: BeatTime::ZERO,
-            tempo: Tempo::new(60_000_000).unwrap(),
-        })
-        .unwrap();
-    for (frame, released) in [(3_001, false), (24_001, true)] {
-        for live in [true, false] {
-            let mut previous = ordinary_mutable_playback(&old_project, &registry);
-            previous.apply(SessionPlaybackCommand::Play).unwrap();
-            render_frames(&mut previous, 64, frame);
-            assert!(
-                previous.mutable_instruments[0]
-                    .as_ref()
-                    .unwrap()
-                    .proofs()
-                    .any(|proof| proof.note_off_sent == released)
-            );
-            let before = previous.arrangement_frame();
-            let mut candidate = ordinary_mutable_playback(edited.project(), &registry);
-            let result = if live {
-                candidate.try_inherit_state_live_from(&mut previous)
-            } else {
-                candidate.try_inherit_state_from(&mut previous)
-            };
-            assert!(
-                matches!(result, Err(SessionPlaybackError::MutableInstrumentActive)),
-                "frame={frame} live={live}: {result:?}"
-            );
-            assert_eq!(previous.arrangement_frame(), before);
-            assert!(previous.playing());
+    // The note ends at 48_000 frames after the edit; render well past it.
+    let horizon = 50_000;
+    for looped in [false, true] {
+        // One mutable note over beats 0..1 (24_000 frames at 120 bpm), with
+        // an optional loop over beats 0..16 that the edit retimes.
+        let mut snapshot = project(1.0, 0, 1 << 32).snapshot();
+        snapshot.loop_region = looped
+            .then(|| beat_loop(120_000_000))
+            .flatten()
+            .map(|(start, end)| LoopRegion::new(start, end, true).unwrap());
+        let old_project = with_test_instrument(
+            &legacy_project_from_snapshot(snapshot).unwrap(),
+            definition.metadata.id,
+            0,
+        );
+        let mut edited = Editor::new(old_project.clone(), 8).unwrap();
+        edited
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(60_000_000).unwrap(),
+            })
+            .unwrap();
+        for (block, cut, released, live) in [64, 512].into_iter().flat_map(|block| {
+            [(3_001_u64, false), (24_001, true)]
+                .into_iter()
+                .flat_map(move |(cut, released)| {
+                    [false, true].map(|live| (block, cut, released, live))
+                })
+        }) {
+            {
+                let context = format!("looped={looped} block={block} cut={cut} live={live}");
+                let mut previous = ordinary_mutable_playback(&old_project, &registry);
+                let mut reference = ordinary_mutable_playback(&old_project, &registry);
+                for playback in [&mut previous, &mut reference] {
+                    playback.apply(SessionPlaybackCommand::Play).unwrap();
+                    render_frames(playback, block, cut as usize);
+                }
+                let proofs = |playback: &SessionPlayback| {
+                    playback.mutable_instruments[0]
+                        .as_ref()
+                        .unwrap()
+                        .proofs()
+                        .collect::<Vec<_>>()
+                };
+                let before = proofs(&previous);
+                assert_eq!(before.len(), 1, "{context}");
+                assert_eq!(before[0].note_off_sent, released, "{context}");
+
+                let mut next = ordinary_mutable_playback(edited.project(), &registry);
+                if live {
+                    next.try_inherit_state_live_from(&mut previous)
+                } else {
+                    next.try_inherit_state_from(&mut previous)
+                }
+                .unwrap_or_else(|error| panic!("{context}: {error:?}"));
+                // The beat is continuous: twice the frames at half the tempo.
+                assert_eq!(next.arrangement_frame(), 2 * cut, "{context}");
+                assert_eq!(next.performance_frame(), cut, "{context}");
+                assert!(next.playing(), "{context}");
+                assert_eq!(next.active_loop_region().is_some(), looped, "{context}");
+
+                let mut actual = vec![[0.0; 2]; horizon];
+                for chunk in actual.chunks_mut(block) {
+                    next.render(chunk).unwrap();
+                }
+                assert_eq!(next.arrangement_frame(), 2 * cut + horizon as u64);
+                // The same occurrence, never a second onset.
+                let after = proofs(&next);
+                assert!(after.len() <= 1, "{context}: {}", after.len());
+                assert!(
+                    after
+                        .iter()
+                        .all(|proof| proof.id == before[0].id && proof.note_off_sent),
+                    "{context}"
+                );
+                // The old voice sounds its release from the cut, then stays
+                // silent: no chase or retrigger of the remapped note.
+                assert_ne!(actual[0], [0.0; 2], "{context}");
+                let quiet = RELEASE as usize + 16;
+                assert!(
+                    actual[quiet..].iter().all(|frame| *frame == [0.0; 2]),
+                    "{context}"
+                );
+                if released {
+                    // An already releasing voice keeps its exact tail.
+                    let mut expected = vec![[0.0; 2]; quiet];
+                    for chunk in expected.chunks_mut(block) {
+                        reference.render(chunk).unwrap();
+                    }
+                    assert_eq!(actual[..quiet], expected[..], "{context}");
+                } else {
+                    // The donor's held level releases from frame zero.
+                    assert!(
+                        actual[RELEASE as usize..quiet]
+                            .iter()
+                            .all(|frame| frame[0] < actual[0][0]),
+                        "{context}"
+                    );
+                }
+            }
         }
     }
 }

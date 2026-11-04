@@ -36,8 +36,8 @@ pub(super) fn seek_is_pending(ticket: Option<u64>, consumed: u64, queued: bool) 
 
 #[cfg(test)]
 mod tests {
+    use super::Viewport;
     use super::{pointer_to_frame, seek_is_pending};
-    use crate::editor::viewport::Viewport;
 
     #[test]
     fn maps_actual_ruler_bounds_and_rounds_to_nearest_frame() {

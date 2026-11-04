@@ -4,7 +4,7 @@
 //! coefficients, inline runtime history and a static pre-filter response query.
 //! The signal path is a two-pole high/low band-pass, an 8x polyphase-FIR
 //! oversampled tanh drive with first-order antiderivative anti-aliasing (see
-//! `oversampler`), a tone low-pass and stereo-linked envelope compensation.
+//! `crate::oversampling`), a tone low-pass and stereo-linked envelope compensation.
 //! Dynamics blends compressed output toward the input envelope. The stage
 //! declares 11 frames of latency; the dry path and the envelope's input peak
 //! are delayed by the same 11 frames so mix and dynamics stay aligned.
@@ -24,8 +24,22 @@ use hex_lattice_contract::{
 };
 use std::any::Any;
 
-mod oversampler;
-use oversampler::{Kernel, LATENCY_FRAMES, Oversampler};
+use crate::oversampling::{Kernel, LATENCY_FRAMES, Oversampler, Shaper};
+
+/// Overdrive's transfer: tanh, with the overflow-free ln(cosh) antiderivative.
+struct Tanh;
+impl Shaper for Tanh {
+    fn tag(&self) -> u8 {
+        1
+    }
+    fn value(&self, x: f64) -> f64 {
+        x.tanh()
+    }
+    fn antiderivative(&self, x: f64) -> f64 {
+        let a = x.abs();
+        a + (-2.0 * a).exp().ln_1p() - std::f64::consts::LN_2
+    }
+}
 
 pub const OVERDRIVE_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.overdrive");
 pub const OVERDRIVE_STATE_VERSION: u32 = 1;
@@ -367,7 +381,7 @@ impl Channel {
         sample
     }
     fn distort(&mut self, input: f64, drive: f64, kernel: &Kernel, tone: f64) -> f64 {
-        let sample = self.oversampler.process(input, drive, kernel);
+        let sample = self.oversampler.process(input, drive, kernel, &Tanh);
         lowpass(sample, &mut self.tone, tone)
     }
 }

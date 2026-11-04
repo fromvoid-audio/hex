@@ -473,7 +473,9 @@ fn mixed_project_relink_recovery_save_as_current_and_session_round_trip() {
     fs::rename(&media, &moved).expect("missing original media");
     let source = ProjectSource::SavedJournal(target.clone());
     let missing = missing_media_report(&source).expect("discover missing stable assets");
-    assert_eq!(missing.len(), 2);
+    // The Session cell re-imports the unchanged file onto the Arrangement
+    // clip's resident asset, so one asset is missing.
+    assert_eq!(missing.len(), 1);
     let restarted = directory.service();
     wait(&restarted);
     edit(

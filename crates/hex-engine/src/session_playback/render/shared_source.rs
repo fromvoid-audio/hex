@@ -150,6 +150,7 @@ pub(super) fn render_source_instrument_chunk<T: crate::prepared_tempo::MidiTempo
                 continuations: context.continuations,
                 index,
                 raw: true,
+                loop_fade: None,
                 timing: context.timing,
                 table: context.table,
             },
@@ -573,31 +574,45 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shared_authored_sampler_combines_note_volume_once_and_keeps_local_audio_and_fx() {
-        std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(|| {
+    fn shared_authored_sampler_case(mode: usize) {
+        std::thread::Builder::new().stack_size(8 * 1024 * 1024).spawn(move || {
             for delayed in [false, true] {
-                for mode in 0..4 {
-                    let (revision, resources, expected, scene, _) = fixture(delayed, mode == 2, false);
-                    for partition in [1, 7] {
-                        let mut playback = SessionPlayback::new_with_device_resources(Arc::clone(&revision), &resources).unwrap();
-                        if mode == 1 { playback.apply(SessionPlaybackCommand::LaunchScene { scene, quantization: LaunchQuantization::Immediate }).unwrap(); }
-                        if mode == 3 { playback.apply(SessionPlaybackCommand::StopTrack { track: revision.arrangement().tracks()[0].canonical_track_id().unwrap(), quantization: LaunchQuantization::Immediate }).unwrap(); }
-                        playback.apply(SessionPlaybackCommand::Play).unwrap();
-                        let mut pcm = vec![[0.0; 2]; 4008];
-                        for chunk in pcm.chunks_mut(partition) { playback.render(chunk).unwrap(); }
-                        let factor = if mode >= 2 { expected.1 } else { expected.0 };
-                        let latency = if delayed { 3 } else { 0 };
-                        let original = [[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0; 2]];
-                        for (index, frame) in pcm.iter().enumerate() {
-                            let sample = index.checked_sub(latency).and_then(|index| original.get(index)).copied().unwrap_or([0.0; 2]);
-                            let local = if mode == 1 { [0.0; 2] } else { index.checked_sub(latency + 4000).and_then(|index| original.get(index)).copied().unwrap_or([0.0; 2]) };
-                            for channel in 0..2 { assert!((frame[channel] - (sample[channel] * factor + local[channel] * expected.2)).abs() < 0.000_002, "mode={mode} delayed={delayed} partition={partition} index={index} frame={frame:?} factor={factor}"); }
-                        }
+                let (revision, resources, expected, scene, _) = fixture(delayed, mode == 2, false);
+                for partition in [1, 7] {
+                    let mut playback = SessionPlayback::new_with_device_resources(Arc::clone(&revision), &resources).unwrap();
+                    if mode == 1 { playback.apply(SessionPlaybackCommand::LaunchScene { scene, quantization: LaunchQuantization::Immediate }).unwrap(); }
+                    if mode == 3 { playback.apply(SessionPlaybackCommand::StopTrack { track: revision.arrangement().tracks()[0].canonical_track_id().unwrap(), quantization: LaunchQuantization::Immediate }).unwrap(); }
+                    playback.apply(SessionPlaybackCommand::Play).unwrap();
+                    let mut pcm = vec![[0.0; 2]; 4008];
+                    for chunk in pcm.chunks_mut(partition) { playback.render(chunk).unwrap(); }
+                    let factor = if mode >= 2 { expected.1 } else { expected.0 };
+                    let latency = if delayed { 3 } else { 0 };
+                    let original = [[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0; 2]];
+                    for (index, frame) in pcm.iter().enumerate() {
+                        let sample = index.checked_sub(latency).and_then(|index| original.get(index)).copied().unwrap_or([0.0; 2]);
+                        let local = if mode == 1 { [0.0; 2] } else { index.checked_sub(latency + 4000).and_then(|index| original.get(index)).copied().unwrap_or([0.0; 2]) };
+                        for channel in 0..2 { assert!((frame[channel] - (sample[channel] * factor + local[channel] * expected.2)).abs() < 0.000_002, "mode={mode} delayed={delayed} partition={partition} index={index} frame={frame:?} factor={factor}"); }
                     }
                 }
             }
         }).unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn shared_authored_sampler_arrangement() {
+        shared_authored_sampler_case(0);
+    }
+    #[test]
+    fn shared_authored_sampler_session() {
+        shared_authored_sampler_case(1);
+    }
+    #[test]
+    fn shared_authored_sampler_muted_receiver() {
+        shared_authored_sampler_case(2);
+    }
+    #[test]
+    fn shared_authored_sampler_stopped_receiver() {
+        shared_authored_sampler_case(3);
     }
 
     #[test]

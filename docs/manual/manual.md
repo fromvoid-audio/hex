@@ -826,11 +826,16 @@ or the physical device is working correctly.
 
 select the intended time range and press **command+shift+e**. the **export output**
 dialog offers **main mix**, **selected tracks**, **shared returns**, and
-**selected stems and shared returns**. select the tracks needed for a stem export
-and choose a new destination in the native file dialog.
+**selected stems and shared returns**. the **export format** dialog then offers
+**16-bit pcm**, **24-bit pcm** and **32-bit float**. select the tracks needed for
+a stem export and choose a new destination in the native file dialog.
 
 exports are wav files. main mix produces the combined output; the stem choices
-keep the selected outputs separate. check the range and output choice before
+keep the selected outputs separate, each in the chosen format. 16-bit files are
+dithered and 24-bit files are rounded; both clamp samples above full scale, and
+the status line reports how many samples clipped. 32-bit float files keep levels
+above full scale and never clip. the format is chosen for each export and is not
+saved in the project. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 
@@ -926,6 +931,28 @@ audio device, the steps that reproduce the problem, and what you expected to
 happen. include the displayed error and whether the issue survives a normal quit
 and reopen. keep original projects and media; share only material you have the
 right to share.
+
+## inspect diagnostic logs
+
+select the log button beside the version to open the diagnostic log window.
+the current session opens first. use previous session and next session to browse
+retained sessions, and refresh to read records written since the last refresh.
+the time column is in utc.
+
+use the category and time controls and the search field to narrow the visible
+records. the time window is measured back from the latest event on the displayed
+page; search for `level=error` to find error records. older unclassified records
+appear under uncategorised. in a large session, use older lines and newer lines
+to move between pages. filters apply to the displayed page, and live history can
+shift between page reads.
+
+click a row to inspect it below the list. unusually long rows are clipped in
+the detail view. to share a section, click its first row, shift-click its last
+row, and select copy selection. the copied excerpt includes the original rows,
+available session context and warnings, and is limited to 1 mib. the viewer
+reports missing, truncated or unreadable data; oversized legacy segments may
+be clipped. logs and excerpts can contain paths or other private information,
+so review them before sharing.
 
 `TESTING.md` is the finite checklist for this specific package. record actual
 results against that version. passing automated checks does not replace native

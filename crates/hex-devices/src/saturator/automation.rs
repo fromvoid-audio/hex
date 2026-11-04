@@ -74,6 +74,10 @@ impl SaturatorRuntime {
             sample_rate,
             drive_gain,
             output_gain,
+            kernel,
+            channels,
+            delay,
+            delay_index,
             gain_ramp_remaining,
         } = self;
         base.check_inline_ownership();
@@ -81,6 +85,12 @@ impl SaturatorRuntime {
         settings.check_inline();
         let _: (&u32, &f64, &f64, &u32) =
             (sample_rate, drive_gain, output_gain, gain_ramp_remaining);
+        let _: (
+            &Kernel,
+            &[Oversampler; 2],
+            &[[f64; 2]; LATENCY_FRAMES],
+            &usize,
+        ) = (kernel, channels, delay, delay_index);
     }
     pub(super) fn apply_automation(
         &mut self,

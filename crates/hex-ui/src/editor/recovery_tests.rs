@@ -99,6 +99,50 @@ fn restart_from_fault(cx: &mut gpui::TestAppContext, stop: bool) {
     drop(backend);
     output.publication.close();
 }
+#[gpui::test]
+fn a_changed_output_route_restarts_audio_once_its_guards_allow(cx: &mut gpui::TestAppContext) {
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let identity = client.output_identity().unwrap();
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+        cx,
+        hex_project::Project::new(48_000).unwrap(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, _| {
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "route fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        // A notice for an output that is no longer current is dropped.
+        view.route_follow = Some(identity + 1);
+        assert!(!view.follow_output_route());
+        assert_eq!(view.route_follow, None);
+        // An open dialog defers the move without reporting an error.
+        let error = view.error.clone();
+        view.route_follow = Some(identity);
+        view.save_dialog_open = true;
+        assert!(!view.follow_output_route());
+        assert_eq!(view.route_follow, Some(identity));
+        assert_eq!(view.error, error);
+        assert!(view.pending_recovery_generation.is_none());
+        // Once allowed, the move uses the restart-audio recovery exactly once.
+        view.save_dialog_open = false;
+        assert!(view.follow_output_route());
+        assert_eq!(view.route_follow, None);
+        assert!(view.pending_recovery_generation.is_some());
+        assert!(view.pending_restart_request.is_some());
+        assert_eq!(view.status.to_string(), "audio output changed · reopening");
+        assert!(!view.follow_output_route());
+    });
+    drop(backend);
+    output.publication.close();
+}
 impl WorkerAudioSink for Sink {
     fn resident_publication_enabled(&self) -> bool {
         true
@@ -797,11 +841,19 @@ fn recovered_mutable_cursor_uses_stopped_preroll_and_exact_callback_ack(
             .command_with_ticket(PlaybackCommand::Play)
             .unwrap();
     });
-    let mut sample = [[0.0; 2]; 1];
-    backend.render(&mut sample).unwrap();
+    // Resume from a nonzero cursor ramps in (128 frames at 48 kHz, rate
+    // scaled; 257 frames cover up to 96 kHz). The prerolled voice must sound
+    // from the first frame and settle at its exact level after the ramp.
+    let mut ramp = [[0.0; 2]; 257];
+    backend.render(&mut ramp).unwrap();
+    assert!(
+        ramp[0][0] > 0.0 && ramp.windows(2).all(|pair| pair[0][0] <= pair[1][0]),
+        "prerolled sampler history must remain playable through the ramp-in: {:?}",
+        &ramp[..4]
+    );
     assert_eq!(
-        sample, [[0.25; 2]; 1],
-        "prerolled sampler history must remain playable"
+        ramp[256], [0.25; 2],
+        "prerolled sampler history must settle at its exact level"
     );
     hold.store(true, std::sync::atomic::Ordering::Release);
     editor.update(cx, |view, cx| {

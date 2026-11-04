@@ -26,6 +26,9 @@ pub(crate) struct MutableInstrumentLimits {
     pub(crate) max_release_tail_frames: u64,
     /// Both immutable host declarations are required for exact per-note volume.
     pub(crate) supports_clip_volume: bool,
+    /// The factory's `steals_releasing_voices` declaration: its voice slots
+    /// bound held density only, while releases still bound the proof ledger.
+    pub(crate) steals_releasing_voices: bool,
 }
 
 impl MutableInstrumentLimits {
@@ -49,6 +52,7 @@ impl MutableInstrumentLimits {
             max_release_tail_frames: factory.max_release_tail_frames(),
             supports_clip_volume: factory.supports_occurrence_gain()
                 && factory.supports_active_occurrence_ids(),
+            steals_releasing_voices: factory.steals_releasing_voices(),
         })
     }
 }
@@ -509,14 +513,14 @@ fn compile_instrument_track_with_empty_bank(
             project,
             clip,
             |note, iteration, start, gate_end, onset_beat, off_beat, playable| {
-                if let Some((ordinals, samples)) = preview.as_mut() {
-                    if ordinals.get(samples.len()).copied() == Some(emitted) {
-                        samples.push(crate::MidiPreviewSample {
-                            frame_start: start,
-                            frame_gate_end: gate_end,
-                            pitch: note.pitch(),
-                        });
-                    }
+                if let Some((ordinals, samples)) = preview.as_mut()
+                    && ordinals.get(samples.len()).copied() == Some(emitted)
+                {
+                    samples.push(crate::MidiPreviewSample {
+                        frame_start: start,
+                        frame_gate_end: gate_end,
+                        pitch: note.pitch(),
+                    });
                 }
                 emitted = emitted
                     .checked_add(1)
@@ -631,32 +635,29 @@ fn validate_density<S: DensitySpan>(
     let onset_frames = spans.iter().map(DensitySpan::start).collect::<Vec<_>>();
     validate_onset_density(&onset_frames)?;
 
-    let mut edges = Vec::with_capacity(spans.len() * 2);
-    for span in spans {
-        edges.push((span.start(), true));
-        edges.push((span.end(), false));
-    }
-    edges.sort_unstable_by_key(|(frame, is_start)| (*frame, *is_start));
-    let mut active = 0_usize;
-    for (_, is_start) in edges {
-        if is_start {
-            active += 1;
-            let max_voices = mutable_limits.map_or(MAX_SIMULTANEOUS_VOICES_PER_TRACK, |limits| {
-                limits
-                    .max_active_occurrences
-                    .min(MAX_SIMULTANEOUS_VOICES_PER_TRACK)
-            });
-            if active > max_voices {
-                let message = if mutable_limits.is_some() {
-                    "midi voice density exceeds the instrument capacity per track"
-                } else {
-                    "midi voice density exceeds 64 simultaneous voices per track"
-                };
-                return Err(Invalid(message));
-            }
-        } else {
-            active -= 1;
+    let max_voices = mutable_limits.map_or(MAX_SIMULTANEOUS_VOICES_PER_TRACK, |limits| {
+        limits
+            .max_active_occurrences
+            .min(MAX_SIMULTANEOUS_VOICES_PER_TRACK)
+    });
+    let message = if mutable_limits.is_some() {
+        "midi voice density exceeds the instrument capacity per track"
+    } else {
+        "midi voice density exceeds 64 simultaneous voices per track"
+    };
+    if mutable_limits.is_some_and(|limits| limits.steals_releasing_voices) {
+        // Stolen releases leave the instrument's slots but keep their proofs:
+        // slots bound held density, the per-track ledger bounds releases.
+        if maximum_overlap(spans, DensitySpan::gate_end) > max_voices {
+            return Err(Invalid(message));
         }
+        if maximum_overlap(spans, DensitySpan::end) > MAX_SIMULTANEOUS_VOICES_PER_TRACK {
+            return Err(Invalid(
+                "midi voice density exceeds 64 simultaneous voices per track",
+            ));
+        }
+    } else if maximum_overlap(spans, DensitySpan::end) > max_voices {
+        return Err(Invalid(message));
     }
     if let Some(limits) = mutable_limits {
         validate_event_density(
@@ -667,6 +668,28 @@ fn validate_density<S: DensitySpan>(
         )?;
     }
     Ok(())
+}
+
+/// Greatest number of half-open `[start, end)` spans sounding together; an
+/// end at a frame precedes a start at the same frame.
+fn maximum_overlap<S: DensitySpan>(spans: &[S], end: fn(&S) -> u64) -> usize {
+    let mut edges = Vec::with_capacity(spans.len() * 2);
+    for span in spans {
+        edges.push((span.start(), true));
+        edges.push((end(span), false));
+    }
+    edges.sort_unstable_by_key(|(frame, is_start)| (*frame, *is_start));
+    let mut active = 0_usize;
+    let mut maximum = 0_usize;
+    for (_, is_start) in edges {
+        if is_start {
+            active += 1;
+            maximum = maximum.max(active);
+        } else {
+            active = active.saturating_sub(1);
+        }
+    }
+    maximum
 }
 
 fn validate_event_density<S: DensitySpan>(spans: &[S], max_events: usize) -> Result<(), Invalid> {
@@ -798,6 +821,7 @@ mod declared_capacity_tests {
             max_active_occurrences: voices,
             max_release_tail_frames: 0,
             supports_clip_volume: false,
+            steals_releasing_voices: false,
         }
     }
 
@@ -866,5 +890,57 @@ mod declared_capacity_tests {
             validate_density(&adjacent_boundary_spans, Some(limits(256, 64))),
             Ok(())
         );
+    }
+
+    #[test]
+    fn stealing_capacity_bounds_held_gates_and_the_ledger_bounds_releases() {
+        let stealing = |voices| MutableInstrumentLimits {
+            steals_releasing_voices: true,
+            ..limits(256, voices)
+        };
+        // One-voice retrigger: each release overlaps the next gate.
+        let retrigger = (0..64)
+            .map(|index| Span {
+                start: index * 100,
+                gate_end: index * 100 + 100,
+                end: index * 100 + 150,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            validate_density(&retrigger, Some(limits(256, 1))),
+            Err(Invalid(
+                "midi voice density exceeds the instrument capacity per track",
+            ))
+        );
+        assert_eq!(validate_density(&retrigger, Some(stealing(1))), Ok(()));
+
+        let mut held = retrigger.clone();
+        held.push(Span {
+            start: 50,
+            gate_end: 60,
+            end: 60,
+        });
+        assert_eq!(
+            validate_density(&held, Some(stealing(1))),
+            Err(Invalid(
+                "midi voice density exceeds the instrument capacity per track",
+            ))
+        );
+
+        // 65 short gates whose releases all overlap exceed the proof ledger.
+        let releases = (0..65)
+            .map(|index| Span {
+                start: index,
+                gate_end: index + 1,
+                end: 1000,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            validate_density(&releases, Some(stealing(1))),
+            Err(Invalid(
+                "midi voice density exceeds 64 simultaneous voices per track",
+            ))
+        );
+        assert_eq!(validate_density(&releases[..64], Some(stealing(1))), Ok(()));
     }
 }

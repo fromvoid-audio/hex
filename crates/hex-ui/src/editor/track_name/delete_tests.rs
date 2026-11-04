@@ -52,17 +52,22 @@ fn header(visual: &mut VisualTestContext, track: TrackId, modifiers: Modifiers) 
 }
 #[gpui::test]
 fn header_backspace_removes_one_track_and_restores_contents_in_one_undo(cx: &mut TestAppContext) {
-    header_backspace_removes_tracks(cx, false);
+    header_backspace_removes_tracks(cx, false, "backspace");
 }
 
 #[gpui::test]
 fn header_backspace_removes_multiple_tracks_and_restores_contents_in_one_undo(
     cx: &mut TestAppContext,
 ) {
-    header_backspace_removes_tracks(cx, true);
+    header_backspace_removes_tracks(cx, true, "backspace");
 }
 
-fn header_backspace_removes_tracks(cx: &mut TestAppContext, multiple: bool) {
+#[gpui::test]
+fn header_x_removes_selected_tracks_and_cmd_z_restores_them(cx: &mut TestAppContext) {
+    header_backspace_removes_tracks(cx, true, "x");
+}
+
+fn header_backspace_removes_tracks(cx: &mut TestAppContext, multiple: bool, key: &str) {
     cx.update(crate::editor::bind_editor_keys);
     let files = crate::editor::external_audio_drop_ui_test::BatchFiles::new();
     let wav = files.wav("delete.wav", 48_000, 48_000);
@@ -139,7 +144,15 @@ fn header_backspace_removes_tracks(cx: &mut TestAppContext, multiple: bool) {
             },
         );
     }
-    visual.simulate_keystrokes("backspace");
+    if key == "x" {
+        editor.update(&mut visual, |view, _| view.close_prompt_open = true);
+        visual.simulate_keystrokes(key);
+        editor.read_with(&visual, |view, _| {
+            assert!(view.last_enqueued_edit.is_none())
+        });
+        editor.update(&mut visual, |view, _| view.close_prompt_open = false);
+    }
+    visual.simulate_keystrokes(key);
     pump(&editor, &mut visual);
     let after = editor.read_with(&visual, |view, _| {
         let p = &view.state.as_ref().unwrap().project;

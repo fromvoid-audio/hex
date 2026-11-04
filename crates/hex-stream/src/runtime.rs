@@ -890,6 +890,10 @@ impl MediaPages for StreamCallbackPages {
     fn request_page(&mut self, key: StreamSourceKey, page_index: u64) {
         self.endpoint.request_page(key, page_index);
     }
+
+    fn prefetch_page(&mut self, key: StreamSourceKey, page_index: u64) {
+        self.endpoint.prefetch_page(key, page_index);
+    }
     fn scalar_page(
         &mut self,
         key: hex_engine::ScalarSourceKey,
@@ -914,6 +918,12 @@ impl MediaPages for StreamRuntime {
     fn request_page(&mut self, key: StreamSourceKey, page_index: u64) {
         if let Some(pages) = self.pages.as_mut() {
             pages.request_page(key, page_index);
+        }
+    }
+
+    fn prefetch_page(&mut self, key: StreamSourceKey, page_index: u64) {
+        if let Some(pages) = self.pages.as_mut() {
+            pages.prefetch_page(key, page_index);
         }
     }
     fn scalar_page(

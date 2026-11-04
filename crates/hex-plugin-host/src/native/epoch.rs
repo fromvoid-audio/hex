@@ -106,7 +106,7 @@ impl Quiescent {
     /// Same exact capture with caller intent cancellation checked in the
     /// existing bounded socket loop. Cancellation retires this original lease;
     /// the predicate owns no helper/endpoint and starts no second waiter.
-    /// A state-exceeds-limit refusal is terminal here, as for every failure;
+    /// A capture refusal is terminal here, as for every failure;
     /// callers that keep the plugin running use the refusal-aware capture.
     pub fn capture_state_retained_while_on_control(
         self,
@@ -116,12 +116,12 @@ impl Quiescent {
             (stopped, Ok(state)) => Ok((stopped, state)),
             (stopped, Err(refusal)) => Err(stopped
                 .instance
-                .refuse_epoch_retained(Error::StateExceedsLimit(refusal))),
+                .refuse_epoch_retained(Error::CaptureRefused(refusal))),
         }
     }
 
-    /// Same exact capture, except that a valid helper refusal because the
-    /// plugin's state exceeds the saved profile is returned with this same
+    /// Same exact capture, except that a valid helper refusal (state exceeds
+    /// the saved profile, or edits kept arriving) is returned with this same
     /// quiescent epoch: nothing was captured, and the caller may capture again,
     /// flush or resume. A malformed or mismatched refusal and every other
     /// failure keep the terminal retained-failure custody described above.

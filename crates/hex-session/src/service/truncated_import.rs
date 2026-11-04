@@ -47,8 +47,8 @@ impl ImportTruncation {
 
 /// One single-file import request explicitly asking to recover readable frames.
 /// Construct it with [`TruncatedImportRecovery::new`]; only `Import`,
-/// `ImportToTrack`, `ImportToTrackWithOverwrite`, `ImportToNewTrack` and
-/// `ImportToSession` qualify.
+/// `ImportToTrack`, `ImportToTrackWithOverwrite`, `ImportToNewTrack`,
+/// `ImportToNewTrackWithGain` and `ImportToSession` qualify.
 #[derive(Debug)]
 pub struct TruncatedImportRecovery(Box<Request>);
 
@@ -76,6 +76,7 @@ fn is_single_file_import(request: &Request) -> bool {
             | Request::ImportToTrack { .. }
             | Request::ImportToTrackWithOverwrite { .. }
             | Request::ImportToNewTrack { .. }
+            | Request::ImportToNewTrackWithGain { .. }
             | Request::ImportToSession { .. }
     )
 }
@@ -158,7 +159,7 @@ impl ImportDecode {
             let max_output = limits
                 .max_frames
                 .checked_mul(8)
-                .and_then(|n| n.checked_add(44))
+                .and_then(|n| n.checked_add(hex_export::FLOAT32_WAV_HEADER_BYTES as usize))
                 .ok_or(SessionError::Invalid("recovery output limit overflows"))?;
             for _ in 0..16 {
                 let serial = NEXT_RECOVERED_SOURCE.fetch_add(1, Ordering::Relaxed);

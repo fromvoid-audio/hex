@@ -49,6 +49,104 @@ fn device_panel_title_render_style_meets_text_contrast_without_changing_palette(
 }
 
 #[test]
+fn retained_receiver_labels_the_existing_source_path_and_printed_audio_bypass() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(receiver) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    let ordinary = editor.project().track(receiver).unwrap();
+    assert_eq!(retained_source_path_label(ordinary), None);
+    let instrument = ordinary.instrument().unwrap().id();
+    let source = ordinary.source_id();
+    let mut snapshot = editor.project().snapshot();
+    snapshot.retained_source_paths.push(receiver.value());
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let retained = project.track(receiver).unwrap();
+    let label = retained_source_path_label(retained).unwrap();
+    assert_eq!(label, "source path · printed audio bypasses");
+    assert_eq!(retained.instrument().unwrap().id(), instrument);
+    assert_eq!(retained.source_id(), source);
+    let mut badge = retained_source_path_badge(label);
+    let foreground = badge.text_style().as_ref().unwrap().color.unwrap().to_rgb();
+    let background = rgb(theme::color(theme::PaletteRole::Surface));
+    let first = luminance(foreground);
+    let second = luminance(background);
+    assert!((first.max(second) + 0.05) / (first.min(second) + 0.05) >= 4.5);
+}
+
+#[gpui::test]
+fn retained_source_path_indicator_is_rendered_with_the_existing_chain(cx: &mut TestAppContext) {
+    let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = model
+        .execute(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver")
+    };
+    let Created::Device(effect) = model
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: hex_engine::default_native_device_state_for_class(
+                NativeDeviceClass::Effect,
+                hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("effect")
+    };
+    let instrument = model
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    for retained in [false, true] {
+        let mut snapshot = model.project().snapshot();
+        if retained {
+            snapshot.retained_source_paths.push(track.value());
+        }
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let (window, editor) =
+            crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+        editor.update(cx, |view, cx| {
+            view.selected_track = Some(track);
+            view.device_panel_active = true;
+            view.clip_view_open = true;
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(window, cx);
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("retained-source-path").is_some(),
+            retained
+        );
+        assert!(visual.debug_bounds("device-chain-scroll").is_some());
+        let selector =
+            Box::leak(format!("instrument-device-{}", instrument.value()).into_boxed_str());
+        assert!(visual.debug_bounds(selector).is_some());
+        let selector = Box::leak(format!("effect-device-{}", effect.value()).into_boxed_str());
+        assert!(visual.debug_bounds(selector).is_some());
+    }
+}
+
+#[test]
 fn full_metadata_cache_keeps_unavailable_parameters_and_unsupported_errors_without_entities() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(track) = editor

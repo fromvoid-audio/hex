@@ -175,6 +175,13 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             })?;
             Ok(crate::Created::None)
         }
+        Command::ToggleDeviceBypass { device } => {
+            project.edit_device(device, |d| {
+                d.bypassed = !d.bypassed;
+                Ok(())
+            })?;
+            Ok(crate::Created::None)
+        }
         _ => Err(Invalid("command is not a device edit")),
     }
 }

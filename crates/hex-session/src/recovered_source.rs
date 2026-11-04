@@ -49,7 +49,7 @@ pub fn recover_wav_to_new_source(
     let output_bytes = decoded
         .frames()
         .checked_mul(8)
-        .and_then(|n| n.checked_add(44))
+        .and_then(|n| n.checked_add(hex_export::FLOAT32_WAV_HEADER_BYTES as usize))
         .filter(|n| *n <= max_output_bytes)
         .ok_or(RecoverySourceError::OutputLimit)?;
     hex_export::publish_resident_source_new(destination, decoded.audio())
@@ -128,11 +128,11 @@ mod tests {
         fs::write(&original_path, &wav).unwrap();
         let limits = Limits::new(1024, 16);
         assert!(matches!(
-            recover_wav_to_new_source(&original_path, &output, limits, 59),
+            recover_wav_to_new_source(&original_path, &output, limits, 73),
             Err(RecoverySourceError::OutputLimit)
         ));
         assert!(!output.exists());
-        let recovered = recover_wav_to_new_source(&original_path, &output, limits, 60).unwrap();
+        let recovered = recover_wav_to_new_source(&original_path, &output, limits, 74).unwrap();
         assert_eq!(recovered.truncation.unwrap().readable_frames, 2);
         assert_eq!(recovered.decoded.path(), output);
         assert_eq!(
@@ -162,12 +162,12 @@ mod tests {
         assert_eq!(audio.frames(), &[[0.5, 0.5], [-0.5, -0.5]]);
         let published = fs::read(&output).unwrap();
         assert!(matches!(
-            recover_wav_to_new_source(&original_path, &output, limits, 60),
+            recover_wav_to_new_source(&original_path, &output, limits, 74),
             Err(RecoverySourceError::Publish(_))
         ));
         assert_eq!(fs::read(&output).unwrap(), published);
         assert!(matches!(
-            recover_wav_to_new_source(&original_path, &original_path, limits, 60),
+            recover_wav_to_new_source(&original_path, &original_path, limits, 74),
             Err(RecoverySourceError::Publish(_))
         ));
         assert!(matches!(
@@ -175,7 +175,7 @@ mod tests {
                 &dir.join("missing.wav"),
                 &dir.join("unused.wav"),
                 limits,
-                60
+                74
             ),
             Err(RecoverySourceError::Decode(_))
         ));
@@ -183,11 +183,12 @@ mod tests {
         assert_eq!(fs::read(&original_path).unwrap(), wav);
         let changed = dir.join("changed.wav");
         let mut altered = published;
-        altered[44] ^= 1;
+        // First float sample after the 58-byte IEEE-float header.
+        altered[58] ^= 1;
         fs::write(&changed, &altered).unwrap();
         let (reference, _) = hex_media::recover_wav_file(&original_path, limits).unwrap();
         assert!(
-            matches!(verify_published(&changed, 60, &reference), Err(RecoverySourceError::PublishedSourceInvalid { path, .. }) if path == changed)
+            matches!(verify_published(&changed, 74, &reference), Err(RecoverySourceError::PublishedSourceInvalid { path, .. }) if path == changed)
         );
         assert_eq!(fs::read(&changed).unwrap(), altered);
         fs::remove_dir_all(dir).unwrap();

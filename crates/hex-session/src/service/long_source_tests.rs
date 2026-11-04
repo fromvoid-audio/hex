@@ -201,3 +201,145 @@ fn streamed_source_past_the_edit_domain_imports_and_reopens_complete() {
     );
     assert_eq!(streamed_frames(&reopened), u64::from(frames));
 }
+
+/// Pulse #4145: timeline edits on a streamed clip past the 16,777,216-frame
+/// edit domain need no resident PCM, so trim, move and split succeed and
+/// survive Undo/Redo and save/reopen with the binding still streamed.
+#[test]
+fn timeline_edits_on_a_streamed_clip_past_the_edit_domain_survive_history_and_reopen() {
+    let files = Files::new();
+    let frames = 20_000_000u32;
+    assert!(u64::from(frames) > hex_project::MAX_AUDIO_DOMAIN_FRAMES);
+    let path = files.long_wav("twenty-million.wav", frames);
+    let service = service_in(DocumentAudioMode::VerifiedStreaming);
+    service.submit(Request::Import(path)).unwrap();
+    let imported = next(&service);
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let track = imported.state.project.tracks()[0].id();
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    let edit = |command: hex_project::Command| {
+        service.submit(Request::Edit(command)).unwrap();
+        let event = next(&service);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        event
+    };
+    let trimmed = edit(hex_project::Command::TrimClipEdge {
+        clip,
+        edge: hex_project::TrimEdge::Right,
+        frame: 19_000_000,
+    });
+    assert_eq!(
+        trimmed.state.project.clip(clip).unwrap().duration(),
+        19_000_000
+    );
+    let moved = edit(hex_project::Command::MoveClip {
+        clip,
+        track,
+        start: 48_000,
+    });
+    assert_eq!(moved.state.project.clip(clip).unwrap().start(), 48_000);
+    let split = edit(hex_project::Command::SplitClip {
+        clip,
+        frame: 10_000_000,
+    });
+    let clips = split.state.project.tracks()[0].clips();
+    assert_eq!(clips.len(), 2);
+    assert_eq!(
+        clips.iter().map(|clip| clip.duration()).sum::<u64>(),
+        19_000_000
+    );
+    let history = |request: Request| {
+        service.submit(request).unwrap();
+        let event = next(&service);
+        assert!(event.error.is_none(), "{:?}", event.error);
+        event
+    };
+    for _ in 0..3 {
+        history(Request::Undo);
+    }
+    // Clip identities are never reused, so history compares the clip layout.
+    let layout = |event: &Event| {
+        event.state.project.tracks()[0]
+            .clips()
+            .iter()
+            .map(|clip| (clip.start(), clip.duration(), clip.source_offset()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(layout(&history(Request::Redo)), layout(&trimmed));
+    assert_eq!(layout(&history(Request::Redo)), layout(&moved));
+    assert_eq!(layout(&history(Request::Redo)), layout(&split));
+    let reopened = save_and_reopen(&service, files.0.join("edited.hex"));
+    assert_eq!(
+        reopened.state.project.snapshot(),
+        split.state.project.snapshot()
+    );
+    assert_eq!(streamed_frames(&reopened), u64::from(frames));
+}
+
+/// Pulse #4145: transform edits render the whole root through the bounded
+/// resident workspace, so past the edit domain they refuse with the limit at
+/// the project's rate and the remedy, leaving the project untouched.
+#[test]
+fn transform_edits_past_the_edit_domain_name_the_limit_and_the_remedy() {
+    let files = Files::new();
+    let path = files.long_wav("twenty-million.wav", 20_000_000);
+    let service = service_in(DocumentAudioMode::VerifiedStreaming);
+    service.submit(Request::Import(path)).unwrap();
+    let imported = next(&service);
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let clip = imported.state.project.tracks()[0].clips()[0].id();
+    for command in [
+        hex_project::Command::ReverseClips(vec![clip]),
+        hex_project::Command::SetAudioClipPitch { clip, cents: 100 },
+        hex_project::Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        },
+        hex_project::Command::StretchAudioClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Right,
+            frame: 19_000_000,
+        },
+    ] {
+        service.submit(Request::Edit(command.clone())).unwrap();
+        let refused = next(&service);
+        let error = refused.error.as_deref().expect("transform refusal");
+        assert!(
+            error.contains(
+                "reverse, pitch, warp and stretch support clips up to about 5:49 at 48 khz; \
+                 trim or split the clip first"
+            ),
+            "{command:?}: {error}"
+        );
+        assert_eq!(refused.state.project, imported.state.project);
+    }
+}
+
+#[test]
+fn fifo_new_track_gain_applies_to_verified_file_imports() {
+    let files = Files::new();
+    let path = files.long_wav("gain.wav", 256);
+    let service = service_in(DocumentAudioMode::VerifiedStreaming);
+    service
+        .submit(Request::ImportToNewTrackWithGain {
+            path,
+            before_track: None,
+            start: 13,
+            gain: 0.25,
+        })
+        .unwrap();
+    let imported = next(&service);
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let track = &imported.state.project.tracks()[0];
+    assert_eq!(track.gain(), 0.25);
+    assert_eq!(track.clips()[0].start(), 13);
+    assert_eq!(streamed_frames(&imported), 256);
+    service.submit(Request::Undo).unwrap();
+    let undo = next(&service);
+    assert!(undo.error.is_none(), "{:?}", undo.error);
+    assert!(undo.state.project.tracks().is_empty());
+    service.submit(Request::Redo).unwrap();
+    let redo = next(&service);
+    assert!(redo.error.is_none(), "{:?}", redo.error);
+    assert_eq!(redo.state.project.tracks()[0].gain(), 0.25);
+}

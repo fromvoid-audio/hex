@@ -339,6 +339,43 @@ fn held_creation_cancels_without_partial_edit_on_escape_focus_outside_and_stale_
 }
 
 #[gpui::test]
+fn x_deletes_selected_midi_note_and_cmd_z_restores_it(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    let roll = visual.debug_bounds("midi-note-roll").unwrap();
+    let at = point(
+        roll.origin.x + roll.size.width * 0.25,
+        roll.origin.y + roll.size.height * 0.52,
+    );
+    double_down(&mut visual, at, Modifiers::default());
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    pump(&editor, &mut visual);
+    let before = editor.read_with(&visual, |v, _| {
+        let project = &v.state.as_ref().unwrap().project;
+        assert_eq!(project.midi_source(clip).unwrap().notes().len(), 1);
+        project.snapshot()
+    });
+    visual.simulate_keystrokes("cmd-a x");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .is_empty()
+        )
+    });
+    visual.simulate_keystrokes("cmd-z");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+}
+
+#[gpui::test]
 fn normal_delete_and_draw_mode_still_use_their_own_gestures(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, clip) = fixture(cx);
     let roll = visual.debug_bounds("midi-note-roll").unwrap();

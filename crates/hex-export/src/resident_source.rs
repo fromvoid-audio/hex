@@ -1,5 +1,5 @@
 //! Create-new publication of an already admitted immutable resident source.
-use super::{BlockRenderer, ExportError, ExportReport, Publication, WavEncoding, publish_encoded};
+use super::{BlockRenderer, ExportError, ExportFormat, ExportReport, Publication, publish_encoded};
 use hex_engine::{Audio, Frame};
 use std::path::Path;
 
@@ -18,7 +18,7 @@ pub fn publish_resident_source_new(
         0,
         frames,
         &Publication::CreateNew,
-        WavEncoding::Float32,
+        ExportFormat::Float32,
         || Ok(ResidentSource { audio, position: 0 }),
     )
 }
@@ -80,7 +80,24 @@ mod tests {
             u32::from_le_bytes(published[24..28].try_into().unwrap()),
             44_100
         );
-        let decoded: Vec<Frame> = published[44..]
+        // WAVE_FORMAT_IEEE_FLOAT: 18-byte fmt with cbSize = 0, then fact.
+        assert_eq!(
+            u32::from_le_bytes(published[16..20].try_into().unwrap()),
+            18
+        );
+        assert_eq!(u16::from_le_bytes(published[36..38].try_into().unwrap()), 0);
+        assert_eq!(&published[38..42], b"fact");
+        assert_eq!(u32::from_le_bytes(published[42..46].try_into().unwrap()), 4);
+        assert_eq!(
+            u32::from_le_bytes(published[46..50].try_into().unwrap()),
+            frames.len() as u32
+        );
+        assert_eq!(&published[50..54], b"data");
+        assert_eq!(
+            published.len(),
+            crate::FLOAT32_WAV_HEADER_BYTES as usize + frames.len() * 8
+        );
+        let decoded: Vec<Frame> = published[58..]
             .chunks_exact(8)
             .map(|bytes| {
                 [

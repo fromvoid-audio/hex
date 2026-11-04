@@ -12,6 +12,134 @@ use hex_session::service::{
 };
 use std::sync::atomic::AtomicU8;
 
+#[test]
+fn track_gain_gesture_reaches_callback_without_a_pcm_step() {
+    use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
+
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 131_072)));
+    (applied, _) = h.applied(applied);
+    let track = imported.state.project.tracks()[0].id();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..12 {
+        h.render();
+    }
+    let mut last = h.render()[63];
+    assert!((last[0] - 0.25).abs() < 1e-5);
+    let key = GestureKey {
+        generation: 0,
+        token: 1,
+    };
+    let began = h.run(Request::DeviceGesture(GestureRequest::Begin {
+        key,
+        target: GestureTarget::TrackGain { track },
+    }));
+    assert!(began.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
+    for (sequence, gain) in [(1, 0.0_f32), (2, 1.5_f32)] {
+        h.service
+            .submit(Request::DeviceGesture(GestureRequest::Change {
+                key,
+                sequence,
+                value: ParameterValue::Float(gain),
+            }))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut event = None;
+        let mut max_step = 0.0_f32;
+        let mut largest = (0.0, 0.0);
+        let mut blocks = 0;
+        loop {
+            h.pump();
+            for frame in h.render() {
+                for lane in 0..2 {
+                    let step = (frame[lane] - last[lane]).abs();
+                    if step > max_step {
+                        max_step = step;
+                        largest = (last[lane], frame[lane]);
+                    }
+                }
+                last = frame;
+            }
+            blocks += 1;
+            if event.is_none() {
+                event = h.service.try_event().ok();
+            }
+            let active = h
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_revision
+                .load(Acquire);
+            if let (Some(event), Some((revision, metadata))) = (&event, h.submitted)
+                && event.gesture_ack.as_ref().is_some_and(|ack| ack.accepted)
+                && metadata
+                    .device_preview
+                    .is_some_and(|preview| preview.sequence == sequence)
+                && active == revision
+                && revision > applied
+            {
+                applied = revision;
+                break;
+            }
+            assert!(
+                blocks < 450,
+                "track gain preview did not apply: {:?}",
+                h.submitted
+            );
+            assert!(Instant::now() < deadline, "track gain preview timed out");
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        for _ in 0..12 {
+            for frame in h.render() {
+                for lane in 0..2 {
+                    let step = (frame[lane] - last[lane]).abs();
+                    if step > max_step {
+                        max_step = step;
+                        largest = (last[lane], frame[lane]);
+                    }
+                }
+                last = frame;
+            }
+        }
+        assert!(
+            (last[0] - 0.25 * gain).abs() < 1e-5,
+            "gain {gain}: {last:?}"
+        );
+        assert!(
+            max_step < 0.003,
+            "gain {gain}: PCM step {max_step}, {largest:?}"
+        );
+    }
+    let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
+        manual_edit: true,
+        key,
+        sequence: 3,
+        value: ParameterValue::Float(1.5),
+    }));
+    assert_eq!(committed.state.project.track(track).unwrap().gain(), 1.5);
+    (applied, _) = h.applied(applied);
+    for (request, expected) in [(Request::Undo, 1.0), (Request::Redo, 1.5)] {
+        let event = h.run(request);
+        assert_eq!(event.state.project.track(track).unwrap().gain(), expected);
+        (applied, _) = h.applied(applied);
+        for _ in 0..12 {
+            last = h.render()[63];
+        }
+        assert!((last[0] - 0.25 * expected).abs() < 1e-5);
+    }
+}
+
 struct ResidentSink {
     inner: NativeAudioSink,
     refuse: Arc<AtomicBool>,
@@ -138,6 +266,9 @@ impl WorkerAudioSink for ResidentSink {
     fn streamed_exporter(&self) -> Option<hex_session::service::StreamedExporter> {
         self.inner.streamed_exporter()
     }
+    fn streamed_bouncer(&self) -> Option<hex_session::StreamedBouncer> {
+        self.inner.streamed_bouncer()
+    }
     fn resident_file_seek_preparer(
         &self,
     ) -> Option<hex_session::service::ResidentFileSeekPreparer> {
@@ -189,6 +320,11 @@ impl WorkerAudioSink for ResidentSink {
     }
     fn resident_publication_enabled(&self) -> bool {
         self.inner.resident_publication_enabled()
+    }
+    fn resident_publication_readiness(
+        &mut self,
+    ) -> hex_session::service::ResidentPublicationReadiness {
+        self.inner.resident_publication_readiness()
     }
     fn resident_admission(&self) -> [DeviceResourceAdmission<'_>; 3] {
         self.inner.resident_admission()
@@ -342,7 +478,19 @@ impl ResidentHarness {
         capacity: usize,
         rate: u32,
     ) -> Self {
-        Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None, None, None)
+        Self::with_plugin_fixture(frame_limit, gate, capacity, rate, None, None, None, None)
+    }
+    pub(super) fn with_recovery(frame_limit: u64, recovery: PathBuf) -> Self {
+        Self::with_plugin_fixture(
+            frame_limit,
+            Arc::new(AtomicBool::new(true)),
+            4,
+            48_000,
+            None,
+            None,
+            None,
+            Some(recovery),
+        )
     }
     pub(super) fn with_plugins(
         host: hex_audio::plugin_effects::Hosting,
@@ -354,6 +502,7 @@ impl ResidentHarness {
             4,
             48_000,
             Some((host, presentation)),
+            None,
             None,
             None,
         )
@@ -371,6 +520,7 @@ impl ResidentHarness {
             Some((host, presentation)),
             Some(facts),
             None,
+            None,
         )
     }
     pub(super) fn with_plugins_and_catalog(
@@ -386,8 +536,10 @@ impl ResidentHarness {
             Some((host, presentation)),
             None,
             Some(catalog),
+            None,
         )
     }
+    #[allow(clippy::too_many_arguments)] // Test fixture covers independent native failure modes.
     fn with_plugin_fixture(
         frame_limit: u64,
         gate: Arc<AtomicBool>,
@@ -399,6 +551,7 @@ impl ResidentHarness {
         )>,
         facts_gate: Option<crate::native_audio::plugins::FactsGate>,
         catalog: Option<PathBuf>,
+        recovery: Option<PathBuf>,
     ) -> Self {
         let native_plugins = plugin.is_some();
         let allow_unavailable = !gate.load(Acquire);
@@ -439,7 +592,7 @@ impl ResidentHarness {
                     Err(error) if error == "audio output is open or still shutting down" => {
                         return Ok(None);
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(error.into()),
                 };
             *target.lock().unwrap() = Some(backend);
             Ok(Some(output))
@@ -454,7 +607,7 @@ impl ResidentHarness {
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
-            None,
+            recovery,
             Box::new(ResidentSink {
                 inner,
                 refuse: Arc::clone(&refuse),
@@ -552,7 +705,7 @@ impl ResidentHarness {
                 }
                 EditorAudioEvent::Unavailable { error, .. } => {
                     assert!(self.allow_unavailable, "{error}");
-                    self.unavailable.push(error);
+                    self.unavailable.push(error.to_string());
                 }
                 EditorAudioEvent::Publication {
                     context,
@@ -918,6 +1071,11 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
             .id(),
         device
     );
+    // The active preview approaches its target over 5 ms. Compare settled
+    // blocks so this test isolates refusal rather than ramp progress.
+    for _ in 0..4 {
+        h.render();
+    }
     let preview_pcm = h.render();
     assert!(preview_pcm.iter().flatten().any(|sample| *sample != 0.0));
     h.refuse.store(true, std::sync::atomic::Ordering::Release);
@@ -972,6 +1130,9 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
     assert!(cancelled.device_preview.is_none());
     assert_eq!(cancelled.state.project, loaded.state.project);
     assert_eq!(cancelled.state.revision, loaded.state.revision);
+    for _ in 0..4 {
+        h.render();
+    }
     assert_eq!(
         h.render(),
         preview_pcm.map(|frame| frame.map(|sample| sample * 2.0))
@@ -1166,6 +1327,10 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
     assert_eq!(metadata.device_preview, Some(identity));
     assert_eq!(metadata.computer_keyboard_request, Some(9));
     assert_eq!(keyboard.device_preview.as_ref().unwrap().identity, identity);
+    // The preview was published while stopped; monitoring advances its ramp.
+    for _ in 0..4 {
+        h.render();
+    }
     assert_eq!(
         h.render(),
         [[0.125; 2]; 64],
@@ -1233,6 +1398,10 @@ fn loaded_resident_tuning_and_preview_seek_use_actual_sources_and_keep_refused_o
         "seek attaches the same live monitor only after historical preroll"
     );
     input.set_key(0, None).unwrap();
+    // Drain the released monitor voice's declick tail (the prepared ~2 ms
+    // floor, 96 frames at 48 kHz) so the refusals below compare the settled
+    // authored overlay alone.
+    h.render();
     h.render();
 
     let mut stale = identity;

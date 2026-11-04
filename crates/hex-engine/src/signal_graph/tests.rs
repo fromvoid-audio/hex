@@ -392,6 +392,11 @@ fn resident_compensated_windows_match_independent_loop_pcm() {
         } else {
             source[timeline]
         };
+        if (19..24).contains(&timeline) {
+            let gain = (23 - timeline) as f32 / 4.0;
+            output[0] *= gain;
+            output[1] *= gain;
+        }
     }
     assert_eq!(actual, expected);
     for partition in [1, 17, 64, 256] {
@@ -558,7 +563,18 @@ fn resident_session_batch_stops_at_quantized_relaunch_boundary() {
         } else {
             [0.0; 2]
         };
-        *output = [others[0] + first[0], others[1] + first[1]];
+        // The replaced first clip fades over the shared 128-frame declick
+        // until its own 32-frame end.
+        let release = if (10..32).contains(&elapsed) {
+            let gain = (128 - (elapsed - 10)) as f32 / 128.0;
+            [0.125 * gain, -0.25 * gain]
+        } else {
+            [0.0; 2]
+        };
+        *output = [
+            others[0] + first[0] + release[0],
+            others[1] + first[1] + release[1],
+        ];
     }
     for partition in [1, 7, 17, 48] {
         let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
@@ -816,7 +832,11 @@ fn gain_uses_delayed_content_frame_and_loop_history_survives_wrap() {
         } else {
             let origin = (index - 7) % 8;
             let gain = if origin < 3 { 0.5 } else { 1.0 };
-            [f.samples[origin][0] * gain, f.samples[origin][1] * gain]
+            let fade = if origin == 7 { 0.0 } else { 1.0 };
+            [
+                f.samples[origin][0] * fade * gain,
+                f.samples[origin][1] * fade * gain,
+            ]
         };
         assert_eq!(*frame, expected, "frame {index}");
     }
@@ -960,6 +980,97 @@ impl hex_lattice::PreparedSharedAnalyticContext for Instrument {
         if age == 5 { [0.25, -0.5] } else { [0.0; 2] }
     }
 }
+#[test]
+fn printed_audio_bypasses_source_chain_and_aligns_before_fader() {
+    let mut f = fixture(&[&[7]], 32);
+    f.editor
+        .execute(Command::InsertInstrument {
+            track: f.tracks[0],
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut project = (**revision.arrangement()).clone();
+    let track = &mut project.tracks[0];
+    track.instrument_position = 0;
+    track.instrument_latency = Some(5);
+    track.instrument_runtime_latency = Some(5);
+    track.instrument_output_gain = 0.5;
+    track.mix = crate::PreparedTrackMix::new(0.5, 0.0, false).unwrap();
+    let graph =
+        Arc::new(SignalGraph::prepare_value(&project, &[], f.editor.project(), &[0]).unwrap());
+    assert!(SignalGraph::prepare_value(&project, &[], f.editor.project(), &[1]).is_err());
+    assert!(SignalGraph::prepare_value(&project, &[], f.editor.project(), &[0, 0]).is_err());
+    for block in [1, 3, 7, 16] {
+        let mut runtime = SignalRuntime::new(Arc::clone(&graph)).unwrap();
+        let track = &project.tracks[0];
+        let mut chain = track.new_device_runtime().unwrap();
+        let mut actual = Vec::new();
+        for start in (0..24).step_by(block) {
+            runtime.delays.begin_transaction().unwrap();
+            chain.begin_block();
+            for frame in start..(start + block).min(24) {
+                runtime
+                    .delays
+                    .push_transport_stamp(TransportStamp {
+                        tempo_micro_bpm: None,
+                        performance_frame: frame as u64,
+                        transport_is_running: true,
+                        arrangement_frame: frame as u64,
+                        loop_pass: 0,
+                        performance_beat_raw: 0,
+                        arrangement_beat_raw: Some(0),
+                    })
+                    .unwrap();
+                let audio = if frame == 0 { [0.25, -0.5] } else { [0.0; 2] };
+                let generator = if frame == 5 { [1.0, -1.0] } else { [0.0; 2] };
+                let mixed = runtime
+                    .process_track(
+                        0,
+                        track,
+                        &mut chain,
+                        audio,
+                        generator,
+                        frame - start,
+                        false,
+                        &mut None,
+                    )
+                    .unwrap();
+                actual.push(runtime.fader(track, 0, None, mixed).unwrap());
+            }
+            runtime.delays.commit_transaction().unwrap();
+            chain.commit_block();
+        }
+        let mut expected = vec![[0.0; 2]; 24];
+        expected[12] = [0.375, -0.5];
+        assert_eq!(actual, expected, "block {block}");
+    }
+}
+
+#[test]
+fn zero_latency_printed_branch_still_requires_compensated_routing() {
+    let mut f = fixture(&[&[0]], 8);
+    f.editor
+        .execute(Command::InsertInstrument {
+            track: f.tracks[0],
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let revision = prepare(&f).unwrap();
+    let mut project = (**revision.arrangement()).clone();
+    let ordinary = SignalGraph::prepare_value(&project, &[], f.editor.project(), &[]).unwrap();
+    let printed = SignalGraph::prepare_value(&project, &[], f.editor.project(), &[0]).unwrap();
+    assert!(!ordinary.needs_runtime());
+    assert!(printed.needs_runtime());
+    assert!(printed.needs_upstream_frame_routing());
+    assert!(!printed.supports_closed_group_stream());
+    assert!(!printed.history_compatible(&ordinary));
+    project.tracks[0].instrument_bypassed = true;
+    let bypassed = SignalGraph::prepare_value(&project, &[], f.editor.project(), &[0]).unwrap();
+    assert!(bypassed.needs_runtime());
+    assert!(bypassed.tracks[0].generator.is_none());
+}
+
 #[test]
 fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     let mut f = fixture(&[&[3]], 32);

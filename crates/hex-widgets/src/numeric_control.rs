@@ -181,10 +181,24 @@ pub enum NumericEventPhase {
     Cancel,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Identity of one pointer drag, unique while any queued event or owner holds it.
+/// Clones share the same identity. No counter or rollover is involved.
+#[derive(Debug, Clone)]
+pub struct NumericGestureId(Rc<()>);
+
+impl PartialEq for NumericGestureId {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for NumericGestureId {}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct NumericControlEvent {
     pub phase: NumericEventPhase,
     pub value: f64,
+    /// Present for pointer drags; other edit paths do not promise an identity.
+    pub gesture: Option<NumericGestureId>,
 }
 
 /// Final value returned to an owner performing a lifecycle barrier. It lets
@@ -196,6 +210,8 @@ pub struct NumericControlFinalValue {
     pub explicit_edit: bool,
     pub previous: f64,
     pub value: f64,
+    /// Identity of an active pointer drag finalized by the owner, if any.
+    pub gesture: Option<NumericGestureId>,
     formatted: String,
 }
 
@@ -333,6 +349,7 @@ pub struct NumericControl {
     pub(crate) invalid_text: bool,
     pub(crate) text: String,
     pub(crate) text_modified: bool,
+    pub(crate) caret_activity: u64,
     pub(crate) selected: Range<usize>,
     pub(crate) reversed: bool,
     pub(crate) marked: Option<Range<usize>>,
@@ -340,6 +357,7 @@ pub struct NumericControl {
     pub(crate) last_bounds: Option<Bounds<Pixels>>,
     pub(crate) last_origin_x: Option<Pixels>,
     press: Option<Press>,
+    active_gesture: Option<NumericGestureId>,
     text_mouse: Option<TextMouseSelection>,
     pub(crate) text_click: crate::TextClickSelection,
     pub(crate) style: ControlStyle,
@@ -437,6 +455,7 @@ impl NumericControl {
             commit_unchanged_text: false,
             editing: NumericEditState(Rc::new(Cell::new(false))),
             text_modified: false,
+            caret_activity: 0,
             invalid_text: false,
             text,
             selected: 0..0,
@@ -446,6 +465,7 @@ impl NumericControl {
             last_bounds: None,
             last_origin_x: None,
             press: None,
+            active_gesture: None,
             text_mouse: None,
             text_click: crate::TextClickSelection::default(),
             style,
@@ -591,17 +611,19 @@ impl NumericControl {
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         self.text_mouse = None;
         self.text_click.clear();
-        if let Some(press) = self.press.take() {
-            if press.dragging {
-                self.value = press.start_value;
-                self.draft = press.start_value;
-                self.text = self.spec.format(self.draft).unwrap_or_default();
-                cx.emit(NumericControlEvent {
-                    phase: NumericEventPhase::Cancel,
-                    value: self.draft,
-                });
-            }
+        if let Some(press) = self.press.take()
+            && press.dragging
+        {
+            self.value = press.start_value;
+            self.draft = press.start_value;
+            self.text = self.spec.format(self.draft).unwrap_or_default();
+            cx.emit(NumericControlEvent {
+                phase: NumericEventPhase::Cancel,
+                value: self.draft,
+                gesture: self.active_gesture.clone(),
+            });
         }
+        self.active_gesture = None;
         if self.editing.is_editing() {
             self.editing.0.set(false);
             self.text_modified = false;
@@ -655,6 +677,7 @@ impl NumericControl {
         // default. A pending invalid text/IME draft must not retain focus-mode
         // or pointer capture and block later keyboard/external updates.
         self.press = None;
+        self.active_gesture = None;
         self.editing.0.set(false);
         self.invalid_text = false;
         self.selected = 0..0;
@@ -665,16 +688,19 @@ impl NumericControl {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Begin,
                 value: start,
+                gesture: None,
             });
             self.value = value;
             self.draft = value;
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Change,
                 value,
+                gesture: None,
             });
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value,
+                gesture: None,
             });
         }
         cx.notify();
@@ -799,6 +825,7 @@ impl NumericControl {
                 self.move_to(offset);
             }
             self.press = None;
+            self.active_gesture = None;
             self.text_mouse = Some(TextMouseSelection {
                 anchor,
                 origin: event.position,
@@ -909,7 +936,9 @@ impl NumericControl {
                 cx.emit(NumericControlEvent {
                     phase: NumericEventPhase::Cancel,
                     value: self.draft,
+                    gesture: self.active_gesture.clone(),
                 });
+                self.active_gesture = None;
                 cx.notify();
                 return (true, true);
             }
@@ -919,6 +948,7 @@ impl NumericControl {
         let total_y = f32::from(event.position.y - press.origin.y);
         if !press.dragging && total_x.hypot(total_y) >= 3.0 {
             press.dragging = true;
+            self.active_gesture = Some(NumericGestureId(Rc::new(())));
             // Cursor visibility changes even at a value bound or on horizontal motion.
             cx.notify();
             self.editing.0.set(false);
@@ -928,6 +958,7 @@ impl NumericControl {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Begin,
                 value: press.start_value,
+                gesture: self.active_gesture.clone(),
             });
         }
         if !press.dragging {
@@ -988,6 +1019,7 @@ impl NumericControl {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Change,
                 value: next,
+                gesture: self.active_gesture.clone(),
             });
             cx.notify();
             (true, true)
@@ -1017,7 +1049,9 @@ impl NumericControl {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value: self.draft,
+                gesture: self.active_gesture.clone(),
             });
+            self.active_gesture = None;
         } else if matches!(press.target, PressTarget::Value)
             && f32::from(event.position.x - press.origin.x)
                 .hypot(f32::from(event.position.y - press.origin.y))
@@ -1076,6 +1110,7 @@ impl NumericControl {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Begin,
                 value: self.draft,
+                gesture: None,
             });
             self.draft = value;
             self.value = value;
@@ -1083,10 +1118,12 @@ impl NumericControl {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Change,
                 value,
+                gesture: None,
             });
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value,
+                gesture: None,
             });
             cx.notify();
         }
@@ -1147,21 +1184,25 @@ impl NumericControl {
                     cx.emit(NumericControlEvent {
                         phase: NumericEventPhase::Begin,
                         value: old,
+                        gesture: None,
                     });
                     self.value = value;
                     self.draft = value;
                     cx.emit(NumericControlEvent {
                         phase: NumericEventPhase::Change,
                         value,
+                        gesture: None,
                     });
                     cx.emit(NumericControlEvent {
                         phase: NumericEventPhase::Commit,
                         value,
+                        gesture: None,
                     });
                 } else if self.commit_unchanged_text && self.text_modified {
                     cx.emit(NumericControlEvent {
                         phase: NumericEventPhase::Commit,
                         value,
+                        gesture: None,
                     });
                 }
                 self.text = self.spec.format(value).unwrap_or_default();
@@ -1188,8 +1229,10 @@ impl NumericControl {
                 cx.emit(NumericControlEvent {
                     phase: NumericEventPhase::Commit,
                     value: self.draft,
+                    gesture: self.active_gesture.clone(),
                 });
             }
+            self.active_gesture = None;
             cx.notify();
         }
         if !self.editing.is_editing() {
@@ -1208,21 +1251,25 @@ impl NumericControl {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Begin,
                 value: old,
+                gesture: None,
             });
             self.value = value;
             self.draft = value;
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Change,
                 value,
+                gesture: None,
             });
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value,
+                gesture: None,
             });
         } else if self.commit_unchanged_text && self.text_modified {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value,
+                gesture: None,
             });
         }
         self.text = self.spec.format(value)?;
@@ -1248,6 +1295,7 @@ impl NumericControl {
                     explicit_edit: press.value_changed,
                     previous: press.start_value,
                     value: self.draft,
+                    gesture: self.active_gesture.clone(),
                     formatted: self.spec.format(self.draft)?,
                 }));
             }
@@ -1255,6 +1303,7 @@ impl NumericControl {
                 explicit_edit: false,
                 previous: self.value,
                 value: self.value,
+                gesture: None,
                 formatted: self.spec.format(self.value)?,
             }));
         }
@@ -1275,6 +1324,7 @@ impl NumericControl {
             explicit_edit: self.text_modified || previous != value,
             previous,
             value,
+            gesture: None,
             formatted,
         }))
     }
@@ -1309,6 +1359,7 @@ impl NumericControl {
             self.invalid_text = false;
             self.selected = 0..0;
             self.marked = None;
+            self.active_gesture = None;
             cx.notify();
             return;
         }
@@ -1509,6 +1560,7 @@ impl NumericControl {
     }
 
     pub(crate) fn move_to(&mut self, offset: usize) {
+        self.caret_activity = self.caret_activity.wrapping_add(1);
         self.invalidate_text_pointer_selection();
         let offset = offset.min(self.text.len());
         self.selected = offset..offset;
@@ -1516,6 +1568,7 @@ impl NumericControl {
     }
 
     pub(crate) fn select_to(&mut self, offset: usize) {
+        self.caret_activity = self.caret_activity.wrapping_add(1);
         self.invalidate_text_pointer_selection();
         let offset = offset.min(self.text.len());
         if self.reversed {

@@ -180,6 +180,7 @@ fn sampler_service_real_mono_stereo_assign_and_controlled_file_pcm() {
                 frames: Some(12),
                 signal: hex_export::ExportSignal::Main,
                 control,
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             })
             .unwrap();
@@ -206,12 +207,14 @@ fn sampler_service_real_mono_stereo_assign_and_controlled_file_pcm() {
         } else {
             left
         };
-        assert_eq!(
-            pcm,
-            left.into_iter()
+        assert_pcm_near(
+            &pcm,
+            &left
+                .into_iter()
                 .zip(right)
                 .map(|(l, r)| [l, r])
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            "controlled file pcm",
         );
         service
             .submit(Request::RestorePlayback { generation: 7 })
@@ -240,6 +243,7 @@ fn queue_export(service: &Service, files: &Files, control: hex_export::ExportCon
             frames: Some(12),
             signal: hex_export::ExportSignal::Main,
             control,
+            format: hex_export::ExportFormat::Pcm16,
             overwrite: false,
         })
         .unwrap();
@@ -305,13 +309,13 @@ fn captured_sampler_survives_new_and_ordinary_open_and_capability_persists() {
     release.send(()).unwrap();
     assert!(export_event(&service).result.is_ok());
     let bytes = fs::read(&files.output).unwrap();
-    assert_eq!(&bytes[44..52], &[0, 16, 0, 224, 0, 40, 0, 240]);
+    assert_pcm_bytes_near(&bytes[44..52], &[0, 16, 0, 224, 0, 40, 0, 240]);
     // The next real export uses the new document's mono source, after the old
     // terminal is drained by control rather than by resource-bearing UI events.
     queue_export(&service, &second, hex_export::ExportControl::default());
     assert!(export_event(&service).result.is_ok());
     let bytes = fs::read(&second.output).unwrap();
-    assert_eq!(&bytes[44..52], &[0, 16, 0, 16, 0, 40, 0, 40]);
+    assert_pcm_bytes_near(&bytes[44..52], &[0, 16, 0, 16, 0, 40, 0, 40]);
 }
 
 #[test]
@@ -597,6 +601,7 @@ fn sampler_unsupported_history_and_ranges_refuse_without_public_source_escape() 
                 frames: Some(12),
                 signal,
                 control: hex_export::ExportControl::default(),
+                format: hex_export::ExportFormat::Pcm16,
                 overwrite: false,
             })
             .unwrap();
@@ -955,9 +960,9 @@ fn private_sampler_edit_refuses_unverified_media_metadata_before_history_commit(
             assert_eq!(result.state.can_redo, before.state.can_redo);
             queue_export(&service, &files, hex_export::ExportControl::default());
             assert!(export_event(&service).result.is_ok());
-            assert_eq!(
+            assert_pcm_bytes_near(
                 &fs::read(&files.output).unwrap()[44..52],
-                &[0, 16, 0, 16, 0, 40, 0, 40]
+                &[0, 16, 0, 16, 0, 40, 0, 40],
             );
         }
     }
@@ -966,4 +971,32 @@ fn private_sampler_edit_refuses_unverified_media_metadata_before_history_commit(
         [true, true],
         "generic Edit must not invent decoded media custody"
     );
+}
+
+/// PCM16 export applies ±1 LSB TPDF dither: compare decoded stereo frames
+/// within one LSB of the plain-rounding expectation.
+pub(super) fn assert_pcm_near(actual: &[[i16; 2]], expected: &[[i16; 2]], context: &str) {
+    assert_eq!(actual.len(), expected.len(), "{context}");
+    for (actual, expected) in actual.iter().flatten().zip(expected.iter().flatten()) {
+        assert!(
+            (i32::from(*actual) - i32::from(*expected)).abs() <= 1,
+            "{context}: {actual:?} not within one lsb of {expected:?}"
+        );
+    }
+}
+
+/// Same comparison for raw little-endian PCM16 stereo bytes.
+fn assert_pcm_bytes_near(actual: &[u8], expected: &[u8]) {
+    let decode = |bytes: &[u8]| {
+        bytes
+            .chunks_exact(4)
+            .map(|f| {
+                [
+                    i16::from_le_bytes([f[0], f[1]]),
+                    i16::from_le_bytes([f[2], f[3]]),
+                ]
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_pcm_near(&decode(actual), &decode(expected), "pcm bytes");
 }

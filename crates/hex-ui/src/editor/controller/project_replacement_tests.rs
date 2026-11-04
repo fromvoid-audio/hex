@@ -687,6 +687,8 @@ fn held_identity(view: &EditorView) -> Option<u64> {
 
 #[gpui::test]
 fn held_endpoint_follows_rebound_and_release_across_generations(cx: &mut TestAppContext) {
+    let _fixture =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     let window = cx.add_window(|window, cx| {
         let service = Service::new(48_000, 8, 8_000_000).expect("test service");
         EditorView::new(window, cx, service, Err("offline test".into()))
@@ -769,6 +771,8 @@ fn held_endpoint_follows_rebound_and_release_across_generations(cx: &mut TestApp
 
 #[gpui::test]
 fn delayed_release_closes_matching_endpoint_after_later_replacement(cx: &mut TestAppContext) {
+    let _fixture =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     let window = cx.add_window(|window, cx| {
         let service = Service::new(48_000, 8, 8_000_000).unwrap();
         EditorView::new(window, cx, service, Err("offline test".into()))
@@ -800,6 +804,8 @@ fn delayed_release_closes_matching_endpoint_after_later_replacement(cx: &mut Tes
 
 #[gpui::test]
 fn project_replacement_holds_resident_endpoint_until_released(cx: &mut TestAppContext) {
+    let _fixture =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
     let window = cx.add_window(|window, cx| {
         let service = Service::new(48_000, 8, 8_000_000).expect("test service");
         EditorView::new(window, cx, service, Err("offline test".into()))

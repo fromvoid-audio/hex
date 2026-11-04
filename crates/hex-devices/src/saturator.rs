@@ -1,5 +1,15 @@
 //! Original nonlinear stereo saturation for the native Lattice device chain.
+//!
+//! Drive, curve and output run inside the shared 8x oversampled ADAA stage
+//! (`crate::oversampling`, Pulse #4146), so the soft and digital clips stay
+//! below -60 db of aliasing at +36 db drive. The device declares the stage's
+//! 11 frames of latency; the dry path is delayed by the same 11 frames, so the
+//! zero-wet endpoint is the exact dry signal, delayed. Bypass advances the
+//! histories and passes the input through undelayed (the host counts bypass as
+//! zero latency). Non-finite input samples pass through to the host's audio
+//! fault boundary without entering the histories.
 
+use crate::oversampling::{Kernel, LATENCY_FRAMES, Oversampler, Shaper};
 use hex_lattice::{
     NativeDeviceDefinition, NativeProcessorRuntime, OutputTail, PreparedNativeProcessor,
     StereoFrame, StereoMatrix,
@@ -373,6 +383,10 @@ impl PreparedNativeProcessor for PreparedSaturator {
             sample_rate: self.sample_rate,
             drive_gain: self.drive_gain,
             output_gain: self.output_gain,
+            kernel: Kernel::new(),
+            channels: [Oversampler::default(); 2],
+            delay: [[0.0; 2]; LATENCY_FRAMES],
+            delay_index: 0,
             gain_ramp_remaining: 0,
         };
         runtime.check_inline_ownership();
@@ -380,13 +394,21 @@ impl PreparedNativeProcessor for PreparedSaturator {
     }
 
     fn algorithmic_latency_frames(&self) -> Option<u32> {
-        Some(0)
+        Some(LATENCY_FRAMES as u32)
     }
 
     fn output_tail(&self) -> OutputTail {
-        OutputTail::Finite { max_tail_frames: 0 }
+        // Oversampler histories and the dry delay drain within this bound.
+        OutputTail::Finite {
+            max_tail_frames: TAIL_FRAMES,
+        }
     }
 }
+
+/// Zero input frames after which every history is exactly zero and output is
+/// silent: the oversampler drain, which outlasts the 11-frame dry delay.
+const TAIL_FRAMES: u64 = crate::oversampling::DRAIN_FRAMES as u64;
+const _: () = assert!(crate::oversampling::DRAIN_FRAMES >= LATENCY_FRAMES);
 
 /// Closed fixed-inline DSP owner, including the last effective controls used by
 /// transactional history copying. It owns no program, asset or external handle.
@@ -404,6 +426,11 @@ pub struct SaturatorRuntime {
     sample_rate: u32,
     drive_gain: f64,
     output_gain: f64,
+    kernel: Kernel,
+    channels: [Oversampler; 2],
+    /// Dry input, delayed by the oversampler latency.
+    delay: [[f64; 2]; LATENCY_FRAMES],
+    delay_index: usize,
     gain_ramp_remaining: u32,
 }
 
@@ -413,6 +440,56 @@ fn gain_ramp_frames(sample_rate: u32) -> u32 {
 }
 
 impl SaturatorRuntime {
+    /// Renders one frame and advances every history. Bypassed frames keep
+    /// their input; an active direct-edit ramp advances only when audible.
+    fn render_frame(&mut self, frame: &mut StereoFrame, bypassed: bool) {
+        if !bypassed {
+            self.advance_gain_ramp();
+        }
+        let settings = self.settings;
+        let wet = f64::from(settings.dry_wet);
+        let input = frame.map(f64::from);
+        let finite = input.map(f64::is_finite);
+        let mut processed = [0.0; 2];
+        for (channel, (stage, value)) in self.channels.iter_mut().zip(input).enumerate() {
+            let value = if finite[channel] { value } else { 0.0 };
+            let shaped = match settings.curve {
+                SaturationCurve::SoftClip => {
+                    stage.process(value, self.drive_gain, &self.kernel, &SoftClip)
+                }
+                SaturationCurve::DigitalClip => {
+                    stage.process(value, self.drive_gain, &self.kernel, &DigitalClip)
+                }
+            };
+            processed[channel] = shaped * self.output_gain;
+        }
+        let stored = [0, 1].map(|channel| if finite[channel] { input[channel] } else { 0.0 });
+        let dry = std::mem::replace(&mut self.delay[self.delay_index], stored);
+        self.delay_index = (self.delay_index + 1) % LATENCY_FRAMES;
+        if bypassed {
+            return;
+        }
+        for channel in 0..2 {
+            if !finite[channel] {
+                // Leave the fault visible to the host's audio boundary.
+                continue;
+            }
+            frame[channel] = if wet == 0.0 {
+                dry[channel]
+            } else if wet == 1.0 {
+                processed[channel]
+            } else {
+                dry[channel] * (1.0 - wet) + processed[channel] * wet
+            } as f32;
+        }
+    }
+
+    fn clear_history(&mut self) {
+        self.channels = [Oversampler::default(); 2];
+        self.delay = [[0.0; 2]; LATENCY_FRAMES];
+        self.delay_index = 0;
+    }
+
     /// Advance the direct-edit ramp by one frame; it ends on exact targets.
     #[inline]
     fn advance_gain_ramp(&mut self) {
@@ -436,6 +513,19 @@ impl SaturatorRuntime {
             }
         }
     }
+
+    /// Bypass is already a discontinuity; resume from the exact targets.
+    fn finish_gain_ramp(&mut self) {
+        if self.gain_ramp_remaining != 0 {
+            self.gain_ramp_remaining = 0;
+            if !self.base.supports(parameter::DRIVE) {
+                self.drive_gain = self.base.drive_gain;
+            }
+            if !self.base.supports(parameter::OUTPUT) {
+                self.output_gain = self.base.output_gain;
+            }
+        }
+    }
 }
 
 impl NativeProcessorRuntime for SaturatorRuntime {
@@ -447,12 +537,12 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         frames: &mut [StereoFrame],
         _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         values: &dyn hex_lattice::NativeParameterAutomation,
-        resources: &dyn hex_lattice::DeviceResources,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), DeviceContractError> {
         let mut resolved = self.controls.resolve(&BINDINGS, values)?;
         for (offset, frame) in frames.iter_mut().enumerate() {
             self.apply_automation(values, &mut resolved, offset)?;
-            self.process_block(std::slice::from_mut(frame), resources);
+            self.render_frame(frame, false);
         }
         Ok(())
     }
@@ -461,13 +551,14 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         frames: &mut [StereoFrame],
         _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         values: &dyn hex_lattice::NativeParameterAutomation,
-        resources: &dyn hex_lattice::DeviceResources,
+        _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), DeviceContractError> {
+        self.finish_gain_ramp();
         let mut resolved = self.controls.resolve(&BINDINGS, values)?;
-        if let Some(offset) = frames.len().checked_sub(1) {
+        for (offset, frame) in frames.iter_mut().enumerate() {
             self.apply_automation(values, &mut resolved, offset)?;
+            self.render_frame(frame, true);
         }
-        self.process_bypassed_block(frames, resources);
         Ok(())
     }
 
@@ -476,45 +567,19 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         frames: &mut [StereoFrame],
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
-        let settings = self.settings;
-        let wet = f64::from(settings.dry_wet);
-        if self.gain_ramp_remaining == 0 {
-            if wet != 0.0 {
-                let (drive, output) = (self.drive_gain, self.output_gain);
-                for frame in frames {
-                    frame[0] =
-                        process_sample(f64::from(frame[0]), settings, drive, output, wet) as f32;
-                    frame[1] =
-                        process_sample(f64::from(frame[1]), settings, drive, output, wet) as f32;
-                }
-            }
-            return;
-        }
         for frame in frames {
-            self.advance_gain_ramp();
-            if wet == 0.0 {
-                continue;
-            }
-            let (drive, output) = (self.drive_gain, self.output_gain);
-            frame[0] = process_sample(f64::from(frame[0]), settings, drive, output, wet) as f32;
-            frame[1] = process_sample(f64::from(frame[1]), settings, drive, output, wet) as f32;
+            self.render_frame(frame, false);
         }
     }
 
     fn process_bypassed_block(
         &mut self,
-        _frames: &mut [StereoFrame],
+        frames: &mut [StereoFrame],
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
-        // Bypass is already a discontinuity; resume from the exact targets.
-        if self.gain_ramp_remaining != 0 {
-            self.gain_ramp_remaining = 0;
-            if !self.base.supports(parameter::DRIVE) {
-                self.drive_gain = self.base.drive_gain;
-            }
-            if !self.base.supports(parameter::OUTPUT) {
-                self.output_gain = self.base.output_gain;
-            }
+        self.finish_gain_ramp();
+        for frame in frames {
+            self.render_frame(frame, true);
         }
     }
 
@@ -523,11 +588,13 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         self.settings = self.base.settings;
         self.drive_gain = self.base.drive_gain;
         self.output_gain = self.base.output_gain;
+        self.clear_history();
         self.gain_ramp_remaining = 0;
     }
 
     fn is_quiescent(&self) -> bool {
-        true
+        self.channels.iter().all(Oversampler::is_quiescent)
+            && self.delay.iter().flatten().all(|v| *v == 0.0)
     }
 
     fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
@@ -545,6 +612,9 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         else {
             return;
         };
+        self.channels = previous.channels;
+        self.delay = previous.delay;
+        self.delay_index = previous.delay_index;
         if self.base.automation_mask != 0 && previous.base.automation_mask != 0 {
             self.controls.inherit(&previous.controls);
             self.settings = previous.settings;
@@ -590,6 +660,44 @@ impl NativeProcessorRuntime for SaturatorRuntime {
     }
 }
 
+/// The soft-clip law and its continuous antiderivative: x^2 / 2 inside
+/// |x| <= 0.5, |x| - ln|x| / 4 + C outside, with C joining both at 0.5.
+struct SoftClip;
+impl Shaper for SoftClip {
+    fn tag(&self) -> u8 {
+        1
+    }
+    fn value(&self, x: f64) -> f64 {
+        soft_clip(x)
+    }
+    fn antiderivative(&self, x: f64) -> f64 {
+        let magnitude = x.abs();
+        if magnitude <= 0.5 {
+            0.5 * x * x
+        } else {
+            magnitude - 0.25 * magnitude.ln() - 0.375 - 0.25 * std::f64::consts::LN_2
+        }
+    }
+}
+/// The digital clip and its antiderivative: x^2 / 2 inside |x| <= 1, |x| - 1/2
+/// outside.
+struct DigitalClip;
+impl Shaper for DigitalClip {
+    fn tag(&self) -> u8 {
+        2
+    }
+    fn value(&self, x: f64) -> f64 {
+        x.clamp(-1.0, 1.0)
+    }
+    fn antiderivative(&self, x: f64) -> f64 {
+        if x.abs() <= 1.0 {
+            0.5 * x * x
+        } else {
+            x.abs() - 0.5
+        }
+    }
+}
+
 fn soft_clip(input: f64) -> f64 {
     let magnitude = input.abs();
     if magnitude <= 0.5 {
@@ -600,6 +708,8 @@ fn soft_clip(input: f64) -> f64 {
 }
 
 #[inline]
+/// The static transfer: the value a held finite input settles to once the
+/// oversampled stage and dry delay are full (`transfer_curve` previews it).
 fn process_sample(
     sample: f64,
     settings: SaturatorSettings,

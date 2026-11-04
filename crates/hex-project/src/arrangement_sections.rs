@@ -19,6 +19,7 @@
 //! beat interval. Authored tempo/meter points remain present even when their
 //! values match neighbors. Synthetic meter anchors are added only where the
 //! effective signature changes; equal-meter section seams do not restart bars.
+//! Copies use an unused semantic color, or refuse when the palette is exhausted.
 //! Destination copies compose the adjacent-copy and stable-ID reorder laws in
 //! one private candidate; display previews compose only markers and tempo.
 //! The session/transport owner fences structural publication. Reorders/copies
