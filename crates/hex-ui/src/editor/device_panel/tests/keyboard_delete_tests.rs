@@ -68,6 +68,17 @@ fn settled(view: &EditorView) -> bool {
 fn device_header_backspace_keeps_real_keyboard_undo_redo_and_focus_after_reconcile(
     cx: &mut TestAppContext,
 ) {
+    device_delete_key_history(cx, "backspace");
+}
+
+#[gpui::test]
+fn device_header_x_keeps_real_keyboard_undo_redo_and_focus_after_reconcile(
+    cx: &mut TestAppContext,
+) {
+    device_delete_key_history(cx, "x");
+}
+
+fn device_delete_key_history(cx: &mut TestAppContext, key: &str) {
     let browser = BrowserDirectory::new();
     cx.update(super::super::super::bind_editor_keys);
     let (service, state, track, device, _, _) = actor_utility_fixture();
@@ -79,7 +90,7 @@ fn device_header_backspace_keeps_real_keyboard_undo_redo_and_focus_after_reconci
     let point = title(&mut visual, device);
     visual.simulate_click(point, Modifiers::default());
     visual.simulate_event(gpui::KeyDownEvent {
-        keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+        keystroke: gpui::Keystroke::parse(key).unwrap(),
         is_held: false,
     });
     pump_until(&editor, cx, |view| {
@@ -109,7 +120,7 @@ fn device_header_backspace_keeps_real_keyboard_undo_redo_and_focus_after_reconci
         );
     });
     visual.simulate_event(gpui::KeyUpEvent {
-        keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+        keystroke: gpui::Keystroke::parse(key).unwrap(),
     });
     let focus_after_removal = visual.update(|window, cx| window.focused(cx).is_some());
     visual.simulate_keystrokes("cmd-z");
@@ -132,7 +143,7 @@ fn device_header_backspace_keeps_real_keyboard_undo_redo_and_focus_after_reconci
     });
     // Restoring a card never makes a still-held key remove it again.
     visual.simulate_event(gpui::KeyDownEvent {
-        keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+        keystroke: gpui::Keystroke::parse(key).unwrap(),
         is_held: true,
     });
     visual.run_until_parked();
@@ -140,7 +151,7 @@ fn device_header_backspace_keeps_real_keyboard_undo_redo_and_focus_after_reconci
         assert_eq!(view.state.as_ref().unwrap().project, original)
     });
     visual.simulate_event(gpui::KeyUpEvent {
-        keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+        keystroke: gpui::Keystroke::parse(key).unwrap(),
     });
     editor.update(cx, |view, _| view.last_transport_command = None);
     visual.simulate_keystrokes("space");
@@ -573,6 +584,18 @@ fn device_backspace_keeps_eq_graph_removal_local(cx: &mut TestAppContext) {
                 .bypassed()
         );
     });
+    visual.simulate_keystrokes("x");
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .is_some(),
+            "a focused graph must not route x to device removal"
+        );
+    });
     visual.simulate_keystrokes("backspace");
     pump_until(&editor, cx, |view| {
         settled(view)
@@ -638,6 +661,15 @@ fn device_backspace_preserves_invalid_numeric_draft_and_device(cx: &mut TestAppC
 
 #[gpui::test]
 fn device_delete_review_refused_press_cannot_turn_into_held_removal(cx: &mut TestAppContext) {
+    refused_device_delete_key(cx, "backspace");
+}
+
+#[gpui::test]
+fn device_x_refusal_survives_other_key_release_and_repeat(cx: &mut TestAppContext) {
+    refused_device_delete_key(cx, "x");
+}
+
+fn refused_device_delete_key(cx: &mut TestAppContext, key: &str) {
     let browser = BrowserDirectory::new();
     cx.update(super::super::super::bind_editor_keys);
     let (service, state, track, device, _, _) = actor_utility_fixture();
@@ -659,7 +691,7 @@ fn device_delete_review_refused_press_cannot_turn_into_held_removal(cx: &mut Tes
         });
         window.dispatch_input(
             gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
-                keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+                keystroke: gpui::Keystroke::parse(key).unwrap(),
                 is_held: false,
             }),
             cx,
@@ -682,8 +714,14 @@ fn device_delete_review_refused_press_cannot_turn_into_held_removal(cx: &mut Tes
     pump_until(&editor, cx, settled);
     visual.run_until_parked();
     let after_edit = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    if key == "x" {
+        // A release of a different key cannot retire x's refusal custody.
+        visual.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+        });
+    }
     visual.simulate_event(gpui::KeyDownEvent {
-        keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+        keystroke: gpui::Keystroke::parse(key).unwrap(),
         is_held: true,
     });
     pump_until(&editor, cx, settled);
@@ -696,9 +734,9 @@ fn device_delete_review_refused_press_cannot_turn_into_held_removal(cx: &mut Tes
         );
     });
     visual.simulate_event(gpui::KeyUpEvent {
-        keystroke: gpui::Keystroke::parse("backspace").unwrap(),
+        keystroke: gpui::Keystroke::parse(key).unwrap(),
     });
-    visual.simulate_keystrokes("backspace");
+    visual.simulate_keystrokes(key);
     pump_until(&editor, cx, |view| {
         settled(view)
             && view
@@ -1193,6 +1231,17 @@ fn device_zero_preserves_numeric_and_browser_typing_and_modified_keys(cx: &mut T
         };
         assert!(entity.read(cx).is_editing());
         assert_eq!(entity.read(cx).display_text(), "0");
+        assert_eq!(view.state.as_ref().unwrap().project, original);
+    });
+    visual.simulate_keystrokes("x");
+    editor.read_with(cx, |view, cx| {
+        let ParameterControl::Float { entity, .. } = &view.device_panel.controls[&ParameterKey {
+            device,
+            parameter: hex_lattice_contract::ParameterId::from_static(1),
+        }] else {
+            panic!("numeric control")
+        };
+        assert_eq!(entity.read(cx).display_text(), "0x");
         assert_eq!(view.state.as_ref().unwrap().project, original);
     });
     visual.simulate_keystrokes("escape");
