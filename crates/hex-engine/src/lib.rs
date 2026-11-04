@@ -1055,6 +1055,11 @@ impl PreparedTrackMix {
         self.channel_gain
     }
 
+    pub(crate) fn with_channel_gain(mut self, gain: Frame) -> Self {
+        self.channel_gain = gain;
+        self
+    }
+
     pub fn muted(self) -> bool {
         self.muted
     }
