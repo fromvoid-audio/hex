@@ -159,6 +159,15 @@ fn assert_action_label_fits(
 
 #[gpui::test]
 fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut TestAppContext) {
+    eq_remove_key_history(cx, "backspace");
+}
+
+#[gpui::test]
+fn eq_x_removes_only_the_focused_band_and_preserves_history(cx: &mut TestAppContext) {
+    eq_remove_key_history(cx, "x");
+}
+
+fn eq_remove_key_history(cx: &mut TestAppContext, key: &str) {
     cx.update(super::super::super::bind_editor_keys);
     cx.update(hex_widgets::bind_numeric_control_keys);
     let (service, state, track, device) = fixture(false);
@@ -178,7 +187,7 @@ fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut Tes
     let position = plot(&mut visual, device, 0.5, 0.5);
     visual.simulate_click(position, Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("backspace");
+    visual.simulate_keystrokes(key);
     pump_until(&editor, cx, |view| {
         settled(view)
             && (view.state.as_ref().unwrap().project.track(track).is_none()
@@ -196,7 +205,7 @@ fn eq_backspace_removes_only_the_focused_band_and_preserves_history(cx: &mut Tes
             "node removal atomically removes its automation"
         );
     });
-    visual.simulate_keystrokes("backspace");
+    visual.simulate_keystrokes(key);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
