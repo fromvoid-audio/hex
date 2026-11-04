@@ -273,14 +273,14 @@ pub(crate) fn open_prepared(
     } else {
         None
     };
-    if let Some(frames) = physical_callback_request {
-        if let Err(error) = control.configure_physical_callback_request(&mut callback, frames) {
-            drop(lifecycle::StreamOwner::failed_preparation_custody(
-                lease,
-                spectrum_reaper,
-            ));
-            return Err(error.to_string().into());
-        }
+    if let Some(frames) = physical_callback_request
+        && let Err(error) = control.configure_physical_callback_request(&mut callback, frames)
+    {
+        drop(lifecycle::StreamOwner::failed_preparation_custody(
+            lease,
+            spectrum_reaper,
+        ));
+        return Err(error.to_string().into());
     }
     let root = control.native_candidate_root();
     let (data_guard, error_guard, terminals, mut legacy_control, mut worker_control, client) =
