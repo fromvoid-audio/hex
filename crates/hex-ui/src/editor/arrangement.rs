@@ -309,7 +309,7 @@ impl EditorView {
                     ),
             );
         }
-        content = content.children(self.edit_cursor_layer(viewport));
+        content = content.children(self.edit_cursor_layer(viewport, cx));
         content = content.children(self.track_reorder_line());
         let upper = div()
             .flex()
@@ -951,7 +951,6 @@ impl EditorView {
                 .into()
             })
             .children([labels])
-            .children(self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Top))
             .children([canvas(
                 |_, _, _| (),
                 move |bounds, _, window, _cx| {
@@ -1038,7 +1037,8 @@ impl EditorView {
             .top_0()
             .bottom_0()
             .left_0()
-            .right_0()]);
+            .right_0()])
+            .children(self.edit_cursor_markers(viewport, hex_widgets::TimeMarkerEdge::Top, cx));
         super::timeline_strip::ruler_surface()
             .debug_selector(|| "arrangement-time-ruler".into())
             .flex()
