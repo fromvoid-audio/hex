@@ -2466,6 +2466,14 @@ impl EditorView {
             .and_then(|state| state.project.loop_region())
             .is_some_and(|region| region.enabled());
         self.state = Some(event.state);
+        if self.selection_loop_start.is_some_and(|(_, region)| {
+            self.state
+                .as_ref()
+                .and_then(|state| state.project.loop_region())
+                != Some(region)
+        }) {
+            self.selection_loop_start = None;
+        }
         if !event.project_replaced {
             self.retire_point_cursor_on_loop_enable(loop_was_enabled);
         }
@@ -2556,6 +2564,7 @@ impl EditorView {
             self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
             self.loop_start_over_clip = None;
+            self.selection_loop_start = None;
             self.clip_paint_gesture = None;
             self.cancel_section_pointer();
             self.time_selection = None;
