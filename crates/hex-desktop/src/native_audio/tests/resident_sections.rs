@@ -703,7 +703,8 @@ fn live_section_edits_retain_sampler(micro_bpm: u32, copy_before_self: bool) {
     (applied, _) = h.applied(applied);
     // Original periodic PCM supplies an independent phase/amplitude oracle
     // at the actual content position, including non-quantum-aligned wraps.
-    let sampler_path = files.wav(48_000, 64_000);
+    let source_frames = 64_000;
+    let sampler_path = files.wav(48_000, source_frames);
     let mut bytes = fs::read(&sampler_path).unwrap();
     for (i, sample) in bytes[44..].chunks_exact_mut(2).enumerate() {
         let value =
@@ -774,6 +775,7 @@ fn live_section_edits_retain_sampler(micro_bpm: u32, copy_before_self: bool) {
     // so that tail keeps the same phase. These checks all run after the
     // first seam whenever the position is inside that tail.
     let release_floor = 96;
+    assert!(u64::from(source_frames) > loop_frames + release_floor);
     let expected_from_start = |start: u64| -> [hex_engine::Frame; 64] {
         std::array::from_fn(|i| {
             let position = (start + i as u64) % loop_frames;

@@ -69,8 +69,3 @@ opt-level = 1
 # Debug assertions and overflow checks remain enabled (Pulse #4636).
 [profile.dev.package.hex-warp]
 opt-level = 1
-
-# Keep native section-loop audio oracles at their original loop lengths while
-# meeting the per-test budget. Debug assertions and overflow checks remain enabled.
-[profile.dev.package.hex-engine]
-opt-level = 1
