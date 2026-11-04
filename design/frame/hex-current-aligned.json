@@ -2,7 +2,7 @@
   "version": 1,
   "id": "hex-yield-workstation",
   "name": "hex / orbital",
-  "revisionId": "hex-current-aligned-study-r76",
+  "revisionId": "hex-current-aligned-study-r78",
   "width": 1900,
   "height": 1120,
   "background": "#111111",
@@ -317963,7 +317963,7 @@
       "bounds": {
         "x": 1568,
         "y": 175,
-        "width": 130,
+        "width": 180,
         "height": 51
       },
       "style": {
@@ -317983,9 +317983,9 @@
       "parentId": "aligned-current-study",
       "bounds": {
         "x": 1576,
-        "y": 181,
+        "y": 179,
         "width": 11,
-        "height": 11
+        "height": 15.399999999999999
       },
       "text": "▾",
       "style": {
@@ -318006,7 +318006,7 @@
       "bounds": {
         "x": 1589,
         "y": 179,
-        "width": 107,
+        "width": 157,
         "height": 15.399999999999999
       },
       "style": {
@@ -318024,7 +318024,7 @@
       "id": "aligned-track-number0",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 180,
         "width": 70,
         "height": 15
@@ -318044,7 +318044,7 @@
       "id": "aligned-track-num-label0",
       "type": "text",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 180,
         "width": 70,
         "height": 15
@@ -318066,7 +318066,7 @@
       "id": "aligned-solo0",
       "type": "container",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 180,
         "width": 20,
         "height": 15
@@ -318087,7 +318087,7 @@
       "id": "aligned-solo-t0",
       "type": "text",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 180,
         "width": 20,
         "height": 15
@@ -318109,7 +318109,7 @@
       "id": "aligned-arm0",
       "type": "container",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 180,
         "width": 20,
         "height": 15
@@ -318130,7 +318130,7 @@
       "id": "aligned-arm-t0",
       "type": "text",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 180,
         "width": 20,
         "height": 15
@@ -318152,7 +318152,7 @@
       "id": "aligned-gain0",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 204.5,
         "width": 70,
         "height": 14
@@ -318173,7 +318173,7 @@
       "id": "track-gain-fill-0",
       "type": "container",
       "bounds": {
-        "x": 1700,
+        "x": 1750,
         "y": 205.5,
         "width": 56.37,
         "height": 12
@@ -318192,7 +318192,7 @@
       "id": "aligned-gain-t0",
       "type": "text",
       "bounds": {
-        "x": 1703,
+        "x": 1753,
         "y": 204.5,
         "width": 65,
         "height": 14
@@ -318214,7 +318214,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 204.5,
         "width": 43,
         "height": 14
@@ -318233,7 +318233,7 @@
       "id": "aligned-pan0",
       "type": "text",
       "bounds": {
-        "x": 1779,
+        "x": 1829,
         "y": 204.5,
         "width": 41,
         "height": 14
@@ -322647,7 +322647,7 @@
       "bounds": {
         "x": 1568,
         "y": 226,
-        "width": 130,
+        "width": 180,
         "height": 51
       },
       "style": {
@@ -322667,9 +322667,9 @@
       "parentId": "aligned-current-study",
       "bounds": {
         "x": 1576,
-        "y": 232,
+        "y": 230,
         "width": 11,
-        "height": 11
+        "height": 15.399999999999999
       },
       "text": "▾",
       "style": {
@@ -322690,7 +322690,7 @@
       "bounds": {
         "x": 1589,
         "y": 230,
-        "width": 107,
+        "width": 157,
         "height": 15.399999999999999
       },
       "style": {
@@ -322708,7 +322708,7 @@
       "id": "aligned-track-number1",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 231,
         "width": 70,
         "height": 15
@@ -322728,7 +322728,7 @@
       "id": "aligned-track-num-label1",
       "type": "text",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 231,
         "width": 70,
         "height": 15
@@ -322750,7 +322750,7 @@
       "id": "aligned-solo1",
       "type": "container",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 231,
         "width": 20,
         "height": 15
@@ -322771,7 +322771,7 @@
       "id": "aligned-solo-t1",
       "type": "text",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 231,
         "width": 20,
         "height": 15
@@ -322793,7 +322793,7 @@
       "id": "aligned-arm1",
       "type": "container",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 231,
         "width": 20,
         "height": 15
@@ -322814,7 +322814,7 @@
       "id": "aligned-arm-t1",
       "type": "text",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 231,
         "width": 20,
         "height": 15
@@ -322836,7 +322836,7 @@
       "id": "aligned-gain1",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 255.5,
         "width": 70,
         "height": 14
@@ -322857,7 +322857,7 @@
       "id": "track-gain-fill-1",
       "type": "container",
       "bounds": {
-        "x": 1700,
+        "x": 1750,
         "y": 256.5,
         "width": 54.85,
         "height": 12
@@ -322876,7 +322876,7 @@
       "id": "aligned-gain-t1",
       "type": "text",
       "bounds": {
-        "x": 1703,
+        "x": 1753,
         "y": 255.5,
         "width": 65,
         "height": 14
@@ -322898,7 +322898,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 255.5,
         "width": 43,
         "height": 14
@@ -322918,7 +322918,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1799.5,
+        "x": 1849.5,
         "y": 256.5,
         "width": 11,
         "height": 12
@@ -322937,7 +322937,7 @@
       "id": "aligned-pan1",
       "type": "text",
       "bounds": {
-        "x": 1779,
+        "x": 1829,
         "y": 255.5,
         "width": 41,
         "height": 14
@@ -326247,7 +326247,7 @@
       "bounds": {
         "x": 1568,
         "y": 277,
-        "width": 130,
+        "width": 180,
         "height": 51
       },
       "style": {
@@ -326267,9 +326267,9 @@
       "parentId": "aligned-current-study",
       "bounds": {
         "x": 1576,
-        "y": 283,
+        "y": 281,
         "width": 11,
-        "height": 11
+        "height": 15.399999999999999
       },
       "text": "▾",
       "style": {
@@ -326290,7 +326290,7 @@
       "bounds": {
         "x": 1589,
         "y": 281,
-        "width": 89,
+        "width": 139,
         "height": 15.399999999999999
       },
       "style": {
@@ -326308,7 +326308,7 @@
       "id": "aligned-track-number2",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 282,
         "width": 70,
         "height": 15
@@ -326328,7 +326328,7 @@
       "id": "aligned-track-num-label2",
       "type": "text",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 282,
         "width": 70,
         "height": 15
@@ -326350,7 +326350,7 @@
       "id": "aligned-solo2",
       "type": "container",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 282,
         "width": 20,
         "height": 15
@@ -326371,7 +326371,7 @@
       "id": "aligned-solo-t2",
       "type": "text",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 282,
         "width": 20,
         "height": 15
@@ -326393,7 +326393,7 @@
       "id": "aligned-arm2",
       "type": "container",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 282,
         "width": 20,
         "height": 15
@@ -326414,7 +326414,7 @@
       "id": "aligned-arm-t2",
       "type": "text",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 282,
         "width": 20,
         "height": 15
@@ -326436,7 +326436,7 @@
       "id": "aligned-gain2",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 306.5,
         "width": 70,
         "height": 14
@@ -326457,7 +326457,7 @@
       "id": "track-gain-fill-2",
       "type": "container",
       "bounds": {
-        "x": 1700,
+        "x": 1750,
         "y": 307.5,
         "width": 53.33,
         "height": 12
@@ -326476,7 +326476,7 @@
       "id": "aligned-gain-t2",
       "type": "text",
       "bounds": {
-        "x": 1703,
+        "x": 1753,
         "y": 306.5,
         "width": 65,
         "height": 14
@@ -326498,7 +326498,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 306.5,
         "width": 43,
         "height": 14
@@ -326517,7 +326517,7 @@
       "id": "aligned-pan2",
       "type": "text",
       "bounds": {
-        "x": 1779,
+        "x": 1829,
         "y": 306.5,
         "width": 41,
         "height": 14
@@ -327323,7 +327323,7 @@
       "bounds": {
         "x": 1571,
         "y": 328,
-        "width": 127,
+        "width": 177,
         "height": 51
       },
       "style": {
@@ -327335,7 +327335,45 @@
         "padding": 0,
         "cutCorner": 7
       },
-      "parentId": "aligned-current-study"
+      "parentId": "aligned-current-study",
+      "points": [
+        [
+          0,
+          4
+        ],
+        [
+          0.3,
+          2.4
+        ],
+        [
+          1.1,
+          1.1
+        ],
+        [
+          2.4,
+          0.3
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          177,
+          0
+        ],
+        [
+          177,
+          44
+        ],
+        [
+          170,
+          51
+        ],
+        [
+          0,
+          51
+        ]
+      ]
     },
     {
       "id": "track-disclosure-3",
@@ -327343,9 +327381,9 @@
       "parentId": "aligned-current-study",
       "bounds": {
         "x": 1579,
-        "y": 334,
+        "y": 332,
         "width": 11,
-        "height": 11
+        "height": 15.399999999999999
       },
       "text": "▾",
       "style": {
@@ -327366,7 +327404,7 @@
       "bounds": {
         "x": 1592,
         "y": 332,
-        "width": 86,
+        "width": 136,
         "height": 15.399999999999999
       },
       "style": {
@@ -327384,7 +327422,7 @@
       "id": "aligned-track-number3",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 333,
         "width": 70,
         "height": 15
@@ -327404,7 +327442,7 @@
       "id": "aligned-track-num-label3",
       "type": "text",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 333,
         "width": 70,
         "height": 15
@@ -327426,7 +327464,7 @@
       "id": "aligned-solo3",
       "type": "container",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 333,
         "width": 20,
         "height": 15
@@ -327447,7 +327485,7 @@
       "id": "aligned-solo-t3",
       "type": "text",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 333,
         "width": 20,
         "height": 15
@@ -327469,7 +327507,7 @@
       "id": "aligned-arm3",
       "type": "container",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 333,
         "width": 20,
         "height": 15
@@ -327490,7 +327528,7 @@
       "id": "aligned-arm-t3",
       "type": "text",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 333,
         "width": 20,
         "height": 15
@@ -327512,7 +327550,7 @@
       "id": "aligned-gain3",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 357.5,
         "width": 70,
         "height": 14
@@ -327533,7 +327571,7 @@
       "id": "track-gain-fill-3",
       "type": "container",
       "bounds": {
-        "x": 1700,
+        "x": 1750,
         "y": 358.5,
         "width": 51.81,
         "height": 12
@@ -327552,7 +327590,7 @@
       "id": "aligned-gain-t3",
       "type": "text",
       "bounds": {
-        "x": 1703,
+        "x": 1753,
         "y": 357.5,
         "width": 65,
         "height": 14
@@ -327574,7 +327612,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 357.5,
         "width": 43,
         "height": 14
@@ -327593,7 +327631,7 @@
       "id": "aligned-pan3",
       "type": "text",
       "bounds": {
-        "x": 1779,
+        "x": 1829,
         "y": 357.5,
         "width": 41,
         "height": 14
@@ -331722,7 +331760,7 @@
       "bounds": {
         "x": 1571,
         "y": 379,
-        "width": 127,
+        "width": 177,
         "height": 51
       },
       "style": {
@@ -331734,7 +331772,45 @@
         "padding": 0,
         "cutCorner": 7
       },
-      "parentId": "aligned-current-study"
+      "parentId": "aligned-current-study",
+      "points": [
+        [
+          0,
+          4
+        ],
+        [
+          0.3,
+          2.4
+        ],
+        [
+          1.1,
+          1.1
+        ],
+        [
+          2.4,
+          0.3
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          177,
+          0
+        ],
+        [
+          177,
+          44
+        ],
+        [
+          170,
+          51
+        ],
+        [
+          0,
+          51
+        ]
+      ]
     },
     {
       "id": "track-disclosure-4",
@@ -331742,9 +331818,9 @@
       "parentId": "aligned-current-study",
       "bounds": {
         "x": 1579,
-        "y": 385,
+        "y": 383,
         "width": 11,
-        "height": 11
+        "height": 15.399999999999999
       },
       "text": "▾",
       "style": {
@@ -331765,7 +331841,7 @@
       "bounds": {
         "x": 1592,
         "y": 383,
-        "width": 86,
+        "width": 136,
         "height": 15.399999999999999
       },
       "style": {
@@ -331783,7 +331859,7 @@
       "id": "aligned-track-number4",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 384,
         "width": 70,
         "height": 15
@@ -331803,7 +331879,7 @@
       "id": "aligned-track-num-label4",
       "type": "text",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 384,
         "width": 70,
         "height": 15
@@ -331825,7 +331901,7 @@
       "id": "aligned-solo4",
       "type": "container",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 384,
         "width": 20,
         "height": 15
@@ -331846,7 +331922,7 @@
       "id": "aligned-solo-t4",
       "type": "text",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 384,
         "width": 20,
         "height": 15
@@ -331868,7 +331944,7 @@
       "id": "aligned-arm4",
       "type": "container",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 384,
         "width": 20,
         "height": 15
@@ -331889,7 +331965,7 @@
       "id": "aligned-arm-t4",
       "type": "text",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 384,
         "width": 20,
         "height": 15
@@ -331911,7 +331987,7 @@
       "id": "aligned-gain4",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 408.5,
         "width": 70,
         "height": 14
@@ -331932,7 +332008,7 @@
       "id": "track-gain-fill-4",
       "type": "container",
       "bounds": {
-        "x": 1700,
+        "x": 1750,
         "y": 409.5,
         "width": 50.28,
         "height": 12
@@ -331951,7 +332027,7 @@
       "id": "aligned-gain-t4",
       "type": "text",
       "bounds": {
-        "x": 1703,
+        "x": 1753,
         "y": 408.5,
         "width": 65,
         "height": 14
@@ -331973,7 +332049,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 408.5,
         "width": 43,
         "height": 14
@@ -331992,7 +332068,7 @@
       "id": "aligned-pan4",
       "type": "text",
       "bounds": {
-        "x": 1779,
+        "x": 1829,
         "y": 408.5,
         "width": 41,
         "height": 14
@@ -335542,7 +335618,7 @@
       "bounds": {
         "x": 1574,
         "y": 430,
-        "width": 124,
+        "width": 174,
         "height": 51
       },
       "style": {
@@ -335554,7 +335630,45 @@
         "padding": 0,
         "cutCorner": 7
       },
-      "parentId": "aligned-current-study"
+      "parentId": "aligned-current-study",
+      "points": [
+        [
+          0,
+          4
+        ],
+        [
+          0.3,
+          2.4
+        ],
+        [
+          1.1,
+          1.1
+        ],
+        [
+          2.4,
+          0.3
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          174,
+          0
+        ],
+        [
+          174,
+          44
+        ],
+        [
+          167,
+          51
+        ],
+        [
+          0,
+          51
+        ]
+      ]
     },
     {
       "id": "track-disclosure-5",
@@ -335562,9 +335676,9 @@
       "parentId": "aligned-current-study",
       "bounds": {
         "x": 1582,
-        "y": 436,
+        "y": 434,
         "width": 11,
-        "height": 11
+        "height": 15.399999999999999
       },
       "text": "▾",
       "style": {
@@ -335585,7 +335699,7 @@
       "bounds": {
         "x": 1595,
         "y": 434,
-        "width": 83,
+        "width": 133,
         "height": 15.399999999999999
       },
       "style": {
@@ -335603,7 +335717,7 @@
       "id": "aligned-track-number5",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 435,
         "width": 70,
         "height": 15
@@ -335623,7 +335737,7 @@
       "id": "aligned-track-num-label5",
       "type": "text",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 435,
         "width": 70,
         "height": 15
@@ -335645,7 +335759,7 @@
       "id": "aligned-solo5",
       "type": "container",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 435,
         "width": 20,
         "height": 15
@@ -335666,7 +335780,7 @@
       "id": "aligned-solo-t5",
       "type": "text",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 435,
         "width": 20,
         "height": 15
@@ -335688,7 +335802,7 @@
       "id": "aligned-arm5",
       "type": "container",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 435,
         "width": 20,
         "height": 15
@@ -335709,7 +335823,7 @@
       "id": "aligned-arm-t5",
       "type": "text",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 435,
         "width": 20,
         "height": 15
@@ -335731,7 +335845,7 @@
       "id": "aligned-gain5",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 459.5,
         "width": 70,
         "height": 14
@@ -335752,7 +335866,7 @@
       "id": "track-gain-fill-5",
       "type": "container",
       "bounds": {
-        "x": 1700,
+        "x": 1750,
         "y": 460.5,
         "width": 48.76,
         "height": 12
@@ -335771,7 +335885,7 @@
       "id": "aligned-gain-t5",
       "type": "text",
       "bounds": {
-        "x": 1703,
+        "x": 1753,
         "y": 459.5,
         "width": 65,
         "height": 14
@@ -335793,7 +335907,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 459.5,
         "width": 43,
         "height": 14
@@ -335813,7 +335927,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1796.5,
+        "x": 1846.5,
         "y": 460.5,
         "width": 3,
         "height": 12
@@ -335832,7 +335946,7 @@
       "id": "aligned-pan5",
       "type": "text",
       "bounds": {
-        "x": 1779,
+        "x": 1829,
         "y": 459.5,
         "width": 41,
         "height": 14
@@ -339192,7 +339306,7 @@
       "bounds": {
         "x": 1568,
         "y": 481,
-        "width": 130,
+        "width": 180,
         "height": 51
       },
       "style": {
@@ -339212,9 +339326,9 @@
       "parentId": "aligned-current-study",
       "bounds": {
         "x": 1576,
-        "y": 487,
+        "y": 485,
         "width": 11,
-        "height": 11
+        "height": 15.399999999999999
       },
       "text": "▾",
       "style": {
@@ -339235,7 +339349,7 @@
       "bounds": {
         "x": 1589,
         "y": 485,
-        "width": 107,
+        "width": 157,
         "height": 15.399999999999999
       },
       "style": {
@@ -339253,7 +339367,7 @@
       "id": "aligned-track-number6",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 486,
         "width": 70,
         "height": 15
@@ -339273,7 +339387,7 @@
       "id": "aligned-track-num-label6",
       "type": "text",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 486,
         "width": 70,
         "height": 15
@@ -339295,7 +339409,7 @@
       "id": "aligned-solo6",
       "type": "container",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 486,
         "width": 20,
         "height": 15
@@ -339316,7 +339430,7 @@
       "id": "aligned-solo-t6",
       "type": "text",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 486,
         "width": 20,
         "height": 15
@@ -339338,7 +339452,7 @@
       "id": "aligned-arm6",
       "type": "container",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 486,
         "width": 20,
         "height": 15
@@ -339359,7 +339473,7 @@
       "id": "aligned-arm-t6",
       "type": "text",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 486,
         "width": 20,
         "height": 15
@@ -339381,7 +339495,7 @@
       "id": "aligned-gain6",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 510.5,
         "width": 70,
         "height": 14
@@ -339402,7 +339516,7 @@
       "id": "track-gain-fill-6",
       "type": "container",
       "bounds": {
-        "x": 1700,
+        "x": 1750,
         "y": 511.5,
         "width": 47.24,
         "height": 12
@@ -339421,7 +339535,7 @@
       "id": "aligned-gain-t6",
       "type": "text",
       "bounds": {
-        "x": 1703,
+        "x": 1753,
         "y": 510.5,
         "width": 65,
         "height": 14
@@ -339443,7 +339557,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 510.5,
         "width": 43,
         "height": 14
@@ -339462,7 +339576,7 @@
       "id": "aligned-pan6",
       "type": "text",
       "bounds": {
-        "x": 1779,
+        "x": 1829,
         "y": 510.5,
         "width": 41,
         "height": 14
@@ -342613,7 +342727,7 @@
       "bounds": {
         "x": 1568,
         "y": 532,
-        "width": 130,
+        "width": 180,
         "height": 51
       },
       "style": {
@@ -342633,9 +342747,9 @@
       "parentId": "aligned-current-study",
       "bounds": {
         "x": 1576,
-        "y": 538,
+        "y": 536,
         "width": 11,
-        "height": 11
+        "height": 15.399999999999999
       },
       "text": "▾",
       "style": {
@@ -342656,7 +342770,7 @@
       "bounds": {
         "x": 1589,
         "y": 536,
-        "width": 107,
+        "width": 157,
         "height": 15.399999999999999
       },
       "style": {
@@ -342674,7 +342788,7 @@
       "id": "aligned-track-number7",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 537,
         "width": 70,
         "height": 15
@@ -342694,7 +342808,7 @@
       "id": "aligned-track-num-label7",
       "type": "text",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 537,
         "width": 70,
         "height": 15
@@ -342716,7 +342830,7 @@
       "id": "aligned-solo7",
       "type": "container",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 537,
         "width": 20,
         "height": 15
@@ -342737,7 +342851,7 @@
       "id": "aligned-solo-t7",
       "type": "text",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 537,
         "width": 20,
         "height": 15
@@ -342759,7 +342873,7 @@
       "id": "aligned-arm7",
       "type": "container",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 537,
         "width": 20,
         "height": 15
@@ -342780,7 +342894,7 @@
       "id": "aligned-arm-t7",
       "type": "text",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 537,
         "width": 20,
         "height": 15
@@ -342802,7 +342916,7 @@
       "id": "aligned-gain7",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 561.5,
         "width": 70,
         "height": 14
@@ -342823,7 +342937,7 @@
       "id": "track-gain-fill-7",
       "type": "container",
       "bounds": {
-        "x": 1700,
+        "x": 1750,
         "y": 562.5,
         "width": 45.72,
         "height": 12
@@ -342842,7 +342956,7 @@
       "id": "aligned-gain-t7",
       "type": "text",
       "bounds": {
-        "x": 1703,
+        "x": 1753,
         "y": 561.5,
         "width": 65,
         "height": 14
@@ -342864,7 +342978,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 561.5,
         "width": 43,
         "height": 14
@@ -342884,7 +342998,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1799.5,
+        "x": 1849.5,
         "y": 562.5,
         "width": 6,
         "height": 12
@@ -342903,7 +343017,7 @@
       "id": "aligned-pan7",
       "type": "text",
       "bounds": {
-        "x": 1779,
+        "x": 1829,
         "y": 561.5,
         "width": 41,
         "height": 14
@@ -346472,7 +346586,7 @@
       "bounds": {
         "x": 1568,
         "y": 583,
-        "width": 130,
+        "width": 180,
         "height": 51
       },
       "style": {
@@ -346492,9 +346606,9 @@
       "parentId": "aligned-current-study",
       "bounds": {
         "x": 1576,
-        "y": 589,
+        "y": 587,
         "width": 11,
-        "height": 11
+        "height": 15.399999999999999
       },
       "text": "▾",
       "style": {
@@ -346515,7 +346629,7 @@
       "bounds": {
         "x": 1589,
         "y": 587,
-        "width": 107,
+        "width": 157,
         "height": 15.399999999999999
       },
       "style": {
@@ -346533,7 +346647,7 @@
       "id": "aligned-track-number8",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 588,
         "width": 70,
         "height": 15
@@ -346553,7 +346667,7 @@
       "id": "aligned-track-num-label8",
       "type": "text",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 588,
         "width": 70,
         "height": 15
@@ -346575,7 +346689,7 @@
       "id": "aligned-solo8",
       "type": "container",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 588,
         "width": 20,
         "height": 15
@@ -346596,7 +346710,7 @@
       "id": "aligned-solo-t8",
       "type": "text",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 588,
         "width": 20,
         "height": 15
@@ -346618,7 +346732,7 @@
       "id": "aligned-arm8",
       "type": "container",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 588,
         "width": 20,
         "height": 15
@@ -346639,7 +346753,7 @@
       "id": "aligned-arm-t8",
       "type": "text",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 588,
         "width": 20,
         "height": 15
@@ -346661,7 +346775,7 @@
       "id": "aligned-gain8",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 612.5,
         "width": 70,
         "height": 14
@@ -346682,7 +346796,7 @@
       "id": "track-gain-fill-8",
       "type": "container",
       "bounds": {
-        "x": 1700,
+        "x": 1750,
         "y": 613.5,
         "width": 44.2,
         "height": 12
@@ -346701,7 +346815,7 @@
       "id": "aligned-gain-t8",
       "type": "text",
       "bounds": {
-        "x": 1703,
+        "x": 1753,
         "y": 612.5,
         "width": 65,
         "height": 14
@@ -346723,7 +346837,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 612.5,
         "width": 43,
         "height": 14
@@ -346742,7 +346856,7 @@
       "id": "aligned-pan8",
       "type": "text",
       "bounds": {
-        "x": 1779,
+        "x": 1829,
         "y": 612.5,
         "width": 41,
         "height": 14
@@ -351156,7 +351270,7 @@
       "bounds": {
         "x": 1568,
         "y": 634,
-        "width": 130,
+        "width": 180,
         "height": 51
       },
       "style": {
@@ -351176,9 +351290,9 @@
       "parentId": "aligned-current-study",
       "bounds": {
         "x": 1576,
-        "y": 640,
+        "y": 638,
         "width": 11,
-        "height": 11
+        "height": 15.399999999999999
       },
       "text": "▾",
       "style": {
@@ -351199,7 +351313,7 @@
       "bounds": {
         "x": 1589,
         "y": 638,
-        "width": 107,
+        "width": 157,
         "height": 15.399999999999999
       },
       "style": {
@@ -351217,7 +351331,7 @@
       "id": "aligned-track-number9",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 639,
         "width": 70,
         "height": 15
@@ -351237,7 +351351,7 @@
       "id": "aligned-track-num-label9",
       "type": "text",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 639,
         "width": 70,
         "height": 15
@@ -351259,7 +351373,7 @@
       "id": "aligned-solo9",
       "type": "container",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 639,
         "width": 20,
         "height": 15
@@ -351280,7 +351394,7 @@
       "id": "aligned-solo-t9",
       "type": "text",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 639,
         "width": 20,
         "height": 15
@@ -351302,7 +351416,7 @@
       "id": "aligned-arm9",
       "type": "container",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 639,
         "width": 20,
         "height": 15
@@ -351323,7 +351437,7 @@
       "id": "aligned-arm-t9",
       "type": "text",
       "bounds": {
-        "x": 1801,
+        "x": 1851,
         "y": 639,
         "width": 20,
         "height": 15
@@ -351345,7 +351459,7 @@
       "id": "aligned-gain9",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 663.5,
         "width": 70,
         "height": 14
@@ -351366,7 +351480,7 @@
       "id": "track-gain-fill-9",
       "type": "container",
       "bounds": {
-        "x": 1700,
+        "x": 1750,
         "y": 664.5,
         "width": 42.68,
         "height": 12
@@ -351385,7 +351499,7 @@
       "id": "aligned-gain-t9",
       "type": "text",
       "bounds": {
-        "x": 1703,
+        "x": 1753,
         "y": 663.5,
         "width": 65,
         "height": 14
@@ -351407,7 +351521,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1778,
+        "x": 1828,
         "y": 663.5,
         "width": 43,
         "height": 14
@@ -351426,7 +351540,7 @@
       "id": "aligned-pan9",
       "type": "text",
       "bounds": {
-        "x": 1779,
+        "x": 1829,
         "y": 663.5,
         "width": 41,
         "height": 14
@@ -360574,7 +360688,7 @@
       "bounds": {
         "x": 1568,
         "y": 480,
-        "width": 130,
+        "width": 180,
         "height": 1
       },
       "style": {
@@ -360593,7 +360707,7 @@
       "bounds": {
         "x": 1571,
         "y": 478,
-        "width": 127,
+        "width": 177,
         "height": 2
       },
       "style": {
@@ -360642,7 +360756,7 @@
       "bounds": {
         "x": 1568,
         "y": 277,
-        "width": 130,
+        "width": 180,
         "height": 0
       },
       "style": {
@@ -360660,7 +360774,7 @@
           0
         ],
         [
-          130,
+          180,
           0
         ]
       ],
@@ -360670,7 +360784,7 @@
       "id": "marked-group-border-parent-right",
       "type": "line",
       "bounds": {
-        "x": 1698,
+        "x": 1748,
         "y": 277,
         "width": 0,
         "height": 51
@@ -360702,7 +360816,7 @@
       "bounds": {
         "x": 1571,
         "y": 328,
-        "width": 127,
+        "width": 177,
         "height": 0
       },
       "style": {
@@ -360720,7 +360834,7 @@
           0
         ],
         [
-          127,
+          177,
           0
         ]
       ],
@@ -360760,7 +360874,7 @@
       "id": "marked-group-border-children-right",
       "type": "line",
       "bounds": {
-        "x": 1698,
+        "x": 1748,
         "y": 328,
         "width": 0,
         "height": 153
@@ -360792,7 +360906,7 @@
       "bounds": {
         "x": 1571,
         "y": 481,
-        "width": 127,
+        "width": 177,
         "height": 0
       },
       "style": {
@@ -360810,7 +360924,7 @@
           0
         ],
         [
-          127,
+          177,
           0
         ]
       ],
@@ -360822,7 +360936,7 @@
       "bounds": {
         "x": 1571,
         "y": 379,
-        "width": 127,
+        "width": 177,
         "height": 0
       },
       "style": {
@@ -360840,7 +360954,7 @@
           0
         ],
         [
-          127,
+          177,
           0
         ]
       ],
@@ -360850,7 +360964,7 @@
       "id": "marked-group-border-nested-right",
       "type": "line",
       "bounds": {
-        "x": 1698,
+        "x": 1748,
         "y": 379,
         "width": 0,
         "height": 51
@@ -360882,7 +360996,7 @@
       "bounds": {
         "x": 1574,
         "y": 430,
-        "width": 124,
+        "width": 174,
         "height": 0
       },
       "style": {
@@ -360900,7 +361014,7 @@
           0
         ],
         [
-          124,
+          174,
           0
         ]
       ],
@@ -365729,7 +365843,7 @@
       "id": "main-gain",
       "type": "container",
       "bounds": {
-        "x": 1699,
+        "x": 1749,
         "y": 779.0,
         "width": 70,
         "height": 14
@@ -365750,7 +365864,7 @@
       "id": "main-gain-fill",
       "type": "container",
       "bounds": {
-        "x": 1700,
+        "x": 1750,
         "y": 780.0,
         "width": 62.1,
         "height": 12
@@ -365769,7 +365883,7 @@
       "id": "main-gain-text",
       "type": "text",
       "bounds": {
-        "x": 1703,
+        "x": 1753,
         "y": 779.0,
         "width": 65,
         "height": 14
@@ -367491,7 +367605,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1681,
+        "x": 1731,
         "y": 282,
         "width": 12,
         "height": 12
@@ -367511,7 +367625,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1684,
+        "x": 1734,
         "y": 285,
         "width": 6,
         "height": 6
@@ -367531,7 +367645,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1681,
+        "x": 1731,
         "y": 333,
         "width": 12,
         "height": 12
@@ -367551,7 +367665,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1684,
+        "x": 1734,
         "y": 336,
         "width": 6,
         "height": 6
@@ -367571,7 +367685,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1681,
+        "x": 1731,
         "y": 384,
         "width": 12,
         "height": 12
@@ -367591,7 +367705,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1684,
+        "x": 1734,
         "y": 387,
         "width": 6,
         "height": 6
@@ -367611,7 +367725,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1681,
+        "x": 1731,
         "y": 435,
         "width": 12,
         "height": 12
@@ -367631,7 +367745,7 @@
       "type": "container",
       "parentId": "aligned-current-study",
       "bounds": {
-        "x": 1684,
+        "x": 1734,
         "y": 438,
         "width": 6,
         "height": 6
