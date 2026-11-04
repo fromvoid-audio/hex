@@ -102,9 +102,7 @@ impl EditorView {
         if self.edit_pending() {
             return;
         }
-        self.enqueue(Request::Edit(Command::InsertDefaultTrack {
-            before_track: self.new_track_insertion_anchor(),
-        }));
+        self.insert_default_track(self.new_track_insertion_anchor());
     }
 
     pub(super) fn add_midi_clip(&mut self) {

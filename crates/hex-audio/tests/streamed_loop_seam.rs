@@ -1,4 +1,4 @@
-//! A streamed Arrangement loop seam reads its overrun page without callback allocation.
+//! Streamed Arrangement loop-end fades and wraps without callback allocation.
 #![cfg(feature = "allocation-probe")]
 use hex_audio::{prepared::PublicationPolicy, worker_fixture};
 use hex_engine::{
@@ -20,8 +20,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-/// Two stream pages; the loop ends exactly on the page boundary, so the
-/// seam's outgoing overrun lives only in the second page.
+/// Two stream pages; the loop ends exactly on their boundary.
 const FRAMES: usize = 2 * STREAM_PAGE_FRAMES;
 const LOOP_START: u64 = 2_048;
 const LOOP_END: u64 = STREAM_PAGE_FRAMES as u64;
@@ -73,13 +72,11 @@ fn dc_wav(path: &PathBuf) {
     fs::write(path, wav).unwrap();
 }
 
-/// DC is continuous across the seam, so rendering the outgoing side from a
-/// missing page would show as a dip below `LEVEL` after a wrap. The overrun
-/// page is the page after the one holding the loop end, so the playhead's
-/// bounded lookahead (#4075) loads it before the first wrap demands it: no
-/// wrap holds the transport, and every frame plays at `LEVEL`.
+/// A constant signal makes the requested 128-frame end fade and full-level
+/// loop attack independently observable. Bounded lookahead must also prevent
+/// the page-boundary wrap from holding the transport.
 #[test]
-fn streamed_loop_seam_crossfade_is_continuous_and_callback_allocation_free() {
+fn streamed_loop_seam_fades_end_and_preserves_attack_without_callback_allocations() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -222,7 +219,13 @@ fn streamed_loop_seam_crossfade_is_continuous_and_callback_allocation_free() {
             held_at.push((wraps, position));
         } else {
             for frame in samples {
-                assert_eq!(frame, [LEVEL; 2], "dip at timeline frame {position}");
+                let remaining = LOOP_END - position;
+                let gain = if remaining <= 128 {
+                    (remaining - 1) as f32 / 127.0
+                } else {
+                    1.0
+                };
+                assert_eq!(frame, [LEVEL * gain; 2], "timeline frame {position}");
                 position += 1;
                 if position == LOOP_END {
                     position = LOOP_START;
@@ -237,7 +240,7 @@ fn streamed_loop_seam_crossfade_is_continuous_and_callback_allocation_free() {
     }
     assert!(
         held_at.is_empty(),
-        "lookahead made the overrun resident before the wrap: {held_at:?}"
+        "lookahead did not keep the loop available at the wrap: {held_at:?}"
     );
     let control = output.publication.control().unwrap();
     assert!(control.retire_audio_candidate_domain(domain));

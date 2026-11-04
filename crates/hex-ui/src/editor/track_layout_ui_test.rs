@@ -710,7 +710,7 @@ fn h_overview_roundtrip_preserves_distinct_heights_and_pinned_return_main_rows(
     }
     assert_heights(&mut visual, &tracks, &[84.0, 124.0]);
     focus_workspace(&mut visual, &editor);
-    for key in ["cmd-h", "ctrl-h", "alt-h", "shift-h"] {
+    for key in ["ctrl-h", "alt-h", "shift-h"] {
         visual.simulate_keystrokes(key);
         assert_heights(&mut visual, &tracks, &[84.0, 124.0]);
     }
@@ -768,6 +768,55 @@ fn h_overview_roundtrip_preserves_distinct_heights_and_pinned_return_main_rows(
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
         assert_eq!(view.worker_requests_pending, 0);
+        assert!(view.last_enqueued_edit.is_none());
+    });
+}
+
+#[gpui::test]
+fn command_h_resets_track_heights_and_exits_overview(cx: &mut TestAppContext) {
+    let (mut visual, editor, tracks) = fixture(cx, 2);
+    let original = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    for (track, delta) in [(tracks[0], 40.0), (tracks[1], 80.0)] {
+        let edge = bounds(&mut visual, "track-height-resize", track).center();
+        drag(&mut visual, edge, point(edge.x, edge.y + px(delta)));
+    }
+    focus_workspace(&mut visual, &editor);
+    visual.simulate_keystrokes("cmd-h");
+    assert_heights(&mut visual, &tracks, &[44.0, 44.0]);
+    let edge = bounds(&mut visual, "track-height-resize", tracks[0]).center();
+    drag(&mut visual, edge, point(edge.x, edge.y + px(40.0)));
+    focus_workspace(&mut visual, &editor);
+    visual.simulate_keystrokes("h cmd-h");
+    assert_heights(&mut visual, &tracks, &[44.0, 44.0]);
+    visual.simulate_keystrokes("h h");
+    assert_heights(&mut visual, &tracks, &[44.0, 44.0]);
+    let edge = bounds(&mut visual, "track-height-resize", tracks[0]).center();
+    let to = point(edge.x, edge.y + px(40.0));
+    let alt = Modifiers {
+        alt: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(edge, MouseButton::Left, alt);
+    visual.simulate_mouse_move(to, MouseButton::Left, alt);
+    visual.simulate_mouse_up(to, MouseButton::Left, alt);
+    assert_heights(&mut visual, &tracks, &[84.0, 84.0]);
+    focus_workspace(&mut visual, &editor);
+    visual.simulate_keystrokes("cmd-h");
+    assert_heights(&mut visual, &tracks, &[44.0, 44.0]);
+    let edge = bounds(&mut visual, "track-height-resize", tracks[0]).center();
+    drag(&mut visual, edge, point(edge.x, edge.y + px(40.0)));
+    let name = bounds(&mut visual, "track-name", tracks[0]).center();
+    visual.simulate_click(name, Modifiers::default());
+    visual.simulate_keystrokes("cmd-r cmd-h");
+    assert_heights(&mut visual, &tracks, &[84.0, 44.0]);
+    visual.simulate_keystrokes("escape");
+    focus_workspace(&mut visual, &editor);
+    visual.simulate_keystrokes("tab cmd-h tab");
+    assert_heights(&mut visual, &tracks, &[84.0, 44.0]);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
         assert!(view.last_enqueued_edit.is_none());
     });
 }
@@ -1008,7 +1057,7 @@ mod capture_tests;
 mod main_size_tests;
 
 #[gpui::test]
-fn arrangement_z_fits_selected_track_span_and_x_restores_both_axes(cx: &mut TestAppContext) {
+fn arrangement_z_fits_selected_track_span_and_v_restores_both_axes(cx: &mut TestAppContext) {
     let (mut visual, editor, tracks) = fixture(cx, 12);
     editor.update(&mut visual, |view, cx| {
         view.track_scroll
@@ -1077,7 +1126,7 @@ fn arrangement_z_fits_selected_track_span_and_x_restores_both_axes(cx: &mut Test
     visual.run_until_parked();
     visual.simulate_resize(size(px(1200.0), px(680.0)));
     visual.run_until_parked();
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.track_body_height(tracks[6]), before.0);
@@ -1110,7 +1159,7 @@ fn arrangement_z_fits_selected_track_span_and_x_restores_both_axes(cx: &mut Test
                 <= 2.0
         );
     });
-    visual.simulate_keystrokes("x");
+    visual.simulate_keystrokes("v");
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.track_body_height(tracks[6]), before.0);

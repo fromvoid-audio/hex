@@ -110,3 +110,67 @@ fn changed_file_decodes_again_as_a_new_asset() {
     assert!(refused.error.is_some());
     assert_eq!(refused.state.project, project);
 }
+
+#[test]
+fn fifo_new_track_gain_is_atomic_and_reuses_resident_audio() {
+    let directory = TestDir::new();
+    let path = directory.0.join("gain.wav");
+    fs::write(&path, wav_mono(&[1000, -2000, 3000, -4000])).unwrap();
+    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    next_event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "before".into(),
+        }))
+        .unwrap();
+    service
+        .submit(Request::ImportToNewTrackWithGain {
+            path: path.clone(),
+            before_track: None,
+            start: 19,
+            gain: 0.25,
+        })
+        .unwrap();
+    let first = next_event(&service);
+    assert!(first.error.is_none());
+    assert_eq!(first.state.project.tracks().len(), 1);
+    let imported = next_event(&service);
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    assert_eq!(imported.state.project.tracks().len(), 2);
+    assert_eq!(imported.state.project.tracks()[1].gain(), 0.25);
+    assert_eq!(imported.state.project.tracks()[1].clips()[0].start(), 19);
+    let after = imported.state.project.clone();
+    let undo = run(&service, Request::Undo);
+    assert_eq!(undo.state.project.tracks(), first.state.project.tracks());
+    let redo = run(&service, Request::Redo);
+    assert_eq!(redo.state.project, after);
+    make_undecodable_keeping_identity(&path);
+    let reused = run(
+        &service,
+        Request::ImportToNewTrackWithGain {
+            path,
+            before_track: None,
+            start: 0,
+            gain: 0.5,
+        },
+    );
+    assert_eq!(reused.state.project.assets().count(), 1);
+    assert_eq!(reused.state.project.tracks().last().unwrap().gain(), 0.5);
+    let before = reused.state.project.clone();
+    service
+        .submit(Request::ImportToNewTrackWithGain {
+            path: directory.0.join("missing.wav"),
+            before_track: None,
+            start: 0,
+            gain: f32::NAN,
+        })
+        .unwrap();
+    let rejected = next_event(&service);
+    assert!(
+        rejected
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("gain"))
+    );
+    assert_eq!(rejected.state.project, before);
+}

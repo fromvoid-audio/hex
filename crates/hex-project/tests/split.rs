@@ -147,6 +147,7 @@ fn invalid_split_positions_and_limits_leave_state_and_redo_untouched() {
 
     let full_project = Project::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
@@ -251,6 +252,7 @@ fn missing_clip_split_is_transactional() {
 fn exhausted_id_space_refuses_split_without_state_or_history_changes() {
     let project = Project::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),

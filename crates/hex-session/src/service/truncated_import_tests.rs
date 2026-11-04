@@ -125,7 +125,7 @@ fn failed_admission_reports_and_retains_the_complete_recovered_file() {
 
 #[test]
 fn each_single_file_destination_binds_the_new_complete_source() {
-    for destination in 0..4 {
+    for destination in 0..5 {
         let directory = TestDir::new();
         let path = directory.0.join("truncated.wav");
         let original = truncated_recording(96, 32);
@@ -160,10 +160,16 @@ fn each_single_file_destination_binds_the_new_complete_source() {
                 before_track: None,
                 start: 0,
             },
-            _ => Request::ImportToSession {
+            3 => Request::ImportToSession {
                 path: path.clone(),
                 track,
                 scene,
+            },
+            _ => Request::ImportToNewTrackWithGain {
+                path: path.clone(),
+                before_track: None,
+                start: 0,
+                gain: 0.25,
             },
         };
         let recovery = TruncatedImportRecovery::new(request).unwrap();
@@ -172,6 +178,9 @@ fn each_single_file_destination_binds_the_new_complete_source() {
             .unwrap();
         let event = next_event(&service);
         assert!(event.error.is_none(), "{:?}", event.error);
+        if destination == 4 {
+            assert_eq!(event.state.project.tracks().last().unwrap().gain(), 0.25);
+        }
         let asset = event.state.project.assets().next().unwrap();
         assert_ne!(asset.path(), path);
         assert_eq!(

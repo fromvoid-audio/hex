@@ -55,14 +55,11 @@ fn loop_edit_after_pausing_a_track_limiter_publishes_current_audio() {
     for _ in 0..12 {
         h.render();
     }
+    let mut fade = super::transport_loop::LoopFadeVerifier::new();
     for _ in 0..100 {
-        assert!(
-            h.render()
-                .iter()
-                .flatten()
-                .all(|v| (*v - 0.25).abs() < 1e-5)
-        );
+        fade.check(&h.render());
     }
+    fade.assert_wrap();
     let position = h
         .audio
         .as_ref()
