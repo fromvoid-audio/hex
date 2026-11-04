@@ -31,6 +31,8 @@ pub enum Command {
         name: String,
         before_track: Option<TrackId>,
         position: crate::ClipGroupPosition,
+        /// Optional finite linear gain in `0..=2`; `None` retains the normal track default.
+        initial_gain: Option<f32>,
     },
     /// Detach selected members without copying decoded media.
     MakeClipsUnique(Vec<ClipId>),
@@ -1873,8 +1875,9 @@ impl Project {
                 name,
                 before_track,
                 position,
+                initial_gain,
             } => {
-                let track = insert_track_before(self, name, before_track)?;
+                let track = insert_track_before_with_gain(self, name, before_track, initial_gain)?;
                 crate::clip_duplicate::apply_alias_at(self, vec![clip], clip, track, position)
             }
             Command::MakeClipsUnique(clips) => crate::clip_alias_commands::unique(self, clips),

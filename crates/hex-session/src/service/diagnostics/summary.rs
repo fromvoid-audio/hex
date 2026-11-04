@@ -222,9 +222,10 @@ pub(super) fn command(value: &Command) -> Description {
             clip,
             name,
             before_track,
+            initial_gain,
             ..
         } => {
-            describe!("duplicate_alias_clip_to_new_track"; ["clip" => clip.value(), "name_bytes" => name.len(), "has_before_track" => before_track.is_some()]; omitted="position")
+            describe!("duplicate_alias_clip_to_new_track"; ["clip" => clip.value(), "name_bytes" => name.len(), "has_before_track" => before_track.is_some(), "initial_gain" => initial_gain]; omitted="position")
         }
         Command::MakeClipsUnique(value0) => {
             describe!("make_clips_unique"; ["value0_count" => value0.len()]; omitted="")

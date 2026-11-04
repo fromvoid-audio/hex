@@ -939,6 +939,7 @@ impl super::EditorView {
         let name = format!("track {}", count + 1);
         if drag.alias_copy() {
             let command = Command::DuplicateAliasClipToNewTrack {
+                initial_gain: None,
                 clip: drag.clip,
                 name,
                 before_track,

@@ -115,14 +115,16 @@ impl Pending {
                     name,
                     before_track,
                     position,
+                    initial_gain,
                 },
                 Command::DuplicateAliasClipToNewTrack {
                     clip: c,
                     name: n,
                     before_track: b,
                     position: p,
+                    initial_gain: g,
                 },
-            ) => (clip, name, before_track, position) == (c, n, b, p),
+            ) => (clip, name, before_track, position, initial_gain) == (c, n, b, p, g),
             _ => false,
         }
     }
