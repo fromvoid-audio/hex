@@ -205,3 +205,68 @@ fn alias_destination_uses_source_bound_worker_and_one_undo_step() {
         redone.state.project.clip_alias(alias)
     );
 }
+
+#[test]
+fn new_track_alias_is_revision_checked_and_undoable_in_one_step() {
+    let service = Service::new(48_000, 32, 0).unwrap();
+    next_event(&service);
+    let added = run(
+        &service,
+        Request::Edit(Command::AddTrack {
+            name: "track".into(),
+        }),
+    );
+    let track = added.state.project.tracks()[0].id();
+    let placed = run(
+        &service,
+        Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        }),
+    );
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip")
+    };
+    let command = Command::DuplicateAliasClipToNewTrack {
+        clip,
+        name: "new".into(),
+        before_track: None,
+        position: hex_project::ClipGroupPosition::Midi(BeatTime::from_quarters(2).unwrap()),
+    };
+    service
+        .submit(Request::MoveExistingClips {
+            project_generation: 1,
+            revision: placed.state.revision,
+            command: command.clone(),
+        })
+        .unwrap();
+    let stale = next_event(&service);
+    assert!(stale.error.is_some());
+    assert_eq!(stale.state.project, placed.state.project);
+    let result = run(
+        &service,
+        Request::MoveExistingClips {
+            project_generation: 0,
+            revision: placed.state.revision,
+            command,
+        },
+    );
+    let Some(Created::Clips { first: alias, .. }) = result.created else {
+        panic!("alias")
+    };
+    assert_eq!(result.state.project.tracks().len(), 2);
+    assert_eq!(
+        result.state.project.clip_alias(clip),
+        result.state.project.clip_alias(alias)
+    );
+    let undone = run(&service, Request::Undo);
+    assert_eq!(undone.state.project.tracks().len(), 1);
+    assert!(undone.state.project.midi_clip(alias).is_none());
+    let redone = run(&service, Request::Redo);
+    assert_eq!(redone.state.project.tracks().len(), 2);
+    assert_eq!(
+        redone.state.project.clip_alias(clip),
+        redone.state.project.clip_alias(alias)
+    );
+}

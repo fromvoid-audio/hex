@@ -218,6 +218,14 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("duplicate_alias_clips_at"; ["clips_count" => clips.len(), "anchor" => anchor.value(), "track" => track.value()]; omitted="position")
         }
+        Command::DuplicateAliasClipToNewTrack {
+            clip,
+            name,
+            before_track,
+            ..
+        } => {
+            describe!("duplicate_alias_clip_to_new_track"; ["clip" => clip.value(), "name_bytes" => name.len(), "has_before_track" => before_track.is_some()]; omitted="position")
+        }
         Command::MakeClipsUnique(value0) => {
             describe!("make_clips_unique"; ["value0_count" => value0.len()]; omitted="")
         }
