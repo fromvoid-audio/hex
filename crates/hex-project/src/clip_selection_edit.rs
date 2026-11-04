@@ -550,6 +550,7 @@ impl Command {
             | Self::SetTrackColor { .. }
             | Self::InsertTrackWithDevice { .. }
             | Self::InsertDefaultTrackWithDevice { .. }
+            | Self::InsertDefaultTrackWithDeviceAndGain { .. }
             | Self::SpliceGainTouch { .. }
             | Self::SpliceGainTouchBatch { .. }
             | Self::ReplaceTrackGainEnvelope { .. }

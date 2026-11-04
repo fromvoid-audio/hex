@@ -400,6 +400,15 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("insert_default_track_with_device"; ["before_track" => before_track.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len(), "device_name_redacted_bytes" => device_name.len()]; omitted="slot")
         }
+        Command::InsertDefaultTrackWithDeviceAndGain {
+            before_track,
+            state,
+            device_name,
+            gain,
+            ..
+        } => {
+            describe!("insert_default_track_with_device_and_gain"; ["before_track" => before_track.map(|id| id.value()), "state_type" => state.type_id().as_str(), "device_name_redacted_bytes" => device_name.len(), "gain" => gain]; omitted="slot,state")
+        }
         Command::SpliceGainTouch {
             track,
             expected_epoch,
