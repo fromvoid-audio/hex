@@ -330,6 +330,7 @@ impl Editor {
                 Project::from_snapshot(candidate.snapshot())?;
             }
         }
+        candidate.validate_source_bindings()?;
         candidate.validate_track_hierarchy()?;
         candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_changed_arrangement_occupancy(&self.project)?;
@@ -486,6 +487,129 @@ impl Editor {
             stopped_bounce,
         });
         Ok(Some(prepared))
+    }
+}
+
+#[cfg(test)]
+mod retained_source_batch_tests {
+    use super::*;
+
+    fn editor_with_receiver(retained: bool) -> (Editor, crate::TrackId, crate::SourceId) {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(receiver) = editor
+            .execute(Command::AddMidiTrack {
+                name: "receiver".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "source".into(),
+                devices: vec![crate::default_instrument_state().unwrap()],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: receiver,
+                source: Some(source),
+            })
+            .unwrap();
+        let mut snapshot = editor.project().snapshot();
+        if retained {
+            snapshot.retained_source_paths.push(receiver.value());
+        }
+        // The public constructor intentionally refuses retained projects until
+        // the complete editing and UI lifecycle is implemented.
+        editor.project = Project::from_snapshot(snapshot).unwrap();
+        editor.undo.clear();
+        editor.redo.clear();
+        (editor, receiver, source)
+    }
+
+    #[test]
+    fn batches_validate_retained_receiver_before_preparation_and_preserve_history_on_refusal() {
+        for unlink in [false, true] {
+            let (mut editor, receiver, source) = editor_with_receiver(true);
+            editor
+                .execute(Command::RenameTrack {
+                    track: receiver,
+                    name: "changed".into(),
+                })
+                .unwrap();
+            assert!(editor.undo());
+            let before = editor.project().snapshot();
+            let undo = editor.can_undo();
+            let redo = editor.can_redo();
+            let mut called = false;
+            let command = if unlink {
+                Command::BindTrackSource {
+                    track: receiver,
+                    source: None,
+                }
+            } else {
+                Command::SetNativeSourceReceiver {
+                    source,
+                    track: None,
+                }
+            };
+            let result = editor.execute_many_prepared(
+                vec![
+                    Command::AddTrack {
+                        name: "temporary".into(),
+                    },
+                    command,
+                ],
+                |_, _| {
+                    called = true;
+                    Ok::<(), Invalid>(())
+                },
+            );
+            assert!(result.is_err());
+            assert!(!called, "invalid candidates must not reach preparation");
+            assert_eq!(editor.project().snapshot(), before);
+            assert_eq!(editor.can_undo(), undo);
+            assert_eq!(editor.can_redo(), redo);
+            assert!(editor.redo());
+            assert_eq!(editor.project().track(receiver).unwrap().name(), "changed");
+        }
+    }
+
+    #[test]
+    fn valid_retained_and_ordinary_batches_remain_editable_and_undoable() {
+        for retained in [false, true] {
+            let (mut editor, receiver, source) = editor_with_receiver(retained);
+            let before = editor.project().snapshot();
+            editor
+                .execute_many_prepared(
+                    vec![
+                        Command::SetNativeSourceReceiver {
+                            source,
+                            track: None,
+                        },
+                        Command::SetNativeSourceReceiver {
+                            source,
+                            track: Some(receiver),
+                        },
+                        Command::RenameTrack {
+                            track: receiver,
+                            name: "renamed".into(),
+                        },
+                    ],
+                    |_, _| Ok::<(), Invalid>(()),
+                )
+                .unwrap();
+            assert_eq!(editor.project().track(receiver).unwrap().name(), "renamed");
+            assert!(editor.undo());
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(editor.redo());
+            assert_eq!(editor.project().track(receiver).unwrap().name(), "renamed");
+        }
     }
 }
 
