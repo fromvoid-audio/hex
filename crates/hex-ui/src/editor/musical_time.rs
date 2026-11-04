@@ -476,7 +476,8 @@ fn ruler_candidates(
                             landmark_count: last_landmark - first_landmark + 1,
                             // Count conservatively across any viewport phase so
                             // crossing a candidate edge does not change stride.
-                            regular_demand: (effective_end - effective_start) / beat_length + 1,
+                            regular_demand: ((effective_end - effective_start) / beat_length)
+                                .saturating_add(1),
                         });
                     }
                 }
