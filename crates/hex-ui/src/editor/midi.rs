@@ -415,7 +415,7 @@ impl EditorView {
         self.cancel_midi_note_gesture();
         let updates = match super::midi_group_drag::nudge_updates(
             &originals,
-            clip_length,
+            u64::MAX,
             time_delta,
             pitch_delta,
         ) {
@@ -426,10 +426,23 @@ impl EditorView {
                 return;
             }
         };
-        self.enqueue(Request::Edit(Command::UpdateMidiNotes {
-            clip: clip_id,
-            notes: updates,
-        }));
+        let command = if updates.iter().any(|note| {
+            note.start
+                .raw()
+                .checked_add(note.duration.raw())
+                .is_none_or(|end| end > clip_length)
+        }) {
+            Command::UpdateMidiNotesWithSourceExtent {
+                clip: clip_id,
+                notes: updates,
+            }
+        } else {
+            Command::UpdateMidiNotes {
+                clip: clip_id,
+                notes: updates,
+            }
+        };
+        self.enqueue(Request::Edit(command));
     }
 
     pub(super) fn adjust_selected_group(
@@ -597,7 +610,7 @@ impl EditorView {
                 start = if delta < 0 {
                     start.saturating_sub(step)
                 } else {
-                    start.saturating_add(step)
+                    start.saturating_add(step).min(u64::MAX - duration)
                 }
             }
             NoteField::Duration(delta) => {
@@ -622,22 +635,42 @@ impl EditorView {
         if !clip.notes().iter().any(|item| item.id() == note_id) {
             return;
         }
-        if start
-            .checked_add(duration)
-            .is_none_or(|end| end > clip.source_length().raw())
-        {
+        let Some(end) = start.checked_add(duration) else {
+            self.error = Some("midi note end exceeds the beat range".into());
+            return;
+        };
+        let grows_source = end > clip.source_length().raw();
+        if grows_source && !matches!(field, NoteField::Onset(_)) {
             self.error = Some("edit would move the note outside its clip".into());
             return;
         }
+        let Some(clip_id) = self.detail_midi_clip_data() else {
+            return;
+        };
         self.finish_live_midi_marquees();
-        self.enqueue(Request::Edit(Command::UpdateMidiNote {
-            note: note_id,
-            start: BeatTime::from_raw(start),
-            duration: BeatTime::from_raw(duration),
-            pitch,
-            channel,
-            velocity,
-        }));
+        let command = if grows_source {
+            Command::UpdateMidiNotesWithSourceExtent {
+                clip: clip_id,
+                notes: vec![hex_project::MidiNoteUpdate {
+                    note: note_id,
+                    start: BeatTime::from_raw(start),
+                    duration: BeatTime::from_raw(duration),
+                    pitch,
+                    channel,
+                    velocity,
+                }],
+            }
+        } else {
+            Command::UpdateMidiNote {
+                note: note_id,
+                start: BeatTime::from_raw(start),
+                duration: BeatTime::from_raw(duration),
+                pitch,
+                channel,
+                velocity,
+            }
+        };
+        self.enqueue(Request::Edit(command));
     }
 }
 
@@ -648,3 +681,7 @@ pub(super) enum NoteField {
     Duration(i8),
     Velocity(i16),
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_command_ui_tests.rs"]
+mod tests;
