@@ -485,7 +485,112 @@ fn drag_source_to_inserted_track(
             view.error
         ),
     });
+    for _ in 0..2 {
+        editor.update(cx, |view, cx| {
+            assert!(view.active_clip_drag.is_none());
+            assert!(view.pending_clip_move.is_some());
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("track-insert-preview"), Some(line));
+        if anchor.is_none() {
+            assert!(visual.debug_bounds("clip-drag-append-preview").is_some());
+        }
+    }
     target
+}
+
+#[gpui::test]
+fn new_track_clip_release_keeps_preview_until_worker_accepts_or_refuses(cx: &mut TestAppContext) {
+    use hex_session::service::Request;
+    for midi in [false, true] {
+        for copy in [false, true] {
+            for refuse in [false, true] {
+                let (_files, handle, editor) = upper_rail_owned_fixture(cx);
+                let mut visual = VisualTestContext::from_window(handle, cx);
+                visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
+                visual.run_until_parked();
+                let (source, anchor, audio) = editor.read_with(&visual, |view, _| {
+                    let project = &view.state.as_ref().unwrap().project;
+                    (
+                        project.tracks()[0].id(),
+                        project.tracks()[1].id(),
+                        project.tracks()[0].clips()[0].id(),
+                    )
+                });
+                let clip = if midi {
+                    editor.update(&mut visual, |view, _| {
+                        assert!(view.enqueue(Request::Edit(Command::RemoveClip(audio))))
+                    });
+                    pump_move(&editor, &mut visual);
+                    editor.update(&mut visual, |view, _| {
+                        assert!(view.enqueue(Request::Edit(Command::PlaceMidiClip {
+                            track: source,
+                            start: BeatTime::ZERO,
+                            length: BeatTime::ONE,
+                        })))
+                    });
+                    pump_move(&editor, &mut visual);
+                    editor.read_with(&visual, |view, _| {
+                        view.state
+                            .as_ref()
+                            .unwrap()
+                            .project
+                            .track(source)
+                            .unwrap()
+                            .midi_clips()[0]
+                            .id()
+                    })
+                } else {
+                    audio
+                };
+                let before = editor.read_with(&visual, |view, _| {
+                    Arc::clone(&view.state.as_ref().unwrap().project)
+                });
+                if refuse {
+                    // Advance only the real worker, leaving the displayed snapshot stale.
+                    // The captured insertion anchor is then rejected by the worker.
+                    editor.update(&mut visual, |view, _| {
+                        view.service
+                            .submit(Request::Edit(Command::RemoveTrack(anchor)))
+                            .unwrap();
+                        upper_rail_next(&view.service);
+                    });
+                }
+                drag_source_to_inserted_track(
+                    cx,
+                    &mut visual,
+                    &editor,
+                    &before,
+                    clip,
+                    source,
+                    Some(anchor),
+                    copy,
+                );
+                if refuse {
+                    editor.update(&mut visual, |view, cx| {
+                        let event = upper_rail_terminal(&view.service);
+                        assert!(event.error.is_some());
+                        view.receive(event);
+                        assert!(view.pending_clip_move.is_none());
+                        assert!(view.state.as_ref().unwrap().project.track(anchor).is_none());
+                        cx.notify();
+                    });
+                } else {
+                    pump_move(&editor, &mut visual);
+                    editor.read_with(&visual, |view, _| {
+                        assert!(view.pending_clip_move.is_none());
+                        assert_eq!(
+                            view.state.as_ref().unwrap().project.tracks().len(),
+                            before.tracks().len() + 1
+                        );
+                    });
+                }
+                visual.run_until_parked();
+                assert!(visual.debug_bounds("track-insert-preview").is_none());
+            }
+        }
+    }
 }
 
 #[gpui::test]
