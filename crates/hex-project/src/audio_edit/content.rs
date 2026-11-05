@@ -65,6 +65,7 @@ impl AudioContentView {
             && (matches!(p.outer_length, AudioDomainClock::Beats(_))
                 != matches!(edit.domain.clock, AudioDomainClock::Beats(_))
                 || p.outer_length.length() == 0
+                || matches!(p.mode, AudioViewMode::OnceWithLead(_))
                 || (p.mode == AudioViewMode::Repeat
                     && p.cycle_phase >= self.base_view_end - self.base_view_start))
         {
@@ -100,7 +101,7 @@ pub(super) fn trim_content(
         .audio_edit_mut()
         .ok_or(Invalid("audio content domain missing"))?
         .content_view = None;
-    let mut next = super::commands::trim_view(&carrier, edge, frame, tempo)?;
+    let mut next = super::commands::trim_retained_view(&carrier, edge, frame, tempo)?;
     // Size the read window from the carrier's audible extent. Retained
     // processing crops in its frozen clock, which may round one raw beat
     // apart from the destination reference position.

@@ -384,12 +384,7 @@ impl SessionPlayback {
             // revision remains owned by playback until scratch is restored.
             let revision = Arc::clone(&self.revision);
             let mut cells = std::mem::take(&mut self.meter_cells);
-            let mut meter = super::meter_capture::MeterCapture {
-                revision: &revision,
-                cells: &mut cells,
-                downstream: capture,
-                invalidated: false,
-            };
+            let mut meter = super::meter_capture::MeterCapture::new(&revision, &mut cells, capture);
             let result = self.render_internal_borrowed(
                 output,
                 pages,
@@ -750,6 +745,9 @@ impl SessionPlayback {
         let mut resident_source_end = 0;
         let mut resident_source_eligible = [false; MAX_TRACKS];
         let mut resident_analytic_eligible = [false; MAX_TRACKS];
+        let mut aligned = [false; MAX_TRACKS];
+        let mut stamps = [None; 256];
+        let mut projected_origins = false;
 
         while output_offset < output.len() {
             if let Some(region) = region {
@@ -808,6 +806,21 @@ impl SessionPlayback {
                     count,
                     &mut resident_source_eligible,
                     &mut resident_analytic_eligible,
+                )?;
+                projected_origins = observer.is_none()
+                    && scalar.is_none()
+                    && self.prepare_native_origin_window(
+                        performance_frame,
+                        arrangement_frame,
+                        arrangement_loop_pass,
+                        &mut stamps[..count],
+                    )?;
+                self.align_resident_tracks(
+                    arrangement_frame,
+                    count,
+                    &resident_source_eligible,
+                    projected_origins.then_some(&stamps[..count]),
+                    &mut aligned,
                 )?;
                 resident_source_index = 0;
                 resident_source_end = count;
@@ -923,6 +936,8 @@ impl SessionPlayback {
                         index: resident_source_index,
                         audio: &resident_source_eligible,
                         analytic: &resident_analytic_eligible,
+                        stamps: projected_origins.then_some(&stamps[..resident_source_end]),
+                        aligned: &aligned,
                     }),
                 )?;
                 if use_resident_sources {
@@ -2143,6 +2158,15 @@ impl SessionPlayback {
                 .get(group_index)
                 .copied()
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            if let Some(tail) = self.tail_mutable_instruments[group_index].as_ref() {
+                add_detached_source_sends(
+                    &tail.sends,
+                    self.revision.arrangement().return_buses(),
+                    &mut self.return_scratch,
+                    mix,
+                    tail_output,
+                )?;
+            }
             emit_detached_tail(
                 graph,
                 self.tail_track_ids[group_index],
@@ -2220,6 +2244,13 @@ impl SessionPlayback {
                 .get(group_index)
                 .copied()
                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            add_detached_source_sends(
+                &tail.sends,
+                self.revision.arrangement().return_buses(),
+                &mut self.return_scratch,
+                mix,
+                tail_output,
+            )?;
             emit_detached_tail(
                 graph,
                 self.tail_track_ids[group_index],
@@ -2297,6 +2328,32 @@ impl SessionPlayback {
         }
         Ok(())
     }
+}
+
+/// Contribute a detached source to each retained post-fader send before
+/// the ordinary Return owner processes its complete input once.
+fn add_detached_source_sends(
+    sends: &crate::mutable_instrument::DetachedSourceSends,
+    returns: &[crate::ReturnBus],
+    scratch: &mut [[Frame; 256]],
+    mix: crate::PreparedTrackMix,
+    output: &[Frame],
+) -> Result<(), SessionPlaybackError> {
+    for (id, gain) in sends.iter() {
+        let index = returns
+            .iter()
+            .position(|bus| bus.id == id)
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        let destination = scratch
+            .get_mut(index)
+            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+        for (target, source) in destination.iter_mut().zip(output.iter().copied()) {
+            let contribution = mix.apply_frame(source);
+            target[0] += contribution[0] * gain;
+            target[1] += contribution[1] * gain;
+        }
+    }
+    Ok(())
 }
 
 /// A retained suffix is already post-fader. Grouped rendering adds it to its

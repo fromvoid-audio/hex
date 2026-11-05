@@ -32,7 +32,9 @@ fn unchanged_file_reimports_through_every_request_without_decoding() {
     let directory = TestDir::new();
     let path = directory.0.join("loop.wav");
     fs::write(&path, wav_mono(&[1_000, -2_000, 3_000, -4_000])).unwrap();
-    let service = Service::new(48_000, 16, 8_000_000).unwrap();
+    // The first import fills the entire resident frame budget. Every further
+    // clip must use its existing media, even though decoding would now fail.
+    let service = Service::new(48_000, 16, 4).unwrap();
     next_event(&service);
     let imported = run(&service, Request::Import(path.clone()));
     let track = imported.state.project.tracks()[0].id();
@@ -81,6 +83,16 @@ fn unchanged_file_reimports_through_every_request_without_decoding() {
     assert_eq!(project.tracks().len(), 4);
     assert_eq!(project.track(track).unwrap().clips().len(), 3);
     assert!(project.session_cell(track, scene).is_some());
+
+    let distinct = directory.0.join("distinct.wav");
+    fs::write(&distinct, wav_mono(&[2000])).unwrap();
+    service.submit(Request::Import(distinct)).unwrap();
+    let refused = next_event(&service);
+    assert_eq!(
+        refused.error.as_deref(),
+        Some("resident audio frame limit reached")
+    );
+    assert_eq!(refused.state.project, project);
 }
 
 #[test]
@@ -91,6 +103,18 @@ fn changed_file_decodes_again_as_a_new_asset() {
     let service = Service::new(48_000, 16, 8_000_000).unwrap();
     next_event(&service);
     run(&service, Request::Import(path.clone()));
+
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, wav_mono(&[-500; 4])).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified + std::time::Duration::from_secs(120))
+        .unwrap();
+    let same_length = run(&service, Request::Import(path.clone()));
+    assert_eq!(same_length.state.project.assets().count(), 2);
+
     fs::write(&path, wav_mono(&[500; 6])).unwrap();
 
     let project = run(&service, Request::Import(path.clone()))
@@ -101,7 +125,7 @@ fn changed_file_decodes_again_as_a_new_asset() {
         .assets()
         .map(|asset| asset.source_frames())
         .collect::<Vec<_>>();
-    assert_eq!(frames, [4, 6]);
+    assert_eq!(frames, [4, 4, 6]);
 
     // A changed file that no longer decodes reports the decode failure.
     fs::write(&path, b"not a wav").unwrap();

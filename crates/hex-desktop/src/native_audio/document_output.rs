@@ -5,6 +5,9 @@ use super::*;
 use hex_session::service::RequestCancellation;
 use std::time::{Duration, Instant};
 
+#[cfg(all(test, feature = "allocation-probe"))]
+mod tests;
+
 pub(super) struct ReplacementOutput {
     pub(super) context: AudioSourceContext,
     pub(super) deadline: Instant,

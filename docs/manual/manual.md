@@ -288,6 +288,15 @@ original clip's start and length; drag its right edge out to reveal the tail. a 
 exactly its start-to-end interval, retaining earlier state needed for sound inside
 that interval. press **escape** to cancel; one undo restores the entire operation.
 
+select a time range on a group row to bounce its submix. **b** inserts an audio
+track beside the group and leaves the original tracks playing. **command+b** on
+one group row adds the same bounce and silences the original group's output
+only for the selected interval. child clips stay intact, and group effects keep
+processing through the muted interval. both commands include nested audio and
+midi tracks and print the selected group's effects before its mixer. the new
+track carries the group's mixer and sends. one undo removes the bounce and, for
+**command+b**, restores the original interval's playback.
+
 while dragging arrangement clips, hold **b** as you release to drop a bounce of them
 at the drop position instead of moving them. the dragged clips stay where they were,
 the bounced clips keep their original lengths with the tail in the file, and one undo
@@ -303,11 +312,21 @@ hex keeps the stopped cursor. undo and redo of an in-place bounce follow the sam
 bounce writes float audio before the track mixer. mixer automation, sends, returns
 and main processing remain live. only the track-header **bounce in place** action replaces material in place and
 removes the track's devices. it covers the entire track, regardless of a smaller
-clip or time selection. for clip and time-selection editing, use **g** to group
+clip or time selection. on a group, it prints the descendants' arrangement
+material and release tail to one new playback child. the group's mixer and sends
+remain live. its printed devices are removed, and the original descendants are
+muted in place with their own devices, arrangement clips and console cells
+preserved. undo restores the group devices and each child's previous mute state.
+unsolo group children before bouncing in place. an external shared source or
+sidechain key can prevent a group bounce. **command+b** also refuses when the
+selected group supplies a sidechain key.
+
+for clip and time-selection editing, use **g** to group
 material instead; grouping retains its existing source and processing behavior.
-in the focused midi editor, **b** keeps toggling draw mode. routed inputs, verified streaming and nonzero-latency device
-paths currently refuse. clip bounces keep up to 30 seconds of release after the
-selected span. if the tail is still sounding then, hex cuts it at that limit and
+in the focused midi editor, **b** keeps toggling draw mode. a bounce needs a
+supported routing and storage mode. device latency is aligned using the admitted
+compensation graph. clip and whole-track bounces keep up to 30 seconds of release
+after the selected span. if the tail is still sounding then, hex cuts it at that limit and
 finishes the bounce. a noise floor at or below -80 dbfs peak in both channels
 counts as silence for tail length. hex retains up to 50 ms after the last louder
 tail sample, without trimming the selected span or changing retained audio. it checks
@@ -730,6 +749,16 @@ and restore the current project sound before playing again.
 click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
+
+during playback, track gain, eq edits and supported device bypass changes apply
+to the running audio. supported latency-bearing effects keep the dry signal
+aligned when you bypass them. reverb and delay tails may shorten or stop.
+
+if a sounding instrument has a long release, hex can keep that release through
+supported receiver paths while you switch the instrument off and back on.
+some processed, routed or compensated paths require playback to stop first.
+if hex reports that source history cannot transfer live, the previous audio
+continues. stop playback before changing bypass on that path.
 
 reverb combines resonant input filters (20 hz–20 khz, q 0.1–10), early reflections and a diffusion network.
 use predelay to separate the room from the source; size, decay, diffusion and

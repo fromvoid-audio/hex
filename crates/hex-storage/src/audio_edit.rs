@@ -117,10 +117,11 @@ struct Placement {
     cycle_phase: u64,
 }
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum ViewMode {
     Once,
     Repeat,
+    OnceWithLead { ticks: u64 },
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -362,6 +363,7 @@ impl From<AudioClipEdit> for AudioEditDto {
                 mode: match p.mode {
                     AudioViewMode::Once => ViewMode::Once,
                     AudioViewMode::Repeat => ViewMode::Repeat,
+                    AudioViewMode::OnceWithLead(ticks) => ViewMode::OnceWithLead { ticks },
                 },
                 outer_length: match p.outer_length {
                     AudioDomainClock::Frames(length) => Clock::Frames { length },
@@ -570,6 +572,7 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
                 mode: match p.mode {
                     ViewMode::Once => AudioViewMode::Once,
                     ViewMode::Repeat => AudioViewMode::Repeat,
+                    ViewMode::OnceWithLead { ticks } => AudioViewMode::OnceWithLead(ticks),
                 },
                 outer_length: match p.outer_length {
                     Clock::Frames { length } => AudioDomainClock::Frames(length),

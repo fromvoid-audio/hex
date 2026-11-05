@@ -128,6 +128,10 @@ pub(in crate::service) fn bounce_arrangement(
     admission: sampler_export::Admission<'_>,
     current: &mut Option<Snapshot>,
 ) -> Result<(Created, Arc<PreparedRevision>), String> {
+    session
+        .project()
+        .validate_bounce_adoption(&target, in_place, adoption)
+        .map_err(|e| e.to_string())?;
     let replaces_devices = target.bakes_devices(in_place);
     if replaces_devices
         && current.as_ref().is_some_and(|s| {

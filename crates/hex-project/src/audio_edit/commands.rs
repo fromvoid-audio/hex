@@ -135,6 +135,52 @@ pub(crate) fn trim_view(
     frame: u64,
     tempo: &TempoMap,
 ) -> Result<Clip, Invalid> {
+    if edge == TrimEdge::Left && frame < clip.start {
+        if let Some(prefixed) = super::extend_frame_left(clip, frame)? {
+            return Ok(prefixed);
+        }
+        if let Some(edit) = clip.audio_edit().filter(|edit| {
+            matches!(edit.domain.clock, AudioDomainClock::Beats(_))
+                && edit.content_view.is_none()
+                && edit
+                    .placement
+                    .is_none_or(|p| p.mode != AudioViewMode::Repeat)
+        }) {
+            if edit.placement.is_some_and(|p| p.mode.leading_ticks() > 0) {
+                return clip.with_musical_leading_silence(frame, tempo);
+            }
+            let projection = AudioViewProjection::new(clip, tempo)?;
+            if projection.occurrence_count() > 0 {
+                let read = projection.occurrence(0)?;
+                let first = read.destination_start.saturating_sub(read.root_start);
+                if frame < first {
+                    // Rewind and add the lead in one retained clock. A
+                    // temporary live crop can cross a different tempo seam
+                    // and fail its endpoint check before the lead is added.
+                    if edit.processing_projection.is_some() {
+                        return trim_retained_outer(clip, edge, frame, tempo);
+                    }
+                    let rewound = if first == clip.start {
+                        clip.clone()
+                    } else {
+                        trim_retained_view(clip, edge, first, tempo)?
+                    };
+                    return rewound.with_musical_leading_silence(frame, tempo);
+                }
+            }
+        }
+    }
+    trim_retained_view(clip, edge, frame, tempo)
+}
+
+/// A directed carrier describes the read window's extent only. It cannot
+/// author a new source program as if it were an independent forward clip.
+pub(super) fn trim_retained_view(
+    clip: &Clip,
+    edge: TrimEdge,
+    frame: u64,
+    tempo: &TempoMap,
+) -> Result<Clip, Invalid> {
     let edit = clip
         .edit
         .as_ref()

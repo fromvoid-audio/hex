@@ -1,51 +1,37 @@
 # engineering health
 
-Snapshot: 5 November 2026; Linux x86_64, Rust/Cargo 1.94.0. Measurement source:
-`4b7309c4fd930ef4c51eadb0cb7408fd5c2b5ac0`, a tree-equivalent Pulse linkage commit
-over upstream `7712eb87a2ef900dc4be8c98a3c8c26db5c09280`.
-The concurrent workspace additions are prose/JSON only; executable inputs were
-unchanged. See [measurement records](measurements.jsonl) for exact commands/logs.
+Snapshot: 5 November 2026, Linux x86_64, Rust/Cargo 1.94.0. The runtime goal is
+active; no scheduled task was created. Reconcile the checkpoint with live Pulse
+and Git after an interruption.
 
-| check | result | wall time |
-| --- | --- | --- |
-| architecture boundaries | passed, 30 explicit crate owners | 0.098 s |
-| pinned dependency patch guard | passed | 0.070 s |
-| UI style guard | passed | 1.384 s |
-| device composition boundary | passed | 0.472 s |
-| existing Rust-shard owner regressions | passed, 2 tests including real Cargo/libtest | 2.799 s |
-| headless `hex-diagnostics` check, locked/offline | passed | 1.498 s |
+Latest cycle: [subframe tempo test partitions](https://pulse.iocore.dev/#/issues/5034),
+[PR #2090](https://github.com/PORTALSURFER/hex/pull/2090). Nine independent rate/mode
+cases retain all 27 combinations, the same fixtures, complete history and full PCM
+oracles. The formatted check body matches the original. At matching baseline
+`d78d2fb484e74fa062fdfdd3bfc1ca0fd8a715f4` and candidate
+`0cc77317ca3f29c486f6543e61925332c85c4b28`:
 
-The configured native Linux libraries and pinned Rust toolchain are available.
-These focused checks do not establish a full-workspace green build, comprehensive
-tests, application performance, macOS GPUI/CoreAudio behavior, physical deadlines
-or listening acceptance. No application performance benchmark was run: the first
-selected improvement is verification reliability, not speed.
+- Old case median: 2.942 s across three isolated runs. Largest new isolated case:
+  0.666 s; selected default-parallel matrix median: 1.740 s.
+- Serial matrix median: 3.190 s. Full library: 11.825 s before and 11.947 s after.
+  These results do not establish less total work or faster whole-suite execution.
+- Contended cases can still exceed 1 s. The broader unit-budget acceptance remains
+  open; this is a test scheduling improvement, not application CPU evidence.
 
-First cycle: [empty-shard refusal](https://pulse.iocore.dev/#/issues/4990) is
-implemented and verified. Before the fix, empty inventory, a filter typo and
-skipping every case each returned 0. They now return 1 with an explicit diagnostic.
-Real Cargo/libtest checks preserve mixed empty/nonempty targets and ordinary test
-failure propagation. An explicit runner-only allowance preserves existing empty
-feature configurations; an aggregate regression still rejects all-empty coverage.
+Current-base verification at `bafdd2ac8a0f9f90c513e7ad01ff052c00aec6b8` over
+`c38297e419cfa6e0139e0971870b3a5f34c4361f`: all nine matrix cases passed; the full
+Session library passed 481 tests with three existing manual profiles ignored in
+12.141 s. Strict owner all-target Clippy passed in default and additive-feature
+configurations. Canonical PR/Pulse records own final guard and integration evidence.
 
-At `e7cbe9ca107db5c4e945a7ee64ecd9b33085ef13`, all 172 owning CI/planner/selector
-tests passed in 19.690 s, and all seven quick guards/format checks passed in
-22.272 s. Raw logs and commands are in the measurement records and canonical PR
-#2077. These are reviewed boundary checks, not a full-workspace/native certificate.
-The diagnostic before/after timings do not establish a performance improvement.
+The [Sampler readiness experiment](https://pulse.iocore.dev/#/issues/3851) was
+retired after inconclusive paired timings; the original fixture was restored.
+The [Session audit](https://pulse.iocore.dev/#/issues/3850) refreshes historical slow
+cases and preserves meaningful rate/mode, large-source and history coverage.
 
-The first broad run failed in two existing self-test cases. The temporary metadata
-Git fixture now ignores generated Python bytecode, preserving its intended source
-mutation checks. The isolated browser scrollbar guard fixture was missing from the
-reviewed inventory; [its focused repair](https://pulse.iocore.dev/#/issues/4993)
-merged in PR #2078 after 31 tests and quick checks passed. The original failed log
-is retained as `artifacts/engineering-bootstrap/owner-tests.log`; no failure was
-counted as passing. The final broad run uses ordinary bytecode behavior.
-
-Git fetch works. GitHub CLI API access returned `Forbidden`; connected GitHub and
-Pulse tools successfully read the repository and created canonical issue/PR links.
-Use those tools rather than changing credentials or network policy.
-
-The full mission is saved; native `/goal` activation is pending the user's manual
-command. Scheduling was explicitly declined. Ongoing execution requires an active
-authorized runtime; no unattended availability has been verified.
+The [private-project CPU report](https://pulse.iocore.dev/#/issues/4965) still needs
+its matched optimized Mac/project baseline. Headless checks establish neither
+native UI/listening acceptance nor physical deadlines or application speed.
+Previous verified outcomes and exact provenance remain in
+[measurements](measurements.jsonl), Git history and canonical PRs/Pulse. Ignored
+raw logs remain executor-local; essential evidence also belongs in the live records.

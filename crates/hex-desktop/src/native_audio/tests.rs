@@ -3,7 +3,6 @@
 use super::*;
 mod bypass_latency;
 mod delay_bypass;
-mod document_output;
 mod limiter;
 mod limiter_bypass;
 mod manual_host_gain;
@@ -583,7 +582,7 @@ impl WorkerAudioSink for ObservedSink {
         self.inner.close();
     }
 }
-pub(super) struct Files(PathBuf);
+pub(super) struct Files(pub(super) PathBuf);
 impl Files {
     pub(super) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(

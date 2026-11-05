@@ -4,6 +4,8 @@ use crate::{BeatTime, Clip, ClipFade, Invalid, TempoMap, TrimEdge};
 use std::sync::Arc;
 
 mod content;
+mod prefix;
+pub(crate) use prefix::extend_frame_left;
 mod timing;
 pub use content::AudioContentView;
 pub use timing::AudioClipTiming;
@@ -491,8 +493,10 @@ impl AudioClipEdit {
                 )
             },
         );
+        let lead = self.placement.map_or(0, |p| p.mode.leading_ticks());
         origin
             .checked_sub(delta)
+            .and_then(|origin| origin.checked_sub(i128::from(lead)))
             .and_then(|origin| origin.checked_add(i128::from(start)))
             .and_then(|origin| origin.checked_add(i128::from(phase)))
             .ok_or(Invalid("audio frozen reference overflow"))
@@ -526,8 +530,11 @@ impl AudioClipEdit {
             i8::try_from(difference).map_err(|_| Invalid("audio placement residual overflow"))
         };
         self.placement_start_offset = residual(start, tempo.beat_to_frame(beat)?)?;
-        self.placement_end_offset =
-            residual(end, tempo.beat_to_frame(BeatTime::from_raw(beat_end))?)?;
+        self.placement_end_offset = if self.placement.is_some_and(|p| p.mode.leading_ticks() > 0) {
+            0
+        } else {
+            residual(end, tempo.beat_to_frame(BeatTime::from_raw(beat_end))?)?
+        };
         Ok(())
     }
     /// Retain a structurally moved musical span, keeping `candidate` when its
@@ -798,8 +805,10 @@ impl AudioClipEdit {
                 self.placement.map_or(0, |p| p.cycle_phase),
             )
         };
+        let lead = self.placement.map_or(0, |p| p.mode.leading_ticks());
         start
-            .checked_sub(i128::from(view_start))
+            .checked_add(i128::from(lead))
+            .and_then(|origin| origin.checked_sub(i128::from(view_start)))
             .and_then(|origin| origin.checked_sub(i128::from(phase)))
             .ok_or(Invalid("audio projection origin overflow"))
     }
@@ -1043,7 +1052,18 @@ impl AudioClipEdit {
                 "audio source cache differs from its canonical domain",
             ));
         }
+        let leading = self
+            .placement
+            .is_some_and(|placement| placement.mode.leading_ticks() != 0);
+        if leading && (self.content_view.is_some() || self.placement_end_offset != 0) {
+            return Err(Invalid(
+                "leading musical one-shot cannot use directed reads or a terminal residual",
+            ));
+        }
         if self.processing_projection.is_some() && self.placement.is_some() {
+            // For a leading one-shot only the gate follows the live clock.
+            // Its terminal frame still comes from the translated retained map
+            // and is validated by AudioViewProjection below.
             let start = self
                 .live_musical_start()
                 .ok_or(Invalid("retained outer audio needs musical placement"))?;
@@ -1057,13 +1077,14 @@ impl AudioClipEdit {
                 .checked_add(length)
                 .ok_or(Invalid("audio outer end overflow"))?;
             if offset_frame(tempo.beat_to_frame(start)?, self.placement_start_offset)? != clip.start
-                || offset_frame(
-                    tempo.beat_to_frame(BeatTime::from_raw(end))?,
-                    self.placement_end_offset,
-                )? != clip
-                    .start
-                    .checked_add(clip.duration)
-                    .ok_or(Invalid("audio outer end overflow"))?
+                || (!leading
+                    && offset_frame(
+                        tempo.beat_to_frame(BeatTime::from_raw(end))?,
+                        self.placement_end_offset,
+                    )? != clip
+                        .start
+                        .checked_add(clip.duration)
+                        .ok_or(Invalid("audio outer end overflow"))?)
             {
                 return Err(Invalid(
                     "retained outer frame cache differs from musical endpoints",
@@ -1241,11 +1262,15 @@ impl AudioClipEdit {
         if matches!(self.timing, AudioClipTiming::Frozen { .. }) {
             return Ok(());
         }
-        if self.reference_start_raw().is_some() && self.domain.events.is_some() {
+        if self.reference_start_raw().is_some()
+            && (self.domain.events.is_some()
+                || self.placement.is_some_and(|p| p.mode.leading_ticks() > 0))
+        {
             if self.domain.warp_enabled {
                 return Err(Invalid("disable warp before frame anchoring"));
             }
-            // Frame placement need not flatten a beat-domain event program.
+            // Frame placement need not flatten a beat-domain event program
+            // or a finite read with its own silent gate.
             // Freeze its complete processing clock just as global tempo edits
             // do for unwarped clips, preserving moved sources and retained fades.
             let reference_start_raw =

@@ -3,7 +3,7 @@ use crate::{Frame, Invalid, Project, Track, compensation::*};
 mod legacy;
 #[cfg(feature = "instrument-test-support")]
 mod printed_branch_probe;
-use hex_project::{ReturnId, RoutingOwner, TrackId};
+use hex_project::{GroupOutputMuteRange, ReturnId, RoutingOwner, TrackId};
 #[cfg(feature = "instrument-test-support")]
 pub use printed_branch_probe::PrintedBranchProbe;
 use std::{collections::BTreeMap, mem::size_of, sync::Arc};
@@ -51,6 +51,7 @@ pub(crate) struct TrackPlan {
     pub output: TrackOutput,
     pub sends: Vec<Send>,
     pub audio_feeds: Vec<Send>,
+    group_output_mutes: Vec<GroupOutputMuteRange>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ReturnPlan {
@@ -310,6 +311,17 @@ impl SignalGraph {
             };
             let fader = builder.node(NodeId::Fader(id), Some(0));
             builder.edge(previous, fader);
+            let mut group_output_mutes = Vec::new();
+            if let Some(owner) = track
+                .canonical_track_id()
+                .and_then(|id| canonical.track(id))
+            {
+                let ranges = owner.group_output_mutes();
+                group_output_mutes
+                    .try_reserve_exact(ranges.len())
+                    .map_err(|_| Invalid("could not reserve prepared group output mute ranges"))?;
+                group_output_mutes.extend_from_slice(ranges);
+            }
             tracks.push(TrackPlan {
                 id: track.canonical_track_id(),
                 devices,
@@ -323,6 +335,7 @@ impl SignalGraph {
                 output: TrackOutput::Main { edge: 0 },
                 sends: Vec::new(),
                 audio_feeds: Vec::new(),
+                group_output_mutes,
             });
         }
         let mut returns = Vec::new();
@@ -712,6 +725,12 @@ impl SignalGraph {
                 .checked_add(track.sends.capacity().checked_mul(size_of::<Send>())?)?
                 .checked_add(
                     track
+                        .group_output_mutes
+                        .capacity()
+                        .checked_mul(size_of::<GroupOutputMuteRange>())?,
+                )?
+                .checked_add(
+                    track
                         .audio_feeds
                         .capacity()
                         .checked_mul(size_of::<Send>())?,
@@ -731,10 +750,11 @@ impl SignalGraph {
         self.plan.max_latency_frames() != 0
             || !self.key_stages.is_empty()
             || self.has_group_outputs
-            || self
-                .tracks
-                .iter()
-                .any(|track| !track.audio_feeds.is_empty() || track.printed_merge.is_some())
+            || self.tracks.iter().any(|track| {
+                !track.audio_feeds.is_empty()
+                    || track.printed_merge.is_some()
+                    || !track.group_output_mutes.is_empty()
+            })
             || self.returns.iter().any(|bus| !bus.audio_feeds.is_empty())
     }
     /// Main's input arrival: the frame at which every aligned path is summed.
@@ -903,6 +923,27 @@ impl SignalGraph {
                 .iter()
                 .any(|track| !track.audio_feeds.is_empty() || track.printed_merge.is_some())
             || self.returns.iter().any(|bus| !bus.audio_feeds.is_empty())
+    }
+    /// A flat graph has no consumer of a track's unaligned fader output.
+    /// Its independent Main alignment edges can advance in a different owner
+    /// order as long as each edge preserves its own frame order.
+    pub(crate) fn independent_main_routes(&self) -> bool {
+        !self.has_group_outputs
+            && self.key_stages.is_empty()
+            && self.returns.is_empty()
+            && self.tracks.iter().all(|track| track.audio_feeds.is_empty())
+    }
+    pub(crate) fn resident_main_alignment(&self, index: usize) -> Option<(usize, u32)> {
+        let track = self.tracks.get(index)?;
+        let TrackOutput::Main { edge } = track.output else {
+            return None;
+        };
+        (track.generator.is_none()
+            && track.printed_merge.is_none()
+            && track.group_output_mutes.is_empty()
+            && self.plan.edges()[self.pre_main_edges[track.source_input]].delay_frames == 0
+            && self.plan.edges()[self.pre_main_edges[track.audio_merge]].delay_frames == 0)
+            .then_some((edge, self.plan.nodes()[track.fader].output_arrival_frames))
     }
     /// With no pre-Main latency or typed feeds, these graphs retain transport
     /// stamps only: every pre-Main edge has zero delay and owns no pending PCM.
@@ -1569,15 +1610,18 @@ impl SignalRuntime {
     }
     pub(crate) fn edge(&mut self, index: usize, frame: Frame) -> Result<Frame, Invalid> {
         let mut frames = [frame];
+        self.edge_block(index, &mut frames)?;
+        Ok(frames[0])
+    }
+    pub(crate) fn edge_block(&mut self, index: usize, frames: &mut [Frame]) -> Result<(), Invalid> {
         let index = *self
             .delay_graph
             .pre_main_edges
             .get(index)
             .ok_or(Invalid("mapped delay edge is missing"))?;
         self.delays
-            .process_edge_in_place(index, &mut frames)
-            .map_err(error)?;
-        Ok(frames[0])
+            .process_edge_in_place(index, frames)
+            .map_err(error)
     }
     pub(crate) fn fader(
         &self,
@@ -1596,17 +1640,29 @@ impl SignalRuntime {
         index: usize,
         override_gain: Option<f32>,
     ) -> Option<crate::PreparedTrackMix> {
-        let frame = self.fader_content_frame(index)?;
-        let mix =
+        let stamp = self.fader_content_stamp(index)?;
+        let frame = stamp.arrangement_frame;
+        let mut mix =
             override_gain.map_or_else(|| track.mix_at(frame), |gain| track.recording_mix(gain));
+        // Apply after devices while retaining the mixer coefficients so live
+        // smoothing and automation still advance through the muted interval.
+        let ranges = &self.graph.tracks[index].group_output_mutes;
+        if stamp.transport_is_running && !ranges.is_empty() {
+            let next = ranges.partition_point(|range| range.end() <= frame);
+            if ranges.get(next).is_some_and(|range| range.contains(frame)) {
+                mix.muted = true;
+            }
+        }
         Some(mix)
     }
     pub(crate) fn fader_content_frame(&self, index: usize) -> Option<u64> {
-        self.delays
-            .stamp_at_delay(
-                self.graph.plan.nodes()[self.graph.tracks[index].fader].output_arrival_frames,
-            )
+        self.fader_content_stamp(index)
             .map(|origin| origin.arrangement_frame)
+    }
+    fn fader_content_stamp(&self, index: usize) -> Option<TransportStamp> {
+        self.delays.stamp_at_delay(
+            self.graph.plan.nodes()[self.graph.tracks[index].fader].output_arrival_frames,
+        )
     }
     pub(crate) fn process_main(
         &mut self,
