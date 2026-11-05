@@ -13451,6 +13451,7 @@ fn instrument_metering_preserves_pcm_and_host_trim_keeps_live_note_identity() {
 fn meter_capture_combines_each_owner_before_advancing_and_discards_refused_blocks() {
     use super::capture::{CaptureSink, OutputCaptureId};
     use super::meter_capture::{Cell, MeterCapture};
+    use crate::signal_graph::Owner;
 
     let mut editor = Editor::new(project(1.0, 0, 8 << 32), 8).unwrap();
     let first = editor.project().tracks()[0].id();
@@ -13469,22 +13470,28 @@ fn meter_capture_combines_each_owner_before_advancing_and_discards_refused_block
         Cell::new(OutputCaptureId::Track(second)),
     ];
     super::meter_capture::sort(&mut cells);
-    let mut capture = MeterCapture {
-        revision: &prepared,
-        cells: &mut cells,
-        downstream: None,
-        invalidated: false,
-    };
+    let mut capture = MeterCapture::new(&prepared, &mut cells, None);
     // Owners can be interleaved; two contributions to the first owner at the
     // same offset cancel before the peak is measured.
     capture
-        .add(OutputCaptureId::Track(first), 0, &[[0.5, 0.0]])
+        .add_prepared_frame(
+            Owner::Track(0),
+            OutputCaptureId::Track(first),
+            0,
+            [0.0, 0.5],
+        )
+        .unwrap();
+    // A stale slot hint must still select the canonical owner.
+    capture
+        .add_prepared_frame(
+            Owner::Track(0),
+            OutputCaptureId::Track(second),
+            1,
+            [f32::NAN, -0.9],
+        )
         .unwrap();
     capture
-        .add(OutputCaptureId::Track(second), 1, &[[0.9, 0.0]])
-        .unwrap();
-    capture
-        .add(OutputCaptureId::Track(first), 0, &[[-0.25, 0.0]])
+        .add(OutputCaptureId::Track(first), 0, &[[0.0, -0.25]])
         .unwrap();
     capture
         .add(OutputCaptureId::Track(first), 1, &[[0.1, 0.0]])

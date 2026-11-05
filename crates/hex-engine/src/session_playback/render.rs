@@ -383,12 +383,7 @@ impl SessionPlayback {
             // revision remains owned by playback until scratch is restored.
             let revision = Arc::clone(&self.revision);
             let mut cells = std::mem::take(&mut self.meter_cells);
-            let mut meter = super::meter_capture::MeterCapture {
-                revision: &revision,
-                cells: &mut cells,
-                downstream: capture,
-                invalidated: false,
-            };
+            let mut meter = super::meter_capture::MeterCapture::new(&revision, &mut cells, capture);
             let result = self.render_internal_borrowed(
                 output,
                 pages,

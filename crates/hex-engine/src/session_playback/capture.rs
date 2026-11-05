@@ -88,6 +88,17 @@ pub(super) trait CaptureSink {
         offset: usize,
         frames: &[Frame],
     ) -> Result<(), SessionPlaybackError>;
+    /// The compensated graph can supply its current owner slot as a lookup
+    /// hint. Historical tails use stable IDs alone.
+    fn add_prepared_frame(
+        &mut self,
+        _owner: crate::signal_graph::Owner,
+        id: OutputCaptureId,
+        offset: usize,
+        frame: Frame,
+    ) -> Result<(), SessionPlaybackError> {
+        self.add(id, offset, &[frame])
+    }
     fn commit(&mut self, _frames: usize) {}
     fn invalidate(&mut self) {}
 }
