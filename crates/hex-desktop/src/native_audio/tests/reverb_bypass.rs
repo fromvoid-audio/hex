@@ -117,6 +117,23 @@ fn frozen_main_reverb_bypass_undo_redo_publishes_without_a_pcm_step() {
             frames.extend_from_slice(&h.render());
         }
         let settled = *frames.last().unwrap();
+        let mut last = previous;
+        let mut max_step = 0.0_f32;
+        let mut largest_transition = (0, 0, 0.0, 0.0);
+        for (offset, frame) in frames.iter().copied().enumerate() {
+            for lane in 0..2 {
+                let step = (frame[lane] - last[lane]).abs();
+                if step > max_step {
+                    max_step = step;
+                    largest_transition = (offset, lane, last[lane], frame[lane]);
+                }
+            }
+            last = frame;
+        }
+        assert!(
+            max_step < 0.003,
+            "bypass={bypassed}: main PCM step {max_step}; (offset, lane, before, after): {largest_transition:?}"
+        );
         if bypassed {
             assert!(
                 settled.iter().all(|sample| (*sample - 0.25).abs() < 1e-5),
@@ -135,23 +152,6 @@ fn frozen_main_reverb_bypass_undo_redo_publishes_without_a_pcm_step() {
                 "frozen history lost"
             );
         }
-        let mut last = previous;
-        let mut max_step = 0.0_f32;
-        let mut largest_transition = (0, 0, 0.0, 0.0);
-        for (offset, frame) in frames.into_iter().enumerate() {
-            for lane in 0..2 {
-                let step = (frame[lane] - last[lane]).abs();
-                if step > max_step {
-                    max_step = step;
-                    largest_transition = (offset, lane, last[lane], frame[lane]);
-                }
-            }
-            last = frame;
-        }
-        assert!(
-            max_step < 0.003,
-            "bypass={bypassed}: main PCM step {max_step}; (offset, lane, before, after): {largest_transition:?}"
-        );
     }
     h.audio
         .as_mut()
