@@ -7,6 +7,20 @@ use hex_session::device_gesture::{
 
 #[test]
 fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm() {
+    width_preview(false, false);
+}
+
+#[test]
+fn verified_width_preserves_non_neutral_balance_automation_through_cancel_and_history() {
+    width_preview(true, false);
+}
+
+#[test]
+fn verified_width_preserves_dc_filter_history_through_preview_terminals_and_undo() {
+    width_preview(true, true);
+}
+
+fn width_preview(automated_balance: bool, dc_remove: bool) {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = super::verified_gain::actual_native_harness();
@@ -44,8 +58,38 @@ fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm
     let Some(hex_project::Created::Device(device)) = inserted.created else {
         panic!("utility")
     };
-    let canonical = inserted.state.project.clone();
-    let source = inserted.state.canonical_audio_source.clone().unwrap();
+    if dc_remove {
+        h.run(Request::SetDeviceParameter {
+            device,
+            parameter: ParameterId::from_static(11),
+            value: ParameterValue::Bool(true),
+        });
+    }
+    let configured = if automated_balance {
+        h.run(Request::Edit(
+            hex_project::Command::ReplaceDeviceAutomation {
+                device,
+                parameter: ParameterId::from_static(2),
+                points: vec![hex_project::AutomationPoint {
+                    beat: hex_project::BeatTime::ZERO,
+                    value: hex_project::AutomationValue::new(0.75).unwrap(),
+                    outgoing: hex_project::AutomationInterpolation::Linear,
+                }],
+            },
+        ))
+    } else {
+        inserted
+    };
+    // Utility's independent balance envelope maps .75 to +.5, attenuating
+    // only the left channel. Literal mid/side width values remain the oracle.
+    let expected = |frame: [f32; 2]| {
+        [
+            frame[0] * if automated_balance { 0.5 } else { 1.0 },
+            frame[1],
+        ]
+    };
+    let canonical = configured.state.project.clone();
+    let source = configured.state.canonical_audio_source.clone().unwrap();
     let output_identity = h.audio.as_ref().unwrap().control.output_identity();
     let mut applied = h.applied(h.context.unwrap()).audio_revision;
     h.audio
@@ -57,7 +101,9 @@ fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm
     let ready = Instant::now() + Duration::from_secs(3);
     let mut last = loop {
         let sample = h.render()[63];
-        if sample == [0.25, -0.125] {
+        if (!dc_remove && sample == expected([0.25, -0.125]))
+            || (dc_remove && sample[0] > 0.05 && sample[1] < -0.05)
+        {
             break sample;
         }
         assert!(
@@ -70,6 +116,116 @@ fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm
         generation: h.context.unwrap().project_generation,
         token: 1,
     };
+    if dc_remove {
+        // Hearing the asymmetric source above distinguishes a real filtered
+        // signal from the reader's initial page-miss silence. A reset on an
+        // adopted preview would reintroduce its DC step; do not mistake the
+        // physically expected width/filter transient for a literal width target.
+        let second = GestureKey { token: 2, ..key };
+        let target = GestureTarget::DeviceParameter {
+            device,
+            parameter: ParameterId::from_static(3),
+        };
+        h.run(Request::DeviceGesture(GestureRequest::Begin {
+            key,
+            target,
+        }));
+        for (index, request) in [
+            Request::DeviceGesture(GestureRequest::Change {
+                key,
+                sequence: 1,
+                value: ParameterValue::Float(0.0),
+            }),
+            Request::DeviceGesture(GestureRequest::Change {
+                key,
+                sequence: 2,
+                value: ParameterValue::Float(2.0),
+            }),
+            Request::DeviceGesture(GestureRequest::Change {
+                key,
+                sequence: 3,
+                value: ParameterValue::Float(4.0),
+            }),
+            Request::DeviceGesture(GestureRequest::Cancel { key }),
+            Request::DeviceGesture(GestureRequest::Change {
+                key: second,
+                sequence: 1,
+                value: ParameterValue::Float(0.0),
+            }),
+            Request::DeviceGesture(GestureRequest::Commit {
+                key: second,
+                sequence: 1,
+                value: ParameterValue::Float(0.0),
+                manual_edit: true,
+            }),
+            Request::Undo,
+            Request::Redo,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if index == 4 {
+                h.run(Request::DeviceGesture(GestureRequest::Begin {
+                    key: second,
+                    target,
+                }));
+            }
+            let changed = h.run(request);
+            if let Some(ack) = &changed.gesture_ack {
+                assert!(ack.accepted);
+            }
+            if index < 5 {
+                assert_eq!(changed.state.project, canonical);
+                assert!(Arc::ptr_eq(
+                    changed.state.canonical_audio_source.as_ref().unwrap(),
+                    &source
+                ));
+            }
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut frames = 0;
+            let mut maximum = 0.0_f32;
+            let mut after_publication = 0;
+            loop {
+                let block = render_advancing(&h);
+                frames += block.len();
+                for frame in block {
+                    for channel in 0..2 {
+                        maximum = maximum.max((frame[channel] - last[channel]).abs());
+                    }
+                    last = frame;
+                }
+                let actual = h
+                    .audio
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .unwrap()
+                    .applied_audio_source()
+                    .unwrap();
+                if actual.audio_revision > applied && actual.context == h.context.unwrap() {
+                    after_publication += 1;
+                    if after_publication == 9 {
+                        applied = actual.audio_revision;
+                        break;
+                    }
+                }
+                assert!(
+                    frames < 16000 && Instant::now() < deadline,
+                    "DC preview {index} never published"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(
+                maximum < 0.005,
+                "DC preview/terminal/history {index}: callback step {maximum}"
+            );
+        }
+        assert_eq!(
+            h.audio.as_ref().unwrap().control.output_identity(),
+            output_identity
+        );
+        return;
+    }
     let begin = h.run(Request::DeviceGesture(GestureRequest::Begin {
         key,
         target: GestureTarget::DeviceParameter {
@@ -83,6 +239,7 @@ fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm
         (2, 2.0, [0.4375, -0.3125]),
         (3, 4.0, [0.8125, -0.6875]),
     ] {
+        let target = expected(target);
         let changed = h.run(Request::DeviceGesture(GestureRequest::Change {
             key,
             sequence,
@@ -173,7 +330,7 @@ fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm
     let cancelled = h.run(Request::DeviceGesture(GestureRequest::Cancel { key }));
     assert!(cancelled.gesture_ack.unwrap().accepted);
     assert_eq!(cancelled.state.project, canonical);
-    applied = wait_pcm(&h, applied, [0.25, -0.125]);
+    applied = wait_pcm(&h, applied, expected([0.25, -0.125]));
     h.observation.lock().unwrap().replay_verified_device = Some(old_preview);
     // Give the worker multiple idle polls; a closed key cannot resurrect audio.
     let stable_until = Instant::now() + Duration::from_millis(20);
@@ -181,7 +338,7 @@ fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm
         assert!(
             render_advancing(&h)
                 .iter()
-                .all(|frame| *frame == [0.25, -0.125])
+                .all(|frame| *frame == expected([0.25, -0.125]))
         );
         assert_eq!(
             h.audio
@@ -211,7 +368,7 @@ fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm
             value: ParameterValue::Float(sequence as f32 / 8.0),
         }));
     }
-    applied = wait_pcm(&h, applied, [0.8125, -0.6875]);
+    applied = wait_pcm(&h, applied, expected([0.8125, -0.6875]));
     let committed = h.run(Request::DeviceGesture(GestureRequest::Commit {
         manual_edit: true,
         key: second,
@@ -219,13 +376,13 @@ fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm
         value: ParameterValue::Float(4.0),
     }));
     assert!(committed.gesture_ack.unwrap().accepted);
-    applied = wait_pcm(&h, applied, [0.8125, -0.6875]);
+    applied = wait_pcm(&h, applied, expected([0.8125, -0.6875]));
     let undo = h.run(Request::Undo);
     assert_eq!(undo.state.project, canonical);
-    applied = wait_pcm(&h, applied, [0.25, -0.125]);
+    applied = wait_pcm(&h, applied, expected([0.25, -0.125]));
     let redone = h.run(Request::Redo);
     assert_eq!(redone.state.project, committed.state.project);
-    applied = wait_pcm(&h, applied, [0.8125, -0.6875]);
+    applied = wait_pcm(&h, applied, expected([0.8125, -0.6875]));
     let third = GestureKey { token: 3, ..key };
     h.run(Request::DeviceGesture(GestureRequest::Begin {
         key: third,
@@ -239,7 +396,7 @@ fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm
         sequence: 1,
         value: ParameterValue::Float(0.0),
     }));
-    applied = wait_pcm(&h, applied, [0.0625, 0.0625]);
+    applied = wait_pcm(&h, applied, expected([0.0625, 0.0625]));
     h.service
         .as_ref()
         .unwrap()
@@ -254,7 +411,7 @@ fn verified_utility_width_reaches_callback_before_commit_with_literal_stereo_pcm
     assert!(!refused.gesture_ack.unwrap().accepted);
     assert!(refused.active_device_gesture.is_none());
     assert_eq!(refused.state.project, committed.state.project);
-    wait_pcm(&h, applied, [0.8125, -0.6875]);
+    wait_pcm(&h, applied, expected([0.8125, -0.6875]));
     assert_eq!(
         h.audio.as_ref().unwrap().control.output_identity(),
         output_identity
