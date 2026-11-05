@@ -742,7 +742,9 @@ impl SessionPlayback {
         let mut resident_source_end = 0;
         let mut resident_source_eligible = [false; MAX_TRACKS];
         let mut resident_analytic_eligible = [false; MAX_TRACKS];
-        let mut aligned_dry = [false; MAX_TRACKS];
+        let mut aligned = [false; MAX_TRACKS];
+        let mut stamps = [None; 256];
+        let mut projected_origins = false;
 
         while output_offset < output.len() {
             if let Some(region) = region {
@@ -802,11 +804,20 @@ impl SessionPlayback {
                     &mut resident_source_eligible,
                     &mut resident_analytic_eligible,
                 )?;
-                self.align_resident_dry_tracks(
+                projected_origins = observer.is_none()
+                    && scalar.is_none()
+                    && self.prepare_native_origin_window(
+                        performance_frame,
+                        arrangement_frame,
+                        arrangement_loop_pass,
+                        &mut stamps[..count],
+                    )?;
+                self.align_resident_tracks(
                     arrangement_frame,
                     count,
                     &resident_source_eligible,
-                    &mut aligned_dry,
+                    projected_origins.then_some(&stamps[..count]),
+                    &mut aligned,
                 )?;
                 resident_source_index = 0;
                 resident_source_end = count;
@@ -922,7 +933,8 @@ impl SessionPlayback {
                         index: resident_source_index,
                         audio: &resident_source_eligible,
                         analytic: &resident_analytic_eligible,
-                        aligned_dry: &aligned_dry,
+                        stamps: projected_origins.then_some(&stamps[..resident_source_end]),
+                        aligned: &aligned,
                     }),
                 )?;
                 if use_resident_sources {
