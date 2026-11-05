@@ -100,7 +100,7 @@ fn compare(mutable: bool, block_size: usize) -> Result<(), Box<dyn Error>> {
     let mut expected = actual.clone();
     let mut position = 0;
     let mut heard = false;
-    for limit in [30_000, 108_000] {
+    for limit in [30_000, 60_000, 90_000, 108_000] {
         while position < limit {
             let count = block_size.min((limit - position) as usize);
             let mut result = None;
@@ -132,10 +132,14 @@ fn compare(mutable: bool, block_size: usize) -> Result<(), Box<dyn Error>> {
             assert_eq!(control.status.position.load(Ordering::Acquire), position);
             control.reclaim();
         }
-        if limit == 30_000 {
+        if limit != 108_000 {
             editor.execute(Command::SetTrackTags {
                 track,
-                tags: vec![TrackTag::new("drums")?, TrackTag::new("lowend")?],
+                tags: match limit {
+                    30_000 => vec![TrackTag::new("drums")?, TrackTag::new("lowend")?],
+                    60_000 => vec![TrackTag::new("live drums")?],
+                    _ => Vec::new(),
+                },
             })?;
             control
                 .publish_with_policy_and_context_generation(

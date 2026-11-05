@@ -266,6 +266,10 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if tags && !self.track_view_change_available(cx) {
+            self.error = Some("finish or cancel the current edit before editing tags".into());
+            return;
+        }
         if (!tags && self.mode != super::EditorMode::Arrangement)
             || self.edit_pending()
             || self.track_name.edit.is_some()
@@ -311,7 +315,9 @@ impl EditorView {
             }
         });
         let focus = input.read(cx).focus_handle().clone();
-        let blur = cx.on_blur(&focus, window, |view, _, cx| view.commit_track_name(cx));
+        let blur = cx.on_blur(&focus, window, |view, _, cx| {
+            view.commit_track_name(false, cx)
+        });
         self.track_name.edit = Some(NameEdit {
             target,
             generation: self.project_generation,
@@ -324,7 +330,7 @@ impl EditorView {
         focus.focus(window);
         cx.notify();
     }
-    fn commit_track_name(&mut self, cx: &mut Context<Self>) {
+    fn commit_track_name(&mut self, keep_invalid: bool, cx: &mut Context<Self>) {
         let Some(edit) = self.track_name.edit.take() else {
             return;
         };
@@ -346,7 +352,9 @@ impl EditorView {
                     }
                     (_, Err(error)) => {
                         self.error = Some(error.to_string().into());
-                        self.track_name.edit = Some(edit);
+                        if keep_invalid {
+                            self.track_name.edit = Some(edit);
+                        }
                     }
                     _ => {}
                 }
@@ -399,7 +407,7 @@ impl EditorView {
     ) {
         let track = self.track_name.edit.as_ref().map(|edit| edit.target);
         if commit {
-            self.commit_track_name(cx);
+            self.commit_track_name(true, cx);
         } else {
             self.track_name.edit = None;
         }
