@@ -502,6 +502,19 @@ cargo test -p hex-stream --features allocation-probe --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
+The headless callback probes share the `allocation_probes` integration target.
+Use the former target name as a module filter to run one fixture family, for
+example:
+
+```sh
+cargo test -p hex-audio --locked --features allocation-probe \
+  --test allocation_probes -- track_gain_allocations::
+```
+
+The calibration, stage-clock and device-comparison targets still support
+isolated runs. The stream-pressure target requires both `allocation-probe` and
+`stream-test-support`.
+
 For the focused Limiter stage-clock allocation check, a smaller test binary
 can reduce cold-start time while retaining debug assertions and the same test
 coverage. This opt-in command optimizes only `hex-engine`; it does not change

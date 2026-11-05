@@ -683,6 +683,8 @@ pub enum Request {
     SamplerEdit(SamplerEdit),
     /// Worker-local continuation after a bounded native callback fence.
     ContinueSamplerEdit,
+    /// Patch the latest canonical device state. On resident output this waits
+    /// behind the current publication before preparing an edit of its own.
     SetDeviceParameter {
         device: hex_project::DeviceId,
         parameter: hex_lattice_contract::ParameterId,
@@ -1178,8 +1180,9 @@ impl Service {
     }
 
     /// Compose the desktop audio adapter without opening a device on the caller.
-    /// The existing worker negotiates the actual rate before creating Session;
-    /// failed output setup retains canonical editing/saving in offline mode.
+    /// The adapter supplies the initial project rate without waiting for device
+    /// opening. Delayed results use its existing polling contract; failed output
+    /// setup retains canonical editing/saving in offline mode.
     pub fn with_audio_sink(
         history_capacity: usize,
         max_resident_frames: u64,
@@ -2512,7 +2515,7 @@ fn run_worker(
                         | GestureRequest::CommitSnapshot { .. }
                         | GestureRequest::CommitEqCreation { .. }
                         | GestureRequest::Cancel { .. }
-                )
+                ) | Request::SetDeviceParameter { .. }
             ) {
             match events.defer_publication(queued) {
                 Some(queued) => queued,
@@ -5744,7 +5747,16 @@ fn run_worker(
                                 Ok((_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
-                                    status = Some("device parameter changed".into());
+                                    status = Some(
+                                        if events.resident_publication_enabled()
+                                            && session.audio_mode() == DocumentAudioMode::Resident
+                                        {
+                                            "resident edit accepted · waiting for audio"
+                                        } else {
+                                            "device parameter changed"
+                                        }
+                                        .into(),
+                                    );
                                 }
                                 Ok(_) => status = Some("no change".into()),
                                 Err(reason) => error = Some(hex_storage::text::lowercase_outside_verbatim(&reason.to_string())),

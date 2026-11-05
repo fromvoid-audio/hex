@@ -1614,7 +1614,7 @@ fn selector_popup_flips_above_near_window_bottom(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn selector_popup_caps_many_choices_to_window_height(cx: &mut TestAppContext) {
-    let (handle, selector, _) = open_clipped_selector(cx, 0.0, 128);
+    let (handle, selector, _) = open_clipped_selector(cx, 0.0, 257);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(240.0), px(80.0)));
     visual.run_until_parked();
