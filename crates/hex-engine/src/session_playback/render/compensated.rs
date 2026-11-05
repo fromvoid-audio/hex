@@ -340,6 +340,7 @@ impl SessionPlayback {
                     delay: arrival,
                 })
             };
+            let work_start = self.render_work.track(index);
             let samples = &mut scratch[..frames];
             for frame in samples.iter_mut() {
                 // Match the two zero-valued merges in the scalar route.
@@ -408,6 +409,7 @@ impl SessionPlayback {
             compensation
                 .edge_block(edge, samples)
                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+            self.render_work.finish(work_start);
             *aligned = true;
         }
         Ok(())
