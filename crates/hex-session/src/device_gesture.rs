@@ -12,7 +12,7 @@ pub use eq_creation::EqNodeCreationSnapshot;
 mod manual_tests;
 #[cfg(test)]
 mod snapshot_tests;
-pub(crate) use preparation::{command_for_snapshot, manual_device_edit};
+pub(crate) use preparation::{command_for_snapshot, device_parameter_command, manual_device_edit};
 
 pub use hex_lattice_contract::{
     DeviceParameterSnapshot, DeviceTypeId, ParameterId, ParameterValue,

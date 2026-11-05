@@ -748,7 +748,15 @@ impl Session {
         &self,
         device: hex_project::DeviceId,
     ) -> Result<hex_engine::NativeDeviceClass, SessionError> {
-        for track in self.project().tracks() {
+        Self::native_device_class_for_project(self.project(), device)
+    }
+    /// Snapshot queries use the same actual owning-slot rule as live Session.
+    /// Frontend parameter requests never choose a registry/class themselves.
+    pub(crate) fn native_device_class_for_project(
+        project: &Project,
+        device: hex_project::DeviceId,
+    ) -> Result<hex_engine::NativeDeviceClass, SessionError> {
+        for track in project.tracks() {
             if track
                 .instrument()
                 .is_some_and(|instrument| instrument.id() == device)
@@ -759,13 +767,11 @@ impl Session {
                 return Ok(hex_engine::NativeDeviceClass::Effect);
             }
         }
-        if self
-            .project()
+        if project
             .return_tracks()
             .iter()
             .any(|track| track.devices().iter().any(|effect| effect.id() == device))
-            || self
-                .project()
+            || project
                 .main_devices()
                 .iter()
                 .any(|effect| effect.id() == device)
