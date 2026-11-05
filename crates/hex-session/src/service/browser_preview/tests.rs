@@ -193,7 +193,8 @@ fn a_waiting_job_receives_the_in_flight_decode() {
     assert_eq!(decodes(&sources), 0, "the waiter did not decode again");
 }
 
-fn large_preview_file() -> (TestDir, PathBuf, usize) {
+#[test]
+fn browser_preview_keeps_full_audio_above_old_byte_and_frame_limits() {
     use std::io::{Seek, SeekFrom, Write};
     let directory = TestDir::new();
     let path = directory.0.join("large.wav");
@@ -217,22 +218,12 @@ fn large_preview_file() -> (TestDir, PathBuf, usize) {
     assert!(fs::metadata(&path).unwrap().len() > IMPORT_FILE_LIMIT as u64);
     assert!(frames > IMPORT_FRAME_LIMIT);
 
-    (directory, path, frames)
-}
-
-#[test]
-fn browser_preview_keeps_full_audio_above_old_byte_and_frame_limits_playback() {
-    let (_directory, path, frames) = large_preview_file();
     let audio = playback(&path, 48_000).unwrap();
     assert_eq!(audio.sample_rate(), 48_000);
     assert_eq!(audio.frames().len(), frames);
     assert_eq!(audio.frames()[0], [0.0; 2]);
     assert_eq!(audio.frames().last(), Some(&[0.5; 2]));
-}
-
-#[test]
-fn browser_preview_keeps_full_audio_above_old_byte_and_frame_limits_waveform() {
-    let (_directory, path, frames) = large_preview_file();
+    drop(audio);
     let preview = waveform(&path, 48_000).unwrap();
     assert_eq!(preview.playback_frames, frames as u64);
     assert_eq!(preview.sample_rate, 48_000);
