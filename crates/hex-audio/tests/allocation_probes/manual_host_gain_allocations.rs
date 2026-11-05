@@ -30,6 +30,139 @@ fn render(callback: &mut prepared::Callback, pcm: &mut [Frame]) -> Result<(), Bo
     );
     Ok(())
 }
+
+#[test]
+fn direct_utility_controls_ramp_for_five_ms_across_prepared_publication()
+-> Result<(), Box<dyn Error>> {
+    check_direct_utility_controls(false)
+}
+
+#[test]
+fn filtered_utility_controls_ramp_without_resetting_dc_history() -> Result<(), Box<dyn Error>> {
+    check_direct_utility_controls(true)
+}
+
+fn check_direct_utility_controls(filtered: bool) -> Result<(), Box<dyn Error>> {
+    use hex_devices::utility::{UTILITY_DEFINITION, parameter};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+
+    const SOURCE: Frame = [0.25, -0.125];
+    const FRAMES: u64 = 4096;
+    let mut neutral = UTILITY_DEFINITION.default_state()?;
+    if filtered {
+        neutral = UTILITY_DEFINITION.patch_parameter(
+            &neutral,
+            parameter::DC_REMOVE,
+            ParameterValue::Bool(true),
+        )?;
+    }
+    for rate in [48_000, 192_000] {
+        let ramp_frames = rate / 200;
+        for block in [1, 7, 64, 512] {
+            let mut editor = Editor::new(Project::new(rate)?, 16)?;
+            let Created::Imported { track, asset, .. } =
+                editor.execute(Command::ImportAudioTrack {
+                    name: "utility ramp source".into(),
+                    path: "source.wav".into(),
+                    sample_rate: rate,
+                    frames: FRAMES,
+                })?
+            else {
+                return Err("import".into());
+            };
+            let Created::Device(device) = editor.execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: neutral.clone(),
+            })?
+            else {
+                return Err("device".into());
+            };
+            let media = BTreeMap::from([(asset, Audio::new(rate, vec![SOURCE; FRAMES as usize])?)]);
+            let prepare = |editor: &Editor| -> Result<Playback, Box<dyn Error>> {
+                let revision = PreparedRevision::prepare(
+                    editor.project(),
+                    &media,
+                    Arc::new(SineTable::new()),
+                    None,
+                )?;
+                Ok(Playback::try_from_prepared_with_session(Arc::new(
+                    revision,
+                ))?)
+            };
+            for (parameter, value, target) in [
+                (
+                    parameter::GAIN,
+                    ParameterValue::Float(0.25),
+                    [0.0625, -0.03125],
+                ),
+                (parameter::MUTE, ParameterValue::Bool(true), [0.0, 0.0]),
+                (
+                    parameter::CHANNEL,
+                    ParameterValue::Choice(3),
+                    [-0.125, 0.25],
+                ),
+            ] {
+                editor.execute(Command::ReplaceDeviceState {
+                    device,
+                    state: neutral.clone(),
+                })?;
+                let (mut control, mut callback) = prepared::channel(rate)?;
+                control
+                    .publish(prepare(&editor)?)
+                    .map_err(|_| "publish neutral")?;
+                control.command(PlaybackCommand::Play).map_err(|_| "play")?;
+                let mut first = [SOURCE];
+                render(&mut callback, &mut first)?;
+                assert_eq!(first, [SOURCE]);
+
+                let state = UTILITY_DEFINITION.patch_parameter(&neutral, parameter, value)?;
+                editor.execute(Command::ReplaceDeviceState { device, state })?;
+                let revision = control
+                    .publish(prepare(&editor)?)
+                    .map_err(|_| "publish edit")?;
+                let mut output = vec![[0.0; 2]; ramp_frames as usize + 1];
+                for chunk in output.chunks_mut(block) {
+                    render(&mut callback, chunk)?;
+                }
+                assert_eq!(control.status.applied_revision.load(Acquire), revision);
+                assert_eq!(control.status.rejected_revision(), None);
+                use hex_devices::utility_filters::{
+                    PreparedUtilityFilters, UtilityFilterProcessor,
+                };
+                let mut reference = UtilityFilterProcessor::new(PreparedUtilityFilters::new(
+                    rate, filtered, false, 120.0, false,
+                )?);
+                assert_eq!(reference.process_frame(SOURCE), SOURCE);
+                for (frame, actual) in output.iter().enumerate() {
+                    let fraction = ((frame + 1) as f32 / ramp_frames as f32).min(1.0);
+                    let expected = if filtered && parameter == parameter::MUTE {
+                        let gain = 1.0 - fraction;
+                        let signal = if gain == 0.0 { [0.0; 2] } else { SOURCE };
+                        reference.process_frame(signal).map(|value| value * gain)
+                    } else {
+                        let input = std::array::from_fn(|channel| {
+                            SOURCE[channel] + (target[channel] - SOURCE[channel]) * fraction
+                        });
+                        reference.process_frame(input)
+                    };
+                    for channel in 0..2 {
+                        assert!(
+                            (actual[channel] - expected[channel]).abs() < 1.0e-7,
+                            "{rate} hz, filtered {filtered}, block {block}, {parameter:?}, frame {frame}: {actual:?} != {expected:?}"
+                        );
+                    }
+                }
+                control.reclaim();
+                control.request_shutdown();
+                render(&mut callback, &mut first)?;
+                assert_eq!(control.reclaim(), 1);
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn static_effect_output_trim_publication_preserves_pcm_and_allocates_nothing()
 -> Result<(), Box<dyn Error>> {

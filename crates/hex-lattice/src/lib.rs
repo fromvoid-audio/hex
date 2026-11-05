@@ -20,6 +20,8 @@ mod matrix_ramp;
 mod meter;
 mod owned_processor;
 mod parameter_automation;
+#[cfg(test)]
+mod static_processing_tests;
 mod tail_split;
 pub use foreign_processor::{
     ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, RefuseForeign,
@@ -245,6 +247,19 @@ pub enum OutputTail {
 /// admission. Prepared automation normally succeeds; malformed borrowed delivery
 /// or a derived-control failure returns through the host's existing rollback.
 pub trait NativeProcessorRuntime: StdAny + Send {
+    /// Opt in when the host can ramp changed input matrix coefficients while
+    /// the processor retains its committed history and authored settings.
+    fn supports_manual_host_matrix_retarget(&self) -> bool {
+        false
+    }
+
+    /// Opt in when processing a source release without an external clock,
+    /// auxiliary input or automation is equivalent to ordinary processing,
+    /// and ordinary history copy resumes that exact signal history.
+    fn supports_detached_source_rejoin(&self) -> bool {
+        false
+    }
+
     /// Process an admitted stereo auxiliary block. `automation == None` uses
     /// the immutable prepared parameters. When `bypassed`, advance the same
     /// private history while leaving the main signal dry. The clock, automation,
@@ -1338,6 +1353,59 @@ impl NativeRuntimeChain {
         self.declared_pair_bytes
     }
 
+    /// Whether two complete chains perform the same static processing without
+    /// signal, automation or unfinished host-ramp history. This observes only
+    /// committed state; callers retain transport/source and ownership proofs.
+    pub fn static_processing_matches(&self, other: &Self) -> bool {
+        self.source_rejoin_processing_matches(other, |runtime| {
+            matches!(runtime, RuntimeOwnership::Memoryless)
+        })
+    }
+
+    /// Whether the whole post-instrument chain can copy committed history
+    /// from a detached source. It must process the same stream without a clock
+    /// or auxiliary signal, emit nothing autonomously, and explicitly admit
+    /// this use. No ownership moves during preflight.
+    pub fn detached_source_history_matches(&self, previous: &Self) -> bool {
+        self.source_rejoin_processing_matches(previous, |runtime| match runtime {
+            RuntimeOwnership::Memoryless => true,
+            RuntimeOwnership::Legacy { primary, .. } => primary.supports_detached_source_rejoin(),
+            RuntimeOwnership::Owned(_) | RuntimeOwnership::Foreign(_) => false,
+        }) && self.can_inherit_from(previous)
+    }
+
+    fn source_rejoin_processing_matches(
+        &self,
+        other: &Self,
+        supports: impl Fn(&RuntimeOwnership) -> bool,
+    ) -> bool {
+        let settled = |entry: &RuntimeEntry| {
+            supports(&entry.runtime)
+                && entry.algorithmic_latency_frames == Some(0)
+                && entry.output_tail == (OutputTail::Finite { max_tail_frames: 0 })
+                && entry.automation.is_empty()
+                && !entry.committed_matrix_ramp.is_active()
+                && !entry.committed_bypass_ramp.is_active()
+                && !entry.committed_output_gain_ramp.active()
+                && entry.committed_transient_output_gain
+                    == host_output_gain_ramp::TransientGain::Follow
+                && entry.committed_host_gains == [entry.input_gain, entry.output_gain]
+        };
+        self.len() == other.len()
+            && self.configuration_matches_range(other, 0..self.len())
+            && self
+                .entries
+                .iter()
+                .zip(&other.entries)
+                .all(|(left, right)| {
+                    left.bypassed == right.bypassed
+                        && left.input_gain == right.input_gain
+                        && left.output_gain == right.output_gain
+                        && settled(left)
+                        && settled(right)
+                })
+    }
+
     /// Whether a same-position range has exact immutable processor
     /// configuration identity, in addition to its prepared processing
     /// semantics. Missing synthetic identities compare conservatively false.
@@ -1393,9 +1461,9 @@ impl NativeRuntimeChain {
     /// authored parameter change. Entry identity and processing topology must
     /// remain exact; a changed configuration is accepted only when both
     /// candidate twins explicitly support retargeting from the old committed
-    /// runtime, or when an unbypassed, unautomated memoryless entry changes
-    /// only its static host matrix (the handoff then ramps it; see
-    /// `matrix_ramp`). A simultaneous bypass change also requires explicit
+    /// runtime, or when a compatible unbypassed, unautomated entry changes
+    /// its static host matrix. The host ramps that matrix; a stateful entry
+    /// must also explicitly admit history and parameter retargeting. A simultaneous bypass change also requires explicit
     /// smoothed bypass support, transferable history and unchanged host
     /// gains, matrix and automation. Empty and malformed ranges are refused.
     pub fn can_retarget_parameters_from_range(
@@ -1413,13 +1481,21 @@ impl NativeRuntimeChain {
             .iter()
             .zip(&previous.entries[range])
             .all(|(candidate, old)| {
-                // A memoryless static matrix carries no processor history; its
-                // changed coefficients ramp in the host across the handoff.
-                let static_matrix_retarget = !candidate.runtime.is_stateful()
-                    && !old.runtime.is_stateful()
-                    && !candidate.bypassed
+                // Static host coefficients ramp independently of processor
+                // history. A stateful provider still has to admit the retarget.
+                let stateful_matrix_retarget =
+                    matches!(
+                        &candidate.runtime,
+                        RuntimeOwnership::Legacy { primary, scratch }
+                            if primary.supports_manual_host_matrix_retarget()
+                                && scratch.supports_manual_host_matrix_retarget()
+                    ) && candidate.runtime.can_inherit_from(&old.runtime)
+                        && candidate.runtime.can_retarget_from(&old.runtime);
+                let static_matrix_retarget = !candidate.bypassed
                     && candidate.automation.is_empty()
-                    && old.automation.is_empty();
+                    && old.automation.is_empty()
+                    && ((!candidate.runtime.is_stateful() && !old.runtime.is_stateful())
+                        || stateful_matrix_retarget);
                 let bypass_retarget = candidate.bypassed != old.bypassed
                     && candidate.configuration.is_some()
                     && old.configuration.is_some()
