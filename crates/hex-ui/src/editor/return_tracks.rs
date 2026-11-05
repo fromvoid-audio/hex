@@ -293,6 +293,7 @@ impl EditorView {
                     .children(
                         self.track_performance_indicator(hex_engine::OutputCaptureId::Return(id)),
                     )
+                    .children(self.track_latency_indicator(super::track_latency::Owner::Return(id)))
                     .children([super::track_meters::render_return(
                         id,
                         self.track_meters.return_level(id),

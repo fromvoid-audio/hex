@@ -76,7 +76,7 @@ fn resident_open_after_new_accepts_before_obsolete_observation_delivery() {
     assert_eq!(h.render(), [[0.0; 2]; 64]);
 }
 
-fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -> u64 {
+pub(super) fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -> u64 {
     assert!(event.project_replaced && event.playback.is_none());
     assert!(h.submitted.is_none_or(|(_, metadata)| {
         metadata.context.project_generation

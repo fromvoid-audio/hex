@@ -657,6 +657,9 @@ impl EditorView {
                                     .children(self.track_performance_indicator(
                                         hex_engine::OutputCaptureId::Track(track_id),
                                     ))
+                                    .children(self.track_latency_indicator(
+                                        super::track_latency::Owner::Track(track_id),
+                                    ))
                                     .children(self.track_tags_header(track, cx)),
                             )
                             .children(self.route_marker_for_track(

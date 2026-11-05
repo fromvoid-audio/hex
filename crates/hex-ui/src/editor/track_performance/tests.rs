@@ -165,9 +165,11 @@ mod rendered {
 
 #[cfg(feature = "ui-test-support")]
 #[gpui::test]
-fn view_action_toggles_actual_arrangement_and_console_headers(cx: &mut gpui::TestAppContext) {
+fn view_actions_fit_independent_indicators_in_arrangement_and_console_headers(
+    cx: &mut gpui::TestAppContext,
+) {
     use crate::editor::clip_drag_ui_test::editor_window;
-    use crate::editor::{EditorMode, ToggleTrackPerformance};
+    use crate::editor::{EditorMode, ToggleTrackLatency, ToggleTrackPerformance};
     use gpui::{VisualTestContext, size};
     use std::sync::Arc;
     let mut model = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
@@ -188,15 +190,25 @@ fn view_action_toggles_actual_arrangement_and_console_headers(cx: &mut gpui::Tes
     visual.update(|window, cx| window.dispatch_action(Box::new(ToggleTrackPerformance), cx));
     visual.run_until_parked();
     assert!(visual.debug_bounds("track-performance-0-1").is_some());
+    assert!(visual.debug_bounds("track-latency-1").is_none());
+    visual.update(|window, cx| window.dispatch_action(Box::new(ToggleTrackLatency), cx));
+    visual.run_until_parked();
+    let assert_indicators_fit = |visual: &mut VisualTestContext| {
+        let work = visual.debug_bounds("track-performance-0-1").unwrap();
+        let latency = visual.debug_bounds("track-latency-1").unwrap();
+        assert!(!work.intersects(&latency));
+    };
+    assert_indicators_fit(&mut visual);
     editor.update(cx, |view, cx| {
         view.mode = EditorMode::Session;
         cx.notify();
     });
     visual.run_until_parked();
-    assert!(visual.debug_bounds("track-performance-0-1").is_some());
+    assert_indicators_fit(&mut visual);
     visual.update(|window, cx| window.dispatch_action(Box::new(ToggleTrackPerformance), cx));
     visual.run_until_parked();
     assert!(visual.debug_bounds("track-performance-0-1").is_none());
+    assert!(visual.debug_bounds("track-latency-1").is_some());
 }
 
 #[cfg(feature = "ui-test-support")]

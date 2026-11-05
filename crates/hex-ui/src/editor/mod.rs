@@ -60,6 +60,7 @@ mod section_layout_preview;
 mod track_header;
 mod track_header_device_drop;
 mod track_hierarchy_indent;
+mod track_latency;
 mod track_meters;
 mod track_performance;
 mod workspace_view;
@@ -383,6 +384,7 @@ actions!(
     hex_editor,
     [
         TogglePlay,
+        ToggleTrackLatency,
         ToggleBrowser,
         ToggleTrackPerformance,
         SearchBrowser,
@@ -891,6 +893,7 @@ pub(super) struct EditorView {
     zoom_fit: zoom_fit::State,
     playback_candidates: VecDeque<PlaybackCandidate>,
     audible_playback: Option<PlaybackCandidate>,
+    show_track_latency: bool,
     track_meters: track_meters::State,
     track_performance: track_performance::State,
     // One existing read-only view per transient protocol, never a prepared graph/resource set.
@@ -1658,6 +1661,7 @@ impl EditorView {
             zoom_fit: zoom_fit::State::default(),
             playback_candidates: VecDeque::new(),
             audible_playback: None,
+            show_track_latency: false,
             track_meters: Default::default(),
             track_performance: Default::default(),
             resident_device_preview: None,

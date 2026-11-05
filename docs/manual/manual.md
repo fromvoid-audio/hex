@@ -849,6 +849,14 @@ does not promise a complete third-party plugin-hosting workflow.
 
 # audio output and settings
 
+choose **view → track latency indicators** and hover **lat** in a track header
+to see delay in samples and milliseconds. local devices shows the longest
+processing path within that track. post-fader arrival includes upstream routes.
+default route compensation is the alignment added on the way to the parent
+group or main. sends can have separate alignment. main output arrival includes
+main devices. a pending or unavailable reading has its own marker. these figures
+describe the applied audio graph and exclude interface and round-trip delay.
+
 hex opens the system's default output device with that device's default
 configuration. **settings…** is available from the hex menu or **command+,**;
 it does not currently provide an audio device, sample-rate or buffer-size chooser.

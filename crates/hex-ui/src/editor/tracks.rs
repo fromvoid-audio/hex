@@ -1890,6 +1890,9 @@ impl EditorView {
                 .children(
                     self.track_performance_indicator(hex_engine::OutputCaptureId::Track(track_id)),
                 )
+                .children(
+                    self.track_latency_indicator(super::track_latency::Owner::Track(track_id)),
+                )
                 .children([super::track_meters::render(
                     track_id,
                     self.track_meters.level(track_id),

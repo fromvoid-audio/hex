@@ -935,6 +935,10 @@ impl Render for EditorView {
                 view.toggle_track_performance();
                 cx.notify();
             }))
+            .on_action(cx.trace(|view, _: &super::ToggleTrackLatency, _, cx| {
+                view.show_track_latency = !view.show_track_latency;
+                cx.notify();
+            }))
             .on_action(cx.trace(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
             }))
