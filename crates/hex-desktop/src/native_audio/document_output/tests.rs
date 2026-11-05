@@ -1,13 +1,17 @@
 //! Exercise ordinary saved-file open with actual Session and callback custody.
 //! The physical device and its post-callback conversion are substituted.
 use super::*;
+use crate::native_audio::tests::{Files, native_fixture};
 use hex_audio::worker_fixture::{HeadlessBackend, open_with_reliable_action_outcomes};
 use hex_engine::{Frame, PlaybackCommand};
 use hex_project::{BeatTime, Command, Created, Editor, Project};
 use hex_session::service::{Event, Request};
-use std::sync::{
-    Mutex,
-    atomic::{AtomicU8, AtomicU32, Ordering::Release},
+use std::{
+    path::PathBuf,
+    sync::{
+        Mutex,
+        atomic::{AtomicU8, AtomicU32, Ordering::Release},
+    },
 };
 
 struct Harness {
