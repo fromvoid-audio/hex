@@ -706,6 +706,37 @@ impl AudioClipEdit {
             self.event_source_frame_at(source, frame, tempo)
         }
     }
+    /// Project a signed authoring coordinate, including virtual space outside
+    /// the retained destination. Only canonical edits can grow that extent.
+    pub fn signed_root_frame_at(&self, position: i128, tempo: &TempoMap) -> Result<i128, Invalid> {
+        match self.domain.clock {
+            AudioDomainClock::Frames(_) => Ok(position),
+            AudioDomainClock::Beats(_) => {
+                let origin = self.processing_origin()?;
+                let beat = origin
+                    .checked_add(position)
+                    .ok_or(Invalid("audio event beat overflow"))?;
+                let tempo = self.processing_tempo(tempo);
+                Ok(audio_projection_frame(tempo, beat)? - audio_projection_frame(tempo, origin)?)
+            }
+        }
+    }
+
+    /// Invert the signed authoring projection in the retained processing clock.
+    pub fn signed_root_position_at(&self, frame: i128, tempo: &TempoMap) -> Result<i128, Invalid> {
+        match self.domain.clock {
+            AudioDomainClock::Frames(_) => Ok(frame),
+            AudioDomainClock::Beats(_) => {
+                let origin = self.processing_origin()?;
+                let tempo = self.processing_tempo(tempo);
+                let frame = audio_projection_frame(tempo, origin)?
+                    .checked_add(frame)
+                    .ok_or(Invalid("audio event frame overflow"))?;
+                Ok(audio_projection_beat(tempo, frame)? - origin)
+            }
+        }
+    }
+
     pub fn root_frame_at(&self, position: u64, tempo: &TempoMap) -> Result<u64, Invalid> {
         let tempo = self.processing_tempo(tempo);
         if position > self.domain.clock.length() {
