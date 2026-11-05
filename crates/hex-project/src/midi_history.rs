@@ -1042,6 +1042,7 @@ fn same_shell(
         routing,
         audio_feeds,
         midi_routes,
+        sidechains,
         import_provenance,
         sample_rate,
         next_id: _,
@@ -1104,6 +1105,7 @@ fn same_shell(
         || routing != &b.routing
         || audio_feeds != &b.audio_feeds
         || midi_routes != &b.midi_routes
+        || sidechains != &b.sidechains
         || import_provenance != &b.import_provenance
         || sample_rate != &b.sample_rate
         || assets != &b.assets
@@ -1132,6 +1134,7 @@ fn same_shell(
             soloed,
             devices,
             instrument,
+            retained_source_path,
             instrument_position,
             content,
             sends,
@@ -1157,6 +1160,7 @@ fn same_shell(
             && soloed == &b.soloed
             && devices == &b.devices
             && instrument == &b.instrument
+            && retained_source_path == &b.retained_source_path
             && instrument_position == &b.instrument_position
             && sends == &b.sends
             && base == &b.gain_lane.base

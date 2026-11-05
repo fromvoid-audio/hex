@@ -1265,62 +1265,61 @@ impl ComputerKeyboardRuntime {
                 }
             }
         }
-        if let Some(capture) = &mut self.capture {
-            if capture
+        if let Some(capture) = &mut self.capture
+            && capture
                 .key_batch
                 .as_ref()
                 .is_some_and(|batch| Some(batch.output_epoch) != self.activation_epoch)
-            {
-                if !deferred {
-                    if let Some((queue, batch)) = self
-                        .input
-                        .lease()
-                        .and_then(|input| input.ordered_keys.as_ref())
-                        .zip(capture.key_batch.as_ref())
-                    {
-                        queue.fault(batch.activation);
-                    }
-                    if capture.active {
-                        capture.fail(crate::midi_capture::MidiCaptureFault::InputChanged);
-                    }
-                }
-                capture.key_batch = None;
-            }
-        }
-        if let Some(capture) = self.capture.as_mut().filter(|capture| capture.is_active()) {
-            if let Some(binding) = capture.binding {
-                let key_changed = self
+        {
+            if !deferred {
+                if let Some((queue, batch)) = self
                     .input
                     .lease()
                     .and_then(|input| input.ordered_keys.as_ref())
-                    .is_none_or(|queue| !queue.active(binding.keys))
-                    || capture
-                        .key_batch
-                        .as_ref()
-                        .is_some_and(|batch| batch.activation != binding.keys);
-                let hardware_changed = match binding.hardware {
-                    Some(token) => self
-                        .live_batch
-                        .as_ref()
-                        .is_none_or(|batch| batch.activation != token),
-                    None => self.live_batch.is_some(),
-                };
-                if key_changed || hardware_changed {
-                    let overflow = self.input.lease().is_some_and(|input| {
-                        !input.is_cancelled()
-                            && (input.ordered_keys_faulted(binding.keys)
-                                || binding.hardware.is_some_and(|token| {
-                                    input
-                                        .live_notes()
-                                        .is_some_and(|live| live.activation_rejected(token))
-                                }))
-                    });
-                    capture.fail(if overflow {
-                        crate::midi_capture::MidiCaptureFault::Capacity
-                    } else {
-                        crate::midi_capture::MidiCaptureFault::InputChanged
-                    });
+                    .zip(capture.key_batch.as_ref())
+                {
+                    queue.fault(batch.activation);
                 }
+                if capture.active {
+                    capture.fail(crate::midi_capture::MidiCaptureFault::InputChanged);
+                }
+            }
+            capture.key_batch = None;
+        }
+        if let Some(capture) = self.capture.as_mut().filter(|capture| capture.is_active())
+            && let Some(binding) = capture.binding
+        {
+            let key_changed = self
+                .input
+                .lease()
+                .and_then(|input| input.ordered_keys.as_ref())
+                .is_none_or(|queue| !queue.active(binding.keys))
+                || capture
+                    .key_batch
+                    .as_ref()
+                    .is_some_and(|batch| batch.activation != binding.keys);
+            let hardware_changed = match binding.hardware {
+                Some(token) => self
+                    .live_batch
+                    .as_ref()
+                    .is_none_or(|batch| batch.activation != token),
+                None => self.live_batch.is_some(),
+            };
+            if key_changed || hardware_changed {
+                let overflow = self.input.lease().is_some_and(|input| {
+                    !input.is_cancelled()
+                        && (input.ordered_keys_faulted(binding.keys)
+                            || binding.hardware.is_some_and(|token| {
+                                input
+                                    .live_notes()
+                                    .is_some_and(|live| live.activation_rejected(token))
+                            }))
+                });
+                capture.fail(if overflow {
+                    crate::midi_capture::MidiCaptureFault::Capacity
+                } else {
+                    crate::midi_capture::MidiCaptureFault::InputChanged
+                });
             }
         }
         // Expiration is audio-owned and overrides even a control writer stalled

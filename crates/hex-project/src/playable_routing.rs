@@ -213,7 +213,8 @@ impl Project {
         self.validate_playable_routes()
     }
     pub(crate) fn validate_playable_routes(&self) -> Result<(), Invalid> {
-        if self.audio_feeds.is_empty() && self.midi_routes.is_empty() {
+        if self.audio_feeds.is_empty() && self.midi_routes.is_empty() && self.sidechains.is_empty()
+        {
             return Ok(());
         }
         if self.audio_feeds.len() > MAX_AUDIO_FEEDS || self.midi_routes.len() > MAX_MIDI_ROUTES {
@@ -224,6 +225,7 @@ impl Project {
             .iter()
             .map(|t| RoutingOwner::Track(t.id()))
             .chain(self.returns.iter().map(|b| RoutingOwner::Return(b.id())))
+            .chain([RoutingOwner::Main])
             .collect();
         let mut audio = BTreeSet::new();
         // Default group outputs participate in the same graph as authored
@@ -264,6 +266,12 @@ impl Project {
             // An authored additive feed may parallel the exclusive default
             // output. Preserve both signals; topology needs their union once.
             audio.insert(edge);
+        }
+        for route in &self.sidechains {
+            audio.insert((
+                RoutingOwner::Track(route.source),
+                self.sidechain_destination(route.device)?,
+            ));
         }
         dag(&nodes, &audio)?;
         let mut destinations = BTreeSet::new();

@@ -76,6 +76,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
     }
     Project::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
@@ -83,6 +84,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
         tuning: Default::default(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         return_feeds: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,

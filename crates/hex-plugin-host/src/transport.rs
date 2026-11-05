@@ -574,10 +574,10 @@ impl Callback {
         if stage.staged_frames != stage.expected_frames {
             return self.fail(Fault::Protocol);
         }
-        if let Some(request) = stage.request {
-            if self.requests.push(request).is_err() {
-                return self.fail(Fault::Saturated);
-            }
+        if let Some(request) = stage.request
+            && self.requests.push(request).is_err()
+        {
+            return self.fail(Fault::Saturated);
         }
         self.state = stage.state;
         Ok(())

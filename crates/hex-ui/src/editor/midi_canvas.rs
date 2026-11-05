@@ -645,20 +645,19 @@ impl EditorView {
                         item.pitch,
                         0,
                         100,
-                    ) {
-                        if let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) {
-                            quad(
-                                x,
-                                note.y * height + 1.0,
-                                right - x,
-                                (height / f32::from(pitch_rows) - 2.0).max(1.0),
-                                theme::color(if canvas_scene.note(id).is_some_and(|n| !n.active) {
-                                    theme::PaletteRole::Muted
-                                } else {
-                                    theme::PaletteRole::Primary
-                                }),
-                            );
-                        }
+                    ) && let Some((x, right)) = super::midi_scene::pixel_bounds(note, width)
+                    {
+                        quad(
+                            x,
+                            note.y * height + 1.0,
+                            right - x,
+                            (height / f32::from(pitch_rows) - 2.0).max(1.0),
+                            theme::color(if canvas_scene.note(id).is_some_and(|n| !n.active) {
+                                theme::PaletteRole::Muted
+                            } else {
+                                theme::PaletteRole::Primary
+                            }),
+                        );
                     }
                 }
 

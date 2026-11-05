@@ -44,6 +44,9 @@ struct Source {
     accepted: bool,
     retiring: bool,
     queued: bool,
+    observes_latency: bool,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    observed_latency_receipt: bool,
     #[cfg(all(test, feature = "allocation-probe"))]
     attempts: u64,
 }
@@ -101,6 +104,7 @@ pub(super) struct PreparationObservation {
     pub(super) native: Option<Progress>,
     pub(super) attempts: u64,
     pub(super) restore_refused: bool,
+    pub(super) observed_latency_receipt: bool,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
 impl std::fmt::Debug for PreparationObservation {
@@ -132,6 +136,9 @@ pub(super) struct Plugins {
     pub(super) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
     degraded_changed: Option<(u64, Vec<u64>)>,
+    latency_poll: usize,
+    latency_poll_at: Option<std::time::Instant>,
+    latency_notice: Option<(hex_audio::prepared::AppliedAudioSource, std::time::Instant)>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -359,6 +366,9 @@ impl Plugins {
                 accepted: false,
                 retiring: false,
                 queued: false,
+                observes_latency: false,
+                #[cfg(all(test, feature = "allocation-probe"))]
+                observed_latency_receipt: false,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 attempts: 0,
             });
@@ -403,6 +413,67 @@ impl Plugins {
             source.retiring |= !source.accepted;
         }
     }
+    /// Sample one original worker per interval while the exact ordinary
+    /// resident graph is active. The helper retains intent across reads.
+    pub fn poll_latency_restart(
+        &mut self,
+        output: &mut WorkerPreparedOutput,
+        context: AudioSourceContext,
+    ) -> Option<hex_audio::prepared::AppliedAudioSource> {
+        let now = std::time::Instant::now();
+        if self.restore.is_some()
+            || self.edit.is_some()
+            || self.pending.is_some()
+            || self.reopen.is_some()
+            || self.sources.is_empty()
+            || self.latency_poll_at.is_some_and(|at| now < at)
+        {
+            return None;
+        }
+        let control = output.publication.control()?;
+        if control.status.applied_audio_source().is_some() {
+            return None;
+        }
+        let active = control
+            .status
+            .native_effect_source()
+            .filter(|source| source.context == context)?;
+        self.latency_poll_at = now.checked_add(std::time::Duration::from_millis(10));
+        let len = self.sources.len();
+        for _ in 0..len {
+            let index = self.latency_poll % len;
+            self.latency_poll = (index + 1) % len;
+            let source = &mut self.sources[index];
+            if !source.accepted
+                || source.retiring
+                || source.project_generation != context.project_generation
+            {
+                continue;
+            }
+            source.observes_latency = true;
+            let batch = control
+                .poll_native_source_recovery_edits_on_control(source.binding)
+                .ok()?;
+            #[cfg(all(test, feature = "allocation-probe"))]
+            {
+                source.observed_latency_receipt |= batch.is_some();
+            }
+            if batch
+                .and_then(|batch| batch.pending_latency_restart)
+                .is_some()
+                && self.latency_notice.is_none_or(|(last, at)| {
+                    last != active
+                        || now.saturating_duration_since(at)
+                            >= std::time::Duration::from_millis(150)
+                })
+            {
+                self.latency_notice = Some((active, now));
+                return Some(active);
+            }
+            return None;
+        }
+        None
+    }
     pub fn poll(&mut self, output: &mut WorkerPreparedOutput, context: Option<AudioSourceContext>) {
         let Some(control) = output.publication.control() else {
             self.output_closed();
@@ -433,61 +504,61 @@ impl Plugins {
                 observed.store(count, std::sync::atomic::Ordering::Release);
             }
         }
-        if let Some(pending) = self.pending.as_mut() {
-            if pending.result.is_none() {
-                if pending.operation.is_cancelled()
-                    || context.is_none_or(|current| {
-                        current.project_generation != pending.context.project_generation
-                    })
-                {
-                    pending.result = Some(Err("vst3 insertion cancelled · source changed".into()));
-                } else if let Some(source) = self
-                    .sources
-                    .iter_mut()
-                    .find(|s| s.binding == pending.binding)
-                {
-                    #[cfg(all(test, feature = "allocation-probe"))]
-                    let held = if matches!(
-                        control.native_source_preparation_progress(source.binding),
-                        Some(Progress::Facts(_))
-                    ) {
-                        let held = self
-                            .facts_gate
-                            .as_mut()
-                            .is_some_and(|gate| gate.held(source.binding));
-                        if !held {
-                            self.facts_gate = None;
-                        }
-                        held
-                    } else {
-                        false
-                    };
-                    #[cfg(not(all(test, feature = "allocation-probe")))]
-                    let held = false;
-                    #[cfg(not(all(test, feature = "allocation-probe")))]
-                    let presentation = None;
-                    #[cfg(all(test, feature = "allocation-probe"))]
-                    let presentation = self.presentation;
-                    let result = if held {
-                        Ok(None)
-                    } else {
-                        #[cfg(all(test, feature = "allocation-probe"))]
-                        {
-                            source.attempts = source.attempts.saturating_add(1);
-                        }
-                        self.host
-                            .as_ref()
-                            .ok_or_else(|| "qualified vst3 helper unavailable".to_owned())
-                            .and_then(|host| advance_source(host, presentation, control, source))
-                    };
-                    match result {
-                        Ok(Some(state)) => pending.result = Some(Ok(state)),
-                        Ok(None) => {}
-                        Err(error) => pending.result = Some(Err(bounded_error(error))),
+        if let Some(pending) = self.pending.as_mut()
+            && pending.result.is_none()
+        {
+            if pending.operation.is_cancelled()
+                || context.is_none_or(|current| {
+                    current.project_generation != pending.context.project_generation
+                })
+            {
+                pending.result = Some(Err("vst3 insertion cancelled · source changed".into()));
+            } else if let Some(source) = self
+                .sources
+                .iter_mut()
+                .find(|s| s.binding == pending.binding)
+            {
+                #[cfg(all(test, feature = "allocation-probe"))]
+                let held = if matches!(
+                    control.native_source_preparation_progress(source.binding),
+                    Some(Progress::Facts(_))
+                ) {
+                    let held = self
+                        .facts_gate
+                        .as_mut()
+                        .is_some_and(|gate| gate.held(source.binding));
+                    if !held {
+                        self.facts_gate = None;
                     }
+                    held
                 } else {
-                    pending.result = Some(Err("original vst3 source unavailable".into()));
+                    false
+                };
+                #[cfg(not(all(test, feature = "allocation-probe")))]
+                let held = false;
+                #[cfg(not(all(test, feature = "allocation-probe")))]
+                let presentation = None;
+                #[cfg(all(test, feature = "allocation-probe"))]
+                let presentation = self.presentation;
+                let result = if held {
+                    Ok(None)
+                } else {
+                    #[cfg(all(test, feature = "allocation-probe"))]
+                    {
+                        source.attempts = source.attempts.saturating_add(1);
+                    }
+                    self.host
+                        .as_ref()
+                        .ok_or_else(|| "qualified vst3 helper unavailable".to_owned())
+                        .and_then(|host| advance_source(host, presentation, control, source))
+                };
+                match result {
+                    Ok(Some(state)) => pending.result = Some(Ok(state)),
+                    Ok(None) => {}
+                    Err(error) => pending.result = Some(Err(bounded_error(error))),
                 }
+            } else {
+                pending.result = Some(Err("original vst3 source unavailable".into()));
             }
         }
         // Refused operations retain their original binding until actual report
@@ -530,6 +601,8 @@ impl Plugins {
                         control.native_source_preparation_progress(source.binding)
                     }),
                     restore_refused,
+                    observed_latency_receipt: source
+                        .is_some_and(|source| source.observed_latency_receipt),
                 };
             }
             if let Some(queued) = &self.queued {
@@ -698,10 +771,10 @@ fn advance_source(
             Err(reason) => return Err(reason.to_owned()),
         },
         Some(Progress::Effect { .. }) => {
-            if let Some((loaned, live)) = control.native_source_endpoint_status(source.binding) {
-                if !live || (source.queued && !loaned) {
-                    return Err("vst3 endpoint returned or stopped before publication".into());
-                }
+            if let Some((loaned, live)) = control.native_source_endpoint_status(source.binding)
+                && (!live || (source.queued && !loaned))
+            {
+                return Err("vst3 endpoint returned or stopped before publication".into());
             }
             if !source.queued {
                 match control.publish_native_source_endpoint(source.binding) {

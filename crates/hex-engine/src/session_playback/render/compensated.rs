@@ -37,6 +37,14 @@ impl SessionPlayback {
             .take(4)
             .count()
             == 4;
+        let loop_fade = self
+            .active_loop_region_at(arrangement_frame)
+            .and_then(|region| {
+                crate::loop_seam::LoopEndFade::new(
+                    region,
+                    self.revision.arrangement().sample_rate(),
+                )
+            });
         eligible.fill(false);
         analytic.fill(false);
         let batch_analytic = self.suppression_scratch.is_empty()
@@ -91,6 +99,7 @@ impl SessionPlayback {
                             continuations: &self.analytic_continuations,
                             index,
                             raw: true,
+                            loop_fade: None,
                             timing: &timing,
                             table: self.revision.session().sine_table(),
                         },
@@ -147,6 +156,9 @@ impl SessionPlayback {
                             track
                                 .render_raw_audio::<dyn MediaPages>(arrangement_frame, output, None)
                                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                            if let Some(fade) = loop_fade {
+                                fade.apply(arrangement_frame, output);
+                            }
                         }
                         *eligible
                             .get_mut(index)
@@ -199,6 +211,7 @@ impl SessionPlayback {
                             continuations: &self.analytic_continuations,
                             index,
                             raw: true,
+                            loop_fade: None,
                             timing: &timing,
                             table: self.revision.session().sine_table(),
                         },
@@ -308,6 +321,14 @@ impl SessionPlayback {
         external: Option<hex_lattice::NativeExternalAutomation<'_>>,
         resident_source: Option<BatchedSources<'_>>,
     ) -> Result<(), SessionPlaybackError> {
+        let loop_fade = self
+            .active_loop_region_at(arrangement_frame)
+            .and_then(|region| {
+                crate::loop_seam::LoopEndFade::new(
+                    region,
+                    self.revision.arrangement().sample_rate(),
+                )
+            });
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
         }
@@ -388,6 +409,7 @@ impl SessionPlayback {
                                     // after the current graph returns to a fused mix.
                                     // The content-origin fader below owns that mix.
                                     raw: true,
+                                    loop_fade,
                                     timing: &timing,
                                     table: self.revision.session().sine_table(),
                                 },
@@ -431,6 +453,7 @@ impl SessionPlayback {
                                     continuations: &self.analytic_continuations,
                                     index,
                                     raw: true,
+                                    loop_fade: None,
                                     timing: &timing,
                                     table: self.revision.session().sine_table(),
                                 },
@@ -601,12 +624,33 @@ impl SessionPlayback {
                             external,
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
-                    let override_gain = self
-                        .gain_recording_override
-                        .filter(|_| self.revision.gain_recording_track() == Some(route.id));
-                    let mixed = compensation
-                        .fader(track, index, override_gain, processed)
-                        .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    let recording_track = self.revision.gain_recording_track() == Some(route.id);
+                    let override_gain = self.gain_recording_override.filter(|_| recording_track);
+                    let live_gain = if recording_track {
+                        compensation.fader_content_frame(index).and_then(|frame| {
+                            self.live_gain_scratch.next(
+                                track,
+                                frame,
+                                override_gain,
+                                self.revision.arrangement().sample_rate(),
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                    let mix = compensation.fader_mix(track, index, live_gain);
+                    let mixed = if let Some(mix) = mix {
+                        let fader = &mut self.track_fader_scratch[index];
+                        let mix = if track.has_gain_automation() || override_gain.is_some() {
+                            fader.follow(mix.channel_gain());
+                            mix
+                        } else {
+                            mix.with_channel_gain(fader.next())
+                        };
+                        mix.apply_frame(processed)
+                    } else {
+                        [0.0; 2]
+                    };
                     // Retired tails retain their old post-fader output; they do
                     // not re-enter current authored sends or feeds.
                     let routed = if let Some(detached) = detached.as_ref() {
@@ -649,9 +693,9 @@ impl SessionPlayback {
                     let mut frame = self.return_scratch[index][0];
                     compensation
                         .effects_with_foreign(
-                            &compensation.graph.returns[index].devices,
+                            crate::signal_graph::Owner::Return(index),
+                            0..compensation.graph.returns[index].devices.len(),
                             &mut self.return_chains[index],
-                            0,
                             &mut frame,
                             frame_offset,
                             foreign,

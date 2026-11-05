@@ -31,6 +31,8 @@
 //! Does not render DSP, access audio devices or maintain a parallel UI editing model. Audio
 //! placement uses project-rate frames; MIDI uses checked Q32.32 quarter-note beats. Failed
 //! preparation must preserve project, IDs and history.
+mod sidechain;
+pub use sidechain::{MAX_SIDECHAIN_ROUTES, SidechainRoute, SidechainRouteSnapshot};
 mod arrangement_occupancy;
 mod arrangement_sections;
 pub use arrangement_sections::{
@@ -531,6 +533,8 @@ pub struct Track {
     pub(crate) soloed: bool,
     pub(crate) devices: Vec<Device>,
     pub(crate) instrument: Option<native_sources::SourceBinding>,
+    /// The bound receiver retains its source path after its own MIDI was printed.
+    pub(crate) retained_source_path: bool,
     /// Number of serial effects that precede the optional instrument.
     /// `None` exactly when `instrument` is absent.
     pub(crate) instrument_position: Option<usize>,
@@ -592,6 +596,10 @@ impl Track {
         self.instrument
             .as_ref()
             .map(native_sources::SourceBinding::source_id)
+    }
+    /// Whether this receiver keeps its source path independently of track MIDI.
+    pub fn retained_source_path(&self) -> bool {
+        self.retained_source_path
     }
     /// Whether this track is the selected audio receiver for its bound source.
     pub fn receives_source_audio(&self) -> bool {
@@ -669,6 +677,7 @@ pub struct Project {
     pub(crate) routing: Vec<ReturnFeed>,
     pub(crate) audio_feeds: Vec<AudioFeed>,
     pub(crate) midi_routes: Vec<MidiRoute>,
+    pub(crate) sidechains: Vec<SidechainRoute>,
     pub(crate) import_provenance: Option<ImportProvenance>,
     pub(crate) sample_rate: u32,
     pub(crate) next_id: u64,
@@ -700,6 +709,7 @@ impl Project {
             routing: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             sample_rate,
             next_id: 1,
             import_provenance: None,
@@ -731,6 +741,7 @@ impl Project {
             routing,
             audio_feeds,
             midi_routes,
+            sidechains,
             import_provenance,
             sample_rate,
             next_id,
@@ -751,6 +762,7 @@ impl Project {
             && routing == &other.routing
             && audio_feeds == &other.audio_feeds
             && midi_routes == &other.midi_routes
+            && sidechains == &other.sidechains
             && import_provenance == &other.import_provenance
             && sample_rate == &other.sample_rate
             && next_id == &other.next_id

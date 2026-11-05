@@ -37,10 +37,12 @@ pub(crate) mod note_activation;
 mod original_sources;
 pub(crate) mod playable_routing;
 pub(crate) mod provenance;
+pub(crate) mod retained_receiver;
 pub(crate) mod return_feeds;
 pub(crate) mod routing;
 pub(crate) mod sampler_crossfade;
 pub(crate) mod session_audio_loops;
+pub(crate) mod sidechain;
 pub(crate) mod track_groups;
 pub(crate) mod track_name_origin;
 pub(crate) mod tuning;
@@ -1289,6 +1291,7 @@ impl DocumentV8 {
                 let sample_rate = document.sample_rate;
                 Snapshot {
                     automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
@@ -1297,6 +1300,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate,
                     next_id: document.next_id,
@@ -1331,6 +1335,7 @@ impl DocumentV8 {
                 }
                 Snapshot {
                     automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
@@ -1339,6 +1344,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1373,6 +1379,7 @@ impl DocumentV8 {
                 }
                 Snapshot {
                     automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
@@ -1381,6 +1388,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1422,6 +1430,7 @@ impl DocumentV8 {
                     .transpose()?;
                 Snapshot {
                     automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
@@ -1430,6 +1439,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1471,6 +1481,7 @@ impl DocumentV8 {
                     .transpose()?;
                 Snapshot {
                     automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
@@ -1479,6 +1490,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1520,6 +1532,7 @@ impl DocumentV8 {
                     .transpose()?;
                 Snapshot {
                     automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
@@ -1528,6 +1541,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1569,6 +1583,7 @@ impl DocumentV8 {
                     .transpose()?;
                 Snapshot {
                     automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
@@ -1577,6 +1592,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1636,6 +1652,7 @@ impl DocumentV8 {
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Snapshot {
                     automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
@@ -1644,6 +1661,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -2084,6 +2102,7 @@ impl DocumentV13 {
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -2092,6 +2111,7 @@ impl DocumentV13 {
             return_feeds: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,
@@ -2449,6 +2469,7 @@ impl DocumentV10 {
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 let snapshot = Snapshot {
                     automatic_track_names: Vec::new(),
+                    retained_source_paths: Vec::new(),
                     aliases: Default::default(),
                     native_sources: Vec::new(),
                     arrangement_sections: Vec::new(),
@@ -2457,6 +2478,7 @@ impl DocumentV10 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: doc.sample_rate,
                     next_id: doc.next_id,
@@ -2600,6 +2622,7 @@ impl DocumentV9 {
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
             automatic_track_names: Vec::new(),
+            retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
             arrangement_sections: Vec::new(),
@@ -2608,6 +2631,7 @@ impl DocumentV9 {
             return_feeds: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,
