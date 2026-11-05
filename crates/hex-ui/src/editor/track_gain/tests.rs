@@ -1857,3 +1857,113 @@ fn console_track_activator_and_solo_use_canonical_commands(cx: &mut TestAppConte
         )
     });
 }
+
+#[gpui::test]
+fn selected_track_gain_drag_previews_and_commits_relative_values_together(cx: &mut TestAppContext) {
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.track_selection.replace(&[track, other]);
+        view.selected_track = Some(track);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let rail = visual
+        .debug_bounds(Box::leak(
+            format!("track-volume-{}-slider", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let start = point(rail.left() + px(10.0), rail.center().y);
+    let end = point(start.x, start.y - px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    pump(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+    });
+    visual.run_until_parked();
+    let (held, expected_other) = editor.read_with(cx, |view, cx| {
+        let hex_session::device_gesture::ParameterValue::Float(held) =
+            view.device_gesture.snapshot().unwrap().value
+        else {
+            panic!("gain")
+        };
+        assert!(held > 0.5);
+        let expected_other = (1.5 * held / 0.5).min(2.0);
+        assert!(
+            (view.track_gain_controls.bindings[&other]
+                .entity
+                .read(cx)
+                .value()
+                - f64::from(expected_other))
+            .abs()
+                < 1e-6,
+            "all selected faders must preview the same relative dB change"
+        );
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(other)
+                .unwrap()
+                .gain(),
+            1.5,
+            "preview is not canonical history"
+        );
+        (held, expected_other)
+    });
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, cx| {
+            for (id, gain) in [(track, held), (other, expected_other)] {
+                assert!(
+                    (view.track_gain_controls.bindings[&id]
+                        .entity
+                        .read(cx)
+                        .value()
+                        - f64::from(gain))
+                    .abs()
+                        < 1e-6,
+                    "released group must stay visible until its exact ACK"
+                );
+            }
+        });
+    }
+    pump(&editor, cx, |view| {
+        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+    });
+    editor.read_with(cx, |view, _| {
+        let project = &view.state.as_ref().unwrap().project;
+        assert_eq!(project.track(track).unwrap().gain(), held);
+        assert_eq!(project.track(other).unwrap().gain(), expected_other);
+    });
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Undo))
+    });
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .gain()
+                == 0.5
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(other)
+                .unwrap()
+                .gain(),
+            1.5,
+            "one Undo restores the whole group"
+        )
+    });
+}
