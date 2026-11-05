@@ -71,6 +71,7 @@ fn moved_event_is_silent_outside_clip_then_revealed_with_original_pcm_without_ca
         let mut output = vec![[0.0; 2]; block];
         render(&mut callback, &mut output)?;
         control.reclaim();
+        let running_position = control.status.position.load(Acquire);
         editor.execute(Command::EditAudioEvents {
             clip,
             operation: AudioEventEdit::Place {
@@ -89,6 +90,11 @@ fn moved_event_is_silent_outside_clip_then_revealed_with_original_pcm_without_ca
             render(&mut callback, &mut output)?;
         }
         assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        assert_eq!(
+            control.status.position.load(Acquire),
+            running_position + (1024_usize.div_ceil(block) * block) as u64,
+            "placement must retain the live transport cursor"
+        );
         assert!(
             output.iter().all(|f| *f == [0.0; 2]),
             "out-of-window event must remain silent, block{block}"
