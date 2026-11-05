@@ -129,6 +129,7 @@ impl EditorView {
             origin_x: f32::from(event.position.x),
             moved: false,
             kind,
+            placement: None,
             operation: None,
         });
         cx.notify();
@@ -142,7 +143,8 @@ impl EditorView {
 #[derive(Clone, Copy)]
 pub(in crate::editor) struct Camera {
     prior: Option<Viewport>,
-    root: Viewport,
+    prior_negative: u64,
+    root: SignedFrameViewport,
     bounds: (u64, u64),
     position: u64,
     offset: u64,
@@ -160,19 +162,17 @@ impl EditorView {
         let tempo = self.state.as_ref()?.project.tempo_map();
         let first = root.root_frame_at(editor_bounds(&root).0, tempo).ok()?;
         let end = root.root_frame_at(editor_bounds(&root).1, tempo).ok()?;
-        let viewport = self.event_viewport(&root);
+        let viewport = self.event_root_window(&root)?;
         Some(Camera {
             prior: self.audio_event_editor.viewport,
-            root: Viewport {
-                start: first.checked_add(viewport.start)?,
-                length: viewport.length,
-            },
+            prior_negative: self.audio_event_editor.negative_pan,
+            root: viewport,
             bounds: (first, end),
             position,
-            offset: root
-                .root_frame_at(position, tempo)
-                .ok()?
-                .saturating_sub(first.checked_add(viewport.start)?),
+            offset: u64::try_from(
+                (i128::from(root.root_frame_at(position, tempo).ok()?) - viewport.start).max(0),
+            )
+            .ok()?,
         })
     }
     /// Called only with the exact terminal's canonical project inside receive.
@@ -207,19 +207,24 @@ impl EditorView {
         let Ok(frame) = root.root_frame_at(camera.position, project.tempo_map()) else {
             return;
         };
-        let start = frame.saturating_sub(camera.offset).saturating_sub(first);
+        let start = i128::from(frame) - i128::from(camera.offset) - i128::from(first);
         self.audio_event_editor
             .install_frame_space(&root, (first, end));
         self.audio_event_editor.viewport = if camera.prior.is_none()
             && camera.bounds == (first, end)
-            && frame.saturating_sub(camera.offset) == camera.root.start
+            && i128::from(frame) - i128::from(camera.offset) == camera.root.start
         {
             None
         } else {
             Some(Viewport {
-                start,
+                start: u64::try_from(start.max(0)).unwrap_or(u64::MAX),
                 length: camera.root.length,
             })
+        };
+        self.audio_event_editor.negative_pan = if self.audio_event_editor.viewport.is_none() {
+            camera.prior_negative
+        } else {
+            u64::try_from((-start).max(0)).unwrap_or(u64::MAX)
         };
         self.audio_event_editor.canonical_start = Some((camera.position, frame));
         self.audio_event_editor.start_grip =
@@ -233,17 +238,23 @@ impl EditorView {
     pub(super) fn audio_play_start_marker(
         &self,
         root: &AudioClipEdit,
-        viewport: Viewport,
+        viewport: SignedFrameViewport,
+        origin_shift: i64,
         window: &Window,
         cx: &Context<Self>,
     ) -> Option<Div> {
         let state = self.state.as_ref()?;
         let clip = state.project.clip(self.detail_clip_id()?)?;
         let position = self.audio_play_start_position()?;
+        let display_position =
+            u64::try_from(i128::from(position) + i128::from(origin_shift)).ok()?;
         let frame = root
-            .root_frame_at(position, state.project.tempo_map())
+            .root_frame_at(display_position, state.project.tempo_map())
             .ok()?;
-        let fraction = viewport.fraction(frame)?;
+        if !viewport.contains(i128::from(frame)) {
+            return None;
+        }
+        let fraction = viewport.fraction(i128::from(frame))? as f32;
         let editable = hex_project::preview_view_resize(
             clip,
             state.project.tempo_map(),
