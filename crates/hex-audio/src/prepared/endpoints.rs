@@ -9,7 +9,7 @@ pub struct Client {
     pub(super) retired_receipts: Option<Arc<retired_scalar_receipts::Mailbox>>,
     action_outcomes: Option<ActionOutcomeReader>,
     worker_owned_publication: bool,
-    project_generation: Option<NonZeroU64>,
+    project_generation: Option<u64>,
 }
 pub struct WorkerControl {
     endpoint: Guard<PublicationControl>,
@@ -177,7 +177,7 @@ impl Client {
     /// desktop binds a delivered worker-owned Client. A retained Client may
     /// change its binding after its successor graph is observed. Priority
     /// Stop remains an output-wide operation with its own cutoff.
-    pub fn bind_resident_transport(&mut self, generation: NonZeroU64) {
+    pub fn bind_resident_transport(&mut self, generation: u64) {
         self.project_generation = Some(generation);
     }
     pub(crate) fn guard(&self) -> &Guard<ClientEndpoints> {
@@ -730,7 +730,7 @@ impl ClientEndpoints {
 }
 struct CommandSource {
     revision: u64,
-    project_generation: Option<NonZeroU64>,
+    project_generation: Option<u64>,
 }
 
 fn enqueue_action(
@@ -755,7 +755,7 @@ fn enqueue_action(
         || source.project_generation.is_some_and(|generation| {
             status
                 .recording_source()
-                .is_some_and(|active| active.context.project_generation != generation.get())
+                .is_some_and(|active| active.context.project_generation != generation)
         })
     {
         return Err(action);

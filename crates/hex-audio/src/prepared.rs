@@ -30,7 +30,6 @@ use hex_engine::{
     playback::Playback,
 };
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
-use std::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{
@@ -242,7 +241,7 @@ impl AtomicRouteSlot {
 struct QueuedCommand {
     ticket: u64,
     action: PlaybackAction,
-    project_generation: Option<NonZeroU64>,
+    project_generation: Option<u64>,
     sampler_edit_gate: u64,
     transport_epoch: u64,
 }
@@ -3913,7 +3912,7 @@ impl Callback {
                 && cut.stop_through.is_none_or(|stop| queued.ticket > stop)
                 && queued.project_generation.is_some_and(|generation| {
                     self.recording_source()
-                        .is_none_or(|source| source.context.project_generation != generation.get())
+                        .is_none_or(|source| source.context.project_generation != generation)
                 })
             {
                 let reason = PlaybackActionRejection::ProjectChanged;
@@ -8847,7 +8846,7 @@ mod tests {
         let (mut control, mut callback) = channel(48_000).unwrap();
         let mut reader = wire_action_outcomes(&mut control, &mut callback);
         let old = AudioSourceContext {
-            project_generation: 1,
+            project_generation: 0,
             editor_revision: 4,
         };
         let (old_graph, _, clip, _) = session_audio_graph();
@@ -8855,7 +8854,7 @@ mod tests {
             .publish_unaccounted_pcm_obligation(
                 old_graph,
                 PublicationPolicy::InstallFreshRuntime,
-                1,
+                old.project_generation,
                 true,
                 false,
                 Some(old),
@@ -8867,7 +8866,7 @@ mod tests {
             reserve_native_worker(control, callback, None);
         let mut retirement = NativeRetirement::new(terminals, root);
         client.activate();
-        client.bind_resident_transport(NonZeroU64::new(1).unwrap());
+        client.bind_resident_transport(old.project_generation);
 
         let control = publication.control().unwrap();
         let fence = control.capture_fresh_runtime_fence().unwrap();
@@ -8941,7 +8940,7 @@ mod tests {
         assert!(!status.playing.load(Acquire));
         assert!(client.command_with_ticket(PlaybackCommand::Play).is_err());
 
-        client.bind_resident_transport(NonZeroU64::new(2).unwrap());
+        client.bind_resident_transport(new.project_generation);
         let control = publication.control().unwrap();
         assert_eq!(control.reclaim(), 1);
         let edited = AudioSourceContext {

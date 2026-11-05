@@ -465,6 +465,7 @@ pub(super) struct ResidentHarness {
     constructor_submitted: Option<(u64, AudioSourceContext)>,
     /// `OutputReleased` events in delivery order: (generation, old output).
     pub(super) released: Vec<(u64, u64)>,
+    pub(super) rebound: Option<(u64, u64)>,
     native_plugins: bool,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_completed: Arc<AtomicU64>,
@@ -675,6 +676,7 @@ impl ResidentHarness {
             publication_refusals: Vec::new(),
             constructor_submitted: None,
             released: Vec::new(),
+            rebound: None,
             native_plugins,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_completed,
@@ -733,6 +735,15 @@ impl ResidentHarness {
         while let Ok(event) = self.events.try_recv() {
             match event {
                 EditorAudioEvent::Opened { audio, .. } => self.audio = Some(audio),
+                EditorAudioEvent::OutputRebound {
+                    project_generation,
+                    output_identity,
+                } => {
+                    let audio = self.audio.as_mut().unwrap();
+                    assert_eq!(audio.control.output_identity(), Some(output_identity));
+                    audio.control.bind_resident_transport(project_generation);
+                    self.rebound = Some((project_generation, output_identity));
+                }
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                 EditorAudioEvent::NativeLatencyRestart { source } => {
                     self.latency_restart = Some(source)

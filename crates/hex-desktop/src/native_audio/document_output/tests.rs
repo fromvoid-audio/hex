@@ -19,6 +19,7 @@ struct Harness {
     events: mpsc::Receiver<EditorAudioEvent>,
     backend: Arc<Mutex<Option<HeadlessBackend>>>,
     audio: Option<EditorAudio>,
+    rebound: Option<(u64, u64)>,
     nominal_device_rate: Arc<AtomicU32>,
     fail: Arc<AtomicU8>,
 }
@@ -75,6 +76,7 @@ impl Harness {
             events,
             backend,
             audio: None,
+            rebound: None,
             nominal_device_rate,
             fail,
         }
@@ -117,6 +119,25 @@ impl Harness {
                     }
                 }
                 EditorAudioEvent::Opened { audio, .. } => self.audio = Some(audio),
+                EditorAudioEvent::OutputRebound {
+                    project_generation,
+                    output_identity,
+                } => {
+                    let audio = self.audio.as_mut().unwrap();
+                    assert_eq!(audio.control.output_identity(), Some(output_identity));
+                    assert_eq!(
+                        audio
+                            .status()
+                            .unwrap()
+                            .recording_source()
+                            .unwrap()
+                            .context
+                            .project_generation,
+                        project_generation
+                    );
+                    audio.control.bind_resident_transport(project_generation);
+                    self.rebound = Some((project_generation, output_identity));
+                }
                 _ => {}
             }
         }
@@ -168,6 +189,69 @@ impl Harness {
             (applied.context == context).then_some(())
         });
     }
+}
+
+#[test]
+fn same_rate_native_open_and_new_keep_the_delivered_output() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let (path, _, project) = saved_fixture(&files, 48_000);
+    let mut h = Harness::new();
+    let initial = h.wait(|h| h.service.try_event().ok());
+    h.await_playback(&initial, 48_000);
+    let identity = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+
+    let opened = h.submit(Request::Open(path.clone()));
+    assert!(opened.project_replaced, "{:?}", opened.error);
+    assert_eq!(*opened.state.project, project);
+    h.await_playback(&opened, 48_000);
+    let generation = opened
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context()
+        .project_generation;
+    assert_eq!(
+        h.audio.as_ref().unwrap().control.output_identity(),
+        Some(identity)
+    );
+    h.wait(|h| (h.rebound == Some((generation, identity))).then_some(()));
+    let refused = h.submit(Request::Open(files.0.join("missing.hex")));
+    assert!(refused.open_complete && !refused.project_replaced && refused.error.is_some());
+    assert_eq!(refused.state.project, opened.state.project);
+    h.await_playback(&opened, 48_000);
+    assert_eq!(
+        h.audio.as_ref().unwrap().control.output_identity(),
+        Some(identity)
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert!((0..8).flat_map(|_| h.render()).any(|frame| frame[0] > 0.30));
+    let replacement = h.submit(Request::Open(path));
+    assert!(replacement.project_replaced, "{:?}", replacement.error);
+    h.await_playback(&replacement, 48_000);
+    let replacement_identity = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    assert_ne!(replacement_identity, identity);
+    h.audio.as_ref().unwrap().control.stop();
+    h.render();
+
+    let new = h.submit(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::Resident,
+        reservation: None,
+    });
+    assert!(new.project_replaced, "{:?}", new.error);
+    h.await_playback(&new, 48_000);
+    assert_eq!(
+        h.audio.as_ref().unwrap().control.output_identity(),
+        Some(replacement_identity)
+    );
+    h.wait(|h| (h.rebound == Some((generation + 2, replacement_identity))).then_some(()));
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
 }
 
 fn saved_fixture(files: &Files, rate: u32) -> (PathBuf, PathBuf, Project) {
@@ -245,6 +329,7 @@ fn ordinary_open_uses_saved_rate_in_both_directions_and_round_trips() {
     let initial = h.wait(|h| h.service.try_event().ok());
     h.await_playback(&initial, 48_000);
     for (device, rate) in [(48_000, 44_100), (44_100, 48_000)] {
+        let previous_identity = h.audio.as_ref().unwrap().control.output_identity().unwrap();
         h.nominal_device_rate.store(device, Release);
         let files = Files::new();
         let (path, wav, expected) = saved_fixture(&files, rate);
@@ -262,6 +347,7 @@ fn ordinary_open_uses_saved_rate_in_both_directions_and_round_trips() {
         assert!(!opened.state.unsaved);
         h.await_playback(&opened, rate);
         let audio = h.audio.as_mut().unwrap();
+        assert_ne!(audio.control.output_identity(), Some(previous_identity));
         assert_eq!(
             audio.label,
             format!("{rate} hz client on {device} hz fixture")
