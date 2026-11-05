@@ -253,11 +253,12 @@ fn control_queue_storage_is_reported_with_the_existing_fixed_capacities() {
 #[ignore = "manual release-profile control/repaint timing; no physical callback budget claim"]
 fn profile_group_gain_control_and_visible_queries() {
     use std::{hint::black_box, time::Instant};
-    let mut project = hex_project::Project::new(48_000).unwrap();
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
     let mut ids = Vec::new();
     for _ in 0..hex_project::MAX_TRACKS {
-        let hex_project::Created::Track(id) = project
-            .apply(Command::AddTrack {
+        let hex_project::Created::Track(id) = editor
+            .execute(Command::AddTrack {
                 name: "gain".into(),
             })
             .unwrap()
@@ -266,7 +267,7 @@ fn profile_group_gain_control_and_visible_queries() {
         };
         ids.push(id);
     }
-    let group = RelativeTrackGains::capture(&project, ids[0], &ids).unwrap();
+    let group = RelativeTrackGains::capture(editor.project(), ids[0], &ids).unwrap();
     for grouped in [false, true] {
         let mut client = GestureClient::default();
         if grouped {

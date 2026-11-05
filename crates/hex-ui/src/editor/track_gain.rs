@@ -195,25 +195,23 @@ fn dispatch_track_gain(
     phase: NumericEventPhase,
     value: ParameterValue,
 ) -> Result<(), &'static str> {
-    if phase == NumericEventPhase::Begin {
-        if let Some(state) = view.state.as_ref()
-            && view.track_selection.contains(track)
-            && state
-                .project
-                .track(track)
-                .is_some_and(|track| track.gain() > 0.0)
-        {
-            let selected = view.track_selection.ordered(&state.project);
-            if selected.len() > 1 {
-                let group =
-                    hex_project::RelativeTrackGains::capture(&state.project, track, &selected)
-                        .map_err(|error| error.0)?;
-                if group.len() > 1 {
-                    view.device_gesture
-                        .begin_track_gains(view.project_generation, group)?;
-                    lease.set(view.device_gesture.snapshot().map(|active| active.key));
-                    return Ok(());
-                }
+    if phase == NumericEventPhase::Begin
+        && let Some(state) = view.state.as_ref()
+        && view.track_selection.contains(track)
+        && state
+            .project
+            .track(track)
+            .is_some_and(|track| track.gain() > 0.0)
+    {
+        let selected = view.track_selection.ordered(&state.project);
+        if selected.len() > 1 {
+            let group = hex_project::RelativeTrackGains::capture(&state.project, track, &selected)
+                .map_err(|error| error.0)?;
+            if group.len() > 1 {
+                view.device_gesture
+                    .begin_track_gains(view.project_generation, group)?;
+                lease.set(view.device_gesture.snapshot().map(|active| active.key));
+                return Ok(());
             }
         }
     }
