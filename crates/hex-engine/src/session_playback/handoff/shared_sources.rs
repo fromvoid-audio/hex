@@ -1414,9 +1414,19 @@ mod tests {
             &resources,
         )
         .unwrap();
-        result
-            .prepare_computer_keyboard(f.editor.project(), f.contributor, Arc::clone(input))
-            .unwrap();
+        if !f
+            .editor
+            .project()
+            .track(f.contributor)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .bypassed()
+        {
+            result
+                .prepare_computer_keyboard(f.editor.project(), f.contributor, Arc::clone(input))
+                .unwrap();
+        }
         (result, revision)
     }
 
@@ -1485,8 +1495,9 @@ mod tests {
                     .try_inherit_runtime_in_control_context(&mut actual, Some(19), Some(19))
                     .unwrap();
                 compare(&mut disabled, &mut oracle, 32, "disable release");
+                assert!(input.is_cancelled(), "disabled input is terminal");
                 if key_up == "while-disabled" {
-                    input.set_key(0, None).unwrap();
+                    assert!(input.set_key(0, None).is_err());
                 }
                 compare(&mut disabled, &mut oracle, 7, "disabled key up");
                 f.editor
@@ -1495,23 +1506,27 @@ mod tests {
                         bypassed: false,
                     })
                     .unwrap();
-                let (mut enabled, _) = live_playback(&f, &input);
+                // Resident input attachment drops a bypassed source. A later
+                // activation gets a fresh root/generation, even if tokens repeat.
+                let fresh = Arc::new(ComputerKeyboardInput::default());
+                let (mut enabled, _) = live_playback(&f, &fresh);
                 enabled
                     .try_inherit_runtime_in_control_context(&mut disabled, Some(19), Some(19))
                     .unwrap();
                 compare(&mut enabled, &mut oracle, 13, "reenable release");
-                for keys in [&input, &oracle_input] {
-                    keys.set_key(1, Some((67, 127, 2))).unwrap();
+                for keys in [&fresh, &oracle_input] {
+                    keys.set_key(1, Some((67, 127, 1))).unwrap();
                 }
                 compare(&mut enabled, &mut oracle, 13, "new physical key");
-                input.set_key(0, None).unwrap();
+                assert!(input.set_key(0, None).is_err());
+                fresh.set_key(0, None).unwrap();
                 compare(
                     &mut enabled,
                     &mut oracle,
                     13,
                     "old key up cannot cut the new key",
                 );
-                for keys in [&input, &oracle_input] {
+                for keys in [&fresh, &oracle_input] {
                     keys.set_key(1, None).unwrap();
                 }
                 compare(&mut enabled, &mut oracle, 900, "all released");
