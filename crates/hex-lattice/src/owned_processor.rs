@@ -276,6 +276,10 @@ impl PreparedProcessorFactory {
             Self::Foreign(v) => Some(v.total_latency_frames()),
         }
     }
+    pub(crate) fn supports_latency_aligned_bypass(&self) -> bool {
+        matches!(self, Self::Legacy(value) if value.supports_latency_aligned_bypass())
+    }
+
     /// Control-side legacy preview capability, when actually supported.
     pub fn frequency_response_at_hz(&self, hz: f32) -> Option<[f32; 2]> {
         match self {
@@ -302,7 +306,12 @@ pub struct PreparedRuntimeInstance {
 }
 impl PreparedRuntimeInstance {
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {
-        if self.bypassed && !matches!(self.definition, Some(PreparedProcessorFactory::Foreign(_))) {
+        if self.bypassed
+            && self.definition.as_ref().is_none_or(|factory| {
+                !matches!(factory, PreparedProcessorFactory::Foreign(_))
+                    && !factory.supports_latency_aligned_bypass()
+            })
+        {
             Some(0)
         } else {
             self.definition.as_ref().map_or(
