@@ -1,6 +1,5 @@
 //! Translating a MIDI source origin must preserve every unchanged audible note.
 //! An uninterrupted independent playback is the PCM/note-off/tail oracle.
-#![cfg(feature = "allocation-probe")]
 use hex_audio::prepared::{self, PublicationPolicy};
 use hex_engine::{
     PreparedRevision, SineTable,

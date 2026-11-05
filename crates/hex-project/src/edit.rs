@@ -1159,7 +1159,7 @@ pub enum Command {
     },
     /// Translate a plain, nonlooping, unique Arrangement source by a positive
     /// prefix, then apply stable note updates in rebased storage coordinates.
-    /// The earliest requested note must begin at storage zero. Placement and
+    /// At least one requested note must begin inside the new prefix. Placement and
     /// elapsed windows do not move; unproved consumer shapes refuse atomically.
     UpdateMidiNotesWithSourcePrefix {
         clip: ClipId,

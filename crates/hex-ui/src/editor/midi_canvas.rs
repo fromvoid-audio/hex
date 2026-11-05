@@ -472,33 +472,31 @@ impl EditorView {
                     );
                 }
                 let raw_span = beat_span.raw();
-                let grid_step = i128::from(grid.step_raw().unwrap_or(BeatTime::ONE.raw()).max(1));
-                let first = -(-beat_start).div_euclid(grid_step);
-                let last = beat_start
-                    .saturating_add(i128::from(raw_span))
-                    .div_euclid(grid_step);
-                let beat_count = last.saturating_sub(first).saturating_add(1);
-                let stride = beat_count.saturating_add(255).saturating_div(256).max(1);
-                let first_tick = -(-first).div_euclid(stride) * stride;
-                for index in 0..256_i128 {
-                    let beat = first_tick.saturating_add(index.saturating_mul(stride));
-                    if beat > last {
-                        break;
+                let step = grid.step_raw().unwrap_or(BeatTime::ONE.raw()).max(1);
+                if let Some(ticks) =
+                    super::midi_viewport_grid::ticks(beat_start, raw_span, step, 256)
+                {
+                    let grid_step = i128::from(step);
+                    for index in 0..256_i128 {
+                        let beat = ticks.first + index * i128::from(ticks.stride);
+                        if beat > ticks.last {
+                            break;
+                        }
+                        let raw = beat.saturating_mul(grid_step);
+                        let x = (raw.saturating_sub(beat_start) as f64 / raw_span as f64) as f32
+                            * width;
+                        quad(
+                            x,
+                            0.0,
+                            1.0,
+                            height,
+                            if raw % i128::from(super::midi_viewport_grid::ACCENT_PERIOD) == 0 {
+                                theme::color(theme::PaletteRole::Border)
+                            } else {
+                                theme::color(theme::PaletteRole::Grid)
+                            },
+                        );
                     }
-                    let raw = beat.saturating_mul(grid_step);
-                    let x =
-                        (raw.saturating_sub(beat_start) as f64 / raw_span as f64) as f32 * width;
-                    quad(
-                        x,
-                        0.0,
-                        1.0,
-                        height,
-                        if raw % i128::from(4 * BeatTime::ONE.raw()) == 0 {
-                            theme::color(theme::PaletteRole::Border)
-                        } else {
-                            theme::color(theme::PaletteRole::Grid)
-                        },
-                    );
                 }
                 for note in canvas_scene.notes() {
                     if draw_selected.binary_search(&note.id).is_ok()

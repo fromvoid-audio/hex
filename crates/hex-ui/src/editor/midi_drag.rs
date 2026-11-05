@@ -383,11 +383,17 @@ pub(super) fn update_with_modifier(
             // Movement can retain material beyond the current source. The
             // canonical extent-growing update owns storage growth on commit.
             let max_start = u64::MAX - gesture.original.duration;
-            let signed_start = (i128::from(gesture.original.start) + delta).clamp(
-                -i128::from(u64::MAX - gesture.clip_length),
-                i128::from(max_start),
-            );
-            source_prefix = (-signed_start).max(0) as u64;
+            let requested = (i128::from(gesture.original.start) + delta).min(i128::from(max_start));
+            let Some((signed_start, prefix)) = super::midi_viewport_grid::source_prefix(
+                requested,
+                u64::MAX - gesture.clip_length,
+                gesture.beat_start,
+                gesture.beat_span,
+                gesture.grid.step_raw().unwrap_or(BeatTime::ONE.raw()),
+            ) else {
+                return false;
+            };
+            source_prefix = prefix;
             let start = (signed_start + i128::from(source_prefix)) as u64;
             let pitch = (i16::from(gesture.original.pitch) + i16::from(pointer_pitch)
                 - i16::from(down_pitch))

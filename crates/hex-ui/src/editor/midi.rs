@@ -415,7 +415,19 @@ impl EditorView {
         self.finish_live_midi_marquees();
         self.cancel_midi_note_gesture();
         let first = originals.iter().map(|note| note.start).min().unwrap_or(0);
-        let prefix = (-(i128::from(first) + time_delta)).max(0) as u64;
+        let Some((start, prefix)) = super::midi_viewport_grid::source_prefix(
+            i128::from(first) + time_delta,
+            u64::MAX - clip_length,
+            self.piano_beat_start,
+            self.piano_beat_span.raw(),
+            self.midi_snap_grid
+                .step_raw()
+                .unwrap_or(BeatTime::ONE.raw()),
+        ) else {
+            self.error = Some("midi source origin exceeds the finite grid range".into());
+            return;
+        };
+        let time_delta = start - i128::from(first);
         for note in &mut originals {
             let Some(start) = note.start.checked_add(prefix) else {
                 self.error = Some("midi source prefix overflow".into());

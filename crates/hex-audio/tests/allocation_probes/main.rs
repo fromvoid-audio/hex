@@ -12,6 +12,7 @@ mod fresh_publication_cancellation;
 mod limiter_allocations;
 mod main_chain_allocations;
 mod midi_once_allocations;
+mod midi_source_prefix;
 mod operator_filter_proof_allocations;
 mod operator_fixed_allocations;
 mod pitch_multiplier_allocations;

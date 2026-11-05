@@ -14,10 +14,15 @@ pub(crate) fn apply(
     prefix: BeatTime,
     notes: Vec<MidiNoteUpdate>,
 ) -> Result<Created, Invalid> {
-    if prefix == BeatTime::ZERO || notes.iter().map(|note| note.start).min() != Some(BeatTime::ZERO)
+    if prefix == BeatTime::ZERO
+        || notes
+            .iter()
+            .map(|note| note.start)
+            .min()
+            .is_none_or(|start| start >= prefix)
     {
         return Err(Invalid(
-            "negative midi authoring needs a positive prefix and an origin note",
+            "negative midi authoring needs a positive prefix containing an authored note",
         ));
     }
     if project.clip_alias(clip).is_some() {

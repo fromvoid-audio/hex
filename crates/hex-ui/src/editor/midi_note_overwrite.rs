@@ -17,11 +17,12 @@ impl EditorView {
             // A negative author can affect old unsigned notes only in its
             // intersection with [0, source end). Its full signed geometry remains
             // in the held/frozen gesture, including the part before source zero.
-            let prefix = gesture.source_prefix;
-            let duration = gesture.preview.duration.saturating_sub(prefix);
+            let local_start = i128::from(gesture.preview.start) - i128::from(gesture.source_prefix);
+            let clipped_prefix = (-local_start).max(0) as u64;
+            let duration = gesture.preview.duration.saturating_sub(clipped_prefix);
             let author = MidiNoteInsert {
                 active: gesture.active,
-                start: BeatTime::from_raw(gesture.preview.start),
+                start: BeatTime::from_raw(local_start.max(0) as u64),
                 duration: BeatTime::from_raw(duration),
                 pitch: gesture.preview.pitch,
                 channel: gesture.channel,

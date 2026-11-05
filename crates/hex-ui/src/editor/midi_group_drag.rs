@@ -354,18 +354,25 @@ impl GroupGesture {
             i128::from(pointer_beat) - i128::from(self.pointer_beat),
             grid,
         );
-        let source_prefix = if self.kind == HitKind::Move && !self.copy {
+        let (desired_delta, source_prefix) = if self.kind == HitKind::Move && !self.copy {
             let first = self
                 .originals
                 .iter()
                 .map(|note| note.start)
                 .min()
                 .unwrap_or(0);
-            (-(i128::from(first) + desired_delta))
-                .max(0)
-                .min(i128::from(u64::MAX - self.clip_length)) as u64
+            let Some((start, prefix)) = super::midi_viewport_grid::source_prefix(
+                i128::from(first) + desired_delta,
+                u64::MAX - self.clip_length,
+                self.beat_start,
+                self.beat_span,
+                self.grid.step_raw().unwrap_or(BeatTime::ONE.raw()),
+            ) else {
+                return false;
+            };
+            (start - i128::from(first), prefix)
         } else {
-            0
+            (desired_delta, 0)
         };
         let resolved = if self.kind == HitKind::Move {
             resolve_common_delta(

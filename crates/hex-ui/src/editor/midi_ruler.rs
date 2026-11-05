@@ -432,14 +432,12 @@ impl EditorView {
                 })
                 .into()
             });
-        let mut step = self
-            .midi_snap_grid
-            .step_raw()
-            .unwrap_or(hex_project::BeatTime::ONE.raw())
-            .max(1);
-        while span / step > 8 {
-            step = step.saturating_mul(2);
-        }
+        let step = super::midi_viewport_grid::ruler_step(
+            span,
+            self.midi_snap_grid
+                .step_raw()
+                .unwrap_or(hex_project::BeatTime::ONE.raw()),
+        );
         let step = i128::from(step);
         let first = -(-start).div_euclid(step);
         for index in 0..=8_i128 {
@@ -462,7 +460,7 @@ impl EditorView {
                     "{:.2}b",
                     raw as f64 / hex_project::BeatTime::ONE.raw() as f64
                 ),
-                raw % i128::from(hex_project::BeatTime::ONE.raw() * 4) == 0,
+                raw % i128::from(super::midi_viewport_grid::ACCENT_PERIOD) == 0,
                 false,
                 false,
             ));

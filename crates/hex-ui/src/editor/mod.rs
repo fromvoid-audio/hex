@@ -146,6 +146,7 @@ mod midi_note_overwrite;
 mod midi_pan;
 mod midi_pitch_zoom;
 mod midi_recording;
+mod midi_viewport_grid;
 mod missing_media;
 mod track_defaults;
 mod user_errors;

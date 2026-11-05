@@ -109,12 +109,12 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
         editor.read_with(&visual, |v, _| {
             if group {
                 let g = v.midi_group_gesture.as_ref().unwrap();
-                assert_eq!(g.source_prefix(), beat(1, 2).raw());
-                assert_eq!(g.preview(moved).unwrap().start, 0);
+                assert_eq!(g.source_prefix(), beat(4, 1).raw());
+                assert_eq!(g.preview(moved).unwrap().start, beat(7, 2).raw());
             } else {
                 let g = v.midi_note_gesture.unwrap();
-                assert_eq!(g.source_prefix, beat(1, 2).raw());
-                assert_eq!(g.preview.start, 0);
+                assert_eq!(g.source_prefix, beat(4, 1).raw());
+                assert_eq!(g.preview.start, beat(7, 2).raw());
             }
             assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &before);
         });
@@ -197,12 +197,12 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
         let after = editor.read_with(&visual, |v, _| {
             let project = v.state.as_ref().unwrap().project.as_ref();
             let source = project.midi_source(clip).unwrap();
-            assert_eq!(source.source_start(), beat(1, 2));
-            assert_eq!(source.source_length(), beat(9, 2));
+            assert_eq!(source.source_start(), beat(4, 1));
+            assert_eq!(source.source_length(), beat(8, 1));
             assert_eq!(project.midi_clip(clip).unwrap().length(), beat(4, 1));
-            assert_eq!(project.midi_note(moved).unwrap().start(), BeatTime::ZERO);
+            assert_eq!(project.midi_note(moved).unwrap().start(), beat(7, 2));
             assert_eq!(project.midi_note(moved).unwrap().duration(), beat(1, 1));
-            assert_eq!(project.midi_note(held).unwrap().start(), beat(1, 2));
+            assert_eq!(project.midi_note(held).unwrap().start(), beat(4, 1));
             assert_eq!(
                 source
                     .notes()
@@ -210,15 +210,15 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
                     .find(|n| n.pitch() == 67)
                     .unwrap()
                     .start(),
-                if group { beat(1, 1) } else { beat(2, 1) }
+                if group { beat(9, 2) } else { beat(11, 2) }
             );
             assert_eq!(
                 source.notes().len(),
                 3,
                 "negative crossing author wins against its positive victim"
             );
-            assert_eq!(v.piano_beat_start, -i128::from(beat(1, 2).raw()));
-            assert_eq!(v.midi_marker, Some(beat(3, 2).raw()));
+            assert_eq!(v.piano_beat_start, i128::from(beat(3, 1).raw()));
+            assert_eq!(v.midi_marker, Some(beat(5, 1).raw()));
             assert!(v.pending_midi_drag.is_none());
             project.clone()
         });
@@ -233,7 +233,7 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
             assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &after)
         });
         let baseline = bodies(&editor, &mut visual);
-        let down = position(&editor, &mut visual, 0.25, 60);
+        let down = position(&editor, &mut visual, 3.75, 60);
         let end = down - point((roll.size.width - px(2.0)) / 8.0, px(0.0));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
@@ -307,18 +307,18 @@ fn negative_keyboard_nudge_uses_one_history_edit_and_exact_origin_ack(cx: &mut T
         let after = editor.read_with(&visual, |v, _| {
             let project = v.state.as_ref().unwrap().project.as_ref();
             let source = project.midi_source(clip).unwrap();
-            assert_eq!(source.source_start(), beat(1, 4));
-            assert_eq!(source.source_length(), beat(17, 4));
+            assert_eq!(source.source_start(), beat(4, 1));
+            assert_eq!(source.source_length(), beat(8, 1));
             for old in before.midi_source(clip).unwrap().notes() {
                 let new = project.midi_note(old.id()).unwrap();
                 assert_eq!(
                     new.start(),
                     if old.pitch() == 60 {
-                        BeatTime::ZERO
+                        beat(15, 4)
                     } else if group {
-                        beat(1, 1)
+                        beat(19, 4)
                     } else {
-                        beat(5, 4)
+                        beat(5, 1)
                     }
                 );
                 assert_eq!(
@@ -326,8 +326,8 @@ fn negative_keyboard_nudge_uses_one_history_edit_and_exact_origin_ack(cx: &mut T
                     (old.duration(), old.velocity(), old.channel())
                 );
             }
-            assert_eq!(v.piano_beat_start, -i128::from(beat(3, 4).raw()));
-            assert_eq!(v.midi_marker, Some(beat(5, 4).raw()));
+            assert_eq!(v.piano_beat_start, i128::from(beat(3, 1).raw()));
+            assert_eq!(v.midi_marker, Some(beat(5, 1).raw()));
             assert!(v.pending_midi_drag.is_none());
             project.clone()
         });
