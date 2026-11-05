@@ -3,7 +3,7 @@
 ## Continue editing in Frame
 
 [hex-orbital.frame.json](hex-orbital.frame.json) is the current editable prototype,
-saved at r127. It includes the structured design, prototype actions, and orbital
+saved at r128. It includes the structured design, prototype actions, and orbital
 styleguide in one portable project.
 
 In Frame, choose **Project → Import project**, select the file, and open the
