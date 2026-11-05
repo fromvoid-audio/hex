@@ -73,7 +73,7 @@ fn future_audio_result_replaces(slot_generation: Option<u64>, event_generation: 
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PublicationObservationDisposition {
+pub(super) enum PublicationObservationDisposition {
     Apply,
     Wait,
     Stale,
