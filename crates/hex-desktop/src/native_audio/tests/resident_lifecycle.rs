@@ -1,4 +1,4 @@
-//! Real current-format document swaps retain one admitted graph through actual output teardown.
+//! Real current-format document swaps retain one admitted graph through output rebind or teardown.
 use super::resident_preview::ResidentHarness;
 use super::*;
 use hex_project::{BeatTime, Command, Created};
@@ -16,6 +16,24 @@ fn resident_open_after_new_accepts_before_obsolete_observation_delivery() {
     h.applied(applied);
     let path = files.0.join("backpressured.hex");
     let saved = h.run(Request::SaveNew(path.clone()));
+    // An active outgoing transport takes the fresh-output path. Keep the
+    // replacement Client queued so the next Open meets actual backpressure.
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    h.render();
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .load(Acquire)
+    );
     let new = h.run(Request::NewWithAudioMode {
         mode: hex_session::DocumentAudioMode::Resident,
         reservation: None,
@@ -92,19 +110,33 @@ pub(super) fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_out
         h.audio.as_ref().unwrap().control.output_identity(),
         Some(old_output)
     );
-    // Neither pending acceptance nor closing the old publication is callback retirement. Release
-    // both actual headless carriers and the old Client, then wait for the real exclusive Lease.
-    h.release_relinquished_output();
-    h.wait_fresh_output(old_output);
-    // The worker named the retired endpoint before opening the fresh one.
-    let generation = event
+    let context = event
         .state
         .canonical_audio_source
         .as_ref()
         .unwrap()
-        .context()
-        .project_generation;
-    assert_eq!(h.released.last(), Some(&(generation, old_output)));
+        .context();
+    let terminal = (context.project_generation, old_output);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        h.pump();
+        if h.released.last() == Some(&terminal) {
+            // Closing publication alone does not release the native lease.
+            h.release_relinquished_output();
+            h.wait_fresh_output(old_output);
+            break;
+        }
+        if h.rebound == Some(terminal) {
+            assert_eq!(
+                h.audio.as_ref().unwrap().control.output_identity(),
+                Some(old_output)
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "output handoff did not settle");
+        h.render();
+        std::thread::yield_now();
+    }
     assert!(
         h.audio
             .as_ref()
@@ -113,17 +145,7 @@ pub(super) fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_out
             .worker_owns_graph_publication()
     );
     let (audio_revision, metadata) = h.applied(0);
-    assert_eq!(
-        metadata.context.project_generation,
-        event
-            .state
-            .canonical_audio_source
-            .as_ref()
-            .unwrap()
-            .context()
-            .project_generation
-    );
-    assert_eq!(metadata.context.editor_revision, event.state.revision);
+    assert_eq!(metadata.context, context);
     audio_revision
 }
 

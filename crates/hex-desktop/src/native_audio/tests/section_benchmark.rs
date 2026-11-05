@@ -263,11 +263,7 @@ fn section_edit_benchmark() {
     let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let loaded = Instant::now();
     let mut event = open_copy(&mut h, copy.clone());
-    // Opening replaces the document's output: release the old callback, then
-    // wait for the fresh output to apply the opened project.
-    h.release_relinquished_output();
-    h.wait_fresh_output(old_output);
-    wait_applied(&mut h, 0);
+    super::resident_lifecycle::finish_replacement(&mut h, &event, old_output);
     let song = sections(&event);
     assert!(song.len() >= 2, "benchmark needs at least two sections");
     let tempo = event.state.project.tempo_map().clone();

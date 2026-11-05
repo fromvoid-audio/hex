@@ -360,12 +360,18 @@ impl EditorView {
     /// Keep the held endpoint for the current generation when the worker kept
     /// that exact output; otherwise request a fresh one.
     fn apply_output_rebound(&mut self, output_identity: u64) {
-        if self
+        if let Some(audio) = self
             .audio
-            .as_ref()
-            .and_then(|a| a.control.output_identity())
-            == Some(output_identity)
+            .as_mut()
+            .filter(|audio| audio.control.output_identity() == Some(output_identity))
         {
+            if audio.mode == hex_session::DocumentAudioMode::Resident
+                && audio.control.worker_owns_graph_publication()
+            {
+                audio
+                    .control
+                    .bind_resident_transport(self.project_generation);
+            }
             self.status = "audio ready".into();
             self.reconcile_publication_observation();
             return;
@@ -2767,7 +2773,9 @@ impl EditorView {
             self.main_track_lane_epoch = 0;
             self.retire_active_clip_drag();
             self.pointer_down = None;
-            self.stop();
+            // The document transaction already owns fresh playback publication.
+            // Reset transport without submitting a second graph during the handoff.
+            self.stop_transport(false);
             self.viewport = None;
             self.duplicate_intent.reject();
             self.pending_scene_duplicate = None;
@@ -4553,6 +4561,10 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        self.stop_transport(true);
+    }
+
+    fn stop_transport(&mut self, restore_current_sound: bool) {
         use super::audio_admission::LatencyRebuild;
         let native_restore = matches!(
             self.latency_rebuild.take(),
@@ -4573,7 +4585,8 @@ impl EditorView {
         // Stop explicitly discards voice histories. A previously refused edit
         // or restoration can now install the canonical sound without inheriting
         // an incompatible preview's history. Keep construction on the worker.
-        let restore = self.stopped_playback_restore.is_none()
+        let restore = restore_current_sound
+            && self.stopped_playback_restore.is_none()
             && !self.edit_pending()
             && self.device_gesture.snapshot().is_none()
             && self.tuning.client.snapshot().is_none()

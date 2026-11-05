@@ -1635,9 +1635,7 @@ fn new_document_and_output_do_not_inherit_the_previous_audition_loop() {
         reservation: None,
     });
     assert!(new.project_replaced);
-    h.release_relinquished_output();
-    h.wait_fresh_output(old_output);
-    let (applied, _) = h.applied(0);
+    let applied = super::resident_lifecycle::finish_replacement(&mut h, &new, old_output);
     let added = h.run(Request::EditArrangementSection {
         project_generation: 1,
         revision: new.state.revision,
