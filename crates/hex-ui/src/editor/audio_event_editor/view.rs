@@ -421,8 +421,8 @@ pub(in crate::editor) fn view(
         element = element.children(view.event_fade_elements(
             &root,
             *event,
-            visible_start,
-            visible_end,
+            start..end,
+            visible_start..visible_end,
             local.length,
             cx,
         ));
