@@ -144,3 +144,163 @@ fn signed_musical_destinations_read_original_warped_pcm_across_a_tempo_seam() {
         }
     }
 }
+
+#[test]
+fn canonical_musical_moves_preserve_the_gate_and_original_source_across_tempo_edits() {
+    use crate::audio_transform::tests::{fixture, prepare, render};
+    use hex_project::{AudioEventEdit, TrimEdge};
+
+    let half = BeatTime::ONE.raw() / 2;
+    for warped in [false, true] {
+        let (mut editor, clip, media) = fixture(false);
+        let track = editor.project().tracks()[0].id();
+        for command in [
+            Command::SetClipFades {
+                clip,
+                fade_in: 0,
+                fade_out: 0,
+            },
+            Command::MoveClip {
+                clip,
+                track,
+                start: 16_000,
+            },
+            Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            },
+        ] {
+            editor.execute(command).unwrap();
+        }
+        if warped {
+            let project = editor.project();
+            let settings = default_audio_warp(
+                project.clip(clip).unwrap(),
+                project.tempo_map(),
+                WarpMode::RePitch,
+            )
+            .unwrap();
+            editor
+                .execute(Command::SetAudioClipWarp {
+                    clip,
+                    settings: Some(settings),
+                })
+                .unwrap();
+        }
+        let seam = BeatTime::from_raw(2 * BeatTime::ONE.raw() + half);
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: seam,
+                tempo: Tempo::new(240_000_000).unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Split { at: half },
+            })
+            .unwrap();
+        let original = editor.project().clone();
+        let baseline = render(
+            &prepare(&editor, &media, &AudioTransformPreparation::default()),
+            0,
+            28_000,
+            57,
+        );
+        for (destination, from, to, stride, edge) in [
+            (
+                -(BeatTime::ONE.raw() as i64),
+                8_000,
+                12_000,
+                1,
+                TrimEdge::Left,
+            ),
+            ((3 * half) as i64, 24_000, 26_000, 2, TrimEdge::Right),
+        ] {
+            editor
+                .execute(Command::EditAudioEvents {
+                    clip,
+                    operation: AudioEventEdit::Place {
+                        event: 1,
+                        start: destination,
+                    },
+                })
+                .unwrap();
+            let placed = editor.project().clone();
+            let c = placed.clip(clip).unwrap();
+            assert_eq!((c.start(), c.duration()), (16_000, 6_000));
+            let event = c
+                .audio_events()
+                .events
+                .into_iter()
+                .find(|event| event.id == 1)
+                .unwrap();
+            assert_eq!(event.source_start, 0);
+            let rendered = render(
+                &prepare(&editor, &media, &AudioTransformPreparation::default()),
+                0,
+                28_000,
+                7,
+            );
+            assert!(rendered[from..to].iter().all(|sample| *sample == [0.0; 2]));
+            assert!(
+                rendered[16_000..20_000]
+                    .iter()
+                    .all(|sample| *sample == [0.0; 2])
+            );
+            assert_eq!(&rendered[20_000..22_000], &baseline[20_000..22_000]);
+            let change = Command::SetTempoPoint {
+                beat: seam,
+                tempo: Tempo::new(160_000_000).unwrap(),
+            };
+            let mut reference = Editor::new(original.clone(), 8).unwrap();
+            reference.execute(change.clone()).unwrap();
+            editor.execute(change).unwrap();
+            let current = render(
+                &prepare(&editor, &media, &AudioTransformPreparation::default()),
+                0,
+                28_000,
+                101,
+            );
+            let expected = render(
+                &prepare(&reference, &media, &AudioTransformPreparation::default()),
+                0,
+                28_000,
+                57,
+            );
+            assert_eq!(&current[20_000..23_000], &expected[20_000..23_000]);
+            assert!(
+                current[16_000..20_000]
+                    .iter()
+                    .all(|sample| *sample == [0.0; 2])
+            );
+            assert!(editor.undo());
+            assert_eq!(editor.project(), &placed);
+            assert!(editor.undo());
+            assert_eq!(editor.project(), &original);
+            assert!(editor.redo());
+            assert_eq!(editor.project(), &placed);
+            let frame = if edge == TrimEdge::Left { from } else { to };
+            editor
+                .execute(Command::TrimClipEdge {
+                    clip,
+                    edge,
+                    frame: frame as u64,
+                })
+                .unwrap();
+            let revealed = render(
+                &prepare(&editor, &media, &AudioTransformPreparation::default()),
+                0,
+                28_000,
+                127,
+            );
+            for (index, sample) in revealed[from..to].iter().enumerate() {
+                assert_eq!(*sample, baseline[16_000 + stride * index]);
+            }
+            assert_eq!(&revealed[20_000..22_000], &baseline[20_000..22_000]);
+            assert!(editor.undo());
+            assert!(editor.undo());
+            assert_eq!(editor.project(), &original);
+        }
+    }
+}

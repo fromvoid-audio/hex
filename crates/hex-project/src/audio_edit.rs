@@ -193,11 +193,21 @@ pub struct AudioFadeProjection {
     pub origin_beat_raw: i128,
     pub local_start_raw: u64,
 }
+/// Finite musical source read retained independently of event destinations.
+/// Both fields use raw quarter-note beat ticks. The source origin translates
+/// with the clip, and source zero stays fixed when the destination grows left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MusicalEventSource {
+    pub zero_in_destination: u64,
+    pub length: BeatTime,
+}
+
 /// Immutable authored processing content, independent of an instance's crop,
 /// loop phase and fade. Retained event roots never refer back to live aliases.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioClipContent {
     pub events: Option<Arc<crate::AudioEvents>>,
+    pub musical_event_source: Option<MusicalEventSource>,
     pub source_offset: u64,
     pub source_length: u64,
     pub clock: AudioDomainClock,
@@ -593,6 +603,7 @@ impl AudioClipEdit {
             domain: Arc::new(AudioClipDomain {
                 content: Arc::new(AudioClipContent {
                     events: None,
+                    musical_event_source: None,
                     source_offset: clip.source_offset,
                     source_length: clip.source_length,
                     clock: AudioDomainClock::Frames(clip.duration),
@@ -628,7 +639,12 @@ impl AudioClipEdit {
             {
                 return Err(Invalid("grouped audio requires a retained event source"));
             }
-            return Ok(self.domain.clock);
+            return Ok(self
+                .domain
+                .musical_event_source
+                .map_or(self.domain.clock, |source| {
+                    AudioDomainClock::Beats(source.length)
+                }));
         }
         if !matches!(self.domain.clock, AudioDomainClock::Frames(_)) {
             return Err(Invalid("grouped event sources require a frame clock"));
@@ -652,6 +668,15 @@ impl AudioClipEdit {
             return Err(Invalid("audio event position exceeds its source"));
         }
         if source == 0 {
+            if let Some(source) = self.domain.musical_event_source {
+                let origin = self.processing_origin()? + i128::from(source.zero_in_destination);
+                let tempo = self.processing_tempo(tempo);
+                return u64::try_from(
+                    audio_projection_frame(tempo, origin + i128::from(position))?
+                        - audio_projection_frame(tempo, origin)?,
+                )
+                .map_err(|_| Invalid("audio event source projection overflow"));
+            }
             self.root_frame_at(position, tempo)
         } else {
             Ok(position)
@@ -666,6 +691,16 @@ impl AudioClipEdit {
     ) -> Result<u64, Invalid> {
         if source == 0 {
             self.event_source_clock(source)?;
+            if let Some(source) = self.domain.musical_event_source {
+                let origin = self.processing_origin()? + i128::from(source.zero_in_destination);
+                let tempo = self.processing_tempo(tempo);
+                let position = audio_projection_beat(
+                    tempo,
+                    audio_projection_frame(tempo, origin)? + i128::from(frame),
+                )? - origin;
+                return u64::try_from(position.clamp(0, i128::from(source.length.raw())))
+                    .map_err(|_| Invalid("audio event source projection overflow"));
+            }
             self.root_position_at(frame, tempo)
         } else {
             self.event_source_frame_at(source, frame, tempo)
@@ -815,6 +850,37 @@ impl AudioClipEdit {
         }
         if let Some(events) = &domain.events {
             events.validate(domain.clock.length())?;
+        }
+        if let Some(source) = domain.musical_event_source {
+            let length = source.length.raw();
+            if !matches!(domain.clock, AudioDomainClock::Beats(_))
+                || self.placement.is_some()
+                || self.content_view.is_some()
+                || length == 0
+                || source
+                    .zero_in_destination
+                    .checked_add(length)
+                    .is_none_or(|end| end > domain.clock.length())
+            {
+                return Err(Invalid("invalid retained musical event source"));
+            }
+            let events = domain
+                .events
+                .as_ref()
+                .filter(|events| events.sources.is_empty())
+                .ok_or(Invalid("musical event source needs its event sequence"))?;
+            for event in &events.events {
+                if event
+                    .source_start
+                    .checked_add(event.length())
+                    .is_none_or(|end| end > length)
+                {
+                    return Err(Invalid("audio event exceeds its retained source clock"));
+                }
+                if let Some(fade) = event.fade {
+                    fade.validate(length, event.source_start, event.length())?;
+                }
+            }
         }
         let source_end = domain
             .source_offset

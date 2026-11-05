@@ -389,3 +389,144 @@ fn roundtrip_placed_events(looping: bool, directed: bool) {
         project.snapshot()
     );
 }
+
+#[test]
+fn musical_event_source_schema_preserves_cropped_and_nested_event_spans() {
+    use hex_project::{BeatTime, TrimEdge, WarpMode};
+    let old = hex_storage::decode(include_bytes!("fixtures/warp-resampler/schema64.json")).unwrap();
+    assert!(
+        old.tracks()
+            .iter()
+            .flat_map(|track| track.clips())
+            .all(|clip| {
+                clip.audio_event_root()
+                    .domain
+                    .musical_event_source
+                    .is_none()
+            })
+    );
+    assert!(
+        hex_storage::schema_version_for(&old) < hex_storage::MUSICAL_EVENT_SOURCE_SCHEMA_VERSION
+    );
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Imported { clip, track, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "audio".into(),
+            path: "audio.wav".into(),
+            sample_rate: 48_000,
+            frames: 24_000,
+        })
+        .unwrap()
+    else {
+        panic!("fixture")
+    };
+    editor
+        .execute(Command::MoveClip {
+            clip,
+            track,
+            start: 24_000,
+        })
+        .unwrap();
+    let settings = hex_project::default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::RePitch,
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: TrimEdge::Left,
+            frame: 27_000,
+        })
+        .unwrap();
+    let before = editor.project().clone();
+    let original = before.clip(clip).unwrap();
+    let root = original.audio_event_root();
+    let event = original
+        .editable_audio_events()
+        .unwrap()
+        .events
+        .into_iter()
+        .find(|event| event.start == root.view_start)
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Place {
+                event: event.id,
+                start: -(BeatTime::ONE.raw() as i64),
+            },
+        })
+        .unwrap();
+    let left = editor.project().clone();
+    let candidate = left.clip(clip).unwrap();
+    assert_eq!(
+        (candidate.start(), candidate.duration()),
+        (original.start(), original.duration())
+    );
+    assert_eq!(
+        candidate
+            .audio_event_root()
+            .domain
+            .musical_event_source
+            .unwrap()
+            .zero_in_destination,
+        BeatTime::ONE.raw()
+    );
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Place {
+                event: event.id,
+                start: (3 * BeatTime::ONE.raw()) as i64,
+            },
+        })
+        .unwrap();
+    let both = editor.project().clone();
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &left);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &both);
+
+    for nested in [false, true] {
+        if nested {
+            let Created::Clip(copy) = editor.execute(Command::DuplicateClip(clip)).unwrap() else {
+                panic!("duplicate")
+            };
+            editor
+                .execute(Command::GroupClips(vec![clip, copy]))
+                .unwrap();
+        }
+        let bytes = hex_storage::encode(editor.project()).unwrap();
+        assert_eq!(
+            hex_storage::schema_version_for(editor.project()),
+            hex_storage::MUSICAL_EVENT_SOURCE_SCHEMA_VERSION
+        );
+        assert_eq!(hex_storage::decode(&bytes).unwrap(), *editor.project());
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        for mutation in 0..4 {
+            let mut malformed = value.clone();
+            match mutation {
+                0 => malformed["version"] = hex_storage::SIDECHAIN_SCHEMA_VERSION.into(),
+                1 => malformed["musical_event_sources"][0]["length_raw"] = u64::MAX.into(),
+                2 => malformed["musical_event_sources"][0]["path"][0] = u64::MAX.into(),
+                _ => {
+                    let row = malformed["musical_event_sources"][0].clone();
+                    malformed["musical_event_sources"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(row);
+                }
+            }
+            assert!(hex_storage::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());
+        }
+    }
+}

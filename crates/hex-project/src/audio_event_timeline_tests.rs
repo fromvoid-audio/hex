@@ -122,7 +122,7 @@ fn placement_refuses_unsupported_roots_and_unbounded_timelines() {
         })
         .unwrap();
     let musical = editor.project().clone();
-    assert!(place(&mut editor, clip, 1, 120).is_err());
+    assert!(place(&mut editor, clip, 1, i64::MAX).is_err());
     assert_eq!(editor.project(), &musical);
     assert!(editor.undo());
     assert_eq!(editor.project(), &before);
