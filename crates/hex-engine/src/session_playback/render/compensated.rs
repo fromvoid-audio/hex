@@ -281,7 +281,7 @@ impl SessionPlayback {
         arrangement_frame: u64,
         frames: usize,
         eligible: &[bool; MAX_TRACKS],
-        origins: Option<&[Option<TransportStamp>]>,
+        origins: Option<(&[Option<TransportStamp>], u32)>,
         aligned: &mut [bool; MAX_TRACKS],
     ) -> Result<(), SessionPlaybackError> {
         aligned.fill(false);
@@ -318,13 +318,16 @@ impl SessionPlayback {
             let native_origins = if chain.is_empty() {
                 None
             } else {
-                let Some(incoming) = origins.filter(|_| {
-                    track.device_chain.iter().all(|device| {
-                        !matches!(
-                            device.definition.as_ref(),
-                            Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
-                        )
-                    })
+                let Some((incoming, _)) = origins.filter(|&(_, history_frames)| {
+                    // In this independent serial track, the fader arrival
+                    // bounds the lookback of every native device stage.
+                    arrival <= history_frames
+                        && track.device_chain.iter().all(|device| {
+                            !matches!(
+                                device.definition.as_ref(),
+                                Some(hex_lattice::PreparedProcessorFactory::Foreign(_))
+                            )
+                        })
                 }) else {
                     continue;
                 };
@@ -406,21 +409,20 @@ impl SessionPlayback {
         }
         Ok(())
     }
-    /// Batching requires real running input and output origins for every stage.
-    /// Cold starts and transitions keep the established scalar warmup behavior.
+    /// Return the contiguous running history available to independent stages.
+    /// A long delay on another track, such as a VST3 bridge, does not enlarge
+    /// the native batching window or exclude tracks with shorter arrivals.
     pub(super) fn prepare_native_origin_window(
         &self,
         performance_frame: u64,
         arrangement_frame: u64,
         loop_pass: u64,
         stamps: &mut [Option<TransportStamp>],
-    ) -> Result<bool, SessionPlaybackError> {
+    ) -> Result<Option<u32>, SessionPlaybackError> {
         let Some(compensation) = self.compensation.as_ref() else {
-            return Ok(false);
+            return Ok(None);
         };
-        let lookback = compensation.graph.main_latency();
         if !compensation.graph.independent_main_routes()
-            || lookback > 256
             || self
                 .native_parameter_state
                 .as_deref()
@@ -432,15 +434,18 @@ impl SessionPlayback {
                 .iter()
                 .flatten()
                 .any(|tail| tail.output_active)
-            || (0..lookback).any(|delay| {
-                !compensation
+        {
+            return Ok(None);
+        }
+        let lookback = compensation.graph.main_latency().min(256);
+        let history_frames = (0..lookback)
+            .take_while(|&delay| {
+                compensation
                     .delays
                     .stamp_at_delay(delay)
                     .is_some_and(|stamp| stamp.transport_is_running)
             })
-        {
-            return Ok(false);
-        }
+            .count() as u32;
         for (offset, stamp) in stamps.iter_mut().enumerate() {
             let performance = performance_frame
                 .checked_add(offset as u64)
@@ -450,7 +455,7 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
             *stamp = Some(self.compensated_stamp(performance, arrangement, loop_pass)?);
         }
-        Ok(true)
+        Ok(Some(history_frames))
     }
 
     fn compensated_stamp(
@@ -1025,7 +1030,9 @@ mod tests {
 
     #[test]
     fn resident_alignment_matches_scalar_automation_capture_seek_and_rollback() {
-        use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId, HostGain};
+        use hex_lattice_contract::{
+            DeviceAutomationTarget, DeviceTypeId, HostGain, NativeDeviceMetadata, ParameterValue,
+        };
         use hex_project::{
             AutomationInterpolation, AutomationPoint, AutomationValue, BeatTime, GainInterpolation,
             GainPoint,
@@ -1053,6 +1060,23 @@ mod tests {
                 })
                 .unwrap();
         }
+        // A long independent path must retain its scalar processing without
+        // forcing the short-arrival native track onto that path.
+        let limiter = &hex_devices::limiter::DEFINITION;
+        let limiter_state = limiter
+            .patch_parameter(
+                &limiter.default_state().unwrap(),
+                hex_devices::limiter::parameter::LOOKAHEAD,
+                ParameterValue::Choice(2),
+            )
+            .unwrap();
+        f.editor
+            .execute(hex_project::Command::InsertDevice {
+                track: f.tracks[2],
+                before: None,
+                state: limiter_state,
+            })
+            .unwrap();
         let second_stage = f.editor.project().track(wet).unwrap().devices()[1].id();
         let step = f.editor.project().tempo_map().frame_to_beat(170).unwrap();
         f.editor
@@ -1095,6 +1119,7 @@ mod tests {
             )
             .unwrap(),
         );
+        assert_eq!(revision.arrangement().main_latency_frames(), 288);
         let mut batched = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         let mut scalar = SessionPlayback::new(revision).unwrap();
         scalar.resident_source_scratch.clear();
@@ -1108,10 +1133,11 @@ mod tests {
         batched.render(&mut warmup).unwrap();
         scalar.render(&mut expected_warmup).unwrap();
         assert_eq!(warmup, expected_warmup);
-        assert!(
+        assert_eq!(
             batched
                 .prepare_native_origin_window(32, 32, 0, &mut [None; 4])
-                .unwrap()
+                .unwrap(),
+            Some(32)
         );
         let mut output = [[9.0; 2]; 512];
         assert_eq!(
