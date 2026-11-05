@@ -71,6 +71,8 @@ impl AudioViewProjection<'_> {
             return Ok(None);
         }
         let elapsed = self.elapsed_at_frame(frame)?;
+        let leading = u64::try_from(self.first_read - self.start)
+            .map_err(|_| Invalid("audio leading extent exceeds placement"))?;
         let audible_start = if self.has_subframe_intro() {
             self.occurrence(0)?.elapsed_start
         } else {
@@ -88,6 +90,13 @@ impl AudioViewProjection<'_> {
                     return Ok(None);
                 }
                 read
+            }
+            None if leading > 0 => {
+                let occurrence = self.occurrence(0)?;
+                if !(occurrence.destination_start..occurrence.destination_end).contains(&frame) {
+                    return Ok(None);
+                }
+                elapsed.saturating_sub(leading)
             }
             None => elapsed.max(audible_start),
         };
@@ -151,8 +160,14 @@ impl AudioViewProjection<'_> {
         if range.start > range.end {
             return Err(Invalid("audio selection range is reversed"));
         }
-        let first = range.start.max(self.placed_frames.0);
-        let last = range.end.min(self.placed_frames.1);
+        let (read_start, read_end) = if self.first_read != self.start {
+            let read = self.occurrence(0)?;
+            (read.destination_start, read.destination_end)
+        } else {
+            self.placed_frames
+        };
+        let first = range.start.max(read_start);
+        let last = range.end.min(read_end);
         if first >= last || self.count == 0 {
             return Ok([None, None]);
         }
@@ -244,10 +259,10 @@ impl AudioViewProjection<'_> {
             } else {
                 frame
             };
-            Ok(raw.clamp(self.start, self.end))
+            Ok(raw.clamp(self.first_read, self.end))
         };
         let elapsed = |frame| -> Result<u128, Invalid> {
-            u128::try_from(position(frame)? - self.start)
+            u128::try_from(position(frame)? - self.first_read)
                 .map_err(|_| Invalid("audio selection clock overflow"))
         };
         let start = u128::from(self.phase) + elapsed(first)?.max(u128::from(audible_start));
@@ -567,6 +582,28 @@ mod tests {
                 .root_ranges_for_frames(clip.start + 72_000..clip.start + 144_000)
                 .unwrap(),
             [None, None]
+        );
+        let gate = current.beat_to_frame(b(19)).unwrap();
+        let extended = clip.with_musical_leading_silence(gate, &current).unwrap();
+        extended
+            .audio_edit()
+            .unwrap()
+            .validate(&extended, &current, 192_000)
+            .unwrap();
+        let leading = AudioViewProjection::new(&extended, &current).unwrap();
+        assert_eq!(
+            leading.outer_frame_bounds(),
+            (gate, clip.start + clip.duration)
+        );
+        let old = projection.occurrence(0).unwrap();
+        let new = leading.occurrence(0).unwrap();
+        assert_eq!(
+            new,
+            AudioViewOccurrence {
+                elapsed_start: new.elapsed_start,
+                elapsed_end: old.elapsed_end + new.elapsed_start,
+                ..old
+            }
         );
         edit.placement_end_offset = 1;
         clip.edit = Some(Arc::new(edit.clone()));
