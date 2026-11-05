@@ -308,11 +308,23 @@ extern "C" __attribute__((visibility("default"))) int HexHostEdit(int kind,uint3
     return host_testing && active_controller?active_controller->send_edit(kind,id,value):kNotImplemented;
 }
 extern "C" __attribute__((visibility("default"))) int HexHostMessages(int retain) {
-    if (!host_testing || !active_controller || !pthread_main_np()) return kInvalidArgument;
+    if (!host_testing || !active_controller || (!pthread_main_np() && retain!=2)) return kInvalidArgument;
     IHostApplication* host=nullptr;
     if (active_controller->host_context()->queryInterface(INLINE_UID_OF(IHostApplication),reinterpret_cast<void**>(&host))!=kResultOk || !host) return kResultFalse;
     IMessage* message=nullptr; TUID message_id{}; std::memcpy(message_id,INLINE_UID_OF(IMessage),sizeof(TUID));
     bool ok=host->createInstance(message_id,message_id,reinterpret_cast<void**>(&message))==kResultOk && message;
+    if (retain==2) {
+        if (ok) {
+            message->setMessageID("Background");
+            auto* attributes=message->getAttributes();
+            int64 value=0;
+            ok=attributes && attributes->setInt("sequence",42)==kResultOk &&
+                attributes->getInt("sequence",value)==kResultOk && value==42 &&
+                message->getMessageID() && !std::strcmp(message->getMessageID(),"Background");
+            message->release();
+        }
+        host->release(); return ok?kResultOk:kResultFalse;
+    }
     if (ok && retain) { retained_message=message; host->release(); return kResultOk; }
     if (ok) {
         message->setMessageID("OriginalCase"); auto* attributes=message->getAttributes();

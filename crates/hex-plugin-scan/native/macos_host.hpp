@@ -93,7 +93,9 @@ class Host final : public IHostApplication, public IComponentHandler {
     std::array<uint64,HOST_EDIT_COUNT> active_tokens{};
     size_t first=0, count=0;
     uint64 sequence=0;
-    bool accepting=true, dispatching=false, recursive=false, applying_feedback=false;
+    std::atomic<bool> accepting{true};
+    std::atomic<pthread_t> processing_thread{nullptr};
+    bool dispatching=false, recursive=false, applying_feedback=false;
     ParameterSnapshot metadata{};
     // Two fixed copies, one main producer and one serialized processing reader.
     // Main may coalesce an unread Ready snapshot, never a Reading one. A raced
@@ -148,6 +150,7 @@ public:
     }
     uint32 reference_count() const { return references.load(); }
     uint32 refusal_flags() const { return refusals.load(); }
+    void bind_processing_thread() { processing_thread.store(pthread_self(),std::memory_order_release); }
     void observe_latency_restarts() {
         observes_latency_restarts.store(true,std::memory_order_release);
     }
@@ -188,10 +191,15 @@ public:
     tresult PLUGIN_API createInstance(TUID cid,TUID iid,void** out) override {
         if (!out) return kInvalidArgument;
         *out=nullptr;
-        if (![NSThread isMainThread]) { refuse(WrongThread); return kResultFalse; }
+        const bool message=same(cid,INLINE_UID_OF(IMessage)) && same(iid,INLINE_UID_OF(IMessage));
+        if (![NSThread isMainThread]) {
+            const auto processing=processing_thread.load(std::memory_order_acquire);
+            if(!message || (processing && pthread_equal(processing,pthread_self()))) {
+                refuse(WrongThread); return kResultFalse;
+            }
+        }
         if (!accepting) { refuse(Retiring); return kResultFalse; }
         if (!cid || !iid) return kInvalidArgument;
-        const bool message=same(cid,INLINE_UID_OF(IMessage)) && same(iid,INLINE_UID_OF(IMessage));
         const bool attributes=same(cid,INLINE_UID_OF(IAttributeList)) && same(iid,INLINE_UID_OF(IAttributeList));
         if (!message && !attributes) return kNoInterface;
         for (auto& slot:messages) if (slot.acquire(attributes)) {

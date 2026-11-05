@@ -285,6 +285,12 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertTrue(value["refusals"] & 512, "message pool exhaustion was explicit")
         self.assertTrue(value["closed"] and value["unloaded"])
 
+    def test_background_host_message_during_processing_keeps_instance_healthy(self):
+        value = self.host_control(14)
+        self.assertEqual(value["message"], 0, value)
+        self.assertEqual(value["refusals"], 0)
+        self.assertTrue(value["closed"] and value["unloaded"])
+
     def test_unknown_and_graph_restart_classes_refuse_without_partial_cache_update(self):
         value = self.host_control(1)
         for field in ("unknown", "graph", "known"):
