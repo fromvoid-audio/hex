@@ -304,6 +304,8 @@ fn actual_selected_effect_revalidation_refuses_changed_metadata_before_root_rese
 fn actual_native_endpoint_moves_through_callback_and_returns_before_worker_disposal() {
     let _serial = serial();
     let (mut control, mut data, errors, mut retirement, binding) = setup();
+    assert!(control.has_vacant_native_source_slots_on_control(1));
+    assert!(!control.has_vacant_native_source_slots_on_control(2));
     let state = control.native_source_prepared_state(binding).unwrap();
     assert_ne!(
         control.native_source_endpoint_installed(binding),

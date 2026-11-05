@@ -12,6 +12,12 @@ pub(super) struct Reopen {
     cleanup: bool,
 }
 
+impl Source {
+    fn is_reopening_for(&self, generation: u64) -> bool {
+        self.project_generation == generation && self.operation.is_reopen()
+    }
+}
+
 impl Plugins {
     pub(in crate::native_audio) fn request_reopen(
         &mut self,
@@ -84,9 +90,7 @@ impl Plugins {
             restore.ready = false;
             restore.cleanup = true;
             for source in &mut self.sources {
-                if source.project_generation == context.project_generation
-                    && source.operation.is_reopen()
-                {
+                if source.is_reopening_for(context.project_generation) {
                     source.retiring = true;
                 }
             }
@@ -101,12 +105,11 @@ impl Plugins {
         let Some(mut restore) = self.reopen.take() else {
             return;
         };
+        let generation = restore.context.project_generation;
         let Some(snapshot) = snapshot.filter(|snapshot| snapshot.context() == restore.context)
         else {
             for source in &mut self.sources {
-                if source.project_generation == restore.context.project_generation
-                    && source.operation.is_reopen()
-                {
+                if source.is_reopening_for(generation) {
                     source.retiring = true;
                 }
             }
@@ -130,14 +133,14 @@ impl Plugins {
         restore.output = Some(identity);
         if restore.cleanup {
             for source in &mut self.sources {
-                if source.operation.is_reopen() {
+                if source.is_reopening_for(generation) {
                     source.retiring = true;
                 }
             }
             if self
                 .sources
                 .iter()
-                .any(|source| source.operation.is_reopen())
+                .any(|source| source.is_reopening_for(generation))
             {
                 self.reopen = Some(restore);
             }
@@ -161,12 +164,16 @@ impl Plugins {
         let Some((owner, device, state)) = next else {
             // Refused sources must reach their actual return before the
             // admitted unavailable graph can be installed instead.
-            if self.sources.iter().any(|source| source.retiring) {
+            if self
+                .sources
+                .iter()
+                .any(|source| source.retiring && source.is_reopening_for(generation))
+            {
                 self.reopen = Some(restore);
             } else if self
                 .sources
                 .iter()
-                .any(|source| source.accepted && source.operation.is_reopen())
+                .any(|source| source.accepted && source.is_reopening_for(generation))
             {
                 restore.ready = true;
                 self.reopen = Some(restore);
