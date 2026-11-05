@@ -35,7 +35,7 @@ fn render(callback: &mut prepared::Callback, output: &mut [Frame]) -> Result<(),
     Ok(())
 }
 #[test]
-fn moved_event_is_silent_outside_clip_then_revealed_with_original_pcm_without_callback_allocations()
+fn moved_range_is_silent_outside_clip_then_revealed_with_original_pcm_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
     for block in [1, 7, 64, 512] {
         let mut editor = Editor::new(Project::new(48_000)?, 8)?;
@@ -73,9 +73,10 @@ fn moved_event_is_silent_outside_clip_then_revealed_with_original_pcm_without_ca
         let running_position = control.status.position.load(Acquire);
         editor.execute(Command::EditAudioEvents {
             clip,
-            operation: AudioEventEdit::Place {
-                event: 1,
-                start: 12288,
+            operation: AudioEventEdit::PlaceRange {
+                start: 0,
+                end: 2048,
+                destination: 12288,
             },
         })?;
         let revision = control

@@ -478,8 +478,12 @@ pub(in crate::editor) fn view(
         }) => Some((*destination, *destination + (*end - *start))),
         _ => view.audio_event_editor.range,
     };
-    let selected_range =
-        selected_range.and_then(|(a, b)| Some((display_position(a)?, display_position(b)?)));
+    let placed_range = placement
+        .zip(operation)
+        .and_then(|(preview, operation)| preview.range(operation));
+    let selected_range = placed_range.or_else(|| {
+        selected_range.and_then(|(a, b)| Some((display_position(a)?, display_position(b)?)))
+    });
     if let Some((a, b)) = selected_range.filter(|(a, b)| a < b) {
         let a = frame_at(a)?;
         let b = frame_at(b)?;
@@ -509,11 +513,14 @@ pub(in crate::editor) fn view(
             );
         }
     }
-    let cursor = frame_at(display_position(
-        view.audio_event_editor
-            .cursor
-            .min(canonical_root.domain.clock.length()),
-    )?)?;
+    let cursor = match placed_range {
+        Some((start, _)) => frame_at(start)?,
+        None => frame_at(display_position(
+            view.audio_event_editor
+                .cursor
+                .min(canonical_root.domain.clock.length()),
+        )?)?,
+    };
     if root_window.contains(i128::from(cursor)) {
         body = body.child(
             div()
@@ -639,7 +646,11 @@ pub(in crate::editor) fn view(
                 Kind::Select
             } else if target == RangeSelectionTarget::Move && range_hit.is_some() {
                 if let Some((start, end)) = range_hit {
-                    Kind::RangeMove { start, end }
+                    if let Ok(limits) = clip.audio_event_range_placement_bounds(start, end) {
+                        Kind::FreeRangeMove { start, end, limits }
+                    } else {
+                        Kind::RangeMove { start, end }
+                    }
                 } else {
                     Kind::Select
                 }
@@ -729,7 +740,7 @@ pub(in crate::editor) fn view(
             if matches!(kind, Kind::Select) {
                 view.audio_event_editor.range = Some((position, position));
                 view.audio_event_editor.selected = None;
-            } else if !matches!(kind, Kind::RangeMove { .. }) {
+            } else if !matches!(kind, Kind::RangeMove { .. } | Kind::FreeRangeMove { .. }) {
                 view.audio_event_editor.range = None;
                 view.audio_event_editor.selected = hit.map(|event| event.id);
             }

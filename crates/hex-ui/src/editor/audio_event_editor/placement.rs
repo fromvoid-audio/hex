@@ -65,13 +65,10 @@ impl Preview {
         events: &AudioEvents,
         operation: &AudioEventEdit,
     ) -> Vec<(u64, u64)> {
-        let AudioEventEdit::Place { event, start } = *operation else {
+        let Some(operation) = self.rebased_operation(operation) else {
             return Vec::new();
         };
         let Ok(lead) = u64::try_from(self.origin_shift) else {
-            return Vec::new();
-        };
-        let Ok(start) = u64::try_from(i128::from(start) + i128::from(lead)) else {
             return Vec::new();
         };
         let mut events = events.clone();
@@ -83,8 +80,43 @@ impl Preview {
             item.start = a;
             item.end = b;
         }
-        paint::replacement_spans(&events, &AudioEventEdit::Move { event, start })
+        paint::replacement_spans(&events, &operation)
     }
+    fn rebased_operation(&self, operation: &AudioEventEdit) -> Option<AudioEventEdit> {
+        let placed = |start| u64::try_from(i128::from(start) + i128::from(self.origin_shift)).ok();
+        match *operation {
+            AudioEventEdit::Place { event, start } => Some(AudioEventEdit::Move {
+                event,
+                start: placed(start)?,
+            }),
+            AudioEventEdit::PlaceRange {
+                start,
+                end,
+                destination,
+            } => Some(AudioEventEdit::MoveRange {
+                start: self.position(start)?,
+                end: self.position(end)?,
+                destination: placed(destination)?,
+            }),
+            _ => None,
+        }
+    }
+
+    pub(super) fn range(&self, operation: &AudioEventEdit) -> Option<(u64, u64)> {
+        let AudioEventEdit::MoveRange {
+            start,
+            end,
+            destination,
+        } = self.rebased_operation(operation)?
+        else {
+            return None;
+        };
+        Some((
+            destination,
+            destination.checked_add(end.checked_sub(start)?)?,
+        ))
+    }
+
     pub(super) fn waveform(
         &self,
         event: u64,
@@ -123,15 +155,15 @@ impl EditorView {
     pub(super) fn update_free_event_placement(
         &self,
         gesture: &mut Gesture,
-        event: AudioEvent,
-        limits: (i64, i64),
         x: f32,
         platform: bool,
     ) {
-        let Some((clip_id, root, _)) = self.event_context() else {
-            return;
+        let (origin, limits) = match gesture.kind {
+            Kind::FreeMove { event, limits } => (event.start, limits),
+            Kind::FreeRangeMove { start, limits, .. } => (start, limits),
+            _ => return,
         };
-        let Some(state) = self.state.as_ref() else {
+        let Some((_, root, _)) = self.event_context() else {
             return;
         };
         let Some(bounds) = self.audio_event_editor.bounds else {
@@ -145,24 +177,31 @@ impl EditorView {
         let viewport = self.event_frame_window(&root);
         let delta = ((f64::from(x) - f64::from(gesture.origin_x)) * viewport.length as f64 / width)
             .round() as i128;
-        let raw = i128::from(event.start)
+        let raw = i128::from(origin)
             .saturating_add(delta)
             .clamp(i128::from(first), i128::from(last)) as i64;
         let start = self
             .free_event_snap(&root, raw, platform)
             .unwrap_or(raw)
             .clamp(first, last);
-        let Ok(preview) = state
-            .project
-            .preview_audio_event_placement(clip_id, event.id, start)
-        else {
-            return;
+        let operation = match gesture.kind {
+            Kind::FreeMove { event, .. } => AudioEventEdit::Place {
+                event: event.id,
+                start,
+            },
+            Kind::FreeRangeMove {
+                start: from, end, ..
+            } => AudioEventEdit::PlaceRange {
+                start: from,
+                end,
+                destination: start,
+            },
+            _ => return,
         };
-        gesture.operation = Some(AudioEventEdit::Place {
-            event: event.id,
-            start,
-        });
-        gesture.placement = Preview::capture(state, clip_id, preview).map(Arc::new);
+        if let Some(preview) = self.placement_preview(&operation) {
+            gesture.operation = Some(operation);
+            gesture.placement = Some(preview);
+        }
     }
     // The admitted frame clock continues beyond its old extent. Do not call
     // root_position_at here: its ordinary read contract clamps to that extent.
@@ -186,14 +225,17 @@ impl EditorView {
         i64::try_from(snapped - i128::from(clip.start()) + i128::from(first)).ok()
     }
     pub(super) fn placement_preview(&self, operation: &AudioEventEdit) -> Option<Arc<Preview>> {
-        let AudioEventEdit::Place { event, start } = *operation else {
+        if !matches!(
+            operation,
+            AudioEventEdit::Place { .. } | AudioEventEdit::PlaceRange { .. }
+        ) {
             return None;
         };
         let state = self.state.as_ref()?;
         let clip = self.detail_clip_id()?;
         let model = state
             .project
-            .preview_audio_event_placement(clip, event, start)
+            .preview_audio_event_edit(clip, operation)
             .ok()?;
         Preview::capture(state, clip, model).map(Arc::new)
     }

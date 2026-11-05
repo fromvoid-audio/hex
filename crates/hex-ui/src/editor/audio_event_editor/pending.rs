@@ -130,10 +130,11 @@ impl EditorView {
         }
         true
     }
-    pub(in crate::editor) fn audio_events_request_complete(&mut self, event: &Event) {
-        let Some(p) = &mut self.audio_event_editor.pending else {
-            return;
-        };
+    pub(in crate::editor) fn audio_events_request_complete(
+        &mut self,
+        event: &Event,
+    ) -> Option<(u64, u64)> {
+        let p = self.audio_event_editor.pending.as_mut()?;
         match p.receipt.observe(
             self.project_generation,
             event.project_replaced,
@@ -144,18 +145,30 @@ impl EditorView {
                 self.retire_pending_audio_events();
             }
             Disposition::Terminal => {
-                if let Some(clipboard) = self
-                    .audio_event_editor
-                    .pending
-                    .take()
-                    .and_then(|p| p.clipboard)
-                {
+                let p = self.audio_event_editor.pending.take()?;
+                if let Some(clipboard) = p.clipboard {
                     self.audio_event_editor.clipboard = Some(clipboard);
+                }
+                if self.audio_event_editor.owner == Some(p.owner)
+                    && self.detail_clip_id() == Some(p.owner.0)
+                    && p.intent.is_some()
+                    && p.intent == self.selection_intent_epoch
+                {
+                    return p.placement?.range(&p.operation);
                 }
             }
             Disposition::Invalidated => {
                 self.audio_event_editor.pending = None;
             }
         }
+        None
+    }
+
+    pub(in crate::editor) fn install_placed_audio_range(&mut self, range: (u64, u64)) {
+        self.sync_audio_navigation();
+        self.audio_event_editor.range = Some(range);
+        self.audio_event_editor.cursor = range.0;
+        self.audio_event_editor.selected = None;
+        self.audio_event_editor.retained_selection = None;
     }
 }

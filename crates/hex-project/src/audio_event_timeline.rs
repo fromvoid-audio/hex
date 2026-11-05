@@ -21,40 +21,39 @@ use crate::{
 };
 use std::sync::Arc;
 
-pub(crate) fn place(
-    project: &mut Project,
-    clip: ClipId,
-    event: u64,
-    start: i64,
-) -> Result<(), Invalid> {
-    let candidate = prepare(project, clip, event, start)?;
-    *project.clip_mut(clip)? = candidate;
-    Ok(())
-}
-
 /// Prepare the exact canonical candidate without touching the live project.
 pub(crate) fn prepare(
     project: &Project,
     clip: ClipId,
-    event: u64,
-    start: i64,
+    operation: &AudioEventEdit,
 ) -> Result<Clip, Invalid> {
     let original = project.clip(clip).ok_or(Invalid("clip no longer exists"))?;
     let (mut edit, mut events) = placement_timeline(project, original)?;
     let length = edit.domain.clock.length();
-    let moved = events
-        .events
-        .iter()
-        .find(|e| e.id == event)
-        .ok_or(Invalid("audio event no longer exists"))?;
-    if i128::from(start) == i128::from(moved.start) {
+    let (old_start, span, start) = match *operation {
+        AudioEventEdit::Place { event, start } => {
+            let moved = events
+                .events
+                .iter()
+                .find(|e| e.id == event)
+                .ok_or(Invalid("audio event no longer exists"))?;
+            (moved.start, moved.length(), start)
+        }
+        AudioEventEdit::PlaceRange {
+            start,
+            end,
+            destination,
+        } if start < end && end <= length => (start, end - start, destination),
+        _ => return Err(Invalid("invalid audio event placement range")),
+    };
+    if i128::from(start) == i128::from(old_start) {
         return Ok(original.clone());
     }
     let lead = if start < 0 { start.unsigned_abs() } else { 0 };
     let destination = u64::try_from(i128::from(start) + i128::from(lead))
         .map_err(|_| Invalid("audio event placement overflow"))?;
     let end = destination
-        .checked_add(moved.length())
+        .checked_add(span)
         .ok_or(Invalid("audio event placement overflow"))?;
     let timeline = length
         .checked_add(lead)
@@ -74,13 +73,21 @@ pub(crate) fn prepare(
     let domain = Arc::make_mut(&mut edit.domain);
     domain.fade_start += lead;
     domain.clock = AudioDomainClock::Frames(timeline);
-    let next = events.edited(
-        AudioEventEdit::Move {
-            event,
-            start: destination,
-        },
-        timeline,
-    )?;
+    let next = match *operation {
+        AudioEventEdit::Place { event, .. } => events.edited(
+            AudioEventEdit::Move {
+                event,
+                start: destination,
+            },
+            timeline,
+        )?,
+        _ => events.place_range(
+            old_start + lead,
+            old_start + lead + span,
+            destination,
+            timeline,
+        )?,
+    };
     Arc::make_mut(&mut edit.domain).events = Some(Arc::new(next));
     let mut candidate = original.clone();
     candidate.edit = Some(Arc::new(edit));
