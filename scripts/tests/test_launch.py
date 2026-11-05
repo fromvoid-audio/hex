@@ -6,7 +6,9 @@ import subprocess
 import tempfile
 import unittest
 
-SCRIPT = Path(__file__).resolve().parents[2] / "launch"
+REPO = Path(__file__).resolve().parents[2]
+SCRIPT = REPO / "launch"
+RUNNER = Path("scripts/run-desktop.sh")
 
 
 class LaunchTests(unittest.TestCase):
@@ -16,6 +18,8 @@ class LaunchTests(unittest.TestCase):
         self.root = Path(self.temp.name) / "checkout with spaces"
         self.root.mkdir()
         shutil.copy2(SCRIPT, self.root / "launch")
+        (self.root / RUNNER.parent).mkdir()
+        shutil.copy2(REPO / RUNNER, self.root / RUNNER)
         self.bin = Path(self.temp.name) / "bin"
         self.bin.mkdir()
         self.trace = Path(self.temp.name) / "trace"
@@ -23,6 +27,8 @@ class LaunchTests(unittest.TestCase):
             fake = self.bin / name
             fake.write_text(
                 '#!/bin/sh\nprintf "%s\\n" "' + name + '" "$(pwd)" "$@" "--end--" >> "$TRACE"\n'
+                + ('if [ -n "${UPDATED_RUNNER:-}" ]; then mv "$UPDATED_RUNNER" scripts/run-desktop.sh; fi\n'
+                   if name == "git" else '')
                 + ('printf "%s\\n" "$HEX_LAUNCH_DISCOVERY_APP" "$HEX_LAUNCH_INSTANCE_APP" > "$TOOLS_TRACE"\n'
                    if name == "cargo" else '')
                 + 'exit "${' + name.upper() + '_EXIT:-0}"\n'
@@ -49,7 +55,8 @@ class LaunchTests(unittest.TestCase):
         self.instance_app = self.root / "instance tools" / "hex.app"
         self.env = dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}", TRACE=str(self.trace),
                         TOOLS_TRACE=str(self.tools_trace), PREPARE_TRACE=str(self.prepare_trace),
-                        TOOLS_APP=str(self.tools_app), INSTANCE_APP=str(self.instance_app))
+                        TOOLS_APP=str(self.tools_app), INSTANCE_APP=str(self.instance_app),
+                        HEX_LAUNCH_DISCOVERY_APP="", HEX_LAUNCH_INSTANCE_APP="")
 
     def run_launch(self, *args, **env):
         return subprocess.run([str(self.root / "launch"), *args], cwd=self.bin,
@@ -68,6 +75,21 @@ class LaunchTests(unittest.TestCase):
         ])
         self.assertEqual(self.tools_trace.read_text().splitlines(), [
             str(self.tools_app), str(self.instance_app),
+        ])
+
+    def test_runs_the_desktop_script_installed_by_pull(self):
+        (self.root / RUNNER).write_text("#!/bin/sh\nexit 19\n")
+        updated = self.root / "incoming runner"
+        updated.write_text(
+            '#!/bin/sh\nexport HEX_LAUNCH_INSTANCE_APP="$INSTANCE_APP"\n'
+            'exec cargo run -r -- "$@"\n'
+        )
+        result = self.run_launch("path with spaces", UPDATED_RUNNER=str(updated))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.tools_trace.read_text().splitlines(), ["", str(self.instance_app)])
+        self.assertEqual(self.trace.read_text().splitlines(), [
+            "git", str(self.root), "pull", "--end--",
+            "cargo", str(self.root), "run", "-r", "--", "path with spaces", "--end--",
         ])
 
     def test_pull_failure_stops_before_running_cargo(self):
