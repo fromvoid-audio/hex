@@ -8,6 +8,11 @@
 //! Does not mutate projects, decode media or run filesystem work on UI/audio callbacks. Preserve
 //! original paths and malformed settings instead of silently replacing user data.
 
+mod track_defaults;
+pub use track_defaults::{
+    TrackDefaults, load_track_defaults, save_track_defaults, track_defaults_path,
+};
+
 mod audio_import;
 pub use audio_import::{
     AudioImportPreferences, audio_import_preferences_path, load_audio_import_preferences,

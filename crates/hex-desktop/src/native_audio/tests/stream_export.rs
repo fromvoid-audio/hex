@@ -14,10 +14,17 @@ fn output_unavailable_export(grouped: bool) {
     let files = Files::new();
     let original = files.wav(24_000, 8192);
     let original_bytes = fs::read(&original).unwrap();
-    let (events, _audio_events) = mpsc::sync_channel(8);
+    let (events, audio_events) = mpsc::sync_channel(8);
     let mut sink = NativeAudioSink::new(events);
     sink.output_factory = Some(Box::new(|_| Err("fixture output unavailable".into())));
-    let service = Service::with_audio_sink(16, 0, None, Box::new(sink)).unwrap();
+    let service = Service::with_audio_sink_and_native_reservation(
+        16,
+        0,
+        None,
+        Box::new(sink),
+        AudioPolicy::new().unwrap().resident_native,
+    )
+    .unwrap();
     let next = || {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -31,9 +38,14 @@ fn output_unavailable_export(grouped: bool) {
             std::thread::yield_now();
         }
     };
+    assert!(next().error.is_none());
     assert!(
-        next().error.is_some(),
-        "injected output failure stays visible"
+        matches!(
+            audio_events.recv_timeout(Duration::from_secs(1)).unwrap(),
+            EditorAudioEvent::Unavailable { error, .. }
+                if error.to_string().contains("fixture output unavailable")
+        ),
+        "injected output failure stays visible asynchronously"
     );
     service
         .submit(Request::NewWithAudioMode {

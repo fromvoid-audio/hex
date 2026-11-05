@@ -513,14 +513,14 @@ fn compile_instrument_track_with_empty_bank(
             project,
             clip,
             |note, iteration, start, gate_end, onset_beat, off_beat, playable| {
-                if let Some((ordinals, samples)) = preview.as_mut() {
-                    if ordinals.get(samples.len()).copied() == Some(emitted) {
-                        samples.push(crate::MidiPreviewSample {
-                            frame_start: start,
-                            frame_gate_end: gate_end,
-                            pitch: note.pitch(),
-                        });
-                    }
+                if let Some((ordinals, samples)) = preview.as_mut()
+                    && ordinals.get(samples.len()).copied() == Some(emitted)
+                {
+                    samples.push(crate::MidiPreviewSample {
+                        frame_start: start,
+                        frame_gate_end: gate_end,
+                        pitch: note.pitch(),
+                    });
                 }
                 emitted = emitted
                     .checked_add(1)

@@ -280,7 +280,7 @@ impl UtilityFilterProcessor {
             [BiquadHistory::default(); 2]
         };
         if let (Some(target), Some(source)) = (&mut self.automation, previous.automation) {
-            target.inherit(&source);
+            target.inherit(&source, self.prepared.sample_rate);
             self.prepared = previous.prepared;
         }
         true

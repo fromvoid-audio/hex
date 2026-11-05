@@ -347,19 +347,19 @@ pub(super) fn render_parameter(
             if let ParameterValue::Float(value) = value {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
-                    if let ParameterValue::Float(canonical) = parameter.value {
-                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
-                            control.set_accessibility_binding(
-                                gpui::AccessibilityBinding {
-                                    name: theme::text(descriptor.label),
-                                    revision,
-                                    value,
-                                    pending,
-                                    guard: guard.clone(),
-                                },
-                                cx,
-                            );
-                        }
+                    if let ParameterValue::Float(canonical) = parameter.value
+                        && let Ok(value) = control.accessibility_value(f64::from(canonical))
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value,
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);
@@ -368,19 +368,19 @@ pub(super) fn render_parameter(
             } else {
                 entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
-                    if let ParameterValue::Float(canonical) = parameter.value {
-                        if let Ok(value) = control.accessibility_value(f64::from(canonical)) {
-                            control.set_accessibility_binding(
-                                gpui::AccessibilityBinding {
-                                    name: theme::text(descriptor.label),
-                                    revision,
-                                    value,
-                                    pending,
-                                    guard: guard.clone(),
-                                },
-                                cx,
-                            );
-                        }
+                    if let ParameterValue::Float(canonical) = parameter.value
+                        && let Ok(value) = control.accessibility_value(f64::from(canonical))
+                    {
+                        control.set_accessibility_binding(
+                            gpui::AccessibilityBinding {
+                                name: theme::text(descriptor.label),
+                                revision,
+                                value,
+                                pending,
+                                guard: guard.clone(),
+                            },
+                            cx,
+                        );
                     }
                     control.set_enabled(enabled, cx);
                     control.set_tab_navigation(tab_navigation, cx);

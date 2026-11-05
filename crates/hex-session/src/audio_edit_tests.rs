@@ -715,6 +715,73 @@ fn directed_clip_previews_share_the_total_waveform_leaf_budget() {
 }
 
 #[test]
+fn repeated_cycle_pyramids_share_the_waveform_cache_budget() {
+    let (session, first, _) = fixture();
+    let source = session.project().clip(first).unwrap();
+    let track = session.project().tracks()[0].id();
+    let asset = source.asset();
+    let mut editor = Editor::new(session.project().clone(), 1).unwrap();
+    let mut ids = vec![first];
+    for index in 1..129 {
+        let Created::Clip(id) = editor
+            .execute(Command::PlaceClip {
+                track,
+                asset,
+                start: index * 16_000,
+                duration: 8_000,
+                source_offset: 0,
+                source_length: 8_000,
+                looping: false,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        ids.push(id);
+    }
+    for id in ids {
+        let end = editor.project().clip(id).unwrap().start() + 16_000;
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip: id,
+                operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd {
+                    project_frame: end,
+                },
+            })
+            .unwrap();
+    }
+    let retained = std::cell::RefCell::new(BTreeMap::new());
+    prepare_with_waveforms(
+        editor.project(),
+        &session.media_bank(),
+        session.sine_table(),
+        None,
+        &session.audio_transforms,
+        &retained,
+    )
+    .unwrap();
+    let views = retained.borrow();
+    assert_eq!(views.len(), 129);
+    let bins: usize = views
+        .values()
+        .map(|view| {
+            assert!(view.waveform.is_repeated());
+            view.waveform.cached_leaf_count()
+                + view
+                    .preview_root
+                    .as_ref()
+                    .unwrap()
+                    .waveform
+                    .cached_leaf_count()
+        })
+        .sum();
+    assert!(
+        bins <= 262_144,
+        "repeated waveform pyramids exceeded their shared budget: {bins}"
+    );
+}
+
+#[test]
 fn time_range_group_prepares_identical_audio_and_roundtrips_complete_state() {
     for (start, end) in [(500, 4_500), (1_000, 11_000), (500, 11_000)] {
         let (mut session, first, previous) = fixture();

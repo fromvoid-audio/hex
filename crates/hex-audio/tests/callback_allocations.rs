@@ -1882,13 +1882,51 @@ fn prepared_edits_inherit_through_a_full_retirement_ring_without_callback_alloca
             revision as u64 + 1
         );
         measured_block(&mut callback, &mut output);
-        assert_project_audio_oracle(
-            &output,
+        // Only the first track's gain changes. Interpolate two independent
+        // static project renders to account for its ongoing 5 ms ramp, including
+        // the following source edit while that ramp is still in progress.
+        let mut original_gain = Editor::new(project.clone(), 1)?;
+        original_gain.execute(Command::Gain {
+            track: workload.tracks[0],
+            gain: workload.project.snapshot().tracks[0].gain,
+        })?;
+        let elapsed = 128 * revision as u64;
+        let before = fixture::finite_session_oracle(
+            original_gain.project(),
+            &workload.media,
+            workload.scene_a,
+            elapsed,
+            output.len(),
+        )?;
+        let after = fixture::finite_session_oracle(
             project,
             &workload.media,
             workload.scene_a,
-            128 * revision as u64,
+            elapsed,
+            output.len(),
         )?;
+        let ramp_frames = RATE.div_ceil(200) as usize;
+        let expected: Vec<Frame> = before
+            .iter()
+            .zip(&after)
+            .enumerate()
+            .map(|(offset, (a, b))| {
+                let progress = ((revision - 1) * output.len() + offset + 1).min(ramp_frames) as f32
+                    / ramp_frames as f32;
+                [
+                    a[0] + (b[0] - a[0]) * progress,
+                    a[1] + (b[1] - a[1]) * progress,
+                ]
+            })
+            .collect();
+        for (frame, (actual, expected)) in output.iter().zip(&expected).enumerate() {
+            for channel in 0..2 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 1e-5,
+                    "frame {frame}, channel {channel}: {actual:?} != {expected:?}"
+                );
+            }
+        }
         assert_eq!(
             control
                 .status
