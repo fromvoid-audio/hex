@@ -235,6 +235,7 @@ mod track_reorder;
 mod track_reorder_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_selection_ui_test;
+mod track_tags;
 mod tracks;
 mod transport;
 mod trim;
@@ -814,6 +815,7 @@ pub(super) struct EditorView {
     sections: arrangement_sections::Sections,
     section_autoplay: bool,
     track_name: track_name::TrackNameState,
+    track_tags: track_tags::State,
     pub(in crate::editor) mode: EditorMode,
     pub(in crate::editor) selected_scene: Option<SceneId>,
     pub(in crate::editor) selected_cell: Option<(TrackId, SceneId)>,
@@ -1580,6 +1582,7 @@ impl EditorView {
             sections: arrangement_sections::Sections::default(),
             section_autoplay: false,
             track_name: track_name::TrackNameState::default(),
+            track_tags: track_tags::State::default(),
             mode: EditorMode::Arrangement,
             selected_scene: None,
             selected_cell: None,

@@ -13,6 +13,43 @@ impl TrackSelection {
         self.ids = ids.iter().copied().collect();
         self.anchor = ids.first().copied();
     }
+    /// A label selects a canonical cohort, including hidden/folded members.
+    /// Plain replaces, shift adds, primary modifier toggles the whole cohort.
+    pub(super) fn select_tag(
+        &mut self,
+        project: &Project,
+        tag: &hex_project::TrackTag,
+        add: bool,
+        toggle: bool,
+        preferred: Option<TrackId>,
+    ) {
+        self.reconcile(project);
+        let matching: Vec<_> = project
+            .tracks()
+            .iter()
+            .filter(|track| track.has_tag(tag))
+            .map(|track| track.id())
+            .collect();
+        if toggle {
+            let remove = matching.iter().all(|id| self.ids.contains(id));
+            for id in &matching {
+                if remove {
+                    self.ids.remove(id);
+                } else {
+                    self.ids.insert(*id);
+                }
+            }
+        } else {
+            if !add {
+                self.ids.clear();
+            }
+            self.ids.extend(matching.iter().copied());
+        }
+        self.anchor = preferred
+            .filter(|id| self.ids.contains(id))
+            .or_else(|| matching.into_iter().find(|id| self.ids.contains(id)))
+            .or_else(|| self.ordered(project).first().copied());
+    }
     pub(super) fn contains(&self, track: TrackId) -> bool {
         self.ids.contains(&track)
     }
@@ -185,6 +222,38 @@ impl super::EditorView {
         }
     }
 
+    pub(super) fn select_tag_tracks(
+        &mut self,
+        tag: &hex_project::TrackTag,
+        modifiers: gpui::Modifiers,
+        preferred: Option<TrackId>,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        if !self.track_view_change_available(cx) {
+            return;
+        }
+        let Some(state) = &self.state else { return };
+        self.track_selection.select_tag(
+            &state.project,
+            tag,
+            modifiers.shift,
+            modifiers.platform,
+            preferred,
+        );
+        let ids = self.track_selection.ordered(&state.project);
+        let active = preferred
+            .filter(|id| ids.contains(id))
+            .or_else(|| self.selected_track.filter(|id| ids.contains(id)))
+            .or_else(|| ids.first().copied());
+        if let Some(active) = active {
+            self.focus_selected_track(active, window);
+        } else {
+            self.selected_track = None;
+            self.update_track_selection_status();
+        }
+        cx.notify();
+    }
     /// Every consumer receives explicit members in canonical order; time range
     /// and focused-clip state never promote unrelated tracks into this selection.
     pub(super) fn selected_track_ids(&self) -> Vec<TrackId> {

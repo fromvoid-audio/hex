@@ -40,6 +40,7 @@ pub(super) struct ClipAliasAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    Tags(super::track_tags::Action),
     Automation(super::device_automation::Action),
     ClipAlias(ClipAliasAction),
     Section(super::arrangement_sections::MenuAction),
@@ -320,6 +321,18 @@ impl EditorView {
             });
         }
         if let Some(track) = after_track {
+            if let Some(menu) = &mut self.context_menu {
+                menu.items.push(MenuItem {
+                    label: "edit tags · comma separated",
+                    swatch: None,
+                    checked: false,
+                    action: EditorContextAction::Tags(super::track_tags::Action::Edit {
+                        generation,
+                        revision,
+                        track,
+                    }),
+                });
+            }
             self.append_automation_menu(device_panel::DevicePanelOwner::Track(track));
         }
         self.append_adaptive_grid_choices();
@@ -594,6 +607,7 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::Tags(action) => self.perform_tag_action(action, window, cx),
             EditorContextAction::Automation(action) => {
                 self.automation_menu_action(action, window, cx)
             }
@@ -898,6 +912,7 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::Tags(action) => action.stale(self),
                 EditorContextAction::Automation(action) => self.automation_action_stale(action),
                 EditorContextAction::ClipAlias(target) => !self.clip_alias_menu_current(target),
                 EditorContextAction::Section(action) => self.section_menu_stale(action),
@@ -1039,6 +1054,7 @@ impl EditorView {
 
 pub(super) fn context_item_label(item: &MenuItem<EditorContextAction>) -> gpui::SharedString {
     match &item.action {
+        EditorContextAction::Tags(action) => action.label(),
         EditorContextAction::Automation(super::device_automation::Action::Show(entry, _))
             if item.label == "parameter" =>
         {

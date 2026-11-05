@@ -647,7 +647,14 @@ impl EditorView {
                                             })
                                             .child(theme::text("group · "))
                                     }))
-                                    .child(theme::text(track.name().to_lowercase())),
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(theme::text(track.name().to_lowercase())),
+                                    )
+                                    .children(self.track_tags_header(track, cx)),
                             )
                             .children(self.route_marker_for_track(
                                 track.id().value(),
