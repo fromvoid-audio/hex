@@ -25,13 +25,13 @@ enum DryStorage {
 impl AlignedDry {
     pub(crate) fn new(latency: Option<u32>) -> Option<Self> {
         let len = usize::try_from(latency?).ok()?;
-        (1..=MAX_ALIGNED_DRY_FRAMES)
-            .contains(&len)
-            .then_some(Self::Inline {
+        (1..=MAX_ALIGNED_DRY_FRAMES).contains(&len).then_some(Self {
+            storage: DryStorage::Inline {
                 frames: [[0.0; 2]; MAX_ALIGNED_DRY_FRAMES],
                 len,
                 next: 0,
-            })
+            },
+        })
     }
     pub(crate) fn reserved(frames: u32) -> Result<Self, DeviceContractError> {
         if !(1..=crate::MAX_RESERVED_BYPASS_FRAMES).contains(&frames) {
