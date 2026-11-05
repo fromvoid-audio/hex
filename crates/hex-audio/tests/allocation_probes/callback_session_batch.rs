@@ -3,7 +3,7 @@ use super::callback_allocations::probe;
 use hex_audio::prepared;
 use hex_engine::{
     Audio, LaunchQuantization, PreparedRevision, SessionPlaybackCommand, SineTable,
-    playback::Playback,
+    playback::{Playback, PlaybackCommand},
 };
 use hex_lattice::{NativeDeviceDefinition, NativeDeviceRegistry, NativeInstrumentRegistry};
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
@@ -12,6 +12,16 @@ use std::{collections::BTreeMap, error::Error, sync::Arc};
 
 #[test]
 fn compensated_session_audio_batches_without_callback_allocations() -> Result<(), Box<dyn Error>> {
+    check_compensated_audio_batch(true)
+}
+
+#[test]
+fn compensated_dry_arrangement_tracks_batch_without_callback_allocations()
+-> Result<(), Box<dyn Error>> {
+    check_compensated_audio_batch(false)
+}
+
+fn check_compensated_audio_batch(session: bool) -> Result<(), Box<dyn Error>> {
     const RATE: u32 = 48_000;
     const LATENCY: usize = 288;
     const SOURCE: [f32; 2] = [0.01, -0.02];
@@ -36,14 +46,16 @@ fn compensated_session_audio_batches_without_callback_allocations() -> Result<()
         else {
             return Err("track".into());
         };
-        editor.execute(Command::CreateSessionAudioClip {
-            track,
-            scene,
-            name: "clip".into(),
-            asset,
-            source_start: 0,
-            source_end: 1024,
-        })?;
+        if session {
+            editor.execute(Command::CreateSessionAudioClip {
+                track,
+                scene,
+                name: "clip".into(),
+                asset,
+                source_start: 0,
+                source_end: 1024,
+            })?;
+        }
         media.insert(asset, Audio::new(RATE, vec![SOURCE; 1024])?);
         if index == 0 {
             let limiter = hex_devices::limiter::DEFINITION.patch_parameter(
@@ -74,12 +86,18 @@ fn compensated_session_audio_batches_without_callback_allocations() -> Result<()
     control
         .publish(Playback::try_from_prepared_with_session(revision)?)
         .map_err(|_| "publish")?;
-    control
-        .launch_and_play_with_ticket(SessionPlaybackCommand::LaunchScene {
-            scene,
-            quantization: LaunchQuantization::Immediate,
-        })
-        .map_err(|_| "launch")?;
+    if session {
+        control
+            .launch_and_play_with_ticket(SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .map_err(|_| "launch")?;
+    } else {
+        control
+            .command(PlaybackCommand::PlayFrom(0))
+            .map_err(|_| "play")?;
+    }
     let mut output = [[0.0; 2]; 512];
     let mut offset = 0;
     for count in [1, 63, 257, 512] {
