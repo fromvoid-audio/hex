@@ -113,6 +113,16 @@ fn current_sampler_console_templates_construct_with_paired_storage() {
     assert!(config.matches_state(native));
     assert!(!config.matches_state(&native.clone().with_input_gain_db(-6.0).unwrap()));
     assert!(!config.matches_state(&native.clone().with_output_gain_db(-6.0).unwrap()));
+    // The captured saved version is part of the exact configuration.
+    let other_version = hex_lattice_contract::NativeDeviceState::new(
+        native.type_id(),
+        native.state_version() - 1,
+        native.payload().to_vec(),
+    )
+    .unwrap()
+    .with_host_metadata_from(native)
+    .unwrap();
+    assert!(!config.matches_state(&other_version));
     assert!(
         owner
             .inner
@@ -381,6 +391,14 @@ fn prepare(
     project: &Project,
     sources: Vec<(hex_project::AssetId, crate::OwnedAudioSource)>,
 ) -> AudioCandidatePreparation {
+    try_prepare(project, sources).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// `prepare`, returning the CURRENT preparation refusal instead of panicking.
+fn try_prepare(
+    project: &Project,
+    sources: Vec<(hex_project::AssetId, crate::OwnedAudioSource)>,
+) -> Result<AudioCandidatePreparation, String> {
     let quote = AudioCandidateReservationQuote::for_project(project, sources.len()).unwrap();
     let limits = quote.storage_reservation(65536).unwrap();
     let work = sources.iter().map(|(_, s)| s.frames()).sum();
@@ -404,7 +422,7 @@ fn prepare(
         work,
         &AtomicBool::new(false),
     )
-    .unwrap_or_else(|e| panic!("{e:?}"));
+    .map_err(|e| format!("{e:?}"))?;
     cell.owner_on_control()
         .unwrap()
         .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
@@ -415,7 +433,7 @@ fn prepare(
             max_construction_peak_bytes: limits.max_construction_data_bytes,
         })
         .unwrap();
-    cell
+    Ok(cell)
 }
 #[test]
 fn current_sampler_console_mixed_scene_loops_have_literal_pcm_and_partition_invariance() {
@@ -578,14 +596,17 @@ fn current_sampler_console_quantized_scene_cut_matches_immediate_cut_at_boundary
 }
 
 #[test]
-fn current_sampler_console_scene_capacity_refusal_preserves_pending_routes_and_pcm() {
+fn current_sampler_console_one_voice_scene_relaunch_steals_the_release() {
+    // The second track's sampler declares stealing. With one voice, its old
+    // release and the incoming voice no longer refuse the scene: the release
+    // is stolen into the declick pool. Two voices are the no-steal oracle.
     let mut results = Vec::new();
-    for refuse in [false, true] {
-        let (project, sources, a, b, _) = mixed_fixture();
+    for voices in [2, 1] {
+        let (project, sources, a, _, _) = mixed_fixture();
         let second = project.tracks()[1].instrument().unwrap();
         let mut state =
             hex_devices::sampler::state::SamplerState::from_native(second.state()).unwrap();
-        state.voices = 1;
+        state.voices = voices;
         let native = state
             .to_native()
             .unwrap()
@@ -600,71 +621,46 @@ fn current_sampler_console_scene_capacity_refusal_preserves_pending_routes_and_p
             .unwrap();
         let mut cell = prepare(editor.project(), sources);
         let owner = cell.owner_on_control().unwrap();
-        let scene = |scene, quantization| {
-            crate::PlaybackAction::Session(crate::SessionPlaybackCommand::LaunchScene {
-                scene,
-                quantization,
-            })
-        };
+        let scene = crate::PlaybackAction::Session(crate::SessionPlaybackCommand::LaunchScene {
+            scene: a,
+            quantization: crate::LaunchQuantization::Immediate,
+        });
         owner
             .test_apply_action(crate::PlaybackAction::Transport(
                 crate::PlaybackCommand::Play,
             ))
             .unwrap();
-        owner
-            .test_apply_action(scene(a, crate::LaunchQuantization::Immediate))
-            .unwrap();
+        owner.test_apply_action(scene).unwrap();
         owner.test_render(&mut [[0.0; 2]; 1]).unwrap();
-        owner
-            .test_apply_action(scene(b, crate::LaunchQuantization::FourQuarter))
-            .unwrap();
-        let before: Vec<_> = (0..3)
-            .map(|i| {
-                owner
-                    .inner
-                    .runtime
-                    .as_ref()
-                    .unwrap()
-                    .playback
-                    .session_route_status(i)
-                    .unwrap()
-            })
-            .collect();
-        if refuse {
-            // First track can retrigger, but the second's factory has one voice:
-            // its old release plus incoming voice cannot fit. Entire scene refuses.
-            assert!(
-                owner
-                    .test_apply_action(scene(a, crate::LaunchQuantization::Immediate))
-                    .is_err()
-            );
-            let after: Vec<_> = (0..3)
-                .map(|i| {
-                    owner
-                        .inner
-                        .runtime
-                        .as_ref()
-                        .unwrap()
-                        .playback
-                        .session_route_status(i)
-                        .unwrap()
-                })
-                .collect();
-            assert_eq!(before, after);
-            assert!(
-                owner
-                    .test_apply_action(crate::PlaybackAction::Session(
-                        crate::SessionPlaybackCommand::Seek(1)
-                    ))
-                    .is_err()
-            );
-        }
+        owner.test_apply_action(scene).unwrap();
         let mut pcm = [[0.0; 2]; 16];
-        owner.test_render(&mut pcm).unwrap();
+        owner.test_render(&mut pcm[..1]).unwrap();
+        assert_eq!(
+            owner
+                .inner
+                .runtime
+                .as_ref()
+                .unwrap()
+                .playback
+                .test_current_sampler_route_proofs(1),
+            Some((2, 1, 1)),
+            "the old proof keeps its quiet deadline beside the new held voice"
+        );
+        owner.test_render(&mut pcm[1..]).unwrap();
         results.push(pcm);
         cell.cleanup_on_control().unwrap();
     }
-    assert_eq!(results[0], results[1]);
+    let (oracle, stolen) = (results[0], results[1]);
+    assert_eq!(stolen[0], oracle[0], "the declick starts at unity");
+    assert_ne!(stolen[1], oracle[1], "the stolen release is declicked");
+    for channel in 0..2 {
+        assert!((stolen[1][channel] - oracle[1][channel]).abs() <= 1.0 / 16.0);
+    }
+    assert_eq!(
+        stolen[2..],
+        oracle[2..],
+        "the stolen voice retires with its own two-frame release"
+    );
 }
 
 #[test]
@@ -839,6 +835,9 @@ mod cue;
 
 #[path = "console_tests/source_metadata.rs"]
 mod source_metadata;
+
+#[path = "console_tests/steal_density.rs"]
+mod steal_density;
 
 #[path = "console_tests/volume.rs"]
 mod volume;

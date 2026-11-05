@@ -271,6 +271,7 @@ impl EditorView {
                 self.track_header_width(),
                 RETURN_ROW_HEIGHT,
                 selected,
+                None,
             )
             .debug_selector(move || format!("return-track-header-{}", id.value()))
             .child(
@@ -289,6 +290,10 @@ impl EditorView {
                             .child(track_name_view)
                             .child(controls),
                     )
+                    .children(
+                        self.track_performance_indicator(hex_engine::OutputCaptureId::Return(id)),
+                    )
+                    .children(self.track_latency_indicator(super::track_latency::Owner::Return(id)))
                     .children([super::track_meters::render_return(
                         id,
                         self.track_meters.return_level(id),

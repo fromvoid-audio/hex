@@ -13,6 +13,7 @@ pub struct Quiescent {
     facts: Facts,
     capture_sequence: u64,
     flush_sequence: u64,
+    reactivate_sequence: u64,
 }
 impl Prepared {
     /// Check the actual child and cancellation state before transferring this
@@ -83,12 +84,87 @@ impl Prepared {
                 facts,
                 capture_sequence: 0,
                 flush_sequence: 0,
+                reactivate_sequence: 0,
             }),
             Err(cause) => Err(self.refuse_epoch_retained(cause)),
         }
     }
 }
 impl Quiescent {
+    /// Settle the opted-in latency request before the owner computes its next
+    /// compensation layout. Bound repeated SDK invalidations on control.
+    pub fn settle_latency_retained_on_control(
+        mut self,
+    ) -> std::result::Result<Self, PreparationFailure> {
+        for _ in 0..2 {
+            match self.poll_recovery_edits_on_control() {
+                Ok(batch) if batch.pending_latency_restart.is_none() => return Ok(self),
+                Ok(_) => self = self.reactivate_retained_on_control()?,
+                Err(error) => return Err(self.instance.refuse_epoch_retained(error)),
+            }
+        }
+        let error = match self.poll_recovery_edits_on_control() {
+            Ok(batch) if batch.pending_latency_restart.is_none() => return Ok(self),
+            Ok(_) => Error::Protocol("native latency keeps changing during reactivation"),
+            Err(error) => error,
+        };
+        Err(self.instance.refuse_epoch_retained(error))
+    }
+
+    /// Deactivate/reactivate the same stopped component on its main lane, then
+    /// refresh raw facts. This intentionally permits DSP history/tail reset;
+    /// ordinary quiescence never does so. The caller must plan compensation
+    /// from these new facts before resume/publication. No state is restored or
+    /// captured, no buses/setup repeat, and processing remains stopped.
+    /// Failure retains the exact original cancelled lease for disposal.
+    pub fn reactivate_retained_on_control(
+        mut self,
+    ) -> std::result::Result<Self, PreparationFailure> {
+        let result = (|| {
+            self.instance.require_live_epoch()?;
+            let operation = self
+                .reactivate_sequence
+                .checked_add(1)
+                .ok_or(Error::Protocol("reactivation operation exhausted"))?;
+            let request =
+                protocol::reactivate(&self.instance.config, self.instance.sequence, operation)?;
+            let until = end_after(self.instance.limits.startup)?;
+            let token = self.instance.lease.cancellation.clone();
+            self.instance
+                .lease
+                .channel
+                .send(&request, until, &mut || token.check())?;
+            self.instance
+                .lease
+                .channel
+                .read(&mut self.instance.packet, until, &mut || token.check())?;
+            if self.instance.packet.magic() == b"HXVIER01" {
+                return Err(Error::Worker(protocol::error(
+                    self.instance.packet.body()?,
+                    self.instance.config.binding,
+                )?));
+            }
+            if self.instance.packet.magic() != b"HXVIAR01" {
+                return Err(Error::Protocol(
+                    "missing component reactivation acknowledgement",
+                ));
+            }
+            let facts = protocol::reactivated_facts(
+                self.instance.packet.body()?,
+                &self.instance.config,
+                self.instance.sequence,
+                operation,
+            )?;
+            self.instance.require_live_epoch()?;
+            self.facts = facts;
+            self.reactivate_sequence = operation;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok(self),
+            Err(cause) => Err(self.instance.refuse_epoch_retained(cause)),
+        }
+    }
     /// Capture component/controller on the helper control lane while the same
     /// actual processor is quiescent. A successful reply grants neither resume
     /// nor publication; startup/canonical envelopes are not replaced. Failure
@@ -106,7 +182,7 @@ impl Quiescent {
     /// Same exact capture with caller intent cancellation checked in the
     /// existing bounded socket loop. Cancellation retires this original lease;
     /// the predicate owns no helper/endpoint and starts no second waiter.
-    /// A state-exceeds-limit refusal is terminal here, as for every failure;
+    /// A capture refusal is terminal here, as for every failure;
     /// callers that keep the plugin running use the refusal-aware capture.
     pub fn capture_state_retained_while_on_control(
         self,
@@ -116,12 +192,12 @@ impl Quiescent {
             (stopped, Ok(state)) => Ok((stopped, state)),
             (stopped, Err(refusal)) => Err(stopped
                 .instance
-                .refuse_epoch_retained(Error::StateExceedsLimit(refusal))),
+                .refuse_epoch_retained(Error::CaptureRefused(refusal))),
         }
     }
 
-    /// Same exact capture, except that a valid helper refusal because the
-    /// plugin's state exceeds the saved profile is returned with this same
+    /// Same exact capture, except that a valid helper refusal (state exceeds
+    /// the saved profile, or edits kept arriving) is returned with this same
     /// quiescent epoch: nothing was captured, and the caller may capture again,
     /// flush or resume. A malformed or mismatched refusal and every other
     /// failure keep the terminal retained-failure custody described above.

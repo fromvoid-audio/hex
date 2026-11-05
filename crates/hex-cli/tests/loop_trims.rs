@@ -49,7 +49,9 @@ impl Fixture {
             .chunks_exact(4)
             .map(|frame| {
                 let left = i16::from_le_bytes([frame[0], frame[1]]);
-                assert_eq!(left, i16::from_le_bytes([frame[2], frame[3]]));
+                let right = i16::from_le_bytes([frame[2], frame[3]]);
+                // Independent per-channel ±1 LSB TPDF dither.
+                assert!((i32::from(left) - i32::from(right)).abs() <= 2);
                 left
             })
             .collect()
@@ -99,11 +101,11 @@ fn saved_loop_edge_trims_and_recursive_splits_preserve_absolute_pcm() {
     };
     let original = fixture.render(editor.project(), "original");
     assert_eq!(&original[..10], &[0; 10]);
-    assert_eq!(
+    assert_near(
         &original[10..],
         &[
-            8192, 16384, -8192, 8192, 16384, -8192, 8192, 16384, -8192, 8192, 16384, -8192
-        ]
+            8192, 16384, -8192, 8192, 16384, -8192, 8192, 16384, -8192, 8192, 16384, -8192,
+        ],
     );
     editor
         .execute(Command::TrimClipEdge {
@@ -116,9 +118,9 @@ fn saved_loop_edge_trims_and_recursive_splits_preserve_absolute_pcm() {
     let trimmed = fixture.render(editor.project(), "trimmed");
     assert_eq!(&trimmed[..12], &[0; 12]);
     assert_eq!(&trimmed[12..], &original[12..]);
-    assert!(editor.undo());
+    assert!(editor.try_undo().unwrap());
     assert_eq!(fixture.render(editor.project(), "undo"), original);
-    assert!(editor.redo());
+    assert!(editor.try_redo().unwrap());
     assert_eq!(fixture.render(editor.project(), "redo"), trimmed);
     editor
         .execute(Command::TrimClipEdge {
@@ -138,7 +140,7 @@ fn saved_loop_edge_trims_and_recursive_splits_preserve_absolute_pcm() {
     assert_eq!(editor.project().clip(clip).unwrap().source_length(), 3);
     let extended = fixture.render(editor.project(), "extended");
     assert_eq!(&extended[11..22], &original[11..22]);
-    assert_eq!(&extended[22..], &[8192, 16384, -8192]);
+    assert_near(&extended[22..], &[8192, 16384, -8192]);
     let Created::Clip(right) = editor
         .execute(Command::SplitClip { clip, frame: 17 })
         .unwrap()
@@ -153,4 +155,17 @@ fn saved_loop_edge_trims_and_recursive_splits_preserve_absolute_pcm() {
         })
         .unwrap();
     assert_eq!(fixture.render(editor.project(), "split"), extended);
+}
+
+/// PCM16 export applies ±1 LSB TPDF dither: within one LSB of `expected`.
+/// Renders of identical timeline audio stay byte-identical, so equality
+/// comparisons between renders remain exact.
+fn assert_near(actual: &[i16], expected: &[i16]) {
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert!(
+            (i32::from(*actual) - i32::from(*expected)).abs() <= 1,
+            "{actual} not within one lsb of {expected}"
+        );
+    }
 }

@@ -130,20 +130,29 @@ impl Drop for DiagnosticActionScope {
 /// `fence` is the callback-observed `stopped_arrangement` lease, `edit` the
 /// canonical apply/commit around preparation, `prepare` the resident
 /// `prepare_transition`, `publish` the handoff to the native sink and `finish`
-/// the sink's edit terminal. Reported on `OutcomeReady` as `section_*_us`.
+/// the sink's edit terminal, and `view` the post-transition view-state
+/// construction. These lie within the request's dispatched worker
+/// time (`worker_us`). `parked` is the time the request waited parked for its
+/// stopped-arrangement fence before dispatch (#4544), so it lies outside
+/// `worker_us`. Reported on `OutcomeReady` as `section_*_us`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SectionPhases {
+    pub parked: Duration,
     pub fence: Duration,
     pub edit: Duration,
     pub prepare: Duration,
     pub publish: Duration,
     pub finish: Duration,
+    pub view: Duration,
 }
 
 pub(super) struct Hooks {
     service_id: u64,
     next_request: AtomicU64,
     observer: OnceLock<Arc<DiagnosticObserver>>,
+    // Request-wait loop iterations of this service's worker (#4574). A scalar
+    // count only; it never gates admission, publication or shutdown.
+    worker_wakes: AtomicU64,
     // Per-service test ceiling for the older-reader save preflight (0: the
     // real hex-storage limit). Shared with this service's worker only.
     #[cfg(test)]
@@ -160,12 +169,22 @@ impl Default for Hooks {
             service_id,
             next_request: AtomicU64::new(0),
             observer: OnceLock::new(),
+            worker_wakes: AtomicU64::new(0),
             #[cfg(test)]
             legacy_reader_limit: AtomicU64::new(0),
         }
     }
 }
 impl Hooks {
+    /// Count one worker request-wait iteration; saturates instead of wrapping.
+    pub fn record_worker_wake(&self) {
+        let _ = self
+            .worker_wakes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1));
+    }
+    pub fn worker_wakes(&self) -> u64 {
+        self.worker_wakes.load(Ordering::Relaxed)
+    }
     /// Older-reader byte ceiling for save consent: the real limit in production.
     pub fn legacy_reader_limit(&self) -> usize {
         #[cfg(test)]
@@ -242,7 +261,7 @@ impl Hooks {
         let result = match result {
             Ok(()) => "enqueued",
             Err(SubmitError::Full(_)) => "full",
-            Err(SubmitError::Busy(_)) => "busy",
+            Err(SubmitError::Busy(..)) => "busy",
             Err(SubmitError::Closed(_)) => "closed",
         };
         self.emit(request, DiagnosticStage::SubmitReturned { result }, None);
@@ -306,11 +325,13 @@ impl Hooks {
         }
         if let Some(phases) = section {
             for (name, value) in [
+                ("section_parked_us", phases.parked),
                 ("section_fence_us", phases.fence),
                 ("section_edit_us", phases.edit),
                 ("section_prepare_us", phases.prepare),
                 ("section_publish_us", phases.publish),
                 ("section_finish_us", phases.finish),
+                ("section_view_us", phases.view),
             ] {
                 description.field(name, format_args!("{}", value.as_micros()));
             }
@@ -521,6 +542,10 @@ mod tests {
                 start: 123,
             },
             Request::SaveNew(path.clone()),
+            Request::Edit(Command::SetTrackTags {
+                track,
+                tags: vec![hex_project::TrackTag::new(name).unwrap()],
+            }),
         ];
         let hooks = Hooks::default();
         let records = Arc::new(Mutex::new(Vec::new()));
@@ -538,7 +563,7 @@ mod tests {
             hooks.begin(request).expect("request identity");
         }
         let records = records.lock().unwrap();
-        assert_eq!(records.len(), 3);
+        assert_eq!(records.len(), 4);
         for (index, (stamp, text, truncated)) in records.iter().enumerate() {
             assert!(!truncated);
             assert!(!text.contains(name));
@@ -546,6 +571,8 @@ mod tests {
             assert!(!text.contains("/private/"));
             assert_eq!(stamp.unwrap().request_id, index as u64 + 1);
         }
+        assert!(records[3].1.contains("set_track_tags"));
+        assert!(records[3].1.contains("tags_count=1"));
         assert!(records[0].1.contains(&format!("track={}", track.value())));
         assert!(
             records[0]
@@ -564,6 +591,40 @@ mod tests {
                 .1
                 .contains(&format!("value0_redacted_bytes={}", path.as_os_str().len()))
         );
+    }
+
+    #[test]
+    fn existing_asset_import_projection_names_its_asset_and_redacts_names() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "fixture.wav".into(),
+                sample_rate: 48_000,
+                frames: 16,
+            })
+            .unwrap()
+        else {
+            panic!("asset fixture");
+        };
+        let name = "私的な曲名🎵";
+        let description = summary::request(&Request::Edit(Command::ImportExistingAudio {
+            asset,
+            placement: hex_project::ExistingAudioPlacement::NewTrack {
+                name: name.into(),
+                before_track: None,
+                start: 7,
+            },
+        }));
+        assert_eq!(
+            description.operation,
+            Some("import_existing_audio_track_at")
+        );
+        let text = &description.details.text;
+        assert!(!text.contains(name));
+        assert!(text.contains(&format!("asset={}", asset.value())));
+        assert!(text.contains(&format!("name_redacted_bytes={}", name.len())));
+        assert!(text.contains("start=7"));
     }
 
     #[test]
@@ -600,8 +661,9 @@ mod tests {
         assert!(event.request_complete);
         assert!(event.error.is_some());
         assert_eq!(event.state.revision, initial.state.revision);
-        let rows = records.lock().unwrap();
-        let stamp = rows
+        let stamp = records
+            .lock()
+            .unwrap()
             .iter()
             .find_map(|(stamp, stage, _)| {
                 matches!(stage, DiagnosticStage::SubmitAttempt)
@@ -609,6 +671,22 @@ mod tests {
                     .flatten()
             })
             .unwrap();
+        // Reception may beat the observer notification after successful queue
+        // publication. Wait without holding its mutex, so the worker can emit it.
+        let deadline = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
+        loop {
+            if records.lock().unwrap().iter().any(|(id, stage, _)| {
+                *id == Some(stamp) && *stage == DiagnosticStage::OutcomeQueued
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "queued outcome diagnostic missing"
+            );
+            std::thread::yield_now();
+        }
+        let rows = records.lock().unwrap();
         assert_eq!(stamp.ui_action_id, Some(42));
         assert_eq!(stamp.operation, Some("add_track"));
         assert!(
@@ -684,7 +762,7 @@ mod tests {
                 name: "fixture".into(),
             })) {
                 Ok(()) => admitted += 1,
-                Err(SubmitError::Full(_)) | Err(SubmitError::Busy(_)) => crate::test_wait::pause(),
+                Err(SubmitError::Full(_)) | Err(SubmitError::Busy(..)) => crate::test_wait::pause(),
                 Err(SubmitError::Closed(_)) => panic!("service closed"),
             }
         }

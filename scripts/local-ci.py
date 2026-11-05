@@ -270,7 +270,6 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     # Owners test; every affected consumer still compiles and lints below.
     tested = boundary.get("test_packages", [])
     module_filters = boundary.get("module_filters", {})
-    module_skips = boundary.get("module_skips", {})
     by_name = {p["name"]: p for p in inventory}
     doc_examples = set(boundary.get("doc_example_owners", []))
 
@@ -280,7 +279,6 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         if not owners or any(owner not in module_filters for owner in owners):
             return argv
         names = sorted({name for owner in owners for name in module_filters[owner]})
-        skips = sorted({name for owner in owners for name in module_skips.get(owner, [])})
         # Module paths name only unit tests in the library or binary; integration
         # tests, examples and benches would build and link only to match nothing.
         if "--doc" not in argv and not {"--test", "--example", "--bench", "--lib", "--bins"} & set(argv):
@@ -289,9 +287,10 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
             argv = (*(a for a in argv if a != "--all-targets"), *selector)
         if argv[:2] == ("python3", "scripts/test_shards.py"):
             split = argv.index("--")
-            return (*argv[:split], *(a for name in names for a in ("--filter", name)),
-                    *(a for name in skips for a in ("--skip", name)), *argv[split:])
-        return (*argv, "--", *names, *(a for name in skips for a in ("--skip", name)))
+            # Coverage is verified across module-scoped configurations together.
+            return (*argv[:split], "--allow-empty",
+                    *(a for name in names for a in ("--filter", name)), *argv[split:])
+        return (*argv, "--", *names)
     if boundary["kind"] == "packages":
         if not tested or set(tested) - set(affected) or tests:
             raise ValueError("package boundary must test its owners within the affected closure")
@@ -404,7 +403,7 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
         health = plan["health"]
         steps = [next(s for s in QUICK_STEPS if s.step_id == "format")]
         if health["python"]:
-            steps.append(Step("health-runner-tests", ci_plan.python_tests.COMPREHENSIVE_ARGV, True, True))
+            steps.append(Step("health-runner-tests", ci_plan.python_tests.argv(plan["python_tests"]), True, True))
         if health["workspace_inputs"]:
             steps.append(Step("health-tests", ("cargo", "test", "--workspace", "--locked"), requires_tests=True))
         elif health["packages"]:

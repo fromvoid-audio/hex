@@ -9,6 +9,7 @@ fn export_pcm(service: &Service, path: PathBuf) -> Vec<[i16; 2]> {
             frames: Some(8),
             signal: ExportSignal::Main,
             control: Default::default(),
+            format: hex_export::ExportFormat::Pcm16,
             overwrite: false,
         })
         .unwrap();
@@ -280,7 +281,7 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
             }
             "future-project" => {
                 let mut document: serde_json::Value = serde_json::from_slice(&saved_bytes).unwrap();
-                document["version"] = (hex_storage::CURRENT_SCHEMA_VERSION + 1).into();
+                document["version"] = (hex_storage::NEWEST_SCHEMA_VERSION + 1).into();
                 open_path = saved.with_file_name("future.hex");
                 fs::write(&open_path, serde_json::to_vec(&document).unwrap()).unwrap();
             }
@@ -349,10 +350,10 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
         );
         assert!(refused.playback.is_none());
         let expected = [4096, 10240, 16384, 6144, -4096, -2048, 0, 0].map(|n| [n, n]);
-        assert_eq!(
-            export_pcm(&service, files.output.clone()),
-            expected,
-            "old actual sound after {case}"
+        assert_pcm_near(
+            &export_pcm(&service, files.output.clone()),
+            &expected,
+            &format!("old actual sound after {case}"),
         );
     }
 }
@@ -412,7 +413,11 @@ fn original_relative_media_and_save_as_keep_the_original_base_and_content() {
     let reopened = event(&service);
     assert!(reopened.error.is_none(), "{:?}", reopened.error);
     let expected = [4096, 10240, 16384, 6144, -4096, -2048, 0, 0].map(|n| [n, n]);
-    assert_eq!(export_pcm(&service, files.output.clone()), expected);
+    assert_pcm_near(
+        &export_pcm(&service, files.output.clone()),
+        &expected,
+        "relocated original",
+    );
 }
 
 #[test]
@@ -512,6 +517,7 @@ fn original_open_caps_ordinary_decode_at_saved_frames_before_alias_construction(
             current: Some(snapshot.selection()),
             ..Admission::default()
         },
+        &mut Default::default(),
     )
     .unwrap();
     let saved = native.source.with_file_name("mixed.hex");
@@ -587,6 +593,7 @@ fn replacement_snapshot_counts_old_original_and_legacy_pcm_before_compiler_entry
                 old_files.source.clone(),
                 None,
                 Admission::default(),
+                &mut Default::default(),
             )
             .unwrap();
             ServiceExportSnapshot {

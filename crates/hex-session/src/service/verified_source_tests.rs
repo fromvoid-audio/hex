@@ -510,7 +510,12 @@ fn invalid_verified_batch_is_atomic_and_metadata_reservation_precedes_canonical_
     .unwrap();
     assert!(refused.verify_import(good).is_err());
     assert_eq!(refused.project().assets().count(), 0);
-    limits.reader.reader.max_source_frames = 8_000_001;
+    limits.reader.reader.max_source_frames = crate::MAX_STREAMED_SOURCE_FRAMES;
+    assert!(limits.validate().is_ok());
+    limits.reader.reader.max_source_frames = crate::MAX_STREAMED_SOURCE_FRAMES + 1;
+    assert!(limits.validate().is_err());
+    limits.reader.reader.max_source_frames = 8_000_000;
+    limits.reader.reader.max_file_bytes = crate::MAX_STREAMED_FILE_BYTES + 1;
     assert!(limits.validate().is_err());
 }
 

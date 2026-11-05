@@ -24,6 +24,44 @@ const CANCELLED: u8 = 1;
 const COMMITTING: u8 = 2;
 const FINISHED: u8 = 3;
 
+/// Per-bundle native scan time, excluding the two-second cleanup allowance.
+/// The range matches the bundled scanner's accepted millisecond argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanDeadline(u32);
+
+impl ScanDeadline {
+    /// Reject values the bundled scanner cannot accept.
+    pub fn from_millis(milliseconds: u32) -> Result<Self, &'static str> {
+        if !(1..=30_000).contains(&milliseconds) {
+            return Err("scan deadline must be 1 to 30000 milliseconds");
+        }
+        Ok(Self(milliseconds))
+    }
+
+    fn outer_limit(self) -> Duration {
+        Duration::from_millis(u64::from(self.0)) + Duration::from_secs(2)
+    }
+
+    fn expired(self, elapsed: Duration) -> bool {
+        elapsed > self.outer_limit()
+    }
+}
+
+impl Default for ScanDeadline {
+    fn default() -> Self {
+        Self(10_000)
+    }
+}
+
+fn scanner_command(scanner: &Path, module: &Path, deadline: ScanDeadline) -> Command {
+    let mut command = Command::new(scanner);
+    command
+        .args(["--bundled", "--trust-user-code"])
+        .arg(module)
+        .arg(deadline.0.to_string());
+    command
+}
+
 struct Operation {
     phase: AtomicU8,
     scanner_started: AtomicBool,
@@ -209,7 +247,7 @@ impl DiscoveryOutcome {
             .filter(|_| self.diagnostics.scanner_started)
     }
 }
-fn discover(app: &Path, path: &Path, token: &Token) -> DiscoveryOutcome {
+fn discover(app: &Path, path: &Path, token: &Token, deadline: ScanDeadline) -> DiscoveryOutcome {
     let started = Instant::now();
     let mut chain_retired = true; // No child has been started yet.
     let mut bundle = None;
@@ -221,6 +259,7 @@ fn discover(app: &Path, path: &Path, token: &Token) -> DiscoveryOutcome {
         app,
         path,
         token,
+        deadline,
         &mut chain_retired,
         &mut diagnostics,
         &mut bundle,
@@ -237,6 +276,7 @@ fn discover_inner(
     app: &Path,
     path: &Path,
     token: &Token,
+    deadline: ScanDeadline,
     chain_retired: &mut bool,
     diagnostics: &mut ScanDiagnostics,
     bundle: &mut Option<Bundle>,
@@ -258,10 +298,7 @@ fn discover_inner(
             .set_nonblocking(true)
             .map_err(|e| format!("scanner channel setup failed: {e}"))?;
     }
-    let mut child = Command::new(&package.scanner)
-        .args(["--bundled", "--trust-user-code"])
-        .arg(path)
-        .arg("10000")
+    let mut child = scanner_command(&package.scanner, path, deadline)
         .stdin(Stdio::from(OwnedFd::from(child_cancel)))
         .stdout(Stdio::from(OwnedFd::from(child_output)))
         .stderr(Stdio::from(OwnedFd::from(child_diagnostic)))
@@ -299,7 +336,7 @@ fn discover_inner(
         if let Some(error) = error {
             cause.get_or_insert(error);
         }
-        if (token.cancelled() || cause.is_some() || started.elapsed() > Duration::from_secs(12))
+        if (token.cancelled() || cause.is_some() || deadline.expired(started.elapsed()))
             && !cancel_sent
         {
             cause.get_or_insert_with(|| {
@@ -384,6 +421,17 @@ fn discover_inner(
 /// One selected scan. Caller runs this on a background control executor and
 /// retains the cancellation owner until this result arrives.
 pub fn scan(catalog_path: &Path, app: &Path, path: PathBuf, token: Token) -> Update {
+    scan_with_deadline(catalog_path, app, path, token, ScanDeadline::default())
+}
+
+/// Scan one selected bundle with a validated per-bundle deadline.
+pub fn scan_with_deadline(
+    catalog_path: &Path,
+    app: &Path,
+    path: PathBuf,
+    token: Token,
+    deadline: ScanDeadline,
+) -> Update {
     if !crate::path_valid(&path) || path.extension().and_then(|s| s.to_str()) != Some("vst3") {
         return Update {
             catalog: None,
@@ -412,7 +460,7 @@ pub fn scan(catalog_path: &Path, app: &Path, path: PathBuf, token: Token) -> Upd
         }
     }
     // An explicit selection always runs, even for a remembered failure.
-    let outcome = discover(app, &path, &token);
+    let outcome = discover(app, &path, &token, deadline);
     let bundle = outcome.failure_identity();
     let DiscoveryOutcome {
         result,
@@ -454,8 +502,18 @@ pub fn scan(catalog_path: &Path, app: &Path, path: PathBuf, token: Token) -> Upd
 
 /// Explicit trusted standard folders. Resolution and enumeration stay on control.
 pub fn scan_standard(catalog_path: &Path, app: &Path, token: Token) -> Update {
+    scan_standard_with_deadline(catalog_path, app, token, ScanDeadline::default())
+}
+
+/// Scan trusted standard folders with a validated per-bundle deadline.
+pub fn scan_standard_with_deadline(
+    catalog_path: &Path,
+    app: &Path,
+    token: Token,
+    deadline: ScanDeadline,
+) -> Update {
     match crate::roots::macos_standard_paths() {
-        Ok(roots) => scan_folders(catalog_path, app, &roots, token),
+        Ok(roots) => scan_folders_with_deadline(catalog_path, app, &roots, token, deadline),
         Err(status) => Update {
             catalog: None,
             diagnostics: None,
@@ -472,6 +530,17 @@ pub fn scan_standard(catalog_path: &Path, app: &Path, token: Token) -> Update {
 /// short final writer transaction merges fresh state, preserving other windows'
 /// records.
 pub fn scan_folders(catalog_path: &Path, app: &Path, roots: &[PathBuf], token: Token) -> Update {
+    scan_folders_with_deadline(catalog_path, app, roots, token, ScanDeadline::default())
+}
+
+/// Scan a bounded folder batch with the same deadline for each bundle.
+pub fn scan_folders_with_deadline(
+    catalog_path: &Path,
+    app: &Path,
+    roots: &[PathBuf],
+    token: Token,
+    deadline: ScanDeadline,
+) -> Update {
     let mut diagnostics = None;
     let mut run = || -> Result<(Vec<Recorded>, String), String> {
         let mut staged = Catalog::load(catalog_path)?;
@@ -492,7 +561,7 @@ pub fn scan_folders(catalog_path: &Path, app: &Path, roots: &[PathBuf], token: T
             &token,
             &mut diagnostics,
             |path| Bundle::inspect(path).ok(),
-            |path| discover(app, path, &token),
+            |path| discover(app, path, &token, deadline),
         )?;
         Ok((
             batch.results,
@@ -684,10 +753,34 @@ pub fn available_app() -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     #[test]
+    fn scan_deadline_is_bounded_and_applies_to_scanner_and_outer_guard() {
+        assert!(ScanDeadline::from_millis(0).is_err());
+        assert!(ScanDeadline::from_millis(30_001).is_err());
+        assert!(ScanDeadline::from_millis(1).is_ok());
+        assert!(ScanDeadline::from_millis(30_000).is_ok());
+        let default = ScanDeadline::default();
+        assert_eq!(default.0, 10_000);
+        assert_eq!(default.outer_limit(), Duration::from_secs(12));
+        let deadline = ScanDeadline::from_millis(23_456).unwrap();
+        let command = scanner_command(Path::new("/scanner"), Path::new("/test.vst3"), deadline);
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--bundled", "--trust-user-code", "/test.vst3", "23456"]
+        );
+        assert_eq!(deadline.outer_limit(), Duration::from_millis(25_456));
+        assert!(!deadline.expired(Duration::from_millis(25_456)));
+        assert!(deadline.expired(Duration::from_millis(25_457)));
+    }
+    #[test]
     fn pre_spawn_refusal_reports_no_invented_native_cleanup() {
         let owner = Cancellation::default();
         let module = Path::new("/original-fixture.vst3");
-        let outcome = discover(Path::new(""), module, &owner.token());
+        let outcome = discover(
+            Path::new(""),
+            module,
+            &owner.token(),
+            ScanDeadline::default(),
+        );
         assert!(outcome.result.is_err());
         assert!(outcome.chain_retired, "no scanner was started");
         let observed = outcome.diagnostics;

@@ -189,10 +189,11 @@ pub fn control_storage_allowance(signal: Option<&ExportSignal>) -> Result<usize,
                 std::mem::size_of::<super::Stem>() + 4096 + std::mem::size_of::<OutputCaptureId>(),
             )
             .ok_or_else(overflow)?;
-        // One encoded PCM16 block reused for each stem; the full frame transaction is above.
+        // One encoded block (sized for the widest format) reused for each stem;
+        // the full frame transaction is above.
         bytes = bytes
             .checked_add(ordered)
-            .and_then(|bytes| bytes.checked_add(FRAMES_PER_BLOCK * 4))
+            .and_then(|bytes| bytes.checked_add(FRAMES_PER_BLOCK * super::format::MAX_FRAME_BYTES))
             .ok_or_else(overflow)?;
     }
     Ok(bytes)
@@ -257,7 +258,7 @@ pub fn controlled_frame_count(
     Ok(frames)
 }
 
-/// Render a selected half-open frame range to a new PCM16 WAV. Stateful history
+/// Render a selected half-open frame range to a new dithered PCM16 WAV. Stateful history
 /// is reconstructed from zero without Seek, in cancellable 256-frame blocks.
 /// Preroll has the existing bounded engine work ceiling; transport loop metadata
 /// is ignored by the canonical linear export owner. Source-loop restrictions
@@ -276,6 +277,7 @@ pub fn render_prepared_controlled(
         start,
         frames,
         signal,
+        ExportFormat::Pcm16,
         control,
         &Publication::CreateNew,
     )
@@ -288,13 +290,16 @@ pub fn render_prepared_controlled(
 /// reconstructed causally, then `frames + main latency` frames render and the
 /// first `main latency` output frames are discarded, so compensation consumes
 /// preroll rather than audio. Captured mixes and stems keep their causal
-/// pre-Main capture timing.
+/// pre-Main capture timing. `format` selects the WAV sample format of the file
+/// or of every stem file in a batch.
+#[allow(clippy::too_many_arguments)] // Range, scope, format, control and publication.
 pub fn render_prepared_with_policy(
     path: &Path,
     revision: Arc<PreparedRevision>,
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
@@ -305,6 +310,7 @@ pub fn render_prepared_with_policy(
         start,
         frames,
         signal,
+        format,
         control,
         publication,
     )
@@ -329,6 +335,7 @@ pub fn render_prepared_controlled_with_device_resources(
         start,
         frames,
         signal,
+        ExportFormat::Pcm16,
         control,
         &Publication::CreateNew,
     )
@@ -343,6 +350,7 @@ pub fn render_prepared_with_device_resources_and_policy(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
@@ -353,6 +361,7 @@ pub fn render_prepared_with_device_resources_and_policy(
         start,
         frames,
         signal,
+        format,
         control,
         publication,
     )
@@ -366,6 +375,7 @@ fn render_prepared_using(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
@@ -376,6 +386,7 @@ fn render_prepared_using(
         start,
         frames,
         signal,
+        format,
         control,
         publication,
         None,
@@ -395,6 +406,7 @@ pub fn render_prepared_with_pages_and_policy(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
     pages: &mut dyn PreparedExportPages,
@@ -406,6 +418,7 @@ pub fn render_prepared_with_pages_and_policy(
         start,
         frames,
         signal,
+        format,
         control,
         publication,
         Some(pages),
@@ -420,6 +433,7 @@ fn render_prepared_using_pages(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
     mut pages: Option<&mut dyn PreparedExportPages>,
@@ -429,14 +443,14 @@ fn render_prepared_using_pages(
             return Err(ExportError::Invalid("stem batches require a new directory"));
         }
         return super::stems::render_stems_using_pages(
-            path, revision, resources, start, frames, stems, control, pages,
+            path, revision, resources, start, frames, stems, format, control, pages,
         );
     }
     control.claim()?;
     let sample_rate = revision.arrangement().sample_rate();
     let latency = main_compensation(&revision, &signal, frames);
     let rendered_frames = compensated_frames(start, frames, latency)?;
-    publish(path, sample_rate, start, frames, publication, || {
+    let prepare_renderer = || {
         let playback = prepare_runtime_with_pages(
             revision,
             resources,
@@ -477,7 +491,16 @@ fn render_prepared_using_pages(
         };
         discard_latency(&mut renderer, latency)?;
         Ok(renderer)
-    })
+    };
+    publish_encoded(
+        path,
+        sample_rate,
+        start,
+        frames,
+        publication,
+        format,
+        prepare_renderer,
+    )
 }
 
 /// Main latency to discard after causal preroll; captures keep causal timing.
@@ -510,6 +533,7 @@ pub fn render_control_sampler_with_policy(
     start: u64,
     frames: u64,
     signal: ExportSignal,
+    format: ExportFormat,
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
@@ -524,7 +548,7 @@ pub fn render_control_sampler_with_policy(
         .total
         .store(compensated_frames(0, frames, latency)?, Ordering::Release);
     let sample_rate = revision.arrangement().sample_rate();
-    publish(path, sample_rate, 0, frames, publication, || {
+    publish_encoded(path, sample_rate, 0, frames, publication, format, || {
         control.check()?;
         let mut playback = SessionPlayback::new_control_sampler_export(revision, &sources)
             .map_err(ExportError::SessionRender)?;
@@ -603,14 +627,15 @@ fn prepare_runtime_observed(
     )
 }
 
-pub(super) fn prepare_bounce_runtime(
+pub(super) fn prepare_bounce_runtime<'provider>(
     revision: Arc<PreparedRevision>,
     resources: Option<&PreparedDeviceResources>,
     start: u64,
     frames: u64,
     control: &ExportControl,
+    pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
 ) -> Result<SessionPlayback, ExportError> {
-    prepare_runtime_using(
+    prepare_runtime_using_pages(
         revision,
         resources,
         start,
@@ -618,6 +643,7 @@ pub(super) fn prepare_bounce_runtime(
         control,
         SessionPlayback::new_finite_arrangement_bounce,
         || {},
+        pages,
     )
 }
 

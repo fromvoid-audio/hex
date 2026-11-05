@@ -813,7 +813,7 @@ pub(super) struct PreparedDocumentReplacement {
     pub(super) sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
     pub(super) resident: Option<Snapshot>,
 }
-/// The candidate Session is complete before final pending acceptance. The caller subsequently
+/// Prepare and admit the exact candidate before changing canonical state. The caller
 /// performs only fixed moves into its canonical/document slots, then emits generation replacement.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn prepare_document_replacement(
@@ -838,7 +838,7 @@ pub(super) fn prepare_document_replacement(
         && let Some(sink) = events.resident_audio()
     {
         let resident = candidate
-            .retain_resident_document_replacement(old, context, sink, admission, current)
+            .prepare_resident_document_replacement(old, context, sink, admission, current)
             .map_err(|e| e.to_string())?;
         return Ok(PreparedDocumentReplacement {
             prepared: Arc::clone(&resident.prepared),
@@ -983,12 +983,14 @@ pub(super) fn prepare_bounce_import(
 ) -> Result<Snapshot, SessionError> {
     let position = fence
         .map(|source| {
+            // Adoption fences after its render, so it keeps the bounded poll.
             crate::service::stopped_arrangement::acquire_position(
                 sink,
                 source,
                 input.shutdown,
                 None,
                 true,
+                None,
             )
         })
         .transpose()?;
@@ -1070,13 +1072,15 @@ pub(super) fn import_file(
     session: &mut Session,
     path: PathBuf,
     destination: AudioBatchDestination,
-    overwrite: bool,
+    options: crate::import_batch::AudioImportOptions,
     context: hex_engine::AudioSourceContext,
     sink: &mut dyn WorkerAudioSink,
     admission: sampler_export::Admission<'_>,
     current: &mut Option<Snapshot>,
+    decode: &mut super::truncated_import::ImportDecode,
 ) -> Result<Arc<PreparedRevision>, SessionError> {
-    if !overwrite
+    options.validate()?;
+    if !options.overwrite
         && let AudioBatchDestination::Console(crate::import_batch::ConsoleDestination::Cell {
             track,
             scene,
@@ -1085,43 +1089,52 @@ pub(super) fn import_file(
     {
         return Err(SessionError::Invalid("session target cell is occupied"));
     }
-    let allowance = import_frame_allowance(session, sink, admission, current.as_ref())?;
-    if let Some(source) = session.plan_file_import_with_allowance(&path, allowance)? {
-        let expected = session.project().clone();
-        let mut accepted = None;
-        let (_, prepared) = session.import_verified_batch_revision(
-            vec![source],
-            destination,
-            &expected,
-            current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
-            overwrite,
-            || Ok(()),
-            |input, admit| {
-                let snapshot =
-                    prepare_import(input, context, sink, admission, current.as_ref(), admit)?;
-                let prepared = Arc::clone(&snapshot.prepared);
-                accepted = Some(snapshot);
-                Ok(prepared)
+    // An unchanged resident file needs no frame allowance, plan or decode; its
+    // member shares the resident asset's PCM (see `import_reuse`).
+    let reused = absolute_document_path(&path)
+        .ok()
+        .and_then(|absolute| session.unchanged_resident_import(&absolute));
+    let prepared = if let Some(prepared) = reused {
+        prepared
+    } else {
+        let allowance = import_frame_allowance(session, sink, admission, current.as_ref())?;
+        if let Some(source) = decode.plan(session, &path, Some(allowance))? {
+            let expected = session.project().clone();
+            let mut accepted = None;
+            let (_, prepared) = session.import_verified_batch_revision(
+                vec![source],
+                destination,
+                &expected,
+                current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
+                options,
+                || Ok(()),
+                |input, admit| {
+                    let snapshot =
+                        prepare_import(input, context, sink, admission, current.as_ref(), admit)?;
+                    let prepared = Arc::clone(&snapshot.prepared);
+                    accepted = Some(snapshot);
+                    Ok(prepared)
+                },
+            )?;
+            *current = accepted;
+            return Ok(prepared);
+        }
+        let output_limit = usize::try_from(allowance)
+            .map_err(|_| SessionError::Invalid("resident frame limit exceeds addressable range"))?;
+        if output_limit == 0 {
+            return Err(SessionError::Invalid("resident audio frame limit reached"));
+        }
+        let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
+        let decoded = decode.decode(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
+        PreparedImport::at_rate(
+            decoded,
+            session.project().sample_rate(),
+            ResampleLimits {
+                max_source_frames: IMPORT_FRAME_LIMIT,
+                max_output_frames: output_limit,
             },
-        )?;
-        *current = accepted;
-        return Ok(prepared);
-    }
-    let output_limit = usize::try_from(allowance)
-        .map_err(|_| SessionError::Invalid("resident frame limit exceeds addressable range"))?;
-    if output_limit == 0 {
-        return Err(SessionError::Invalid("resident audio frame limit reached"));
-    }
-    let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
-    let prepared = PreparedImport::at_rate(
-        decoded,
-        session.project().sample_rate(),
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: output_limit,
-        },
-    )?;
+        )?
+    };
     let expected = session.project().clone();
     let mut accepted = None;
     let (_, prepared) = session.import_prepared_batch_revision_using(
@@ -1129,10 +1142,7 @@ pub(super) fn import_file(
         destination,
         &expected,
         current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
-        crate::import_batch::AudioImportOptions {
-            overwrite,
-            ..Default::default()
-        },
+        options,
         || Ok(()),
         |input, admit| {
             let snapshot =
@@ -1146,8 +1156,8 @@ pub(super) fn import_file(
     Ok(prepared)
 }
 
-/// Decode found files for an in-place relink. Each is resampled like an import;
-/// the session transaction then checks them against the saved asset metadata.
+/// Decode found files for an in-place relink. Each is resampled with its asset's
+/// saved conversion law; the session transaction then checks the saved metadata.
 pub(super) fn decode_relinks(
     session: &Session,
     relinks: BTreeMap<hex_project::AssetId, PathBuf>,
@@ -1172,16 +1182,23 @@ pub(super) fn decode_relinks(
             return Err(SessionError::Invalid("relink cancelled"));
         }
         let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
-        let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
+        let decoded = super::decode_resident_import(path)?;
+        // Relinked media is reconverted with the asset's saved conversion law.
+        let conversion = session
+            .project()
+            .asset(asset)
+            .ok_or(SessionError::Invalid("relinked media no longer exists"))?
+            .conversion_version();
         prepared.push((
             asset,
-            PreparedImport::at_rate(
+            PreparedImport::for_conversion(
                 decoded,
                 session.project().sample_rate(),
                 ResampleLimits {
                     max_source_frames: IMPORT_FRAME_LIMIT,
                     max_output_frames: output_limit,
                 },
+                conversion,
             )?,
         ));
     }
@@ -1586,9 +1603,9 @@ impl Session {
         })
     }
     /// Prepare the complete candidate before its reserved Session swap. Every predecessor owner,
-    /// including unused originals/media, remains admitted through final pending acceptance. No
-    /// old monitor client is attached to a new document merely because its TrackId is reused.
-    pub(super) fn retain_resident_document_replacement(
+    /// including unused originals/media, remains admitted through the replacement attempt.
+    /// No old monitor client is attached to a new document merely because its TrackId is reused.
+    pub(super) fn prepare_resident_document_replacement(
         &self,
         old: &Session,
         context: hex_engine::AudioSourceContext,
@@ -1640,10 +1657,13 @@ impl Session {
             self.project(),
             sink,
             metadata,
-            ResidentPublicationPolicy::ReplaceDocument,
+            ResidentPublicationPolicy::ReplaceDocument {
+                requires_plugin_profile: super::audio_sink::requires_plugin_profile(self.project()),
+            },
         )?;
-        // No cancellation/refusal after the sink accepted the complete pending owner. The caller
-        // performs only fixed canonical/document moves and existing generation teardown next.
+        sink.finish_resident_document_replacement()
+            .map_err(SessionError::NativeAudio)?;
+        // The caller now performs only fixed canonical/document moves.
         Ok(snapshot)
     }
 
@@ -2324,9 +2344,11 @@ impl Session {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     mod bounce_tests;
     mod export_tests;
+    mod fence_tests;
+    mod import_reuse_tests;
     mod plugin_effect_tests;
     mod source_binding_tests;
     use super::*;
@@ -2525,6 +2547,13 @@ mod tests {
             self.pending = None;
             self.observed.closed.fetch_add(1, Ordering::Release);
         }
+    }
+
+    pub(in crate::service) fn fixture_sink() -> Box<dyn WorkerAudioSink> {
+        Box::new(OfflineSink {
+            observed: Arc::new(Observed::default()),
+            pending: None,
+        })
     }
 
     #[test]
@@ -3509,6 +3538,7 @@ mod tests {
         let mut current = Some(current);
         let mut preview = None;
         let draft = crate::device_gesture::GestureSnapshot {
+            track_gains: None,
             touched_parameters: crate::device_gesture::TouchedParameters::default(),
             manual_edit: false,
             key: crate::device_gesture::GestureKey {

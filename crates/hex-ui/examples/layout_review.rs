@@ -14,6 +14,37 @@ mod output_meter;
 #[allow(dead_code)]
 mod theme;
 
+#[path = "../src/editor/musical_time.rs"]
+#[allow(dead_code)] // The editor also consumes ruler, band and input-grid queries.
+mod musical_time;
+#[path = "../src/editor/pending_edit.rs"]
+mod pending_edit;
+#[path = "../src/section_appearance.rs"]
+mod section_appearance;
+#[path = "../src/section_hit.rs"]
+mod section_hit;
+#[path = "../src/section_input.rs"]
+mod section_input;
+#[path = "../src/section_reorder.rs"]
+#[allow(dead_code)] // Main also consumes the tempo preview.
+mod section_reorder;
+#[path = "../src/section_resize.rs"]
+#[allow(dead_code)] // Main also consumes tempo and marker-only variants.
+mod section_resize;
+#[path = "../src/section_selection.rs"]
+mod section_selection;
+#[path = "../src/section_surface.rs"]
+mod section_surface;
+#[path = "../src/editor/seek.rs"]
+#[allow(dead_code)] // The editor also uses transport seek acknowledgement.
+mod seek;
+#[path = "../src/editor/signed_frame_viewport.rs"]
+#[allow(dead_code)] // The shared grid also supports the event editor's signed camera.
+mod signed_frame_viewport;
+#[path = "../src/editor/viewport.rs"]
+#[allow(dead_code)] // The editor also uses zoom and scrolling operations.
+mod viewport;
+
 #[path = "layout_review/sandbox.rs"]
 mod sandbox;
 

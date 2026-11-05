@@ -82,6 +82,18 @@ fn release_level(steps: u64, release: u64) -> f64 {
     }
 }
 
+/// Reconstructed mono source at a literal playback position in source frames,
+/// before gain and envelope: the cursor law under test supplies the position,
+/// the plan's interpolation law (linear at or below unity, band-limited above)
+/// supplies the value.
+fn source(prepared: &PreparedSamplerRuntime, pitch: u8, pcm: &[f32], frames: f64) -> f64 {
+    let position = (frames * ONE as f64).round() as u128;
+    prepared.notes[usize::from(pitch)]
+        .unwrap()
+        .source_value::<true>(DeviceResourcePcm::Mono(pcm), position)
+        .map_or(0.0, |value| value[0])
+}
+
 fn assert_frames_near(actual: &[StereoFrame], expected: &[[f64; 2]]) {
     assert_eq!(actual.len(), expected.len());
     for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
@@ -164,7 +176,9 @@ fn capacity_refusal_and_speculative_rollback_leave_actual_pair_unchanged() {
     process(&mut runtime, &[on(0, 1, 60)], &mut committed, &resources);
     assert_eq!(speculative, committed);
     assert_eq!(committed, [[1.0; 2], [3.0; 2]]);
-    // Equal-offset gate-off frees a zero-release slot before the next onset.
+    // No release is zero: an equal-offset gate-off makes the held voice
+    // stealable, so the next onset takes its slot while the old voice
+    // continues its floored release under the steal declick.
     committed.fill([0.0; 2]);
     process(
         &mut runtime,
@@ -172,7 +186,10 @@ fn capacity_refusal_and_speculative_rollback_leave_actual_pair_unchanged() {
         &mut committed,
         &resources,
     );
-    assert_eq!(committed, [[1.0; 2], [3.0; 2]]);
+    let release = crate::sampler::envelope::release_floor_frames(8_000);
+    let fade = prepared.steal_fade_frames() as f64;
+    let stolen = 7.0 * release_level(1, release) * (1.0 - 1.0 / fade);
+    assert_frames_near(&committed, &[[1.0 + 5.0; 2], [3.0 + stolen; 2]]);
     assert!(!runtime.committed_is_quiescent());
     runtime.reset();
     assert!(runtime.committed_is_quiescent());
@@ -257,14 +274,13 @@ fn project_tuning_velocity_amount_and_gated_release_reach_actual_mutable_samples
     let mut output = vec![[0.0; 2]; frames];
     process(&mut runtime, &[note, off(2, 1)], &mut output, &resources);
     // Pitch 61 steps 1.5 source frames per output frame around the 6-frame
-    // loop, so the literal (interpolated) source cycle is 1, 4, 7, 10.
-    let cycle = [1.0, 4.0, 7.0, 10.0];
+    // loop. Positions stay unwrapped so wrapped passes read loop history.
     let expected: Vec<_> = (0..frames as u64)
         .map(|age| {
             let level = age
                 .checked_sub(2)
                 .map_or(1.0, |steps| release_level(steps, release));
-            [cycle[(age % 4) as usize] * level; 2]
+            [source(&prepared, 61, &pcm, age as f64 * 1.5) * level; 2]
         })
         .collect();
     assert_frames_near(&output, &expected);
@@ -338,11 +354,17 @@ fn preparation_and_pair_caller_limits_refuse_without_rendering() {
         );
     }
     let prepared = bound.prepare_runtime_on_control(32, 1024, &tuning).unwrap();
+    // The declared tail always includes the release floor, even when the
+    // authored release is zero; a zero-tail host refuses below.
+    assert_eq!(
+        prepared.max_release_tail_frames(),
+        crate::sampler::envelope::release_floor_frames(8_000)
+    );
     let limits = NativeInstrumentRuntimeLimits {
         max_pair_bytes: prepared.declared_twin_bytes() * 2,
         max_events_per_block: 1024,
         max_active_occurrences: 32,
-        max_tail_frames: 0,
+        max_tail_frames: prepared.max_release_tail_frames(),
     };
     assert!(NativeInstrumentRuntimePair::new(&prepared, limits).is_ok());
     for refused in [
@@ -356,6 +378,14 @@ fn preparation_and_pair_caller_limits_refuse_without_rendering() {
         },
         NativeInstrumentRuntimeLimits {
             max_active_occurrences: 31,
+            ..limits
+        },
+        NativeInstrumentRuntimeLimits {
+            max_tail_frames: limits.max_tail_frames - 1,
+            ..limits
+        },
+        NativeInstrumentRuntimeLimits {
+            max_tail_frames: 0,
             ..limits
         },
     ] {
@@ -372,19 +402,19 @@ fn absolute_project_retune_moves_authored_root_but_not_slice_selection() {
     let views = [view(&pcm)];
     let resources = BorrowedDeviceResources(&views);
     let mut frequencies = *hex_lattice::TuningTable::default().frequencies();
-    // Uniform octave retuning must move the authored root itself. Expected PCM
-    // is literal source indices, independent of the coefficient implementation.
+    // Uniform octave retuning must move the authored root itself. Expected
+    // values are the reconstructed source at literal positions.
     for hz in &mut frequencies {
         *hz *= 2.0;
     }
     let tuning = hex_lattice::TuningTable::new(frequencies).unwrap();
-    for (mode, expected) in [
-        (Mode::Classic { loop_region: None }, [1.0, 5.0, 9.0, 0.0]),
+    for (mode, step) in [
+        (Mode::Classic { loop_region: None }, 2.0),
         (
             Mode::OneShot {
                 gate: GateMode::Trigger,
             },
-            [1.0, 5.0, 9.0, 0.0],
+            2.0,
         ),
         (
             Mode::Slice {
@@ -392,7 +422,7 @@ fn absolute_project_retune_moves_authored_root_but_not_slice_selection() {
                 base_note: 60,
                 gate: GateMode::Trigger,
             },
-            [1.0, 3.0, 5.0, 0.0],
+            1.0,
         ),
     ] {
         let mut settings = Settings::new(Region {
@@ -413,7 +443,16 @@ fn absolute_project_retune_moves_authored_root_but_not_slice_selection() {
         let mut runtime = pair(&prepared);
         let mut output = [[0.0; 2]; 4];
         process(&mut runtime, &[on(0, 1, 60)], &mut output, &resources);
-        assert_eq!(output, expected.map(|sample| [sample; 2]));
+        if step == 1.0 {
+            // Slices select regions, not pitch: unity linear is literal PCM.
+            assert_eq!(output, [[1.0; 2], [3.0; 2], [5.0; 2], [0.0; 2]]);
+        } else {
+            // Octave: source positions 0, 2, 4, then the region end.
+            let expected =
+                [0.0, 2.0, 4.0].map(|position| [source(&prepared, 60, &pcm, position); 2]);
+            assert_frames_near(&output[..3], &expected);
+            assert_eq!(output[3], [0.0; 2]);
+        }
         assert!(runtime.committed_is_quiescent());
     }
 }
@@ -660,6 +699,45 @@ fn occurrence_gain_scales_actual_gated_release_without_touching_the_other_voice(
 }
 
 #[test]
+fn occurrence_gain_follows_retired_slot_reuse_and_unlisted_voices() {
+    let pcm = [1.0; 2];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(
+        views[0],
+        Mode::OneShot {
+            gate: GateMode::Trigger,
+        },
+        1,
+    );
+    let mut runtime = pair(&prepared);
+    let gains = [
+        NativeInstrumentOccurrenceGain::new(1, 0.25, 0.25, 6, 0).unwrap(),
+        NativeInstrumentOccurrenceGain::new(2, 0.75, 0.75, 6, 0).unwrap(),
+    ];
+    let events = [on(0, 1, 60), on(2, 2, 60), on(4, 3, 60)];
+    let mut output = [[0.0; 2]; 6];
+    runtime.begin_block();
+    runtime
+        .process_block_with_clock_and_occurrence_gains(
+            &events,
+            &mut output,
+            None,
+            &gains,
+            &resources,
+        )
+        .unwrap();
+    runtime.commit_block();
+    assert_eq!(
+        output,
+        [
+            [0.25; 2], [0.25; 2], [0.75; 2], [0.75; 2], [1.0; 2], [1.0; 2]
+        ]
+    );
+    assert!(runtime.committed_is_quiescent());
+}
+
+#[test]
 fn gain_batch_can_cover_more_incoming_identities_than_simultaneously_active_voices() {
     let pcm = [1.0; 32];
     let views = [view(&pcm)];
@@ -696,7 +774,17 @@ fn gain_batch_can_cover_more_incoming_identities_than_simultaneously_active_voic
         )
         .unwrap();
     runtime.commit_block();
-    assert_eq!(output, [[0.5; 2]; 7]);
+    // Every released voice is stolen into the declick pool with its gain
+    // frozen at the steal, so the whole mix is the unity-gain mix halved.
+    let mut unity = [[0.0; 2]; 7];
+    process(&mut pair(&prepared), &events, &mut unity, &resources);
+    assert!(
+        unity[0][0] > 1.0,
+        "released voices still sound while stolen"
+    );
+    for (actual, unity) in output.iter().zip(unity) {
+        assert_eq!(*actual, [unity[0] * 0.5, unity[1] * 0.5]);
+    }
 }
 
 #[test]
@@ -1130,11 +1218,10 @@ fn gated_tuning_retargets_actual_cursor_fast_slow_and_cancel_without_replaying_p
         .unwrap();
     let mut fast_pcm = [[0.0; 2]; 4];
     process(&mut fast, &[], &mut fast_pcm, &resources);
-    assert_eq!(
-        fast_pcm,
-        [[4.0; 2], [6.0; 2], [8.0; 2], [2.0; 2]],
-        "source cursor3 survives; only future steps double"
-    );
+    // Source cursor 3 survives; only future steps double (9 wraps to 1).
+    let expected =
+        [3.0, 5.0, 7.0, 9.0].map(|position| [source(&fast_factory, 60, &pcm, position); 2]);
+    assert_frames_near(&fast_pcm, &expected);
 
     let slow_factory = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(0.5));
     let mut slow = pair(&slow_factory);
@@ -1180,26 +1267,28 @@ fn gated_retuning_retires_at_actual_source_end_instead_of_age_times_new_step() {
     let resources = BorrowedDeviceResources(&views);
     let settings = Settings::new(Region { start: 0, end: 8 });
     let original = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(1.0));
-    for (ratio, expected) in [
-        (2.0, vec![4.0, 6.0, 8.0]),
-        (0.5, vec![4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.0]),
-    ] {
+    for (ratio, frames) in [(2.0, 3), (0.5, 10)] {
         let mut old = pair(&original);
         process(&mut old, &[on(0, 7, 60)], &mut [[0.0; 2]; 3], &resources);
         let target = prepare_retarget_settings(views[0], settings, 4, 259, &ratio_tuning(ratio));
+        // Cursor 3 carries over; the changed step applies only from there.
+        let expected: Vec<f64> = (0..frames)
+            .map(|offset| source(&target, 60, &pcm, 3.0 + f64::from(offset) * ratio))
+            .collect();
+        if ratio < 1.0 {
+            // Below unity the original linear law is unchanged.
+            assert_eq!(
+                expected,
+                vec![4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.0]
+            );
+        }
         let mut next = pair(&target);
         next.retarget_from(&old, target_proof(&target).as_ref())
             .unwrap();
         let mut actual = vec![[0.0; 2]; expected.len()];
         process(&mut next, &[], &mut actual, &resources);
-        assert_eq!(
-            actual,
-            expected
-                .into_iter()
-                .map(|sample| [sample; 2])
-                .collect::<Vec<_>>(),
-            "ratio{ratio}"
-        );
+        let expected: Vec<_> = expected.into_iter().map(|sample| [sample; 2]).collect();
+        assert_frames_near(&actual, &expected);
         assert!(
             next.committed_is_quiescent(),
             "cursor reaches region end exactly after the rendered prefix and changed-rate suffix"
@@ -1239,16 +1328,17 @@ fn releasing_gated_tuning_keeps_gate_age_velocity_and_new_onsets_start_at_zero()
     process(&mut next, &[], &mut tail, &resources);
     let expected: Vec<_> = (5..5 + release)
         .map(|age| {
-            let cursor = (5 + 2 * (age - 5)) % 8;
+            let cursor = 5 + 2 * (age - 5);
             let level = release_level(age - 3, release) * (64.0 / 127.0);
-            [f64::from(pcm[cursor as usize]) * level; 2]
+            [source(&target, 60, &pcm, cursor as f64) * level; 2]
         })
         .collect();
     assert_frames_near(&tail, &expected);
     assert!(next.committed_is_quiescent());
     let mut onset = [[0.0; 2]; 4];
     process(&mut next, &[on(0, 8, 60)], &mut onset, &resources);
-    assert_eq!(onset, [[1.0; 2], [3.0; 2], [5.0; 2], [7.0; 2]]);
+    let expected = [0.0, 2.0, 4.0, 6.0].map(|position| [source(&target, 60, &pcm, position); 2]);
+    assert_frames_near(&onset, &expected);
 }
 
 #[test]
@@ -1326,6 +1416,7 @@ fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
     let mut runtime = SamplerRuntime {
         prepared,
         active: [None; MAX_SAMPLER_RUNTIME_VOICES],
+        fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
     };
     runtime.active[0] = Some(ActiveVoice {
         occurrence: 7,
@@ -1344,4 +1435,158 @@ fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
         (voice.age, voice.position, voice.gate),
         (age, position, None)
     );
+}
+
+mod release_floor;
+mod steal;
+
+// The frame-major schedule is an independent behavioral oracle for the
+// optimized span schedule. It retains the same primitive voice/event laws.
+fn frame_major_oracle(
+    runtime: &mut SamplerRuntime,
+    events: &[NativeInstrumentEvent],
+    frames: &mut [StereoFrame],
+    gains: &[NativeInstrumentOccurrenceGain],
+    resources: &dyn DeviceResources,
+) {
+    let view = (0..resources.len())
+        .filter_map(|index| resources.get(index))
+        .find(|view| runtime.prepared.source.matches(*view))
+        .unwrap();
+    let mut active = runtime.active;
+    let mut fading = runtime.fading;
+    let fade = runtime.prepared.steal_fade_frames() as f64;
+    let mut next = 0;
+    for (offset, frame) in frames.iter_mut().enumerate() {
+        let gain_at = |id| {
+            gains
+                .binary_search_by_key(&id, |gain| gain.occurrence_id())
+                .ok()
+                .map_or(1.0, |index| gains[index].value_at_offset(offset as u64))
+        };
+        while events
+            .get(next)
+            .is_some_and(|event| event.frame_offset() == offset)
+        {
+            runtime
+                .event(&mut active, &mut fading, events[next], &gain_at)
+                .unwrap();
+            next += 1;
+        }
+        for voice in active.iter().flatten() {
+            runtime.mix(frame, view.pcm, voice, gain_at(voice.occurrence));
+        }
+        for item in fading.iter().flatten() {
+            let declick = 1.0 - item.voice.age.saturating_sub(item.start) as f64 / fade;
+            runtime.mix(frame, view.pcm, &item.voice, item.gain * declick);
+        }
+        runtime.advance(&mut active, &mut fading, 1).unwrap();
+    }
+    runtime.active = active;
+    runtime.fading = fading;
+}
+
+fn voice_signature(voice: ActiveVoice) -> (u64, u8, u64, u64, u128, Option<u64>) {
+    (
+        voice.occurrence,
+        voice.pitch,
+        voice.gain.to_bits(),
+        voice.age,
+        voice.position,
+        voice.gate,
+    )
+}
+
+#[test]
+fn event_spans_match_frame_major_pcm_and_voice_state() {
+    let pcm: Vec<_> = (0..24).map(|i| (i as f32 - 11.0) / 13.0).collect();
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    for (looping, pitch) in [(false, 60), (false, 72), (true, 48), (true, 60), (true, 72)] {
+        let mode = if looping {
+            Mode::Classic {
+                loop_region: Some(Region { start: 2, end: 20 }),
+            }
+        } else {
+            Mode::OneShot {
+                gate: GateMode::Trigger,
+            }
+        };
+        let prepared = prepare(views[0], mode, 2);
+        let mut actual = SamplerRuntime {
+            prepared: prepared.clone(),
+            active: [None; MAX_SAMPLER_RUNTIME_VOICES],
+            fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
+        };
+        let mut expected = SamplerRuntime {
+            prepared,
+            active: [None; MAX_SAMPLER_RUNTIME_VOICES],
+            fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
+        };
+        let batches: Vec<Vec<NativeInstrumentEvent>> = if looping {
+            vec![
+                vec![on(0, 1, pitch), on(1, 2, pitch), off(4, 1), on(5, 3, pitch)],
+                vec![off(0, 2), on(0, 4, pitch), off(7, 3)],
+                vec![],
+            ]
+        } else {
+            vec![
+                vec![on(0, 1, pitch), on(2, 2, pitch)],
+                vec![on(20, 3, pitch)],
+                vec![],
+            ]
+        };
+        for (batch_index, events) in batches.iter().enumerate() {
+            let length = [16, 24, 17][batch_index];
+            let mut ids: Vec<_> = actual
+                .active
+                .iter()
+                .flatten()
+                .map(|v| v.occurrence)
+                .collect();
+            ids.extend(events.iter().filter_map(|event| match event {
+                NativeInstrumentEvent::NoteOn { occurrence_id, .. } => Some(*occurrence_id),
+                _ => None,
+            }));
+            ids.sort_unstable();
+            ids.dedup();
+            let gains: Vec<_> = ids
+                .into_iter()
+                .filter(|id| id % 2 != 0)
+                .map(|id| {
+                    NativeInstrumentOccurrenceGain::new(id, 0.17, 0.83, length as u64, 0).unwrap()
+                })
+                .collect();
+            actual.preflight_events(events, length, &resources).unwrap();
+            actual.preflight_occurrence_gains(events, &gains).unwrap();
+            let mut out = vec![[-0.0, 0.125]; length];
+            let mut oracle = out.clone();
+            actual.process_with_gains(events, &mut out, &gains, &resources);
+            frame_major_oracle(&mut expected, events, &mut oracle, &gains, &resources);
+            assert_eq!(
+                out.iter().map(|f| f.map(f32::to_bits)).collect::<Vec<_>>(),
+                oracle
+                    .iter()
+                    .map(|f| f.map(f32::to_bits))
+                    .collect::<Vec<_>>(),
+                "looping={looping} pitch={pitch} batch={batch_index}"
+            );
+            assert_eq!(
+                actual.active.map(|v| v.map(voice_signature)),
+                expected.active.map(|v| v.map(voice_signature))
+            );
+            assert_eq!(
+                actual.fading.map(|v| v.map(|v| (
+                    voice_signature(v.voice),
+                    v.start,
+                    v.gain.to_bits()
+                ))),
+                expected.fading.map(|v| v.map(|v| (
+                    voice_signature(v.voice),
+                    v.start,
+                    v.gain.to_bits()
+                )))
+            );
+        }
+    }
 }

@@ -531,6 +531,47 @@ fn epoch_body(config: &Configuration, sequence: u64) -> Vec<u8> {
     body
 }
 #[test]
+fn reactivation_binds_source_completed_prefix_and_unique_operation() {
+    let config = config();
+    let request = reactivate(&config, 3, 2).unwrap();
+    assert_eq!(&request[..4], b"HXVA");
+    assert_eq!(
+        &request[48..],
+        &[
+            3_u64.to_le_bytes(),
+            24_u64.to_le_bytes(),
+            2_u64.to_le_bytes()
+        ]
+        .concat()
+    );
+    assert!(reactivate(&config, 3, 0).is_err());
+    assert!(reactivate(&config, u64::MAX, 2).is_err());
+    let mut body = epoch_body(&config, 3);
+    body.extend(2_u64.to_le_bytes());
+    assert_eq!(
+        reactivated_facts(&body, &config, 3, 2)
+            .unwrap()
+            .algorithmic_latency_frames,
+        3
+    );
+    for end in 0..body.len() {
+        assert!(reactivated_facts(&body[..end], &config, 3, 2).is_err());
+    }
+    for offset in [0, 32, 48, 80, 112, 120, 134, 135, 138, 146, 154] {
+        let mut bad = body.clone();
+        bad[offset] ^= 128;
+        assert!(
+            reactivated_facts(&bad, &config, 3, 2).is_err(),
+            "offset {offset}"
+        );
+    }
+    assert!(reactivated_facts(&body, &config, 2, 2).is_err());
+    assert!(reactivated_facts(&body, &config, 3, 1).is_err());
+    assert!(reactivated_facts(&body, &config, 3, 0).is_err());
+    body.push(0);
+    assert!(reactivated_facts(&body, &config, 3, 2).is_err());
+}
+#[test]
 fn epoch_acknowledgements_bind_exact_source_prefix_facts_and_presentation() {
     let mut config = config();
     let body = epoch_body(&config, 3);
@@ -703,6 +744,41 @@ fn stopped_flush_request_and_ack_bind_source_prefix_operation_and_complete_value
     })
     .unwrap();
     assert!(flush_request(&config, 0, 1, &late).is_err());
+}
+
+#[test]
+fn recovery_edit_receipts_keep_exact_prefix_and_versioned_ordinal() {
+    let config = config();
+    let request = recovery_edit_request(&config, 2, 3).unwrap();
+    assert_eq!(&request[..6], b"HXVG\x02\0");
+    assert_eq!(&request[6..], &edit_request(&config, 2, 3).unwrap()[6..]);
+    assert!(recovery_edit_request(&config, 2, 0).is_err());
+    let mut body = Vec::new();
+    stamp(&mut body, config.binding);
+    for field in [2_u64, 16, 3] {
+        body.extend(field.to_le_bytes());
+    }
+    body.extend([0; 6]);
+    body.extend(9_u64.to_le_bytes());
+    let response = recovery_edits(&body, &config, 2, 3, (0, 0)).unwrap();
+    assert!(response.edits.as_slice().is_empty());
+    assert_eq!(response.pending_latency_restart.unwrap().get(), 9);
+    for end in 0..body.len() {
+        assert!(recovery_edits(&body[..end], &config, 2, 3, (0, 0)).is_err());
+    }
+    for offset in [2, 10, 18, 26, 34, 42, 50, 58, 60, 62] {
+        let mut bad = body.clone();
+        bad[offset] ^= 128;
+        assert!(recovery_edits(&bad, &config, 2, 3, (0, 0)).is_err());
+    }
+    assert!(parameter_edits(&body, &config, 2, 3, (0, 0)).is_err());
+    body[64..].fill(0);
+    assert!(
+        recovery_edits(&body, &config, 2, 3, (0, 0))
+            .unwrap()
+            .pending_latency_restart
+            .is_none()
+    );
 }
 
 #[test]
@@ -942,14 +1018,19 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
     );
 }
 
-fn refusal_body(config: &Configuration, sequence: u64, operation: u64, observed: u32) -> Vec<u8> {
+fn refusal_prefix(config: &Configuration, sequence: u64, operation: u64, reason: u8) -> Vec<u8> {
     let mut body = Vec::new();
     stamp(&mut body, config.binding);
     let frames = sequence * u64::from(config.quantum);
     for word in [sequence, frames, operation] {
         body.extend(word.to_le_bytes());
     }
-    body.push(1);
+    body.push(reason);
+    body
+}
+
+fn refusal_body(config: &Configuration, sequence: u64, operation: u64, observed: u32) -> Vec<u8> {
+    let mut body = refusal_prefix(config, sequence, operation, 1);
     body.extend(observed.to_le_bytes());
     body
 }
@@ -960,8 +1041,13 @@ fn capture_refusal_binds_exact_operation_and_reports_lowercase_limit() {
     let limit = hex_plugin_state::MAX_OPAQUE_BYTES as u32;
     let body = refusal_body(&config, 3, 2, limit + 1);
     let refusal = capture_refusal(&body, &config, 3, 2).unwrap();
-    assert_eq!(refusal.observed_bytes, limit + 1);
-    let message = crate::Error::StateExceedsLimit(refusal).to_string();
+    assert_eq!(
+        refusal,
+        StateCaptureRefusal::ExceedsLimit {
+            observed_bytes: limit + 1
+        }
+    );
+    let message = crate::Error::CaptureRefused(refusal).to_string();
     assert_eq!(
         message,
         "plugin state exceeds the 4000-byte limit · not saved · plugin keeps running"
@@ -980,7 +1066,7 @@ fn capture_refusal_binds_exact_operation_and_reports_lowercase_limit() {
     trailing.push(0);
     assert!(capture_refusal(&trailing, &config, 3, 2).is_err());
     let mut reason = body.clone();
-    reason[58] = 2;
+    reason[58] = 3;
     assert!(
         capture_refusal(&reason, &config, 3, 2).is_err(),
         "unknown reason"
@@ -991,6 +1077,59 @@ fn capture_refusal_binds_exact_operation_and_reports_lowercase_limit() {
             "a state that fits is never refused as oversized: {observed}"
         );
     }
+}
+
+#[test]
+fn still_changing_refusal_is_exact_fieldless_and_versioned() {
+    let config = config();
+    let body = refusal_prefix(&config, 3, 2, 2);
+    let refusal = capture_refusal(&body, &config, 3, 2).unwrap();
+    assert_eq!(refusal, StateCaptureRefusal::StillChanging);
+    assert_eq!(
+        crate::Error::CaptureRefused(refusal).to_string(),
+        "plugin state kept changing during capture · not saved · plugin keeps running"
+    );
+    // Reason 2 carries no fields; a stale operation or prefix is malformed.
+    let mut trailing = body.clone();
+    trailing.extend(0_u32.to_le_bytes());
+    assert!(capture_refusal(&trailing, &config, 3, 2).is_err());
+    assert!(capture_refusal(&body, &config, 3, 1).is_err());
+    assert!(capture_refusal(&body, &config, 4, 2).is_err());
+    // The version 01 frame (reason 1 only) is no longer a refusal frame.
+    assert_eq!(&CAPTURE_REFUSAL_MAGIC, b"HXVICR02");
+}
+
+#[test]
+fn live_capture_reply_separates_refusal_from_terminal_frames() {
+    let config = config();
+    let refusal = refusal_prefix(&config, 9, 2, 2);
+    assert!(matches!(
+        live_capture_reply(&CAPTURE_REFUSAL_MAGIC, &refusal, &config, 9, 2),
+        Err(crate::Error::CaptureRefused(
+            StateCaptureRefusal::StillChanging
+        ))
+    ));
+    // A refusal for another operation is malformed, never a retirement.
+    assert!(matches!(
+        live_capture_reply(&CAPTURE_REFUSAL_MAGIC, &refusal, &config, 9, 3),
+        Err(crate::Error::Protocol(_))
+    ));
+    assert!(matches!(
+        live_capture_reply(b"HXVICR01", &refusal, &config, 9, 2),
+        Err(crate::Error::Protocol(
+            "missing live capture acknowledgement"
+        ))
+    ));
+    let mut pending = Vec::new();
+    stamp(&mut pending, config.binding);
+    for word in [9_u64, 72, 2] {
+        pending.extend(word.to_le_bytes());
+    }
+    pending.extend([0, 0, 0]);
+    assert!(matches!(
+        live_capture_reply(b"HXVLCA01", &pending, &config, 9, 2),
+        Ok(None)
+    ));
 }
 
 #[test]
@@ -1019,7 +1158,7 @@ fn refusal_frame_reads_through_the_channel_and_keeps_its_successor() {
     assert_eq!(packet.magic(), CAPTURE_REFUSAL_MAGIC);
     assert_eq!(
         capture_refusal(packet.body().unwrap(), &config, 9, 2).unwrap(),
-        StateCaptureRefusal {
+        StateCaptureRefusal::ExceedsLimit {
             observed_bytes: 6000
         }
     );

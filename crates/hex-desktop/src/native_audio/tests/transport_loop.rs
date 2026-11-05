@@ -2,6 +2,61 @@
 use super::resident_preview::ResidentHarness;
 use super::*;
 
+/// Verify constant audio and the exact 128-frame Arrangement loop-end fade.
+/// The limiter delays the output, so follow the delivered PCM rather than
+/// deriving its source position from the current transport position.
+pub(super) struct LoopFadeVerifier {
+    previous: Option<i32>,
+    saw_fade: bool,
+    saw_attack: bool,
+}
+
+impl LoopFadeVerifier {
+    pub(super) fn new() -> Self {
+        Self {
+            previous: None,
+            saw_fade: false,
+            saw_attack: false,
+        }
+    }
+
+    pub(super) fn check(&mut self, frames: &[hex_engine::Frame]) {
+        for frame in frames {
+            for sample in frame {
+                let scaled = *sample * (127.0 / 0.25);
+                let step = scaled.round() as i32;
+                assert!(
+                    (0..=127).contains(&step) && (scaled - step as f32).abs() < 0.006,
+                    "unexpected loop PCM: {sample}"
+                );
+            }
+            assert!(
+                (frame[0] - frame[1]).abs() < 1e-6,
+                "stereo mismatch: {frame:?}"
+            );
+            let step = (frame[0] * (127.0 / 0.25)).round() as i32;
+            if let Some(previous) = self.previous {
+                let valid = match previous {
+                    127 => step == 127 || step == 126,
+                    0 => step == 127,
+                    _ => step == previous - 1,
+                };
+                assert!(valid, "invalid loop fade step: {previous} -> {step}");
+                self.saw_fade |= previous == 1 && step == 0;
+                self.saw_attack |= previous == 0 && step == 127;
+            }
+            self.previous = Some(step);
+        }
+    }
+
+    pub(super) fn assert_wrap(&self) {
+        assert!(
+            self.saw_fade && self.saw_attack,
+            "expected a complete fade and full-level loop attack"
+        );
+    }
+}
+
 fn position(h: &ResidentHarness) -> u64 {
     h.audio
         .as_ref()
@@ -15,15 +70,9 @@ fn position(h: &ResidentHarness) -> u64 {
 /// Render `blocks` callbacks of constant source PCM; return the visited span.
 fn play(h: &ResidentHarness, blocks: usize) -> (u64, u64) {
     let (mut low, mut high) = (u64::MAX, 0);
+    let mut fade = LoopFadeVerifier::new();
     for _ in 0..blocks {
-        assert!(
-            h.render()
-                .iter()
-                .flatten()
-                .all(|v| (*v - 0.25).abs() < 1e-5),
-            "uninterrupted audio near {}",
-            position(h)
-        );
+        fade.check(&h.render());
         let at = position(h);
         (low, high) = (low.min(at), high.max(at));
     }

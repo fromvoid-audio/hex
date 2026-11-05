@@ -1,9 +1,9 @@
 //! Isolated real callback and limiter stage-clock allocation regression.
 #![cfg(feature = "allocation-probe")]
 
-#[path = "callback_allocations/probe.rs"]
+#[path = "allocation_probes/callback_allocations/probe.rs"]
 mod probe;
-#[path = "callback_allocations/stage_clocks.rs"]
+#[path = "allocation_probes/callback_allocations/stage_clocks.rs"]
 mod stage_clocks;
 
 use hex_audio::prepared;
