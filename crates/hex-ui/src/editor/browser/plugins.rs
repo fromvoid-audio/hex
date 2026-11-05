@@ -78,12 +78,13 @@ impl EditorView {
         &mut self,
         module: &std::path::Path,
         cid: Option<[u8; 16]>,
+        cx: &App,
     ) {
         let selected = cid
             .ok_or_else(|| "select an available vst3 effect class".to_string())
             .and_then(|cid| self.browser.plugins.catalog.select_effect(module, cid));
         match selected {
-            Ok(selection) => self.insert_browser_plugin_effect(selection),
+            Ok(selection) => self.insert_browser_plugin_effect(selection, cx),
             Err(error) => self.error = Some(error.into()),
         }
     }

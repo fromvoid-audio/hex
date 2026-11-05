@@ -496,6 +496,15 @@ impl NativeAudioSink {
                     });
                 }
             };
+            let rebind_policy = self
+                .document_rebind
+                .as_ref()
+                .filter(|rebind| rebind.context == metadata.context)
+                .map(|rebind| {
+                    hex_audio::prepared::PublicationPolicy::InstallUnderStoppedArrangement(
+                        rebind.fence,
+                    )
+                });
             let policy = match policy {
                 ResidentPublicationPolicy::ArrangementEdit => {
                     let Some(policy) = section_policy else {
@@ -511,14 +520,8 @@ impl NativeAudioSink {
                     hex_audio::prepared::PublicationPolicy::InheritRuntime
                 }
                 ResidentPublicationPolicy::InstallFreshRuntime => {
-                    if let Some(rebind) = self
-                        .document_rebind
-                        .as_ref()
-                        .filter(|rebind| rebind.context == metadata.context)
-                    {
-                        hex_audio::prepared::PublicationPolicy::InstallUnderStoppedArrangement(
-                            rebind.fence,
-                        )
+                    if let Some(policy) = rebind_policy {
+                        policy
                     } else {
                         match self.plugins.restore_policy(metadata.context) {
                             Ok(Some(policy)) if metadata.stopped_restore => policy,
@@ -535,9 +538,8 @@ impl NativeAudioSink {
                         }
                     }
                 }
-                ResidentPublicationPolicy::RestorePluginState => {
-                    hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
-                }
+                ResidentPublicationPolicy::RestorePluginState => rebind_policy
+                    .unwrap_or(hex_audio::prepared::PublicationPolicy::InstallFreshRuntime),
                 ResidentPublicationPolicy::ReplaceDocument { .. } => {
                     hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
                 }

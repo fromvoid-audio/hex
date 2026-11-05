@@ -110,13 +110,65 @@ impl std::fmt::Display for Error {
             Self::Validation(error) => write!(out, "instance source refused: {error}"),
             Self::Cancelled => out.write_str("instance cancelled"),
             Self::Timeout => out.write_str("instance supervision timed out"),
-            Self::Worker(n) => write!(out, "instance worker refused operation: {n}"),
+            Self::Worker(n) => match worker_refusal(*n) {
+                Some(reason) => write!(out, "vst3 {reason} (worker code {n})"),
+                None => write!(out, "instance worker refused operation: {n}"),
+            },
             Self::Custody(s) => write!(out, "instance child custody is unconfirmed: {s}"),
             Self::CaptureRefused(refusal) => refusal.fmt(out),
             Self::Preparation { cause, .. } => write!(out, "instance preparation failed: {cause}"),
         }
     }
 }
+// Wire refusal codes from macos_instance_worker.mm. Keep the legacy setup
+// stage readable when a desktop is using an older helper.
+fn worker_refusal(code: u32) -> Option<&'static str> {
+    Some(match code {
+        1 => "worker configuration refused",
+        2 => "bundle admission refused",
+        3 => "effect class not found",
+        4 => "processing setup refused",
+        5 => "presentation latency refused",
+        6 => "plug-in state capture refused",
+        7 => "processing refused",
+        8 => "worker protocol refused",
+        9 => "load cancelled",
+        10 => "plug-in shutdown refused",
+        11 => "host callback refused",
+        12 => "worker stopped after an exception",
+        13 => "component or controller initialization refused",
+        14 => "plug-in state restore refused",
+        15 => "plug-in suspension refused",
+        16 => "plug-in resume refused",
+        17 => "processing setup has an invalid instance state",
+        18 => "processing configuration refused",
+        19 => "plug-in refused 32-bit audio processing",
+        20 => "plug-in audio bus topology is unsupported",
+        21 => "plug-in refused the requested audio bus arrangement",
+        22 => "plug-in reported a different audio bus arrangement",
+        23 => "plug-in rejected processing setup",
+        24 => "plug-in activation refused",
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn worker_refusal_explains_topology_and_retains_numeric_code() {
+    assert_eq!(
+        Error::Worker(20).to_string(),
+        "vst3 plug-in audio bus topology is unsupported (worker code 20)"
+    );
+    assert_eq!(
+        Error::Worker(4).to_string(),
+        "vst3 processing setup refused (worker code 4)"
+    );
+    assert_eq!(
+        Error::Worker(255).to_string(),
+        "instance worker refused operation: 255"
+    );
+}
+
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {

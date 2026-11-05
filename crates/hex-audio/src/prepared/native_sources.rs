@@ -430,6 +430,14 @@ impl PublicationControl {
         self.candidate_root
             .configure_native_source_preparation(capacity, limits)
     }
+    /// Check the existing native source reservation on control before staging
+    /// a bounded cohort. Unavailable or contended custody refuses this check.
+    /// Subsequent preparation must still pass each original admission.
+    pub fn has_vacant_native_source_slots_on_control(&self, needed: usize) -> bool {
+        self.native_custody
+            && !self.status.closing.load(Acquire)
+            && self.candidate_root.has_vacant_native_source_slots(needed)
+    }
     /// Run source preparation on the existing control worker, never UI/audio.
     /// Success parks the actual owner in Root even after refusal/close. The
     /// initial binding and cancellation pair are created by Root before spawn.

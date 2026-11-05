@@ -2223,7 +2223,7 @@ impl EditorView {
                     }
                 };
                 self.clear_native_device_drag(drag);
-                self.insert_plugin_effect(selection, destination, before);
+                self.insert_plugin_effect(selection, destination, before, cx);
                 cx.notify();
                 return;
             }
@@ -2456,6 +2456,7 @@ impl EditorView {
                     selection,
                     hex_session::service::PluginEffectDestination::Track(drop_target.track),
                     before,
+                    cx,
                 );
                 cx.notify();
                 return;

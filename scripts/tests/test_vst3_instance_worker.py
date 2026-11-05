@@ -551,6 +551,13 @@ class NativeInstanceTests(unittest.TestCase):
                 if self.trace.exists():
                     self.assertEqual(self.observation()[2:5], (0, 0, 0))
 
+    def test_setup_refusal_reports_the_sdk_stage(self):
+        for variant, code in [(1, 21), (3, 23), (7, 24)]:
+            with self.subTest(variant=variant):
+                session = self.session(variant=variant)
+                self.error(session, code)
+                self.terminal(session, code)
+
     def test_capture_presentation_start_and_teardown_refusals_are_not_ready(self):
         for variant, first, terminal, closed, unloaded in [
                 (15, 6, 6, True, True), (16, 6, 10, False, False),

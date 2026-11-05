@@ -1069,7 +1069,13 @@ impl WorkerAudioSink for NativeAudioSink {
         self.plugins.reopen_ready()
     }
     fn finish_plugin_state_restore(&mut self, context: AudioSourceContext, accepted: bool) {
-        if self.plugins.finish_reopen(context, accepted) && accepted {
+        if self.plugins.finish_reopen(context, accepted)
+            && accepted
+            && self
+                .document_rebind
+                .as_ref()
+                .is_none_or(|rebind| rebind.context != context || !rebind.restores_plugins)
+        {
             // The exact replacement graph was admitted with this unpublished
             // owner still inventoried. Retire it on control only after success.
             self.resident
@@ -1545,8 +1551,15 @@ impl WorkerAudioSink for NativeAudioSink {
                     control.reclaim();
                     control.poll_resident_publication();
                 }
-                self.plugins
-                    .poll_reopen(&mut output, self.desired.as_deref());
+                if self.document_rebind.as_ref().is_none_or(|rebind| {
+                    output
+                        .publication
+                        .control()
+                        .is_some_and(|control| rebind.ready(control))
+                }) {
+                    self.plugins
+                        .poll_reopen(&mut output, self.desired.as_deref());
+                }
                 self.plugins.poll(
                     &mut output,
                     self.desired.as_ref().map(|source| source.context()),
