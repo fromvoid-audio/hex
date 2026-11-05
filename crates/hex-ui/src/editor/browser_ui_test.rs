@@ -5685,3 +5685,6 @@ fn browser_file_result_vectors_paint_in_light_and_dark_themes(cx: &mut TestAppCo
         }
     }
 }
+
+#[path = "browser_random_ui_test.rs"]
+mod random_ui_tests;

@@ -11,6 +11,7 @@ mod history;
 mod insertion;
 mod place_icons;
 mod plugins;
+mod random;
 mod resize;
 mod samples;
 mod tree;
@@ -1890,6 +1891,13 @@ impl EditorView {
         self.restore_browser_history_position(cx);
         let path = self.browser.directory.clone();
         let folder_dialog = self.browser_folder_button(cx);
+        let control = self.browser_random_button(cx);
+        let folder_dialog = div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .child(folder_dialog)
+            .child(control);
         let section = self.browser.section.clone();
         if matches!(section, BrowserSection::All | BrowserSection::Instruments)
             && self.browser.device_catalog.is_none()
