@@ -5,6 +5,7 @@ mod bypass_latency;
 mod delay_bypass;
 mod document_output;
 mod limiter;
+mod limiter_bypass;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod plugins;
 mod recovery;
