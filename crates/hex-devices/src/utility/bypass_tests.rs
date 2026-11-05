@@ -12,15 +12,17 @@ fn state(dc: bool, bass: bool, muted: bool) -> NativeDeviceState {
         .unwrap()
         .with_output_gain_db(6.0)
         .unwrap();
+    let registry = crate::native_registry().unwrap();
     for (id, value) in [
         (parameter::DC_REMOVE, dc),
         (parameter::BASS_MONO, bass),
         (parameter::MUTE, muted),
     ] {
-        state = UTILITY_DEFINITION
+        state = registry
             .patch_parameter(&state, id, ParameterValue::Bool(value))
             .unwrap();
     }
+    assert_eq!(state.output_gain_db(), 6.0);
     state
 }
 fn chain(state: &NativeDeviceState, bypassed: bool, rate: u32) -> NativeRuntimeChain {

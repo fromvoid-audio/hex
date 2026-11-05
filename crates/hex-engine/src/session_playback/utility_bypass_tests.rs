@@ -30,9 +30,9 @@ fn utility_filter_bypass_track_return_main_matches_automated_wet_and_dry_referen
                 .with_output_gain_db(6.0)
                 .unwrap();
             for (id, value) in [(p::DC_REMOVE, dc), (p::BASS_MONO, bass), (p::MUTE, muted)] {
-                state = DEFINITION
-                    .patch_parameter(&state, id, ParameterValue::Bool(value))
-                    .unwrap();
+                state =
+                    crate::patch_native_device_parameter(&state, id, ParameterValue::Bool(value))
+                        .unwrap();
             }
             let device = DeviceSnapshot {
                 id,
@@ -123,7 +123,8 @@ fn utility_filter_bypass_track_return_main_matches_automated_wet_and_dry_referen
                 assert!(
                     wet.iter()
                         .zip(&dry)
-                        .any(|(w, d)| (w[0] - d[0]).abs() > 0.001)
+                        .any(|(w, d)| (w[0] - d[0]).abs() > 0.001),
+                    "oracle needs distinct wet/dry: location={location} dc={dc} bass={bass} muted={muted} automated={automated} bypassed={bypassed}"
                 );
                 for (index, ((actual, wet), dry)) in actual.iter().zip(wet).zip(dry).enumerate() {
                     let progress = (index + 1).min(240) as f32 / 240.0;
