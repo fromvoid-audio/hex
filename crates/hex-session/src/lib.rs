@@ -748,7 +748,15 @@ impl Session {
         &self,
         device: hex_project::DeviceId,
     ) -> Result<hex_engine::NativeDeviceClass, SessionError> {
-        for track in self.project().tracks() {
+        Self::native_device_class_for_project(self.project(), device)
+    }
+    /// Snapshot queries use the same actual owning-slot rule as live Session.
+    /// Frontend parameter requests never choose a registry/class themselves.
+    pub(crate) fn native_device_class_for_project(
+        project: &Project,
+        device: hex_project::DeviceId,
+    ) -> Result<hex_engine::NativeDeviceClass, SessionError> {
+        for track in project.tracks() {
             if track
                 .instrument()
                 .is_some_and(|instrument| instrument.id() == device)
@@ -759,13 +767,11 @@ impl Session {
                 return Ok(hex_engine::NativeDeviceClass::Effect);
             }
         }
-        if self
-            .project()
+        if project
             .return_tracks()
             .iter()
             .any(|track| track.devices().iter().any(|effect| effect.id() == device))
-            || self
-                .project()
+            || project
                 .main_devices()
                 .iter()
                 .any(|effect| effect.id() == device)
@@ -2056,6 +2062,31 @@ fn prepare_with_waveforms_using(
         let mut roots: Vec<(Audio, Shape, Arc<Waveform>)> = Vec::new();
         let mut next = BTreeMap::new();
         for view in prepared.arrangement().audio_clip_views() {
+            if let Some(map) = &view.sparse {
+                let waveform = if let Some(existing) = old.get(&view.clip).filter(|entry| {
+                    entry.waveform.bins.len() <= requested_bins
+                        && entry.waveform.shares_sparse_with(&view.audio, map)
+                }) {
+                    Arc::clone(&existing.waveform)
+                } else {
+                    Arc::new(
+                        waveform::summarize_sparse(&view.audio, Arc::clone(map), requested_bins)
+                            .map_err(|_| {
+                                hex_engine::Invalid("sparse waveform preparation failed")
+                            })?,
+                    )
+                };
+                next.insert(
+                    view.clip,
+                    service::AudioClipWaveform {
+                        waveform,
+                        offset: view.offset,
+                        length: view.length,
+                        preview_root: None,
+                    },
+                );
+                continue;
+            }
             let shape: Shape = view
                 .repeat
                 .map(|repeat| {

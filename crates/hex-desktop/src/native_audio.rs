@@ -33,7 +33,7 @@ mod route_follow;
 mod sampler;
 mod section_edit;
 mod verified_gain;
-use verified_gain::{GainWatermark, VerifiedKey, VerifiedSource};
+use verified_gain::{PreviewWatermark, VerifiedKey, VerifiedSource};
 #[cfg(all(test, feature = "allocation-probe"))]
 mod tests;
 
@@ -126,8 +126,8 @@ pub(super) struct NativeAudioSink {
     route_seen: u64,
     route_follow: route_follow::RouteFollow,
     desired: Option<Arc<CanonicalAudioSourceSnapshot>>,
-    gain_source: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
-    gain_watermark: Option<GainWatermark>,
+    verified_preview: Option<VerifiedSource>,
+    preview_watermark: Option<PreviewWatermark>,
     verified_last: Option<VerifiedKey>,
     verified_blocked: Option<VerifiedKey>,
     output: Option<WorkerPreparedOutput>,
@@ -202,8 +202,8 @@ impl NativeAudioSink {
             route_seen: 0,
             route_follow: Default::default(),
             desired: None,
-            gain_source: None,
-            gain_watermark: None,
+            verified_preview: None,
+            preview_watermark: None,
             verified_last: None,
             verified_blocked: None,
             output: None,
@@ -613,16 +613,11 @@ impl NativeAudioSink {
             return;
         };
         self.maintain_returns(control);
-        let Some(snapshot) = self
-            .gain_source
-            .as_ref()
-            .map(|source| VerifiedSource::Gain(Arc::clone(source)))
-            .or_else(|| {
-                self.desired
-                    .as_ref()
-                    .map(|source| VerifiedSource::Canonical(Arc::clone(source)))
-            })
-        else {
+        let Some(snapshot) = self.verified_preview.clone().or_else(|| {
+            self.desired
+                .as_ref()
+                .map(|source| VerifiedSource::Canonical(Arc::clone(source)))
+        }) else {
             return;
         };
         let context = snapshot.context();
@@ -1191,6 +1186,12 @@ impl WorkerAudioSink for NativeAudioSink {
     ) {
         self.receive_verified_gain(source);
     }
+    fn verified_device_parameter_source(
+        &mut self,
+        source: Arc<hex_session::service::VerifiedDeviceParameterSource>,
+    ) {
+        self.receive_verified_device(source);
+    }
     fn resident_publication_enabled(&self) -> bool {
         self.worker_owned_resident_graphs
     }
@@ -1326,14 +1327,14 @@ impl WorkerAudioSink for NativeAudioSink {
             old.context().project_generation != source.context().project_generation
         }) || source.audio_mode() != DocumentAudioMode::VerifiedStreaming
         {
-            self.gain_watermark = None;
+            self.preview_watermark = None;
         }
         if self
-            .gain_source
+            .verified_preview
             .as_ref()
-            .is_some_and(|gain| !Arc::ptr_eq(gain.canonical(), &source))
+            .is_some_and(|preview| !Arc::ptr_eq(preview.canonical_arc(), &source))
         {
-            self.gain_source = None;
+            self.verified_preview = None;
         }
         // Cancel stale preparation before any poll can classify a newly opened
         // ordinary output using the old sampler's phase.

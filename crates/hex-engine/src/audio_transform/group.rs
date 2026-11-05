@@ -10,7 +10,63 @@ pub(crate) struct GroupSource<'a> {
     pub audio: &'a Audio,
 }
 
+/// Shared selection law for semantic compilation and native storage quoting.
+pub(crate) fn sparse_group_plan(
+    clip: &hex_project::Clip,
+) -> Result<Option<(u64, usize, usize)>, Invalid> {
+    let Some(edit) = clip.audio_edit() else {
+        return Ok(None);
+    };
+    if edit.placement.is_some() || edit.content_view.is_some() {
+        return Ok(None);
+    }
+    let Some(events) = &edit.domain.events else {
+        return Ok(None);
+    };
+    let Some(anchor) = events.sources.first() else {
+        return Ok(None);
+    };
+    let extent = edit.domain.clock.length();
+    events.validate(extent)?;
+    let Some((frames, spans)) = crate::SparseFrameMap::packing_size(extent, &events.events)? else {
+        return Ok(None);
+    };
+    let projection = AudioViewProjection::new(clip, &anchor.tempo)?;
+    if projection.occurrence_count() != 1 {
+        return Ok(None);
+    }
+    let occurrence = projection.occurrence(0)?;
+    Ok((occurrence.destination_start == clip.start()
+        && occurrence.root_end.checked_sub(occurrence.root_start) == Some(clip.duration()))
+    .then_some((occurrence.root_start, frames, spans)))
+}
+
 impl AudioTransformPreparation {
+    /// Arrangement playback and worker peaks share the sparse frame law.
+    pub(crate) fn compile_arrangement_group(
+        &self,
+        clip: &hex_project::Clip,
+        sources: &[GroupSource<'_>],
+    ) -> Result<Clip, Invalid> {
+        if let Some((offset, _, _)) = sparse_group_plan(clip)?
+            && let Some(edit) = clip.audio_edit()
+            && let Some(events) = &edit.domain.events
+            && let Some(layout) =
+                crate::SparseFrameMap::for_events(edit.domain.clock.length(), &events.events)?
+        {
+            let audio = self.prepare_group_audio(clip, sources, true, Some(&layout))?;
+            return Ok(Clip::sparse_region(
+                audio,
+                Arc::new(layout),
+                clip.start(),
+                clip.duration(),
+                offset,
+            )?
+            .with_gain(clip.gain()));
+        }
+        self.compile_group(clip, sources)
+    }
+
     pub(crate) fn compile_group(
         &self,
         clip: &hex_project::Clip,
@@ -28,10 +84,10 @@ impl AudioTransformPreparation {
             && let Some(shape) =
                 super::view::root_loop(clip, edit, &AudioViewProjection::new(clip, &anchor.tempo)?)?
         {
-            let root = self.prepare_group_audio(clip, sources, true)?;
+            let root = self.prepare_group_audio(clip, sources, true, None)?;
             return super::view::looped_clip(root, clip, shape);
         }
-        let audio = self.prepare_group_audio(clip, sources, false)?;
+        let audio = self.prepare_group_audio(clip, sources, false, None)?;
         super::view::placed_clip(audio, clip)
     }
 
@@ -42,7 +98,7 @@ impl AudioTransformPreparation {
         clip: &hex_project::Clip,
         sources: &[GroupSource<'_>],
     ) -> Result<Audio, Invalid> {
-        self.prepare_group_audio(clip, sources, true)
+        self.prepare_group_audio(clip, sources, true, None)
     }
 
     fn prepare_group_audio(
@@ -50,6 +106,7 @@ impl AudioTransformPreparation {
         clip: &hex_project::Clip,
         sources: &[GroupSource<'_>],
         root_only: bool,
+        packing: Option<&crate::SparseFrameMap>,
     ) -> Result<Audio, Invalid> {
         if self.cancelled() {
             return Err(Invalid("audio preparation cancelled"));
@@ -86,7 +143,9 @@ impl AudioTransformPreparation {
             .ok_or(Invalid("grouped audio dependency missing"))?;
         let tempo = &anchor.root.tempo;
         let projection = AudioViewProjection::new(clip, tempo)?;
-        if clip.duration() > MAX_AUDIO_DOMAIN_FRAMES || projection.occurrence_count() > 8_192 {
+        if (packing.is_none() && clip.duration() > MAX_AUDIO_DOMAIN_FRAMES)
+            || projection.occurrence_count() > 8_192
+        {
             return Err(Invalid("grouped audio exceeds bounded placement work"));
         }
         // A single forward occurrence can be copied from its exact root
@@ -99,7 +158,9 @@ impl AudioTransformPreparation {
             } else {
                 0..edit.domain.clock.length()
             };
-        let root_length = root_window.end - root_window.start;
+        let root_length = packing.map_or(root_window.end - root_window.start, |map| {
+            map.packed_len() as u64
+        });
         let mut work = root_length;
         for source in sources {
             let root = &source.root.clip;
@@ -145,8 +206,8 @@ impl AudioTransformPreparation {
         // Group output is frozen in frames; translating its destination does
         // not change the captured source program or require another PCM copy.
         if let Some(audio) = self.lookup_key(anchor.audio, anchor.asset, |key| {
-            matches!(key, EntryKey::Group { root_only: old_root_only, edit: old, duration, sources: old_sources }
-                if *old_root_only == root_only && same_group_program(old, edit, root_only)
+            matches!(key, EntryKey::Group { root_only: old_root_only, sparse, edit: old, duration, sources: old_sources }
+                if *old_root_only == root_only && *sparse == packing.is_some() && same_group_program(old, edit, root_only)
                 && (root_only || *duration == clip.duration())
                 && old_sources.len() == sources.len()
                 && old_sources.iter().zip(sources).all(|((pcm, conversion, rate), source)|
@@ -212,10 +273,14 @@ impl AudioTransformPreparation {
                     continue;
                 }
                 let source_start = event.source_start + (start - event.start);
+                let packed_start = if let Some(map) = packing {
+                    map.packed_index(start as usize)
+                        .ok_or(Invalid("grouped audio sparse event is missing"))?
+                } else {
+                    (start - root_window.start) as usize
+                };
                 let destination = root_pcm
-                    .get_mut(
-                        (start - root_window.start) as usize..(end - root_window.start) as usize,
-                    )
+                    .get_mut(packed_start..packed_start + (end - start) as usize)
                     .ok_or(Invalid("grouped audio event exceeds root"))?;
                 let event_gain = event.gain.linear();
                 for (offset, frame) in destination.iter_mut().enumerate() {
@@ -260,7 +325,24 @@ impl AudioTransformPreparation {
                 }
             }
         }
-        if root_only || edit.content_view.is_none() {
+        if let Some(map) = packing {
+            let mut result = Ok(());
+            map.visit(
+                root_window.start as usize..root_window.end as usize,
+                |root, packed| {
+                    if result.is_ok() {
+                        result = mapping::apply_fade(
+                            &mut root_pcm[packed],
+                            root.start as u64,
+                            edit,
+                            tempo,
+                            &self.shutdown,
+                        );
+                    }
+                },
+            );
+            result?;
+        } else if root_only || edit.content_view.is_none() {
             mapping::apply_fade(
                 &mut root_pcm,
                 root_window.start,
@@ -322,6 +404,7 @@ impl AudioTransformPreparation {
             source: anchor.audio.clone(),
             key: EntryKey::Group {
                 root_only,
+                sparse: packing.is_some(),
                 edit: edit.clone(),
                 duration: clip.duration(),
                 sources: identities,

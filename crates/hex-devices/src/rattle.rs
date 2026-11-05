@@ -18,6 +18,8 @@
 //! recursive history, recursive states flush denormals, and long exact silence
 //! clears every history, giving an explicit finite tail. No callback allocation,
 //! locks, logging, resources or project-schema changes are needed.
+//! The host keeps this same 11-frame latency during bypass, advancing ordinary
+//! processing/automation and finite-tail history behind an aligned dry ramp.
 //!
 //! This is an independent implementation from a behavioural description of a
 //! third-party device. It establishes no measured transfer function or parity
@@ -344,6 +346,13 @@ impl PreparedRattle {
 }
 
 impl PreparedNativeProcessor for PreparedRattle {
+    // Keep the exact 11-frame dry delay and ordinary wet processing (including
+    // automation, noise/filter/envelope state and finite-tail guards) warm.
+    // The host owns the bounded dry history and transactional bypass ramp.
+    fn supports_latency_aligned_bypass(&self) -> bool {
+        true
+    }
+
     fn parameter_automation_descriptor(
         &self,
         parameter: ParameterId,

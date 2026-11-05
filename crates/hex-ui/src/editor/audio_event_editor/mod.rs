@@ -27,6 +27,7 @@ use super::{
 use gpui::{Bounds, Pixels};
 use hex_project::{AudioClipEdit, AudioEvent, AudioEventEdit, ClipId};
 use hex_session::service::Request;
+pub(super) use placement::MusicalEventWaveform;
 pub(in crate::editor) use play_start::Camera as PlayStartCamera;
 pub(super) use view::view;
 
@@ -61,6 +62,9 @@ pub(in crate::editor) fn event_grid_origin(root: &AudioClipEdit) -> u64 {
 /// Grouped events and processed frame roots expose their retained material
 /// independently of the Arrangement window.
 fn content_bounds(root: &AudioClipEdit) -> (u64, u64) {
+    if root.domain.musical_event_source.is_some() {
+        return (0, root.domain.clock.length());
+    }
     if root.domain.events.as_ref().is_some_and(|events| {
         !events.sources.is_empty()
             || (matches!(root.timing, hex_project::AudioClipTiming::Frames)
@@ -103,12 +107,35 @@ pub(super) struct State {
     range: Option<(u64, u64)>,
     grid: SnapGrid,
     pub(super) fade_key_held: bool,
+    fade_hover: Option<u64>,
     bounds: Option<Bounds<Pixels>>,
     pub(super) gesture: Option<Gesture>,
     clipboard: Option<Clipboard>,
     pending: Option<pending::Pending>,
 }
 impl State {
+    fn set_fade_hover(
+        &mut self,
+        owner: (ClipId, u64),
+        revision: u64,
+        event: u64,
+        hovered: bool,
+    ) -> bool {
+        if self.owner != Some(owner) || self.revision != revision {
+            return false;
+        }
+        let next = if hovered {
+            Some(event)
+        } else {
+            self.fade_hover.filter(|id| *id != event)
+        };
+        if self.fade_hover == next {
+            return false;
+        }
+        self.fade_hover = next;
+        true
+    }
+
     pub(super) fn clear_fit_back(&mut self) {
         self.fit_back = None;
         self.fit_back_negative = 0;
@@ -162,6 +189,10 @@ enum Kind {
         limits: (i64, i64),
     },
     Move(AudioEvent),
+    Duplicate {
+        event: AudioEvent,
+        limits: Option<(i64, i64)>,
+    },
     FreeMove {
         event: AudioEvent,
         limits: (i64, i64),
@@ -668,10 +699,16 @@ impl EditorView {
                     destination,
                 });
             }
-            Kind::FreeMove { .. } | Kind::FreeRangeMove { .. } => {
-                self.update_free_event_placement(&mut gesture, x, platform)
-            }
-            Kind::Move(event) => {
+            Kind::FreeMove { .. }
+            | Kind::FreeRangeMove { .. }
+            | Kind::Duplicate {
+                limits: Some(_), ..
+            } => self.update_free_event_placement(&mut gesture, x, platform),
+            Kind::Move(event)
+            | Kind::Duplicate {
+                event,
+                limits: None,
+            } => {
                 let candidate =
                     (i128::from(event.start) + i128::from(raw) - i128::from(gesture.anchor)).clamp(
                         i128::from(content_bounds(&root).0),
@@ -692,10 +729,19 @@ impl EditorView {
                             .saturating_sub(event.length())
                             .max(content_bounds(&root).0),
                     );
-                gesture.operation = Some(AudioEventEdit::Move {
-                    event: event.id,
-                    start,
-                });
+                gesture.operation = if matches!(gesture.kind, Kind::Duplicate { .. }) {
+                    i64::try_from(start)
+                        .ok()
+                        .map(|start| AudioEventEdit::Duplicate {
+                            event: event.id,
+                            start,
+                        })
+                } else {
+                    Some(AudioEventEdit::Move {
+                        event: event.id,
+                        start,
+                    })
+                };
             }
             Kind::Leading(event) => {
                 let start =
@@ -769,8 +815,16 @@ impl EditorView {
         else {
             return;
         };
-        if !trim && let Ok((first, last)) = clip.audio_event_placement_bounds(event.id) {
-            let raw = next - i128::from(clip.start()) + i128::from(origin);
+        if !trim
+            && let Ok((first, last)) =
+                state
+                    .project
+                    .audio_event_drag_bounds(clip_id, event.start, event.end)
+        {
+            let frame = next - i128::from(clip.start()) + i128::from(origin);
+            let Ok(raw) = root.signed_root_position_at(frame, state.project.tempo_map()) else {
+                return;
+            };
             let start = raw.clamp(i128::from(first), i128::from(last)) as i64;
             self.event_commit(AudioEventEdit::Place {
                 event: event.id,
@@ -807,6 +861,36 @@ impl EditorView {
             self.audio_event_editor.range = Some((editor_bounds(&root).0, editor_bounds(&root).1));
             self.audio_event_editor.cursor = editor_bounds(&root).0;
         }
+    }
+    fn duplicate_selected_event(&mut self) {
+        let Some(selected) = self.audio_event_editor.selected else {
+            return;
+        };
+        let Some((clip, _, _)) = self.event_context() else {
+            return;
+        };
+        let Some(source) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.clip(clip))
+        else {
+            return;
+        };
+        let Some(event) = source
+            .editable_audio_events()
+            .ok()
+            .and_then(|events| events.events.into_iter().find(|event| event.id == selected))
+        else {
+            return;
+        };
+        let Ok(start) = i64::try_from(event.end) else {
+            self.error = Some("audio event duplicate exceeds its timeline".into());
+            return;
+        };
+        self.event_commit(AudioEventEdit::Duplicate {
+            event: event.id,
+            start,
+        });
     }
     fn event_duplicate(&mut self) {
         let Some((start, end)) = self.event_range() else {

@@ -500,6 +500,7 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
             domain: Arc::new(AudioClipDomain {
                 content: Arc::new(hex_project::AudioClipContent {
                     events: None,
+                    musical_event_source: None,
                     source_offset: d.source_offset,
                     source_length: d.source_length,
                     clock: match d.clock {

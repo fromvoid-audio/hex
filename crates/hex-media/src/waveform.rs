@@ -1,6 +1,7 @@
 //! Control-side peak summaries. Compute once after import, cache for visible UI.
 use crate::ImportError;
-use hex_engine::Audio;
+use hex_engine::{Audio, SparseFrameMap};
+use std::{ops::Range, sync::Arc};
 
 pub const MAX_BINS: usize = 65_536;
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -17,6 +18,7 @@ pub struct Waveform {
     // Pairwise extrema above the leaf bins; built once on the control worker.
     levels: Vec<Vec<[Peak; 2]>>,
     samples: Option<Audio>,
+    sparse: Option<Arc<SparseFrameMap>>,
     /// Present when summary frame `f` reads `samples[offset + (phase + f) % period]`.
     repeat: Option<Repeat>,
     // A bounded pyramid for one cycle prevents an extended clip from losing
@@ -37,6 +39,16 @@ impl Waveform {
     /// A repeated summary never matches here; see `shares_repeat_with`.
     pub fn shares_audio_with(&self, audio: &Audio) -> bool {
         self.repeat.is_none()
+            && self.sparse.is_none()
+            && self
+                .samples
+                .as_ref()
+                .is_some_and(|samples| samples.shares_pcm_with(audio))
+    }
+
+    /// Packed samples alone do not identify their positions on the timeline.
+    pub fn shares_sparse_with(&self, audio: &Audio, map: &SparseFrameMap) -> bool {
+        self.sparse.as_deref() == Some(map)
             && self
                 .samples
                 .as_ref()
@@ -65,6 +77,9 @@ impl Waveform {
 
     /// Exact extrema of retained PCM over a nonempty summary range.
     fn exact_range(&self, start: usize, end: usize) -> Option<[Peak; 2]> {
+        if let Some(map) = &self.sparse {
+            return Some(sparse_peaks(self.samples.as_ref()?, map, start..end));
+        }
         let mut peaks = self.sample(start)?.map(|sample| Peak {
             min: sample,
             max: sample,
@@ -121,6 +136,7 @@ impl Waveform {
             bins,
             levels,
             samples: None,
+            sparse: None,
             repeat: None,
             repeat_root: None,
         })
@@ -152,6 +168,15 @@ impl Waveform {
         self.repeat.is_some()
     }
 
+    fn pcm_frames(&self, range: Range<usize>) -> usize {
+        let Some(map) = &self.sparse else {
+            return range.len();
+        };
+        let mut count = 0;
+        map.visit(range, |_, packed| count += packed.len());
+        count
+    }
+
     /// Exact resident-PCM extrema for a caller-bounded range. Returns `None`
     /// when PCM is not retained or the range exceeds the caller's work limit.
     fn exact_peaks_for_frames(
@@ -162,7 +187,7 @@ impl Waveform {
     ) -> Option<[Peak; 2]> {
         let start = start.min(self.source_frames);
         let end = end.min(self.source_frames);
-        if start >= end || end - start > max_frames {
+        if start >= end || self.pcm_frames(start..end) > max_frames {
             return None;
         }
         self.exact_range(start, end)
@@ -239,7 +264,9 @@ impl Waveform {
         } else {
             boundary(last)
         };
-        let partial = (whole_start - start).checked_add(end - whole_end)?;
+        let partial = self
+            .pcm_frames(start..whole_start)
+            .checked_add(self.pcm_frames(whole_end..end))?;
         if partial > max_pcm_frames {
             return None;
         }
@@ -354,6 +381,51 @@ pub fn summarize(audio: &Audio, requested_bins: usize) -> Result<Waveform, Impor
     let mut waveform = summarize_peaks(audio, requested_bins)?;
     waveform.samples = Some(audio.clone());
     Ok(waveform)
+}
+
+/// Summarize a packed resident root with exact silence for its empty intervals.
+pub fn summarize_sparse(
+    audio: &Audio,
+    map: Arc<SparseFrameMap>,
+    requested_bins: usize,
+) -> Result<Waveform, ImportError> {
+    if !(1..=MAX_BINS).contains(&requested_bins) || audio.frames().len() != map.packed_len() {
+        return Err(ImportError::LimitExceeded("invalid sparse waveform extent"));
+    }
+    let frames = map.extent();
+    let count = requested_bins.min(frames);
+    let mut bins = Vec::new();
+    bins.try_reserve_exact(count)
+        .map_err(|_| ImportError::AllocationFailed)?;
+    let width = frames / count;
+    let extra = frames % count;
+    let mut start = 0;
+    for bin in 0..count {
+        let end = start + width + usize::from(bin < extra);
+        bins.push(sparse_peaks(audio, &map, start..end));
+        start = end;
+    }
+    let mut waveform = Waveform::from_peaks(frames, bins)?;
+    waveform.samples = Some(audio.clone());
+    waveform.sparse = Some(map);
+    Ok(waveform)
+}
+
+fn sparse_peaks(audio: &Audio, map: &SparseFrameMap, range: Range<usize>) -> [Peak; 2] {
+    const SILENCE: [Peak; 2] = [Peak { min: 0.0, max: 0.0 }; 2];
+    let length = range.len();
+    let mut occupied = 0;
+    let mut result = None;
+    map.visit(range, |_, packed| {
+        occupied += packed.len();
+        for &sample in &audio.frames()[packed] {
+            include(&mut result, sample.map(|x| Peak { min: x, max: x }));
+        }
+    });
+    if occupied < length {
+        include(&mut result, SILENCE);
+    }
+    result.unwrap_or(SILENCE)
 }
 
 /// Summary of `frames` frames looping `audio[offset..offset + period)` from

@@ -111,6 +111,7 @@ pub struct AssetSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSnapshot {
+    pub tags: Vec<String>,
     pub kind: crate::TrackKind,
     pub parent_group: Option<u64>,
     pub color: crate::ElementColor,
@@ -332,6 +333,11 @@ impl Project {
                 .tracks
                 .iter()
                 .map(|track| TrackSnapshot {
+                    tags: track
+                        .tags
+                        .iter()
+                        .map(|tag| tag.as_str().to_owned())
+                        .collect(),
                     kind: track.kind,
                     parent_group: track.parent_group.map(TrackId::value),
                     color: track.color,
@@ -1123,6 +1129,7 @@ impl Project {
                 });
             }
             tracks.push(Track {
+                tags: crate::track_tags::snapshot_list(track.tags)?,
                 kind: track.kind,
                 parent_group: track.parent_group.map(TrackId),
                 color: track.color,

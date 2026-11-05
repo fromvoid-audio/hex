@@ -21,7 +21,7 @@ mod budget;
 mod content;
 mod events;
 mod group;
-pub(crate) use group::GroupSource;
+pub(crate) use group::{GroupSource, sparse_group_plan};
 mod mapping;
 mod view;
 use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
@@ -132,6 +132,7 @@ enum EntryKey {
     },
     Group {
         root_only: bool,
+        sparse: bool,
         edit: AudioClipEdit,
         duration: u64,
         sources: Vec<(Audio, u32, u32)>,
@@ -586,13 +587,37 @@ impl AudioTransformPreparation {
                 cache.evict_oldest()?;
             }
         }
+        let source_edit = edit
+            .domain
+            .musical_event_source
+            .map(|source| {
+                let origin = edit.processing_origin()? + i128::from(source.zero_in_destination);
+                let mut root = view::occurrence_edit(edit, origin, self, tempo_map)?;
+                root.view_end = source.length.raw();
+                let domain = Arc::make_mut(&mut root.domain);
+                domain.clock = hex_project::AudioDomainClock::Beats(source.length);
+                domain.musical_event_source = None;
+                domain.events = None;
+                Ok::<_, Invalid>(root)
+            })
+            .transpose()?;
+        let read_root = source_edit.as_ref().unwrap_or(edit);
+        let read_length = if source_edit.is_some() {
+            read_root.projected_domain(tempo_map)?.1
+        } else {
+            length
+        };
         let reservation = self.reserve_with_eviction(bytes)?;
         let scratch_reservation = if edit.domain.events.is_some() {
-            Some(self.reserve_with_eviction(bytes)?)
+            let scratch_bytes = usize::try_from(read_length)
+                .ok()
+                .and_then(|length| length.checked_mul(std::mem::size_of::<crate::Frame>()))
+                .ok_or(Invalid("audio event source byte count overflow"))?;
+            Some(self.reserve_with_eviction(scratch_bytes)?)
         } else {
             None
         };
-        let (map, attacks) = mapping::prepare_map(edit, tempo_map, &self.shutdown)?;
+        let (map, attacks) = mapping::prepare_map(read_root, tempo_map, &self.shutdown)?;
         let mut envelope = Vec::new();
         envelope
             .try_reserve_exact(edit.domain.source_gain.len())
@@ -620,7 +645,7 @@ impl AudioTransformPreparation {
             attacks: &attacks,
             input,
             map: &map,
-            output_frames: length as usize,
+            output_frames: read_length as usize,
             pitch_cents: domain.pitch_cents,
             mode,
         };
@@ -633,8 +658,11 @@ impl AudioTransformPreparation {
             rendered.frames = events::compose(
                 events::EventSource {
                     frames: &rendered.frames,
-                    root: edit,
-                    zero_in_destination: 0,
+                    root: read_root,
+                    zero_in_destination: edit
+                        .domain
+                        .musical_event_source
+                        .map_or(0, |source| source.zero_in_destination),
                 },
                 edit,
                 tempo_map,

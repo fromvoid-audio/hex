@@ -65,6 +65,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok::<_, hex_project::Invalid>(TrackSnapshot {
+                tags: Vec::new(),
                 kind: hex_project::TrackKind::Ordinary,
                 parent_group: None,
                 color: hex_project::ElementColor::default(),

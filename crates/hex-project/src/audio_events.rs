@@ -93,6 +93,12 @@ pub enum AudioEventEdit {
         event: u64,
         start: u64,
     },
+    /// Copy one event to a signed root-clock position with a fresh identity.
+    /// The destination may overwrite other events but must leave the source intact.
+    Duplicate {
+        event: u64,
+        start: i64,
+    },
     MoveRange {
         start: u64,
         end: u64,
@@ -526,6 +532,31 @@ impl AudioEvents {
                     length,
                 )?;
             }
+            AudioEventEdit::Duplicate { event, start } => {
+                let source = next
+                    .events
+                    .iter()
+                    .find(|item| item.id == event)
+                    .copied()
+                    .ok_or(Invalid("audio event no longer exists"))?;
+                let start = u64::try_from(start)
+                    .map_err(|_| Invalid("audio event duplicate precedes its container"))?;
+                let end = start
+                    .checked_add(source.length())
+                    .filter(|end| *end <= length)
+                    .ok_or(Invalid("audio event duplicate exceeds its container"))?;
+                if start < source.end && source.start < end {
+                    return Err(Invalid("audio event duplicate overlaps its source"));
+                }
+                next.carve(start, end)?;
+                let id = next.id()?;
+                next.events.push(AudioEvent {
+                    id,
+                    start,
+                    end,
+                    ..source
+                });
+            }
             AudioEventEdit::Move { event, start } => {
                 let index = next
                     .events
@@ -742,7 +773,9 @@ pub(crate) fn apply(
     })?;
     if matches!(
         operation,
-        AudioEventEdit::Place { .. } | AudioEventEdit::PlaceRange { .. }
+        AudioEventEdit::Place { .. }
+            | AudioEventEdit::PlaceRange { .. }
+            | AudioEventEdit::Duplicate { .. }
     ) {
         let candidate = crate::audio_event_timeline::prepare(project, clip, &operation)?;
         *project.clip_mut(clip)? = candidate;

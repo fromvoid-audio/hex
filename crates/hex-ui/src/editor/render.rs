@@ -966,6 +966,11 @@ impl Render for EditorView {
                 view.browser_next(window, cx);
             }))
             .on_action(
+                cx.trace(|view, _: &super::BrowserRandomSample, window, cx| {
+                    view.browser_random_sample(window, cx);
+                }),
+            )
+            .on_action(
                 cx.trace(|view, _: &super::BrowserPreviewSelected, window, cx| {
                     view.browser_preview_selected(window, cx);
                 }),
