@@ -1,7 +1,6 @@
 //! Standalone private kernel probe using the existing allowed test-only counter.
 //! No audio callback, provider, publication or native deadline coverage.
-#![cfg(feature = "allocation-probe")]
-#[path = "../../hex-devices/src/operator_filter_lowpass.rs"]
+#[path = "../../../hex-devices/src/operator_filter_lowpass.rs"]
 mod filter;
 use filter::{Error, Lowpass, PreparedLowpass};
 

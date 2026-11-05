@@ -1,5 +1,4 @@
 //! Independently linked test of the real ordinary streamed publication boundary.
-#![cfg(feature = "allocation-probe")]
 use hex_audio::{
     audio_diagnostics::{AudioDiagnosticKind, AudioDiagnosticsFlags},
     prepared::{AdmittedPublishError, FreshRuntimeCancellationResult, PublicationPolicy},

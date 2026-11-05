@@ -1,5 +1,4 @@
 //! Real prepared publication with stateful Main; no native device or OS audio.
-#![cfg(feature = "allocation-probe")]
 use allocation_counter::measure;
 use hex_audio::prepared;
 use hex_engine::{
@@ -196,7 +195,7 @@ fn latency_delayed_metronome_mix_handoff_and_stop_allocate_and_drop_nothing() {
     assert!(Arc::strong_count(&next) >= 1);
 }
 
-#[path = "../../hex-engine/examples/support/latency_fixture.rs"]
+#[path = "../../../hex-engine/examples/support/latency_fixture.rs"]
 mod latency_fixture;
 
 #[test]

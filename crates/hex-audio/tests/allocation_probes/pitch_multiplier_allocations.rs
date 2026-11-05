@@ -1,6 +1,5 @@
 //! Standalone control-math probe, not native callback or pitch admission.
-#![cfg(feature = "allocation-probe")]
-#[path = "../../hex-devices/src/pitch_multiplier.rs"]
+#[path = "../../../hex-devices/src/pitch_multiplier.rs"]
 mod pitch;
 use pitch::{Error, Multiplier};
 

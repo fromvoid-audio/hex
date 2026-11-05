@@ -1,5 +1,4 @@
 //! Loop launch, dense wrapping and stop through the real prepared callback.
-#![cfg(feature = "allocation-probe")]
 use allocation_counter::measure;
 use hex_audio::prepared;
 use hex_engine::{

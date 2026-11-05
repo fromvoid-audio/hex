@@ -1,7 +1,5 @@
 //! Real compensated Session callback with allocation and independent PCM checks.
-#![cfg(feature = "allocation-probe")]
-#[path = "callback_allocations/probe.rs"]
-mod probe;
+use super::callback_allocations::probe;
 use hex_audio::prepared;
 use hex_engine::{
     Audio, LaunchQuantization, PreparedRevision, SessionPlaybackCommand, SineTable,
