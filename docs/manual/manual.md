@@ -65,6 +65,14 @@ keep the original project and its media if opening fails. an unsupported or
 malformed format needs its reported recovery path; changing the filename does
 not convert it. compatibility with every historical alpha file is not implied.
 
+## quit with work in progress
+
+quitting from the dock uses the same confirmation as quitting from the app
+menu. if hex asks whether to discard unsaved work, choose **cancel** to return
+to the project and save it. **discard** closes the project and can cancel an
+export in progress. finish a recording or resolve a retained take before
+quitting.
+
 ## missing media
 
 when you open a project whose audio files have moved, hex shows the
@@ -629,6 +637,11 @@ as projects grow, ordinary audio clips can play directly from their original
 files while retaining their complete duration. single-file and bulk imports keep
 this behavior; a bulk drop remains one undo step. keep those files available for
 playback, save/reopen and export.
+
+the **disk** indicator lights when streamed data arrives too late for playback. hover
+over it to see how many playback callbacks were affected on the current output.
+it clears three seconds after the last reported increase. short fades ease the
+transition into and out of missing audio.
 
 on an arrangement audio clip, hover over the top edge between the trim corners
 and drag vertically to adjust clip gain. drag down to reduce or up to increase;

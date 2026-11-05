@@ -77,7 +77,7 @@ impl super::EditorView {
         self.output_meter_frame = frame;
         let overload_changed = self
             .disk_overload
-            .observe(frame.map(|frame| frame.stream_starved), now);
+            .observe(frame.map(|frame| (frame.source, frame.stream_starved)), now);
         self.redraw_gate.should_redraw(
             visible_change || availability_changed || overload_changed || cpu_changed,
             frame,
