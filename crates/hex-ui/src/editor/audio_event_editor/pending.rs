@@ -9,6 +9,7 @@ pub(super) struct Pending {
     pub(super) owner: (ClipId, u64),
     pub(super) operation: AudioEventEdit,
     pub(super) preview: AudioEvents,
+    pub(super) placement: Option<std::sync::Arc<placement::Preview>>,
     receipt: Receipt,
     intent: Option<u64>,
     before: Selection,
@@ -35,14 +36,19 @@ impl EditorView {
         let Some(source) = self.state.as_ref().and_then(|s| s.project.clip(clip)) else {
             return;
         };
-        let preview = match source
-            .editable_audio_events()
-            .and_then(|events| events.edited(operation.clone(), root.domain.clock.length()))
-        {
-            Ok(events) => events,
-            Err(error) => {
-                self.error = Some(error.0.into());
-                return;
+        let placement = self.placement_preview(&operation);
+        let preview = if let Some(placement) = &placement {
+            placement.clip().audio_events()
+        } else {
+            match source
+                .editable_audio_events()
+                .and_then(|events| events.edited(operation.clone(), root.domain.clock.length()))
+            {
+                Ok(events) => events,
+                Err(error) => {
+                    self.error = Some(error.0.into());
+                    return;
+                }
             }
         };
         self.advance_selection_intent();
@@ -82,6 +88,7 @@ impl EditorView {
             owner: (clip, self.project_generation),
             operation: operation.clone(),
             preview,
+            placement,
             receipt: Receipt::new(self.project_generation),
             intent: self.selection_intent_epoch,
             before,

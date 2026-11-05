@@ -10,7 +10,7 @@ impl Kind {
         match self {
             Self::Select => CursorStyle::Arrow,
             Self::PlayStart { .. } => CursorStyle::ResizeLeftRight,
-            Self::RangeMove { .. } | Self::Move(_) => CursorStyle::OpenHand,
+            Self::RangeMove { .. } | Self::Move(_) | Self::FreeMove { .. } => CursorStyle::OpenHand,
             Self::Leading(_) => CursorStyle::ResizeLeftBracket,
             Self::Trailing(_) => CursorStyle::ResizeRightBracket,
             Self::Fade(fade) => fade.pointer_cursor(),

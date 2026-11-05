@@ -121,7 +121,8 @@ pub enum AudioEventEdit {
     },
     /// Place one event anywhere on its clip's free event timeline. `start` is a
     /// signed root-clock position relative to the current root origin; a frame
-    /// one-shot root first becomes a grouped timeline, then grows to fit.
+    /// one-shot root first becomes a grouped timeline. A raw source loop keeps
+    /// its source phase. The destination grows within the processing budget.
     Place {
         event: u64,
         start: i64,

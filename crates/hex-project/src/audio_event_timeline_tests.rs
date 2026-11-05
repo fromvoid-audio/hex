@@ -116,14 +116,14 @@ fn placement_refuses_unsupported_roots_and_unbounded_timelines() {
     }
     assert!(place(&mut editor, clip, 9, 10).is_err());
     editor
-        .execute(Command::SetClipLooping {
+        .execute(Command::SetAudioClipMusical {
             clip,
-            looping: true,
+            enabled: true,
         })
         .unwrap();
-    let looped = editor.project().clone();
+    let musical = editor.project().clone();
     assert!(place(&mut editor, clip, 1, 120).is_err());
-    assert_eq!(editor.project(), &looped);
+    assert_eq!(editor.project(), &musical);
     assert!(editor.undo());
     assert_eq!(editor.project(), &before);
 }
