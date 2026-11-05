@@ -117,17 +117,9 @@ impl EditorView {
 
     pub(super) fn tick_track_performance(&mut self, now: Instant) -> bool {
         let state = &mut self.track_performance;
-        if !state.enabled
-            || state
-                .updated
-                .is_some_and(|previous| now.saturating_duration_since(previous) < REFRESH)
-        {
+        if !state.enabled {
             return false;
         }
-        let elapsed = state.updated.map_or(0.0, |previous| {
-            now.saturating_duration_since(previous).as_secs_f32()
-        });
-        state.updated = Some(now);
         let Some(audio) = self.audio.as_ref() else {
             return state.unavailable(Availability::Unavailable);
         };
@@ -174,10 +166,23 @@ impl EditorView {
         if state.identity != Some(identity) {
             state.entries.clear();
             state.identity = Some(identity);
+            state.updated = None;
             observation.set_render_work_enabled(false);
             observation.set_render_work_enabled(true);
             changed = true;
         }
+        // The refresh interval bounds meter reads, not invalidation. An edit,
+        // stop or output replacement must retire the previous display at once.
+        if state
+            .updated
+            .is_some_and(|previous| now.saturating_duration_since(previous) < REFRESH)
+        {
+            return changed;
+        }
+        let elapsed = state.updated.map_or(0.0, |previous| {
+            now.saturating_duration_since(previous).as_secs_f32()
+        });
+        state.updated = Some(now);
         changed |= state.availability != Availability::Fresh;
         state.availability = Availability::Fresh;
         for (owner, meter) in observation.render_work_meters() {

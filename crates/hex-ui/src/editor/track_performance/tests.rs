@@ -198,3 +198,29 @@ fn view_action_toggles_actual_arrangement_and_console_headers(cx: &mut gpui::Tes
     visual.run_until_parked();
     assert!(visual.debug_bounds("track-performance-0-1").is_none());
 }
+
+#[cfg(feature = "ui-test-support")]
+#[gpui::test]
+fn missing_output_invalidates_cached_work_inside_the_sample_interval(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::editor::clip_drag_ui_test::editor_window;
+    use std::sync::Arc;
+
+    let (_, editor) = editor_window(cx, Project::new(48_000).unwrap(), Arc::default());
+    let now = Instant::now();
+    let owner = owner();
+    editor.update(cx, |view, _| {
+        view.track_performance = fixture(owner, now, 250);
+        view.track_performance.updated = Some(now);
+        assert_eq!(
+            view.track_performance.appearance(owner, now),
+            (Availability::Fresh, 4)
+        );
+        assert!(view.tick_track_performance(now));
+        assert_eq!(
+            view.track_performance.appearance(owner, now),
+            (Availability::Unavailable, 0)
+        );
+    });
+}
