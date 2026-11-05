@@ -1,7 +1,10 @@
 //! Control-side peak summaries. Compute once after import, cache for visible UI.
 use crate::ImportError;
 use hex_engine::{Audio, SparseFrameMap};
-use std::{ops::Range, sync::Arc};
+use std::{
+    ops::Range,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 pub const MAX_BINS: usize = 65_536;
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -490,13 +493,35 @@ pub fn summarize_repeated(
 /// Peak-only browser metadata. Decoded PCM is borrowed during construction and
 /// is not kept alive by the summary or its range-query hierarchy.
 pub fn summarize_peaks(audio: &Audio, requested_bins: usize) -> Result<Waveform, ImportError> {
-    if requested_bins == 0 || requested_bins > MAX_BINS {
-        return Err(ImportError::LimitExceeded("waveform bins must be 1..65536"));
-    }
     summarize_slice(audio.frames(), requested_bins)
 }
 
+/// Peak-only summary with cooperative cancellation on the control worker.
+/// Checks before allocation, between bins and at most every 65,536 PCM frames
+/// inside a bin. Pyramid construction is bounded by [`MAX_BINS`]; cancellation
+/// is checked again afterwards. An uninterrupted result has the same peak bits
+/// and range queries as [`summarize_peaks`]. Never returns a partial waveform.
+pub fn summarize_peaks_cancellable(
+    audio: &Audio,
+    requested_bins: usize,
+    cancel: &AtomicBool,
+) -> Result<Waveform, ImportError> {
+    summarize_slice_with_check(audio.frames(), requested_bins, || crate::cancelled(cancel))
+}
+
 fn summarize_slice(frames: &[[f32; 2]], requested_bins: usize) -> Result<Waveform, ImportError> {
+    summarize_slice_with_check(frames, requested_bins, || Ok(()))
+}
+
+fn summarize_slice_with_check(
+    frames: &[[f32; 2]],
+    requested_bins: usize,
+    mut check: impl FnMut() -> Result<(), ImportError>,
+) -> Result<Waveform, ImportError> {
+    check()?;
+    if requested_bins == 0 || requested_bins > MAX_BINS {
+        return Err(ImportError::LimitExceeded("waveform bins must be 1..65536"));
+    }
     let count = requested_bins.min(frames.len());
     let mut bins = Vec::new();
     bins.try_reserve_exact(count)
@@ -506,27 +531,93 @@ fn summarize_slice(frames: &[[f32; 2]], requested_bins: usize) -> Result<Wavefor
     let extra = frames.len() % count;
     let mut start = 0;
     for bin in 0..count {
+        check()?;
         let end = start + width + usize::from(bin < extra);
         let first = frames[start];
         let mut peaks = first.map(|sample| Peak {
             min: sample,
             max: sample,
         });
-        for frame in &frames[start + 1..end] {
-            for (peak, sample) in peaks.iter_mut().zip(frame) {
-                peak.min = peak.min.min(*sample);
-                peak.max = peak.max.max(*sample);
+        for window in frames[start + 1..end].chunks(crate::CANCEL_CHECK_FRAMES) {
+            check()?;
+            for frame in window {
+                for (peak, sample) in peaks.iter_mut().zip(frame) {
+                    peak.min = peak.min.min(*sample);
+                    peak.max = peak.max.max(*sample);
+                }
             }
         }
         bins.push(peaks);
         start = end;
     }
-    Waveform::from_peaks(frames.len(), bins)
+    let waveform = Waveform::from_peaks(frames.len(), bins)?;
+    check()?;
+    Ok(waveform)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peak_scan_cancellation_interrupts_one_large_bin() {
+        let frames = vec![[0.25, -0.5]; 4 * crate::CANCEL_CHECK_FRAMES + 7];
+        let cancel = AtomicBool::new(false);
+        let mut checks = 0;
+        let result = summarize_slice_with_check(&frames, 1, || {
+            checks += 1;
+            // Entry, bin and two scan windows have been admitted. Cancel at
+            // the next window, independently of thread scheduling or clocks.
+            if checks == 5 {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            crate::cancelled(&cancel)
+        });
+        assert!(matches!(result, Err(ImportError::Cancelled)));
+        assert_eq!(checks, 5, "no partial result or further scan after refusal");
+
+        let audio = Audio::new(48_000, frames).unwrap();
+        assert!(matches!(
+            summarize_peaks_cancellable(&audio, 1, &cancel),
+            Err(ImportError::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn uninterrupted_cancellable_peaks_preserve_bits_and_range_queries() {
+        let mut frames = vec![[-0.0, 0.0]; 2 * crate::CANCEL_CHECK_FRAMES + 7];
+        frames[crate::CANCEL_CHECK_FRAMES - 1] = [0.75, -0.5];
+        frames[crate::CANCEL_CHECK_FRAMES] = [-0.25, 0.875];
+        *frames.last_mut().unwrap() = [1.0, -1.0];
+        let audio = Audio::new(48_000, frames).unwrap();
+        let cancel = AtomicBool::new(false);
+        let bits = |peaks: Option<[Peak; 2]>| {
+            peaks.map(|peaks| peaks.map(|peak| (peak.min.to_bits(), peak.max.to_bits())))
+        };
+        for bins in [1, 17, 4096, MAX_BINS] {
+            let expected = summarize_peaks(&audio, bins).unwrap();
+            let actual = summarize_peaks_cancellable(&audio, bins, &cancel).unwrap();
+            assert_eq!(actual.source_frames, audio.frames().len());
+            assert_eq!(actual.bins.len(), expected.bins.len());
+            assert!(actual.samples.is_none());
+            for (&actual, &expected) in actual.bins.iter().zip(&expected.bins) {
+                assert_eq!(bits(Some(actual)), bits(Some(expected)));
+            }
+            for (start, end) in [
+                (0, 1),
+                (
+                    crate::CANCEL_CHECK_FRAMES - 1,
+                    crate::CANCEL_CHECK_FRAMES + 1,
+                ),
+                (0, audio.frames().len()),
+            ] {
+                assert_eq!(
+                    bits(actual.peaks_for_frames(start, end)),
+                    bits(expected.peaks_for_frames(start, end))
+                );
+            }
+        }
+    }
 
     #[test]
     fn repeated_summary_matches_materialized_loop_without_copying_pcm() {

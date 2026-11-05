@@ -2,6 +2,7 @@
 use super::*;
 use crate::resident_import::{IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT};
 use crate::service::service_tests::{TestDir, wav_mono};
+use hex_media::waveform::summarize_peaks;
 use std::{fs, thread, time::Instant};
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
