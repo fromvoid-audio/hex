@@ -61,6 +61,18 @@ fn unproved_stateful_suffix_refuses_reenable_and_keeps_previous_release() {
     check(4, 17);
 }
 
+#[test]
+fn sampler_release_rejoin_preserves_its_return_send_and_other_feeds() {
+    for block in [1, 7, 64, 512] {
+        check(5, block);
+    }
+}
+
+#[test]
+fn unproved_compensated_bypass_refuses_without_a_dropout() {
+    check(6, 17);
+}
+
 fn check(case: usize, block: usize) {
     let mut editor = Editor::new(Project::new(8000).unwrap(), 32).unwrap();
     let Created::Asset(asset) = editor
@@ -168,6 +180,36 @@ fn check(case: usize, block: usize) {
             gain: 0.25,
         })
         .unwrap();
+    if case == 5 {
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack {
+                name: "shared return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return");
+        };
+        for (track, gain) in [(track, 0.5), (unrelated, 0.25)] {
+            editor
+                .execute(Command::SetReturnSend {
+                    track,
+                    return_track: bus,
+                    gain,
+                })
+                .unwrap();
+        }
+    }
+    if case == 6 {
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+    }
     let Created::Clip(other_clip) = editor
         .execute(Command::PlaceMidiClip {
             track: unrelated,
@@ -202,7 +244,11 @@ fn check(case: usize, block: usize) {
     let off = editor.project().tempo_map().frame_to_beat(129).unwrap();
     let future = editor.project().tempo_map().frame_to_beat(300).unwrap();
     let duration = editor.project().tempo_map().frame_to_beat(16).unwrap();
-    for (target, gate) in [(&mut editor, BeatTime::ONE), (&mut oracle_editor, off)] {
+    let oracle_gate = if case == 6 { BeatTime::ONE } else { off };
+    for (target, gate) in [
+        (&mut editor, BeatTime::ONE),
+        (&mut oracle_editor, oracle_gate),
+    ] {
         target
             .execute(Command::AddMidiNote {
                 clip,
@@ -313,7 +359,7 @@ fn check(case: usize, block: usize) {
             position += n;
             assert_eq!(control.status.recovery_position(), position as u64);
         }
-        if case == 4 && !bypassed {
+        if (case == 4 && !bypassed) || (case == 6 && bypassed) {
             assert_eq!(
                 control.status.rejected_revision(),
                 Some((
