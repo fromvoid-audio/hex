@@ -955,13 +955,15 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
     for end in 0..body.len() {
         assert!(parameter_page(&body[..end], &config, 1, 7, query).is_err());
     }
+    let mut oversized = body.clone();
+    oversized[67..69].copy_from_slice(&(MAX_CONTROLLER_PARAMETERS + 1).to_le_bytes());
+    assert!(parameter_page(&oversized, &config, 1, 7, query).is_err());
     for (offset, value) in [
         (2, 8),
         (34, 2),
         (42, 7),
         (50, 8),
         (59, 8),
-        (67, 129),
         (69, 1),
         (71, 5),
         (75, 128),

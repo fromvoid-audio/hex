@@ -314,6 +314,85 @@ fn page(instance: &mut Prepared, query: ParameterPageQuery) -> Box<ParameterPage
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn large_controller_inventory_pages_pcm_and_saved_state_remain_bounded() {
+    let start = |case: &Case, inventory: &'static str, state| {
+        let setup = case.setup_restore(37);
+        Pending::prepare_with_restore(
+            &build(),
+            source(),
+            options().preparation,
+            state,
+            PreparationCancellation::new_on_control().unwrap(),
+            move |command| {
+                setup(command);
+                command.env("HEX_ORIGINAL_PARAMETER_INVENTORY", inventory);
+            },
+        )
+        .and_then(|pending| pending.complete_on_control(Some(options().presentation)))
+    };
+    let case = Case::new();
+    let mut instance = start(&case, "519", None).unwrap();
+    let first = page(&mut instance, ParameterPageQuery::default());
+    assert_eq!((first.total, first.as_slice()[0].id), (519, 7));
+    let last = page(
+        &mut instance,
+        ParameterPageQuery {
+            first: 516,
+            revision: first.revision,
+            conversion: None,
+        },
+    );
+    assert_eq!(
+        last.as_slice()
+            .iter()
+            .map(|parameter| parameter.id)
+            .collect::<Vec<_>>(),
+        [1516, 1517, 1518]
+    );
+    let mut input = request(instance.configuration(), 0);
+    input
+        .parameters
+        .push(crate::transport::ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: 0.5,
+        })
+        .unwrap();
+    let output = instance.exchange_on_worker(input).unwrap();
+    assert_eq!(&output.pcm[..8], &input.pcm[..8]);
+    let updated = page(&mut instance, ParameterPageQuery::default());
+    assert_eq!(
+        (updated.total, updated.as_slice()[0].normalized),
+        (519, 0.5)
+    );
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let (stopped, captured) = stopped.capture_state_retained_on_control().unwrap();
+    assert!(stopped.retire_on_control().unwrap().status.success());
+    let independent = Case::new();
+    let mut restored = start(&independent, "519", Some(captured)).unwrap();
+    let values = page(&mut restored, ParameterPageQuery::default());
+    assert_eq!((values.total, values.as_slice()[0].normalized), (519, 0.5));
+    assert!(
+        restored
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+    for (malformed, diagnostic) in [
+        ("577", "inventory exceeds the host capacity"),
+        ("duplicate", "invalid controller parameter inventory"),
+    ] {
+        let case = Case::new();
+        let error = start(&case, malformed, None)
+            .err()
+            .expect("inventory must refuse");
+        assert!(error.to_string().contains(diagnostic), "{error}");
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_source() {
     for variant in [91, 92] {
         let case = Case::new();

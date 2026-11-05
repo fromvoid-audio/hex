@@ -82,6 +82,13 @@ const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12
 // Original one-parameter SDK fixtures preserve the same opaque state shape.
 // Distinct variants exercise actual metadata and processing, not host guesses.
 static ParamID parameter_id(int variant) { return variant==80 || variant==89 || variant==92?0u:7u; }
+static int32 parameter_inventory_size() {
+    const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
+    if(!shape) return 1;
+    if(!std::strcmp(shape,"519") || !std::strcmp(shape,"duplicate")) return 519;
+    if(!std::strcmp(shape,"577")) return 577;
+    return 1;
+}
 static double parameter_value(int variant,double value) {
     if(variant==81) return std::round(value*3.0)/3.0;
     if(variant==82) return value>=0.5?1.0:0.0;
@@ -93,6 +100,7 @@ IComponentHandler* latency_handler=nullptr;
 class RestoreController final : public IEditController {
     std::atomic<uint32> refs{1};
     const int fault=next_fault;
+    const int32 inventory_size=parameter_inventory_size();
     FUnknown* context=nullptr;
     IComponentHandler* handler=nullptr;
     float component_gain=0;uint32 scroll=7;
@@ -197,10 +205,19 @@ public:
         int32 written=0;const auto result=stream->write(data.data(),data.size(),&written);
         trace(20);return result==kResultOk && written==8?kResultOk:kResultFalse;
     }
-    int32 PLUGIN_API getParameterCount() override { return control() && context?1:-1; }
+    int32 PLUGIN_API getParameterCount() override { return control() && context?inventory_size:-1; }
     tresult PLUGIN_API getParameterInfo(int32 index,ParameterInfo& info) override {
-        if (!control() || !context || index) return kInvalidArgument;
+        if (!control() || !context || index<0 || index>=inventory_size) return kInvalidArgument;
         ++restoration.info_reads;info={};info.id=parameter_id(fault);info.defaultNormalizedValue=fault==81?1.0/3.0:(fault==82?0.0:0.25);
+        if(index) {
+            const auto* shape=std::getenv("HEX_ORIGINAL_PARAMETER_INVENTORY");
+            if(index!=inventory_size-1 || !shape || std::strcmp(shape,"duplicate"))
+                info.id=static_cast<ParamID>(1000+index);
+            info.flags=ParameterInfo::kIsReadOnly;
+            const char16_t name[]=u"observed";
+            std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));
+            return kResultOk;
+        }
         if(fault==80 || fault==81 || fault==82 || fault==91 || fault==92) info.flags=ParameterInfo::kCanAutomate;
         if(fault==91 || fault==92) {const char16_t unit[]=u"ratio";std::memcpy(info.units,unit,sizeof(unit));}
         if(fault==81) info.stepCount=3;
@@ -210,6 +227,7 @@ public:
         const char16_t name[]=u"gain";std::memcpy(info.title,name,sizeof(name));std::memcpy(info.shortTitle,name,sizeof(name));return kResultOk;
     }
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
+        if(control() && context && id>1000 && id<static_cast<ParamID>(1000+inventory_size)) return 0.25;
         if (!control() || !context || id!=parameter_id(fault)) {++observed.violations;return 0;}
         ++restoration.value_reads;trace(19);
         if(fault==57)fault_hang(19);
