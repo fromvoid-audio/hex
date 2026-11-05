@@ -30,6 +30,7 @@ mod shared_source_allocations;
 mod short_latency_bypass;
 mod signed_envelope_allocations;
 mod spectrum_capture_allocations;
+mod static_release_receiver;
 mod stream_miss_fade;
 mod streamed_loop_seam;
 mod streamed_publication_boundary;

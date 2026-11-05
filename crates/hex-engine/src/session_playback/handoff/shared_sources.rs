@@ -31,7 +31,7 @@ pub(super) fn short_source_release_blocks_reenable(
     })
 }
 
-/// Plan a return from a detached release to the same dry receiver. Copying
+/// Plan a return from a detached release to the same static receiver. Copying
 /// the committed kernel and its ledger admits future onsets immediately;
 /// the old tail stays in the retiring graph and cannot render a second copy.
 /// Live releases require committed NoteOffs; source inheritance retains their
@@ -73,13 +73,16 @@ pub(super) fn reenabled_release_receivers(
                         && old.instrument_state == track.instrument_state
                         && old.source_id() == track.source_id()
                         && old.mix() == track.mix()
-                        && previous.device_chains[old_index].is_empty()
+                        && old.instrument_position() == track.instrument_position()
+                        && previous.device_chains[old_index]
+                            .static_processing_matches(&candidate.device_chains[index])
                         && !previous.track_faders[old_index].active()
                 });
-        // A captured effect suffix, send or compensated path has its own
-        // history. A dry receiver can take the release only when its gain
-        // and ordered matrix reproduce the captured output path.
-        let same_dry_path = candidate.compensation.is_none()
+        // Exact static chains have no processor, automation or unfinished host
+        // ramp to lose. Preserve their actual ordered processing and suffix
+        // boundary; stateful, send and compensated paths still need their own
+        // history/custody proof. Do not fold matrices or compare only their PCM.
+        let same_processing_path = candidate.compensation.is_none()
             && previous.compensation.is_none()
             && track.sends().is_empty()
             && !track.has_gain_automation()
@@ -88,10 +91,14 @@ pub(super) fn reenabled_release_receivers(
             && track.instrument_output_gain == 1.0
             && previous.tail_mixes[slot] == track.mix()
             && previous.tail_suffix_matrices[slot] == track.instrument_suffix_matrix()
-            && candidate.device_chains[index].is_empty()
-            && previous.tail_groups[slot]
-                .as_ref()
-                .is_some_and(|chain| chain.is_empty())
+            && tail_runtime_suffix_start(
+                &candidate.device_chains[index],
+                track.instrument_position(),
+            )
+            .is_ok_and(|start| previous.tail_suffix_starts[slot] == start)
+            && previous.tail_groups[slot].as_ref().is_some_and(|chain| {
+                candidate.device_chains[index].static_processing_matches(chain)
+            })
             && !previous.tail_output_active[slot]
             && !previous
                 .releases
@@ -105,7 +112,7 @@ pub(super) fn reenabled_release_receivers(
         if timing_changed
             || !previous.playing
             || !same_receiver
-            || !same_dry_path
+            || !same_processing_path
             || !released
             || receivers.contains(&Some(index))
             || candidate.mutable_instruments[index]
@@ -1437,7 +1444,12 @@ mod tests {
         on_control(|| {
             use crate::computer_keyboard::ComputerKeyboardInput;
             use crate::playback::PlaybackCommand;
-            for key_up in ["before-disable", "while-disabled", "after-reenable"] {
+            for (key_up, utility_gain_db) in [
+                ("before-disable", None),
+                ("while-disabled", None),
+                ("after-reenable", None),
+                ("after-reenable", Some(-6.0)),
+            ] {
                 let mut f = fixture();
                 let clips: Vec<_> = f
                     .editor
@@ -1469,6 +1481,20 @@ mod tests {
                 f.editor
                     .execute(Command::ReplaceDeviceState { device, state })
                     .unwrap();
+                if let Some(gain_db) = utility_gain_db {
+                    let state = hex_devices::utility::UTILITY_DEFINITION
+                        .default_state()
+                        .unwrap()
+                        .with_output_gain_db(gain_db)
+                        .unwrap();
+                    f.editor
+                        .execute(Command::InsertDevice {
+                            track: f.receiver,
+                            before: None,
+                            state,
+                        })
+                        .unwrap();
+                }
                 let input = Arc::new(ComputerKeyboardInput::default());
                 let oracle_input = Arc::new(ComputerKeyboardInput::default());
                 for keys in [&input, &oracle_input] {
@@ -1486,7 +1512,7 @@ mod tests {
                     let mut b = a.clone();
                     actual.render(&mut a).unwrap();
                     oracle.render(&mut b).unwrap();
-                    assert_eq!(a, b, "{key_up}: {phase}");
+                    assert_eq!(a, b, "{key_up}, utility={utility_gain_db:?}: {phase}");
                     if phase == "held prefix" {
                         assert!(a.iter().flatten().any(|x| x.abs() > 0.001));
                     }
@@ -1893,30 +1919,84 @@ mod tests {
         });
     }
 
+    fn long_sampler_release(f: &mut Fixture) -> hex_project::DeviceId {
+        let instrument = f
+            .editor
+            .project()
+            .track(f.receiver)
+            .unwrap()
+            .instrument()
+            .unwrap();
+        let mut state =
+            hex_devices::sampler::state::SamplerState::from_native(instrument.state()).unwrap();
+        state.envelope.release_seconds = 0.1;
+        let state = state
+            .to_native()
+            .unwrap()
+            .with_asset_references(instrument.state().asset_references().to_vec())
+            .unwrap();
+        let device = instrument.id();
+        f.editor
+            .execute(Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        device
+    }
+
     #[test]
     fn rapid_shared_source_reenable_preserves_the_original_long_release() {
         on_control(|| {
             let mut f = fixture();
-            let instrument = f
-                .editor
-                .project()
-                .track(f.receiver)
-                .unwrap()
-                .instrument()
-                .unwrap();
-            let mut state =
-                hex_devices::sampler::state::SamplerState::from_native(instrument.state()).unwrap();
-            state.envelope.release_seconds = 0.1;
-            let state = state
-                .to_native()
-                .unwrap()
-                .with_asset_references(instrument.state().asset_references().to_vec())
-                .unwrap();
-            let device = instrument.id();
-            f.editor
-                .execute(Command::ReplaceDeviceState { device, state })
-                .unwrap();
+            let device = long_sampler_release(&mut f);
             check_rapid_source_toggles(&mut f, device);
+        });
+    }
+
+    #[test]
+    fn rapid_static_utility_receiver_reenable_preserves_the_original_release() {
+        on_control(|| {
+            use hex_devices::utility::{UTILITY_DEFINITION as utility, parameter as p};
+            use hex_lattice_contract::ParameterValue;
+            for case in 0..3 {
+                let mut f = fixture();
+                let device = long_sampler_release(&mut f);
+                let mut state = utility.default_state().unwrap();
+                if case == 1 {
+                    state = utility
+                        .patch_parameter(&state, p::BALANCE, ParameterValue::Float(0.5))
+                        .unwrap();
+                    state = utility
+                        .patch_parameter(&state, p::WIDTH, ParameterValue::Float(2.0))
+                        .unwrap();
+                } else if case == 2 {
+                    state = utility
+                        .patch_parameter(&state, p::INVERT_LEFT, ParameterValue::Bool(true))
+                        .unwrap();
+                }
+                f.editor
+                    .execute(Command::InsertDevice {
+                        track: f.receiver,
+                        before: None,
+                        state,
+                    })
+                    .unwrap();
+                if case == 2 {
+                    let state = utility
+                        .patch_parameter(
+                            &utility.default_state().unwrap(),
+                            p::WIDTH,
+                            ParameterValue::Float(0.5),
+                        )
+                        .unwrap();
+                    f.editor
+                        .execute(Command::InsertDevice {
+                            track: f.receiver,
+                            before: None,
+                            state,
+                        })
+                        .unwrap();
+                }
+                check_rapid_source_toggles(&mut f, device);
+            }
         });
     }
 
