@@ -471,9 +471,12 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
             format!("stage=native_latency_restart source={source:?}")
         }
         E::DegradedPlugins {
+            project_generation,
             output_identity,
             devices,
-        } => format!("stage=degraded_plugins output={output_identity} devices={devices:?}"),
+        } => format!(
+            "stage=degraded_plugins generation={project_generation} output={output_identity} devices={devices:?}"
+        ),
         E::Publication {
             context,
             output_identity,

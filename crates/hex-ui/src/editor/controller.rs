@@ -1005,14 +1005,16 @@ impl EditorView {
                     }
                 }
                 crate::EditorAudioEvent::DegradedPlugins {
+                    project_generation,
                     output_identity,
                     devices,
                 } => {
-                    if self
-                        .audio
-                        .as_ref()
-                        .and_then(|audio| audio.control.output_identity())
-                        == Some(output_identity)
+                    if project_generation == self.project_generation
+                        && self
+                            .audio
+                            .as_ref()
+                            .and_then(|audio| audio.control.output_identity())
+                            == Some(output_identity)
                     {
                         self.degraded_plugins =
                             crate::editor_backend::DegradedDevices::new(devices);
@@ -2764,6 +2766,7 @@ impl EditorView {
             self.pending_playback = None;
             self.pending_resident_publication = None;
             self.clear_route_telemetry();
+            self.degraded_plugins = Default::default();
             self.drag_lanes.clear();
             self.track_drop_lanes.clear();
             self.drag_lane_epochs.clear();

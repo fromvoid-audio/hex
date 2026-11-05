@@ -254,6 +254,102 @@ fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return
 
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
+fn retained_native_document_retires_the_outgoing_effect_after_exact_installation() {
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_plugins(
+        host(),
+        Some(EffectPresentation {
+            input_frames: 0,
+            output_frames: 512,
+        }),
+    );
+    assert!(h.next().error.is_none());
+    let (initial, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 2048)));
+    let (imported_revision, _) = h.applied(initial);
+    h.service
+        .submit(Request::InsertPluginEffect(request(
+            &imported.state,
+            PluginEffectDestination::Main,
+        )))
+        .unwrap();
+    assert!(h.next().error.is_none());
+    let inserted = terminal(&mut h);
+    assert!(inserted.plugin_effect_complete[0].accepted);
+    let (applied, metadata) = h.applied(imported_revision);
+    let old = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .recording_source()
+        .unwrap();
+    assert_eq!(old.audio_revision, applied);
+    assert_eq!(old.context, metadata.context);
+    wait(|| h.plugin_progress.lock().unwrap().accepted);
+    let original = h.plugin_progress.lock().unwrap().binding.unwrap();
+    let new_project = || Request::NewWithAudioMode {
+        mode: DocumentAudioMode::Resident,
+        reservation: None,
+    };
+
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service.submit(new_project()).unwrap();
+    let refused = h.next();
+    assert!(!refused.project_replaced && refused.error.is_some());
+    assert_eq!(refused.state.project, inserted.state.project);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source(),
+        Some(old)
+    );
+    assert!(!h.plugin_progress.lock().unwrap().retiring);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for block in 0..3 {
+        let pcm = h.render_plugin_block();
+        wait(|| h.plugin_completed.load(Acquire) > block);
+        assert_eq!(pcm, [[if block == 2 { 0.125 } else { 0.0 }; 2]; 256]);
+    }
+    h.audio.as_ref().unwrap().control.stop();
+    h.render_plugin_block();
+
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    let new = h.run(new_project());
+    let before_installation = *h.plugin_progress.lock().unwrap();
+    assert_eq!(before_installation.binding, Some(original));
+    assert!(!before_installation.retiring);
+    let applied = super::resident_lifecycle::finish_replacement(&mut h, &new, old.output_identity);
+    let audio = h.audio.as_ref().unwrap();
+    assert_eq!(audio.control.output_identity(), Some(old.output_identity));
+    assert!(applied > old.audio_revision);
+    assert!(new.state.project.main_devices().is_empty());
+    wait(|| {
+        h.pump();
+        h.render_plugin_block();
+        h.plugin_records.load(Acquire) == 0 && h.plugin_progress.lock().unwrap().binding.is_none()
+    });
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render_plugin_block(), [[0.0; 2]; 256]);
+}
+
+#[test]
+#[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_restores_committed_effect_after_stop() {
     let _native = native_fixture();
     for location in 0..3 {

@@ -39,13 +39,14 @@ impl Plugins {
     pub fn idle(&self) -> bool {
         true
     }
-    pub(super) fn can_retain_output_for_native_document(&self) -> bool {
+    pub(super) fn can_retain_output_for_native_document(&self, _generation: u64) -> bool {
         true
     }
+    pub(super) fn retire_document_sources(&mut self, _generation: u64) {}
     pub fn ready(&self) -> bool {
         true
     }
-    pub fn take_degraded_change(&mut self) -> Option<(u64, Vec<u64>)> {
+    pub fn take_degraded_change(&mut self) -> Option<(u64, u64, Vec<u64>)> {
         None
     }
     pub fn prepare(
