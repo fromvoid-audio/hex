@@ -19,12 +19,11 @@ struct Span {
 }
 
 impl SparseFrameMap {
-    /// Select sparse packing only when it saves at least one sizeable block.
-    /// The canonical event inventory is already validated and in root order.
-    pub(crate) fn for_events(
+    /// Count occupied frames without allocating or visiting the gaps.
+    pub(crate) fn packing_size(
         extent: u64,
         events: &[hex_project::AudioEvent],
-    ) -> Result<Option<Self>, Invalid> {
+    ) -> Result<Option<(usize, usize)>, Invalid> {
         let extent =
             usize::try_from(extent).map_err(|_| Invalid("sparse audio extent overflow"))?;
         let mut packed_len = 0usize;
@@ -38,9 +37,22 @@ impl SparseFrameMap {
                 .ok_or(Invalid("sparse audio length overflow"))?;
             count += 1;
         }
-        if packed_len == 0 || extent.saturating_sub(packed_len) < 8_192 {
+        Ok(
+            (packed_len != 0 && extent.saturating_sub(packed_len) >= 8_192)
+                .then_some((packed_len, count)),
+        )
+    }
+
+    /// Construct a layout from an already validated event inventory.
+    pub(crate) fn for_events(
+        extent: u64,
+        events: &[hex_project::AudioEvent],
+    ) -> Result<Option<Self>, Invalid> {
+        let Some((packed_len, count)) = Self::packing_size(extent, events)? else {
             return Ok(None);
-        }
+        };
+        let extent =
+            usize::try_from(extent).map_err(|_| Invalid("sparse audio extent overflow"))?;
         let mut spans = Vec::new();
         spans
             .try_reserve_exact(count)
@@ -73,8 +85,16 @@ impl SparseFrameMap {
         self.packed_len
     }
 
-    pub(crate) fn allocation_bytes(&self) -> usize {
-        self.spans.capacity() * size_of::<Span>() + size_of::<Self>()
+    pub(crate) fn allocation_bytes(spans: usize) -> Option<usize> {
+        let (payload, overhead) = crate::owned_shared::OwnedShared::<Self>::declared_parts()?;
+        spans
+            .checked_mul(size_of::<Span>())?
+            .checked_add(payload)?
+            .checked_add(overhead)
+    }
+
+    pub(crate) fn retained_bytes(&self) -> Option<usize> {
+        Self::allocation_bytes(self.spans.capacity())
     }
 
     pub(crate) fn packed_index(&self, root: usize) -> Option<usize> {

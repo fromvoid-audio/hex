@@ -336,6 +336,8 @@ struct SourceSlot {
     owner: Option<OwnedAudioSource>,
     // Fresh constructor root stays here after its distinct graph alias moves.
     prepared_origin: Option<OwnedAudioSource>,
+    sparse_frames: Option<usize>,
+    sparse: Option<std::sync::Arc<crate::SparseFrameMap>>,
     transformed: bool,
     disposal: Disposal,
     #[cfg(test)]
@@ -1677,6 +1679,10 @@ impl AudioPreparationCustody {
                     },
                     owner: None,
                     prepared_origin: None,
+                    sparse_frames: crate::audio_transform::sparse_group_plan(clip)
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?
+                        .map(|(_, frames, _)| frames),
+                    sparse: None,
                     transformed,
                     disposal: Disposal::Unstarted,
                     #[cfg(test)]
@@ -1767,6 +1773,7 @@ impl AudioPreparationCustody {
             let result = catch_unwind(AssertUnwindSafe(|| {
                 drop(self.slots[index].owner.take());
                 drop(self.slots[index].prepared_origin.take());
+                drop(self.slots[index].sparse.take());
                 #[cfg(test)]
                 drop(self.slots[index].probe.take());
             }));
