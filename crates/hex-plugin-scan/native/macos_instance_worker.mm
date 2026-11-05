@@ -266,6 +266,12 @@ int main(int argc,char** argv) {
             if(configured!=hex_instance::ConfigurationResult::Prepared) {
                 failure=setup_failure(configured);throw Refusal{};
             }
+            // The SDK permits latency changes to become observable only after
+            // reactivation. Cover startup notifications before publishing facts.
+            if(instance.latency_restart()) {
+                if(!instance.reactivate_on_control()) throw Refusal{};
+                instance.cover_latency_restart(instance.latency_restart());
+            }
             failure=HostControl;instance.dispatch_host_callbacks();
             if(instance.host_refusals()) throw Refusal{};
             auto latency=instance.reported_latency_on_control();
@@ -285,9 +291,15 @@ int main(int argc,char** argv) {
             }
             failure=HostControl;instance.dispatch_host_callbacks();
             if(instance.host_refusals()) throw Refusal{};
+            failure=Presentation;
+            if(instance.latency_restart()) {
+                if(!instance.reactivate_on_control()) throw Refusal{};
+                instance.cover_latency_restart(instance.latency_restart());
+                presentation=apply_presentation(instance,*available,supplied);
+                if(!presentation || instance.latency_restart() || instance.host_refusals()) throw Refusal{};
+            }
             const auto final_latency=instance.reported_latency_on_control();
             const auto final_tail=instance.reported_tail_on_control();
-            failure=Presentation;
             if(!final_latency || !final_tail || *final_latency!=*latency || *final_tail!=*tail) throw Refusal{}; // caller's plan became stale
             instance.finish_startup_latency_observation_on_control();
             const auto hello=ready_body(*config,state,*latency,*tail,*presentation,supplied,restoration.restored());

@@ -518,6 +518,14 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(magic, b"HXVB")
         self.terminal(session, 0, message=session.stop())
 
+    def test_startup_latency_notice_is_reactivated_before_accepting_the_report(self):
+        session = self.session(variant=111, auto_present=False)
+        self.assertEqual(session.message()[0], b"HXVIFA03")
+        session.presentation(None, allow_unknown=True)
+        self.error(session, 5)
+        self.terminal(session, 5)
+        self.assertEqual((self.observation()[8], self.observation()[10]), (0, 0))
+
     def test_source_selected_persistent_pcm_positions_and_negotiated_mono_stereo(self):
         for channels in [(1, 1), (1, 2), (2, 2)]:
             with self.subTest(channels=channels):
