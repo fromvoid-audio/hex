@@ -2,6 +2,8 @@
 //! A shared Window lease owns held event/selection/fade input; pending receipts
 //! retain frozen release geometry independently until the canonical terminal.
 mod fades;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod free_placement_tests;
 mod navigation;
 mod paint;
 mod pending;
