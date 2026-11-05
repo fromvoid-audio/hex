@@ -45,6 +45,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         bounce_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
+        import_truncation: None,
         save_complete: false,
         save_correlation: None,
         document_format_upgrade_required: false,
@@ -646,4 +647,193 @@ fn failed_batch_worker_event_displays_original_path_in_status_and_tooltip(cx: &m
         })
         .expect("deliver production batch failure");
     std::fs::remove_dir_all(directory).expect("remove fixture");
+}
+
+/// One fixture output for the held-endpoint protocol tests; the fixture lease
+/// is process-wide, so retry while another test still owns it.
+fn held_fixture_audio() -> (
+    crate::editor_backend::EditorAudio,
+    hex_audio::WorkerPreparedOutput,
+    hex_audio::worker_fixture::HeadlessBackend,
+) {
+    let deadline = crate::test_wait::hang_deadline();
+    let (mut output, backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(output) => break output,
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && Instant::now() < deadline =>
+            {
+                std::thread::yield_now()
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    let audio = crate::editor_backend::EditorAudio {
+        control: output.take_client().expect("fixture client"),
+        sample_rate: 48_000,
+        label: "held output".into(),
+        spectrum_error: None,
+        mode: hex_session::DocumentAudioMode::Resident,
+    };
+    (audio, output, backend)
+}
+
+fn held_identity(view: &EditorView) -> Option<u64> {
+    view.audio
+        .as_ref()
+        .and_then(|a| a.control.output_identity())
+}
+
+#[gpui::test]
+fn held_endpoint_follows_rebound_and_release_across_generations(cx: &mut TestAppContext) {
+    let _fixture =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let window = cx.add_window(|window, cx| {
+        let service = Service::new(48_000, 8, 8_000_000).expect("test service");
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    let project = Arc::new(Project::new(48_000).expect("project"));
+    let (audio, _output, _backend) = held_fixture_audio();
+    let identity = audio.control.output_identity().expect("identity");
+    let (events, receiver) = std::sync::mpsc::sync_channel(4);
+    window
+        .update(cx, |view, _, cx| {
+            view.audio_events = receiver;
+            view.receive(event(Arc::clone(&project), 1, true));
+            let generation = view.project_generation;
+            view.audio = Some(audio);
+
+            // A rebind that overtakes its replacement waits for it and keeps
+            // the endpoint open meanwhile.
+            events
+                .send(crate::EditorAudioEvent::OutputRebound {
+                    project_generation: generation + 1,
+                    output_identity: identity,
+                })
+                .unwrap();
+            view.poll_editor_audio_events(cx);
+            assert_eq!(held_identity(view), Some(identity));
+            view.receive(event(Arc::clone(&project), 2, true));
+            assert_eq!(view.project_generation, generation + 1);
+            assert_eq!(
+                held_identity(view),
+                Some(identity),
+                "rebound kept the endpoint"
+            );
+            assert!(view.pending_audio_result.is_none());
+
+            // A stale rebind or release never touches the current endpoint.
+            for stale in [
+                crate::EditorAudioEvent::OutputRebound {
+                    project_generation: generation,
+                    output_identity: identity.wrapping_add(1),
+                },
+                crate::EditorAudioEvent::OutputReleased {
+                    project_generation: generation,
+                    old_output_identity: identity.wrapping_add(1),
+                },
+            ] {
+                events.send(stale).unwrap();
+                view.poll_editor_audio_events(cx);
+                assert_eq!(held_identity(view), Some(identity));
+            }
+
+            // A release that overtakes its replacement closes the endpoint at
+            // once, so the worker's fresh open is never blocked by this client.
+            events
+                .send(crate::EditorAudioEvent::OutputReleased {
+                    project_generation: generation + 2,
+                    old_output_identity: identity,
+                })
+                .unwrap();
+            view.poll_editor_audio_events(cx);
+            assert!(view.audio.is_none());
+            view.receive(event(Arc::clone(&project), 3, true));
+            assert!(view.audio.is_none());
+
+            // A kept output without a live client here falls back to a restart.
+            events
+                .send(crate::EditorAudioEvent::OutputRebound {
+                    project_generation: view.project_generation,
+                    output_identity: identity,
+                })
+                .unwrap();
+            view.poll_editor_audio_events(cx);
+            assert_eq!(
+                view.pending_restart_request
+                    .map(|(generation, _)| generation),
+                Some(view.project_generation)
+            );
+        })
+        .expect("held endpoint protocol");
+}
+
+#[gpui::test]
+fn delayed_release_closes_matching_endpoint_after_later_replacement(cx: &mut TestAppContext) {
+    let _fixture =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let window = cx.add_window(|window, cx| {
+        let service = Service::new(48_000, 8, 8_000_000).unwrap();
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    let project = Arc::new(Project::new(48_000).unwrap());
+    let (audio, _output, _backend) = held_fixture_audio();
+    let identity = audio.control.output_identity().unwrap();
+    let (events, receiver) = std::sync::mpsc::sync_channel(4);
+    window
+        .update(cx, |view, _, cx| {
+            view.audio_events = receiver;
+            view.receive(event(Arc::clone(&project), 1, true));
+            let generation = view.project_generation;
+            view.audio = Some(audio);
+            view.receive(event(Arc::clone(&project), 2, true));
+            view.receive(event(Arc::clone(&project), 3, true));
+            assert_eq!(held_identity(view), Some(identity));
+            events
+                .send(crate::EditorAudioEvent::OutputReleased {
+                    project_generation: generation + 1,
+                    old_output_identity: identity,
+                })
+                .unwrap();
+            view.poll_editor_audio_events(cx);
+            assert!(view.audio.is_none());
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn project_replacement_holds_resident_endpoint_until_released(cx: &mut TestAppContext) {
+    let _fixture =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    let window = cx.add_window(|window, cx| {
+        let service = Service::new(48_000, 8, 8_000_000).expect("test service");
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    let project = Arc::new(Project::new(48_000).expect("project"));
+    let (audio, _output, _backend) = held_fixture_audio();
+    let identity = audio.control.output_identity().expect("identity");
+    let (events, receiver) = std::sync::mpsc::sync_channel(4);
+    window
+        .update(cx, |view, _, cx| {
+            view.audio_events = receiver;
+            view.receive(event(Arc::clone(&project), 1, true));
+            view.audio = Some(audio);
+            view.receive(event(Arc::clone(&project), 2, true));
+            assert_eq!(
+                held_identity(view),
+                Some(identity),
+                "held across replacement"
+            );
+            events
+                .send(crate::EditorAudioEvent::OutputReleased {
+                    project_generation: view.project_generation,
+                    old_output_identity: identity,
+                })
+                .unwrap();
+            view.poll_editor_audio_events(cx);
+            assert!(view.audio.is_none());
+            assert_eq!(view.status, "preparing audio output");
+        })
+        .expect("held endpoint release");
 }

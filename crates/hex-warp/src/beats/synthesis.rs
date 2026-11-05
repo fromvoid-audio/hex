@@ -660,6 +660,7 @@ mod search_tests {
                         used: 0,
                         scratch: 0,
                         base_scratch: 0,
+                        resampler: Resampler::V1,
                     };
                     let initial = search.score(nominal, nominal, &mut work).unwrap();
                     if pattern == 1 && statistics == 4 {
@@ -826,6 +827,7 @@ mod search_tests {
                         used: 0,
                         scratch: 0,
                         base_scratch: 0,
+                        resampler: Resampler::V1,
                     };
                     let initial = search.score(1500.0, 1500.0, &mut work).unwrap();
                     work.used = 0;

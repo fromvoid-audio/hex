@@ -1,4 +1,7 @@
 //! Authored Session MIDI history, persistence, and playback through the GPUI worker contract.
+mod common;
+
+use common::wait;
 use hex_engine::playback::Playback;
 use hex_engine::{
     LaunchQuantization, PlaybackAction, PreparedRevision, SessionPlaybackCommand,
@@ -10,8 +13,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
-    thread,
-    time::{Duration, Instant},
 };
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -35,22 +36,6 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn wait(service: &Service) -> Event {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        match service.try_event() {
-            Ok(event) => {
-                assert!(event.error.is_none(), "{:?}", event.error);
-                return event;
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
-                thread::sleep(Duration::from_millis(2));
-            }
-            Err(error) => panic!("worker event missing: {error}"),
-        }
     }
 }
 

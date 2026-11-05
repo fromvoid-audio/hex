@@ -302,6 +302,14 @@ impl Client {
         self.action_with_ticket(PlaybackAction::LaunchAndPlay(command))
             .map_err(|_| command)
     }
+    /// Apply a linear level to the preview bus only.
+    pub fn preview_set_gain(&mut self, gain: f32) -> Result<(), Invalid> {
+        self.endpoints
+            .owner_mut()
+            .ok_or(Invalid("audio client is closed"))?
+            .sample_preview
+            .set_gain(gain)
+    }
     pub fn preview_request(&mut self) -> Result<u64, Invalid> {
         self.endpoints
             .owner_mut()
@@ -559,13 +567,28 @@ impl Client {
     /// Fresh independent pairs, filtered by this endpoint's exact desired tokens,
     /// generation, rate and publication floors. The bounded cache lives on control.
     pub fn spectrum_latest_pairs(&mut self) -> Vec<crate::spectrum_worker::PublishedSpectra> {
+        let mut pairs = Vec::new();
+        self.spectrum_latest_pairs_into(&mut pairs);
+        pairs
+    }
+    /// Replace `out` with the latest fresh pairs, reusing its capacity. A
+    /// closed output or absent reader leaves it empty.
+    pub fn spectrum_latest_pairs_into(
+        &mut self,
+        out: &mut Vec<crate::spectrum_worker::PublishedSpectra>,
+    ) {
+        out.clear();
         let Some(endpoints) = self.endpoints.owner_mut() else {
-            return Vec::new();
+            return;
         };
         let Some(reader) = endpoints.spectrum_reader.as_mut() else {
-            return Vec::new();
+            return;
         };
-        reader.try_latest_pairs_at(Instant::now(), endpoints.spectrum_target.desired_targets())
+        reader.try_latest_pairs_into(
+            Instant::now(),
+            endpoints.spectrum_target.desired_targets(),
+            out,
+        );
     }
     pub fn spectrum_select(
         &mut self,

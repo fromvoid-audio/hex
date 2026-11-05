@@ -377,6 +377,7 @@ fn moving_midi_clip_to_new_hybrid_track_preserves_clip_and_note_ids_in_one_step(
 
     let Created::Track(inserted) = editor
         .execute(Command::MoveMidiClipToNewTrack {
+            initial_gain: None,
             clip,
             name: "track 3".into(),
             before_track: Some(anchor),
@@ -1377,6 +1378,8 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
     let other_clip_id = other_track_id + 1;
     let first_note_id = other_track_id + 10;
     snapshot.tracks.push(hex_project::TrackSnapshot {
+        group_output_mutes: Vec::new(),
+        tags: Vec::new(),
         kind: hex_project::TrackKind::Ordinary,
         parent_group: None,
         color: hex_project::ElementColor::default(),

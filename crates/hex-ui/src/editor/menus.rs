@@ -1,8 +1,9 @@
 //! Native application menus dispatch the editor's existing guarded actions.
 use super::{
     CancelUpdate, InstallUpdateOnQuit, NewProject, OpenProject, OpenRecentProject,
-    OpenRelinkedProject, OpenSettings, Quit, RecoverPreviousSave, RecoverSavedProject,
-    RecoverUntitledProject, SaveAndRestartForUpdate, SaveAsProject, SaveProject,
+    OpenRelinkedProject, OpenSettings, Quit, RecoverKeptSession, RecoverPreviousSave,
+    RecoverSavedProject, RecoverUntitledProject, SaveAndRestartForUpdate, SaveAsProject,
+    SaveProject,
 };
 use crate::theme;
 use gpui::{App, Menu, MenuItem};
@@ -43,6 +44,7 @@ fn application_menus(recent_projects: &[PathBuf]) -> Vec<Menu> {
                     RecoverSavedProject,
                 ),
                 MenuItem::action(theme::text("recover previous save…"), RecoverPreviousSave),
+                MenuItem::action(theme::text("recover kept session…"), RecoverKeptSession),
                 MenuItem::submenu(Menu {
                     name: theme::text("recent projects"),
                     items: recent_projects
@@ -61,6 +63,19 @@ fn application_menus(recent_projects: &[PathBuf]) -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action(theme::text("save"), SaveProject),
                 MenuItem::action(theme::text("save as…"), SaveAsProject),
+            ],
+        },
+        Menu {
+            name: theme::text("view"),
+            items: vec![
+                MenuItem::action(
+                    theme::text("track performance indicators"),
+                    super::ToggleTrackPerformance,
+                ),
+                MenuItem::action(
+                    theme::text("track latency indicators"),
+                    super::ToggleTrackLatency,
+                ),
             ],
         },
     ]

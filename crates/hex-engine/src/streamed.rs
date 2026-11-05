@@ -1,6 +1,9 @@
 //! Streamed-source identity and the narrow borrowed page interface used by render.
 use crate::{Frame, Invalid};
-use hex_project::{AssetId, IDENTITY_CONVERSION, SINC_CONVERSION_V1, validate_conversion_metadata};
+use hex_project::{
+    AssetId, IDENTITY_CONVERSION, SINC_CONVERSION_V1, SINC_CONVERSION_V2,
+    validate_conversion_metadata,
+};
 
 /// Fixed project-rate page size shared by the engine and `hex-stream`.
 pub const STREAM_PAGE_FRAMES: usize = 4096;
@@ -59,7 +62,10 @@ impl StreamedSourceMetadata {
         if key.generation == 0 {
             return Err(Invalid("stream source generation must be positive"));
         }
-        if conversion_version != IDENTITY_CONVERSION && conversion_version != SINC_CONVERSION_V1 {
+        if !matches!(
+            conversion_version,
+            IDENTITY_CONVERSION | SINC_CONVERSION_V1 | SINC_CONVERSION_V2
+        ) {
             return Err(Invalid("unsupported streamed conversion version"));
         }
         Ok(Self {
@@ -119,6 +125,25 @@ pub trait MediaPages {
         None
     }
     fn request_scalar_page(&mut self, _key: crate::ScalarSourceKey, _page_index: u64) {}
+
+    /// Speculatively request the page after the one the playhead is reading
+    /// (bounded lookahead, #4075). Never required for readiness, never waits;
+    /// providers without a request queue ignore it.
+    fn prefetch_page(&mut self, _key: StreamSourceKey, _page_index: u64) {}
+
+    /// The page together with the per-voice miss-fade table lent by the
+    /// session runtime (`crate::stream_miss_fade`). Views without a table
+    /// return `None` and keep source-local silence on a miss.
+    fn page_and_miss_fades(
+        &mut self,
+        key: StreamSourceKey,
+        page_index: u64,
+    ) -> (
+        Option<BorrowedMediaPage<'_>>,
+        Option<&mut crate::StreamMissFades>,
+    ) {
+        (self.page(key, page_index), None)
+    }
 }
 
 impl StreamedSourceMetadata {
@@ -138,3 +163,6 @@ impl StreamedSourceMetadata {
         } = key;
     }
 }
+
+#[cfg(test)]
+mod prefetch_tests;
