@@ -2226,39 +2226,144 @@ fn group_gain_automation_tracks_delayed_content_across_render_partitions() {
 }
 
 #[test]
-fn compressor_sidechain_refuses_preparation_until_rendering_is_supported() {
-    let mut f = fixture(&[&[], &[]], 64);
-    let state = hex_devices::compressor::COMPRESSOR_DEFINITION
-        .default_state()
-        .unwrap();
-    let Created::Device(device) = f
-        .editor
-        .execute(Command::InsertDevice {
-            track: f.tracks[1],
-            before: None,
-            state,
-        })
-        .unwrap()
-    else {
-        panic!("compressor")
+fn compressor_sidechain_aligns_independent_key_and_main_in_both_renderers() {
+    const FRAMES: usize = 1_024;
+    const DELAY: usize = 7;
+    use hex_devices::compressor::COMPRESSOR_DEFINITION;
+
+    let render = |destination: usize, key_late: bool, connected: bool| {
+        let delay = [DELAY as u32];
+        let mut f = if key_late {
+            fixture(&[&[], &delay], FRAMES)
+        } else {
+            fixture(&[&delay, &[]], FRAMES)
+        };
+        let main = f.tracks[0];
+        let key = f.tracks[1];
+        for (track, samples) in [
+            (main, vec![[0.0625, -0.03125]; FRAMES]),
+            (key, vec![[0.0, 0.75]; FRAMES]),
+        ] {
+            let asset = f.editor.project().track(track).unwrap().clips()[0].asset();
+            f.media.insert(asset, Audio::new(48_000, samples).unwrap());
+        }
+        let state = COMPRESSOR_DEFINITION.default_state().unwrap();
+        let insert = match destination {
+            0 => Command::InsertDevice {
+                track: main,
+                before: None,
+                state,
+            },
+            1 => {
+                let Created::ReturnTrack(return_track) = f
+                    .editor
+                    .execute(Command::AddReturnTrack {
+                        name: "parallel".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("return")
+                };
+                f.editor
+                    .execute(Command::SetReturnSend {
+                        track: main,
+                        return_track,
+                        gain: 1.0,
+                    })
+                    .unwrap();
+                Command::InsertReturnDevice {
+                    return_track,
+                    before: None,
+                    state,
+                }
+            }
+            _ => Command::InsertMainDevice {
+                before: None,
+                state,
+            },
+        };
+        let Created::Device(device) = f.editor.execute(insert).unwrap() else {
+            panic!("compressor")
+        };
+        if connected {
+            f.editor
+                .execute(Command::SetSidechain {
+                    device,
+                    source: Some(key),
+                })
+                .unwrap();
+        }
+        let definitions: [&dyn NativeDeviceDefinition; 2] = [&Definition, &COMPRESSOR_DEFINITION];
+        let effects = NativeDeviceRegistry::new(&definitions).unwrap();
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare_with_registries(
+                f.editor.project(),
+                &f.media,
+                Arc::new(SineTable::new()),
+                None,
+                &effects,
+                &instruments,
+            )
+            .unwrap(),
+        );
+        assert_eq!(revision.arrangement().main_latency_frames(), DELAY as u32);
+        let expected = session(Arc::clone(&revision), FRAMES + DELAY, 17);
+        assert_eq!(&expected[..DELAY], &[[0.0; 2]; DELAY]);
+        assert_eq!(
+            session(Arc::clone(&revision), FRAMES + DELAY, 256),
+            expected
+        );
+        let mut legacy = vec![[0.0; 2]; FRAMES + DELAY];
+        let mut renderer = Renderer::new(revision.arrangement());
+        renderer.play();
+        renderer.render(&mut legacy).unwrap();
+        assert_eq!(legacy, expected);
+        if connected && key_late && destination == 0 {
+            let seek = |warm| {
+                let mut playback = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+                if warm {
+                    playback.apply(SessionPlaybackCommand::Play).unwrap();
+                    playback.render(&mut [[0.0; 2]; 768]).unwrap();
+                }
+                playback.apply(SessionPlaybackCommand::Seek(201)).unwrap();
+                playback.apply(SessionPlaybackCommand::Play).unwrap();
+                let mut pcm = [[0.0; 2]; 128];
+                playback.render(&mut pcm).unwrap();
+                pcm
+            };
+            assert_eq!(seek(false), seek(true));
+
+            f.editor
+                .execute(Command::SetLoopRegion {
+                    start: 17,
+                    end: 397,
+                    enabled: true,
+                })
+                .unwrap();
+            let looping = Arc::new(
+                PreparedRevision::prepare_with_registries(
+                    f.editor.project(),
+                    &f.media,
+                    Arc::new(SineTable::new()),
+                    None,
+                    &effects,
+                    &instruments,
+                )
+                .unwrap(),
+            );
+            assert_eq!(
+                session(Arc::clone(&looping), FRAMES, 1),
+                session(looping, FRAMES, 63)
+            );
+        }
+        expected
     };
-    let prepare = |f: &Fixture| {
-        PreparedRevision::prepare(
-            f.editor.project(),
-            &f.media,
-            Arc::new(SineTable::new()),
-            None,
-        )
-    };
-    assert!(prepare(&f).is_ok());
-    f.editor
-        .execute(Command::SetSidechain {
-            device,
-            source: Some(f.tracks[0]),
-        })
-        .unwrap();
-    assert_eq!(
-        prepare(&f).err(),
-        Some(Invalid("compressor sidechain playback is unavailable"))
-    );
+
+    for destination in 0..3 {
+        let delayed_key = render(destination, true, true);
+        assert_eq!(delayed_key, render(destination, false, true));
+        let internal = render(destination, true, false);
+        assert_ne!(delayed_key[900], internal[900], "destination {destination}");
+    }
 }

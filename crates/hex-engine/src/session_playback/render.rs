@@ -959,7 +959,7 @@ impl SessionPlayback {
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
                     self.push_compensated_stamp(performance, arrangement, arrangement_loop_pass)?;
                     self.compensation
-                        .as_ref()
+                        .as_mut()
                         .ok_or(SessionPlaybackError::DeviceRuntime)?
                         .process_main_with_foreign(
                             &mut self.main_chain,
@@ -989,7 +989,7 @@ impl SessionPlayback {
                     )?;
                 }
             } else {
-                if let Some(compensation) = self.compensation.as_ref() {
+                if let Some(compensation) = self.compensation.as_mut() {
                     compensation
                         .process_main_with_foreign(
                             &mut self.main_chain,
