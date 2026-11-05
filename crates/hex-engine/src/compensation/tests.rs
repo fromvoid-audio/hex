@@ -259,7 +259,7 @@ fn stamp(index: usize) -> TransportStamp {
     TransportStamp {
         tempo_micro_bpm: Some(123_000_000),
         performance_frame: index as u64,
-        transport_is_running: index % 3 != 0,
+        transport_is_running: !index.is_multiple_of(3),
         arrangement_frame: (index % 4) as u64,
         loop_pass: (index / 4) as u64,
         performance_beat_raw: (index as u64) << 30,
@@ -318,13 +318,21 @@ fn stage_origin_preview_matches_actual_pushes_and_rollback() {
         runtime.push_transport_stamp(stamp(index)).unwrap();
     }
     runtime.commit_transaction().unwrap();
+    let incoming = std::array::from_fn::<_, 9, _>(|index| Some(stamp(7 + index)));
     for delay in [0, 3, 5] {
         let predicted: Vec<_> = (0..9)
             .map(|offset| preview(&runtime, delay, offset, 7))
             .collect();
+        let window = OriginWindow {
+            history: &runtime,
+            incoming: &incoming,
+            delay,
+        };
+        let projected = std::array::from_fn::<_, 9, _>(|index| window.stamp(index));
         runtime.begin_transaction().unwrap();
         for (offset, expected) in predicted.into_iter().enumerate() {
             runtime.push_transport_stamp(stamp(7 + offset)).unwrap();
+            assert_eq!(runtime.stamp_at_delay(delay), projected[offset]);
             assert_eq!(
                 runtime
                     .stamp_at_delay(delay)

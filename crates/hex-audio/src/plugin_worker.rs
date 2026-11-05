@@ -25,6 +25,9 @@ pub use parameters::{MAX_OBSERVED_PARAMETERS, NativeParameterValue, NativeParame
 mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use capture::{NativeWorkerCapture, NativeWorkerCaptureProgress};
+/// Non-terminal helper refusal carried by [`NativeWorkerCaptureProgress::Refused`].
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use hex_plugin_host::protocol::StateCaptureRefusal;
 
 // Original completion allocation, shared only by joining control and worker.
 // The callback never sees the capture mailbox or takes its mutex.
@@ -474,14 +477,14 @@ impl NativeWorker {
                 .map(|fault| hex_plugin_host::Error::Protocol(fault.message()))
         });
         if let Some(error) = failure {
-            if let Some(Processor::Native(instance)) = state.processor.as_mut() {
-                if let Err(custody) = instance.cancel_and_reap_on_control() {
-                    return Err(hex_plugin_host::Error::Preparation {
-                        cause: Box::new(error),
-                        exit: None,
-                        custody_error: Some(Box::new(custody)),
-                    });
-                }
+            if let Some(Processor::Native(instance)) = state.processor.as_mut()
+                && let Err(custody) = instance.cancel_and_reap_on_control()
+            {
+                return Err(hex_plugin_host::Error::Preparation {
+                    cause: Box::new(error),
+                    exit: None,
+                    custody_error: Some(Box::new(custody)),
+                });
             }
             return Err(error);
         }

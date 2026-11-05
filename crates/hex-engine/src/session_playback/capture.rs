@@ -1,4 +1,7 @@
 //! Bounded control plans and borrowed, transactional canonical output buffers.
+#[cfg(feature = "instrument-test-support")]
+pub(super) mod window_probe;
+
 use super::{SessionPlayback, SessionPlaybackError};
 use crate::{Frame, PreparedRevision};
 use hex_project::{ReturnId, TrackId};
@@ -44,6 +47,9 @@ pub type ProjectSignalObserver<'observer> =
 pub struct ProjectOutputTap<'a, 'observer> {
     tracks: &'a [u64],
     observer: &'a mut ProjectSignalObserver<'observer>,
+    // Callback-relative start of the current render part. `Playback` splits a
+    // callback only at a transport declick boundary and restores zero after.
+    part_offset: usize,
 }
 impl<'a, 'observer> ProjectOutputTap<'a, 'observer> {
     pub fn tracks(&self) -> &[u64] {
@@ -60,10 +66,17 @@ impl<'a, 'observer> ProjectOutputTap<'a, 'observer> {
         (tracks.len() <= hex_project::MAX_TRACKS
             && tracks.iter().all(|id| *id != 0)
             && tracks.windows(2).all(|pair| pair[0] < pair[1]))
-        .then_some(Self { tracks, observer })
+        .then_some(Self {
+            tracks,
+            observer,
+            part_offset: 0,
+        })
+    }
+    pub(crate) fn set_part_offset(&mut self, offset: usize) {
+        self.part_offset = offset;
     }
     pub(crate) fn main(&mut self, frames: &[Frame]) {
-        (self.observer)(ProjectSignal::Master, 0, frames);
+        (self.observer)(ProjectSignal::Master, self.part_offset, frames);
     }
     pub(crate) fn unavailable(&mut self) {
         (self.observer)(ProjectSignal::Unavailable, 0, &[]);
@@ -78,6 +91,17 @@ pub(super) trait CaptureSink {
         offset: usize,
         frames: &[Frame],
     ) -> Result<(), SessionPlaybackError>;
+    /// The compensated graph can supply its current owner slot as a lookup
+    /// hint. Historical tails use stable IDs alone.
+    fn add_prepared_frame(
+        &mut self,
+        _owner: crate::signal_graph::Owner,
+        id: OutputCaptureId,
+        offset: usize,
+        frame: Frame,
+    ) -> Result<(), SessionPlaybackError> {
+        self.add(id, offset, &[frame])
+    }
     fn commit(&mut self, _frames: usize) {}
     fn invalidate(&mut self) {}
 }
@@ -94,7 +118,11 @@ impl CaptureSink for ProjectOutputTap<'_, '_> {
         if let OutputCaptureId::Track(id) = id
             && self.selects(OutputCaptureId::Track(id))
         {
-            (self.observer)(ProjectSignal::Track(id.value()), offset, frames);
+            (self.observer)(
+                ProjectSignal::Track(id.value()),
+                self.part_offset.saturating_add(offset),
+                frames,
+            );
         }
         Ok(())
     }

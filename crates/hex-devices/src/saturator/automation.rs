@@ -74,11 +74,23 @@ impl SaturatorRuntime {
             sample_rate,
             drive_gain,
             output_gain,
+            kernel,
+            channels,
+            delay,
+            delay_index,
+            gain_ramp_remaining,
         } = self;
         base.check_inline_ownership();
         controls.check_inline(SaturatorSettings::check_inline);
         settings.check_inline();
-        let _: (&u32, &f64, &f64) = (sample_rate, drive_gain, output_gain);
+        let _: (&u32, &f64, &f64, &u32) =
+            (sample_rate, drive_gain, output_gain, gain_ramp_remaining);
+        let _: (
+            &Kernel,
+            &[Oversampler; 2],
+            &[[f64; 2]; LATENCY_FRAMES],
+            &usize,
+        ) = (kernel, channels, delay, delay_index);
     }
     pub(super) fn apply_automation(
         &mut self,
@@ -92,12 +104,16 @@ impl SaturatorRuntime {
         let settings = next.effective();
         // Constant/held controls reuse scalar coefficients; only a changing dB
         // value evaluates the original bounded gain conversion.
-        let drive = if settings.drive_db == self.settings.drive_db {
+        let drive = if (!self.base.supports(parameter::DRIVE) && self.gain_ramp_remaining != 0)
+            || settings.drive_db == self.settings.drive_db
+        {
             self.drive_gain
         } else {
             amplitude_from_db(settings.drive_db)?
         };
-        let output = if settings.output_db == self.settings.output_db {
+        let output = if (!self.base.supports(parameter::OUTPUT) && self.gain_ramp_remaining != 0)
+            || settings.output_db == self.settings.output_db
+        {
             self.output_gain
         } else {
             amplitude_from_db(settings.output_db)?

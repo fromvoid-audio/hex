@@ -80,6 +80,8 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
             });
         }
         tracks.push(TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),
@@ -108,6 +110,7 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
     }
     Ok(Project::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
         arrangement_sections: Vec::new(),
@@ -133,6 +136,7 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
         meter_points: vec![MeterPoint::new(BeatTime::ZERO, Meter::COMMON_TIME)],
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         return_feeds: Vec::new(),
         import_provenance: None,
     })?)

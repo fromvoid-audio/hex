@@ -123,6 +123,15 @@ arrange places clips along a time ruler. console provides the clip/scene workspa
 these views share the project; switching views does not create another document.
 tracks can contain both audio and midi clips under the same mixer controls.
 
+choose **view → track performance indicators** to show six compact segments in
+track headers and arrange return headers. hover an indicator for its sampled
+share of audio processing time and the scale. group indicators show only the
+group's own work; a shared instrument belongs to its receiver. main processing,
+old detached tails and shared overhead remain in the global meter. external
+worker cpu is excluded. dim segments mean a fresh reading is unavailable, not
+zero work. some playback modes cannot supply these timings and show unavailable. the indicators are diagnostic: they do not measure latency or prove
+which track caused a dropout.
+
 solo takes precedence over track mute or deactivation. a muted track sounds while
 soloed; turning solo off restores its muted state. solo does not change the stored
 track activator setting.
@@ -203,9 +212,11 @@ repeats it, and starting after its end plays on without looping. only when there
 is no selection or edit cursor does an enabled loop supply its beginning.
 moving or resizing the loop during playback takes effect immediately with the
 same rule: inside the new loop the playhead wraps at its new end, before it the
-playhead plays into it, and after it playback continues. if an instrument note
-is sounding when the loop changes, audio restarts at the playhead: effect tails
-reset and notes under the playhead start again from there.
+playhead plays into it, and after it playback continues. some first-pass loop
+edits keep a held arrangement instrument note sounding, when the note and its
+release finish before both loop ends and playback can retain the same source
+history. when playback needs to restart at the playhead, effect tails reset and
+notes under the playhead start again from there.
 for multiple sections, the loop spans the earliest start to the latest end,
 including gaps. while the computer midi keyboard is on, plain **l** and **w** play notes.
 setting new loop bounds from selected main sections also turns on section focus
@@ -277,6 +288,15 @@ original clip's start and length; drag its right edge out to reveal the tail. a 
 exactly its start-to-end interval, retaining earlier state needed for sound inside
 that interval. press **escape** to cancel; one undo restores the entire operation.
 
+select a time range on a group row to bounce its submix. **b** inserts an audio
+track beside the group and leaves the original tracks playing. **command+b** on
+one group row adds the same bounce and silences the original group's output
+only for the selected interval. child clips stay intact, and group effects keep
+processing through the muted interval. both commands include nested audio and
+midi tracks and print the selected group's effects before its mixer. the new
+track carries the group's mixer and sends. one undo removes the bounce and, for
+**command+b**, restores the original interval's playback.
+
 while dragging arrangement clips, hold **b** as you release to drop a bounce of them
 at the drop position instead of moving them. the dragged clips stay where they were,
 the bounced clips keep their original lengths with the tail in the file, and one undo
@@ -284,18 +304,29 @@ removes the drop. the drop shows as pending until rendering finishes. let go of 
 before releasing to move normally. a bounce drop that would overlap its own source, or
 that lands between tracks, is refused.
 
-stop playback and disable live midi input or audition before bouncing in place. hex keeps the stopped cursor and installs
-a fresh playback state so live release voices cannot duplicate the baked tails.
-undo and redo of an in-place bounce use the same stopped-edit rule.
+disable live midi input or audition before bouncing in place. bounce in place works while
+playing: the render runs while the song continues, then audio restarts at the cursor on the
+baked clips, so release voices and effect tails cannot duplicate the baked tails. when stopped,
+hex keeps the stopped cursor. undo and redo of an in-place bounce follow the same rule.
 
 bounce writes float audio before the track mixer. mixer automation, sends, returns
 and main processing remain live. only the track-header **bounce in place** action replaces material in place and
 removes the track's devices. it covers the entire track, regardless of a smaller
-clip or time selection. for clip and time-selection editing, use **g** to group
+clip or time selection. on a group, it prints the descendants' arrangement
+material and release tail to one new playback child. the group's mixer and sends
+remain live. its printed devices are removed, and the original descendants are
+muted in place with their own devices, arrangement clips and console cells
+preserved. undo restores the group devices and each child's previous mute state.
+unsolo group children before bouncing in place. an external shared source or
+sidechain key can prevent a group bounce. **command+b** also refuses when the
+selected group supplies a sidechain key.
+
+for clip and time-selection editing, use **g** to group
 material instead; grouping retains its existing source and processing behavior.
-in the focused midi editor, **b** keeps toggling draw mode. routed inputs, verified streaming and nonzero-latency device
-paths currently refuse. clip bounces keep up to 30 seconds of release after the
-selected span. if the tail is still sounding then, hex cuts it at that limit and
+in the focused midi editor, **b** keeps toggling draw mode. a bounce needs a
+supported routing and storage mode. device latency is aligned using the admitted
+compensation graph. clip and whole-track bounces keep up to 30 seconds of release
+after the selected span. if the tail is still sounding then, hex cuts it at that limit and
 finishes the bounce. a noise floor at or below -80 dbfs peak in both channels
 counts as silence for tail length. hex retains up to 50 ms after the last louder
 tail sample, without trimming the selected span or changing retained audio. it checks
@@ -464,6 +495,11 @@ with several clips selected, pitch changes remain relative to each clip's
 existing value. in **re-pitch** mode the dial is unavailable: tempo determines
 the audible pitch while the stored transpose value is retained.
 
+pitch and warp reconstruction use the resampling version saved with the clip.
+new material uses the current version, which reduces aliasing when you raise
+pitch substantially. opening an older project preserves the version used by
+its existing pitched or warped material.
+
 ## clip loop resizing
 
 hold **option** over a clip's right header edge to show the circle cursor, then
@@ -585,10 +621,19 @@ do not assume double-clicking a sample inserts it into a track.
 and channel information; check duration, placement and playback after importing.
 keep source recordings available with the project.
 
+when a new import has a different sample rate from the project, hex uses the
+current conversion to prepare playback. a saved import keeps its original
+conversion version when the project is reopened.
+
 as projects grow, ordinary audio clips can play directly from their original
 files while retaining their complete duration. single-file and bulk imports keep
 this behavior; a bulk drop remains one undo step. keep those files available for
 playback, save/reopen and export.
+
+the **disk** indicator lights when streamed data arrives too late for playback. hover
+over it to see how many playback callbacks were affected on the current output.
+it clears three seconds after the last reported increase. short fades ease the
+transition into and out of missing audio.
 
 on an arrangement audio clip, hover over the top edge between the trim corners
 and drag vertically to adjust clip gain. drag down to reduce or up to increase;
@@ -719,6 +764,16 @@ click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
 
+during playback, track gain, eq edits and supported device bypass changes apply
+to the running audio. supported latency-bearing effects keep the dry signal
+aligned when you bypass them. reverb and delay tails may shorten or stop.
+
+if a sounding instrument has a long release, hex can keep that release through
+supported receiver paths while you switch the instrument off and back on.
+some processed, routed or compensated paths require playback to stop first.
+if hex reports that source history cannot transfer live, the previous audio
+continues. stop playback before changing bypass on that path.
+
 reverb combines resonant input filters (20 hz–20 khz, q 0.1–10), early reflections and a diffusion network.
 use predelay to separate the room from the source; size, decay, diffusion and
 scale shape its space. spin moves the early reflections, while chorus modulates
@@ -808,6 +863,14 @@ does not promise a complete third-party plugin-hosting workflow.
 
 # audio output and settings
 
+choose **view → track latency indicators** and hover **lat** in a track header
+to see delay in samples and milliseconds. local devices shows the longest
+processing path within that track. post-fader arrival includes upstream routes.
+default route compensation is the alignment added on the way to the parent
+group or main. sends can have separate alignment. main output arrival includes
+main devices. a pending or unavailable reading has its own marker. these figures
+describe the applied audio graph and exclude interface and round-trip delay.
+
 hex opens the system's default output device with that device's default
 configuration. **settings…** is available from the hex menu or **command+,**;
 it does not currently provide an audio device, sample-rate or buffer-size chooser.
@@ -825,11 +888,16 @@ or the physical device is working correctly.
 
 select the intended time range and press **command+shift+e**. the **export output**
 dialog offers **main mix**, **selected tracks**, **shared returns**, and
-**selected stems and shared returns**. select the tracks needed for a stem export
-and choose a new destination in the native file dialog.
+**selected stems and shared returns**. the **export format** dialog then offers
+**16-bit pcm**, **24-bit pcm** and **32-bit float**. select the tracks needed for
+a stem export and choose a new destination in the native file dialog.
 
 exports are wav files. main mix produces the combined output; the stem choices
-keep the selected outputs separate. check the range and output choice before
+keep the selected outputs separate, each in the chosen format. 16-bit files are
+dithered and 24-bit files are rounded; both clamp samples above full scale, and
+the status line reports how many samples clipped. 32-bit float files keep levels
+above full scale and never clip. the format is chosen for each export and is not
+saved in the project. check the range and output choice before
 exporting, then audition the resulting files. offline rendering can be available
 even when live audio output is unavailable.
 
@@ -925,6 +993,28 @@ audio device, the steps that reproduce the problem, and what you expected to
 happen. include the displayed error and whether the issue survives a normal quit
 and reopen. keep original projects and media; share only material you have the
 right to share.
+
+## inspect diagnostic logs
+
+select the log button beside the version to open the diagnostic log window.
+the current session opens first. use previous session and next session to browse
+retained sessions, and refresh to read records written since the last refresh.
+the time column is in utc.
+
+use the category and time controls and the search field to narrow the visible
+records. the time window is measured back from the latest event on the displayed
+page; search for `level=error` to find error records. older unclassified records
+appear under uncategorised. in a large session, use older lines and newer lines
+to move between pages. filters apply to the displayed page, and live history can
+shift between page reads.
+
+click a row to inspect it below the list. unusually long rows are clipped in
+the detail view. to share a section, click its first row, shift-click its last
+row, and select copy selection. the copied excerpt includes the original rows,
+available session context and warnings, and is limited to 1 mib. the viewer
+reports missing, truncated or unreadable data; oversized legacy segments may
+be clipped. logs and excerpts can contain paths or other private information,
+so review them before sharing.
 
 `TESTING.md` is the finite checklist for this specific package. record actual
 results against that version. passing automated checks does not replace native

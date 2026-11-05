@@ -137,12 +137,16 @@ impl PreparedEq {
     }
 }
 impl PreparedNativeProcessor for PreparedEq {
+    fn supports_smoothed_bypass(&self) -> bool {
+        true
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
     fn declared_runtime_bytes(&self) -> usize {
         EQ_RUNTIME_BYTES
             + self.configuration.nodes.len() * std::mem::size_of::<RuntimeBand>()
+            + MAX_NODES * std::mem::size_of::<OutgoingBand>()
             + std::mem::size_of::<Configuration>()
             + 2 * std::mem::size_of::<usize>()
             + self.configuration.heap_bytes()
@@ -153,6 +157,7 @@ impl PreparedNativeProcessor for PreparedEq {
         for (index, coefficients) in self.stages.iter().enumerate() {
             bands[index].current = *coefficients;
             bands[index].target = *coefficients;
+            bands[index].stages_used = stages_used(coefficients);
             bands[index].shape = self.configuration.nodes[index].kind as u8;
         }
         Box::new(EqRuntime {
@@ -170,6 +175,7 @@ impl PreparedNativeProcessor for PreparedEq {
             effective_banks: std::array::from_fn(|i| {
                 self.configuration.nodes.get(i).map_or(0, |n| n.bank)
             }),
+            mode_fade: ModeFade::new(),
         })
     }
     fn frequency_response_at_hz(&self, frequency: f32) -> Option<[f32; 2]> {
@@ -206,8 +212,11 @@ struct RuntimeBand {
     current: BandStages,
     target: BandStages,
     history: [[[f64; 2]; 4]; 2],
-    remaining: u8,
+    remaining: u16,
     shape: u8,
+    // A stage that has processed a non-identity filter remains in the bound
+    // until its histories are reset, including through coefficient ramps.
+    stages_used: u8,
 }
 impl Default for RuntimeBand {
     fn default() -> Self {
@@ -217,7 +226,215 @@ impl Default for RuntimeBand {
             history: [[[0.0; 2]; 4]; 2],
             remaining: 0,
             shape: 0,
+            stages_used: 1,
         }
+    }
+}
+impl RuntimeBand {
+    #[inline]
+    fn filter_channel(&mut self, channel: usize, input: f64) -> f64 {
+        let used = usize::from(self.stages_used);
+        let history = &mut self.history[channel];
+        let output = filter(input, &self.current[..used], history);
+        // Even identity arithmetic can change history on a non-finite input.
+        // Preserve that state until reset.
+        if used < self.current.len() && !output.is_finite() {
+            self.stages_used = self.current.len() as u8;
+            filter(output, &self.current[used..], &mut history[used..])
+        } else {
+            output
+        }
+    }
+}
+/// A five-millisecond transition independent of device sample rate.
+fn coefficient_smooth_frames(sample_rate: u32) -> u16 {
+    u16::try_from(sample_rate.div_ceil(200).max(1)).unwrap_or(u16::MAX)
+}
+/// Frames for a channel-mode crossfade: 256 at 48 kHz, scaled by rate.
+fn mode_fade_frames(sample_rate: u32) -> u32 {
+    let frames = (u64::from(sample_rate) * 256).div_ceil(48_000).max(1);
+    u32::try_from(frames).unwrap_or(u32::MAX)
+}
+/// One band of the outgoing routing: frozen effective coefficients, its
+/// history and the bank it filtered.
+#[derive(Clone, Copy)]
+struct OutgoingBand {
+    stages: BandStages,
+    history: [[[f64; 2]; 4]; 2],
+    bank: u8,
+}
+impl Default for OutgoingBand {
+    fn default() -> Self {
+        Self {
+            stages: [Coefficients::IDENTITY; 4],
+            history: [[[0.0; 2]; 4]; 2],
+            bank: 0,
+        }
+    }
+}
+/// The outgoing routing's band audition: the auditioned band's frozen
+/// coefficients and bank, its isolated history and the frozen audition mix.
+#[derive(Clone, Copy)]
+struct OutgoingAudition {
+    stages: BandStages,
+    history: [[[f64; 2]; 4]; 2],
+    bank: u8,
+    mix: f64,
+}
+/// The outgoing routing after a stereo/left-right/mid-side switch (Pulse
+/// #4122, the same law as EQ8's #4106). Band histories cannot be reinterpreted
+/// under a new routing, so the previous routing keeps filtering with its
+/// frozen effective coefficients, history, gain and band audition (at its
+/// frozen audition mix) while the output crossfades linearly into the new
+/// routing, which starts from empty history. The crossfade ends exactly on the
+/// new routing, then the outgoing state is cleared.
+///
+/// Capacity is one outgoing branch. Its band storage holds `MAX_NODES` bands,
+/// the existing node limit, so any outgoing routing fits regardless of the
+/// incoming node count (a mode switch combined with node deletion, such as a
+/// state replacement, still crossfades). It is allocated with the runtime on
+/// control; capturing, carrying and processing only copy into it. Same-mode
+/// handoffs carry an active branch. A further mode change while the branch is
+/// still fading is refused as transiently busy (`transition_busy_from`), so
+/// the host defers it for at most one fade (256 frames at 48 kHz, 16/3 ms)
+/// instead of dropping the older routing. A transport discontinuity or reset
+/// ends the crossfade.
+struct ModeFade {
+    bands: Box<[OutgoingBand]>,
+    len: usize,
+    audition: Option<OutgoingAudition>,
+    mode: u8,
+    gain: f64,
+    remaining: u32,
+    total: u32,
+}
+impl ModeFade {
+    fn new() -> Self {
+        Self {
+            bands: vec![OutgoingBand::default(); MAX_NODES].into_boxed_slice(),
+            len: 0,
+            audition: None,
+            mode: 0,
+            gain: 1.0,
+            remaining: 0,
+            total: 0,
+        }
+    }
+    fn is_active(&self) -> bool {
+        self.remaining > 0
+    }
+    fn clear(&mut self) {
+        for band in &mut self.bands[..self.len] {
+            band.history = [[[0.0; 2]; 4]; 2];
+        }
+        self.len = 0;
+        self.audition = None;
+        self.remaining = 0;
+        self.total = 0;
+    }
+    /// Starts a crossfade out of `previous`'s routing.
+    fn capture(&mut self, previous: &EqRuntime, sample_rate: u32) {
+        self.clear();
+        let mode = previous.configuration.mode;
+        let active = |bank_id: u8| bank_id == bank(mode, 0) || bank_id == bank(mode, 1);
+        let outgoing = previous
+            .bands
+            .iter()
+            .zip(&previous.effective_banks)
+            .filter(|(_, bank_id)| active(**bank_id));
+        // `previous.bands` holds at most `MAX_NODES` bands, so every outgoing
+        // band has a slot.
+        for ((band, bank_id), slot) in outgoing.zip(self.bands.iter_mut()) {
+            *slot = OutgoingBand {
+                stages: band.current,
+                history: band.history,
+                bank: *bank_id,
+            };
+            self.len += 1;
+        }
+        self.audition = previous
+            .audition
+            .filter(|_| previous.audition_mix > 0.0)
+            .and_then(|selection| {
+                previous
+                    .configuration
+                    .nodes
+                    .iter()
+                    .position(|node| node.id.value() == selection.index)
+            })
+            .and_then(|index| {
+                Some(OutgoingAudition {
+                    stages: previous.bands.get(index)?.current,
+                    history: previous.audition_history,
+                    bank: *previous.effective_banks.get(index)?,
+                    mix: previous.audition_mix,
+                })
+            });
+        self.mode = mode;
+        self.gain = previous.gain;
+        self.total = mode_fade_frames(sample_rate);
+        self.remaining = self.total;
+    }
+    /// Carries an in-progress crossfade across a same-routing handoff, copying
+    /// only the occupied bands.
+    fn copy_from(&mut self, other: &ModeFade) {
+        self.clear();
+        if !other.is_active() {
+            return;
+        }
+        self.bands[..other.len].copy_from_slice(&other.bands[..other.len]);
+        self.len = other.len;
+        self.audition = other.audition;
+        self.mode = other.mode;
+        self.gain = other.gain;
+        self.remaining = other.remaining;
+        self.total = other.total;
+    }
+    fn blend(&mut self, input: StereoFrame, current: [f64; 2]) -> [f64; 2] {
+        if !self.is_active() {
+            return current;
+        }
+        let mut working = [f64::from(input[0]), f64::from(input[1])];
+        if self.mode == 2 {
+            working = [
+                (working[0] + working[1]) * 0.5,
+                (working[0] - working[1]) * 0.5,
+            ];
+        }
+        let audition_input = working;
+        for band in &mut self.bands[..self.len] {
+            for (channel, value) in working.iter_mut().enumerate() {
+                if band.bank == bank(self.mode, channel) {
+                    *value = filter(*value, &band.stages, &mut band.history[channel]);
+                }
+            }
+        }
+        if let Some(audition) = &mut self.audition {
+            for (channel, value) in working.iter_mut().enumerate() {
+                let isolated = if audition.bank == bank(self.mode, channel) {
+                    filter(
+                        audition_input[channel],
+                        &audition.stages,
+                        &mut audition.history[channel],
+                    )
+                } else {
+                    0.0
+                };
+                *value += (isolated - *value) * audition.mix;
+            }
+        }
+        if self.mode == 2 {
+            working = [working[0] + working[1], working[0] - working[1]];
+        }
+        self.remaining -= 1;
+        if self.remaining == 0 {
+            self.clear();
+            return current;
+        }
+        let weight = f64::from(self.remaining) / f64::from(self.total);
+        std::array::from_fn(|channel| {
+            current[channel] + (working[channel] * self.gain - current[channel]) * weight
+        })
     }
 }
 pub const EQ_RUNTIME_BYTES: usize = std::mem::size_of::<EqRuntime>();
@@ -234,6 +451,7 @@ struct EqRuntime {
     audition_history: [[[f64; 2]; 4]; 2],
     gain: f64,
     effective_banks: [u8; MAX_NODES],
+    mode_fade: ModeFade,
 }
 impl EqRuntime {
     fn process(
@@ -242,6 +460,7 @@ impl EqRuntime {
         clock: Option<&dyn NativeInstrumentClock>,
         bypassed: bool,
     ) {
+        let automated = !self.configuration.lanes.is_empty();
         for (offset, frame) in frames.iter_mut().enumerate() {
             let running = clock.is_some_and(|c| c.transport_is_running() == Some(true));
             // A stopped monitoring clock may repeat its arrangement origin.
@@ -261,10 +480,11 @@ impl EqRuntime {
                     band.history = [[[0.0; 2]; 4]; 2];
                 }
                 self.audition_history = [[[0.0; 2]; 4]; 2];
+                self.mode_fade.clear();
             }
-            if self.refresh_target || discontinuity || position % CADENCE == 0 {
+            if self.refresh_target || discontinuity || (automated && position % CADENCE == 0) {
                 self.refresh_target = false;
-                let beat = if origin.is_some() && !self.configuration.lanes.is_empty() {
+                let beat = if origin.is_some() && automated {
                     clock.and_then(|clock| clock.arrangement_beat_at_offset(offset))
                 } else {
                     None
@@ -283,12 +503,19 @@ impl EqRuntime {
                         band.history = [[[0.0; 2]; 4]; 2];
                         band.shape = node.kind as u8;
                     }
-                    band.target = target;
                     if discontinuity {
+                        band.target = target;
                         band.current = target;
                         band.remaining = 0;
-                    } else if band.current != target {
-                        band.remaining = CADENCE as u8;
+                        band.stages_used = stages_used(&target);
+                    } else if band.target != target {
+                        band.target = target;
+                        band.stages_used = band.stages_used.max(stages_used(&target));
+                        band.remaining = if band.current == target {
+                            0
+                        } else {
+                            coefficient_smooth_frames(self.sample_rate)
+                        };
                     }
                 }
             }
@@ -317,10 +544,13 @@ impl EqRuntime {
                         current.a2 += (target.a2 - current.a2) * t;
                     }
                     band.remaining -= 1;
+                    if band.remaining == 0 {
+                        band.current = band.target;
+                    }
                 }
                 for (channel, value) in working.iter_mut().enumerate() {
                     if self.effective_banks[index] == bank(self.configuration.mode, channel) {
-                        *value = filter(*value, &band.current, &mut band.history[channel]);
+                        *value = band.filter_channel(channel, *value);
                     }
                 }
             }
@@ -357,20 +587,30 @@ impl EqRuntime {
             if self.configuration.mode == 2 {
                 working = [working[0] + working[1], working[0] - working[1]];
             }
+            let output = self
+                .mode_fade
+                .blend(input, [working[0] * self.gain, working[1] * self.gain]);
             *frame = if bypassed {
                 input
             } else {
-                [
-                    finite_f32(working[0] * self.gain),
-                    finite_f32(working[1] * self.gain),
-                ]
+                [finite_f32(output[0]), finite_f32(output[1])]
             };
             self.last_frame = origin;
             self.fallback_frame = self.fallback_frame.wrapping_add(1);
         }
     }
 }
-fn filter(mut input: f64, stages: &BandStages, history: &mut [[f64; 2]; 4]) -> f64 {
+fn stages_used(stages: &BandStages) -> u8 {
+    // Always run one section so even an identity band applies the existing
+    // finite-value and denormal law. Further untouched identity sections
+    // have zero history and would repeat that same operation.
+    stages
+        .iter()
+        .rposition(|stage| *stage != Coefficients::IDENTITY)
+        .map_or(1, |index| (index + 1) as u8)
+}
+
+fn filter(mut input: f64, stages: &[Coefficients], history: &mut [[f64; 2]]) -> f64 {
     for (c, h) in stages.iter().zip(history) {
         let output = c.b0 * input + h[0];
         h[0] = quiet(c.b1 * input - c.a1 * output + h[1]);
@@ -422,6 +662,7 @@ impl NativeProcessorRuntime for EqRuntime {
             band.history = [[[0.0; 2]; 4]; 2];
             band.current = band.target;
             band.remaining = 0;
+            band.stages_used = stages_used(&band.target);
         }
         self.last_frame = None;
         self.fallback_frame = 0;
@@ -429,9 +670,11 @@ impl NativeProcessorRuntime for EqRuntime {
         self.audition_request = None;
         self.audition_mix = 0.0;
         self.audition_history = [[[0.0; 2]; 4]; 2];
+        self.mode_fade.clear();
     }
     fn is_quiescent(&self) -> bool {
-        self.audition.is_none()
+        !self.mode_fade.is_active()
+            && self.audition.is_none()
             && self.audition_request.is_none()
             && self.audition_mix == 0.0
             && self
@@ -445,62 +688,94 @@ impl NativeProcessorRuntime for EqRuntime {
                 .flatten()
                 .all(|v| *v == 0.0)
     }
+    /// A channel-mode change still inherits and retargets without a reset:
+    /// the previous routing crossfades out (see `ModeFade`). Retargeting keeps
+    /// session playback from detaching the old suffix as a ringing tail beside
+    /// a fresh chain.
     fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
-        previous.as_any().downcast_ref::<Self>().is_some_and(|old| {
-            old.sample_rate == self.sample_rate && old.configuration.mode == self.configuration.mode
-        })
+        previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|old| old.sample_rate == self.sample_rate)
     }
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         self.can_copy_history_from(previous)
     }
     fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
-        if let Some(old) = previous.as_any().downcast_ref::<Self>().filter(|old| {
-            old.sample_rate == self.sample_rate && old.configuration.mode == self.configuration.mode
-        }) {
-            if Arc::ptr_eq(&self.configuration, &old.configuration) {
-                self.bands.copy_from_slice(&old.bands);
-                self.effective_banks = old.effective_banks;
-                self.last_frame = old.last_frame;
-                self.fallback_frame = old.fallback_frame;
-                self.refresh_target = old.refresh_target;
-                self.audition = old.audition;
-                self.audition_request = old.audition_request;
-                self.audition_mix = old.audition_mix;
-                self.audition_history = old.audition_history;
-                self.gain = old.gain;
-                return;
-            }
-            for (index, node) in self.configuration.nodes.iter().enumerate() {
-                if let Some(prior) = old
-                    .configuration
-                    .nodes
-                    .iter()
-                    .position(|n| n.id == node.id && n.bank == node.bank)
-                {
-                    if old.configuration.nodes[prior].kind == node.kind {
-                        self.bands[index].history = old.bands[prior].history;
-                    }
-                    self.bands[index].current = old.bands[prior].current;
-                    self.bands[index].remaining = CADENCE as u8;
-                }
-            }
-            if old
-                .audition
-                .is_none_or(|selection| self.can_select(selection))
-                && old
-                    .audition_request
-                    .is_none_or(|selection| self.can_select(selection))
-            {
-                self.audition = old.audition;
-                self.audition_request = old.audition_request;
-                self.audition_mix = old.audition_mix;
-                self.audition_history = old.audition_history;
-            }
+        let Some(old) = previous
+            .as_any()
+            .downcast_ref::<Self>()
+            .filter(|old| old.sample_rate == self.sample_rate)
+        else {
+            return;
+        };
+        if old.configuration.mode != self.configuration.mode {
+            // The new routing starts from empty history; the old one fades out.
+            self.reset();
+            self.mode_fade.capture(old, self.sample_rate);
             self.last_frame = old.last_frame;
             self.fallback_frame = old.fallback_frame;
             self.refresh_target = true;
             self.gain = old.gain;
+            return;
         }
+        self.mode_fade.copy_from(&old.mode_fade);
+        if Arc::ptr_eq(&self.configuration, &old.configuration) {
+            self.bands.copy_from_slice(&old.bands);
+            self.effective_banks = old.effective_banks;
+            self.last_frame = old.last_frame;
+            self.fallback_frame = old.fallback_frame;
+            self.refresh_target = old.refresh_target;
+            self.audition = old.audition;
+            self.audition_request = old.audition_request;
+            self.audition_mix = old.audition_mix;
+            self.audition_history = old.audition_history;
+            self.gain = old.gain;
+            return;
+        }
+        for (index, node) in self.configuration.nodes.iter().enumerate() {
+            if let Some(prior) = old
+                .configuration
+                .nodes
+                .iter()
+                .position(|n| n.id == node.id && n.bank == node.bank)
+            {
+                if old.configuration.nodes[prior].kind == node.kind {
+                    self.bands[index] = old.bands[prior];
+                } else {
+                    self.bands[index].current = old.bands[prior].current;
+                    self.bands[index].remaining = coefficient_smooth_frames(self.sample_rate);
+                    self.bands[index].stages_used = self.bands[index]
+                        .stages_used
+                        .max(old.bands[prior].stages_used);
+                }
+            }
+        }
+        if old
+            .audition
+            .is_none_or(|selection| self.can_select(selection))
+            && old
+                .audition_request
+                .is_none_or(|selection| self.can_select(selection))
+        {
+            self.audition = old.audition;
+            self.audition_request = old.audition_request;
+            self.audition_mix = old.audition_mix;
+            self.audition_history = old.audition_history;
+        }
+        self.last_frame = old.last_frame;
+        self.fallback_frame = old.fallback_frame;
+        self.refresh_target = true;
+        self.gain = old.gain;
+    }
+    /// The single `ModeFade` branch is full: a further channel-mode change
+    /// waits until the previous switch has finished fading (Pulse #4122).
+    fn transition_busy_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+        previous.as_any().downcast_ref::<Self>().is_some_and(|old| {
+            old.sample_rate == self.sample_rate
+                && old.configuration.mode != self.configuration.mode
+                && old.mode_fade.is_active()
+        })
     }
     fn as_any(&self) -> &dyn StdAny {
         self
@@ -653,4 +928,243 @@ fn design(node: Node, sample_rate: u32) -> BandStages {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod smoothing_tests {
+    use super::*;
+    use hex_lattice::EMPTY_DEVICE_RESOURCES;
+
+    #[test]
+    fn sparse_filter_matches_full_sections_with_residual_and_nonfinite_history() {
+        let mut band = RuntimeBand::default();
+        band.current[0].b0 = 0.75;
+        band.current[0].b1 = 0.25;
+        let mut full_history = [[0.0; 2]; 4];
+        let mut compare = |band: &mut RuntimeBand, input| {
+            let expected = filter(input, &band.current, &mut full_history);
+            let actual = band.filter_channel(0, input);
+            assert_eq!(actual.to_bits(), expected.to_bits());
+            assert_eq!(band.history[0], full_history);
+        };
+        for input in [-0.0, 0.5, f64::MIN_POSITIVE, -0.25] {
+            compare(&mut band, input);
+            assert_eq!(band.stages_used, 1);
+        }
+        // The last stage's stored sample still matters after its coefficients
+        // reach identity at the end of a ramp.
+        band.current[3].b1 = 0.5;
+        band.stages_used = stages_used(&band.current);
+        compare(&mut band, 0.5);
+        band.current[3] = Coefficients::IDENTITY;
+        compare(&mut band, 0.0);
+        compare(&mut band, 0.25);
+
+        let mut malformed = RuntimeBand::default();
+        let mut full = [[0.0; 2]; 4];
+        for input in [f64::INFINITY, 0.5, f64::NAN] {
+            let expected = filter(input, &malformed.current, &mut full);
+            let actual = malformed.filter_channel(0, input);
+            assert!(actual == expected || (actual.is_nan() && expected.is_nan()));
+            assert_eq!(malformed.stages_used, 4);
+        }
+        assert!(
+            malformed.history[0]
+                .iter()
+                .flatten()
+                .all(|value| value.is_nan())
+        );
+    }
+
+    fn runtime(rate: u32, gain: f32) -> Box<dyn NativeProcessorRuntime> {
+        let mut state = EqState::default();
+        let mut node = Node::new(NodeId::new(1).unwrap(), 750.0, gain, 0).unwrap();
+        node.kind = NodeKind::LowShelf;
+        state.add(node).unwrap();
+        PreparedEq::new(state, rate).unwrap().create_runtime()
+    }
+
+    fn process(runtime: &mut dyn NativeProcessorRuntime, count: usize) -> Vec<StereoFrame> {
+        let mut frames = vec![[0.25; 2]; count];
+        runtime.process_block(&mut frames, &EMPTY_DEVICE_RESOURCES);
+        frames
+    }
+
+    fn remaining(runtime: &dyn NativeProcessorRuntime) -> u32 {
+        u32::from(runtime.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].remaining)
+    }
+
+    #[test]
+    fn unchanged_target_reaches_its_sample_rate_scaled_deadline() {
+        for rate in [8_000_u32, 44_100, 48_000, 192_000] {
+            let mut old = runtime(rate, 0.0);
+            process(old.as_mut(), 17);
+            let mut changed = runtime(rate, 12.0);
+            let initial = old.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].current[0].b0;
+            let target =
+                changed.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].target[0].b0;
+            changed.copy_history_from(old.as_ref());
+            let duration = rate.div_ceil(200);
+            for elapsed in 1..=duration {
+                process(changed.as_mut(), 1);
+                assert_eq!(
+                    remaining(changed.as_ref()),
+                    duration - elapsed,
+                    "rate={rate}, elapsed={elapsed}"
+                );
+                let actual =
+                    changed.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].current[0].b0;
+                let expected =
+                    initial + (target - initial) * f64::from(elapsed) / f64::from(duration);
+                assert!(
+                    (actual - expected).abs() < 1e-12,
+                    "rate={rate}, elapsed={elapsed}: {actual} vs {expected}"
+                );
+            }
+            let band = &changed.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0];
+            assert_eq!(band.current, band.target, "rate={rate}");
+        }
+    }
+
+    #[test]
+    fn equivalent_publication_preserves_the_active_ramp_and_pcm() {
+        let mut old = runtime(48_000, 0.0);
+        process(old.as_mut(), 17);
+        let mut reference = runtime(48_000, 12.0);
+        reference.copy_history_from(old.as_ref());
+        process(reference.as_mut(), 23);
+        let mut republished: Vec<_> = [1, 17, 64]
+            .into_iter()
+            .map(|block| {
+                let mut next = runtime(48_000, 12.0);
+                next.copy_history_from(reference.as_ref());
+                (next, block)
+            })
+            .collect();
+        let expected = process(reference.as_mut(), 300);
+        for (runtime, block) in &mut republished {
+            let mut actual = vec![[0.25; 2]; 300];
+            for chunk in actual.chunks_mut(*block) {
+                runtime.process_block(chunk, &EMPTY_DEVICE_RESOURCES);
+            }
+            for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+                assert_eq!(
+                    actual, expected,
+                    "equivalent publication changed PCM at frame {index}, block {block}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn changed_target_restarts_from_the_effective_coefficients() {
+        let mut old = runtime(48_000, 0.0);
+        process(old.as_mut(), 17);
+        let mut first = runtime(48_000, 12.0);
+        first.copy_history_from(old.as_ref());
+        process(first.as_mut(), 23);
+        let effective = first.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].current;
+        let mut reversed = runtime(48_000, -12.0);
+        reversed.copy_history_from(first.as_ref());
+        assert_eq!(
+            reversed.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].current,
+            effective
+        );
+        process(reversed.as_mut(), 1);
+        assert_eq!(remaining(reversed.as_ref()), 239);
+    }
+
+    #[test]
+    fn extreme_frequency_and_q_retargets_remain_finite() {
+        fn extreme(rate: u32, frequency: f32, gain: f32) -> Box<dyn NativeProcessorRuntime> {
+            let mut state = EqState::default();
+            let mut node = Node::new(NodeId::new(1).unwrap(), frequency, gain, 0).unwrap();
+            node.q = 18.0;
+            state.add(node).unwrap();
+            PreparedEq::new(state, rate).unwrap().create_runtime()
+        }
+        for rate in [48_000, 192_000] {
+            let mut old = extreme(rate, 20.0, 24.0);
+            process(old.as_mut(), 128);
+            let mut next = extreme(rate, 20_000.0, -24.0);
+            next.copy_history_from(old.as_ref());
+            let frames = process(next.as_mut(), 4096);
+            assert!(
+                frames
+                    .iter()
+                    .flatten()
+                    .all(|sample| sample.is_finite() && sample.abs() < 32.0),
+                "rate={rate}"
+            );
+            assert!(frames.iter().flatten().any(|sample| sample.abs() > 1e-6));
+            let band = &next.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0];
+            assert!(
+                band.current
+                    .iter()
+                    .chain(&band.target)
+                    .all(|c| [c.b0, c.b1, c.b2, c.a1, c.a2].iter().all(|v| v.is_finite()))
+            );
+            assert!(
+                band.history
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .all(|sample| sample.is_finite())
+            );
+        }
+    }
+
+    #[test]
+    fn moving_automation_is_independent_of_block_partitioning() {
+        struct Clock(u64);
+        impl NativeInstrumentClock for Clock {
+            fn beat_at_offset(&self, offset: usize) -> Option<u64> {
+                self.arrangement_beat_at_offset(offset)
+            }
+            fn arrangement_frame_at_offset(&self, offset: usize) -> Option<u64> {
+                Some(self.0 + offset as u64)
+            }
+            fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+                Some((self.0 + offset as u64) << 22)
+            }
+            fn transport_is_running(&self) -> Option<bool> {
+                Some(true)
+            }
+        }
+        fn render(block: usize) -> Vec<StereoFrame> {
+            let mut state = EqState::default();
+            let node = Node::new(NodeId::new(1).unwrap(), 750.0, 0.0, 0).unwrap();
+            state.add(node).unwrap();
+            state
+                .set_lane(AutomationLane {
+                    node: node.id,
+                    parameter: NodeParameter::Gain,
+                    points: vec![
+                        AutomationPoint {
+                            beat: 0,
+                            normalized: 0.25,
+                        },
+                        AutomationPoint {
+                            beat: 1 << 32,
+                            normalized: 0.75,
+                        },
+                    ],
+                })
+                .unwrap();
+            let mut runtime = PreparedEq::new(state, 48_000).unwrap().create_runtime();
+            let mut frames = vec![[0.25; 2]; 1024];
+            for (index, chunk) in frames.chunks_mut(block).enumerate() {
+                runtime.process_block_with_clock(
+                    chunk,
+                    Some(&Clock((index * block) as u64)),
+                    &EMPTY_DEVICE_RESOURCES,
+                );
+            }
+            frames
+        }
+        let expected = render(1);
+        for block in [17, 64, 256] {
+            assert_eq!(render(block), expected, "block size {block}");
+        }
+    }
 }

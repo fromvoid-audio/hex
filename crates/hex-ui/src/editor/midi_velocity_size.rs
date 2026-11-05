@@ -22,7 +22,7 @@ impl EditorView {
                     .as_ref()
                     .is_none_or(|s| s.revision != r.scene.revision)
                 || self.detail_midi_clip_data() != Some(r.scene.clip)
-                || self.piano_beat_start.raw() != r.scene.start
+                || self.piano_beat_start != r.scene.start
                 || self.piano_beat_span.raw() != r.scene.span
                 || !self.clip_view_open
                 || self.device_panel_active
@@ -73,7 +73,7 @@ impl EditorView {
                         generation: self.project_generation,
                         revision,
                         clip,
-                        start: self.piano_beat_start.raw(),
+                        start: self.piano_beat_start,
                         span: self.piano_beat_span.raw(),
                     },
                     height: self.midi_velocity.height,

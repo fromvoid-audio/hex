@@ -1,13 +1,17 @@
 """App-only self-test selection and conservative refusal, without Cargo builds."""
 import copy
+from contextlib import redirect_stderr
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +22,10 @@ SPEC = importlib.util.spec_from_file_location(
     "python_impact_fixture", Path(__file__).resolve().parents[1] / "python_test_plan.py")
 impact = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(impact)
+SHARDS_SPEC = importlib.util.spec_from_file_location(
+    "python_shards_fixture", Path(__file__).resolve().parents[1] / "python_shards.py")
+shards = importlib.util.module_from_spec(SHARDS_SPEC)
+SHARDS_SPEC.loader.exec_module(shards)
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = [
     {"name": "hex-ui", "manifest": "crates/hex-ui/Cargo.toml", "dependencies": []},
@@ -40,6 +48,109 @@ def cases(suite):
 
 
 class SelectionTests(unittest.TestCase):
+    def test_health_owned_tooling_uses_owner_and_shared_checks(self):
+        chosen = selection(["scripts/ci_plan.py"], profile="health")
+        self.assertEqual(chosen["mode"], "shared")
+        self.assertIn("test_ci_plan", chosen["test_selectors"])
+        self.assertIn("test_python_test_plan", chosen["test_selectors"])
+        self.assertIn("test_architecture", chosen["excluded_groups"])
+        self.assertEqual(impact.argv(chosen)[:3], ("python3", "scripts/python_shards.py", "--"))
+
+    def test_health_mixed_and_unknown_inputs_remain_comprehensive(self):
+        for paths in (["scripts/ci_plan.py", "crates/hex-engine/src/lib.rs"],
+                      ["scripts/ci_plan.py", "Cargo.lock"],
+                      ["scripts/unknown-helper.py"]):
+            with self.subTest(paths=paths):
+                self.assertEqual(selection(paths, profile="health")["mode"], "comprehensive")
+
+    def test_health_native_or_unregistered_inputs_remain_comprehensive(self):
+        paths = ["scripts/ci_plan.py"]
+        self.assertEqual(selection(paths, profile="health", env={"HEX_VST3_SDK_DIR": "fixture"})["mode"],
+                         "comprehensive")
+        modules = sorted(impact.REVIEWED_MODULES) + ["test_unknown"]
+        self.assertEqual(selection(paths, profile="health", modules=modules)["mode"], "comprehensive")
+
+    def test_shard_discovery_retains_bounded_marker_and_deduplicates(self):
+        class Cases(unittest.TestCase):
+            def test_plain(self):
+                pass
+            def test_bounded(self):
+                pass
+        Cases.test_bounded.__hex_shard_bounded__ = True
+        plain, bounded = Cases("test_plain"), Cases("test_bounded")
+        suite = unittest.TestSuite([plain, bounded, plain])
+        with patch.object(unittest.defaultTestLoader, "loadTestsFromNames", return_value=suite):
+            selected = shards.test_cases(["fixture"])
+        self.assertEqual(dict(selected), {plain.id(): False, bounded.id(): True})
+
+    def test_shard_scheduler_preserves_fast_parallelism_and_bounds_tagged_cases(self):
+        lock = threading.Lock()
+        barrier = threading.Barrier(3, timeout=0.5)
+        active = {False: 0, True: 0}
+        maximum = {False: 0, True: 0}
+        events = []
+        def run(name):
+            bounded = name.startswith("bounded")
+            with lock:
+                active[bounded] += 1
+                maximum[bounded] = max(maximum[bounded], active[bounded])
+                events.append(name)
+            if not bounded:
+                barrier.wait()
+            time.sleep(0.01)
+            with lock:
+                active[bounded] -= 1
+            return (name, int(name == "bounded-1"), "result")
+        cases = [(f"fast-{i}", False) for i in range(3)] + [(f"bounded-{i}", True) for i in range(5)]
+        results = list(shards.run_cases(cases, 3, run))
+        self.assertEqual([item[0] for item in results], [name for name, _ in cases])
+        self.assertEqual([item[1] for item in results].count(1), 1)
+        self.assertEqual(maximum[False], 3)
+        self.assertLessEqual(maximum[True], 2)
+        self.assertTrue(all(name.startswith("fast") for name in events[:3]))
+
+    def test_shard_bounded_phase_respects_a_single_worker(self):
+        active = 0
+        maximum = 0
+        def run(name):
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
+            time.sleep(0.01)
+            active -= 1
+            return (name, 0, "")
+        results = list(shards.run_cases([("a", True), ("b", True)], 1, run))
+        self.assertEqual([item[0] for item in results], ["a", "b"])
+        self.assertEqual(maximum, 1)
+
+    def test_shard_cli_refuses_empty_or_missing_selection(self):
+        output = io.StringIO()
+        with patch.object(shards, "test_cases", return_value=[]), redirect_stderr(output):
+            self.assertEqual(shards.main(["--", "fixture"]), 1)
+        self.assertIn("no tests matched", output.getvalue())
+        output = io.StringIO()
+        with redirect_stderr(output):
+            self.assertEqual(shards.main(["--", "missing_shard_fixture.no_case"]), 1)
+        self.assertIn("exit 1", output.getvalue())
+
+    def test_shard_cli_runs_both_groups_and_propagates_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "shard_fixture.py").write_text(
+                "import unittest\n"
+                "class Cases(unittest.TestCase):\n"
+                "    def test_plain(self): pass\n"
+                "    def test_bounded(self): self.fail('expected')\n"
+                "    test_bounded.__hex_shard_bounded__ = True\n"
+            )
+            output = io.StringIO()
+            with patch.dict(os.environ, {"PYTHONPATH": directory}), patch.object(sys, "path", [directory, *sys.path]):
+                with redirect_stderr(output):
+                    self.assertEqual(shards.main(["--workers", "3", "--", "shard_fixture"]), 1)
+            self.assertIn("shard_fixture.Cases.test_plain (exit 0)", output.getvalue())
+            self.assertIn("shard_fixture.Cases.test_bounded (exit 1)", output.getvalue())
+            sys.modules.pop("shard_fixture", None)
+
     def test_ui_and_core_app_edits_have_the_same_reviewed_shared_checks(self):
         ui = selection(["crates/hex-ui/src/editor.rs"])
         core = selection(["crates/hex-engine/src/lib.rs"])
@@ -54,20 +165,40 @@ class SelectionTests(unittest.TestCase):
 
     def test_current_repository_inventory_retains_scoped_feedback_and_impact_fallbacks(self):
         modules = impact.available_modules(ROOT)
+        self.assertIn("test_ui_style_log_viewer", modules)
+        self.assertEqual(selection(["scripts/check-ui-style.py"], modules=modules)["mode"], "comprehensive")
         for path in ("crates/hex-ui/src/editor.rs", "crates/hex-engine/src/lib.rs"):
             with self.subTest(path=path):
                 chosen = selection([path], modules=modules)
                 self.assertEqual(chosen["mode"], "shared")
                 self.assertEqual(chosen["test_selectors"], [*impact.SHARED_TESTS, "test_python_test_plan"])
+        # Tooling owner boundary: a script with its own test module selects that
+        # module plus shared invariants, never unrelated tooling suites.
+        for path, owner in (
+            ("scripts/check-architecture.py", "test_check_architecture"),
+            ("scripts/tests/test_architecture.py", "test_architecture"),
+            ("scripts/hex-update-entry.py", "test_hex_update_entry"),
+            ("scripts/pending_update_exit.py", "test_pending_update_exit"),
+            ("scripts/tests/test_hex_update_entry.py", "test_hex_update_entry"),
+            ("scripts/tests/test_pending_update_exit.py", "test_pending_update_exit"),
+            ("scripts/tests/test_vst3_macos_bootstrap.py", "test_vst3_macos_bootstrap"),
+        ):
+            with self.subTest(path=path):
+                chosen = selection([path], modules=modules)
+                if owner not in modules:  # no module of its own: comprehensive
+                    self.assertEqual(chosen["mode"], "comprehensive")
+                    continue
+                self.assertEqual(chosen["mode"], "shared")
+                self.assertIn(owner, chosen["test_selectors"])
+                self.assertIn("test_python_test_plan", chosen["test_selectors"])
+                self.assertNotIn(owner, chosen["excluded_groups"])
         for path in (
-            "scripts/check-architecture.py", "scripts/tests/test_architecture.py", "AGENTS.md",
-            "scripts/hex-update-entry.py", "scripts/pending_update_exit.py",
-            "scripts/tests/test_hex_update_entry.py", "scripts/tests/test_pending_update_exit.py",
+            "AGENTS.md",
             "crates/hex-plugin-scan/native/macos_bootstrap.py",
             "crates/hex-plugin-scan/native/macos_helper.mm",
             "crates/hex-plugin-scan/native/macos_fixture.cpp",
             "crates/hex-plugin-scan/native/build.py", "crates/hex-plugin-scan/build.rs",
-            "scripts/tests/test_vst3_macos_bootstrap.py", "Cargo.toml", ".cargo/config.toml",
+            "Cargo.toml", ".cargo/config.toml",
         ):
             with self.subTest(path=path):
                 chosen = selection([path], modules=modules)
@@ -124,11 +255,21 @@ assert unittest.defaultTestLoader.loadTestsFromTestCase(instance.NativeInstanceT
         self.assertEqual(impact.native_acceptance_inputs({"HEX_VST3_SDK_DIR": ""}), [])
 
     def test_tooling_configuration_vendor_and_unknown_inputs_stay_comprehensive(self):
+        modules = sorted(impact.REVIEWED_MODULES)
+        for path, owner in (
+            ("scripts/launch-restart.py", "test_launch_restart"), ("scripts/local-ci.py", "test_local_ci"),
+            ("scripts/ci_plan.py", "test_ci_plan"), ("scripts/python_test_plan.py", "test_python_test_plan"),
+            ("scripts/hex-test-build.py", "test_hex_test_build"), ("scripts/test_shards.py", "test_ci_plan"),
+            ("scripts/tests/test_ci_plan.py", "test_ci_plan"),
+        ):
+            with self.subTest(path=path):
+                result = selection([path], modules=modules)
+                self.assertEqual(result["mode"], "shared")
+                self.assertIn(owner, result["test_selectors"])
+                self.assertIn("test_architecture", result["excluded_groups"])
         for path in (
-            "launch", "scripts/launch-restart.py", "scripts/local-ci.py",
-            "scripts/ci_plan.py", "scripts/python_test_plan.py", "scripts/build_inputs.py",
-            "scripts/hex-test-build.py", "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
-            "scripts/tests/test_ci_plan.py", "scripts/new-helper.py", "Cargo.toml", "Cargo.lock",
+            "launch", "scripts/build_inputs.py", "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
+            "scripts/new-helper.py", "Cargo.toml", "Cargo.lock",
             ".cargo/config.toml", "rust-toolchain.toml", "AGENTS.md",
             "crates/hex-ui/Cargo.toml", "crates/hex-ui/build.rs",
             "crates/hex-ui/assets/not-source.rs", "third_party/gpui/src/lib.rs",
@@ -141,8 +282,9 @@ assert unittest.defaultTestLoader.loadTestsFromTestCase(instance.NativeInstanceT
                 self.assertEqual(result["excluded_groups"], [])
 
     def test_mixed_inputs_and_unregistered_rename_endpoint_cannot_take_fast_path(self):
+        # Mixed UI/core Rust inputs share the same invariants as either alone.
+        self.assertEqual(selection(["crates/hex-ui/src/a.rs", "crates/hex-engine/src/a.rs"])["mode"], "shared")
         for paths in (
-            ["crates/hex-ui/src/a.rs", "crates/hex-engine/src/a.rs"],
             ["crates/hex-ui/src/a.rs", "launch"],
             ["crates/hex-engine/src/a.rs", "unknown/renamed.rs"],
         ):
