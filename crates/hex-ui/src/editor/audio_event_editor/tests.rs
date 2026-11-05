@@ -502,7 +502,11 @@ fn event_grid_paints_over_opaque_audio_at_full_and_zoomed_extents(cx: &mut TestA
         assert!(grid.top() >= body.top() + px(22.0));
         let frame = editor.read_with(&visual, |v, _| {
             let root = v.event_context().unwrap().1;
-            let viewport = v.event_project_viewport(&root).unwrap();
+            let viewport = v
+                .event_project_window(&root)
+                .unwrap()
+                .visible_unsigned()
+                .unwrap();
             super::super::musical_time::grid_lines(
                 &v.state.as_ref().unwrap().project,
                 viewport,

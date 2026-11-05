@@ -2,18 +2,18 @@
 //! This only paints/snaps display coordinates: transport and audio reads remain
 //! unsigned. Each side retains its existing bounded grid/ruler work (at most 256
 //! negative grid lines and 64 labels, in addition to the positive resolver).
+use super::super::signed_frame_viewport::SignedFrameViewport;
 use super::*;
-use crate::editor::signed_frame_viewport::SignedFrameViewport;
 use hex_project::{audio_projection_beat, audio_projection_frame};
 
-pub(in crate::editor) struct SignedGridLine {
-    pub(in crate::editor) frame: i128,
-    pub(in crate::editor) bar_start: bool,
+pub(in super::super) struct SignedGridLine {
+    pub(in super::super) frame: i128,
+    pub(in super::super) bar_start: bool,
 }
-pub(in crate::editor) struct SignedRulerTick {
-    pub(in crate::editor) frame: i128,
-    pub(in crate::editor) label: String,
-    pub(in crate::editor) bar_start: bool,
+pub(in super::super) struct SignedRulerTick {
+    pub(in super::super) frame: i128,
+    pub(in super::super) label: String,
+    pub(in super::super) bar_start: bool,
 }
 fn negative_step(
     project: &Project,
@@ -118,7 +118,7 @@ fn negative_landmarks(
     }
     points
 }
-pub(in crate::editor) fn negative_grid_lines(
+pub(in super::super) fn negative_grid_lines(
     project: &Project,
     window: SignedFrameViewport,
     width: f32,
@@ -140,7 +140,7 @@ pub(in crate::editor) fn negative_grid_lines(
         })
         .collect()
 }
-pub(in crate::editor) fn negative_ruler_ticks(
+pub(in super::super) fn negative_ruler_ticks(
     project: &Project,
     window: SignedFrameViewport,
     width: f32,
@@ -173,7 +173,7 @@ pub(in crate::editor) fn negative_ruler_ticks(
         .collect()
 }
 impl SnapGrid {
-    pub(in crate::editor) fn snap_signed_frame(
+    pub(in super::super) fn snap_signed_frame(
         self,
         project: &Project,
         frame: i128,
@@ -205,7 +205,7 @@ impl SnapGrid {
 }
 
 impl SnapGrid {
-    pub(in crate::editor) fn adjacent_signed_frame(
+    pub(in super::super) fn adjacent_signed_frame(
         self,
         project: &Project,
         frame: i128,

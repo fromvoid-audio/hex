@@ -110,7 +110,7 @@ pub(in crate::editor) fn view(
         width * (viewport.length as f64 / project_window.length.max(1) as f64) as f32,
         view.audio_event_editor.grid,
     );
-    let negative_grid = super::super::musical_time::negative_grid_lines(
+    let negative_grid = super::super::musical_time::signed::negative_grid_lines(
         &state.project,
         project_window,
         width,
@@ -160,9 +160,11 @@ pub(in crate::editor) fn view(
             tick.fragmentary_bar,
         ));
     }
-    for tick in
-        super::super::musical_time::negative_ruler_ticks(&state.project, project_window, width)
-    {
+    for tick in super::super::musical_time::signed::negative_ruler_ticks(
+        &state.project,
+        project_window,
+        width,
+    ) {
         let x = project_window.fraction(tick.frame)? as f32;
         ruler = ruler.children(super::super::timeline_strip::ruler_tick(
             x,

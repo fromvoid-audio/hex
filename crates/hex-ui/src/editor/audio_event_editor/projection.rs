@@ -65,14 +65,6 @@ impl EditorView {
         self.event_frame_window(root)
             .shifted(i128::from(clip.start()))
     }
-    #[cfg(test)]
-    pub(super) fn event_project_viewport(&self, root: &AudioClipEdit) -> Option<Viewport> {
-        Some(
-            self.event_project_window(root)?
-                .visible_unsigned()
-                .unwrap_or(Viewport::fit(0)),
-        )
-    }
     pub(super) fn event_pointer_position(&self, x: f32, platform: bool) -> Option<u64> {
         if !x.is_finite() {
             return None;
