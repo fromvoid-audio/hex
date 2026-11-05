@@ -1,4 +1,114 @@
-//! Transactional wet/dry transition for compatible zero-latency effect handoffs.
+//! Transactional wet/dry transition for compatible native effect handoffs.
+use hex_lattice_contract::DeviceContractError;
+
+const MAX_ALIGNED_DRY_FRAMES: usize = 16;
+
+/// Dry input has one control-allocated owner per committed/speculative history.
+/// Short legacy delays remain inline. The separately admitted owned lookahead
+/// reserves exact configured storage before publication; callback operations
+/// copy samples in place and never clone, replace, grow or destroy a buffer.
+pub(crate) struct AlignedDry {
+    storage: DryStorage,
+}
+// Keep lengths and cursor construction private to this history owner.
+enum DryStorage {
+    Inline {
+        frames: [[f32; 2]; MAX_ALIGNED_DRY_FRAMES],
+        len: usize,
+        next: usize,
+    },
+    Reserved {
+        frames: Vec<[f32; 2]>,
+        next: usize,
+    },
+}
+impl AlignedDry {
+    pub(crate) fn new(latency: Option<u32>) -> Option<Self> {
+        let len = usize::try_from(latency?).ok()?;
+        (1..=MAX_ALIGNED_DRY_FRAMES).contains(&len).then_some(Self {
+            storage: DryStorage::Inline {
+                frames: [[0.0; 2]; MAX_ALIGNED_DRY_FRAMES],
+                len,
+                next: 0,
+            },
+        })
+    }
+    pub(crate) fn reserved(frames: u32) -> Result<Self, DeviceContractError> {
+        if !(1..=crate::MAX_RESERVED_BYPASS_FRAMES).contains(&frames) {
+            return Err(DeviceContractError::InvalidDescriptor);
+        }
+        let len =
+            usize::try_from(frames).map_err(|_| DeviceContractError::RuntimeBudgetExceeded)?;
+        let mut frames = Vec::new();
+        frames
+            .try_reserve_exact(len)
+            .map_err(|_| DeviceContractError::RuntimeAllocation)?;
+        // The aggregate quote charges this exact logical capacity, excluding
+        // allocator bookkeeping. Refuse an allocator's larger logical reserve.
+        if frames.capacity() != len {
+            return Err(DeviceContractError::RuntimeBudgetExceeded);
+        }
+        frames.resize(len, [0.0; 2]);
+        Ok(Self {
+            storage: DryStorage::Reserved { frames, next: 0 },
+        })
+    }
+    fn parts(&self) -> (&[[f32; 2]], usize) {
+        match &self.storage {
+            DryStorage::Inline { frames, len, next } => (&frames[..*len], *next),
+            DryStorage::Reserved { frames, next } => (frames, *next),
+        }
+    }
+    fn parts_mut(&mut self) -> (&mut [[f32; 2]], &mut usize) {
+        match &mut self.storage {
+            DryStorage::Inline { frames, len, next } => (&mut frames[..*len], next),
+            DryStorage::Reserved { frames, next } => (frames, next),
+        }
+    }
+    pub(crate) fn can_copy_from(&self, previous: &Self) -> bool {
+        std::mem::discriminant(&self.storage) == std::mem::discriminant(&previous.storage)
+            && self.parts().0.len() == previous.parts().0.len()
+    }
+    pub(crate) fn copy_from(&mut self, previous: &Self) -> bool {
+        if !self.can_copy_from(previous) {
+            return false;
+        }
+        let (source, old_next) = previous.parts();
+        let (destination, next) = self.parts_mut();
+        destination.copy_from_slice(source);
+        *next = old_next;
+        true
+    }
+    pub(crate) fn advance(&mut self, input: [f32; 2]) -> [f32; 2] {
+        let (frames, next) = self.parts_mut();
+        let dry = std::mem::replace(&mut frames[*next], input);
+        *next += 1;
+        if *next == frames.len() {
+            *next = 0;
+        }
+        dry
+    }
+    pub(crate) fn is_quiet(&self) -> bool {
+        self.parts().0.iter().all(|f| *f == [0.0; 2])
+    }
+    pub(crate) fn reset(&mut self) {
+        let (frames, next) = self.parts_mut();
+        frames.fill([0.0; 2]);
+        *next = 0;
+    }
+}
+/// Both options have the same prepared layout within one transaction. A
+/// cross-owner caller must preflight compatibility; mismatch never mutates.
+pub(crate) fn copy_dry(
+    destination: &mut Option<AlignedDry>,
+    previous: &Option<AlignedDry>,
+) -> bool {
+    match (destination.as_mut(), previous.as_ref()) {
+        (Some(destination), Some(previous)) => destination.copy_from(previous),
+        (None, None) => true,
+        _ => false,
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BypassRamp {
@@ -59,6 +169,38 @@ mod tests {
         ProcessorChainOwner, StereoMatrix,
     };
     use std::sync::Arc;
+
+    #[test]
+    fn reserved_dry_is_bounded_and_copies_only_into_existing_storage() {
+        for len in [1, 16, 17, 2366, crate::MAX_RESERVED_BYPASS_FRAMES] {
+            let mut committed = super::AlignedDry::reserved(len).unwrap();
+            let mut scratch = super::AlignedDry::reserved(len).unwrap();
+            let address = scratch.parts().0.as_ptr();
+            for i in 0..len + 7 {
+                let actual = committed.advance([i as f32, -(i as f32)]);
+                let expected = if i < len {
+                    [0.0; 2]
+                } else {
+                    [(i - len) as f32, -((i - len) as f32)]
+                };
+                assert_eq!(actual, expected);
+            }
+            assert!(scratch.copy_from(&committed));
+            assert_eq!(scratch.parts(), committed.parts());
+            assert_eq!(scratch.parts().0.as_ptr(), address);
+            let before = scratch.parts().0.to_vec();
+            let other = super::AlignedDry::reserved(if len == 1 { 2 } else { 1 }).unwrap();
+            assert!(!scratch.copy_from(&other));
+            assert_eq!(scratch.parts().0, before);
+            scratch.reset();
+            assert!(scratch.is_quiet());
+            assert_eq!(scratch.parts().0.as_ptr(), address);
+        }
+        for len in [0, crate::MAX_RESERVED_BYPASS_FRAMES + 1, u32::MAX] {
+            assert!(super::AlignedDry::reserved(len).is_err());
+        }
+        assert!(super::AlignedDry::new(Some(17)).is_none());
+    }
 
     fn chain(rate: u32, bypassed: bool) -> NativeRuntimeChain {
         let kind = DeviceTypeId::from_static("test.bypass.ramp");
@@ -133,5 +275,129 @@ mod tests {
         assert!((after[0][0] - before[79][0]).abs() < 0.002);
         assert_eq!(after[239][0], 0.5);
         assert!(after.windows(2).all(|pair| pair[1][0] >= pair[0][0]));
+    }
+
+    struct AlignedFixture;
+    impl crate::PreparedNativeProcessor for AlignedFixture {
+        fn supports_latency_aligned_bypass(&self) -> bool {
+            true
+        }
+
+        fn runtime_version(&self) -> u32 {
+            1
+        }
+
+        fn declared_runtime_bytes(&self) -> usize {
+            std::mem::size_of::<AlignedFixtureRuntime>()
+        }
+
+        fn create_runtime(&self) -> Box<dyn crate::NativeProcessorRuntime> {
+            Box::new(AlignedFixtureRuntime(
+                super::AlignedDry::new(Some(4)).unwrap(),
+            ))
+        }
+
+        fn algorithmic_latency_frames(&self) -> Option<u32> {
+            Some(4)
+        }
+    }
+
+    struct AlignedFixtureRuntime(super::AlignedDry);
+    impl crate::NativeProcessorRuntime for AlignedFixtureRuntime {
+        fn process_block(
+            &mut self,
+            frames: &mut [crate::StereoFrame],
+            _resources: &dyn crate::DeviceResources,
+        ) {
+            for frame in frames {
+                *frame = self.0.advance(*frame).map(|sample| sample * 2.0);
+            }
+        }
+
+        fn reset(&mut self) {
+            self.0.reset();
+        }
+
+        fn is_quiescent(&self) -> bool {
+            self.0.is_quiet()
+        }
+
+        fn can_copy_history_from(&self, previous: &dyn crate::NativeProcessorRuntime) -> bool {
+            previous.as_any().is::<Self>()
+        }
+
+        fn copy_history_from(&mut self, previous: &dyn crate::NativeProcessorRuntime) {
+            if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
+                self.0.copy_from(&previous.0);
+            }
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    fn aligned_chain(bypassed: bool) -> NativeRuntimeChain {
+        let kind = DeviceTypeId::from_static("test.bypass.aligned");
+        let prepared = PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Track(1),
+            device_id: 7,
+            device_type: kind,
+            matrix: StereoMatrix::identity(),
+            bypassed,
+            sample_rate: 8_000,
+            configuration: Some(Arc::new(NativeDeviceState::new(kind, 1, vec![]).unwrap())),
+            definition: Some(Arc::new(AlignedFixture)),
+        };
+        assert_eq!(prepared.algorithmic_latency_frames(), Some(4));
+        let chain = NativeRuntimeChain::new(vec![prepared]).unwrap();
+        assert_eq!(
+            chain.algorithmic_latency_frames_for_entry(0).unwrap(),
+            Some(4)
+        );
+        chain
+    }
+
+    #[test]
+    fn aligned_bypass_preserves_delay_and_rollback_through_rapid_reversal() {
+        let samples: Vec<_> = (0..200).map(|n| [n as f32 / 256.0; 2]).collect();
+        let mut output = samples.clone();
+        let mut current = aligned_chain(false);
+        let switches = [
+            (16, 25, true, 1.0),
+            (25, 91, false, 0.775),
+            (91, 200, true, 1.0),
+        ];
+        current.begin_block();
+        current.process_block(&mut output[..16]).unwrap();
+        current.commit_block();
+        for (start, end, bypassed, from) in switches {
+            let mut next = aligned_chain(bypassed);
+            assert!(next.configuration_matches_range(&current, 0..1));
+            assert!(next.can_inherit_from(&current));
+            next.transfer_history_from(&mut current);
+            next.begin_block();
+            next.process_block(&mut [[-0.25; 2]; 11]).unwrap();
+            next.rollback_block();
+
+            for part in output[start..end].chunks_mut(53) {
+                next.begin_block();
+                next.process_block(part).unwrap();
+                next.commit_block();
+            }
+            let target = if bypassed { 0.0 } else { 1.0 };
+            for (offset, actual) in output[start..end].iter().enumerate() {
+                let wet = from + (target - from) * (offset + 1).min(40) as f32 / 40.0;
+                let expected = samples[start + offset - 4][0] * (1.0 + wet);
+                assert!(
+                    (actual[0] - expected).abs() < 1e-6,
+                    "frame {}",
+                    start + offset
+                );
+                assert_eq!(actual[0], actual[1]);
+            }
+            current = next;
+        }
     }
 }

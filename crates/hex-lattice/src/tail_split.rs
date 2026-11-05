@@ -3,8 +3,7 @@
 //! This is a borrowed signal operation, not resource custody, graph admission,
 //! routing or an output-tail owner. The caller retains both chains and must
 //! begin, commit or roll back their block transactions together with this ramp.
-//! The caller must exclude live/transient automation of the target and retain
-//! the exact old and new owners throughout the transition, and retain the old
+//! The caller must retain the exact old and new owners throughout the transition, and retain the old
 //! owner until its actual signal history has drained. Identity checks do not
 //! replace that custody contract or protect against a dropped owner's address
 //! being reused.
@@ -12,6 +11,17 @@ use crate::{
     DeviceContractError, NativeInstrumentClock, NativeRuntimeChain, OutputTail, RefuseForeign,
     StereoFrame,
 };
+use hex_lattice_contract::DeviceAutomationTarget::HostOutputGain;
+
+/// Borrowed pre/post-node observation of a combined tail-split signal.
+pub type TailSplitObserver<'a> = dyn for<'frames> FnMut(
+        crate::ProcessorChainOwner,
+        u64,
+        crate::DeviceTypeId,
+        crate::NodeSignalPhase,
+        usize,
+        &'frames [StereoFrame],
+    ) + 'a;
 
 /// Fixed-sample bypass transition. Committed and speculative positions stay
 /// independent so a later host block refusal can restore the exact trajectory.
@@ -54,8 +64,11 @@ impl NativeRuntimeChain {
         self.tail_bypass_change_at(old, index)
             && next.algorithmic_latency_frames == Some(0)
             && previous.algorithmic_latency_frames == Some(0)
-            && next.automation.is_empty()
-            && previous.automation.is_empty()
+            && next.automation.supports_tail_split_controls()
+            && previous.automation.supports_tail_split_controls()
+            && !next.committed_bypass_ramp.is_active()
+            && !next.committed_matrix_ramp.is_active()
+            && next.committed_host_gains == [next.input_gain, next.output_gain]
             && !previous.committed_bypass_ramp.is_active()
             && !previous.committed_matrix_ramp.is_active()
             && previous.committed_host_gains == [previous.input_gain, previous.output_gain]
@@ -139,19 +152,74 @@ impl TailSplit {
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
+        self.process_with_controls(
+            old,
+            next,
+            input,
+            old_output,
+            new_output,
+            frame_offset,
+            clock,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Process the successor using the normal validated input and automation
+    /// path. Matching external windows require an enabled, prepared output
+    /// gain stage. Observations describe the full input and summed output.
+    /// A transient application is speculative; the enclosing render commits
+    /// the block and the output sink owns delivery confirmation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_with_controls(
+        &mut self,
+        old: &mut NativeRuntimeChain,
+        next: &mut NativeRuntimeChain,
+        input: &[StereoFrame],
+        old_output: &mut [StereoFrame],
+        new_output: &mut [StereoFrame],
+        frame_offset: usize,
+        clock: Option<&dyn NativeInstrumentClock>,
+        mut transient: Option<&mut crate::NativeTransientProcessing>,
+        external: Option<crate::NativeExternalAutomation<'_>>,
+        mut observer: Option<&mut TailSplitObserver<'_>>,
+    ) -> Result<(), DeviceContractError> {
         if !self.open
             || input.len() > 256
             || input.len() != old_output.len()
             || input.len() != new_output.len()
             || frame_offset.checked_add(input.len()).is_none()
         {
+            if let Some(context) = transient.as_deref_mut() {
+                context.applied = None;
+            }
             return Err(DeviceContractError::InvalidDescriptor);
+        }
+        if let Some(context) = transient.as_deref_mut()
+            && context.input.identity.owner() == self.owner
+            && context.input.identity.device_id() == self.device_id
+        {
+            match next.validate_transient_input(context.input) {
+                Ok(true) => {}
+                Ok(false) => {
+                    context.applied = None;
+                    return Err(DeviceContractError::InvalidDescriptor);
+                }
+                Err(error) => {
+                    context.applied = None;
+                    return Err(error);
+                }
+            }
         }
         let Some((previous, successor)) = old
             .entries
             .get_mut(self.index)
             .zip(next.entries.get_mut(self.index))
         else {
+            if let Some(context) = transient.as_deref_mut() {
+                context.applied = None;
+            }
             return Err(DeviceContractError::InvalidDescriptor);
         };
         if !NativeRuntimeChain::same_runtime_identity(previous, successor)
@@ -165,7 +233,33 @@ impl TailSplit {
             || previous.bypassed != self.old_bypassed
             || successor.bypassed == self.old_bypassed
         {
+            if let Some(context) = transient.as_deref_mut() {
+                context.applied = None;
+            }
             return Err(DeviceContractError::InvalidDescriptor);
+        }
+        if let Some(window) = external
+            && window.identity.owner() == self.owner
+            && window.identity.device_id() == self.device_id
+            && !window.values.targets().is_empty()
+            && (successor.bypassed
+                || !successor.automation.has_host_target(HostOutputGain)
+                || window.values.targets() != [HostOutputGain])
+        {
+            if let Some(context) = transient.as_deref_mut() {
+                context.applied = None;
+            }
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        if let Some(observer) = observer.as_mut() {
+            observer(
+                self.owner,
+                self.device_id,
+                self.device_type,
+                crate::NodeSignalPhase::Input,
+                frame_offset,
+                input,
+            );
         }
         let mut old_dry = [[0.0; 2]; 256];
         let mut gains = [0.0_f32; 256];
@@ -187,6 +281,7 @@ impl TailSplit {
         let old_result = NativeRuntimeChain::process_entry_with_foreign_inner(
             previous,
             old_output,
+            None,
             frame_offset,
             clock,
             clock,
@@ -197,18 +292,30 @@ impl TailSplit {
         previous.bypassed = self.old_bypassed;
         previous.metering = old_metering;
         let result = old_result.and_then(|()| {
-            NativeRuntimeChain::process_entry_with_foreign_inner(
-                successor,
+            next.process_range_tapped_with_foreign_input_and_external(
+                self.index..self.index + 1,
                 new_output,
                 frame_offset,
                 clock,
                 clock,
                 &mut RefuseForeign,
-                None,
-                None,
+                transient.as_deref_mut(),
+                external,
+                &mut |_, _, _, _, _, _| {},
             )
         });
+        let Some(successor) = next.entries.get_mut(self.index) else {
+            if let Some(context) = transient.as_deref_mut() {
+                context.applied = None;
+            }
+            return Err(DeviceContractError::InvalidDescriptor);
+        };
         successor.metering = new_metering;
+        if result.is_err()
+            && let Some(context) = transient
+        {
+            context.applied = None;
+        }
         result?;
         if self.old_bypassed {
             for (index, sample) in old_output.iter_mut().enumerate() {
@@ -218,7 +325,7 @@ impl TailSplit {
                 }
             }
         }
-        if new_metering {
+        if new_metering || observer.is_some() {
             let mut meter_frames = [[0.0; 2]; 256];
             let new_gain = if successor.bypassed {
                 1.0
@@ -238,13 +345,27 @@ impl TailSplit {
                         metered_old + (input[index][lane] * gains[index]) * new_gain;
                 }
             }
-            successor.meter.observe_input(&meter_frames[..input.len()]);
+            if new_metering {
+                successor.meter.observe_input(&meter_frames[..input.len()]);
+            }
             for index in 0..input.len() {
                 for lane in 0..2 {
                     meter_frames[index][lane] = old_output[index][lane] + new_output[index][lane];
                 }
             }
-            successor.meter.observe_output(&meter_frames[..input.len()]);
+            if new_metering {
+                successor.meter.observe_output(&meter_frames[..input.len()]);
+            }
+            if let Some(observer) = observer.as_mut() {
+                observer(
+                    self.owner,
+                    self.device_id,
+                    self.device_type,
+                    crate::NodeSignalPhase::Output,
+                    frame_offset,
+                    &meter_frames[..input.len()],
+                );
+            }
         }
         Ok(())
     }

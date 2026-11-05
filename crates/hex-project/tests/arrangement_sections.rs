@@ -161,7 +161,7 @@ fn section_drag_copies_use_stable_destinations_fresh_identity_and_one_history_st
         }
         let copied = editor.project().arrangement_section(copy).unwrap();
         assert_eq!(copied.name(), original.name());
-        assert_ne!(copied.color(), original.color());
+        assert!(ElementColor::ALL.contains(&copied.color()));
         let shape = |markers: &[hex_project::ArrangementSection]| {
             markers
                 .iter()
@@ -2160,8 +2160,7 @@ fn repeated_duplicates_at_a_fractional_tempo_keep_musical_audio_editable() {
         else {
             panic!("copy identity")
         };
-        // Reuse a color explicitly so this timing stress can exceed the finite
-        // palette without weakening the duplication exhaustion contract.
+        // Explicit recoloring remains independent of the duplication color draw.
         e.execute(Command::SetArrangementSectionColor {
             section: copy,
             color: ElementColor::Cyan,

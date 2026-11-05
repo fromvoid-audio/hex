@@ -20,8 +20,8 @@ fn assert_visible(
 ) {
     editor.read_with(visual, |v, _| {
         assert_eq!(v.midi_time_selection_bounds(), Some((first, last)));
-        assert!(v.piano_beat_start.raw() <= first);
-        assert!(v.piano_beat_start.raw() + v.piano_beat_span.raw() >= last);
+        assert!(v.piano_beat_start <= i128::from(first));
+        assert!(v.piano_beat_start + i128::from(v.piano_beat_span.raw()) >= i128::from(last));
         assert!(
             v.midi_selection.is_empty(),
             "time selection never reduces to a note"
@@ -276,7 +276,9 @@ fn reversed_ruler_selection_snaps_and_cancel_or_stale_render_keeps_baseline(
         range
     });
     // Mutate the view before repaint; old pixels must not capture a new range.
-    editor.update(&mut visual, |v, _| v.piano_beat_start = BeatTime::ONE);
+    editor.update(&mut visual, |v, _| {
+        v.piano_beat_start = i128::from(BeatTime::ONE.raw())
+    });
     visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(last, Some(MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(last, MouseButton::Left, Modifiers::default());

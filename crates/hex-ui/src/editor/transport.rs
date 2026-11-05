@@ -289,6 +289,7 @@ impl EditorView {
             }))
             .children([self.snap_control(cx)])
             .children([self.section_focus_toggle(cx)])
+            .children([self.track_tag_filter_control(cx)])
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))
             .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx));
         let mut status = div()

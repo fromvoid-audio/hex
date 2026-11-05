@@ -12,6 +12,8 @@ use crate::{MAX_EVENT_BYTES, MAX_SEGMENT_BYTES, RETAINED_SEGMENTS};
 // unbounded files are clipped rather than causing unbounded viewer allocation.
 const SEGMENT_READ_LIMIT: u64 = MAX_SEGMENT_BYTES + (MAX_EVENT_BYTES as u64 * 6 + 1024);
 const MAX_LINES: usize = 100_000;
+const FILTERED_TEXT_LIMIT: usize = 1024 * 1024;
+const FILTER_QUERY_LIMIT: usize = 4096;
 
 /// An original complete log line, with event fields when present.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,20 +51,31 @@ pub struct LogFilter<'a> {
 }
 impl LogFilter<'_> {
     pub fn matches(&self, line: &LogLine) -> bool {
-        let Some(event) = &line.event else {
+        if line.event.is_none() {
+            return true;
+        }
+        let query = self.text.map(str::to_lowercase);
+        self.matches_record(
+            &line.text,
+            line.event
+                .as_ref()
+                .map(|event| (event.category.as_str(), event.unix_nanos)),
+            query.as_deref(),
+        )
+    }
+
+    fn matches_record(&self, text: &str, event: Option<(&str, u128)>, query: Option<&str>) -> bool {
+        let Some((category, unix_nanos)) = event else {
             return true;
         };
-        self.category
-            .is_none_or(|category| event.category == category)
-            && self
-                .text
-                .is_none_or(|text| line.text.to_lowercase().contains(&text.to_lowercase()))
+        self.category.is_none_or(|expected| category == expected)
             && self
                 .since_unix_nanos
-                .is_none_or(|since| event.unix_nanos >= since)
+                .is_none_or(|since| unix_nanos >= since)
             && self
                 .until_unix_nanos
-                .is_none_or(|until| event.unix_nanos <= until)
+                .is_none_or(|until| unix_nanos <= until)
+            && query.is_none_or(|query| text.to_lowercase().contains(query))
     }
 }
 
@@ -73,6 +86,47 @@ pub struct LogPage {
     pub page: usize,
     pub has_older: bool,
     pub has_newer: bool,
+}
+
+/// Oldest matching entries across the entire retained session, not one page.
+/// Non-event context/loss lines remain present regardless of event filters.
+#[derive(Debug)]
+pub struct FilteredLog {
+    pub snapshot: LogSnapshot,
+    /// All matching events counted before export limits, excluding context.
+    pub matching_events: usize,
+    /// Matching/context entries omitted after reaching a result limit.
+    pub omitted_lines: usize,
+}
+
+/// Read/filter the same bounded segment snapshot as the paged reader. Retain
+/// at most 100,000 lines and 1 MiB of original line text/newlines; keep scanning
+/// to count omissions and detect warnings after the retained prefix. Queries
+/// are limited to 4096 bytes and folded once per scan. Time bounds are inclusive
+/// absolute Unix nanoseconds; callers resolve a relative window once, before
+/// dispatch. Missing/unreadable active files or archives other than absent
+/// rollover slots return an error, never a falsely complete partial export.
+/// Concurrent rotation remains detectable best-effort, not an atomic log freeze.
+pub fn read_session_filtered(active: &Path, filter: &LogFilter<'_>) -> io::Result<FilteredLog> {
+    if filter
+        .text
+        .is_some_and(|text| text.len() > FILTER_QUERY_LIMIT)
+        || filter
+            .since_unix_nanos
+            .zip(filter.until_unix_nanos)
+            .is_some_and(|(since, until)| since > until)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid or oversized log filter",
+        ));
+    }
+    let (page, matching_events, omitted_lines) = read_selected(active, None, filter)?;
+    Ok(FilteredLog {
+        snapshot: page.snapshot,
+        matching_events,
+        omitted_lines,
+    })
 }
 
 /// Read the newest page. Older retained lines are reported as omitted; use
@@ -96,6 +150,14 @@ pub fn read_session(active: &Path) -> io::Result<LogSnapshot> {
 /// Page numbers can shift as a live session grows, so callers should tell users
 /// that paging and refresh use a new snapshot.
 pub fn read_session_page(active: &Path, requested_page: usize) -> io::Result<LogPage> {
+    read_selected(active, Some(requested_page), &LogFilter::default()).map(|(page, _, _)| page)
+}
+
+fn read_selected(
+    active: &Path,
+    requested_page: Option<usize>,
+    filter: &LogFilter<'_>,
+) -> io::Result<(LogPage, usize, usize)> {
     let mut snapshot = LogSnapshot::default();
     let mut segments = Vec::new();
     for index in (0..RETAINED_SEGMENTS).rev() {
@@ -115,7 +177,11 @@ pub fn read_session_page(active: &Path, requested_page: usize) -> io::Result<Log
             }
         };
         let mut bytes = Vec::new();
-        file.take(SEGMENT_READ_LIMIT + 1).read_to_end(&mut bytes)?;
+        file.take(SEGMENT_READ_LIMIT + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| {
+                io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+            })?;
         if bytes.len() as u64 > SEGMENT_READ_LIMIT {
             bytes.truncate(SEGMENT_READ_LIMIT as usize);
             snapshot
@@ -146,33 +212,40 @@ pub fn read_session_page(active: &Path, requested_page: usize) -> io::Result<Log
     }
     let total: usize = segments.iter().map(|(_, text)| text.lines().count()).sum();
     let last_page = total.saturating_sub(1) / MAX_LINES;
-    let page = requested_page.min(last_page);
-    if page != requested_page {
+    let page = requested_page.unwrap_or(0).min(last_page);
+    if requested_page.is_some_and(|requested| page != requested) {
         snapshot
             .warnings
             .push("requested page is no longer available".into());
     }
     let end = total.saturating_sub(page.saturating_mul(MAX_LINES));
-    let start = end.saturating_sub(MAX_LINES);
+    let start = if requested_page.is_some() {
+        end.saturating_sub(MAX_LINES)
+    } else {
+        0
+    };
+    let query = filter.text.map(str::to_lowercase);
+    let mut matching_events = 0;
+    let mut omitted_lines = 0;
+    let mut retained_bytes = 0_usize;
     let mut position = 0usize;
     let mut previous_sequence: Option<u64> = None;
     let mut previous_segment: Option<u64> = None;
     let mut sequence_discontinuity = false;
     let mut truncated = false;
     for (path, text) in segments {
-        if snapshot.header.is_none() {
-            if let Some(line) = text
+        if snapshot.header.is_none()
+            && let Some(line) = text
                 .lines()
                 .next()
                 .filter(|line| line.starts_with("session_started "))
-            {
-                let clipped: String = line.chars().take(4096).collect();
-                snapshot.header = Some(if clipped.len() < line.len() {
-                    format!("{clipped} [header clipped]")
-                } else {
-                    clipped
-                });
-            }
+        {
+            let clipped: String = line.chars().take(4096).collect();
+            snapshot.header = Some(if clipped.len() < line.len() {
+                format!("{clipped} [header clipped]")
+            } else {
+                clipped
+            });
         }
         if let Some(segment) = text
             .lines()
@@ -219,11 +292,30 @@ pub fn read_session_page(active: &Path, requested_page: usize) -> io::Result<Log
                         .any(|field| field == "truncated=true")
                 });
             }
-            if (start..end).contains(&position) {
-                snapshot.lines.push(LogLine {
-                    text: line.to_owned(),
-                    event: event.map(ParsedEvent::into_log_event),
-                });
+            if (start..end).contains(&position)
+                && filter.matches_record(
+                    line,
+                    event
+                        .as_ref()
+                        .map(|event| (event.category, event.unix_nanos)),
+                    query.as_deref(),
+                )
+            {
+                matching_events += usize::from(event.is_some());
+                let size = retained_bytes.saturating_add(line.len()).saturating_add(1);
+                if requested_page.is_none()
+                    && (omitted_lines > 0
+                        || snapshot.lines.len() >= MAX_LINES
+                        || size > FILTERED_TEXT_LIMIT)
+                {
+                    omitted_lines += 1;
+                } else {
+                    retained_bytes = size;
+                    snapshot.lines.push(LogLine {
+                        text: line.to_owned(),
+                        event: event.map(ParsedEvent::into_log_event),
+                    });
+                }
             }
             position += 1;
         }
@@ -241,12 +333,21 @@ pub fn read_session_page(active: &Path, requested_page: usize) -> io::Result<Log
             .warnings
             .push("one or more event messages were truncated by the logger".into());
     }
-    Ok(LogPage {
-        snapshot,
-        page,
-        has_older: start > 0,
-        has_newer: page > 0,
-    })
+    if omitted_lines > 0 {
+        snapshot.warnings.push(format!(
+            "{omitted_lines} matching/context lines omitted at export limit (1 mib or 100000 lines)"
+        ));
+    }
+    Ok((
+        LogPage {
+            snapshot,
+            page,
+            has_older: start > 0,
+            has_newer: page > 0,
+        },
+        matching_events,
+        omitted_lines,
+    ))
 }
 
 struct ParsedEvent<'a> {
@@ -454,3 +555,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "reader/filtered_tests.rs"]
+mod filtered_tests;

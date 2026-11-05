@@ -199,12 +199,11 @@ fn reverb_host_loop_continues_tank_while_seek_and_stop_reset_it() {
             .unwrap()
             .unwrap();
         let mut provider = prepared.create_runtime();
-        // A wrapped pass ramps its loop-start impulse in from the silent
-        // material past the loop end: first crossfade frame, gain 1/F.
-        let impulse = |i: usize| {
-            let gain = if i == 0 { 1.0 } else { 1.0 / 128.0 };
-            [0.25 * gain, -0.5 * gain]
-        };
+        // Loop starts keep their full transient. The input is silent at
+        // each loop end, so the end envelope cannot change these impulses.
+        // One uninterrupted provider runtime independently checks that the
+        // host preserves the reverb tank across all three passes.
+        let impulse = |_i: usize| [0.25, -0.5];
         let mut expected = vec![[0.0; 2]; 12_000];
         for i in [0, 5000, 10000] {
             expected[i] = impulse(i);

@@ -10,6 +10,9 @@ pub use timing::AudioClipTiming;
 
 pub const MAX_AUDIO_POINTS: usize = 1_024;
 pub const MAX_AUDIO_DOMAIN_FRAMES: u64 = 16_777_216;
+/// Virtual frame horizon for an Arrangement event root that can be read as
+/// occupied spans. It bounds editor coordinates, not allocation or DSP work.
+pub const MAX_SPARSE_AUDIO_TIMELINE_FRAMES: u64 = 1 << 36;
 
 /// Refusal for an edit whose whole root must fit the bounded resident transform
 /// workspace (reverse, pitch, warp and stretch; #4145). Durations are
@@ -193,11 +196,21 @@ pub struct AudioFadeProjection {
     pub origin_beat_raw: i128,
     pub local_start_raw: u64,
 }
+/// Finite musical source read retained independently of event destinations.
+/// Both fields use raw quarter-note beat ticks. The source origin translates
+/// with the clip, and source zero stays fixed when the destination grows left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MusicalEventSource {
+    pub zero_in_destination: u64,
+    pub length: BeatTime,
+}
+
 /// Immutable authored processing content, independent of an instance's crop,
 /// loop phase and fade. Retained event roots never refer back to live aliases.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioClipContent {
     pub events: Option<Arc<crate::AudioEvents>>,
+    pub musical_event_source: Option<MusicalEventSource>,
     pub source_offset: u64,
     pub source_length: u64,
     pub clock: AudioDomainClock,
@@ -388,7 +401,8 @@ pub fn audio_projection_frame_q32(tempo: &TempoMap, beat_raw: i128) -> Result<i1
 }
 
 /// Signed nearest-frame conversion; exact half ties move later, including -0.5.
-/// Negative projection uses tempo-at-zero only for invisible analysis context.
+/// Negative projection uses tempo-at-zero for bounded, non-transport context,
+/// including the virtual clip-editor grid. It does not enable playback before zero.
 pub fn audio_projection_frame(tempo: &TempoMap, beat_raw: i128) -> Result<i128, Invalid> {
     if beat_raw >= 0 {
         return tempo
@@ -592,6 +606,7 @@ impl AudioClipEdit {
             domain: Arc::new(AudioClipDomain {
                 content: Arc::new(AudioClipContent {
                     events: None,
+                    musical_event_source: None,
                     source_offset: clip.source_offset,
                     source_length: clip.source_length,
                     clock: AudioDomainClock::Frames(clip.duration),
@@ -627,7 +642,12 @@ impl AudioClipEdit {
             {
                 return Err(Invalid("grouped audio requires a retained event source"));
             }
-            return Ok(self.domain.clock);
+            return Ok(self
+                .domain
+                .musical_event_source
+                .map_or(self.domain.clock, |source| {
+                    AudioDomainClock::Beats(source.length)
+                }));
         }
         if !matches!(self.domain.clock, AudioDomainClock::Frames(_)) {
             return Err(Invalid("grouped event sources require a frame clock"));
@@ -651,6 +671,15 @@ impl AudioClipEdit {
             return Err(Invalid("audio event position exceeds its source"));
         }
         if source == 0 {
+            if let Some(source) = self.domain.musical_event_source {
+                let origin = self.processing_origin()? + i128::from(source.zero_in_destination);
+                let tempo = self.processing_tempo(tempo);
+                return u64::try_from(
+                    audio_projection_frame(tempo, origin + i128::from(position))?
+                        - audio_projection_frame(tempo, origin)?,
+                )
+                .map_err(|_| Invalid("audio event source projection overflow"));
+            }
             self.root_frame_at(position, tempo)
         } else {
             Ok(position)
@@ -665,11 +694,52 @@ impl AudioClipEdit {
     ) -> Result<u64, Invalid> {
         if source == 0 {
             self.event_source_clock(source)?;
+            if let Some(source) = self.domain.musical_event_source {
+                let origin = self.processing_origin()? + i128::from(source.zero_in_destination);
+                let tempo = self.processing_tempo(tempo);
+                let position = audio_projection_beat(
+                    tempo,
+                    audio_projection_frame(tempo, origin)? + i128::from(frame),
+                )? - origin;
+                return u64::try_from(position.clamp(0, i128::from(source.length.raw())))
+                    .map_err(|_| Invalid("audio event source projection overflow"));
+            }
             self.root_position_at(frame, tempo)
         } else {
             self.event_source_frame_at(source, frame, tempo)
         }
     }
+    /// Project a signed authoring coordinate, including virtual space outside
+    /// the retained destination. Only canonical edits can grow that extent.
+    pub fn signed_root_frame_at(&self, position: i128, tempo: &TempoMap) -> Result<i128, Invalid> {
+        match self.domain.clock {
+            AudioDomainClock::Frames(_) => Ok(position),
+            AudioDomainClock::Beats(_) => {
+                let origin = self.processing_origin()?;
+                let beat = origin
+                    .checked_add(position)
+                    .ok_or(Invalid("audio event beat overflow"))?;
+                let tempo = self.processing_tempo(tempo);
+                Ok(audio_projection_frame(tempo, beat)? - audio_projection_frame(tempo, origin)?)
+            }
+        }
+    }
+
+    /// Invert the signed authoring projection in the retained processing clock.
+    pub fn signed_root_position_at(&self, frame: i128, tempo: &TempoMap) -> Result<i128, Invalid> {
+        match self.domain.clock {
+            AudioDomainClock::Frames(_) => Ok(frame),
+            AudioDomainClock::Beats(_) => {
+                let origin = self.processing_origin()?;
+                let tempo = self.processing_tempo(tempo);
+                let frame = audio_projection_frame(tempo, origin)?
+                    .checked_add(frame)
+                    .ok_or(Invalid("audio event frame overflow"))?;
+                Ok(audio_projection_beat(tempo, frame)? - origin)
+            }
+        }
+    }
+
     pub fn root_frame_at(&self, position: u64, tempo: &TempoMap) -> Result<u64, Invalid> {
         let tempo = self.processing_tempo(tempo);
         if position > self.domain.clock.length() {
@@ -757,6 +827,46 @@ impl AudioClipEdit {
             }
         }
     }
+    /// The packed Arrangement reader requires a forward, one-shot frame root.
+    pub(crate) fn plain_frame_event_root(&self) -> bool {
+        self.frame_event_root_shape()
+            && self
+                .domain
+                .events
+                .as_ref()
+                .is_some_and(|events| !events.sources.is_empty())
+    }
+
+    pub(crate) fn frame_event_root_shape(&self) -> bool {
+        matches!(self.domain.clock, AudioDomainClock::Frames(_))
+            && matches!(self.timing, AudioClipTiming::Frames)
+            && self.placement.is_none()
+            && self.content_view.is_none()
+            && self.processing_projection.is_none()
+            && !self.domain.warp_enabled
+            && !self.domain.looping
+            && self.domain.pitch_cents == 0
+            && self.domain.source_gain.is_empty()
+    }
+
+    pub(crate) fn accepts_projected_extent(&self, length: u64) -> bool {
+        if length <= MAX_AUDIO_DOMAIN_FRAMES {
+            return true;
+        }
+        length <= MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+            && self.plain_frame_event_root()
+            && self.domain.events.as_ref().is_some_and(|events| {
+                events
+                    .events
+                    .iter()
+                    .try_fold(0u64, |n, event| {
+                        n.checked_add(event.end.checked_sub(event.start)?)
+                            .filter(|n| *n <= MAX_AUDIO_DOMAIN_FRAMES)
+                    })
+                    .is_some()
+            })
+    }
+
     pub fn validate(
         &self,
         clip: &Clip,
@@ -814,6 +924,37 @@ impl AudioClipEdit {
         }
         if let Some(events) = &domain.events {
             events.validate(domain.clock.length())?;
+        }
+        if let Some(source) = domain.musical_event_source {
+            let length = source.length.raw();
+            if !matches!(domain.clock, AudioDomainClock::Beats(_))
+                || self.placement.is_some()
+                || self.content_view.is_some()
+                || length == 0
+                || source
+                    .zero_in_destination
+                    .checked_add(length)
+                    .is_none_or(|end| end > domain.clock.length())
+            {
+                return Err(Invalid("invalid retained musical event source"));
+            }
+            let events = domain
+                .events
+                .as_ref()
+                .filter(|events| events.sources.is_empty())
+                .ok_or(Invalid("musical event source needs its event sequence"))?;
+            for event in &events.events {
+                if event
+                    .source_start
+                    .checked_add(event.length())
+                    .is_none_or(|end| end > length)
+                {
+                    return Err(Invalid("audio event exceeds its retained source clock"));
+                }
+                if let Some(fade) = event.fade {
+                    fade.validate(length, event.source_start, event.length())?;
+                }
+            }
         }
         let source_end = domain
             .source_offset
@@ -879,7 +1020,7 @@ impl AudioClipEdit {
             return Err(Invalid("active warp needs settings and markers"));
         }
         let (_, length, view_start, view_end) = self.projected_domain(tempo)?;
-        if length > MAX_AUDIO_DOMAIN_FRAMES {
+        if !self.accepts_projected_extent(length) {
             return Err(transform_domain_limit(tempo.sample_rate()));
         }
         if length == 0 || view_start >= view_end {

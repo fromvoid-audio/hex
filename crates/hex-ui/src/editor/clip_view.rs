@@ -114,6 +114,7 @@ impl EditorView {
         window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        self.device_panel.compressor_sidechains.clear_visible();
         self.reconcile_clip_detail_resize(window, cx);
         self.reconcile_velocity_size(window, cx);
         self.reconcile_piano_pitch_zoom(window, cx);
