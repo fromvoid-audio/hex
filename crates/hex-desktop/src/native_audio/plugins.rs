@@ -280,6 +280,9 @@ impl Plugins {
                 .iter()
                 .any(|source| source.retiring || (source.queued && !source.accepted))
     }
+    pub(super) fn can_retain_output_for_native_document(&self) -> bool {
+        self.sources.is_empty() && self.idle()
+    }
     pub fn ready(&self) -> bool {
         // Session queries this only for its held insertion. No Root binding yet
         // means a contended admission must retry, not wait for nonexistent facts.

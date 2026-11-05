@@ -1246,14 +1246,13 @@ fn rendered_sampler_save_open(
             .is_some_and(|applied| {
                 applied.context.project_generation == 2
                     && applied.context.editor_revision == loaded_revision + 2
-                    && applied.output_identity != before_output
             })
         {
             break;
         }
         assert!(
             Instant::now() < end,
-            "actual Open did not reach a fresh matching native CURRENT: total={:?}, reopen={:?}, expected_revision={}, previous_output={before_output}, current={:?}, submitted={:?}, ui={:?}, prompt={:?}",
+            "actual Open did not reach matching native CURRENT: total={:?}, reopen={:?}, expected_revision={}, previous_output={before_output}, current={:?}, submitted={:?}, ui={:?}, prompt={:?}",
             started.elapsed(),
             reopen_started.elapsed(),
             loaded_revision + 2,
