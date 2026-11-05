@@ -151,3 +151,6 @@ impl NativeAudioSink {
         }
     }
 }
+
+#[cfg(all(test, feature = "allocation-probe"))]
+mod tests;
