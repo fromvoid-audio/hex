@@ -312,7 +312,13 @@ fn non_affine_event_clock_refusal_is_atomic_and_global_tempo_recovers_without_un
 }
 
 #[test]
-fn freely_placed_events_roundtrip_on_their_grouped_timeline() {
+fn freely_placed_events_roundtrip_with_and_without_a_source_loop() {
+    for (looping, directed) in [(false, false), (true, false), (false, true)] {
+        roundtrip_placed_events(looping, directed);
+    }
+}
+
+fn roundtrip_placed_events(looping: bool, directed: bool) {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 16).unwrap();
     let Created::Imported { clip, .. } = editor
         .execute(Command::ImportAudioTrack {
@@ -325,8 +331,34 @@ fn freely_placed_events_roundtrip_on_their_grouped_timeline() {
     else {
         panic!("fixture")
     };
+    if looping {
+        editor
+            .execute(Command::SetClipLooping { clip, looping })
+            .unwrap();
+        editor
+            .execute(Command::SetClipSourcePhase { clip, phase: 65 })
+            .unwrap();
+    }
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split { at: 40 },
+        })
+        .unwrap();
+    if directed {
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: hex_project::AudioViewResizeOperation::CycleRange {
+                    start: 0,
+                    end: 80,
+                    looping: true,
+                },
+            })
+            .unwrap();
+        editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+    }
     for operation in [
-        AudioEventEdit::Split { at: 40 },
         AudioEventEdit::Place {
             event: 2,
             start: 130,
@@ -341,8 +373,14 @@ fn freely_placed_events_roundtrip_on_their_grouped_timeline() {
             .unwrap();
     }
     let project = editor.project();
-    let edit = project.clip(clip).unwrap().audio_edit().unwrap();
-    assert_eq!((edit.view_start, edit.domain.clock.length()), (25, 215));
+    let placed = project.clip(clip).unwrap();
+    assert_eq!(
+        (placed.looping(), placed.source_phase()),
+        (looping, if looping { 65 } else { 0 })
+    );
+    let edit = placed.audio_edit().unwrap();
+    assert_eq!(edit.view_start, 25);
+    assert_eq!(edit.domain.clock.length(), if directed { 195 } else { 215 });
     let saved = hex_storage::encode(project).unwrap();
     let value: serde_json::Value = serde_json::from_slice(&saved).unwrap();
     assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);

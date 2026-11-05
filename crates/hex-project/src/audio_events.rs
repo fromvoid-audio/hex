@@ -121,10 +121,18 @@ pub enum AudioEventEdit {
     },
     /// Place one event anywhere on its clip's free event timeline. `start` is a
     /// signed root-clock position relative to the current root origin; a frame
-    /// one-shot root first becomes a grouped timeline, then grows to fit.
+    /// one-shot root first becomes a grouped timeline. A raw source loop keeps
+    /// its source phase. The destination grows within the processing budget.
     Place {
         event: u64,
         start: i64,
+    },
+    /// Move a half-open selection to a signed root coordinate. Complete
+    /// events keep their IDs. A split gives the right fragment a fresh ID.
+    PlaceRange {
+        start: u64,
+        end: u64,
+        destination: i64,
     },
 }
 impl AudioEvents {
@@ -319,7 +327,10 @@ impl AudioEvents {
         if self.events.len() > MAX_AUDIO_EVENTS + 2 {
             return Err(Invalid("audio event view limit reached"));
         }
-        if matches!(operation, AudioEventEdit::Place { .. }) {
+        if matches!(
+            operation,
+            AudioEventEdit::Place { .. } | AudioEventEdit::PlaceRange { .. }
+        ) {
             return Err(Invalid(
                 "free audio event placement edits the clip's whole timeline",
             ));
@@ -349,7 +360,7 @@ impl AudioEvents {
         self.validate_geometry(length)?;
         let mut next = self.clone();
         match operation {
-            AudioEventEdit::Place { .. } => {
+            AudioEventEdit::Place { .. } | AudioEventEdit::PlaceRange { .. } => {
                 return Err(Invalid(
                     "free audio event placement edits the clip's whole timeline",
                 ));
@@ -641,6 +652,30 @@ impl AudioEvents {
         next.validate_geometry(length)?;
         Ok(next)
     }
+    pub(crate) fn place_range(
+        self,
+        start: u64,
+        end: u64,
+        destination: u64,
+        length: u64,
+    ) -> Result<Self, Invalid> {
+        // Split before removing the selection so complete events and
+        // untouched left fragments keep their original identities.
+        let mut next = self.edited_inner(AudioEventEdit::SplitRange { start, end }, length)?;
+        let first = next.events.partition_point(|event| event.start < start);
+        let last = next.events.partition_point(|event| event.start < end);
+        let moved: Vec<_> = next.events.drain(first..last).collect();
+        next.carve(destination, destination + (end - start))?;
+        next.events
+            .extend(moved.into_iter().map(|event| AudioEvent {
+                start: destination + (event.start - start),
+                end: destination + (event.end - start),
+                ..event
+            }));
+        next.events.sort_by_key(|event| event.start);
+        next.validate(length)?;
+        Ok(next)
+    }
     pub fn copy_range(&self, start: u64, end: u64) -> Vec<AudioEvent> {
         self.events
             .iter()
@@ -705,8 +740,13 @@ pub(crate) fn apply(
             Invalid("clip no longer exists")
         }
     })?;
-    if let AudioEventEdit::Place { event, start } = operation {
-        return crate::audio_event_timeline::place(project, clip, event, start);
+    if matches!(
+        operation,
+        AudioEventEdit::Place { .. } | AudioEventEdit::PlaceRange { .. }
+    ) {
+        let candidate = crate::audio_event_timeline::prepare(project, clip, &operation)?;
+        *project.clip_mut(clip)? = candidate;
+        return Ok(());
     }
     let mut edit = original
         .audio_edit()

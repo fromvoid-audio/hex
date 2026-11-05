@@ -1,5 +1,6 @@
 use super::*;
-use crate::editor::clip_drag_ui_test::{pump_move as pump, upper_rail_owned_fixture};
+pub(super) use crate::editor::clip_drag_ui_test::pump_move as pump;
+use crate::editor::clip_drag_ui_test::upper_rail_owned_fixture;
 use gpui::{Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size};
 use hex_project::Command;
 use hex_session::service::Request;
@@ -208,7 +209,7 @@ fn refused_cut_keeps_previous_clipboard_and_restores_range_after_real_terminal(
     assert_eq!(std::fs::read(original_path).unwrap(), original_bytes);
 }
 
-fn open(
+pub(super) fn open(
     cx: &mut TestAppContext,
 ) -> (
     Arc<crate::editor::test_environment::Environment>,
@@ -233,7 +234,7 @@ fn open(
     assert!(visual.debug_bounds("audio-events-waveform").is_some());
     (files, visual, editor, clip)
 }
-fn edit(
+pub(super) fn edit(
     visual: &mut VisualTestContext,
     editor: &Entity<EditorView>,
     clip: ClipId,
