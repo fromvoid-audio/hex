@@ -1444,7 +1444,12 @@ mod tests {
         on_control(|| {
             use crate::computer_keyboard::ComputerKeyboardInput;
             use crate::playback::PlaybackCommand;
-            for key_up in ["before-disable", "while-disabled", "after-reenable"] {
+            for (key_up, utility_gain_db) in [
+                ("before-disable", None),
+                ("while-disabled", None),
+                ("after-reenable", None),
+                ("after-reenable", Some(-6.0)),
+            ] {
                 let mut f = fixture();
                 let clips: Vec<_> = f
                     .editor
@@ -1476,6 +1481,20 @@ mod tests {
                 f.editor
                     .execute(Command::ReplaceDeviceState { device, state })
                     .unwrap();
+                if let Some(gain_db) = utility_gain_db {
+                    let state = hex_devices::utility::UTILITY_DEFINITION
+                        .default_state()
+                        .unwrap()
+                        .with_output_gain_db(gain_db)
+                        .unwrap();
+                    f.editor
+                        .execute(Command::InsertDevice {
+                            track: f.receiver,
+                            before: None,
+                            state,
+                        })
+                        .unwrap();
+                }
                 let input = Arc::new(ComputerKeyboardInput::default());
                 let oracle_input = Arc::new(ComputerKeyboardInput::default());
                 for keys in [&input, &oracle_input] {
@@ -1493,7 +1512,7 @@ mod tests {
                     let mut b = a.clone();
                     actual.render(&mut a).unwrap();
                     oracle.render(&mut b).unwrap();
-                    assert_eq!(a, b, "{key_up}: {phase}");
+                    assert_eq!(a, b, "{key_up}, utility={utility_gain_db:?}: {phase}");
                     if phase == "held prefix" {
                         assert!(a.iter().flatten().any(|x| x.abs() > 0.001));
                     }
