@@ -62,15 +62,14 @@ fn unproved_stateful_suffix_refuses_reenable_and_keeps_previous_release() {
 }
 
 #[test]
-fn active_long_source_send_bypass_refuses_without_chase_or_displacing_other_pcm() {
+fn sampler_release_rejoin_preserves_its_return_send_and_other_feeds() {
     for block in [1, 7, 64, 512] {
         check(5, block);
-        check(7, block); // Priority Stop still wins after the terminal refusal.
     }
 }
 
 #[test]
-fn quiescent_source_with_a_send_can_still_be_bypassed() {
+fn unproved_compensated_bypass_refuses_without_a_dropout() {
     check(6, 17);
 }
 
@@ -175,29 +174,42 @@ fn check(case: usize, block: usize) {
     else {
         panic!("unrelated");
     };
-    if case >= 5 {
-        let Created::ReturnTrack(bus) = editor
-            .execute(Command::AddReturnTrack { name: "bus".into() })
-            .unwrap()
-        else {
-            panic!("return");
-        };
-        for (source, gain) in [(track, 0.5), (unrelated, 0.25)] {
-            editor
-                .execute(Command::SetReturnSend {
-                    track: source,
-                    return_track: bus,
-                    gain,
-                })
-                .unwrap();
-        }
-    }
     editor
         .execute(Command::Gain {
             track: unrelated,
             gain: 0.25,
         })
         .unwrap();
+    if case == 5 {
+        let Created::ReturnTrack(bus) = editor
+            .execute(Command::AddReturnTrack {
+                name: "shared return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return");
+        };
+        for (track, gain) in [(track, 0.5), (unrelated, 0.25)] {
+            editor
+                .execute(Command::SetReturnSend {
+                    track,
+                    return_track: bus,
+                    gain,
+                })
+                .unwrap();
+        }
+    }
+    if case == 6 {
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.limiter"),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+    }
     let Created::Clip(other_clip) = editor
         .execute(Command::PlaceMidiClip {
             track: unrelated,
@@ -229,18 +241,14 @@ fn check(case: usize, block: usize) {
         panic!("clip");
     };
     let mut oracle_editor = Editor::new(editor.project().clone(), 32).unwrap();
-    let off = if matches!(case, 5 | 7) {
-        // A terminal refusal must retain the original gate and future onset.
-        BeatTime::ONE
-    } else {
-        editor.project().tempo_map().frame_to_beat(129).unwrap()
-    };
+    let off = editor.project().tempo_map().frame_to_beat(129).unwrap();
     let future = editor.project().tempo_map().frame_to_beat(300).unwrap();
     let duration = editor.project().tempo_map().frame_to_beat(16).unwrap();
-    for (target, gate) in [(&mut editor, BeatTime::ONE), (&mut oracle_editor, off)] {
-        if case == 6 {
-            continue; // The source is quiescent; unrelated audio still sounds.
-        }
+    let oracle_gate = if case == 6 { BeatTime::ONE } else { off };
+    for (target, gate) in [
+        (&mut editor, BeatTime::ONE),
+        (&mut oracle_editor, oracle_gate),
+    ] {
         target
             .execute(Command::AddMidiNote {
                 clip,
@@ -319,12 +327,7 @@ fn check(case: usize, block: usize) {
     );
     assert_eq!(&actual[..129], &expected[..129]);
     position += 129;
-    let changes: &[(bool, usize)] = if case >= 5 {
-        &[(true, 13)]
-    } else {
-        &[(true, 13), (false, 13), (true, 7), (false, 13)]
-    };
-    for &(bypassed, count) in changes {
+    for (bypassed, count) in [(true, 13), (false, 13), (true, 7), (false, 13)] {
         editor
             .execute(Command::SetDeviceBypass { device, bypassed })
             .unwrap();
@@ -356,7 +359,7 @@ fn check(case: usize, block: usize) {
             position += n;
             assert_eq!(control.status.recovery_position(), position as u64);
         }
-        if case == 4 && !bypassed {
+        if (case == 4 && !bypassed) || (case == 6 && bypassed) {
             assert_eq!(
                 control.status.rejected_revision(),
                 Some((
@@ -377,37 +380,15 @@ fn check(case: usize, block: usize) {
             assert_eq!(control.reclaim(), 1);
             return;
         }
-        if matches!(case, 5 | 7) {
-            assert_eq!(
-                control.status.rejected_revision(),
-                Some((
-                    applied,
-                    hex_engine::PlaybackHandoffRejection::SourceHistoryUnavailable
-                ))
-            );
-            assert_eq!(
-                control
-                    .status
-                    .applied_revision
-                    .load(std::sync::atomic::Ordering::Acquire),
-                previous_revision
-            );
-            assert_eq!(control.reclaim(), 1, "refused candidate returns to control");
-        } else {
-            assert_eq!(
-                control
-                    .status
-                    .applied_revision
-                    .load(std::sync::atomic::Ordering::Acquire),
-                applied
-            );
-            assert!(control.status.rejected_revision().is_none());
-            control.reclaim();
-        }
-    }
-    if case == 7 {
-        control.stop();
-        oracle.apply(SessionPlaybackCommand::Stop).unwrap();
+        assert_eq!(
+            control
+                .status
+                .applied_revision
+                .load(std::sync::atomic::Ordering::Acquire),
+            applied
+        );
+        assert!(control.status.rejected_revision().is_none());
+        control.reclaim();
     }
     while position < 5000 {
         let n = (5000 - position).min(block);

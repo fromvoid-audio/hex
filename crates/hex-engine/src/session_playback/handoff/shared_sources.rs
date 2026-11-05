@@ -1,6 +1,49 @@
 //! Source-owned kernel continuity, separate from track-local effect history.
 use super::*;
 
+/// A compensated or typed route can retain upstream frames independently of
+/// its current source. Until that route can carry the bypass transition, keep
+/// the applied graph rather than reset its delay and chase a held note.
+pub(super) fn compensated_long_source_bypass(
+    candidate: &SessionPlayback,
+    previous: &SessionPlayback,
+) -> bool {
+    if !previous.playing || (candidate.compensation.is_none() && previous.compensation.is_none()) {
+        return false;
+    }
+    let limit = u64::from(candidate.revision.arrangement().sample_rate().div_ceil(200));
+    previous
+        .mutable_instruments
+        .iter()
+        .enumerate()
+        .any(|(index, runtime)| {
+            let Some(runtime) = runtime.as_ref().filter(|runtime| {
+                runtime.max_release_tail_frames() > limit && !runtime.committed_is_quiescent()
+            }) else {
+                return false;
+            };
+            let Some(device) = runtime.expression_identity else {
+                return false;
+            };
+            let Some(old) = previous.revision.arrangement().tracks().get(index) else {
+                return false;
+            };
+            if old.instrument_bypassed || old.instrument_id != Some(device) {
+                return false;
+            }
+            candidate
+                .revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .any(|track| {
+                    track.canonical_track_id() == old.canonical_track_id()
+                        && track.instrument_id == Some(device)
+                        && track.instrument_bypassed
+                })
+        })
+}
+
 /// A short, already-releasing source must finish before another kernel for
 /// the same device is admitted. The callback can retry while the old graph
 /// renders; held live inputs and long releases retain the existing policy.
@@ -81,13 +124,16 @@ pub(super) fn reenabled_release_receivers(
                     )
                     && !previous.track_faders[old_index].active()
             });
-        // Retain the exact ordered suffix. Routed or compensated history needs
-        // its own proof; a dry detached tail cannot stand in for those paths.
-        let no_routed_history = candidate.compensation.is_none()
-            && previous.compensation.is_none()
-            && track.sends().is_empty();
+        // Retain the exact ordered suffix and post-fader sends. A detached
+        // source cannot stand in for compensation and typed route histories.
+        let no_compensation = candidate.compensation.is_none() && previous.compensation.is_none();
+        let same_sends = crate::mutable_instrument::DetachedSourceSends::from_track(
+            track,
+            candidate.revision.arrangement().return_buses(),
+        ) == Some(tail.sends);
         let detached_chain = previous.tail_groups[slot].as_ref();
-        let same_processing_path = no_routed_history
+        let same_processing_path = no_compensation
+            && same_sends
             && !track.has_gain_automation()
             && candidate.revision.gain_recording_track() != Some(tail.track_id)
             && previous.revision.gain_recording_track() != Some(tail.track_id)
@@ -126,13 +172,15 @@ pub(super) fn reenabled_release_receivers(
             if long_release
                 && !timing_changed
                 && previous.playing
-                && no_routed_history
                 && track.canonical_track_id() == Some(tail.track_id)
                 && old_index.is_some_and(|old_index| {
                     let old = &previous.revision.arrangement().tracks()[old_index];
                     old.instrument_bypassed && old.instrument_id == Some(device)
                 })
-                && detached_chain.is_some_and(|chain| chain.stateful_count() != 0)
+                && (!no_compensation
+                    || !tail.sends.is_empty()
+                    || !track.sends().is_empty()
+                    || detached_chain.is_some_and(|chain| chain.stateful_count() != 0))
             {
                 return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
             }
@@ -221,25 +269,6 @@ impl SharedSourceHandoff {
                 let same_device = old_runtime.expression_identity.is_some()
                     && old_runtime.expression_identity
                         == revision.arrangement().tracks()[new_index].instrument_id;
-                let old_track = previous
-                    .revision
-                    .arrangement()
-                    .tracks()
-                    .get(old_index)
-                    .ok_or(SessionPlaybackError::RevisionTrackMismatch)?;
-                // The detached suffix mixes to Main; it does not own the
-                // current send inputs. A reset cannot preserve this active
-                // source's routed release, so refuse before either graph moves.
-                if previous.playing
-                    && same_device
-                    && !revision.arrangement().tracks()[new_index].instrument_slot_enabled()
-                    && !old_track.sends().is_empty()
-                    && old_runtime.max_release_tail_frames()
-                        > u64::from(revision.arrangement().sample_rate().div_ceil(200))
-                    && !old_runtime.committed_is_quiescent()
-                {
-                    return Err(SessionPlaybackError::RoutedSourceHistoryUnavailable);
-                }
                 let held_input = previous.computer_keyboard.as_ref().is_some_and(|keyboard| {
                     keyboard.has_mutable_source_input_voices()
                         && previous
