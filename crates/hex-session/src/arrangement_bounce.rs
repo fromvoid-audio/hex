@@ -40,7 +40,7 @@ pub(crate) fn isolated(
     let selected_is_receiver =
         selected_source.is_some_and(|source| source.receiver == Some(selected_track_id));
 
-    if matches!(target, BounceTarget::Range(_))
+    if matches!(target, BounceTarget::Range(_) | BounceTarget::Track(_))
         && project
             .track(item.track)
             .is_some_and(hex_project::Track::is_group)

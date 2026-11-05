@@ -7,10 +7,10 @@
 //! only render to new tracks. Audio grouping retains its separate pre-device
 //! contract. Whole-track intent covers all
 //! active Arrangement clips and every Console cell on one ordinary root track,
-//! independent of selection. Whole-track hierarchy, inactive clips and external
-//! routing refuse. Group ranges print the selected subtree at its post-device
-//! tap and adopt one ordinary sibling. Console activation is retained on
-//! independently rendered cells.
+//! independent of selection. Group ranges print the selected subtree at its
+//! post-device tap and adopt one ordinary sibling. Whole groups use the same
+//! tap over the Arrangement extent, then add an ordinary playback child.
+//! Existing group descendants and their Console cells stay in place.
 //! Clip and whole-track bakes retain the bounded release-tail policy. New-track
 //! clip bounces keep the selected span as the clip view; the tail stays in the
 //! rendered file beyond the view end.
@@ -33,7 +33,8 @@ pub enum BounceSource {
 pub enum BounceTarget {
     Clips(Vec<ClipId>),
     /// Complete Arrangement/Console track bake. Requires in-place adoption; never
-    /// derives its extent from a current clip or time selection.
+    /// derives its extent from a current clip or time selection. Groups print
+    /// Arrangement only and retain descendant Console cells.
     Track(TrackId),
     Range(TimeRange),
     /// Finite pre-device audio grouping, not a track/device bake. The range
@@ -135,6 +136,75 @@ impl Project {
         Ok(members)
     }
 
+    fn plan_whole_group_bounce(&self, group: TrackId) -> Result<BounceTrack, Invalid> {
+        if self.tracks().len() >= crate::MAX_TRACKS {
+            return Err(Invalid("group bounce needs space for a playback track"));
+        }
+        let members = self.group_bounce_tracks(group)?;
+        let (_, children) = members
+            .split_first()
+            .ok_or(Invalid("bounce group is missing"))?;
+        // Solo takes precedence over authored mute in playback. Preserve it
+        // by refusing before render instead of leaving duplicate child audio.
+        if children.iter().any(crate::Track::soloed) {
+            return Err(Invalid(
+                "unsolo the group children before bouncing in place",
+            ));
+        }
+        for route in self.sidechains() {
+            if children.iter().any(|track| track.id() == route.source)
+                && !members.iter().any(|track| {
+                    track
+                        .devices()
+                        .iter()
+                        .any(|device| device.id() == route.device)
+                })
+            {
+                return Err(Invalid(
+                    "cannot mute group children used as external sidechain keys",
+                ));
+            }
+        }
+        let mut clips = Vec::new();
+        let mut start = u64::MAX;
+        let mut end = 0;
+        for track in children {
+            for clip in track.clips().iter().filter(|clip| clip.active()) {
+                let last = clip
+                    .start()
+                    .checked_add(clip.duration())
+                    .ok_or(Invalid("bounce source interval overflows"))?;
+                start = start.min(clip.start());
+                end = end.max(last);
+                clips.push(clip.id());
+            }
+            for clip in track.midi_clips().iter().filter(|clip| clip.active()) {
+                let (first, last) = midi_frames(self, clip)?;
+                start = start.min(first);
+                end = end.max(last);
+                clips.push(clip.id());
+            }
+        }
+        if clips.is_empty() {
+            return Err(Invalid(
+                "group has no active arrangement material to bounce",
+            ));
+        }
+        if end
+            .checked_sub(start)
+            .is_none_or(|n| n == 0 || n > MAX_ARRANGEMENT_BOUNCE_FRAMES)
+        {
+            return Err(Invalid("bounce exceeds its finite frame budget"));
+        }
+        Ok(BounceTrack {
+            source: BounceSource::Arrangement,
+            track: group,
+            start,
+            end,
+            clips,
+        })
+    }
+
     /// Reject unsupported adoption before a worker prepares or publishes files.
     pub fn validate_bounce_adoption(
         &self,
@@ -219,6 +289,9 @@ impl Project {
             let track = self
                 .track(*id)
                 .ok_or(Invalid("bounce track no longer exists"))?;
+            if track.is_group() {
+                return Ok(vec![self.plan_whole_group_bounce(*id)?]);
+            }
             if track.kind() != crate::TrackKind::Ordinary || track.parent_group().is_some() {
                 return Err(Invalid(
                     "whole-track bounce requires an ordinary ungrouped track",
@@ -479,6 +552,8 @@ fn commit_planned(
                 range: TimeRange::new(vec![track], start, start + span)?,
             })?;
             (track, start)
+        } else if in_place && original.is_group() {
+            (adopt_group_playback_child(project, item.track)?, file.start)
         } else if in_place {
             match &target {
                 BounceTarget::Clips(_) | BounceTarget::Track(_) => {
@@ -599,7 +674,9 @@ fn commit_planned(
             }
         };
     }
-    if let BounceTarget::Track(track) = target {
+    if let BounceTarget::Track(track) = target
+        && project.track(track).is_some_and(|owner| !owner.is_group())
+    {
         let retain = project.track(track).is_some_and(|owner| {
             owner.retained_source_path()
                 || owner.source_id().is_some_and(|source| {
@@ -633,6 +710,33 @@ fn commit_planned(
         (Some(first), Some(last)) => Ok(Created::Clips { first, last }),
         _ => Err(Invalid("bounce produced no clips")),
     }
+}
+
+fn adopt_group_playback_child(project: &mut Project, group: TrackId) -> Result<TrackId, Invalid> {
+    let members = project.group_bounce_tracks(group)?;
+    let (root, children) = members
+        .split_first()
+        .ok_or(Invalid("bounce group is missing"))?;
+    let name = format!("{} bounce", root.name());
+    let color = root.color();
+    let children: Vec<_> = children.iter().map(crate::Track::id).collect();
+    let destination = crate::TrackDestination {
+        parent_group: Some(group),
+        before: children.first().copied(),
+    };
+    let index = project.track_hierarchy()?.insertion(destination)?;
+    let mut playback =
+        crate::edit::new_track(project, name, crate::TrackKind::Ordinary, Some(group))?;
+    playback.color = color;
+    let id = playback.id();
+    project.tracks.insert(index, playback);
+    // The child is pre-mixer PCM. Leave the group gain, pan, automation and
+    // sends live while retiring exactly the devices printed into its output.
+    project.track_mut(group)?.devices.clear();
+    for child in children {
+        project.track_mut(child)?.muted = true;
+    }
+    Ok(id)
 }
 
 /// Resolve each output's destination track and start from the anchor's drop.
