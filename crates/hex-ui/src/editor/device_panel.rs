@@ -42,6 +42,7 @@ mod chain_window;
 mod effect_bus;
 pub(super) use effect_bus::{EffectBusOwner, select_main, selected_owner};
 mod compressor_panel;
+pub(super) use compressor_panel::sidechain::drop_track_key;
 mod eq8_panel;
 mod eq_panel;
 mod limiter_panel;
@@ -160,6 +161,7 @@ pub(super) struct DevicePanelState {
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
     saturator_previews: HashMap<DeviceId, saturator_panel::PreviewCache>,
     compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
+    pub(super) compressor_sidechains: compressor_panel::sidechain::Controls,
     auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
     reverb_previews: HashMap<DeviceId, reverb_panel::PreviewCache>,
     overdrive_previews: HashMap<DeviceId, overdrive_panel::PreviewCache>,
@@ -1461,11 +1463,11 @@ fn render_device_card_target(
                 _ => None,
             };
             let previous = payload.destination.get();
-            if let Some(target) = target.filter(|_| inside) {
-                if previous != Some(target) {
-                    payload.destination.set(Some(target));
-                    entity.update(cx, |_, cx| cx.notify());
-                }
+            if let Some(target) = target.filter(|_| inside)
+                && previous != Some(target)
+            {
+                payload.destination.set(Some(target));
+                entity.update(cx, |_, cx| cx.notify());
             }
         })
         .on_drop(

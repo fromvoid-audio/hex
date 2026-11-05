@@ -87,6 +87,100 @@ fn live_zero_tail_devices_bypass_without_a_step_in_the_actual_callback() {
 }
 
 #[test]
+fn live_saturator_bypass_without_a_step_in_the_actual_callback() {
+    let _native = native_fixture();
+    for owner in ["track", "return", "main"] {
+        let files = Files::new();
+        let mut h = ResidentHarness::with_frame_limit(131_072);
+        h.next();
+        let (mut applied, _) = h.applied(0);
+        let imported = h.run(Request::Import(files.wav(48_000, 65_536)));
+        (applied, _) = h.applied(applied);
+        let track = imported.state.project.tracks()[0].id();
+        let state = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Effect,
+            hex_engine::DeviceTypeId::from_static("hex.saturator"),
+        )
+        .unwrap()
+        .with_output_gain_db(6.0)
+        .unwrap();
+        let command = match owner {
+            "track" => Command::InsertDevice {
+                track,
+                before: None,
+                state,
+            },
+            "return" => {
+                let added = h.run(Request::Edit(Command::AddReturnTrack {
+                    name: "return".into(),
+                }));
+                (applied, _) = h.applied(applied);
+                let Some(Created::ReturnTrack(return_track)) = added.created else {
+                    panic!("return")
+                };
+                h.run(Request::Edit(Command::SetReturnSend {
+                    track,
+                    return_track,
+                    gain: 1.0,
+                }));
+                (applied, _) = h.applied(applied);
+                Command::InsertReturnDevice {
+                    return_track,
+                    before: None,
+                    state,
+                }
+            }
+            _ => Command::InsertMainDevice {
+                before: None,
+                state,
+            },
+        };
+        let inserted = h.run(Request::Edit(command));
+        let Some(Created::Device(device)) = inserted.created else {
+            panic!("device")
+        };
+        (applied, _) = h.applied(applied);
+        let control = &mut h.audio.as_mut().unwrap().control;
+        let output_identity = control.output_identity();
+        control.command(PlaybackCommand::PlayFrom(0)).unwrap();
+        for _ in 0..16 {
+            h.render();
+        }
+        let wet = h.render()[63][0];
+        let dry = if owner == "return" { 0.5 } else { 0.25 };
+        assert!(wet - dry > 0.2, "{owner}: wet={wet}, dry={dry}");
+        let mut previous = wet;
+        for (bypassed, blocks) in [(true, 1), (false, 1), (true, 5), (false, 5)] {
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let cut = status.performance_frame.load(Acquire);
+            h.run(Request::Edit(Command::SetDeviceBypass { device, bypassed }));
+            for _ in 0..blocks {
+                for frame in h.render() {
+                    assert!(
+                        (frame[0] - previous).abs() < 0.01,
+                        "{owner}, bypassed={bypassed}: {previous} -> {frame:?}"
+                    );
+                    previous = frame[0];
+                }
+            }
+            let audio = h.audio.as_ref().unwrap();
+            let status = audio.status().unwrap();
+            assert_eq!(status.performance_frame.load(Acquire), cut + 64 * blocks);
+            assert_eq!(audio.control.output_identity(), output_identity);
+            assert!(status.applied_revision.load(Acquire) > applied);
+            (applied, _) = h.applied(applied);
+            if blocks == 5 {
+                let target = if bypassed { dry } else { wet };
+                assert!(
+                    (previous - target).abs() < 1e-3,
+                    "{owner}: {previous} != {target}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn live_eq_bypass_transition_keeps_output_continuous() {
     let _native = native_fixture();
     for owner in 0..3 {

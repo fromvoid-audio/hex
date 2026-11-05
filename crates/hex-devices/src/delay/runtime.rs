@@ -22,6 +22,9 @@ pub(super) struct Factory {
     pub(super) rate: u32,
 }
 impl PreparedOwnedProcessorRuntime for Factory {
+    fn supports_smoothed_bypass(&self) -> bool {
+        true
+    }
     fn runtime_version(&self) -> u32 {
         2
     }
@@ -551,6 +554,9 @@ impl OwnedProcessorRuntime for Runtime {
         self.dirty_len = 0;
         self.pristine = false;
         true
+    }
+    fn can_split_tail_input_from(&self, previous: &dyn OwnedProcessorRuntime) -> bool {
+        self.can_fork_timing_without_signal_history_from(previous)
     }
     fn can_retarget_parameters_from(&self, old: &dyn OwnedProcessorRuntime) -> bool {
         self.can_inherit_from(old)

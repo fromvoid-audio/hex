@@ -10,6 +10,11 @@ use std::{any::Any, sync::Arc};
 /// Control-prepared owned transaction factory, independent of the legacy twin
 /// factory. Construction is fallible and finishes before audio publication.
 pub trait PreparedOwnedProcessorRuntime: Send + Sync {
+    /// Opt in when the host can smoothly mix dry and processed output during
+    /// bypass changes while continuing this owner's existing signal history.
+    fn supports_smoothed_bypass(&self) -> bool {
+        false
+    }
     fn parameter_automation_descriptor(
         &self,
         _parameter: hex_lattice_contract::ParameterId,
@@ -164,6 +169,14 @@ pub trait OwnedProcessorRuntime: Any + Send {
     ) -> bool {
         false
     }
+    /// Explicitly authorize complementary input splitting between the old
+    /// and pristine new owners. A timing fork alone does not establish this
+    /// signal law. Providers that report dynamics meters must refuse until
+    /// those readings have a defined combined-signal contract. Unsupported or
+    /// not-yet-validated providers return false.
+    fn can_split_tail_input_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {
+        false
+    }
     /// Commit-phase alternative when the host exclusively owns a retiring
     /// donor. It follows the same preflight as inherit_from. Providers may swap
     /// preallocated histories instead of copying them; the donor must not be
@@ -263,6 +276,10 @@ impl PreparedProcessorFactory {
             Self::Foreign(v) => Some(v.total_latency_frames()),
         }
     }
+    pub(crate) fn supports_latency_aligned_bypass(&self) -> bool {
+        matches!(self, Self::Legacy(value) if value.supports_latency_aligned_bypass())
+    }
+
     /// Control-side legacy preview capability, when actually supported.
     pub fn frequency_response_at_hz(&self, hz: f32) -> Option<[f32; 2]> {
         match self {
@@ -289,7 +306,12 @@ pub struct PreparedRuntimeInstance {
 }
 impl PreparedRuntimeInstance {
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {
-        if self.bypassed && !matches!(self.definition, Some(PreparedProcessorFactory::Foreign(_))) {
+        if self.bypassed
+            && self.definition.as_ref().is_none_or(|factory| {
+                !matches!(factory, PreparedProcessorFactory::Foreign(_))
+                    && !factory.supports_latency_aligned_bypass()
+            })
+        {
             Some(0)
         } else {
             self.definition.as_ref().map_or(
