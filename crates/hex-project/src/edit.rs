@@ -1354,6 +1354,7 @@ pub(crate) fn new_track(
     let id = TrackId(project.allocate_id()?);
     let color = crate::appearance::new_track_color(project);
     Ok(Track {
+        group_output_mutes: Default::default(),
         tags: Vec::new(),
         kind,
         parent_group,

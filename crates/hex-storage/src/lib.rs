@@ -78,7 +78,7 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = LEADING_AUDIO_ONCE_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = GROUP_OUTPUT_MUTE_SCHEMA_VERSION;
 
 /// Schema70 stores an independent original source span for signed musical event placement.
 pub const MUSICAL_EVENT_SOURCE_SCHEMA_VERSION: u32 = 70;
@@ -89,6 +89,8 @@ pub const EXTENDED_FRAME_EVENTS_SCHEMA_VERSION: u32 = 71;
 pub const TRACK_TAGS_SCHEMA_VERSION: u32 = 72;
 /// Schema73 stores a leading silent gate for a finite musical one-shot.
 pub const LEADING_AUDIO_ONCE_SCHEMA_VERSION: u32 = 73;
+/// Schema74 adds authored Arrangement group output mute ranges.
+pub const GROUP_OUTPUT_MUTE_SCHEMA_VERSION: u32 = 74;
 
 fn contains_leading_audio_once(project: &Project) -> bool {
     project
@@ -121,6 +123,7 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 }
 
 /// Schema [`encode`] writes for `project`:
+/// [`GROUP_OUTPUT_MUTE_SCHEMA_VERSION`] when a group output has authored mute ranges,
 /// [`LEADING_AUDIO_ONCE_SCHEMA_VERSION`] for a finite musical placement with a silent lead,
 /// [`TRACK_TAGS_SCHEMA_VERSION`] when track tags are present,
 /// [`EXTENDED_FRAME_EVENTS_SCHEMA_VERSION`] for an extended frame-event root,
@@ -134,7 +137,9 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// [`SINC_V2_SCHEMA_VERSION`] when it contains sinc v2 media, otherwise
 /// [`CURRENT_SCHEMA_VERSION`].
 pub fn schema_version_for(project: &Project) -> u32 {
-    if contains_leading_audio_once(project) {
+    if schema::group_output_mute::contains(project) {
+        GROUP_OUTPUT_MUTE_SCHEMA_VERSION
+    } else if contains_leading_audio_once(project) {
         LEADING_AUDIO_ONCE_SCHEMA_VERSION
     } else if schema::track_tags::contains(project) {
         TRACK_TAGS_SCHEMA_VERSION
@@ -325,11 +330,14 @@ impl From<serde_json::Error> for StorageError {
 /// A Compressor sidechain makes it schema69; older projects open disconnected.
 /// An independent musical event source makes it schema70. A frame-event root
 /// beyond the dense processing limit makes it schema71. Tags make it schema72.
+/// A leading musical one-shot makes it schema73 and group mute ranges schema74.
 /// Schema59 is reserved and explicitly refused.
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    if contains_leading_audio_once(project) {
+    if schema::group_output_mute::contains(project) {
+        encode_document(&schema::group_output_mute::encode(project)?)
+    } else if contains_leading_audio_once(project) {
         let mut value = schema::track_tags::encode(project)?;
         value["version"] = LEADING_AUDIO_ONCE_SCHEMA_VERSION.into();
         encode_document(&value)
@@ -557,6 +565,7 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     let project = match header.version {
+        GROUP_OUTPUT_MUTE_SCHEMA_VERSION => schema::group_output_mute::decode(bytes),
         LEADING_AUDIO_ONCE_SCHEMA_VERSION => {
             schema::track_tags::decode_with_version(bytes, LEADING_AUDIO_ONCE_SCHEMA_VERSION)
         }
@@ -611,8 +620,9 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery",
         )),
     }?;
-    if contains_leading_audio_once(&project)
-        != (header.version == LEADING_AUDIO_ONCE_SCHEMA_VERSION)
+    if header.version < GROUP_OUTPUT_MUTE_SCHEMA_VERSION
+        && contains_leading_audio_once(&project)
+            != (header.version == LEADING_AUDIO_ONCE_SCHEMA_VERSION)
     {
         return Err(StorageError::Invalid(
             "project schema disagrees with its leading musical one-shot; original file unchanged",

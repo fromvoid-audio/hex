@@ -47,6 +47,7 @@ fn fixture(
         let track = next_id;
         next_id += 1;
         tracks.push(TrackSnapshot {
+            group_output_mutes: Vec::new(),
             tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,

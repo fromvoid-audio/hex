@@ -44,7 +44,10 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
 }
 
 pub(crate) fn decode_with_version(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
-    let mut value = super::audio_events::parse_unique(bytes)?;
+    decode_value(super::audio_events::parse_unique(bytes)?, version)
+}
+
+pub(crate) fn decode_value(mut value: Value, version: u32) -> Result<Project, StorageError> {
     if value.get("version").and_then(Value::as_u64) != Some(version.into()) {
         return Err(StorageError::Invalid("invalid track tag schema"));
     }
