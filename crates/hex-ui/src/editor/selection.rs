@@ -30,7 +30,8 @@ impl TrackSelection {
             .filter(|track| track.has_tag(tag))
             .map(|track| track.id())
             .collect();
-        if toggle {
+        // Combined shift+primary keeps the existing additive selection law.
+        if toggle && !add {
             let remove = matching.iter().all(|id| self.ids.contains(id));
             for id in &matching {
                 if remove {

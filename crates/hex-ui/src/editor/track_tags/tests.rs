@@ -116,6 +116,22 @@ fn rendered_tag_selection_modifiers_overflow_and_filter_are_view_only(cx: &mut T
         &mut visual,
         selector("track-tag-first", ids[0]),
         Modifiers {
+            shift: true,
+            platform: true,
+            ..Default::default()
+        },
+    );
+    view.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.selected_track_ids(),
+            ids,
+            "combined modifiers add rather than remove the matching cohort"
+        )
+    });
+    click(
+        &mut visual,
+        selector("track-tag-first", ids[0]),
+        Modifiers {
             platform: true,
             ..Default::default()
         },
