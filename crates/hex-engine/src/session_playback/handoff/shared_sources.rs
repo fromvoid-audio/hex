@@ -89,7 +89,11 @@ pub(super) fn reenabled_release_receivers(
             && track.instrument_output_gain == 1.0
             && previous.tail_mixes[slot] == track.mix()
             && previous.tail_suffix_matrices[slot] == track.instrument_suffix_matrix()
-            && previous.tail_suffix_starts[slot] == track.instrument_position()
+            && tail_runtime_suffix_start(
+                &candidate.device_chains[index],
+                track.instrument_position(),
+            )
+            .is_ok_and(|start| previous.tail_suffix_starts[slot] == start)
             && previous.tail_groups[slot].as_ref().is_some_and(|chain| {
                 candidate.device_chains[index].static_processing_matches(chain)
             })
