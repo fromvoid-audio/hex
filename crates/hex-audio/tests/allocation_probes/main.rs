@@ -21,6 +21,8 @@ mod midi_once_allocations;
 mod midi_source_prefix;
 mod operator_filter_proof_allocations;
 mod operator_fixed_allocations;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod parallel_render_profile;
 mod pitch_multiplier_allocations;
 mod return_feed_allocations;
 mod routed_midi_allocations;
