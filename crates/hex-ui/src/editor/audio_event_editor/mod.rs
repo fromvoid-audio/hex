@@ -27,6 +27,7 @@ use super::{
 use gpui::{Bounds, Pixels};
 use hex_project::{AudioClipEdit, AudioEvent, AudioEventEdit, ClipId};
 use hex_session::service::Request;
+pub(super) use placement::MusicalEventWaveform;
 pub(in crate::editor) use play_start::Camera as PlayStartCamera;
 pub(super) use view::view;
 
@@ -61,6 +62,9 @@ pub(in crate::editor) fn event_grid_origin(root: &AudioClipEdit) -> u64 {
 /// Grouped events and processed frame roots expose their retained material
 /// independently of the Arrangement window.
 fn content_bounds(root: &AudioClipEdit) -> (u64, u64) {
+    if root.domain.musical_event_source.is_some() {
+        return (0, root.domain.clock.length());
+    }
     if root.domain.events.as_ref().is_some_and(|events| {
         !events.sources.is_empty()
             || (matches!(root.timing, hex_project::AudioClipTiming::Frames)
@@ -769,8 +773,16 @@ impl EditorView {
         else {
             return;
         };
-        if !trim && let Ok((first, last)) = clip.audio_event_placement_bounds(event.id) {
-            let raw = next - i128::from(clip.start()) + i128::from(origin);
+        if !trim
+            && let Ok((first, last)) =
+                state
+                    .project
+                    .audio_event_drag_bounds(clip_id, event.start, event.end)
+        {
+            let frame = next - i128::from(clip.start()) + i128::from(origin);
+            let Ok(raw) = root.signed_root_position_at(frame, state.project.tempo_map()) else {
+                return;
+            };
             let start = raw.clamp(i128::from(first), i128::from(last)) as i64;
             self.event_commit(AudioEventEdit::Place {
                 event: event.id,

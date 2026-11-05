@@ -31,6 +31,7 @@ mod midi_clip_volume;
 pub(crate) mod midi_one_shot;
 mod migrations;
 pub(crate) mod musical_audio;
+pub(crate) mod musical_event_source;
 pub(crate) mod native_sources;
 pub(crate) mod nested_audio;
 pub(crate) mod note_activation;
