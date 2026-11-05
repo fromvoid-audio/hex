@@ -994,10 +994,25 @@ impl SessionPlayback {
         let old_base = previous.revision.session().timing();
         let new_base = self.revision.session().timing();
         let same_base = old_base.same_map(new_base);
+        let candidate_periodic = self.periodic_tempo_at(previous.arrangement_frame);
+        let same_periodic = previous.periodic_tempo() == candidate_periodic;
+        let old_clock = previous.timing_view();
+        let old_beat = old_clock
+            .frame_to_beat(previous.performance_frame)
+            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let new_base_view = base_timing_for(self.revision.session(), candidate_periodic);
+        let new_beat = new_base_view
+            .frame_to_beat(previous.performance_frame)
+            .map_err(|_| SessionPlaybackError::TempoConversion)?;
+        let arrangement_loop_continuity = same_base
+            && old_loop != new_loop
+            && old_beat == new_beat
+            && first_pass_arrangement_loop_continuity(self, previous);
         // An edited base map cuts every held mutable Arrangement gate at the
         // donor's cut (`arrangement_tempo_remap` below), so a retimed loop
         // has no active gate deadline left to prove.
         if same_base
+            && !arrangement_loop_continuity
             && old_loop != new_loop
             && previous.routes.iter().enumerate().any(|(index, _)| {
                 effective_midi_route(&previous.revision, &previous.routes, index)
@@ -1011,16 +1026,6 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::MutableInstrumentLoopBoundsActive);
         }
-        let candidate_periodic = self.periodic_tempo_at(previous.arrangement_frame);
-        let same_periodic = previous.periodic_tempo() == candidate_periodic;
-        let old_clock = previous.timing_view();
-        let old_beat = old_clock
-            .frame_to_beat(previous.performance_frame)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
-        let new_base_view = base_timing_for(self.revision.session(), candidate_periodic);
-        let new_beat = new_base_view
-            .frame_to_beat(previous.performance_frame)
-            .map_err(|_| SessionPlaybackError::TempoConversion)?;
         let timing_changed = !same_base || !same_periodic;
         // Arrangement content is beat-anchored, so an edited base tempo map
         // keeps the cursor's beat, not its frame (Pulse #3935). Old-revision
@@ -1072,6 +1077,7 @@ impl SessionPlayback {
             ));
         }
         if timing_changed
+            && !arrangement_loop_continuity
             && !arrangement_tempo_remap
             && old_loop.is_some()
             && previous.routes.iter().enumerate().any(|(index, _)| {
@@ -1160,6 +1166,11 @@ impl SessionPlayback {
                 }
             }
         }
+        let reenabled_release_receivers = shared_sources::reenabled_release_receivers(
+            self,
+            previous,
+            timing_changed || old_loop != new_loop,
+        )?;
         let source_handoff = SharedSourceHandoff::prepare(
             &self.revision,
             &self.mutable_instruments,
@@ -1168,13 +1179,14 @@ impl SessionPlayback {
             previous,
             timing_changed,
             arrangement_tempo_remap,
+            arrangement_loop_continuity,
             &mut self.spans,
         )?;
         let mut mutable_continuity_new_for_old = source_handoff.new_for_old;
         let mut mutable_retarget_new_for_old = source_handoff.retarget_for_old;
         // An edited base map keeps only Arrangement mutable runtimes: their
         // held gates are cut at the cut, so no stale frame deadline survives.
-        if !timing_changed || arrangement_tempo_remap {
+        if !timing_changed || arrangement_tempo_remap || arrangement_loop_continuity {
             for (old_index, _) in previous.routes.iter().enumerate() {
                 if source_handoff.handles_old(old_index) {
                     continue;
@@ -2130,7 +2142,15 @@ impl SessionPlayback {
                             .source_routing()
                             .receiver_index(new_index)
                             .is_none());
-                if (source_binding_changed || !old_track.instrument_config_matches(new_track))
+                let analytic_bypass_changed = shared_sources::shared_analytic_bypass_changed(
+                    &previous.revision,
+                    old_index,
+                    &self.revision,
+                    new_index,
+                );
+                if (source_binding_changed
+                    || analytic_bypass_changed
+                    || !old_track.instrument_config_matches(new_track))
                     && !previous
                         .revision
                         .track_retains_source_configuration(&self.revision, old_route.id)
@@ -3176,6 +3196,9 @@ impl SessionPlayback {
         }
         let mut reserved_tail_voices = self.release_scratch.len();
         for (slot, tail) in previous.tail_mutable_instruments.iter().enumerate() {
+            if reenabled_release_receivers[slot].is_some() {
+                continue;
+            }
             let Some(tail) = tail
                 .as_ref()
                 .filter(|tail| !tail.runtime.committed_is_quiescent())
@@ -4032,6 +4055,18 @@ impl SessionPlayback {
         // permanently consumes this candidate's single admission opportunity.
         self.candidate_admission_open = false;
 
+        for (slot, receiver) in reenabled_release_receivers.into_iter().enumerate() {
+            if let Some(index) = receiver {
+                let tail = previous.tail_mutable_instruments[slot]
+                    .as_ref()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                self.mutable_instruments[index]
+                    .as_mut()
+                    .ok_or(SessionPlaybackError::DeviceRuntime)?
+                    .inherit_from(&tail.runtime)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            }
+        }
         for (old_index, new_index) in analytic_import_new_for_old.iter().copied().enumerate() {
             if new_index == usize::MAX {
                 continue;
@@ -4809,8 +4844,78 @@ fn mutable_proof_deadline(
     deadline
 }
 
-/// Whether every proof of `runtime` belongs to a donor Arrangement route, so
-/// an edited base map cuts each held gate at the cut (Pulse #4117).
+/// With equal canonical maps and equal beats at the cut, a first-pass loop
+/// edit can retain Arrangement voices until the earlier wrap. The periodic
+/// view returns the canonical inverse before its start, uses that same inverse
+/// at its admitted round-tripping start, and lifts canonical local beats by
+/// zero cycles until its end. Round-tripping beats for interior frames lie
+/// strictly between the endpoint beats by monotonicity of the forward map.
+/// The candidate anchor therefore has zero shift over the retained interval.
+/// No retained gate or tail may reach either wrap. Signature, source-law and
+/// occupancy checks still run before runtime transfer.
+fn first_pass_arrangement_loop_continuity(
+    candidate: &SessionPlayback,
+    previous: &SessionPlayback,
+) -> bool {
+    if previous.anchor.is_some()
+        || previous.computer_keyboard.is_some()
+        || candidate.computer_keyboard.is_some()
+        || previous.arrangement_loop_pass != 0
+        || previous.performance_frame != previous.arrangement_frame
+        || candidate.revision.arrangement().main_latency_frames() != 0
+        || previous.revision.arrangement().main_latency_frames() != 0
+        || previous
+            .tail_mutable_instruments
+            .iter()
+            .any(Option::is_some)
+    {
+        return false;
+    }
+    let boundary = [previous.loop_region(), candidate.loop_region()]
+        .into_iter()
+        .flatten()
+        .filter(|region| region.enabled())
+        .map(hex_project::LoopRegion::end)
+        .min()
+        .unwrap_or(u64::MAX);
+    if previous.performance_frame >= boundary {
+        return false;
+    }
+    for playback in [previous, candidate] {
+        for (index, route) in playback.routes.iter().enumerate() {
+            if route.owner != RouteOwner::Arrangement
+                || route.pending.is_some()
+                || playback.revision.source_routing().is_shared(index)
+            {
+                return false;
+            }
+        }
+    }
+    previous
+        .mutable_instruments
+        .iter()
+        .enumerate()
+        .all(|(index, runtime)| {
+            let Some(runtime) = runtime else {
+                return true;
+            };
+            let Some(route) = previous.routes.get(index) else {
+                return false;
+            };
+            previous
+                .revision
+                .mutable_arrangement_track_matches(&candidate.revision, route.id)
+                && !runtime.has_committed_live_occurrences()
+                && runtime.proofs().all(|proof| {
+                    proof.signature.key().loop_pass == 0
+                        && proof.gate_end_frame < boundary
+                        && proof.quiet_deadline_frame < boundary
+                })
+        })
+}
+
+/// Whether every proof belongs to a donor Arrangement route, so an edited
+/// base map can cut each held gate at the cut (Pulse #4117).
 fn arrangement_only_proofs(
     previous: &SessionPlayback,
     runtime: &MutableInstrumentTrackRuntime,

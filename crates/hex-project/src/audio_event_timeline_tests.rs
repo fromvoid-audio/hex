@@ -116,14 +116,93 @@ fn placement_refuses_unsupported_roots_and_unbounded_timelines() {
     }
     assert!(place(&mut editor, clip, 9, 10).is_err());
     editor
-        .execute(Command::SetClipLooping {
+        .execute(Command::SetAudioClipMusical {
             clip,
-            looping: true,
+            enabled: true,
         })
         .unwrap();
-    let looped = editor.project().clone();
-    assert!(place(&mut editor, clip, 1, 120).is_err());
-    assert_eq!(editor.project(), &looped);
+    let musical = editor.project().clone();
+    assert!(place(&mut editor, clip, 1, i64::MAX).is_err());
+    assert_eq!(editor.project(), &musical);
     assert!(editor.undo());
     assert_eq!(editor.project(), &before);
+}
+
+#[test]
+fn signed_range_moves_keep_whole_ids_split_sources_and_replace_through_gaps() {
+    let (mut editor, clip) = imported(100);
+    for operation in [
+        AudioEventEdit::Split { at: 20 },
+        AudioEventEdit::Split { at: 40 },
+        AudioEventEdit::Split { at: 60 },
+        AudioEventEdit::Split { at: 80 },
+        AudioEventEdit::Delete { start: 40, end: 60 },
+    ] {
+        editor
+            .execute(Command::EditAudioEvents { clip, operation })
+            .unwrap();
+    }
+    let before = editor.project().clone();
+    for (start, end, destination) in [
+        (70, 10, 0),
+        (10, 101, 0),
+        (10, 70, i64::MIN),
+        (10, 70, i64::MAX),
+    ] {
+        let operation = AudioEventEdit::PlaceRange {
+            start,
+            end,
+            destination,
+        };
+        assert!(
+            editor
+                .execute(Command::EditAudioEvents { clip, operation })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before);
+    }
+    for destination in [-65_i64, 25, 130] {
+        let operation = AudioEventEdit::PlaceRange {
+            start: 10,
+            end: 70,
+            destination,
+        };
+        let preview = editor
+            .project()
+            .preview_audio_event_edit(clip, &operation)
+            .unwrap();
+        editor
+            .execute(Command::EditAudioEvents { clip, operation })
+            .unwrap();
+        let placed = editor.project().clip(clip).unwrap();
+        assert_eq!(placed, preview.clip());
+        assert_eq!((placed.start(), placed.duration()), (0, 100));
+        let events = placed.audio_events();
+        let view = placed.audio_event_root().view_start as i64;
+        let shape = |id| {
+            let e = events.events.iter().find(|e| e.id == id).unwrap();
+            assert_eq!(
+                preview.original_waveform_position(id, e.start),
+                Some(e.source_start)
+            );
+            (e.start as i64 - view, e.end as i64 - view, e.source_start)
+        };
+        assert_eq!(shape(1), (0, 10, 0));
+        assert_eq!(shape(6), (destination, destination + 10, 10));
+        assert_eq!(shape(2), (destination + 10, destination + 30, 20));
+        assert_eq!(shape(4), (destination + 50, destination + 60, 60));
+        if destination == 25 {
+            assert_eq!(shape(8), (85, 100, 85));
+            assert!(!events.events.iter().any(|e| e.id == 5 || e.id == 7));
+        } else {
+            assert_eq!(shape(7), (70, 80, 70));
+            assert_eq!(shape(5), (80, 100, 80));
+        }
+        let after = editor.project().clone();
+        assert!(editor.undo());
+        assert_eq!(editor.project(), &before);
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &after);
+        assert!(editor.undo());
+    }
 }

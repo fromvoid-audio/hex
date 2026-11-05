@@ -693,9 +693,9 @@ impl SessionPlayback {
                     let mut frame = self.return_scratch[index][0];
                     compensation
                         .effects_with_foreign(
-                            &compensation.graph.returns[index].devices,
+                            crate::signal_graph::Owner::Return(index),
+                            0..compensation.graph.returns[index].devices.len(),
                             &mut self.return_chains[index],
-                            0,
                             &mut frame,
                             frame_offset,
                             foreign,

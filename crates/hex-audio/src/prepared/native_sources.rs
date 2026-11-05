@@ -70,6 +70,17 @@ impl PublicationControl {
         }
         Ok(result)
     }
+    /// Observe the exact live worker's edit receipts and uncovered latency
+    /// restart. Opt in only when the consumer can restore the stopped source.
+    pub fn poll_native_source_recovery_edits_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::RecoveryEdits>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native edit output is closing");
+        }
+        self.candidate_root.native_source_recovery_edits(binding)
+    }
     /// Inspect latest processor parameter values through the actual original
     /// Root-held effect or its unique loan control. Wrong/closed/revoked sources
     /// refuse; busy is a read refusal, not consumption or transport cancellation.
@@ -333,6 +344,17 @@ impl PublicationControl {
             return Err("native reactivation output is closing");
         }
         Ok(result)
+    }
+    /// Settle latency restarts on this exact stopped source reservation
+    /// before completing its new epoch and preparing compensation.
+    pub fn settle_native_latency_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::Facts>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native reactivation output is closing");
+        }
+        self.candidate_root.settle_native_latency(binding)
     }
     /// Capture the original quiescent owner after actual graph/endpoint return.
     /// `binding` names Root's renewed reservation; the helper still acknowledges
