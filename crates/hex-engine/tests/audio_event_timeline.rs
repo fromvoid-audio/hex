@@ -240,3 +240,61 @@ fn placed_events_keep_their_original_source_loop_phase_without_repeating_outside
         }
     }
 }
+
+#[test]
+fn signed_range_placement_gates_moved_pcm_and_preserves_a_hole_when_revealed() {
+    for destination in [-80_i64, 120] {
+        let (mut editor, clip) = imported();
+        let track = editor.project().tracks()[0].id();
+        editor
+            .execute(Command::MoveClip {
+                clip,
+                track,
+                start: 200,
+            })
+            .unwrap();
+        for operation in [
+            AudioEventEdit::Delete { start: 20, end: 40 },
+            AudioEventEdit::PlaceRange {
+                start: 10,
+                end: 60,
+                destination,
+            },
+        ] {
+            editor
+                .execute(Command::EditAudioEvents { clip, operation })
+                .unwrap();
+        }
+        let start = (200 + destination) as usize;
+        for block in [1, 7, 64, 512] {
+            let hidden = render(&editor, 400, block);
+            assert!(hidden[start..start + 50].iter().all(|f| *f == [0.0; 2]));
+        }
+        let (edge, frame) = if destination < 0 {
+            (TrimEdge::Left, start as u64)
+        } else {
+            (TrimEdge::Right, (start + 50) as u64)
+        };
+        editor
+            .execute(Command::TrimClipEdge { clip, edge, frame })
+            .unwrap();
+        for block in [1, 7, 64, 512] {
+            for (song, sample) in render(&editor, 400, block).into_iter().enumerate() {
+                let source = if (start..start + 10).contains(&song)
+                    || (start + 30..start + 50).contains(&song)
+                {
+                    Some((song - start + 10) as u64)
+                } else if (200..210).contains(&song) || (260..300).contains(&song) {
+                    Some((song - 200) as u64)
+                } else {
+                    None
+                };
+                let expected = source.map_or([0.0; 2], |frame| [value(frame), -value(frame)]);
+                assert_eq!(
+                    sample, expected,
+                    "destination {destination}, block {block}, frame {song}"
+                );
+            }
+        }
+    }
+}

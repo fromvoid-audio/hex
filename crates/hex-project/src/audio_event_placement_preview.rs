@@ -4,7 +4,7 @@
 //! source identity/window, activation, event gain/fade remain equal, and the
 //! frame container has no position-dependent processing. This owns metadata only;
 //! no media, decoder, graph, history revision or global identity is allocated here.
-use crate::{AudioClipTiming, AudioDomainClock, Clip, ClipId, Invalid, Project};
+use crate::{AudioClipTiming, AudioDomainClock, AudioEventEdit, Clip, ClipId, Invalid, Project};
 
 #[derive(Clone, Debug)]
 pub struct AudioEventPlacementPreview {
@@ -44,11 +44,20 @@ impl Project {
         event: u64,
         start: i64,
     ) -> Result<AudioEventPlacementPreview, Invalid> {
+        self.preview_audio_event_edit(clip, &AudioEventEdit::Place { event, start })
+    }
+
+    /// Preview a signed single-event or range placement in its exact canonical root.
+    pub fn preview_audio_event_edit(
+        &self,
+        clip: ClipId,
+        operation: &AudioEventEdit,
+    ) -> Result<AudioEventPlacementPreview, Invalid> {
         let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
         original.audio_event_placement_limit().ok_or(Invalid(
             "free editor placement needs a fixed frame timeline",
         ))?;
-        let candidate = crate::audio_event_timeline::prepare(self, clip, event, start)?;
+        let candidate = crate::audio_event_timeline::prepare(self, clip, operation)?;
         let root = original.audio_event_root();
         let mut waveform = Vec::new();
         if matches!(root.domain.clock, AudioDomainClock::Frames(_))
@@ -123,21 +132,33 @@ impl Clip {
     /// Numerical root-frame limits for this captured event. This is a preview
     /// hint, not a processing reservation; the canonical command revalidates it.
     pub fn audio_event_placement_bounds(&self, event: u64) -> Result<(i64, i64), Invalid> {
-        let limit = self.audio_event_placement_limit().ok_or(Invalid(
-            "free editor placement needs a fixed frame timeline",
-        ))?;
-        let root = self.audio_event_root();
         let events = self.editable_audio_events()?;
         let event = events
             .events
             .iter()
             .find(|e| e.id == event)
             .ok_or(Invalid("audio event no longer exists"))?;
+        self.audio_event_range_placement_bounds(event.start, event.end)
+    }
+
+    /// Placement limits for a nonempty interval in the retained frame root.
+    pub fn audio_event_range_placement_bounds(
+        &self,
+        start: u64,
+        end: u64,
+    ) -> Result<(i64, i64), Invalid> {
+        let limit = self.audio_event_placement_limit().ok_or(Invalid(
+            "free editor placement needs a fixed frame timeline",
+        ))?;
+        let length = self.audio_event_root().domain.clock.length();
+        if start >= end || end > length {
+            return Err(Invalid("invalid audio event placement range"));
+        }
         let lead = limit
-            .checked_sub(root.domain.clock.length())
+            .checked_sub(length)
             .ok_or(Invalid("audio event root exceeds placement limit"))?;
         let last = limit
-            .checked_sub(event.length())
+            .checked_sub(end - start)
             .ok_or(Invalid("audio event exceeds placement limit"))?;
         Ok((
             -i64::try_from(lead).map_err(|_| Invalid("audio event placement overflow"))?,

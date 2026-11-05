@@ -146,6 +146,11 @@ enum Kind {
         start: u64,
         end: u64,
     },
+    FreeRangeMove {
+        start: u64,
+        end: u64,
+        limits: (i64, i64),
+    },
     Move(AudioEvent),
     FreeMove {
         event: AudioEvent,
@@ -653,8 +658,8 @@ impl EditorView {
                     destination,
                 });
             }
-            Kind::FreeMove { event, limits } => {
-                self.update_free_event_placement(&mut gesture, event, limits, x, platform)
+            Kind::FreeMove { .. } | Kind::FreeRangeMove { .. } => {
+                self.update_free_event_placement(&mut gesture, x, platform)
             }
             Kind::Move(event) => {
                 let candidate =
