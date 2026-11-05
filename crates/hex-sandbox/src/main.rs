@@ -45,6 +45,9 @@ mod section_surface;
 #[path = "../../hex-ui/src/editor/seek.rs"]
 #[allow(dead_code)] // The editor also uses transport seek acknowledgement.
 mod seek;
+#[path = "../../hex-ui/src/editor/signed_frame_viewport.rs"]
+#[allow(dead_code)] // The shared grid also supports the event editor's signed camera.
+mod signed_frame_viewport;
 #[path = "../../hex-ui/src/theme.rs"]
 #[allow(dead_code)]
 mod theme;

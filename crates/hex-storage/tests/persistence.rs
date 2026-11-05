@@ -1404,7 +1404,7 @@ fn track_tags_upgrade_schema69_preserve_complete_state_and_original_bytes() {
         })
         .unwrap();
     assert!(token.requires_save_confirmation(editor.project()).unwrap());
-    let new = dir.join("schema70.hex");
+    let new = dir.join("schema72.hex");
     save_new(&new, editor.project()).unwrap();
     assert_eq!(load(&new).unwrap(), *editor.project());
     assert_eq!(fs::read(&old).unwrap(), bytes);

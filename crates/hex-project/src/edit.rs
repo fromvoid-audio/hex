@@ -634,6 +634,10 @@ pub enum Command {
         track: TrackId,
         gain: f32,
     },
+    /// Change a bounded set of static track gains atomically in one history step.
+    SetTrackGains {
+        gains: Vec<(TrackId, f32)>,
+    },
     /// Set original Hex stereo balance; this is not a measured Live pan law.
     Balance {
         track: TrackId,
@@ -2652,28 +2656,8 @@ impl Project {
                 target.automatic_name = false;
                 Ok(Created::None)
             }
-            Command::Gain { track, gain } => {
-                if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
-                    return Err(Invalid("gain must be finite and within 0..2"));
-                }
-                if !self
-                    .track(track)
-                    .ok_or(Invalid("track no longer exists"))?
-                    .gain_lane()
-                    .base()
-                    .is_empty()
-                    || !self
-                        .track(track)
-                        .ok_or(Invalid("track no longer exists"))?
-                        .gain_lane
-                        .spans
-                        .is_empty()
-                {
-                    return Err(Invalid("track gain is owned by automation"));
-                }
-                self.track_mut(track)?.gain = gain;
-                Ok(Created::None)
-            }
+            Command::Gain { track, gain } => crate::track_gain_group::apply(self, &[(track, gain)]),
+            Command::SetTrackGains { gains } => crate::track_gain_group::apply(self, &gains),
             Command::Balance { track, balance } => {
                 if !balance.is_finite() || !(-1.0..=1.0).contains(&balance) {
                     return Err(Invalid("balance must be finite and within -1..1"));

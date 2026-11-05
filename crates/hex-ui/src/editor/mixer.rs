@@ -121,15 +121,11 @@ impl EditorView {
                         )),
                     );
             }
-            use hex_session::device_gesture::GestureTarget;
             let active_gain = self.device_gesture.snapshot().and_then(|snapshot| {
                 if snapshot.key.generation != self.project_generation {
                     return None;
                 }
-                match snapshot.target {
-                    GestureTarget::TrackGain { track } => Some(track),
-                    _ => None,
-                }
+                snapshot.target.track_gain_anchor()
             });
             let owner = active_gain
                 .or_else(|| {

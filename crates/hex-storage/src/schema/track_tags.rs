@@ -1,11 +1,11 @@
-//! Schema70 adds canonical tag assignments above schema69's complete project.
-//! Schemas1–69 migrate with no tags; their existing layout remains unchanged.
-//! Only tagged projects need70. Reading never edits original bytes or media;
-//! existing publication and newer-format overwrite consent keep their owners.
+//! Schema72 adds canonical track tags to the complete event layout. Projects
+//! saved without tags keep their existing codec. The earlier tag draft at
+//! 3a50aa81 used schema70 over schema69, with a disjoint tag inventory and no
+//! musical event inventory. It remains readable and upgrades only on save.
 use crate::{Project, StorageError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,20 +20,20 @@ pub(crate) fn contains(project: &Project) -> bool {
         .any(|track| !track.tags().is_empty())
 }
 pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
-    let mut snapshot = project.snapshot();
-    let assignments: Vec<_> = snapshot
-        .tracks
-        .iter_mut()
-        .filter_map(|track| {
-            (!track.tags.is_empty()).then(|| Assignment {
-                track: track.id,
-                tags: std::mem::take(&mut track.tags),
-            })
+    let assignments: Vec<_> = project
+        .tracks()
+        .iter()
+        .filter(|track| !track.tags().is_empty())
+        .map(|track| Assignment {
+            track: track.id().value(),
+            tags: track
+                .tags()
+                .iter()
+                .map(|tag| tag.as_str().to_owned())
+                .collect(),
         })
         .collect();
-    let neutral =
-        Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))?;
-    let mut value = super::sidechain::encode(&neutral)?;
+    let mut value = super::musical_event_source::encode(project)?;
     value["track_tags"] = serde_json::to_value(assignments)?;
     value["version"] = crate::TRACK_TAGS_SCHEMA_VERSION.into();
     Ok(value)
@@ -44,6 +44,30 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     {
         return Err(StorageError::Invalid("invalid track tag schema"));
     }
+    let assignments = take_assignments(&mut value)?;
+    if assignments.is_empty() {
+        return Err(StorageError::Invalid("track tag inventory is empty"));
+    }
+    let project =
+        super::musical_event_source::decode_value(value, crate::TRACK_TAGS_SCHEMA_VERSION)?;
+    restore_assignments(project, assignments)
+}
+
+pub(crate) fn decode_schema70(bytes: &[u8]) -> Result<Project, StorageError> {
+    let mut value = super::audio_events::parse_unique(bytes)?;
+    if value.get("track_tags").is_none() {
+        return super::musical_event_source::decode_value(
+            value,
+            crate::MUSICAL_EVENT_SOURCE_SCHEMA_VERSION,
+        );
+    }
+    let assignments = take_assignments(&mut value)?;
+    value["version"] = crate::SIDECHAIN_SCHEMA_VERSION.into();
+    let project = super::sidechain::decode(&serde_json::to_vec(&value)?)?;
+    restore_assignments(project, assignments)
+}
+
+fn take_assignments(value: &mut Value) -> Result<BTreeMap<u64, Vec<String>>, StorageError> {
     let assignments = value
         .as_object_mut()
         .and_then(|object| object.remove("track_tags"))
@@ -67,21 +91,27 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     {
         return Err(StorageError::Invalid("invalid track tag inventory"));
     }
-    let assignments: Vec<Assignment> = serde_json::from_value(assignments)?;
-    value["version"] = crate::SIDECHAIN_SCHEMA_VERSION.into();
-    let neutral = super::sidechain::decode(&serde_json::to_vec(&value)?)?;
-    let mut snapshot = neutral.snapshot();
-    let mut seen = BTreeSet::new();
-    for assignment in assignments {
-        if !seen.insert(assignment.track) {
+    let mut by_track = BTreeMap::new();
+    for Assignment { track, tags } in serde_json::from_value::<Vec<Assignment>>(assignments)? {
+        if by_track.insert(track, tags).is_some() {
             return Err(StorageError::Invalid("duplicate track tag owner"));
         }
-        let track = snapshot
-            .tracks
-            .iter_mut()
-            .find(|track| track.id == assignment.track)
-            .ok_or(StorageError::Invalid("track tag owner is missing"))?;
-        track.tags = assignment.tags;
+    }
+    Ok(by_track)
+}
+
+fn restore_assignments(
+    project: Project,
+    mut assignments: BTreeMap<u64, Vec<String>>,
+) -> Result<Project, StorageError> {
+    let mut snapshot = project.snapshot();
+    for track in &mut snapshot.tracks {
+        if let Some(tags) = assignments.remove(&track.id) {
+            track.tags = tags;
+        }
+    }
+    if !assignments.is_empty() {
+        return Err(StorageError::Invalid("track tag owner is missing"));
     }
     Project::from_snapshot(snapshot).map_err(|error| StorageError::Invalid(error.0))
 }
@@ -117,13 +147,27 @@ mod tests {
             })
             .unwrap();
         let tagged = editor.project();
-        assert_eq!(crate::schema_version_for(tagged), 70);
+        assert_eq!(
+            crate::schema_version_for(tagged),
+            crate::TRACK_TAGS_SCHEMA_VERSION
+        );
         let bytes = crate::encode(tagged).unwrap();
         assert_eq!(crate::decode(&bytes).unwrap(), *tagged);
         assert!(crate::encode_schema22(tagged).is_err());
         assert!(crate::encode_schema20(tagged).is_err());
         assert_eq!(historical["version"], 69);
         assert!(historical.get("track_tags").is_none());
+        // The draft layout was schema69 plus only the track inventory.
+        let mut draft = historical.clone();
+        draft["version"] = 70.into();
+        draft["track_tags"] = encode(tagged).unwrap()["track_tags"].clone();
+        assert_eq!(
+            crate::decode(&serde_json::to_vec(&draft).unwrap()).unwrap(),
+            *tagged
+        );
+        draft["musical_event_sources"] = serde_json::json!([]);
+        assert!(crate::decode(&serde_json::to_vec(&draft).unwrap()).is_err());
+
         let mut old = historical;
         old["track_tags"] = serde_json::json!([]);
         assert!(crate::decode(&serde_json::to_vec(&old).unwrap()).is_err());

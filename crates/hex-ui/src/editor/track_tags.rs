@@ -280,17 +280,69 @@ impl EditorView {
             .map(|tag| tag.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        Some(div().id(("track-tags-row",id.value())).flex().items_center().flex_shrink_0().max_w(px(76.)).text_xs()
-            .debug_selector(move || format!("track-tags-{}",id.value()))
-            .tooltip(move |_,cx| cx.new(|_| super::transport::MiniTooltip { kind:crate::tooltips::Kind::control("track tags"),description:format!("{all} · click selects matches · shift adds · cmd/ctrl toggles · right click filters").into() }).into())
-            .child(div().id(("track-tag",id.value())).debug_selector(move || format!("track-tag-first-{}",id.value())).cursor_pointer().max_w(px(54.)).truncate().px(px(2.)).rounded(px(2.)).bg(rgb(theme::color(theme::PaletteRole::Raised)))
-                .on_mouse_down(MouseButton::Left,|_,_,cx| cx.stop_propagation())
-                .on_click(cx.listener(move |view,event:&gpui::ClickEvent,window,cx| { cx.stop_propagation(); view.select_tag_tracks(&click,event.modifiers(),Some(id),window,cx); }))
-                .on_mouse_down(MouseButton::Right,cx.listener(move |view,event:&gpui::MouseDownEvent,window,cx| { cx.stop_propagation();view.open_track_tag_choices(id,event.position,window,cx); }))
-                .child(theme::text(first.as_str())))
-            .child(div().id(("track-tag-more",id.value())).debug_selector(move || format!("track-tag-more-{}",id.value())).cursor_pointer().px(px(2.))
-                .on_mouse_down(MouseButton::Left,cx.listener(move |view,event:&gpui::MouseDownEvent,window,cx| { cx.stop_propagation();view.open_track_tag_choices(id,event.position,window,cx); }))
-                .child(theme::text(if track.tags().len() > 1 { format!("+{}",track.tags().len()-1) } else { "⋯".into() }))))
+        let more = match track.tags().len() {
+            1 => "⋯".into(),
+            count => format!("+{}", count - 1),
+        };
+        let label = div()
+            .id(("track-tag", id.value()))
+            .debug_selector(move || format!("track-tag-first-{}", id.value()))
+            .cursor_pointer()
+            .max_w(px(54.))
+            .truncate()
+            .px(px(2.))
+            .rounded(px(2.))
+            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(
+                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.select_tag_tracks(&click, event.modifiers(), Some(id), window, cx);
+                }),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.open_track_tag_choices(id, event.position, window, cx);
+                }),
+            )
+            .child(theme::text(first.as_str()));
+        let overflow = div()
+            .id(("track-tag-more", id.value()))
+            .debug_selector(move || format!("track-tag-more-{}", id.value()))
+            .cursor_pointer()
+            .px(px(2.))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.open_track_tag_choices(id, event.position, window, cx);
+                }),
+            )
+            .child(theme::text(more));
+        Some(
+            div()
+                .id(("track-tags-row", id.value()))
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .max_w(px(76.))
+                .text_xs()
+                .debug_selector(move || format!("track-tags-{}", id.value()))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| super::transport::MiniTooltip {
+                        kind: crate::tooltips::Kind::control("track tags"),
+                        description: format!(
+                            "{all} · click selects matches · shift adds · cmd/ctrl toggles · right click filters"
+                        )
+                        .into(),
+                    })
+                    .into()
+                })
+                .child(label)
+                .child(overflow),
+        )
     }
     pub(super) fn track_tag_filter_control(
         &mut self,

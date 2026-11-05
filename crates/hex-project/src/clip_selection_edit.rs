@@ -618,6 +618,7 @@ impl Command {
             | Self::SetTrackTags { .. }
             | Self::RenameTrack { .. }
             | Self::Gain { .. }
+            | Self::SetTrackGains { .. }
             | Self::Balance { .. }
             | Self::MasterGain { .. }
             | Self::SetProjectTempo { .. }

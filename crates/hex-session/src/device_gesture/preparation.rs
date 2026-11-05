@@ -7,6 +7,21 @@ pub(crate) fn command_for_snapshot(
     session: &Session,
     snapshot: GestureSnapshot,
 ) -> Result<Command, SessionError> {
+    if let Some(group) = snapshot.track_gains {
+        if snapshot.target
+            != (GestureTarget::TrackGains {
+                track: group.anchor(),
+            })
+            || snapshot.creation.is_some()
+            || snapshot.parameters.is_some()
+            || snapshot.secondary_value.is_some()
+        {
+            return Err(SessionError::Invalid("selected gain cohort target changed"));
+        }
+        return group
+            .command(session.project(), track_gain_value(snapshot.value)?)
+            .map_err(SessionError::from);
+    }
     if let Some(creation) = snapshot.creation {
         let GestureTarget::EqNodeCreation { device } = snapshot.target else {
             return Err(SessionError::Invalid("eq creation target changed"));
@@ -115,7 +130,9 @@ pub(crate) fn command_for_snapshot(
                 snapshot.manual_edit,
             ))
         }
-        GestureTarget::DeviceParameterSnapshot { .. } | GestureTarget::EqNodeCreation { .. } => {
+        GestureTarget::TrackGains { .. }
+        | GestureTarget::DeviceParameterSnapshot { .. }
+        | GestureTarget::EqNodeCreation { .. } => {
             Err(SessionError::Invalid("snapshot parameters are missing"))
         }
     }
