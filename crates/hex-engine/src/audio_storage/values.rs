@@ -46,12 +46,21 @@ impl<'a> AudioRootStorageLedger<'a> {
             source_phase: _,
             fade: _,
             streamed: _,
+            sparse,
         } = metadata;
         self.bytes(
             Owner::exclusive(metadata),
             Location("clip-metadata-box", 0),
             std::mem::size_of::<crate::ClipMetadata>(),
-        )
+        )?;
+        if let Some(map) = sparse.as_deref() {
+            self.bytes(
+                Owner::exclusive(map),
+                Location("sparse-frame-map", 0),
+                map.allocation_bytes(),
+            )?;
+        }
+        Ok(())
     }
     pub(crate) fn map(&mut self, map: &'a hex_project::TempoMap) -> Result<(), AudioStorageError> {
         let layout = map.owned_allocation_layout();
