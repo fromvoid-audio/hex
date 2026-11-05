@@ -247,6 +247,13 @@ pub enum OutputTail {
 /// admission. Prepared automation normally succeeds; malformed borrowed delivery
 /// or a derived-control failure returns through the host's existing rollback.
 pub trait NativeProcessorRuntime: StdAny + Send {
+    /// Opt in when processing a source release without an external clock,
+    /// auxiliary input or automation is equivalent to ordinary processing,
+    /// and ordinary history copy resumes that exact signal history.
+    fn supports_detached_source_rejoin(&self) -> bool {
+        false
+    }
+
     /// Process an admitted stereo auxiliary block. `automation == None` uses
     /// the immutable prepared parameters. When `bypassed`, advance the same
     /// private history while leaving the main signal dry. The clock, automation,
@@ -1343,14 +1350,39 @@ impl NativeRuntimeChain {
     /// Whether two complete chains perform the same static processing without
     /// signal, automation or unfinished host-ramp history. This observes only
     /// committed state; callers retain transport/source and ownership proofs.
-    /// Stateful/foreign providers and armed transient/automation programs refuse.
-    /// No resource is copied, adopted or retired by this query.
     pub fn static_processing_matches(&self, other: &Self) -> bool {
-        let static_entry = |entry: &RuntimeEntry| {
-            matches!(entry.runtime, RuntimeOwnership::Memoryless)
+        self.source_rejoin_processing_matches(other, |runtime| {
+            matches!(runtime, RuntimeOwnership::Memoryless)
+        })
+    }
+
+    /// Whether the whole post-instrument chain can copy committed history
+    /// from a detached source. It must process the same stream without a clock
+    /// or auxiliary signal, emit nothing autonomously, and explicitly admit
+    /// this use. No ownership moves during preflight.
+    pub fn detached_source_history_matches(&self, previous: &Self) -> bool {
+        self.source_rejoin_processing_matches(previous, |runtime| match runtime {
+            RuntimeOwnership::Memoryless => true,
+            RuntimeOwnership::Legacy { primary, .. } => primary.supports_detached_source_rejoin(),
+            RuntimeOwnership::Owned(_) | RuntimeOwnership::Foreign(_) => false,
+        }) && self.can_inherit_from(previous)
+    }
+
+    fn source_rejoin_processing_matches(
+        &self,
+        other: &Self,
+        supports: impl Fn(&RuntimeOwnership) -> bool,
+    ) -> bool {
+        let settled = |entry: &RuntimeEntry| {
+            supports(&entry.runtime)
+                && entry.algorithmic_latency_frames == Some(0)
+                && entry.output_tail == (OutputTail::Finite { max_tail_frames: 0 })
                 && entry.automation.is_empty()
                 && !entry.committed_matrix_ramp.is_active()
                 && !entry.committed_bypass_ramp.is_active()
+                && !entry.committed_output_gain_ramp.active()
+                && entry.committed_transient_output_gain
+                    == host_output_gain_ramp::TransientGain::Follow
                 && entry.committed_host_gains == [entry.input_gain, entry.output_gain]
         };
         self.len() == other.len()
@@ -1360,7 +1392,11 @@ impl NativeRuntimeChain {
                 .iter()
                 .zip(&other.entries)
                 .all(|(left, right)| {
-                    left.bypassed == right.bypassed && static_entry(left) && static_entry(right)
+                    left.bypassed == right.bypassed
+                        && left.input_gain == right.input_gain
+                        && left.output_gain == right.output_gain
+                        && settled(left)
+                        && settled(right)
                 })
     }
 

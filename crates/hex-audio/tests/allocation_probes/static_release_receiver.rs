@@ -49,6 +49,18 @@ fn static_receiver_rejoin_matches_authored_note_off_and_future_onset_without_cal
     }
 }
 
+#[test]
+fn gate_suffix_rejoin_retains_detector_history_and_source_pcm() {
+    for block in [1, 7, 64, 512] {
+        check(3, block);
+    }
+}
+
+#[test]
+fn unproved_stateful_suffix_refuses_reenable_and_keeps_previous_release() {
+    check(4, 17);
+}
+
 fn check(case: usize, block: usize) {
     let mut editor = Editor::new(Project::new(8000).unwrap(), 32).unwrap();
     let Created::Asset(asset) = editor
@@ -108,6 +120,12 @@ fn check(case: usize, block: usize) {
         state = utility
             .patch_parameter(&state, p::BALANCE, ParameterValue::Float(0.5))
             .unwrap();
+    } else if case == 3 {
+        state = hex_engine::default_native_device_state(hex_devices::gate::GATE_TYPE_ID).unwrap();
+    } else if case == 4 {
+        state =
+            hex_engine::default_native_device_state(hex_devices::compressor::COMPRESSOR_TYPE_ID)
+                .unwrap();
     } else if case == 2 {
         state = utility
             .patch_parameter(&state, p::INVERT_LEFT, ParameterValue::Bool(true))
@@ -268,7 +286,11 @@ fn check(case: usize, block: usize) {
             .execute(Command::SetDeviceBypass { device, bypassed })
             .unwrap();
         let (revision, resources) = prepare(editor.project(), &store);
-        control
+        let previous_revision = control
+            .status
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire);
+        let applied = control
             .publish(
                 Playback::try_from_prepared_with_device_resources(revision, &resources).unwrap(),
             )
@@ -291,6 +313,34 @@ fn check(case: usize, block: usize) {
             position += n;
             assert_eq!(control.status.recovery_position(), position as u64);
         }
+        if case == 4 && !bypassed {
+            assert_eq!(
+                control.status.rejected_revision(),
+                Some((
+                    applied,
+                    hex_engine::PlaybackHandoffRejection::SourceHistoryUnavailable
+                ))
+            );
+            assert_eq!(
+                control
+                    .status
+                    .applied_revision
+                    .load(std::sync::atomic::Ordering::Acquire),
+                previous_revision
+            );
+            assert_eq!(control.reclaim(), 1, "refused owner returns to control");
+            control.request_shutdown();
+            zero(measure(|| callback.begin_block()));
+            assert_eq!(control.reclaim(), 1);
+            return;
+        }
+        assert_eq!(
+            control
+                .status
+                .applied_revision
+                .load(std::sync::atomic::Ordering::Acquire),
+            applied
+        );
         assert!(control.status.rejected_revision().is_none());
         control.reclaim();
     }

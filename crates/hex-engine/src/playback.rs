@@ -243,7 +243,8 @@ impl PlaybackHandoffRejection {
                 Self::LatencyLayoutChanged
             }
             PlaybackHandoffError::Session(
-                crate::SessionPlaybackError::SourceHistoryUnavailable,
+                crate::SessionPlaybackError::SourceHistoryUnavailable
+                | crate::SessionPlaybackError::DetachedReceiverHistoryUnavailable,
             ) => Self::SourceHistoryUnavailable,
             PlaybackHandoffError::Session(crate::SessionPlaybackError::CandidateAlreadyUsed) => {
                 Self::SessionRuntime

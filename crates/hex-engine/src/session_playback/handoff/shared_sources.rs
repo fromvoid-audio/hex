@@ -31,7 +31,7 @@ pub(super) fn short_source_release_blocks_reenable(
     })
 }
 
-/// Plan a return from a detached release to the same static receiver. Copying
+/// Plan a return from a detached release to the same receiver. Copying
 /// the committed kernel and its ledger admits future onsets immediately;
 /// the old tail stays in the retiring graph and cannot render a second copy.
 /// Live releases require committed NoteOffs; source inheritance retains their
@@ -60,31 +60,34 @@ pub(super) fn reenabled_release_receivers(
         }) else {
             continue;
         };
+        let old_index = previous
+            .routes
+            .iter()
+            .position(|route| route.id == tail.track_id);
         let same_receiver = track.canonical_track_id() == Some(tail.track_id)
-            && previous
-                .routes
-                .iter()
-                .position(|route| route.id == tail.track_id)
-                .is_some_and(|old_index| {
-                    let old = &previous.revision.arrangement().tracks()[old_index];
-                    old.receives_source_audio()
-                        && old.instrument_bypassed
-                        && old.instrument_id == Some(device)
-                        && old.instrument_state == track.instrument_state
-                        && old.source_id() == track.source_id()
-                        && old.mix() == track.mix()
-                        && old.instrument_position() == track.instrument_position()
-                        && previous.device_chains[old_index]
-                            .static_processing_matches(&candidate.device_chains[index])
-                        && !previous.track_faders[old_index].active()
-                });
-        // Exact static chains have no processor, automation or unfinished host
-        // ramp to lose. Preserve their actual ordered processing and suffix
-        // boundary; stateful, send and compensated paths still need their own
-        // history/custody proof. Do not fold matrices or compare only their PCM.
-        let same_processing_path = candidate.compensation.is_none()
+            && old_index.is_some_and(|old_index| {
+                let old = &previous.revision.arrangement().tracks()[old_index];
+                old.receives_source_audio()
+                    && old.instrument_bypassed
+                    && old.instrument_id == Some(device)
+                    && old.instrument_state == track.instrument_state
+                    && old.source_id() == track.source_id()
+                    && old.mix() == track.mix()
+                    && old.instrument_position() == track.instrument_position()
+                    && source_release_chain_matches(
+                        track,
+                        &candidate.device_chains[index],
+                        &previous.device_chains[old_index],
+                    )
+                    && !previous.track_faders[old_index].active()
+            });
+        // Retain the exact ordered suffix. Routed or compensated history needs
+        // its own proof; a dry detached tail cannot stand in for those paths.
+        let no_routed_history = candidate.compensation.is_none()
             && previous.compensation.is_none()
-            && track.sends().is_empty()
+            && track.sends().is_empty();
+        let detached_chain = previous.tail_groups[slot].as_ref();
+        let same_processing_path = no_routed_history
             && !track.has_gain_automation()
             && candidate.revision.gain_recording_track() != Some(tail.track_id)
             && previous.revision.gain_recording_track() != Some(tail.track_id)
@@ -96,15 +99,16 @@ pub(super) fn reenabled_release_receivers(
                 track.instrument_position(),
             )
             .is_ok_and(|start| previous.tail_suffix_starts[slot] == start)
-            && previous.tail_groups[slot].as_ref().is_some_and(|chain| {
-                candidate.device_chains[index].static_processing_matches(chain)
+            && detached_chain.is_some_and(|chain| {
+                source_release_chain_matches(track, &candidate.device_chains[index], chain)
             })
             && !previous.tail_output_active[slot]
             && !previous
                 .releases
                 .iter()
                 .any(|release| release.location.tail_group().map(usize::from) == Some(slot));
-        let released = tail.runtime.max_release_tail_frames() > short_limit
+        let long_release = tail.runtime.max_release_tail_frames() > short_limit;
+        let released = long_release
             && tail.runtime.committed_live_gates_released()
             && tail.runtime.proofs().all(|note| {
                 note.note_off_sent || note.gate_end_frame <= previous.performance_frame
@@ -119,11 +123,37 @@ pub(super) fn reenabled_release_receivers(
                 .as_ref()
                 .is_none_or(|runtime| !runtime.can_inherit_from(&tail.runtime))
         {
+            if long_release
+                && !timing_changed
+                && previous.playing
+                && no_routed_history
+                && track.canonical_track_id() == Some(tail.track_id)
+                && old_index.is_some_and(|old_index| {
+                    let old = &previous.revision.arrangement().tracks()[old_index];
+                    old.instrument_bypassed && old.instrument_id == Some(device)
+                })
+                && detached_chain.is_some_and(|chain| chain.stateful_count() != 0)
+            {
+                return Err(SessionPlaybackError::DetachedReceiverHistoryUnavailable);
+            }
             return Err(SessionPlaybackError::MutableInstrumentActive);
         }
         receivers[slot] = Some(index);
     }
     Ok(receivers)
+}
+
+fn source_release_chain_matches(
+    track: &crate::Track,
+    candidate: &hex_lattice::NativeRuntimeChain,
+    previous: &hex_lattice::NativeRuntimeChain,
+) -> bool {
+    candidate.static_processing_matches(previous)
+        // With no prefix or independent audio, this chain sees only the
+        // retained source. Its detached copy owns the live signal history.
+        || (track.instrument_position() == 0
+            && track.clips.is_empty()
+            && candidate.detached_source_history_matches(previous))
 }
 
 pub(super) struct SharedSourceHandoff {

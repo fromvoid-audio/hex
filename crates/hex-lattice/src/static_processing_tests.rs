@@ -98,4 +98,5 @@ fn a_quiescent_provider_is_not_a_stateless_processing_proof() {
     .unwrap();
     assert!(chain.committed_range_is_quiescent(0..1));
     assert!(!chain.static_processing_matches(&chain));
+    assert!(!chain.detached_source_history_matches(&chain));
 }
