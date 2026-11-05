@@ -36,7 +36,7 @@ mod transport_loop;
 mod unavailable_plugins;
 mod utility_width;
 mod verified_device_preview;
-mod verified_gain;
+pub(super) mod verified_gain;
 mod worker_idle;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;
@@ -57,7 +57,7 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
 /// Serialize native-lease fixtures. A failed test only poisons the unit guard;
 /// recovering it keeps one failure from cascading into unrelated tests.
-fn native_fixture() -> std::sync::MutexGuard<'static, ()> {
+pub(super) fn native_fixture() -> std::sync::MutexGuard<'static, ()> {
     NATIVE_FIXTURE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -78,7 +78,7 @@ impl RenderedCurrentStatus for hex_audio::prepared::Status {
     }
 }
 #[derive(Default)]
-struct Observation {
+pub(super) struct Observation {
     resident_submitted: Vec<RenderedCurrent>,
     resident_endpoints: Vec<(u64, Weak<hex_audio::prepared::Status>)>,
     resident_observation_pending: bool,
@@ -91,8 +91,8 @@ struct Observation {
     )>,
     received_verified_device: Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
     replay_verified_device: Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
-    received_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
-    replay_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
+    pub(super) received_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
+    pub(super) replay_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
     fail_gain_open: bool,
     expire_gain_fence: bool,
     cancel_edit_after_seal: Option<Arc<AtomicBool>>,
@@ -583,9 +583,9 @@ impl WorkerAudioSink for ObservedSink {
         self.inner.close();
     }
 }
-struct Files(PathBuf);
+pub(super) struct Files(PathBuf);
 impl Files {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "hex-desktop-worker-{}-{}",
             std::process::id(),
@@ -594,7 +594,7 @@ impl Files {
         fs::create_dir(&path).unwrap();
         Self(path)
     }
-    fn wav(&self, rate: u32, frames: u32) -> PathBuf {
+    pub(super) fn wav(&self, rate: u32, frames: u32) -> PathBuf {
         self.constant_wav("mixed-rate.wav", rate, frames, &[8192])
     }
     fn constant_wav(&self, name: &str, rate: u32, frames: u32, samples: &[i16]) -> PathBuf {
@@ -637,14 +637,14 @@ struct RenderedSetup {
     opened: Option<EditorAudioEvent>,
     observation: Option<EditorAudioEvent>,
 }
-struct Harness {
+pub(super) struct Harness {
     rendered_setup: Option<RenderedSetup>,
-    service: Option<Service>,
-    events: mpsc::Receiver<EditorAudioEvent>,
-    backend: Arc<Mutex<Option<HeadlessBackend>>>,
-    audio: Option<EditorAudio>,
-    context: Option<AudioSourceContext>,
-    observation: Arc<Mutex<Observation>>,
+    pub(super) service: Option<Service>,
+    pub(super) events: mpsc::Receiver<EditorAudioEvent>,
+    pub(super) backend: Arc<Mutex<Option<HeadlessBackend>>>,
+    pub(super) audio: Option<EditorAudio>,
+    pub(super) context: Option<AudioSourceContext>,
+    pub(super) observation: Arc<Mutex<Observation>>,
     wait: Duration,
 }
 impl Harness {
@@ -694,7 +694,7 @@ impl Harness {
             wait,
         }
     }
-    fn next(&mut self) -> Event {
+    pub(super) fn next(&mut self) -> Event {
         let deadline = Instant::now() + self.wait;
         loop {
             if let Ok(event) = self.service.as_ref().unwrap().try_event() {
@@ -781,13 +781,13 @@ impl Harness {
             [setup.opened.unwrap(), setup.observation.unwrap()],
         )
     }
-    fn run(&mut self, request: Request) -> Event {
+    pub(super) fn run(&mut self, request: Request) -> Event {
         self.service.as_ref().unwrap().submit(request).unwrap();
         let event = self.next();
         assert!(event.error.is_none(), "{:?}", event.error);
         event
     }
-    fn open(&mut self) {
+    pub(super) fn open(&mut self) {
         let deadline = Instant::now() + self.wait;
         loop {
             match self.events.try_recv() {
@@ -810,7 +810,7 @@ impl Harness {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
-    fn render(&self) -> [hex_engine::Frame; 64] {
+    pub(super) fn render(&self) -> [hex_engine::Frame; 64] {
         let mut output = [[0.0; 2]; 64];
         let mut slot = self.backend.lock().unwrap();
         let backend = slot.as_mut().unwrap();
@@ -828,7 +828,10 @@ impl Harness {
         );
         output
     }
-    fn applied(&self, context: AudioSourceContext) -> hex_audio::prepared::AppliedAudioSource {
+    pub(super) fn applied(
+        &self,
+        context: AudioSourceContext,
+    ) -> hex_audio::prepared::AppliedAudioSource {
         let deadline = Instant::now() + self.wait;
         loop {
             self.render();
