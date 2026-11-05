@@ -6,20 +6,27 @@ use hex_lattice::{NativeRuntimeChain, PreparedProcessorInstance, ProcessorChainO
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 use std::{error::Error, hint::black_box, sync::Arc, time::Instant};
 fn chain(db: f32) -> Result<NativeRuntimeChain, Box<dyn Error>> {
+    chain_count(db, 1)
+}
+fn chain_count(db: f32, count: usize) -> Result<NativeRuntimeChain, Box<dyn Error>> {
     let kind = DeviceTypeId::from_static("test.host-gain-profile");
-    Ok(NativeRuntimeChain::new(vec![PreparedProcessorInstance {
-        meter: Default::default(),
-        owner: ProcessorChainOwner::Track(1),
-        device_id: 7,
-        device_type: kind,
-        matrix: StereoMatrix::identity(),
-        bypassed: false,
-        sample_rate: 48000,
-        configuration: Some(Arc::new(
-            NativeDeviceState::new(kind, 1, vec![1])?.with_output_gain_db(db)?,
-        )),
-        definition: None,
-    }])?)
+    let state = Arc::new(NativeDeviceState::new(kind, 1, vec![1])?.with_output_gain_db(db)?);
+    let mut instances = Vec::new();
+    instances.try_reserve_exact(count)?;
+    for i in 0..count {
+        instances.push(PreparedProcessorInstance {
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Track(1),
+            device_id: u64::try_from(i + 1)?,
+            device_type: kind,
+            matrix: StereoMatrix::identity(),
+            bypassed: false,
+            sample_rate: 48000,
+            configuration: Some(Arc::clone(&state)),
+            definition: None,
+        });
+    }
+    Ok(NativeRuntimeChain::new(instances)?)
 }
 fn main() -> Result<(), Box<dyn Error>> {
     for block in [64, 128, 512] {
@@ -66,6 +73,29 @@ fn main() -> Result<(), Box<dyn Error>> {
                 current.accounted_storage_bytes()
             );
         }
+    }
+    for count in [1, 16, 64, 256] {
+        let old = chain_count(0.0, count)?;
+        let mut samples = Vec::with_capacity(4096);
+        for i in 0..5120 {
+            let mut candidate = chain_count(-6.0, count)?;
+            let start = Instant::now();
+            candidate.inherit_from(black_box(&old));
+            let ns = start.elapsed().as_nanos();
+            black_box(&candidate);
+            if i >= 1024 {
+                samples.push(ns);
+            }
+        }
+        samples.sort_unstable();
+        let mean = samples.iter().sum::<u128>() / samples.len() as u128;
+        println!(
+            "mode=handoff entries={count} samples={} mean_ns={mean} p50_ns={} p99_ns={} max_ns={}",
+            samples.len(),
+            samples.get(2048).ok_or("p50")?,
+            samples.get(4055).ok_or("p99")?,
+            samples.last().ok_or("max")?
+        );
     }
     Ok(())
 }

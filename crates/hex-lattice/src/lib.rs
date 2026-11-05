@@ -1661,8 +1661,7 @@ impl NativeRuntimeChain {
         previous: &Self,
         excluded_old_range: std::ops::Range<usize>,
     ) {
-        self.inherit_output_gain_ramps(previous, &excluded_old_range);
-        self.inherit_matrix_ramps(previous, &excluded_old_range);
+        self.inherit_host_stage_ramps(previous, &excluded_old_range);
         self.inherit_bypass_ramps(previous, &excluded_old_range);
         for entry in &mut self.entries {
             if let Some((index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
@@ -1700,8 +1699,7 @@ impl NativeRuntimeChain {
         previous: &mut Self,
         excluded: std::ops::Range<usize>,
     ) {
-        self.inherit_output_gain_ramps(previous, &excluded);
-        self.inherit_matrix_ramps(previous, &excluded);
+        self.inherit_host_stage_ramps(previous, &excluded);
         self.inherit_bypass_ramps(previous, &excluded);
         for entry in &mut self.entries {
             if let Some((index, old)) = previous.entries.iter_mut().enumerate().find(|(_, old)| {
@@ -1713,81 +1711,17 @@ impl NativeRuntimeChain {
         }
     }
 
-    /// A static output-trim edit may retain the same native effect's committed
-    /// gain trajectory. This grants no new runtime/source inheritance: normal
-    /// identity and history admission still own that decision. Never infer a
-    /// transient Clear from absence; an output input-target is excluded even
-    /// when its clock origin is currently unavailable.
-    fn inherit_output_gain_ramps(&mut self, previous: &Self, excluded: &std::ops::Range<usize>) {
-        use hex_lattice_contract::DeviceAutomationTarget::HostOutputGain;
+    /// Reuse one same-identity donor lookup for the independent output-trim
+    /// and static-matrix trajectories. Excluded donors, bypass and automation
+    /// keep the existing matrix law; the scalar proof lives with its owner.
+    fn inherit_host_stage_ramps(&mut self, previous: &Self, excluded: &std::ops::Range<usize>) {
         for entry in &mut self.entries {
             let old = previous
                 .entries
                 .iter()
                 .enumerate()
                 .find(|(_, old)| Self::same_runtime_identity(entry, old));
-            let mut ramp = host_output_gain_ramp::OutputGainRamp::INACTIVE;
-            if let Some((index, old)) = old {
-                let configuration_present =
-                    entry.configuration.is_some() && old.configuration.is_some();
-                let gain_edit = !entry.bypassed
-                    && !old.bypassed
-                    && entry.input_gain == old.input_gain
-                    && entry.matrix == old.matrix
-                    && entry.automation == old.automation
-                    && match (&entry.configuration, &old.configuration) {
-                        (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b) || a.processing_eq(b),
-                        _ => false,
-                    };
-                // An unchanged host target continues independently of a
-                // simultaneously retargeted device payload/input/matrix. Its
-                // existing trajectory grants no new DSP-history authority.
-                let continuing = entry.output_gain == old.output_gain
-                    && (entry.bypassed == old.bypassed
-                        || (entry.algorithmic_latency_frames == Some(0)
-                            && old.algorithmic_latency_frames == Some(0)
-                            && entry.supports_smoothed_bypass
-                            && old.supports_smoothed_bypass));
-                let eligible = !excluded.contains(&index)
-                    && configuration_present
-                    && (gain_edit || continuing)
-                    && !entry.automation_frozen
-                    && !old.automation_frozen
-                    && !entry.automation.has_host_target(HostOutputGain)
-                    && !old.automation.has_host_target(HostOutputGain)
-                    && entry.automation.input_target() != Some(HostOutputGain)
-                    && old.automation.input_target() != Some(HostOutputGain)
-                    && !matches!(entry.runtime, RuntimeOwnership::Foreign(_))
-                    && !matches!(old.runtime, RuntimeOwnership::Foreign(_))
-                    && entry.runtime.can_inherit_from(&old.runtime);
-                ramp = host_output_gain_ramp::OutputGainRamp::inherited(
-                    old.committed_output_gain_ramp,
-                    old.output_gain,
-                    old.committed_host_gains[1],
-                    entry.output_gain,
-                    entry.sample_rate,
-                    eligible,
-                );
-                if eligible {
-                    entry.committed_host_gains[1] = old.committed_host_gains[1];
-                    entry.scratch_host_gains[1] = old.committed_host_gains[1];
-                }
-            }
-            entry.committed_output_gain_ramp = ramp;
-            entry.scratch_output_gain_ramp = ramp;
-        }
-    }
-
-    /// Start or continue each static matrix ramp from the same-identity old
-    /// entry's committed matrix. Excluded (retained-tail) donors, bypass and
-    /// automation on either side apply the candidate matrix exactly.
-    fn inherit_matrix_ramps(&mut self, previous: &Self, excluded: &std::ops::Range<usize>) {
-        for entry in &mut self.entries {
-            let old = previous
-                .entries
-                .iter()
-                .enumerate()
-                .find(|(_, old)| Self::same_runtime_identity(entry, old));
+            host_output_gain_ramp::inherit(entry, old, excluded);
             let ramp = match old {
                 Some((index, old)) => matrix_ramp::MatrixRamp::inherited(
                     old.committed_matrix_ramp,

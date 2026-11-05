@@ -95,6 +95,74 @@ impl OutputGainRamp {
         last
     }
 }
+/// Carry a canonical static output stage using the existing host-stage donor
+/// lookup. Ordinary DSP/source inheritance still owns eligibility; this adds no
+/// search pass, source fact, or transient Set/Clear interpretation.
+pub(super) fn inherit(
+    entry: &mut crate::RuntimeEntry,
+    old: Option<(usize, &crate::RuntimeEntry)>,
+    excluded: &std::ops::Range<usize>,
+) {
+    use crate::runtime_ownership::RuntimeOwnership;
+    use hex_lattice_contract::DeviceAutomationTarget::HostOutputGain;
+    let mut ramp = OutputGainRamp::INACTIVE;
+    if let Some((index, old)) = old {
+        // Most graph publications do not change this stage. Do not
+        // recheck payloads or seed new control state for inactive gains.
+        if entry.output_gain == old.output_gain && !old.committed_output_gain_ramp.active() {
+            entry.committed_output_gain_ramp = OutputGainRamp::INACTIVE;
+            entry.scratch_output_gain_ramp = OutputGainRamp::INACTIVE;
+            return;
+        }
+        let configuration_present = entry.configuration.is_some() && old.configuration.is_some();
+        // An unchanged host target continues independently of a
+        // simultaneously retargeted device payload/input/matrix. Its
+        // existing trajectory grants no new DSP-history authority.
+        let continuing = entry.output_gain == old.output_gain
+            && (entry.bypassed == old.bypassed
+                || (entry.algorithmic_latency_frames == Some(0)
+                    && old.algorithmic_latency_frames == Some(0)
+                    && entry.supports_smoothed_bypass
+                    && old.supports_smoothed_bypass));
+        let gain_edit = !continuing
+            && !entry.bypassed
+            && !old.bypassed
+            && entry.input_gain == old.input_gain
+            && entry.matrix == old.matrix
+            && entry.automation == old.automation
+            && match (&entry.configuration, &old.configuration) {
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b) || a.processing_eq(b),
+                _ => false,
+            };
+        let eligible = !excluded.contains(&index)
+            && configuration_present
+            && (gain_edit || continuing)
+            && !entry.automation_frozen
+            && !old.automation_frozen
+            && !entry.automation.has_host_target(HostOutputGain)
+            && !old.automation.has_host_target(HostOutputGain)
+            && entry.automation.input_target() != Some(HostOutputGain)
+            && old.automation.input_target() != Some(HostOutputGain)
+            && !matches!(entry.runtime, RuntimeOwnership::Foreign(_))
+            && !matches!(old.runtime, RuntimeOwnership::Foreign(_))
+            && entry.runtime.can_inherit_from(&old.runtime);
+        ramp = OutputGainRamp::inherited(
+            old.committed_output_gain_ramp,
+            old.output_gain,
+            old.committed_host_gains[1],
+            entry.output_gain,
+            entry.sample_rate,
+            eligible,
+        );
+        if eligible {
+            entry.committed_host_gains[1] = old.committed_host_gains[1];
+            entry.scratch_host_gains[1] = old.committed_host_gains[1];
+        }
+    }
+    entry.committed_output_gain_ramp = ramp;
+    entry.scratch_output_gain_ramp = ramp;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
