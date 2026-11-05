@@ -754,6 +754,9 @@ pub(super) fn command(value: &Command) -> Description {
         Command::RemoveTracks(value0) => {
             describe!("remove_tracks"; ["value0_count" => value0.len()]; omitted="")
         }
+        Command::SetTrackTags { track, tags } => {
+            describe!("set_track_tags"; ["track" => track.value(), "tags_count" => tags.len()]; omitted="tag_text")
+        }
         Command::RenameTrack { track, name } => {
             describe!("rename_track"; ["track" => track.value(), "name_redacted_bytes" => name.len()]; omitted="")
         }
@@ -1184,6 +1187,16 @@ pub(super) fn command(value: &Command) -> Description {
             velocity,
         } => {
             describe!("update_midi_note"; ["note" => note.value(), "start_beats_q32" => start.raw(), "duration_beats_q32" => duration.raw(), "pitch" => pitch, "channel" => channel, "velocity" => velocity]; omitted="")
+        }
+        Command::UpdateMidiNotesWithSourcePrefix {
+            clip,
+            prefix,
+            notes,
+        } => {
+            describe!("update_midi_notes_with_source_prefix"; ["clip" => clip.value(),"prefix_beats_q32" => prefix.raw(),"notes_count" => notes.len()]; omitted="note_data")
+        }
+        Command::UpdateMidiNotesWithSourceExtent { clip, notes } => {
+            describe!("update_midi_notes_with_source_extent"; ["clip" => clip.value(), "notes_count" => notes.len()]; omitted="")
         }
         Command::UpdateMidiNotes { clip, notes } => {
             describe!("update_midi_notes"; ["clip" => clip.value(), "notes_count" => notes.len()]; omitted="")

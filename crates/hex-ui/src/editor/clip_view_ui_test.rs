@@ -161,7 +161,7 @@ fn midi_clip_view_toggle_preserves_selection_and_moves_focus_out_of_hidden_roll(
                             generation: view.project_generation,
                             revision: view.state.as_ref().unwrap().revision,
                             clip,
-                            beat_start: view.piano_beat_start.raw(),
+                            beat_start: view.piano_beat_start,
                             beat_span: view.piano_beat_span.raw(),
                             pitch_low: view.piano_pitch_low,
                             pitch_rows: view.piano_pitch_rows,

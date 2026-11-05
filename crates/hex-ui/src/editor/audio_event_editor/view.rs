@@ -6,6 +6,7 @@ use gpui::{Context, Div, MouseButton, canvas, div, prelude::*, px, relative, rgb
 use hex_widgets::{RANGE_HANDLE_FRACTION, RangeSelectionTarget, RangeSelectionZones};
 
 const EVENT_RULER_HEIGHT: f32 = super::super::timeline_strip::RULER_HEIGHT;
+const EVENT_TOP: f32 = EVENT_RULER_HEIGHT + 1.0;
 
 pub(in crate::editor) fn view(
     view: &mut EditorView,
@@ -16,6 +17,7 @@ pub(in crate::editor) fn view(
     view.sync_audio_navigation();
     let owner = (clip_id, view.project_generation);
     let state = view.state.as_ref()?;
+    let revision = state.revision;
     let clip = state.project.clip(clip_id)?.clone();
     let events = match clip.editable_audio_events() {
         Ok(events) => events,
@@ -73,9 +75,11 @@ pub(in crate::editor) fn view(
     let canonical_root = root;
     let root = placement.map_or_else(|| canonical_root.clone(), |p| p.clip().audio_event_root());
     let display_position = |position| placement.map_or(Some(position), |p| p.position(position));
-    let local = view.event_viewport(&root);
-    let root_window = view.event_root_window(&root)?;
-    let project_window = view.event_project_window(&root)?;
+    let local = view.event_frame_window(&canonical_root);
+    let root_window = view
+        .event_root_window(&canonical_root)?
+        .shifted(placement.map_or(0, |p| p.frame_shift()))?;
+    let project_window = view.event_project_window(&canonical_root)?;
     let viewport = project_window
         .visible_unsigned()
         .unwrap_or(Viewport::fit(0));
@@ -193,7 +197,7 @@ pub(in crate::editor) fn view(
             .id(("audio-event", event.id))
             .debug_selector(move || format!("audio-event-{}", event_id))
             .absolute()
-            .top(px(25.0))
+            .top(px(EVENT_TOP))
             .bottom(px(3.0))
             .left(relative(frame_to_x(visible_start)))
             .w(relative(
@@ -208,7 +212,30 @@ pub(in crate::editor) fn view(
             })))
             .bg(rgb(theme::color(theme::PaletteRole::Clip)))
             .opacity(if event.active { 1.0 } else { 0.5 })
-            .cursor(gpui::CursorStyle::Arrow);
+            .cursor(gpui::CursorStyle::Arrow)
+            .on_mouse_move(
+                cx.listener(move |view, event: &gpui::MouseMoveEvent, _, cx| {
+                    if event.pressed_button.is_some() {
+                        return;
+                    }
+                    let editor = &mut view.audio_event_editor;
+                    let content = editor.bounds.is_some_and(|bounds| {
+                        event.position.y >= bounds.top() + px(EVENT_TOP + fades::CONTENT_TOP)
+                    });
+                    if editor.set_fade_hover(owner, revision, event_id, content) {
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
+                if !*hovered
+                    && view
+                        .audio_event_editor
+                        .set_fade_hover(owner, revision, event_id, false)
+                {
+                    cx.notify();
+                }
+            }));
         let handle_height = view
             .audio_event_editor
             .bounds
@@ -272,7 +299,15 @@ pub(in crate::editor) fn view(
             if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
                 element = element.child(
                     waveform::waveform_source_segment_gain_view_cached(
-                        std::sync::Arc::clone(&prepared.waveform),
+                        std::sync::Arc::clone(
+                            prepared
+                                .preview_root
+                                .as_ref()
+                                .filter(|_| {
+                                    matches!(root.timing, hex_project::AudioClipTiming::Frames)
+                                })
+                                .map_or(&prepared.waveform, |root| &root.waveform),
+                        ),
                         0,
                         source_root + (visible_start - start),
                         source_root + (visible_end - start),
@@ -411,8 +446,8 @@ pub(in crate::editor) fn view(
         element = element.children(view.event_fade_elements(
             &root,
             *event,
-            visible_start,
-            visible_end,
+            start..end,
+            visible_start..visible_end,
             local.length,
             cx,
         ));
@@ -478,8 +513,12 @@ pub(in crate::editor) fn view(
         }) => Some((*destination, *destination + (*end - *start))),
         _ => view.audio_event_editor.range,
     };
-    let selected_range =
-        selected_range.and_then(|(a, b)| Some((display_position(a)?, display_position(b)?)));
+    let placed_range = placement
+        .zip(operation)
+        .and_then(|(preview, operation)| preview.range(operation));
+    let selected_range = placed_range.or_else(|| {
+        selected_range.and_then(|(a, b)| Some((display_position(a)?, display_position(b)?)))
+    });
     if let Some((a, b)) = selected_range.filter(|(a, b)| a < b) {
         let a = frame_at(a)?;
         let b = frame_at(b)?;
@@ -509,11 +548,14 @@ pub(in crate::editor) fn view(
             );
         }
     }
-    let cursor = frame_at(display_position(
-        view.audio_event_editor
-            .cursor
-            .min(canonical_root.domain.clock.length()),
-    )?)?;
+    let cursor = match placed_range {
+        Some((start, _)) => frame_at(start)?,
+        None => frame_at(display_position(
+            view.audio_event_editor
+                .cursor
+                .min(canonical_root.domain.clock.length()),
+        )?)?,
+    };
     if root_window.contains(i128::from(cursor)) {
         body = body.child(
             div()
@@ -639,7 +681,11 @@ pub(in crate::editor) fn view(
                 Kind::Select
             } else if target == RangeSelectionTarget::Move && range_hit.is_some() {
                 if let Some((start, end)) = range_hit {
-                    Kind::RangeMove { start, end }
+                    if let Ok(limits) = state.project.audio_event_drag_bounds(clip_id, start, end) {
+                        Kind::FreeRangeMove { start, end, limits }
+                    } else {
+                        Kind::RangeMove { start, end }
+                    }
                 } else {
                     Kind::Select
                 }
@@ -700,7 +746,10 @@ pub(in crate::editor) fn view(
                         value: f64::from(target.gain.millidb()),
                     }
                 } else if target == RangeSelectionTarget::Move {
-                    if let Ok(limits) = clip.audio_event_placement_bounds(hit.id) {
+                    if let Ok(limits) = state
+                        .project
+                        .audio_event_drag_bounds(clip_id, hit.start, hit.end)
+                    {
                         Kind::FreeMove { event: hit, limits }
                     } else {
                         Kind::Move(hit)
@@ -729,7 +778,7 @@ pub(in crate::editor) fn view(
             if matches!(kind, Kind::Select) {
                 view.audio_event_editor.range = Some((position, position));
                 view.audio_event_editor.selected = None;
-            } else if !matches!(kind, Kind::RangeMove { .. }) {
+            } else if !matches!(kind, Kind::RangeMove { .. } | Kind::FreeRangeMove { .. }) {
                 view.audio_event_editor.range = None;
                 view.audio_event_editor.selected = hit.map(|event| event.id);
             }

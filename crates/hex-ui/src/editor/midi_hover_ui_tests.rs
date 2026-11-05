@@ -144,8 +144,7 @@ fn tiny_note_hover_and_hits_follow_time_pitch_zoom_and_draw_mode(cx: &mut TestAp
     pump(&editor, &mut visual);
     editor.update(&mut visual, |v, cx| {
         v.piano_beat_span = BeatTime::from_raw(BeatTime::ONE.raw() / 16);
-        v.piano_beat_start =
-            BeatTime::from_raw(2 * BeatTime::ONE.raw() - v.piano_beat_span.raw() / 4);
+        v.piano_beat_start = i128::from(2 * BeatTime::ONE.raw() - v.piano_beat_span.raw() / 4);
         v.piano_pitch_low = 59;
         v.piano_pitch_rows = 12;
         cx.notify();

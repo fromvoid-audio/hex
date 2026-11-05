@@ -89,7 +89,9 @@ impl EditorView {
     }
 
     pub(super) fn midi_step_preview(&self) -> [Option<MidiNoteInsert>; 128] {
-        let cursor = self.midi_marker.unwrap_or(self.piano_beat_start.raw());
+        let cursor = self
+            .midi_marker
+            .unwrap_or(self.piano_beat_start.max(0) as u64);
         let duration = self.midi_snap_grid.movement_step();
         if !self.live_midi_context()
             || !self.midi_step.enabled
@@ -124,7 +126,9 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let cursor = self.midi_marker.unwrap_or(self.piano_beat_start.raw());
+        let cursor = self
+            .midi_marker
+            .unwrap_or(self.piano_beat_start.max(0) as u64);
         let duration = self.midi_snap_grid.movement_step();
         let Some(next) = cursor.checked_add(duration).filter(|next| *next < u64::MAX) else {
             self.error = Some("step entry exceeds the musical time range".into());

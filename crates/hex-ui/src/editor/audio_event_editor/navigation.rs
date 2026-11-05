@@ -75,11 +75,33 @@ impl EditorView {
             && let Some(shift) = current.audio_event_coordinate_shift_from(previous)
             && shift != 0
         {
+            let previous_root = previous.audio_event_root();
+            // The camera measures frames while musical selection coordinates
+            // measure beat ticks. A one-shot musical rebase carries its frame
+            // anchor by exactly the same amount as its content.
+            let frames = matches!(root.domain.clock, hex_project::AudioDomainClock::Frames(_));
+            let camera_delta = if frames {
+                i128::from(shift) + i128::from(editor_bounds(&previous_root).0)
+                    - i128::from(editor_bounds(&root).0)
+            } else {
+                0
+            };
+            let state = &mut self.audio_event_editor;
+            let translate_camera = |view: &mut Viewport, negative: &mut u64| {
+                let start = i128::from(view.start) - i128::from(*negative) + camera_delta;
+                view.start = u64::try_from(start.max(0)).unwrap_or(u64::MAX);
+                *negative = u64::try_from((-start).max(0)).unwrap_or(u64::MAX);
+            };
+            if let Some(view) = state.viewport.as_mut() {
+                translate_camera(view, &mut state.negative_pan);
+            }
+            if let Some(Some(view)) = state.fit_back.as_mut() {
+                translate_camera(view, &mut state.fit_back_negative);
+            }
             let length = root.domain.clock.length();
             let shifted = |position: u64| {
                 (i128::from(position) + i128::from(shift)).clamp(0, i128::from(length)) as u64
             };
-            let state = &mut self.audio_event_editor;
             state.cursor = shifted(state.cursor);
             state.range = state.range.and_then(|(a, b)| {
                 let (a, b) = (shifted(a), shifted(b));
@@ -87,7 +109,7 @@ impl EditorView {
             });
             state.canonical_start = state
                 .canonical_start
-                .map(|(raw, frame)| (shifted(raw), shifted(frame)));
+                .map(|(raw, frame)| (shifted(raw), if frames { shifted(frame) } else { frame }));
             state.start_grip = state
                 .start_grip
                 .map(|(raw, offset, length)| (shifted(raw), offset, length));
