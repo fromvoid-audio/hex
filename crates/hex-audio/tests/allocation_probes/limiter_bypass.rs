@@ -321,3 +321,113 @@ fn zero(info: allocation_counter::AllocationInfo) {
         (0, 0, 0, 0)
     );
 }
+
+#[test]
+fn reserved_dry_owners_survive_full_retirement_cancel_stop_and_shutdown() {
+    use prepared::{FreshRuntimeCancellationResult, PublicationPolicy};
+    use std::sync::atomic::Ordering::Acquire;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Imported { asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "custody".into(),
+            path: "memory/limiter-custody.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 4096,
+            playback_frames: 4096,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("import");
+    };
+    let mut state =
+        hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.limiter")).unwrap();
+    for (id, value) in [(6, 2), (7, 1), (8, 2)] {
+        state = hex_engine::patch_native_device_parameter(
+            &state,
+            hex_lattice_contract::ParameterId::from_static(id),
+            ParameterValue::Choice(value),
+        )
+        .unwrap();
+    }
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state,
+        })
+        .unwrap();
+    let media = BTreeMap::from([(
+        asset,
+        Audio::new(48_000, vec![[0.25, -0.125]; 4096]).unwrap(),
+    )]);
+    let revision = Arc::new(
+        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
+            .unwrap(),
+    );
+    let graph = || Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    let mut output = [[0.0; 2]; 64];
+    for index in 0..3 {
+        control.publish(graph()).unwrap();
+        if index == 0 {
+            control.command(PlaybackCommand::Play).unwrap();
+        }
+        zero(measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        }));
+    }
+    assert!(control.status.playing.load(Acquire));
+    assert_eq!(control.status.applied_revision.load(Acquire), 3);
+    let fence = control.capture_fresh_runtime_fence().unwrap();
+    let candidate = control
+        .publish_with_policy(
+            graph(),
+            PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+        )
+        .unwrap();
+    assert_eq!(
+        control.cancel_fresh_runtime_publication(candidate),
+        FreshRuntimeCancellationResult::Cancelled
+    );
+    control.command(PlaybackCommand::Stop).unwrap();
+    // The existing 48k Stop fades over128 frames. Both blocks must keep the
+    // full-ring candidate owned while that real transport contract completes.
+    for _ in 0..2 {
+        zero(measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        }));
+    }
+    assert!(
+        !control.status.playing.load(Acquire),
+        "priority stop survives full retirement"
+    );
+    assert_eq!(control.status.applied_revision.load(Acquire), 3);
+    assert_eq!(control.status.rejected_revision(), None);
+    let mut returned = 0;
+    let disposal = measure(|| returned = control.reclaim());
+    assert_eq!(returned, 2);
+    assert!(
+        disposal.count_current < 0 && disposal.bytes_current < 0,
+        "unique runtime and dry buffers are destroyed on control"
+    );
+    zero(measure(|| {
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+    }));
+    assert_eq!(
+        control.status.rejected_revision(),
+        Some((
+            candidate,
+            hex_engine::PlaybackHandoffRejection::FreshRuntimeCancelled
+        ))
+    );
+    assert_eq!(control.reclaim(), 1);
+    control.request_shutdown();
+    zero(measure(|| {
+        callback.begin_block();
+        callback.render(&mut output).unwrap();
+    }));
+    assert_eq!(control.reclaim(), 1);
+}
