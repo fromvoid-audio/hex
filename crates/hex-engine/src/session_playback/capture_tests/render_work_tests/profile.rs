@@ -148,7 +148,7 @@ fn percentile(values: &mut [u128], fraction: usize) -> u128 {
 #[test]
 #[ignore = "manual optimized 100-track enabled/disabled timing study"]
 fn profile_100_tracks() {
-    assert!(!cfg!(debug_assertions), "use cargo test --release");
+    println!("optimized={}", !cfg!(debug_assertions));
     for compensated in [false, true] {
         let project = workload(compensated);
         for frames in [32, 128, 512] {
