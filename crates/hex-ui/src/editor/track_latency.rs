@@ -180,26 +180,41 @@ mod tests {
 
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
-    fn indicator_fits_a_compact_header(cx: &mut gpui::TestAppContext) {
-        struct Fixture;
-        impl gpui::Render for Fixture {
-            fn render(
-                &mut self,
-                _: &mut gpui::Window,
-                _: &mut gpui::Context<Self>,
-            ) -> impl gpui::IntoElement {
-                div()
-                    .flex()
-                    .h(px(16.0))
-                    .font_family(theme::FONT_FAMILY)
-                    .children([render(Owner::Main, Reading::Pending)])
-            }
-        }
-        let window = cx.add_window(|_, _| Fixture);
-        let mut visual = gpui::VisualTestContext::from_window(*window, cx);
+    fn view_action_mounts_the_indicator_in_actual_headers(cx: &mut gpui::TestAppContext) {
+        use crate::editor::{EditorMode, ToggleTrackLatency, clip_drag_ui_test::editor_window};
+        use gpui::{VisualTestContext, size};
+        use hex_project::{Command, Editor, Project};
+        use std::sync::Arc;
+
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        model
+            .execute(Command::AddTrack {
+                name: "track".into(),
+            })
+            .unwrap();
+        let (window, editor) = editor_window(cx, model.project().clone(), Arc::default());
+        let mut visual = VisualTestContext::from_window(window, cx);
+        visual.simulate_resize(size(px(1280.0), px(800.0)));
         visual.run_until_parked();
-        let bounds = visual.debug_bounds("main-latency").unwrap();
-        assert_eq!(bounds.size.width, px(21.0));
-        assert!(bounds.size.height <= px(16.0));
+        assert!(visual.debug_bounds("track-latency-1").is_none());
+        visual.update(|window, cx| window.dispatch_action(Box::new(ToggleTrackLatency), cx));
+        visual.run_until_parked();
+        let track = visual.debug_bounds("track-latency-1").unwrap();
+        let header = visual.debug_bounds("arrangement-track-header-1").unwrap();
+        assert_eq!(track.size.width, px(21.0));
+        assert!(header.contains(&track.center()));
+        assert!(visual.debug_bounds("main-latency").is_some());
+        editor.update(cx, |view, cx| {
+            view.mode = EditorMode::Session;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("track-latency-1").unwrap().size.width,
+            px(21.0)
+        );
+        visual.update(|window, cx| window.dispatch_action(Box::new(ToggleTrackLatency), cx));
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("track-latency-1").is_none());
     }
 }
