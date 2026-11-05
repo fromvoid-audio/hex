@@ -1831,15 +1831,20 @@ fn sampler_bypass_keeps_held_note_continuous_in_the_actual_callback() {
 
 #[test]
 fn long_sampler_release_survives_immediate_reenable() {
-    long_sampler_release(false);
+    long_sampler_release(false, 0.0);
 }
 
 #[test]
 fn long_sampler_release_through_post_utility_survives_immediate_reenable() {
-    long_sampler_release(true);
+    long_sampler_release(true, 0.0);
 }
 
-fn long_sampler_release(post_utility: bool) {
+#[test]
+fn long_sampler_release_through_non_neutral_utility_survives_immediate_reenable() {
+    long_sampler_release(true, -6.0);
+}
+
+fn long_sampler_release(post_utility: bool, gain_db: f32) {
     use super::resident_preview::ResidentHarness;
     let _native = native_fixture();
     let files = Files::new();
@@ -1895,6 +1900,8 @@ fn long_sampler_release(post_utility: bool) {
             state: hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
                 "hex.utility",
             ))
+            .unwrap()
+            .with_output_gain_db(gain_db)
             .unwrap(),
         }));
         (applied, _) = h.applied(applied);
@@ -1997,7 +2004,9 @@ fn long_sampler_release(post_utility: bool) {
         release.extend_from_slice(&h.render());
     }
     assert!(
-        release.iter().any(|frame| frame[0] > 0.3),
+        release
+            .iter()
+            .any(|frame| frame[0] > 0.3 * 10.0_f32.powf(gain_db / 20.0)),
         "a future note must sound while the original release continues"
     );
     assert!(
