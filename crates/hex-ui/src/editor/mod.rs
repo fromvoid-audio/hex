@@ -851,7 +851,7 @@ pub(super) struct EditorView {
     piano_pitch_wheel_accum: f32,
     poll_cadence: poll_cadence::PollCadence,
     piano_pitch_scroll_accum: f32,
-    pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
+    pub(in crate::editor) piano_beat_start: i128,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
     pub(in crate::editor) piano_pitch_low: u8,
     piano_pitch_rows: u8,
@@ -1614,7 +1614,7 @@ impl EditorView {
             piano_pitch_wheel_accum: 0.0,
             poll_cadence,
             piano_pitch_scroll_accum: 0.0,
-            piano_beat_start: hex_project::BeatTime::ZERO,
+            piano_beat_start: 0,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
                 .unwrap_or(hex_project::BeatTime::ONE),
             piano_pitch_low: 48,
@@ -2183,7 +2183,7 @@ impl EditorView {
         self.midi_hit_cycle = None;
         self.midi_scene_cache.clear();
         self.midi_selection.clear();
-        self.piano_beat_start = hex_project::BeatTime::ZERO;
+        self.piano_beat_start = 0;
         if let Some(length) = self
             .state
             .as_ref()

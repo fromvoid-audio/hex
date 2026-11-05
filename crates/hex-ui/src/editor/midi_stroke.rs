@@ -42,7 +42,7 @@ pub(super) struct StrokeContext {
     pub(super) effective_grid: MidiGrid,
     pub(super) snap_modifier: bool,
     pub(super) pitch_modifier: bool,
-    pub(super) view_start: u64,
+    pub(super) view_start: i128,
     pub(super) view_span: u64,
     pub(super) pitch_low: u8,
     pub(super) pitch_rows: u8,
@@ -56,8 +56,8 @@ impl StrokeContext {
     /// previews only; canonical growth occurs once, through the typed edit.
     pub(super) fn authoring_length(self) -> Option<u64> {
         self.view_start
-            .checked_add(self.view_span)
-            .map(|end| end.max(self.clip_length))
+            .checked_add(i128::from(self.view_span))
+            .and_then(|end| u64::try_from(end.max(i128::from(self.clip_length))).ok())
     }
 
     fn is_valid(self) -> bool {
@@ -66,7 +66,10 @@ impl StrokeContext {
             && self.clip_length > 0
             && self.view_span <= super::midi_scene::zoom_limit(self.clip_length)
             && self.view_start == super::midi_scene::clamp_start(self.view_start, self.view_span)
-            && self.view_start.checked_add(self.view_span).is_some()
+            && self
+                .view_start
+                .checked_add(i128::from(self.view_span))
+                .is_some()
             && super::midi_scene::valid_pitch_range(self.pitch_low, self.pitch_rows)
             && self.bounds.is_valid()
             && self.draw_mode
@@ -1622,14 +1625,14 @@ mod tests {
         let (_, clip) = fixture(beat(1));
         let base = context(clip, beat(1), MidiGrid::Sixteenth, false);
         let blank = StrokeContext {
-            view_start: beat(8),
+            view_start: i128::from(beat(8)),
             view_span: beat(4),
             ..base
         };
         assert!(blank.is_valid());
         assert_eq!(blank.authoring_length(), Some(beat(12)));
         let distant = StrokeContext {
-            view_start: beat(1024),
+            view_start: i128::from(beat(1024)),
             ..blank
         };
         assert!(distant.is_valid());
@@ -1640,7 +1643,7 @@ mod tests {
                 ..blank
             },
             StrokeContext {
-                view_start: u64::MAX,
+                view_start: i128::MAX,
                 view_span: 1,
                 ..blank
             },

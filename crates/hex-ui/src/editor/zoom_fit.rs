@@ -12,7 +12,7 @@ pub(super) enum Target {
 }
 #[derive(Clone, Copy)]
 struct PianoView {
-    start: BeatTime,
+    start: i128,
     span: BeatTime,
     low: u8,
     rows: u8,
@@ -24,7 +24,7 @@ fn bounded_piano_view(prior: PianoView, length: u64) -> PianoView {
         .raw()
         .clamp(minimum, super::midi_scene::zoom_limit(length));
     PianoView {
-        start: BeatTime::from_raw(super::midi_scene::clamp_start(prior.start.raw(), span)),
+        start: super::midi_scene::clamp_start(prior.start, span),
         span: BeatTime::from_raw(span),
         ..prior
     }
@@ -82,8 +82,8 @@ impl EditorView {
         ) else {
             return false;
         };
-        if (self.piano_beat_start.raw(), self.piano_beat_span.raw())
-            == (viewport.start, viewport.length)
+        if (self.piano_beat_start, self.piano_beat_span.raw())
+            == (i128::from(viewport.start), viewport.length)
         {
             return false;
         }
@@ -92,7 +92,7 @@ impl EditorView {
         }
         self.cancel_midi_note_gesture();
         self.piano_zoom_wheel_accum = 0.0;
-        self.piano_beat_start = BeatTime::from_raw(viewport.start);
+        self.piano_beat_start = i128::from(viewport.start);
         self.piano_beat_span = BeatTime::from_raw(viewport.length);
         true
     }

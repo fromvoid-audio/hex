@@ -21,7 +21,7 @@ fn position(
             roll.origin.x
                 + px(1.0)
                 + (roll.size.width - px(2.0))
-                    * ((beat * BeatTime::ONE.raw() as f64 - v.piano_beat_start.raw() as f64)
+                    * ((beat * BeatTime::ONE.raw() as f64 - v.piano_beat_start as f64)
                         / v.piano_beat_span.raw() as f64) as f32,
             roll.origin.y
                 + px(1.0)
@@ -547,7 +547,7 @@ fn new_note_creation_keeps_released_geometry_until_its_real_terminal(cx: &mut Te
         let (mut visual, editor, _environment, clip) = fixture(cx);
         if grows {
             editor.update(&mut visual, |v, cx| {
-                v.piano_beat_start = beat(3.0);
+                v.piano_beat_start = i128::from(beat(3.0).raw());
                 cx.notify();
             });
             repaint(&editor, &mut visual);
@@ -650,3 +650,6 @@ mod note_capture_tests;
 
 #[path = "midi_draw_preview_ui_tests.rs"]
 mod stroke_preview_tests;
+
+#[path = "midi_source_prefix_ui_tests.rs"]
+mod source_prefix_tests;

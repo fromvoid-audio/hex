@@ -57,7 +57,7 @@ impl EditorView {
             revision: self.state.as_ref()?.revision,
             clip,
             selection_epoch: self.midi_selection.epoch(),
-            beat_start: self.piano_beat_start.raw(),
+            beat_start: self.piano_beat_start,
             beat_span: self.piano_beat_span.raw(),
             pitch_low: self.piano_pitch_low,
             pitch_rows: self.piano_pitch_rows,
@@ -247,7 +247,13 @@ impl EditorView {
                 } else {
                     match g.updates() {
                         Ok(notes) => {
-                            let command = if notes.iter().any(|note| {
+                            let command = if g.source_prefix() > 0 {
+                                Command::UpdateMidiNotesWithSourcePrefix {
+                                    clip,
+                                    prefix: BeatTime::from_raw(g.source_prefix()),
+                                    notes,
+                                }
+                            } else if notes.iter().any(|note| {
                                 note.start
                                     .raw()
                                     .checked_add(note.duration.raw())
@@ -279,7 +285,20 @@ impl EditorView {
         }
         midi_drag::update_with_modifier(&mut g, point[0], point[1], modifiers.platform);
         if !midi_drag::is_noop(&g) {
-            let command = if g
+            let command = if g.source_prefix > 0 {
+                Command::UpdateMidiNotesWithSourcePrefix {
+                    clip,
+                    prefix: BeatTime::from_raw(g.source_prefix),
+                    notes: vec![hex_project::MidiNoteUpdate {
+                        note: g.note,
+                        start: BeatTime::from_raw(g.preview.start),
+                        duration: BeatTime::from_raw(g.preview.duration),
+                        pitch: g.preview.pitch,
+                        channel: g.channel,
+                        velocity: g.velocity,
+                    }],
+                }
+            } else if g
                 .preview
                 .start
                 .checked_add(g.preview.duration)

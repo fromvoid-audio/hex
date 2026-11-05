@@ -1157,6 +1157,15 @@ pub enum Command {
         clip: ClipId,
         notes: Vec<MidiNoteUpdate>,
     },
+    /// Translate a plain, nonlooping, unique Arrangement source by a positive
+    /// prefix, then apply stable note updates in rebased storage coordinates.
+    /// The earliest requested note must begin at storage zero. Placement and
+    /// elapsed windows do not move; unproved consumer shapes refuse atomically.
+    UpdateMidiNotesWithSourcePrefix {
+        clip: ClipId,
+        prefix: crate::BeatTime,
+        notes: Vec<MidiNoteUpdate>,
+    },
     /// Atomically enable or disable existing notes without changing their geometry.
     SetMidiNotesActive {
         clip: ClipId,
@@ -2642,6 +2651,11 @@ impl Project {
             Command::EditClips { clips, edit } => {
                 crate::clip_selection_edit::apply(self, clips, edit)
             }
+            Command::UpdateMidiNotesWithSourcePrefix {
+                clip,
+                prefix,
+                notes,
+            } => crate::midi_source_prefix::apply(self, clip, prefix, notes),
             Command::RenameClip { clip, name } => crate::clip_name::rename(self, clip, name),
             Command::RenameTrack { track, name } => {
                 name_valid(&name)?;

@@ -137,7 +137,7 @@ impl EditorView {
             return;
         };
         let _ = end;
-        self.piano_beat_start = BeatTime::ZERO;
+        self.piano_beat_start = 0;
         self.piano_beat_span = BeatTime::from_raw(4 * BeatTime::ONE.raw());
         self.midi_selection.clear();
         self.enqueue(Request::Edit(Command::PlaceMidiClip {
@@ -261,7 +261,9 @@ impl EditorView {
         }
         self.clear_midi_time_selection();
         self.cancel_midi_note_gesture();
-        let current = self.midi_marker.unwrap_or(self.piano_beat_start.raw());
+        let current = self
+            .midi_marker
+            .unwrap_or(self.piano_beat_start.max(0) as u64);
         let step = self.midi_snap_grid.movement_step();
         let next = if right {
             let Some(next) = current.checked_add(step).filter(|value| *value < u64::MAX) else {
@@ -279,14 +281,13 @@ impl EditorView {
         let step = self.midi_snap_grid.movement_step();
         // Keep the insertion position visible without changing zoom or source extent.
         let span = self.piano_beat_span.raw().max(1);
-        let start = self.piano_beat_start.raw();
-        if next < start {
-            self.piano_beat_start = BeatTime::from_raw(next);
-        } else if next >= start.saturating_add(span) {
-            self.piano_beat_start = BeatTime::from_raw(
-                next.saturating_sub(span.saturating_sub(step.min(span / 2).max(1))),
-            )
-            .min(BeatTime::from_raw(u64::MAX - span));
+        let start = self.piano_beat_start;
+        if i128::from(next) < start {
+            self.piano_beat_start = i128::from(next);
+        } else if i128::from(next) >= start.saturating_add(i128::from(span)) {
+            self.piano_beat_start =
+                i128::from(next.saturating_sub(span.saturating_sub(step.min(span / 2).max(1))))
+                    .min(i128::from(u64::MAX - span));
         }
     }
 
@@ -360,7 +361,7 @@ impl EditorView {
 
     fn nudge_selected_group(&mut self, time_delta: i128, pitch_delta: i16) {
         if self.edit_pending()
-            || self.midi_selection.len() < 2
+            || self.midi_selection.is_empty()
             || self.midi_selection.len() > hex_project::MAX_NOTES
         {
             return;
@@ -413,6 +414,15 @@ impl EditorView {
         }
         self.finish_live_midi_marquees();
         self.cancel_midi_note_gesture();
+        let first = originals.iter().map(|note| note.start).min().unwrap_or(0);
+        let prefix = (-(i128::from(first) + time_delta)).max(0) as u64;
+        for note in &mut originals {
+            let Some(start) = note.start.checked_add(prefix) else {
+                self.error = Some("midi source prefix overflow".into());
+                return;
+            };
+            note.start = start;
+        }
         let updates = match super::midi_group_drag::nudge_updates(
             &originals,
             u64::MAX,
@@ -426,7 +436,13 @@ impl EditorView {
                 return;
             }
         };
-        let command = if updates.iter().any(|note| {
+        let command = if prefix > 0 {
+            Command::UpdateMidiNotesWithSourcePrefix {
+                clip: clip_id,
+                prefix: BeatTime::from_raw(prefix),
+                notes: updates,
+            }
+        } else if updates.iter().any(|note| {
             note.start
                 .raw()
                 .checked_add(note.duration.raw())
@@ -442,7 +458,15 @@ impl EditorView {
                 notes: updates,
             }
         };
-        self.enqueue(Request::Edit(command));
+        if prefix > 0 {
+            self.submit_midi_drag_preview(
+                clip_id,
+                super::midi_pending_drag::Frozen::OriginNudge,
+                command,
+            );
+        } else {
+            self.enqueue(Request::Edit(command));
+        }
     }
 
     pub(super) fn adjust_selected_group(
@@ -607,6 +631,10 @@ impl EditorView {
         match field {
             NoteField::Pitch(delta) => pitch = (i16::from(pitch) + delta).clamp(0, 127) as u8,
             NoteField::Onset(delta) => {
+                if delta < 0 && start < step {
+                    self.nudge_selected_group(-i128::from(step), 0);
+                    return;
+                }
                 start = if delta < 0 {
                     start.saturating_sub(step)
                 } else {

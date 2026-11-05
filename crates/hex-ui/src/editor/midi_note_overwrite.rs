@@ -14,18 +14,26 @@ impl EditorView {
         source: &MidiSource,
     ) -> Result<Option<MidiNoteOverwritePreview>, Invalid> {
         if let Some(gesture) = self.displayed_midi_note_gesture() {
+            // A negative author can affect old unsigned notes only in its
+            // intersection with [0, source end). Its full signed geometry remains
+            // in the held/frozen gesture, including the part before source zero.
+            let prefix = gesture.source_prefix;
+            let duration = gesture.preview.duration.saturating_sub(prefix);
+            let author = MidiNoteInsert {
+                active: gesture.active,
+                start: BeatTime::from_raw(gesture.preview.start),
+                duration: BeatTime::from_raw(duration),
+                pitch: gesture.preview.pitch,
+                channel: gesture.channel,
+                velocity: gesture.velocity,
+            };
+            let authors = if duration > 0 {
+                std::slice::from_ref(&author)
+            } else {
+                &[]
+            };
             return source
-                .preview_note_overwrite(
-                    &[gesture.note],
-                    &[MidiNoteInsert {
-                        active: gesture.active,
-                        start: BeatTime::from_raw(gesture.preview.start),
-                        duration: BeatTime::from_raw(gesture.preview.duration),
-                        pitch: gesture.preview.pitch,
-                        channel: gesture.channel,
-                        velocity: gesture.velocity,
-                    }],
-                )
+                .preview_note_overwrite(&[gesture.note], authors)
                 .map(Some);
         }
         if let Some(gesture) = self.displayed_midi_group_gesture() {
@@ -45,10 +53,16 @@ impl EditorView {
                 if !gesture.is_copy() {
                     removed.push(original.id);
                 }
+                let local_start = i128::from(note.start) - i128::from(gesture.source_prefix());
+                let clipped_prefix = (-local_start).max(0) as u64;
+                let duration = note.duration.saturating_sub(clipped_prefix);
+                if duration == 0 {
+                    continue;
+                }
                 authored.push(MidiNoteInsert {
                     active: note.active,
-                    start: BeatTime::from_raw(note.start),
-                    duration: BeatTime::from_raw(note.duration),
+                    start: BeatTime::from_raw(local_start.max(0) as u64),
+                    duration: BeatTime::from_raw(duration),
                     pitch: note.pitch,
                     channel: note.channel,
                     velocity: note.velocity,

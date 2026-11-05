@@ -10,7 +10,6 @@
 //! while a drag is in flight; the drag survives and the viewport stays fixed.
 use super::EditorView;
 use gpui::{Modifiers, ScrollDelta, px};
-use hex_project::BeatTime;
 
 /// Pixels per wheel line for scrolling; one mouse notch moves a few pitch rows.
 const SCROLL_LINE_PX: f32 = 40.0;
@@ -102,21 +101,21 @@ impl EditorView {
             low = target.clamp(0, max_low) as u8;
         }
         let span = self.piano_beat_span.raw();
-        let mut start = self.piano_beat_start.raw();
+        let mut start = self.piano_beat_start;
         if time != 0.0 && span > 0 {
             let ticks = (f64::from(time) / f64::from(bounds[2]) * span as f64)
                 .round()
                 .clamp(-(u64::MAX as f64), u64::MAX as f64) as i128;
-            let next = (i128::from(start) - ticks).clamp(0, i128::from(u64::MAX)) as u64;
+            let next = start - ticks;
             start = super::midi_scene::clamp_start(next, span);
         }
-        if (low, start) == (self.piano_pitch_low, self.piano_beat_start.raw()) {
+        if (low, start) == (self.piano_pitch_low, self.piano_beat_start) {
             return false;
         }
         // Viewport-bound gesture state is retired, as for every other navigation.
         self.cancel_midi_note_gesture();
         self.piano_pitch_low = low;
-        self.piano_beat_start = BeatTime::from_raw(start);
+        self.piano_beat_start = i128::from(start);
         true
     }
 }

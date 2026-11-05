@@ -162,9 +162,12 @@ pub(super) struct NoteGesture {
     pub(super) channel: u8,
     pub(super) velocity: u8,
     pub(super) preview: NotePreview,
+    /// Positive storage translation; displayed source start is preview.start - prefix.
+    /// Only the canonical source-prefix command may publish this coordinate change.
+    pub(super) source_prefix: u64,
     pub(super) kind: GestureKind,
     pub(super) bounds: [f32; 4],
-    pub(super) beat_start: u64,
+    pub(super) beat_start: i128,
     pub(super) beat_span: u64,
     pub(super) clip_length: u64,
     pub(super) pitch_low: u8,
@@ -184,7 +187,7 @@ pub(super) struct GestureStart {
     pub(super) kind: HitKind,
     pub(super) pointer: [f32; 2],
     pub(super) bounds: [f32; 4],
-    pub(super) beat_start: u64,
+    pub(super) beat_start: i128,
     pub(super) beat_span: u64,
     pub(super) clip_length: u64,
     pub(super) pitch_low: u8,
@@ -200,7 +203,7 @@ pub(super) struct GestureContext {
     pub(super) selected_note: Option<NoteId>,
     pub(super) clip_contains_note: bool,
     pub(super) pending: bool,
-    pub(super) beat_start: u64,
+    pub(super) beat_start: i128,
     pub(super) beat_span: u64,
     pub(super) pitch_low: u8,
     pub(super) pitch_rows: u8,
@@ -316,6 +319,7 @@ pub(super) fn begin(start: GestureStart) -> Option<NoteGesture> {
         channel: start.channel,
         velocity: start.velocity,
         preview: start.original,
+        source_prefix: 0,
         kind,
         bounds: start.bounds,
         beat_start: start.beat_start,
@@ -338,7 +342,7 @@ pub(super) fn update_with_modifier(
     pointer_y: f32,
     invert_snap: bool,
 ) -> bool {
-    let Some(pointer_beat_raw) = beat_at_point(
+    let Some(pointer_beat_raw) = signed_beat_at_point(
         pointer_x,
         gesture.bounds,
         gesture.beat_start,
@@ -365,6 +369,7 @@ pub(super) fn update_with_modifier(
             effective_grid,
         )
     };
+    let mut source_prefix = 0;
     let candidate = match gesture.kind {
         GestureKind::Move {
             pointer_beat_raw: down_beat,
@@ -378,8 +383,12 @@ pub(super) fn update_with_modifier(
             // Movement can retain material beyond the current source. The
             // canonical extent-growing update owns storage growth on commit.
             let max_start = u64::MAX - gesture.original.duration;
-            let start =
-                (i128::from(gesture.original.start) + delta).clamp(0, i128::from(max_start)) as u64;
+            let signed_start = (i128::from(gesture.original.start) + delta).clamp(
+                -i128::from(u64::MAX - gesture.clip_length),
+                i128::from(max_start),
+            );
+            source_prefix = (-signed_start).max(0) as u64;
+            let start = (signed_start + i128::from(source_prefix)) as u64;
             let pitch = (i16::from(gesture.original.pitch) + i16::from(pointer_pitch)
                 - i16::from(down_pitch))
             .clamp(0, 127) as u8;
@@ -431,13 +440,14 @@ pub(super) fn update_with_modifier(
             }
         }
     };
-    let changed = gesture.preview != candidate;
+    let changed = gesture.preview != candidate || gesture.source_prefix != source_prefix;
     gesture.preview = candidate;
+    gesture.source_prefix = source_prefix;
     changed
 }
 
 pub(super) fn is_noop(gesture: &NoteGesture) -> bool {
-    gesture.preview == gesture.original
+    gesture.source_prefix == 0 && gesture.preview == gesture.original
 }
 
 pub(super) fn release_is_inside(gesture: &NoteGesture, x: f32, y: f32) -> bool {
@@ -461,15 +471,23 @@ pub(super) fn point_is_inside(bounds: [f32; 4], x: f32, y: f32) -> bool {
 pub(super) fn beat_at_point(
     x: f32,
     bounds: [f32; 4],
-    beat_start: u64,
+    beat_start: i128,
     beat_span: u64,
 ) -> Option<u64> {
+    u64::try_from(signed_beat_at_point(x, bounds, beat_start, beat_span)?).ok()
+}
+/// View coordinates may precede the unsigned authored source. Only explicit
+/// source-prefix authoring may convert a negative view coordinate to storage.
+pub(super) fn signed_beat_at_point(
+    x: f32,
+    bounds: [f32; 4],
+    beat_start: i128,
+    beat_span: u64,
+) -> Option<i128> {
     let [left, top, width, height] = bounds;
-    if !x.is_finite()
-        || !left.is_finite()
-        || !top.is_finite()
-        || !width.is_finite()
-        || !height.is_finite()
+    if ![x, left, top, width, height]
+        .iter()
+        .all(|value| value.is_finite())
         || width <= 0.0
         || height <= 0.0
         || beat_span == 0
@@ -481,8 +499,7 @@ pub(super) fn beat_at_point(
     if !raw.is_finite() || raw < 0.0 {
         return None;
     }
-    let raw = raw.min(u64::MAX as f64) as u64;
-    beat_start.checked_add(raw)
+    beat_start.checked_add(i128::from(raw.min(u64::MAX as f64) as u64))
 }
 
 pub(super) fn quantize_delta(delta: i128, grid: MidiGrid) -> i128 {

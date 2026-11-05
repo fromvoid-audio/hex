@@ -202,7 +202,7 @@ pub(super) struct GroupContext {
     pub(super) revision: u64,
     pub(super) clip: Option<ClipId>,
     pub(super) selection_epoch: u64,
-    pub(super) beat_start: u64,
+    pub(super) beat_start: i128,
     pub(super) beat_span: u64,
     pub(super) pitch_low: u8,
     pub(super) pitch_rows: u8,
@@ -221,7 +221,7 @@ pub(super) struct GroupStart {
     pub(super) originals: Vec<GroupNote>,
     pub(super) pointer: [f32; 2],
     pub(super) bounds: [f32; 4],
-    pub(super) beat_start: u64,
+    pub(super) beat_start: i128,
     pub(super) beat_span: u64,
     pub(super) pitch_low: u8,
     pub(super) pitch_rows: u8,
@@ -241,7 +241,7 @@ pub(super) struct GroupGesture {
     pointer_beat: u64,
     pointer_pitch: u8,
     bounds: [f32; 4],
-    beat_start: u64,
+    beat_start: i128,
     beat_span: u64,
     pitch_low: u8,
     pitch_rows: u8,
@@ -249,6 +249,7 @@ pub(super) struct GroupGesture {
     grid: MidiGrid,
     delta: i128,
     pitch_delta: i16,
+    source_prefix: u64,
 }
 
 impl GroupGesture {
@@ -315,6 +316,7 @@ impl GroupGesture {
             grid: start.grid,
             delta: 0,
             pitch_delta: 0,
+            source_prefix: 0,
         })
     }
 
@@ -334,7 +336,7 @@ impl GroupGesture {
 
     pub(super) fn update(&mut self, point: [f32; 2], invert_snap: bool) -> bool {
         let Some(pointer_beat) =
-            midi_drag::beat_at_point(point[0], self.bounds, self.beat_start, self.beat_span)
+            midi_drag::signed_beat_at_point(point[0], self.bounds, self.beat_start, self.beat_span)
         else {
             return false;
         };
@@ -352,11 +354,24 @@ impl GroupGesture {
             i128::from(pointer_beat) - i128::from(self.pointer_beat),
             grid,
         );
+        let source_prefix = if self.kind == HitKind::Move && !self.copy {
+            let first = self
+                .originals
+                .iter()
+                .map(|note| note.start)
+                .min()
+                .unwrap_or(0);
+            (-(i128::from(first) + desired_delta))
+                .max(0)
+                .min(i128::from(u64::MAX - self.clip_length)) as u64
+        } else {
+            0
+        };
         let resolved = if self.kind == HitKind::Move {
             resolve_common_delta(
                 &self.originals,
                 u64::MAX,
-                desired_delta,
+                desired_delta + i128::from(source_prefix),
                 i16::from(pointer_pitch) - i16::from(self.pointer_pitch),
             )
         } else {
@@ -372,16 +387,20 @@ impl GroupGesture {
         let Ok((delta, pitch_delta)) = resolved else {
             return false;
         };
-        if self.delta == delta && self.pitch_delta == pitch_delta {
+        if self.delta == delta
+            && self.pitch_delta == pitch_delta
+            && self.source_prefix == source_prefix
+        {
             return false;
         }
         self.delta = delta;
         self.pitch_delta = pitch_delta;
+        self.source_prefix = source_prefix;
         true
     }
 
     pub(super) fn is_noop(&self) -> bool {
-        self.delta == 0 && self.pitch_delta == 0
+        self.source_prefix == 0 && self.delta == 0 && self.pitch_delta == 0
     }
 
     /// Copy toggles only a move gesture; a captured resize keeps its edge.
@@ -438,6 +457,7 @@ impl GroupGesture {
             grid: note.grid,
             delta: i128::from(note.preview.start) - i128::from(note.original.start),
             pitch_delta: i16::from(note.preview.pitch) - i16::from(note.original.pitch),
+            source_prefix: 0,
         }))
     }
 
@@ -498,6 +518,10 @@ impl GroupGesture {
         self.bounds
     }
 
+    pub(super) fn source_prefix(&self) -> u64 {
+        self.source_prefix
+    }
+
     pub(super) fn source_length(&self) -> u64 {
         self.clip_length
     }
@@ -525,7 +549,7 @@ impl GroupGesture {
     }
 
     pub(super) fn updates(&self) -> Result<Vec<MidiNoteUpdate>, &'static str> {
-        if self.kind != HitKind::Move {
+        if self.kind != HitKind::Move || self.source_prefix > 0 {
             if self.is_noop() {
                 return Err("group midi edit is a no-op");
             }

@@ -4,7 +4,7 @@
 //! Window owns held input; its read-only canvas witness never retains pending edits.
 use super::{EditorView, midi_scene, midi_stroke::CanvasBounds};
 use gpui::{Context, MouseButton, MouseMoveEvent, MouseUpEvent, Window};
-use hex_project::{BeatTime, ClipId};
+use hex_project::ClipId;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -14,7 +14,7 @@ pub(super) struct State {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Viewport {
-    start: u64,
+    start: i128,
     span: u64,
     low: u8,
     rows: u8,
@@ -43,7 +43,8 @@ impl Gesture {
         let ticks = (dx * self.viewport.span as f64)
             .round()
             .clamp(-(u64::MAX as f64), u64::MAX as f64) as i128;
-        let start = (i128::from(self.viewport.start) - ticks).clamp(0, i128::from(u64::MAX)) as u64;
+        let start =
+            (self.viewport.start - ticks).clamp(-i128::from(u64::MAX), i128::from(u64::MAX));
         let pitches = (dy * f64::from(self.viewport.rows))
             .round()
             .clamp(-128.0, 128.0) as i16;
@@ -101,7 +102,7 @@ impl EditorView {
         };
         let length = source.source_length().raw();
         let viewport = Viewport {
-            start: self.piano_beat_start.raw(),
+            start: self.piano_beat_start,
             span: self.piano_beat_span.raw(),
             low: self.piano_pitch_low,
             rows: self.piano_pitch_rows,
@@ -249,8 +250,8 @@ impl EditorView {
             self.midi_pan.gesture = None;
             return true;
         };
-        let changed = next.start != self.piano_beat_start.raw() || next.low != self.piano_pitch_low;
-        self.piano_beat_start = BeatTime::from_raw(next.start);
+        let changed = next.start != self.piano_beat_start || next.low != self.piano_pitch_low;
+        self.piano_beat_start = i128::from(next.start);
         self.piano_pitch_low = next.low;
         changed
     }
@@ -278,6 +279,7 @@ impl EditorView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hex_project::BeatTime;
     use hex_project::{Command, Created, Editor, Project};
 
     fn gesture(length: u64, viewport: Viewport) -> Gesture {
@@ -321,14 +323,14 @@ mod tests {
         let g = gesture(
             beat / 4,
             Viewport {
-                start: 2 * beat,
+                start: i128::from(2 * beat),
                 span: 4 * beat,
                 low: 48,
                 rows: 24,
             },
         );
         let expected = Viewport {
-            start: 3 * beat,
+            start: i128::from(3 * beat),
             low: 54,
             ..g.viewport
         };
@@ -354,12 +356,12 @@ mod tests {
                 },
             );
             let first = g.resolve([f32::MAX, f32::MAX]).unwrap();
-            assert_eq!(first.start, 0);
+            assert_eq!(first.start, -i128::from(u64::MAX));
             assert_eq!(first.low, 128 - rows);
             let last = g.resolve([-f32::MAX, -f32::MAX]).unwrap();
-            assert_eq!(last.start, u64::MAX - span);
+            assert_eq!(last.start, i128::from(u64::MAX - span));
             assert_eq!(last.low, 0);
-            assert!(last.start.checked_add(last.span).is_some());
+            assert!(last.start.checked_add(i128::from(last.span)).is_some());
         }
     }
 }

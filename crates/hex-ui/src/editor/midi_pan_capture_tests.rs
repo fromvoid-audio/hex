@@ -5,6 +5,7 @@ use gpui::{
     CursorStyle, Entity, Modifiers, MouseMoveEvent, MouseUpEvent, Render, TestAppContext,
     VisualTestContext, div, point, prelude::*, px, size,
 };
+use hex_project::BeatTime;
 use std::{cell::Cell, rc::Rc, sync::Arc};
 struct Host {
     editor: Entity<EditorView>,
@@ -69,10 +70,7 @@ fn open(cx: &mut TestAppContext, button: MouseButton) -> Fixture {
         to,
     }
 }
-fn viewport(
-    editor: &Entity<EditorView>,
-    visual: &VisualTestContext,
-) -> (BeatTime, BeatTime, u8, u8) {
+fn viewport(editor: &Entity<EditorView>, visual: &VisualTestContext) -> (i128, BeatTime, u8, u8) {
     editor.read_with(visual, |v, _| {
         (
             v.piano_beat_start,
@@ -93,7 +91,7 @@ fn piano_pan_can_begin_and_repaint_far_beyond_source_without_edit(cx: &mut TestA
     } = open(cx, MouseButton::Middle);
     let start = BeatTime::from_quarters(1024).unwrap();
     let before = editor.update(&mut visual, |v, cx| {
-        v.piano_beat_start = start;
+        v.piano_beat_start = i128::from(start.raw());
         cx.notify();
         v.state.as_ref().unwrap().project.snapshot()
     });
@@ -105,7 +103,7 @@ fn piano_pan_can_begin_and_repaint_far_beyond_source_without_edit(cx: &mut TestA
     for _ in 0..3 {
         editor.update(&mut visual, |_, cx| cx.notify());
         visual.run_until_parked();
-        assert!(viewport(&editor, &visual).0 > start);
+        assert!(viewport(&editor, &visual).0 > i128::from(start.raw()));
     }
     editor.read_with(&visual, |v, _| {
         assert!(v.midi_pan.gesture.is_none());
@@ -143,7 +141,7 @@ fn piano_pan_owns_both_buttons_and_finishes_outside_without_edit(cx: &mut TestAp
         visual.simulate_mouse_move(to, button, Modifiers::default());
         visual.run_until_parked();
         let moved = viewport(&editor, &visual);
-        assert!(moved.0 > BeatTime::ZERO);
+        assert!(moved.0 > 0);
         let final_at = point(to.x - px(40.), outside.y);
         visual.simulate_mouse_move(final_at, button, Modifiers::default());
         visual.run_until_parked();
