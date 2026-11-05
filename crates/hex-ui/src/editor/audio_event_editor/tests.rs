@@ -1682,11 +1682,21 @@ fn wheel_navigation_anchors_pointer_and_keeps_tabs_independent(cx: &mut TestAppC
     let painted = visual
         .debug_bounds("audio-source-visible-waveform")
         .unwrap();
-    assert!((marker.left() - (body.left() + body.size.width * 0.8)).abs() < px(2.0));
+    assert!((marker.left() - (body.left() + body.size.width * 0.9)).abs() < px(2.0));
+    assert!((painted.left() - (body.left() + body.size.width * 0.1)).abs() < px(2.0));
     assert!((painted.size.width - body.size.width * 0.8).abs() < px(2.0));
     editor.update(&mut visual, |v, cx| {
         assert_eq!(v.audio_source_viewport().length, 120_000);
+        assert_eq!(v.audio_source_viewport().start, -12_000);
         assert_eq!(v.audio_event_editor.viewport, Some(events));
+        v.event_pan(false);
+        v.event_pan(false);
+        assert_eq!(v.audio_source_viewport().start, -132_000);
+        assert!(v.event_fit_selection(false));
+        assert!(v.event_fit_selection(true));
+        assert_eq!(v.audio_source_viewport().start, -132_000);
+        v.event_pan(true);
+        v.event_pan(true);
         v.event_pan(true);
         v.event_pan(true);
         assert!(v.audio_source_viewport().start >= 96_000);
@@ -1750,7 +1760,7 @@ fn navigation_rejects_bad_wheel_and_held_input_and_resets_on_source_replacement(
         v.project_generation += 1;
         v.sync_audio_navigation();
         assert!(v.audio_event_editor.source_view);
-        assert_eq!(v.audio_source_viewport(), Viewport::fit(96_000));
+        assert_eq!(v.audio_source_viewport(), Viewport::fit(96_000).into());
         assert!(v.audio_event_editor.viewport.is_none());
         assert!(v.audio_event_editor.source_fit_back.is_none());
         assert!(v.last_enqueued_edit.is_none());

@@ -166,17 +166,6 @@ impl EditorView {
         }
     }
 
-    fn audio_navigation_minimum(&self) -> u64 {
-        self.state
-            .as_ref()
-            .and_then(|s| {
-                hex_project::BeatTime::from_quarters(16)
-                    .ok()
-                    .and_then(|beat| s.project.tempo_map().beat_to_frame(beat).ok())
-            })
-            .unwrap_or(1)
-            .max(1)
-    }
     pub(super) fn event_navigation_limit(&self, root: &AudioClipEdit) -> u64 {
         let Some(state) = self.state.as_ref() else {
             return 0;
@@ -185,14 +174,10 @@ impl EditorView {
         let Some(first) = frame(editor_bounds(root).0) else {
             return 0;
         };
-        let Some(end) = frame(editor_bounds(root).1) else {
-            return 0;
-        };
         let placement = self
             .detail_clip_id()
             .and_then(|id| state.project.clip(id))
             .map_or(0, |c| c.start());
-        let _ = end;
         (u64::MAX - first).min(u64::MAX - placement)
     }
 
@@ -206,14 +191,10 @@ impl EditorView {
             })
             .map_or(0, |a| a.playback_frames())
     }
-    fn source_navigation_limit(&self) -> u64 {
-        navigation_limit(self.source_extent(), self.audio_navigation_minimum())
-    }
-    pub(in crate::editor) fn audio_source_viewport(&self) -> Viewport {
+    pub(in crate::editor) fn audio_source_viewport(&self) -> SignedFrameViewport {
         self.audio_event_editor
             .source_viewport
-            .unwrap_or(Viewport::fit(self.source_extent()))
-            .clamp(self.source_navigation_limit())
+            .unwrap_or_else(|| Viewport::fit(self.source_extent()).into())
     }
     fn audio_navigation(&self) -> Option<(SignedFrameViewport, i128, i128, i128)> {
         if !self.event_context_current() {
@@ -222,9 +203,9 @@ impl EditorView {
         if self.audio_event_editor.source_view {
             let clip = self.state.as_ref()?.project.clip(self.detail_clip_id()?)?;
             Some((
-                self.audio_source_viewport().into(),
-                0,
-                i128::from(self.source_navigation_limit()),
+                self.audio_source_viewport(),
+                -i128::from(u64::MAX),
+                i128::from(u64::MAX),
                 i128::from(clip.source_offset().saturating_add(clip.source_phase())),
             ))
         } else {
@@ -245,12 +226,7 @@ impl EditorView {
     }
     fn set_audio_navigation(&mut self, viewport: SignedFrameViewport) {
         if self.audio_event_editor.source_view {
-            if let Ok(start) = u64::try_from(viewport.start) {
-                self.audio_event_editor.source_viewport = Some(Viewport {
-                    start,
-                    length: viewport.length,
-                });
-            }
+            self.audio_event_editor.source_viewport = Some(viewport);
         } else {
             self.store_event_camera(viewport);
         }
@@ -307,8 +283,7 @@ impl EditorView {
             let Some(prior) = self.audio_event_editor.source_fit_back.take() else {
                 return false;
             };
-            self.audio_event_editor.source_viewport =
-                prior.map(|v| v.clamp(self.source_navigation_limit()));
+            self.audio_event_editor.source_viewport = prior;
         } else {
             let Some(clip) = self
                 .state
@@ -328,6 +303,7 @@ impl EditorView {
             ) else {
                 return false;
             };
+            let next = SignedFrameViewport::from(next);
             if next == self.audio_source_viewport() {
                 return false;
             }
@@ -404,20 +380,5 @@ impl EditorView {
         };
         self.set_audio_navigation(viewport);
         true
-    }
-}
-
-// Same finite envelope as the piano roll, with an explicitly converted minimum.
-fn navigation_limit(content: u64, minimum: u64) -> u64 {
-    content.saturating_mul(4).max(minimum)
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn navigation_envelope_handles_short_and_extreme_content() {
-        assert_eq!(super::navigation_limit(10, 100), 100);
-        assert_eq!(super::navigation_limit(100, 10), 400);
-        assert_eq!(super::navigation_limit(u64::MAX, 1), u64::MAX);
     }
 }

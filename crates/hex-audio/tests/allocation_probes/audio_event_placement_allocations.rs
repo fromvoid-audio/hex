@@ -1,5 +1,4 @@
 //! Finite whole-clip placement through actual publication, seek and callback.
-#![cfg(feature = "allocation-probe")]
 use allocation_counter::measure;
 use hex_audio::prepared::{self, PublicationPolicy};
 use hex_engine::{

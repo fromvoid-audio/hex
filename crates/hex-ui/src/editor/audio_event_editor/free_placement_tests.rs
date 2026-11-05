@@ -4,6 +4,36 @@ use super::*;
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 
 #[gpui::test]
+fn dragging_blank_space_left_of_the_root_cannot_move_its_first_event(cx: &mut TestAppContext) {
+    let (_files, mut visual, editor, _) = open(cx);
+    let before = editor.update(&mut visual, |v, cx| {
+        for _ in 0..3 {
+            v.event_pan(false);
+        }
+        cx.notify();
+        v.state.as_ref().unwrap().project.snapshot()
+    });
+    visual.run_until_parked();
+    let lane = visual.debug_bounds("audio-events-waveform").unwrap();
+    assert!(visual.debug_bounds("audio-event-1").is_none());
+    let down = point(lane.center().x, lane.top() + px(33.0));
+    let moved = point(down.x + lane.size.width * 0.25, down.y);
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(matches!(
+            v.audio_event_editor.gesture.as_ref().unwrap().kind,
+            Kind::Select
+        ));
+    });
+    visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.pending.is_none());
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+    });
+}
+
+#[gpui::test]
 fn frame_event_drag_beyond_clip_end_keeps_waveform_release_history_and_saved_material(
     cx: &mut TestAppContext,
 ) {

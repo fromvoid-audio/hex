@@ -66,21 +66,10 @@ impl EditorView {
             .shifted(i128::from(clip.start()))
     }
     pub(super) fn event_pointer_position(&self, x: f32, platform: bool) -> Option<u64> {
-        if !x.is_finite() {
-            return None;
-        }
         let (_, root, _) = self.event_context()?;
         let state = self.state.as_ref()?;
-        let bounds = self.audio_event_editor.bounds?;
-        let width = f32::from(bounds.size.width);
-        if !width.is_finite() || width <= 0.0 {
-            return None;
-        }
         let window = self.event_project_window(&root)?;
-        let fraction = ((x - f32::from(bounds.origin.x)) / width).clamp(0.0, 1.0);
-        let frame = window
-            .start
-            .checked_add((f64::from(fraction) * window.length as f64).round() as i128)?;
+        let (frame, width) = self.event_pointer_frame(window, x)?;
         let snapped = self
             .audio_event_editor
             .grid
@@ -88,6 +77,34 @@ impl EditorView {
             .snap_signed_frame(&state.project, frame, window, width)?;
         self.event_position_from_signed_project_frame(&root, snapped)
     }
+    /// Selection can clamp to the content edge. Hit testing must leave blank
+    /// space blank so an invisible event at the first frame cannot be grabbed.
+    pub(super) fn event_hit_position(&self, root: &AudioClipEdit, x: f32) -> Option<u64> {
+        let tempo = self.state.as_ref()?.project.tempo_map();
+        let (first, end) = content_bounds(root);
+        let first = i128::from(root.root_frame_at(first, tempo).ok()?);
+        let end = i128::from(root.root_frame_at(end, tempo).ok()?);
+        let (frame, _) = self.event_pointer_frame(self.event_root_window(root)?, x)?;
+        if !(first..end).contains(&frame) {
+            return None;
+        }
+        root.root_position_at(u64::try_from(frame).ok()?, tempo)
+            .ok()
+    }
+
+    fn event_pointer_frame(&self, window: SignedFrameViewport, x: f32) -> Option<(i128, f32)> {
+        let bounds = self.audio_event_editor.bounds?;
+        let width = f32::from(bounds.size.width);
+        if !x.is_finite() || !width.is_finite() || width <= 0.0 {
+            return None;
+        }
+        let fraction = ((x - f32::from(bounds.origin.x)) / width).clamp(0.0, 1.0);
+        let frame = window
+            .start
+            .checked_add((f64::from(fraction) * window.length as f64).round() as i128)?;
+        Some((frame, width))
+    }
+
     pub(super) fn event_position_from_signed_project_frame(
         &self,
         root: &AudioClipEdit,

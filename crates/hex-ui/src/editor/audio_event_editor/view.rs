@@ -590,12 +590,6 @@ pub(in crate::editor) fn view(
             else {
                 return;
             };
-            let Some(raw) = view.event_pointer_position(
-                f32::from(event.position.x),
-                view.audio_event_editor.grid != SnapGrid::Off,
-            ) else {
-                return;
-            };
             view.advance_selection_intent();
             view.audio_event_focus.focus(window);
             let Some((clip_id, root, _)) = view.event_context() else {
@@ -629,15 +623,18 @@ pub(in crate::editor) fn view(
             let Ok(events) = clip.editable_audio_events() else {
                 return;
             };
-            let hit = events
-                .events
-                .iter()
-                .find(|e| e.start <= raw && raw < e.end)
-                .copied();
+            let raw = view.event_hit_position(&root, f32::from(event.position.x));
+            let hit = raw.and_then(|raw| {
+                events
+                    .events
+                    .iter()
+                    .find(|e| e.start <= raw && raw < e.end)
+                    .copied()
+            });
             let range_hit = view
                 .audio_event_editor
                 .range
-                .filter(|(a, b)| a <= &raw && raw < *b);
+                .filter(|(a, b)| raw.is_some_and(|raw| *a <= raw && raw < *b));
             let kind = if view.time_selection_key_held {
                 Kind::Select
             } else if target == RangeSelectionTarget::Move && range_hit.is_some() {
@@ -744,7 +741,7 @@ pub(in crate::editor) fn view(
                 anchor: if matches!(kind, Kind::Select) {
                     position
                 } else {
-                    raw
+                    raw.unwrap_or(position)
                 },
                 kind,
                 placement: None,
