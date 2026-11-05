@@ -441,7 +441,7 @@ mod tests {
             OutputTail::Finite { max_tail_frames: 0 }
         }
         fn create_runtime(&self) -> Result<Box<dyn OwnedProcessorRuntime>, DeviceContractError> {
-            Err(DeviceContractError::RuntimeAllocation)
+            Ok(Box::new(EmptyHistory))
         }
     }
     #[test]
@@ -477,6 +477,83 @@ mod tests {
         }));
         assert_eq!(default.declared_pair_bytes(), Some(17));
         assert!(!default.supports_latency_aligned_bypass());
+    }
+
+    // An actually empty provider history isolates host dry custody from the
+    // provider's own quiescence and layout decisions.
+    struct EmptyHistory;
+    impl OwnedProcessorRuntime for EmptyHistory {
+        fn fixed_storage_pair_bytes(&self) -> Option<usize> {
+            Some(0)
+        }
+        fn begin_block(&mut self) {}
+        fn process_block(&mut self, _: &mut [StereoFrame], _: &dyn crate::DeviceResources) {}
+        fn commit_block(&mut self) {}
+        fn rollback_block(&mut self) {}
+        fn reset(&mut self) {}
+        fn committed_is_quiescent(&self) -> bool {
+            true
+        }
+        fn speculative_is_quiescent(&self) -> bool {
+            true
+        }
+        fn can_inherit_from(&self, old: &dyn OwnedProcessorRuntime) -> bool {
+            old.as_any().is::<Self>()
+        }
+        fn can_retarget_parameters_from(&self, old: &dyn OwnedProcessorRuntime) -> bool {
+            self.can_inherit_from(old)
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+    #[test]
+    fn changed_dry_layout_waits_for_its_donor_and_clears_a_reused_candidate() {
+        let make = |frames: u32, bypassed| {
+            let kind = DeviceTypeId::from_static("test.reserved.bypass");
+            crate::NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+                automation: Default::default(),
+                meter: Default::default(),
+                owner: ProcessorChainOwner::Track(1),
+                device_id: 1,
+                device_type: kind,
+                matrix: StereoMatrix::identity(),
+                bypassed,
+                sample_rate: 48_000,
+                configuration: Some(Arc::new(
+                    NativeDeviceState::new(kind, 1, frames.to_le_bytes().to_vec()).unwrap(),
+                )),
+                definition: Some(PreparedProcessorFactory::Owned(Arc::new(
+                    ReservationQuote {
+                        frames: Some(frames),
+                        latency: Some(frames),
+                    },
+                ))),
+            }])
+            .unwrap()
+        };
+        let mut old = make(12, true);
+        old.begin_block();
+        old.process_block(&mut [[0.5; 2]; 1]).unwrap();
+        old.commit_block();
+        let mut next = make(24, true);
+        next.begin_block();
+        next.process_block(&mut [[0.75; 2]; 32]).unwrap();
+        next.commit_block();
+        assert!(!next.can_inherit_from(&old));
+        assert!(!next.can_retarget_parameters_from_range(&old, 0..1));
+        old.reset();
+        assert!(next.can_inherit_from(&old));
+        assert!(next.can_retarget_parameters_from_range(&old, 0..1));
+        next.transfer_history_from(&mut old);
+        let mut silence = [[0.0; 2]; 48];
+        next.begin_block();
+        next.process_block(&mut silence).unwrap();
+        next.commit_block();
+        assert_eq!(
+            silence, [[0.0; 2]; 48],
+            "fresh layout must not replay the candidate's former dry input"
+        );
     }
 
     struct Clock;
