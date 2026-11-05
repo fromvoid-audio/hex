@@ -1,5 +1,4 @@
 //! Saved touch ramps execute on the actual callback without heap activity.
-#![cfg(feature = "allocation-probe")]
 use allocation_counter::measure;
 use hex_audio::prepared;
 use hex_engine::{

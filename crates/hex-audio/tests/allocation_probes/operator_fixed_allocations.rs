@@ -1,5 +1,4 @@
 //! Fixed tuning and velocity sensitivity prepare before admission; callback sampling and seek stay bounded.
-#![cfg(feature = "allocation-probe")]
 use allocation_counter::measure;
 use hex_audio::prepared;
 use hex_audio::spectrum_worker::{SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker};

@@ -19,6 +19,7 @@ mod resident_reverb;
 mod resident_routes;
 mod resident_sections;
 mod resident_streamed_bounce;
+mod reverb_bypass;
 mod sampler;
 mod section_benchmark;
 mod solo_latency;
