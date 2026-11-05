@@ -298,3 +298,145 @@ fn signed_range_placement_gates_moved_pcm_and_preserves_a_hole_when_revealed() {
         }
     }
 }
+
+#[test]
+fn finite_frame_placement_keeps_once_repeat_direction_and_processed_source_reads() {
+    use hex_project::{AudioViewResizeOperation, SourceGainPoint};
+    for (looping, reversed, processed) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (false, true, true),
+        (true, false, true),
+    ] {
+        let (mut editor, clip) = imported();
+        let track = editor.project().tracks()[0].id();
+        editor
+            .execute(Command::MoveClip {
+                clip,
+                track,
+                start: 200,
+            })
+            .unwrap();
+        if processed {
+            editor
+                .execute(Command::SetAudioClipPitch { clip, cents: 600 })
+                .unwrap();
+            editor
+                .execute(Command::SetAudioClipSourceGain {
+                    clip,
+                    points: vec![
+                        SourceGainPoint {
+                            frame: 0,
+                            gain_q16: 32_768,
+                        },
+                        SourceGainPoint {
+                            frame: SOURCE,
+                            gain_q16: 65_536,
+                        },
+                    ],
+                })
+                .unwrap();
+        }
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: AudioEventEdit::Split { at: 10 },
+            })
+            .unwrap();
+        let source = render(&editor, 400, 64);
+        editor
+            .execute(Command::ResizeAudioClipView {
+                clip,
+                operation: AudioViewResizeOperation::CycleRange {
+                    start: 20,
+                    end: 80,
+                    looping,
+                },
+            })
+            .unwrap();
+        if looping {
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip,
+                    operation: AudioViewResizeOperation::PlayStart { position: 27 },
+                })
+                .unwrap();
+        }
+        if reversed {
+            editor.execute(Command::ReverseClips(vec![clip])).unwrap();
+        }
+        let before = editor.project().clip(clip).unwrap().clone();
+        let original = render(&editor, 400, 64);
+        for destination in [-40_i64, 160] {
+            let operation = AudioEventEdit::Place {
+                event: 1,
+                start: destination,
+            };
+            let preview = editor
+                .project()
+                .preview_audio_event_edit(clip, &operation)
+                .unwrap();
+            editor
+                .execute(Command::EditAudioEvents { clip, operation })
+                .unwrap();
+            let placed = editor.project().clip(clip).unwrap();
+            assert_eq!(placed, preview.clip());
+            assert_eq!(
+                (placed.start(), placed.duration()),
+                (before.start(), before.duration())
+            );
+            let old_root = before.audio_event_root();
+            let root = placed.audio_event_root();
+            assert_eq!(root.placement, old_root.placement);
+            assert_eq!(
+                root.content_view.map(|v| v.window),
+                old_root.content_view.map(|v| v.window)
+            );
+            assert_eq!(root.domain.pitch_cents, old_root.domain.pitch_cents);
+            assert_eq!(root.domain.source_gain, old_root.domain.source_gain);
+            assert_eq!(
+                placed.audio_event_coordinate_shift_from(&before),
+                (destination < 0).then_some(-destination)
+            );
+            let event = placed
+                .audio_events()
+                .events
+                .into_iter()
+                .find(|e| e.id == 1)
+                .unwrap();
+            assert_eq!((event.source_start, event.length()), (0, 10));
+            for block in [1, 7, 64, 512] {
+                assert_eq!(
+                    render(&editor, 400, block),
+                    original,
+                    "gate changed: {looping} {reversed} {processed} {destination} {block}"
+                );
+            }
+            editor
+                .execute(Command::ResizeAudioClipView {
+                    clip,
+                    operation: AudioViewResizeOperation::CycleRange {
+                        start: event.start,
+                        end: event.end,
+                        looping: true,
+                    },
+                })
+                .unwrap();
+            let revealed = render(&editor, 400, 7);
+            let expected: Vec<_> = if reversed {
+                source[200..210].iter().copied().rev().collect()
+            } else {
+                source[200..210].to_vec()
+            };
+            assert_eq!(
+                &revealed[200..210],
+                expected,
+                "source changed: {looping} {reversed} {processed} {destination}"
+            );
+            assert!(editor.undo());
+            assert!(editor.undo());
+            assert_eq!(editor.project().clip(clip), Some(&before));
+        }
+    }
+}

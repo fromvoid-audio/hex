@@ -73,9 +73,11 @@ pub(in crate::editor) fn view(
     let canonical_root = root;
     let root = placement.map_or_else(|| canonical_root.clone(), |p| p.clip().audio_event_root());
     let display_position = |position| placement.map_or(Some(position), |p| p.position(position));
-    let local = view.event_viewport(&root);
-    let root_window = view.event_root_window(&root)?;
-    let project_window = view.event_project_window(&root)?;
+    let local = view.event_frame_window(&canonical_root);
+    let root_window = view
+        .event_root_window(&canonical_root)?
+        .shifted(i128::from(placement.map_or(0, |p| p.origin_shift())))?;
+    let project_window = view.event_project_window(&canonical_root)?;
     let viewport = project_window
         .visible_unsigned()
         .unwrap_or(Viewport::fit(0));
@@ -272,7 +274,15 @@ pub(in crate::editor) fn view(
             if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
                 element = element.child(
                     waveform::waveform_source_segment_gain_view_cached(
-                        std::sync::Arc::clone(&prepared.waveform),
+                        std::sync::Arc::clone(
+                            prepared
+                                .preview_root
+                                .as_ref()
+                                .filter(|_| {
+                                    matches!(root.timing, hex_project::AudioClipTiming::Frames)
+                                })
+                                .map_or(&prepared.waveform, |root| &root.waveform),
+                        ),
                         0,
                         source_root + (visible_start - start),
                         source_root + (visible_end - start),

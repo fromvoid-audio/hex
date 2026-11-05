@@ -29,7 +29,13 @@ impl Preview {
         let source = state
             .audio_clip_waveforms
             .get(&clip)
-            .map(|p| Source::Processed(Arc::clone(&p.waveform)))
+            .map(|p| {
+                let waveform = p
+                    .preview_root
+                    .as_ref()
+                    .map_or(&p.waveform, |root| &root.waveform);
+                Source::Processed(Arc::clone(waveform))
+            })
             .or_else(|| {
                 if original.audio_edit().is_some() {
                     return None;
@@ -209,7 +215,7 @@ impl EditorView {
         let state = self.state.as_ref()?;
         let clip = state.project.clip(self.detail_clip_id()?)?;
         let first = root
-            .root_frame_at(editor_bounds(root).0, state.project.tempo_map())
+            .root_frame_at(event_grid_origin(root), state.project.tempo_map())
             .ok()?;
         let frame = i128::from(clip.start()) + i128::from(raw) - i128::from(first);
         let snapped = self
