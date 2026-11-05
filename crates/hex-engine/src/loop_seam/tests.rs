@@ -1,11 +1,10 @@
-use super::LoopSeam;
 use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
 use crate::{
     Audio, AudioSourceContext, BorrowedMediaPage, Frame, MediaPages, PreparedRevision,
     STREAM_PAGE_FRAMES, SineTable, StreamSourceKey, StreamedSourceMetadata,
     compile::PreparedAudioSource,
 };
-use hex_project::{AssetId, Command, Created, Editor, LoopRegion, Project};
+use hex_project::{AssetId, Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::Arc};
 
 const RATE: u32 = 48_000;
@@ -16,8 +15,6 @@ const LOOP_START: u64 = 2_345;
 const LOOP_END: u64 = 8_901;
 /// Where the DC content starts or stops inside the loop.
 const EDGE: usize = 5_000;
-/// Three wraps when playing from frame zero.
-const RENDERED: usize = LOOP_END as usize + 3 * (LOOP_END - LOOP_START) as usize - 100;
 
 /// One audio track with a clip at frame zero, looped over `region` if any.
 fn project(region: Option<(u64, u64)>) -> (Project, AssetId) {
@@ -130,94 +127,59 @@ fn play(
     output
 }
 
-/// Output frames at which the transport wraps, playing from zero.
-fn wraps() -> impl Iterator<Item = usize> {
-    let length = (LOOP_END - LOOP_START) as usize;
-    (0..)
-        .map(move |pass| LOOP_END as usize + pass * length)
-        .take_while(|wrap| *wrap < RENDERED)
-}
-
-fn largest_step(output: &[Frame]) -> f32 {
-    output
-        .windows(2)
-        .flat_map(|pair| {
-            [
-                (pair[1][0] - pair[0][0]).abs(),
-                (pair[1][1] - pair[0][1]).abs(),
-            ]
-        })
-        .fold(0.0, f32::max)
+#[test]
+fn loop_end_fades_without_softening_the_next_attack() {
+    let (looped, asset) = project(Some((LOOP_START, LOOP_END)));
+    let samples = vec![[1.0, -1.0]; CLIP];
+    let total = LOOP_END as usize + 64;
+    let output = play(&mut resident(&looped, asset, &samples), 256, total, None);
+    assert_eq!(output[LOOP_END as usize - 1], [0.0, 0.0]);
+    assert_eq!(output[LOOP_END as usize], samples[LOOP_START as usize]);
+    let mut pages = Pages {
+        key: StreamSourceKey::new(31, asset),
+        samples: &samples,
+    };
+    assert_eq!(
+        play(&mut streamed(&looped, asset), 64, total, Some(&mut pages)),
+        output
+    );
 }
 
 #[test]
-fn seam_crossfades_stepped_dc_identically_for_every_block_size_and_source() {
+fn wrapped_audio_matches_the_authored_loop_at_every_block_size() {
     let (looped, asset) = project(Some((LOOP_START, LOOP_END)));
-    for dc_first in [true, false] {
-        let samples = stepped_dc(dc_first);
-        let reference = play(&mut resident(&looped, asset, &samples), 1, RENDERED, None);
-        let (at_end, at_start) = if dc_first {
-            ([0.0, 0.0], [1.0, -1.0])
-        } else {
-            ([1.0, -1.0], [0.0, 0.0])
+    let samples = stepped_dc(true);
+    let length = (LOOP_END - LOOP_START) as usize;
+    let total = LOOP_END as usize + length * 2;
+    for block in [64, 256, 512] {
+        let output = play(&mut resident(&looped, asset, &samples), block, total, None);
+        let first = &output[LOOP_START as usize..LOOP_END as usize];
+        assert!(first == &samples[LOOP_START as usize..LOOP_END as usize]);
+        for pass in 0..2 {
+            let start = LOOP_END as usize + pass * length;
+            assert!(
+                output[start..start + length] == *first,
+                "block {block}, pass {pass}"
+            );
+        }
+        let mut pages = Pages {
+            key: StreamSourceKey::new(31, asset),
+            samples: &samples,
         };
-        let mut checked = 0;
-        for wrap in wraps() {
-            let step = largest_step(&reference[wrap - 2 * F..wrap + 2 * F]);
-            assert!(
-                step <= 1.0 / F as f32 + 1e-6,
-                "dc_first {dc_first}: step {step} at wrap {wrap}"
-            );
-            // The outgoing side runs on past the loop end at (F-1)/F while
-            // the loop start ramps in at 1/F; the pre-seam frame is untouched.
-            assert_eq!(reference[wrap - 1], at_end, "dc_first {dc_first}");
-            let first = 1.0 / F as f32;
-            let expected = [
-                at_start[0] * first + at_end[0] * (1.0 - first),
-                at_start[1] * first + at_end[1] * (1.0 - first),
-            ];
-            assert!(
-                (reference[wrap][0] - expected[0]).abs() < 1e-6
-                    && (reference[wrap][1] - expected[1]).abs() < 1e-6,
-                "dc_first {dc_first}: {:?} != {expected:?}",
-                reference[wrap]
-            );
-            assert_eq!(reference[wrap + F - 1], at_start, "dc_first {dc_first}");
-            checked += 1;
-        }
-        assert_eq!(checked, 3);
-        for block in [64, 512] {
-            let output = play(
-                &mut resident(&looped, asset, &samples),
-                block,
-                RENDERED,
-                None,
-            );
-            assert_eq!(output, reference, "dc_first {dc_first}: block {block}");
-        }
-        for block in [1, 64, 512] {
-            let mut pages = Pages {
-                key: StreamSourceKey::new(31, asset),
-                samples: &samples,
-            };
-            let output = play(
+        assert_eq!(
+            play(
                 &mut streamed(&looped, asset),
                 block,
-                RENDERED,
-                Some(&mut pages),
-            );
-            assert_eq!(
-                output, reference,
-                "dc_first {dc_first}: streamed block {block}"
-            );
-        }
+                total,
+                Some(&mut pages)
+            ),
+            output
+        );
     }
 }
 
 #[test]
-fn content_continuous_across_the_seam_plays_without_a_dip() {
-    // A period that divides the loop length: the material past the loop end
-    // is exactly the material at its start.
+fn continuous_material_only_changes_in_the_short_end_envelope() {
     const PERIOD: usize = 600;
     let (looped, asset) = project(Some((2_400, 8_400)));
     let period: Vec<Frame> = (0..PERIOD)
@@ -230,18 +192,61 @@ fn content_continuous_across_the_seam_plays_without_a_dip() {
     let frames = 8_400 + 2 * 6_000;
     for block in [1, 64, 512] {
         let output = play(&mut resident(&looped, asset, &samples), block, frames, None);
-        // The un-looped continuation repeats the same period.
-        let deviation = output
-            .iter()
-            .enumerate()
-            .map(|(i, frame)| {
-                let expected = period[i % PERIOD];
-                (frame[0] - expected[0])
-                    .abs()
-                    .max((frame[1] - expected[1]).abs())
-            })
-            .fold(0.0, f32::max);
-        assert_eq!(deviation, 0.0, "block {block}");
+        for (i, sample) in output.iter().enumerate() {
+            let position = if i < 8_400 {
+                i
+            } else {
+                2_400 + (i - 8_400) % 6_000
+            };
+            let distance = 8_400 - position;
+            let gain = if distance <= 128 {
+                (distance - 1) as f32 / 127.0
+            } else {
+                1.0
+            };
+            let expected = [samples[position][0] * gain, samples[position][1] * gain];
+            assert!(
+                (sample[0] - expected[0]).abs() < 1e-6 && (sample[1] - expected[1]).abs() < 1e-6,
+                "frame {i}, block {block}"
+            );
+        }
+    }
+}
+
+#[test]
+fn short_loops_keep_their_start_and_end_without_block_dependence() {
+    for length in [1, 2, 3, 64, 128, 129, 256] {
+        let start = 2_400;
+        let end = start + length;
+        let (looped, asset) = project(Some((start, end)));
+        let samples = vec![[1.0, -1.0]; CLIP];
+        let frames = end as usize + length as usize * 3;
+        let reference = play(&mut resident(&looped, asset, &samples), 1, frames, None);
+        for wrap in (end as usize..frames).step_by(length as usize) {
+            assert_eq!(reference[wrap], [1.0, -1.0], "length {length}");
+            if length > 1 {
+                assert_eq!(reference[wrap - 1], [0.0, 0.0], "length {length}");
+            }
+        }
+        for block in [64, 512] {
+            assert_eq!(
+                play(&mut resident(&looped, asset, &samples), block, frames, None),
+                reference
+            );
+            let mut pages = Pages {
+                key: StreamSourceKey::new(31, asset),
+                samples: &samples,
+            };
+            assert_eq!(
+                play(
+                    &mut streamed(&looped, asset),
+                    block,
+                    frames,
+                    Some(&mut pages)
+                ),
+                reference
+            );
+        }
     }
 }
 
@@ -254,7 +259,7 @@ fn loop_off_output_is_the_unchanged_clip() {
             let output = play(
                 &mut resident(&linear, asset, &samples),
                 block,
-                RENDERED,
+                CLIP + 512,
                 None,
             );
             assert_eq!(output[..CLIP], samples[..], "dc_first {dc_first}: {block}");
@@ -276,25 +281,7 @@ fn the_first_pass_keeps_its_transient() {
 }
 
 #[test]
-fn a_seam_needs_a_wrapped_pass_and_a_loop_of_two_ramps() {
-    let short = LoopRegion::new(10, 10 + 2 * F as u64 - 1, true).unwrap();
-    assert_eq!(LoopSeam::for_pass(short, 1, RATE), None);
-    let region = LoopRegion::new(10, 10 + 2 * F as u64, true).unwrap();
-    assert_eq!(LoopSeam::for_pass(region, 0, RATE), None);
-    let seam = LoopSeam::for_pass(region, 1, RATE).unwrap();
-    // Only chunks starting inside the first F frames read an overrun, clipped
-    // to the end of the crossfade.
-    assert_eq!(seam.overrun(9, 64), None);
-    assert_eq!(seam.overrun(10, 64), Some((10 + 2 * F as u64, 64)));
-    assert_eq!(
-        seam.overrun(10 + 100, 64),
-        Some((10 + 2 * F as u64 + 100, 28))
-    );
-    assert_eq!(seam.overrun(10 + F as u64, 64), None);
-}
-
-#[test]
-fn streamed_demand_pins_the_overrun_with_the_wrapped_chunks_that_read_it() {
+fn streamed_demand_only_pins_audio_read_after_wrap() {
     let (looped, asset) = project(Some((LOOP_START, LOOP_END)));
     let samples = stepped_dc(true);
     let key = StreamSourceKey::new(31, asset);
@@ -317,8 +304,7 @@ fn streamed_demand_pins_the_overrun_with_the_wrapped_chunks_that_read_it() {
             .unwrap();
         indices
     };
-    // Frame 0 and loop start 2345 are in page 0; the overrun from 8901 is in
-    // page 2, read only by a wrapped pass's first chunks.
+    // The wrapped chunk reads page 0, but not the unrelated post-loop page 2.
     let overrun_page = LOOP_END / STREAM_PAGE_FRAMES as u64;
     let mut playback = streamed(&looped, asset);
     assert_eq!(next_pages(&mut playback), vec![0]);
@@ -326,8 +312,8 @@ fn streamed_demand_pins_the_overrun_with_the_wrapped_chunks_that_read_it() {
     assert_eq!(playback.position(), LOOP_START);
     let wrapped = next_pages(&mut playback);
     assert!(wrapped.contains(&0), "{wrapped:?}");
-    assert!(wrapped.contains(&overrun_page), "{wrapped:?}");
-    // Past the crossfade the chunk demands only what it reads itself.
+    assert!(!wrapped.contains(&overrun_page), "{wrapped:?}");
+    // The next chunk also demands only its own source pages.
     play(&mut playback, 512, F, Some(&mut pages));
     assert_eq!(next_pages(&mut playback), vec![0]);
     // Loop off demands only what the chunk itself reads.
@@ -337,36 +323,67 @@ fn streamed_demand_pins_the_overrun_with_the_wrapped_chunks_that_read_it() {
 }
 
 #[test]
-fn a_latent_graph_crossfades_the_seam_it_actually_outputs() {
+fn a_latent_graph_delays_the_end_fade_and_preserves_the_next_attack() {
     const LATENCY: usize = 7;
+    // Keep three wraps and a loop longer than the fade, while making the
+    // one-frame reference inexpensive. Its period is unaligned to both blocks.
+    const START: u64 = 41;
+    const END: u64 = 642;
+    const LENGTH: usize = (END - START) as usize;
+    const FRAMES: usize = END as usize + 3 * LENGTH - 100;
     let mut f = crate::signal_graph::tests::fixture(&[&[LATENCY as u32]], CLIP);
     f.editor
         .execute(Command::SetLoopRegion {
-            start: LOOP_START,
-            end: LOOP_END,
+            start: START,
+            end: END,
             enabled: true,
         })
         .unwrap();
-    let samples = stepped_dc(true);
+    let samples = vec![[1.0, -1.0]; CLIP];
     for audio in f.media.values_mut() {
         *audio = Audio::new(RATE, samples.clone()).unwrap();
     }
     let latent = || Playback::from_prepared(crate::signal_graph::tests::prepare(&f).unwrap());
     let mut playback = latent();
     assert_eq!(playback.main_output_latency_frames(), LATENCY as u32);
-    let reference = play(&mut playback, 1, RENDERED, None);
-    for wrap in wraps() {
+    let reference = play(&mut playback, 1, FRAMES, None);
+    for wrap in (END as usize..FRAMES).step_by(LENGTH) {
         let seam = wrap + LATENCY;
-        let step = largest_step(&reference[seam - 2 * F..seam + 2 * F]);
-        assert!(step <= 1.0 / F as f32 + 1e-6, "step {step} at seam {seam}");
         assert_eq!(reference[seam - 1], [0.0, 0.0]);
-        assert_eq!(reference[seam + F - 1], [1.0, -1.0]);
+        assert_eq!(reference[seam], [1.0, -1.0]);
     }
     for block in [64, 512] {
         assert_eq!(
-            play(&mut latent(), block, RENDERED, None),
+            play(&mut latent(), block, FRAMES, None),
             reference,
             "block {block}"
         );
     }
+}
+
+#[test]
+#[ignore = "release timing evidence; run explicitly"]
+fn profile_loop_render() {
+    use std::time::Instant;
+    let (looped, asset) = project(Some((LOOP_START, LOOP_END)));
+    let samples = vec![[0.25, -0.25]; CLIP];
+    let mut playback = resident(&looped, asset, &samples);
+    playback
+        .try_apply_declicked_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    let mut block = [[0.0; 2]; 256];
+    for _ in 0..100 {
+        playback.render(&mut block).unwrap();
+    }
+    let mut times = Vec::with_capacity(2000);
+    for _ in 0..2000 {
+        let start = Instant::now();
+        playback.render(&mut block).unwrap();
+        times.push(start.elapsed().as_nanos());
+    }
+    times.sort_unstable();
+    eprintln!(
+        "loop render 48k/256 1 resident track: p50={}ns p95={}ns p99={}ns",
+        times[1000], times[1900], times[1980]
+    );
 }

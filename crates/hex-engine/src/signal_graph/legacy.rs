@@ -111,10 +111,9 @@ impl RendererRuntime {
                         Owner::Return(index) => {
                             let bus = &project.return_buses[index];
                             let mut returned = self.return_scratch[index][0];
-                            compensation.effects(
-                                &compensation.graph.returns[index].devices,
+                            compensation.process_return(
+                                index,
                                 &mut self.return_chains[index],
-                                0,
                                 &mut returned,
                                 offset,
                                 &mut None,

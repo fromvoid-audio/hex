@@ -13,7 +13,8 @@ use std::{collections::BTreeMap, sync::Arc};
 /// project. The service clears its clipboard on project replacement. Asset
 /// metadata, scene and route dependencies are checked again at paste admission.
 /// Setup-only copies retain mixer/gain automation and the complete device chain,
-/// including both A/B authored states; all Arrangement and Session cells are omitted.
+/// including both A/B authored states. Arrangement clips and output mute
+/// ranges, and Session cells, are omitted.
 #[derive(Clone, Debug)]
 pub struct TrackClipboard {
     tempo: Arc<TempoMap>,
@@ -48,6 +49,7 @@ impl Project {
             if without_clips {
                 copy.content.audio_clips.clear();
                 copy.content.midi_clips.clear();
+                copy.group_output_mutes = Default::default();
             }
             tracks.push(copy);
         }

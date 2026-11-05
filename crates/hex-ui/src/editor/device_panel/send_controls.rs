@@ -158,15 +158,15 @@ pub fn finalize_send_controls_for_track(
             .snapshot()
             .is_some_and(|snapshot| snapshot.target == target)
             && !view.device_gesture.has_pending_terminal();
-        if finalized.previous != finalized.value || active_matches {
-            if let Err(error) = commit_owned_numeric_edit(view, target, &finalized) {
-                view.error = Some(
-                    format!("could not finish send edit: {error}")
-                        .to_lowercase()
-                        .into(),
-                );
-                return false;
-            }
+        if (finalized.previous != finalized.value || active_matches)
+            && let Err(error) = commit_owned_numeric_edit(view, target, &finalized)
+        {
+            view.error = Some(
+                format!("could not finish send edit: {error}")
+                    .to_lowercase()
+                    .into(),
+            );
+            return false;
         }
         entity.update(cx, |control, cx| {
             control.accept_finish_edit_for_owner(finalized, cx)

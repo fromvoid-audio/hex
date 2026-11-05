@@ -181,10 +181,10 @@ impl VoiceCoefficients {
             return self.band_limited::<CHECK_FINITE>(pcm, kernel, index, fraction, wrapped);
         }
         let mut next = index + 1;
-        if let Some((start, end)) = self.loop_offsets {
-            if next == end {
-                next = start;
-            }
+        if let Some((start, end)) = self.loop_offsets
+            && next == end
+        {
+            next = start;
         }
         next = next.min(length - 1);
         let (Some(a), Some(b)) = (

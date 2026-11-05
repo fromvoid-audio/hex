@@ -42,7 +42,7 @@ impl FileToken {
     /// True when saving `project` writes a newer schema than this file's, for
     /// example adding sinc v2 media to a schema63 file. Compares the actual
     /// saved formats, not application versions.
-    fn requires_schema_upgrade_for(&self, project: &Project) -> bool {
+    pub fn requires_schema_upgrade_for(&self, project: &Project) -> bool {
         self.requires_format_upgrade()
             || self
                 .1

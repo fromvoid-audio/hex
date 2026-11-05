@@ -9,7 +9,7 @@ fn chunk(out: &mut Vec<u8>, id: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(id);
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
     out.extend_from_slice(data);
-    if data.len() % 2 != 0 {
+    if !data.len().is_multiple_of(2) {
         out.push(0);
     }
 }

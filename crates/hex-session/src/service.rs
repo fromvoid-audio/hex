@@ -45,6 +45,7 @@ mod startup_failure_tests;
 pub use shutdown::{DROP_SHUTDOWN_BOUND, ShutdownError};
 mod streamed_export;
 pub use streamed_export::{StreamedExportRequest, StreamedExporter};
+mod publication_wait;
 mod resident_audio;
 mod resident_preview;
 mod resident_seek;
@@ -60,7 +61,8 @@ pub use audio_sink::{
     NativeSamplerRetryFacts, ResidentEffectPreparation, ResidentFileInput, ResidentFileMetadata,
     ResidentFilePublication, ResidentFileSeekPreparer, ResidentFileSeekRequest, ResidentFileSet,
     ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
-    ResidentPublicationPolicy, ResidentPublicationRefusal, ResidentRuntimeLoop, WorkerAudioSink,
+    ResidentPublicationPolicy, ResidentPublicationReadiness, ResidentPublicationRefusal,
+    ResidentRuntimeLoop, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -310,6 +312,21 @@ pub struct Event {
     pub tuning_library: Option<TuningLibraryResult>,
 }
 
+/// Best-effort display observation after a Solo edit commits and before its
+/// ordinary terminal. The one-slot channel can drop observations under
+/// backpressure; only the ordered Event terminal acknowledges the request.
+/// Consumers must match the generation and previous revision before painting,
+/// and retire the observation on the terminal or project replacement. It
+/// never acknowledges recovery, transfers project custody or proves audio application.
+pub struct SoloViewObservation {
+    pub project_generation: u64,
+    pub previous_revision: u64,
+    pub revision: u64,
+    pub tracks: Vec<(hex_project::TrackId, bool)>,
+}
+
+mod verified_device_preview;
+pub use verified_device_preview::VerifiedDeviceParameterSource;
 mod verified_gain;
 pub use verified_gain::VerifiedTrackGainSource;
 
@@ -560,6 +577,7 @@ pub enum Request {
         revision: u64,
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
+        new_track_gain: Option<f32>,
     },
     /// Captured VST3 catalog choice; native preparation remains on the canonical worker.
     InsertPluginEffect(PluginEffectInsertion),
@@ -583,6 +601,7 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
         destination: ArrangementDeviceDestination,
+        new_track_gain: Option<f32>,
     },
     /// Copy one captured Arrangement source to a new normal Console column.
     /// Resolve stamps before any gesture barrier, source preparation or history.
@@ -592,6 +611,7 @@ pub enum Request {
         source: hex_project::ClipId,
         before_track: Option<hex_project::TrackId>,
         scene: hex_project::SessionSceneTarget,
+        initial_gain: Option<f32>,
     },
     /// Retains the take through preparation; every path echoes request_id.
     CommitMidiTake {
@@ -665,6 +685,8 @@ pub enum Request {
     SamplerEdit(SamplerEdit),
     /// Worker-local continuation after a bounded native callback fence.
     ContinueSamplerEdit,
+    /// Patch the latest canonical device state. On resident output this waits
+    /// behind the current publication before preparing an edit of its own.
     SetDeviceParameter {
         device: hex_project::DeviceId,
         parameter: hex_lattice_contract::ParameterId,
@@ -721,6 +743,13 @@ pub enum Request {
         path: PathBuf,
         before_track: Option<hex_project::TrackId>,
         start: u64,
+    },
+    /// FIFO single-file import with an admission-time captured new-track gain.
+    ImportToNewTrackWithGain {
+        path: PathBuf,
+        before_track: Option<hex_project::TrackId>,
+        start: u64,
+        gain: f32,
     },
     ImportToSession {
         path: PathBuf,
@@ -1028,6 +1057,7 @@ pub struct Service {
     /// `None` after shutdown, which disconnects an idle blocking worker.
     requests: Option<request_cancellation::Sender>,
     events: diagnostics::EventReceiver,
+    solo_views: Receiver<SoloViewObservation>,
     diagnostics: Arc<diagnostics::Hooks>,
     export_events: Receiver<ExportEvent>,
     export_busy: Arc<AtomicBool>,
@@ -1152,8 +1182,9 @@ impl Service {
     }
 
     /// Compose the desktop audio adapter without opening a device on the caller.
-    /// The existing worker negotiates the actual rate before creating Session;
-    /// failed output setup retains canonical editing/saving in offline mode.
+    /// The adapter supplies the initial project rate without waiting for device
+    /// opening. Delayed results use its existing polling contract; failed output
+    /// setup retains canonical editing/saving in offline mode.
     pub fn with_audio_sink(
         history_capacity: usize,
         max_resident_frames: u64,
@@ -1332,6 +1363,7 @@ impl Service {
         let document_intent = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let worker_document_intent = Arc::clone(&document_intent);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
+        let (solo_view_tx, solo_views) = mpsc::sync_channel(1);
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
         let actor_export_events = export_event_tx.clone();
@@ -1439,6 +1471,7 @@ impl Service {
                     actor_export_events,
                     recovery,
                     resident_seek,
+                    solo_view_tx,
                 )
             })
             .map_err(ServiceError::Worker)?;
@@ -1451,6 +1484,7 @@ impl Service {
             )),
             diagnostics: Arc::clone(&diagnostics),
             events: diagnostics::EventReceiver::new(event_rx, diagnostics),
+            solo_views,
             export_events: export_event_rx,
             export_busy,
             shutdown,
@@ -1467,6 +1501,12 @@ impl Service {
     /// Construction failure recorded before the initial-state sender disconnects.
     pub fn startup_failure(&self) -> Option<&str> {
         self.startup_failure.get().map(String::as_str)
+    }
+
+    /// Receive a bounded, optional Solo display observation. A full channel
+    /// drops the observation; the ordinary terminal remains authoritative.
+    pub fn try_solo_view(&self) -> Result<SoloViewObservation, TryRecvError> {
+        self.solo_views.try_recv()
     }
 
     /// Submit without waiting for worker capacity.
@@ -1537,13 +1577,11 @@ impl Service {
                 | hex_project::BounceTarget::AudioGroup { clips: ids, .. },
             ..
         } = &request
-        {
-            if ids.is_empty()
+            && (ids.is_empty()
                 || ids.len() > hex_project::MAX_CLIPS
-                || ids.capacity() > hex_project::MAX_CLIPS
-            {
-                return Err(SubmitError::Busy(request, BusyReason::InvalidBounceTarget));
-            }
+                || ids.capacity() > hex_project::MAX_CLIPS)
+        {
+            return Err(SubmitError::Busy(request, BusyReason::InvalidBounceTarget));
         }
         if matches!(&request, Request::ResidentArrangementSeek(_)) {
             if self.arrangement_seek.is_some() {
@@ -2144,6 +2182,7 @@ fn run_worker(
     export_events: SyncSender<ExportEvent>,
     recovery: Option<PathBuf>,
     mut resident_seek: Option<resident_seek::Lane>,
+    solo_views: SyncSender<SoloViewObservation>,
 ) {
     let mut revision = 0_u64;
     let mut unsaved = false;
@@ -2460,6 +2499,34 @@ fn run_worker(
             control_lanes_pending(resident_seek.as_ref(), &export_lane)
         },
     ) {
+        let queued = if events.resident_publication_enabled()
+            && session.audio_mode() == DocumentAudioMode::Resident
+            && matches!(
+                &queued.request,
+                Request::Edit(
+                    Command::ToggleDeviceBypass { .. }
+                        | Command::SetDeviceBypass { .. }
+                        | Command::ReplaceDeviceState { .. }
+                ) | Request::DeviceGesture(
+                    GestureRequest::Change { .. }
+                        | GestureRequest::ChangePair { .. }
+                        | GestureRequest::ChangeSnapshot { .. }
+                        | GestureRequest::ChangeEqCreation { .. }
+                        | GestureRequest::Commit { .. }
+                        | GestureRequest::CommitPair { .. }
+                        | GestureRequest::CommitSnapshot { .. }
+                        | GestureRequest::CommitEqCreation { .. }
+                        | GestureRequest::Cancel { .. }
+                ) | Request::SetDeviceParameter { .. }
+            ) {
+            match events.defer_publication(queued) {
+                Some(queued) => queued,
+                None => continue,
+            }
+        } else {
+            queued
+        };
+        let publication_wait_failure = queued.publication_wait_failure;
         // Requests whose handler takes the stopped Arrangement lease first begin
         // it here; a live callback that has not answered parks the request and
         // returns this worker to its loop (see `stopped_arrangement`, #4544).
@@ -2496,9 +2563,17 @@ fn run_worker(
             queued
         };
         events.begin_diagnostics(&queued, project_generation, revision);
-        events.begin_request(&document_intent, queued.document_intent);
+        events.begin_request(
+            &document_intent,
+            queued.document_intent,
+            queued.publication_waited,
+        );
         let save_correlation = queued.save_correlation;
         let (request, mut import_decode) = truncated_import::admit(queued.request);
+        let solo_request = matches!(
+            &request,
+            Request::Edit(Command::ToggleSolo { .. } | Command::ToggleSoloTracks { .. })
+        );
         let seek_intent = match &request {
             Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
             _ => None,
@@ -2519,13 +2594,12 @@ fn run_worker(
                 | Request::Open(_)
                 | Request::OpenWith { .. }
                 | Request::OpenWithAudioMode { .. }
-        ) {
-            if let Some(gain) = pending_sampler_parameter.take() {
-                gain.cancel().store(true, Ordering::Release);
-                sampler_edit_complete = Some(gain.request_id());
-                if let Some(audio) = events.sampler_edit_audio() {
-                    audio.cancel_sampler_edit();
-                }
+        ) && let Some(gain) = pending_sampler_parameter.take()
+        {
+            gain.cancel().store(true, Ordering::Release);
+            sampler_edit_complete = Some(gain.request_id());
+            if let Some(audio) = events.sampler_edit_audio() {
+                audio.cancel_sampler_edit();
             }
         }
         let mut midi_take_complete = match &request {
@@ -2822,6 +2896,7 @@ fn run_worker(
                 revision: expected_revision,
                 class,
                 type_id,
+                new_track_gain,
             } => Some(
                 if *expected_generation != project_generation || *expected_revision != revision {
                     Err("instrument insertion canceled · project changed".to_owned())
@@ -2839,12 +2914,13 @@ fn run_worker(
                             hex_storage::text::lowercase_outside_verbatim(&reason.to_string())
                         })
                         .and_then(|state| {
-                            Ok(Command::InsertDefaultTrackWithDevice {
-                                before_track: None,
-                                slot: hex_project::TrackDeviceSlot::Instrument,
+                            Ok(device_track_command(
+                                None,
+                                hex_project::TrackDeviceSlot::Instrument,
                                 state,
-                                device_name: native_device_name(*class, *type_id)?,
-                            })
+                                native_device_name(*class, *type_id)?,
+                                *new_track_gain,
+                            ))
                         })
                 },
             ),
@@ -2882,8 +2958,10 @@ fn run_worker(
                     Command::MoveClipWithOverwrite { .. }
                     | Command::MoveMidiClipWithOverwrite { .. }
                     | Command::CopyClipTo { .. }
-                    | Command::CopyMidiClipTo { .. } => true,
-                    Command::MoveClipsWithOverwrite { clips, .. } => {
+                    | Command::CopyMidiClipTo { .. }
+                    | Command::DuplicateAliasClipToNewTrack { .. } => true,
+                    Command::MoveClipsWithOverwrite { clips, .. }
+                    | Command::DuplicateAliasClipsAt { clips, .. } => {
                         !clips.is_empty() && clips.len() <= hex_project::MAX_CLIPS
                     }
                     _ => false,
@@ -2904,6 +2982,7 @@ fn run_worker(
                 source,
                 before_track,
                 scene,
+                initial_gain,
             } => Some(
                 if *captured_generation != project_generation || *captured_revision != revision {
                     Err("console clip insertion canceled · project changed".into())
@@ -2920,12 +2999,14 @@ fn run_worker(
                         source: *source,
                         before_track: *before_track,
                         scene: *scene,
+                        initial_gain: *initial_gain,
                     })
                 } else if session.project().midi_clip(*source).is_some() {
                     Ok(Command::CopyArrangementMidiToNewSessionTrack {
                         source: *source,
                         before_track: *before_track,
                         scene: *scene,
+                        initial_gain: *initial_gain,
                     })
                 } else {
                     Err("arrangement source no longer exists".into())
@@ -3138,6 +3219,9 @@ fn run_worker(
             .err(),
             _ => None,
         });
+        if barrier_failure.is_none() {
+            barrier_failure = publication_wait_failure.map(str::to_owned);
+        }
         if save_correlation.is_some_and(|identity| {
             identity.project_generation != project_generation || identity.revision != revision
         }) {
@@ -3424,6 +3508,24 @@ fn run_worker(
                 save_complete = true;
             }
         } else if let Some(reason) = barrier_failure {
+            if let Request::DeviceGesture(gesture) = &request {
+                gesture_request = true;
+                gesture_protocol_ack = true;
+                gesture_ack = Some(GestureAck {
+                    key: gesture.key(),
+                    phase: gesture.phase(),
+                    sequence: gesture.sequence(),
+                    accepted: false,
+                    preview_retained: matches!(
+                        gesture.phase(),
+                        crate::device_gesture::GesturePhase::Commit
+                            | crate::device_gesture::GesturePhase::Cancel
+                    ) && device_gesture
+                        .snapshot()
+                        .is_some_and(|active| active.key == gesture.key()),
+                    reason: Some(reason.clone()),
+                });
+            }
             sampler_edit_complete = match &request {
                 Request::SamplerEdit(edit) => Some(edit.request_id()),
                 _ => None,
@@ -3561,6 +3663,7 @@ fn run_worker(
                         && matches!(
                             gesture,
                             GestureRequest::Begin { .. }
+                                | GestureRequest::BeginTrackGains { .. }
                                 | GestureRequest::BeginSnapshot { .. }
                                 | GestureRequest::BeginEqCreation { .. }
                         ) {
@@ -3938,6 +4041,7 @@ fn run_worker(
                     class,
                     type_id,
                     destination,
+                    new_track_gain,
                 } => {
                     let command = if device_gesture.snapshot().is_some() {
                         Err("device edit is still applying; drag again".to_owned())
@@ -3946,7 +4050,13 @@ fn run_worker(
                     {
                         Err("device drag canceled · project changed".to_owned())
                     } else {
-                        arrangement_device_command(session.project(), class, type_id, destination)
+                        arrangement_device_command(
+                            session.project(),
+                            class,
+                            type_id,
+                            destination,
+                            new_track_gain,
+                        )
                     };
                     match command.and_then(|command| {
                         resident_audio::execute_command(
@@ -4597,12 +4707,13 @@ fn run_worker(
                 | Request::ImportToTrack { .. }
                 | Request::ImportToTrackWithOverwrite { .. }
                 | Request::ImportToNewTrack { .. }
+                | Request::ImportToNewTrackWithGain { .. }
                 | Request::ImportToSession { .. })
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident =>
                 {
                     let result = (|| {
-                        let (path, destination, overwrite) = match request {
+                        let (path, destination, overwrite, gain) = match request {
                             Request::Import(path) => (
                                 path,
                                 AudioBatchDestination::NewTracks {
@@ -4610,13 +4721,20 @@ fn run_worker(
                                     start: 0,
                                 },
                                 false,
+                                None,
                             ),
-                            Request::ImportToTrack { path, track, start } => {
-                                (path, AudioBatchDestination::Track { track, start }, false)
-                            }
-                            Request::ImportToTrackWithOverwrite { path, track, start } => {
-                                (path, AudioBatchDestination::Track { track, start }, true)
-                            }
+                            Request::ImportToTrack { path, track, start } => (
+                                path,
+                                AudioBatchDestination::Track { track, start },
+                                false,
+                                None,
+                            ),
+                            Request::ImportToTrackWithOverwrite { path, track, start } => (
+                                path,
+                                AudioBatchDestination::Track { track, start },
+                                true,
+                                None,
+                            ),
                             Request::ImportToNewTrack {
                                 path,
                                 before_track,
@@ -4628,6 +4746,21 @@ fn run_worker(
                                     start,
                                 },
                                 false,
+                                None,
+                            ),
+                            Request::ImportToNewTrackWithGain {
+                                path,
+                                before_track,
+                                start,
+                                gain,
+                            } => (
+                                path,
+                                AudioBatchDestination::NewTracks {
+                                    before_track,
+                                    start,
+                                },
+                                false,
+                                Some(gain),
                             ),
                             Request::ImportToSession { path, track, scene } => (
                                 path,
@@ -4635,6 +4768,7 @@ fn run_worker(
                                     crate::import_batch::ConsoleDestination::Cell { track, scene },
                                 ),
                                 false,
+                                None,
                             ),
                             _ => return Err(SessionError::Invalid("audio import request changed")),
                         };
@@ -4645,7 +4779,11 @@ fn run_worker(
                             &mut session,
                             path,
                             destination,
-                            overwrite,
+                            crate::import_batch::AudioImportOptions {
+                                overwrite,
+                                new_track_gain: gain,
+                                ..Default::default()
+                            },
                             hex_engine::AudioSourceContext {
                                 project_generation,
                                 editor_revision: revision.saturating_add(1),
@@ -4812,6 +4950,37 @@ fn run_worker(
                     path,
                     before_track,
                     start,
+                    compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    ),
+                    &mut import_decode,
+                ) {
+                    Ok(prepared) => {
+                        unsaved = true;
+                        replacement_revision = Some(prepared);
+                        status = Some("audio imported to new track".into());
+                    }
+                    Err(reason) => error = Some(reason),
+                },
+                Request::ImportToNewTrackWithGain {
+                    path,
+                    before_track,
+                    start,
+                    gain,
+                } => match import_to_new_track_with_gain(
+                    &mut session,
+                    path,
+                    before_track,
+                    start,
+                    gain,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                     export_lane.admission_with_resident_owners(
                         compiled.as_ref().map(|(_, p)| {
@@ -5581,7 +5750,16 @@ fn run_worker(
                                 Ok((_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
                                     replacement_revision = Some(prepared);
-                                    status = Some("device parameter changed".into());
+                                    status = Some(
+                                        if events.resident_publication_enabled()
+                                            && session.audio_mode() == DocumentAudioMode::Resident
+                                        {
+                                            "resident edit accepted · waiting for audio"
+                                        } else {
+                                            "device parameter changed"
+                                        }
+                                        .into(),
+                                    );
                                 }
                                 Ok(_) => status = Some("no change".into()),
                                 Err(reason) => error = Some(hex_storage::text::lowercase_outside_verbatim(&reason.to_string())),
@@ -6357,31 +6535,24 @@ fn run_worker(
                         (Some(_), Ok(_)) if stale_consent => {
                             error = Some("project changed · format upgrade cancelled".into());
                         }
+                        (Some(handle), Ok(project))
+                            if !consent && handle.token.requires_schema_upgrade_for(&project) =>
+                        {
+                            save_confirmation_required = true;
+                            error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
+                        }
                         (Some(handle), Ok(project)) => {
-                            if !consent {
-                                match handle.token.requires_save_confirmation_within(
-                                    &project,
-                                    events.legacy_reader_limit(),
-                                ) {
-                                    Ok(true) => {
-                                        save_confirmation_required = true;
-                                        error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
-                                    }
-                                    Ok(false) => {}
-                                    Err(reason) => {
-                                        error = Some(hex_storage::text::lowercase_outside_verbatim(
-                                            &reason.to_string(),
-                                        ))
-                                    }
+                            match hex_storage::prepare_replacement_within(
+                                &handle.path,
+                                &handle.token,
+                                &project,
+                                events.legacy_reader_limit(),
+                            ) {
+                                Ok(prepared) if !consent && prepared.requires_confirmation() => {
+                                    save_confirmation_required = true;
+                                    error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
                                 }
-                            }
-                            // Preflight has not touched the original, recovery or token.
-                            if error.is_none() {
-                                match hex_storage::replace_existing(
-                                    &handle.path,
-                                    &handle.token,
-                                    &project,
-                                ) {
+                                Ok(prepared) => match prepared.publish() {
                                     Ok(outcome) => {
                                         let commit = apply_current_save_outcome(handle, outcome);
                                         unsaved = commit.dirty;
@@ -6404,6 +6575,11 @@ fn run_worker(
                                             &reason.to_string(),
                                         ))
                                     }
+                                },
+                                Err(reason) => {
+                                    error = Some(hex_storage::text::lowercase_outside_verbatim(
+                                        &reason.to_string(),
+                                    ))
                                 }
                             }
                         }
@@ -6696,10 +6872,9 @@ fn run_worker(
                             Ok(playback) => {
                                 live_expression_complete = Some(Arc::clone(&input));
                                 if let Some(previous) = live_expression.replace(Arc::clone(&input))
+                                    && !Arc::ptr_eq(&previous, &input)
                                 {
-                                    if !Arc::ptr_eq(&previous, &input) {
-                                        previous.cancel();
-                                    }
+                                    previous.cancel();
                                 }
                                 keyboard_tuning_hint = playback.computer_keyboard_tuning_hint();
                                 computer_keyboard_playback = Some(playback);
@@ -6797,10 +6972,9 @@ fn run_worker(
                             Ok((project, prepared, playback, is_preview)) => {
                                 if let Some(previous) =
                                     audition_activation.replace(Arc::clone(&input))
+                                    && !Arc::ptr_eq(&previous, &input)
                                 {
-                                    if !Arc::ptr_eq(&previous, &input) {
-                                        previous.cancel();
-                                    }
+                                    previous.cancel();
                                 }
                                 computer_keyboard_playback = Some(playback);
                                 if is_preview {
@@ -7307,6 +7481,27 @@ fn run_worker(
                     .flatten();
             }
         }
+        if solo_request && canonical_changed && error.is_none() {
+            let mut tracks = Vec::new();
+            if tracks
+                .try_reserve_exact(state.project.tracks().len())
+                .is_ok()
+            {
+                tracks.extend(
+                    state
+                        .project
+                        .tracks()
+                        .iter()
+                        .map(|track| (track.id(), track.soloed())),
+                );
+                let _ = solo_views.try_send(SoloViewObservation {
+                    project_generation,
+                    previous_revision: revision_before_request,
+                    revision,
+                    tracks,
+                });
+            }
+        }
         if let Some(untitled_path) = recovery.as_deref() {
             let journal_result = recovery_tracker.maintain(
                 recovery::RecoveryContext {
@@ -7638,10 +7833,10 @@ fn run_worker(
         ) {
             return;
         }
-        if let Some(job) = export_job {
-            if let Err(event) = export_lane.submit(job) {
-                let _ = export_events.try_send(event);
-            }
+        if let Some(job) = export_job
+            && let Err(event) = export_lane.submit(job)
+        {
+            let _ = export_events.try_send(event);
         }
         if let Some(event) = export_completion {
             let _ = export_events.try_send(event);
@@ -7999,6 +8194,70 @@ fn import_to_new_track(
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn import_to_new_track_with_gain(
+    session: &mut Session,
+    path: PathBuf,
+    before_track: Option<hex_project::TrackId>,
+    start: u64,
+    gain: f32,
+    previous: Option<&PreparedRevision>,
+    admission: sampler_export::Admission<'_>,
+    decode: &mut truncated_import::ImportDecode,
+) -> Result<Arc<PreparedRevision>, String> {
+    let options = crate::import_batch::AudioImportOptions {
+        new_track_gain: Some(gain),
+        overwrite: false,
+        ..Default::default()
+    };
+    options.validate().map_err(|error| error.to_string())?;
+    let path = absolute_document_path(&path)?;
+    let destination = AudioBatchDestination::NewTracks {
+        before_track,
+        start,
+    };
+    let reused = session.unchanged_resident_import(&path);
+    if reused.is_none()
+        && let Some(source) = decode
+            .plan(session, &path, None)
+            .map_err(|e| e.to_string())?
+    {
+        let expected = session.project().clone();
+        return session
+            .import_verified_batch_revision(
+                vec![source],
+                destination,
+                &expected,
+                previous,
+                options,
+                || Ok(()),
+                crate::import_batch::prepare_asset_free,
+            )
+            .map(|(_, prepared)| prepared)
+            .map_err(|e| e.to_string());
+    }
+    let prepared = match reused {
+        Some(prepared) => prepared,
+        None => decode_resident_member(session, path, decode)?,
+    };
+    admission
+        .check_legacy_stage(session, std::slice::from_ref(&prepared))
+        .map_err(|e| e.to_string())?;
+    let expected = session.project().clone();
+    session
+        .import_prepared_batch_revision_using(
+            vec![prepared],
+            destination,
+            &expected,
+            previous,
+            options,
+            || Ok(()),
+            crate::import_batch::prepare_asset_free,
+        )
+        .map(|(_, prepared)| prepared)
+        .map_err(|e| hex_storage::text::lowercase_outside_verbatim(&e.to_string()))
+}
+
 fn import_to_session(
     session: &mut Session,
     path: PathBuf,
@@ -8060,27 +8319,51 @@ fn native_device_name(
         )
 }
 
+fn device_track_command(
+    before_track: Option<hex_project::TrackId>,
+    slot: hex_project::TrackDeviceSlot,
+    state: hex_lattice_contract::NativeDeviceState,
+    device_name: String,
+    gain: Option<f32>,
+) -> Command {
+    match gain {
+        Some(gain) => Command::InsertDefaultTrackWithDeviceAndGain {
+            before_track,
+            slot,
+            state,
+            device_name,
+            gain,
+        },
+        None => Command::InsertDefaultTrackWithDevice {
+            before_track,
+            slot,
+            state,
+            device_name,
+        },
+    }
+}
+
 fn arrangement_device_command(
     project: &hex_project::Project,
     class: hex_engine::NativeDeviceClass,
     type_id: hex_lattice_contract::DeviceTypeId,
     destination: ArrangementDeviceDestination,
+    new_track_gain: Option<f32>,
 ) -> Result<Command, String> {
     use hex_engine::NativeDeviceClass;
     let state = hex_engine::default_native_device_state_for_class(class, type_id)
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     match destination {
-        ArrangementDeviceDestination::NewTrack { before_track } => {
-            Ok(Command::InsertDefaultTrackWithDevice {
-                before_track,
-                slot: match class {
-                    NativeDeviceClass::Instrument => hex_project::TrackDeviceSlot::Instrument,
-                    NativeDeviceClass::Effect => hex_project::TrackDeviceSlot::Effect,
-                },
-                state,
-                device_name: native_device_name(class, type_id)?,
-            })
-        }
+        ArrangementDeviceDestination::NewTrack { before_track } => Ok(device_track_command(
+            before_track,
+            match class {
+                NativeDeviceClass::Instrument => hex_project::TrackDeviceSlot::Instrument,
+                NativeDeviceClass::Effect => hex_project::TrackDeviceSlot::Effect,
+            },
+            state,
+            native_device_name(class, type_id)?,
+            new_track_gain,
+        )),
         ArrangementDeviceDestination::ExistingTrack { track, instrument } => {
             let target = project
                 .track(track)
@@ -8113,6 +8396,8 @@ mod browser_instrument_tests;
 mod clip_move_tests;
 #[cfg(test)]
 mod clip_paste_tests;
+#[cfg(test)]
+mod split_carry_tests;
 #[cfg(test)]
 #[path = "service/track_reorder_tests.rs"]
 mod track_reorder_tests;
@@ -10860,6 +11145,7 @@ mod service_tests {
                 class: hex_engine::NativeDeviceClass::Effect,
                 type_id: utility,
                 destination: ArrangementDeviceDestination::NewTrack { before_track: None },
+                new_track_gain: None,
             })
             .expect("arrangement drop during parameter gesture");
         let refused_arrangement = next_event(&service);
@@ -11625,6 +11911,7 @@ mod service_tests {
         let (requests, _request_receiver) = mpsc::sync_channel(0);
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
+        let (_solo_sender, solo_views) = mpsc::sync_channel(1);
         let service = Service {
             diagnostics: Arc::new(diagnostics::Hooks::default()),
             export_test_hook: Arc::new(std::sync::Mutex::new(None)),
@@ -11636,6 +11923,7 @@ mod service_tests {
                 events,
                 Arc::new(diagnostics::Hooks::default()),
             ),
+            solo_views,
             export_events,
             export_busy: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),

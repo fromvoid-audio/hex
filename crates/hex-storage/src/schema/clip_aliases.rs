@@ -149,6 +149,7 @@ pub(crate) fn require_legacy_compatible(project: &Project) -> Result<(), Storage
 fn neutral(content: &AudioClipContent) -> Arc<AudioClipContent> {
     Arc::new(AudioClipContent {
         events: None,
+        musical_event_source: None,
         source_offset: content.source_offset,
         source_length: content.source_length,
         clock: content.clock,

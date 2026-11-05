@@ -215,48 +215,61 @@ public:
 
     // One initial stopped capture; later project restore/capture transactions
     // must reuse the same actual instance owner, not create a competing state path.
+    enum class CaptureResult { Captured, Overflow, Refused };
     bool capture_initial_state_on_control(CapturedState& result) {
-        return capture_state_on_control(result,true);
+        uint32_t observed=0;
+        return capture_state_on_control(result,true,observed)==CaptureResult::Captured;
     }
     // Existing activated instance, including concurrent realtime processing as
     // permitted by IComponent::getState. The main lane owns these streams;
     // the protocol must finish capture before epoch changes or teardown.
     // Reuse only exclusive control streams; never initialize/synchronize the
     // controller again or replace the original startup capture.
-    bool capture_current_state_on_control(CapturedState& result) {
-        return capture_state_on_control(result,false) && result.component;
+    CaptureResult capture_current_state_on_control(CapturedState& result,uint32_t& observed) {
+        const auto outcome=capture_state_on_control(result,false,observed);
+        return outcome==CaptureResult::Captured && !result.component?CaptureResult::Refused:outcome;
     }
 private:
-    bool capture_state_on_control(CapturedState& result,bool initial) {
+    CaptureResult capture_state_on_control(CapturedState& result,bool initial,uint32_t& observed) {
+        observed=0;
         if (![NSThread isMainThread] || !configured || !active || (initial && processing.load()) || quarantined.load() ||
-            (initial && (component_stream || controller_stream))) return false;
+            (initial && (component_stream || controller_stream))) return CaptureResult::Refused;
         CapturedState captured{};
         if(initial) component_stream=new(std::nothrow) StateStream(StateStream::capacity);
-        if (!component_stream || (!initial && !component_stream->reset_write_on_control(StateStream::capacity))) return false;
+        if (!component_stream || (!initial && !component_stream->reset_write_on_control(StateStream::capacity))) return CaptureResult::Refused;
         const auto first=component->getState(component_stream);
-        if (!component_stream->valid() || !component_stream->exclusive()) return false;
+        if (!component_stream->valid() || !component_stream->exclusive()) return CaptureResult::Refused;
+        if (component_stream->overflow()) {
+            if(first!=kResultOk && first!=kResultFalse && first!=kInvalidArgument) return CaptureResult::Refused;
+            observed=component_stream->overflow();return CaptureResult::Overflow;
+        }
         if (first==kResultOk) {
             captured.component=true;captured.component_bytes=static_cast<uint32>(component_stream->size());
             std::copy_n(component_stream->bytes.begin(),captured.component_bytes,captured.bytes.begin());
-        } else if (first!=kNotImplemented && first!=kResultFalse) return false;
+        } else if (first!=kNotImplemented && first!=kResultFalse) return CaptureResult::Refused;
         if (controller) {
             if (initial && !restored && captured.component) {
                 if (!component_stream->rewind_read_only_on_control() ||
                     controller->setComponentState(component_stream)!=kResultOk ||
-                    !component_stream->valid() || !component_stream->exclusive()) return false;
+                    !component_stream->valid() || !component_stream->exclusive()) return CaptureResult::Refused;
                 if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
-                    host->refusal_flags()) return false;
+                    host->refusal_flags()) return CaptureResult::Refused;
             }
             if(initial) controller_stream=new(std::nothrow) StateStream(StateStream::capacity-captured.component_bytes);
-            if (!controller_stream || (!initial && !controller_stream->reset_write_on_control(StateStream::capacity-captured.component_bytes))) return false;
+            if (!controller_stream || (!initial && !controller_stream->reset_write_on_control(StateStream::capacity-captured.component_bytes))) return CaptureResult::Refused;
             const auto second=controller->getState(controller_stream);
-            if (!controller_stream->valid() || !controller_stream->exclusive()) return false;
+            if (!controller_stream->valid() || !controller_stream->exclusive()) return CaptureResult::Refused;
+            if (controller_stream->overflow()) {
+                if((!initial && !captured.component) ||
+                    (second!=kResultOk && second!=kResultFalse && second!=kInvalidArgument)) return CaptureResult::Refused;
+                observed=controller_stream->overflow();return CaptureResult::Overflow;
+            }
             if (second==kResultOk) {
                 captured.controller=true;captured.controller_bytes=static_cast<uint32>(controller_stream->size());
                 std::copy_n(controller_stream->bytes.begin(),captured.controller_bytes,captured.bytes.begin()+captured.component_bytes);
-            } else if (second!=kNotImplemented && second!=kResultFalse) return false;
+            } else if (second!=kNotImplemented && second!=kResultFalse) return CaptureResult::Refused;
         }
-        result=captured;return true;
+        result=captured;return CaptureResult::Captured;
     }
 public:
 
@@ -299,6 +312,18 @@ public:
         return processor->getTailSamples();
     }
 
+    // Explicit latency-facts renewal at the stopped main-lane barrier. Normal
+    // epochs do not reset component activity or DSP history. No rollback after
+    // a foreign refusal: the existing terminal owner retains this component.
+    bool reactivate_on_control() {
+        if (![NSThread isMainThread] || !configured || !active || processing.load() ||
+            processing_fault.load() || quarantined.load()) return false;
+        if (component->setActive(false)!=kResultOk) return refuse_cleanup();
+        active=false;
+        if (component->setActive(true)!=kResultOk) return refuse_cleanup();
+        active=true;
+        return true;
+    }
     bool start_processing() {
         if ([NSThread isMainThread] || !configured || !active || processing.load() || processing_fault.load() || quarantined.load()) return false;
         if (processing_thread != std::thread::id{} && processing_thread != std::this_thread::get_id()) return false;
@@ -378,6 +403,9 @@ public:
     uint64 host_callback_revision_on_control() const { return host?host->callback_revision_on_control():0; }
     void complete_parameter_edit() { if(host) host->complete_parameter_edit(); }
     uint32 host_refusals() const { return host?host->refusal_flags():0; }
+    void observe_latency_restarts() { if(host) host->observe_latency_restarts(); }
+    uint64 latency_restart() const { return host?host->latency_restart():0; }
+    void cover_latency_restart(uint64 covered) { if(host) host->cover_latency_restart(covered); }
 
     bool close() {
         if (![NSThread isMainThread] || processing.load() || quarantined.load()) return false;

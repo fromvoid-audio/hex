@@ -431,6 +431,7 @@ impl EditorView {
     }
 
     pub(super) fn sample_filters(&self, cx: &mut Context<Self>) -> Div {
+        let control = self.browser_random_button(cx);
         let mut content = div().flex().flex_col().flex_shrink_0().child(
             div()
                 .h(px(23.0))
@@ -441,6 +442,8 @@ impl EditorView {
                 .child(
                     div()
                         .flex_1()
+                        .min_w_0()
+                        .truncate()
                         .text_xs()
                         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                         .child(theme::text(self.sample_results_count_text(cx))),
@@ -456,7 +459,8 @@ impl EditorView {
                     "add sample folder",
                     |view, _, cx| view.open_browser_folder(cx),
                     cx,
-                )),
+                ))
+                .child(control),
         );
         let mut filters = div().flex().flex_wrap().px_1().gap_1();
         for (index, source) in std::iter::once(None)

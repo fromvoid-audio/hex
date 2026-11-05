@@ -57,10 +57,28 @@ pub enum EditorAudioEvent {
         output_identity: u64,
         state: EditorPublicationState,
     },
+    /// Project replacement kept this output for `project_generation`. The UI
+    /// keeps the endpoint it held across the replacement when its identity
+    /// matches; otherwise it requests a fresh output.
+    OutputRebound {
+        project_generation: u64,
+        output_identity: u64,
+    },
+    /// Project replacement retires this output for `project_generation`. The
+    /// UI closes the endpoint it held across the replacement so the worker can
+    /// open a fresh output; the next `Opened`/`Unavailable` follows.
+    OutputReleased {
+        project_generation: u64,
+        old_output_identity: u64,
+    },
     /// The default output device or its nominal rate changed after this
     /// output opened. The UI moves to the new route through the same
     /// recovery as restart audio. Sent at most once per output.
     OutputRouteChanged { output_identity: u64 },
+    /// A pending SDK restart on this exact ordinary installed graph.
+    NativeLatencyRestart {
+        source: hex_audio::prepared::AppliedAudioSource,
+    },
     /// The complete set of vst3 device ids on this output whose endpoint
     /// faulted and now passes audio through (#3977). Sent when the set
     /// changes; an empty set clears every degraded marker.

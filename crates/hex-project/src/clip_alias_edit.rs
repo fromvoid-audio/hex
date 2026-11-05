@@ -55,6 +55,8 @@ impl Plan {
         let explicit = matches!(
             command,
             Command::DuplicateAliasClips(_)
+                | Command::DuplicateAliasClipsAt { .. }
+                | Command::DuplicateAliasClipToNewTrack { .. }
                 | Command::MakeClipsUnique(_)
                 | Command::ApplyClipSettingsToAliases(_)
                 | Command::DuplicateSessionCell { alias: true, .. }
@@ -145,14 +147,14 @@ impl Plan {
             if let Some(clip) = clip
                 && let Some(source) = project.clip_alias(clip)
             {
-                let prefix = if let Command::TrimMidiClipEdge { edge, beat, .. } = command {
-                    project
+                let prefix = match command {
+                    Command::TrimMidiClipEdge { edge, beat, .. } => project
                         .midi_clip(clip)
                         .ok_or(Invalid("alias trim member missing"))?
                         .preview_edge_trim(*edge, *beat)?
-                        .source_prefix()
-                } else {
-                    BeatTime::ZERO
+                        .source_prefix(),
+                    Command::UpdateMidiNotesWithSourcePrefix { prefix, .. } => *prefix,
+                    _ => BeatTime::ZERO,
                 };
                 writes.push(Write {
                     source,

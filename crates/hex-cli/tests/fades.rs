@@ -153,9 +153,9 @@ fn saved_fade_endpoints_and_recursive_splits_export_identical_pcm() {
             })
             .unwrap();
         assert_eq!(fixture.render(editor.project(), "split"), original);
-        assert!(editor.undo());
+        assert!(editor.try_undo().unwrap());
         assert_eq!(fixture.render(editor.project(), "undo"), original);
-        assert!(editor.redo());
+        assert!(editor.try_redo().unwrap());
         assert_eq!(fixture.render(editor.project(), "redo"), original);
     }
 }
@@ -246,8 +246,8 @@ fn lower_fade_resize_save_reopen_exports_the_resized_boundary_and_one_step_histo
         &resized,
         &[0, 0, 0, 2731, 5461, 8192, 8192, 8192, 8192, 4096, 0],
     );
-    assert!(editor.undo());
+    assert!(editor.try_undo().unwrap());
     assert_eq!(fixture.render(editor.project(), "undo-resize"), left);
-    assert!(editor.redo());
+    assert!(editor.try_redo().unwrap());
     assert_eq!(fixture.render(editor.project(), "redo-resize"), resized);
 }

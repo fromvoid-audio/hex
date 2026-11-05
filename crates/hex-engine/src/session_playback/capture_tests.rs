@@ -1,4 +1,6 @@
 use super::*;
+#[path = "capture_tests/render_work_tests.rs"]
+mod render_work_tests;
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{ReturnTrackSnapshot, SendLevelSnapshot};
 
@@ -631,6 +633,56 @@ fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::
 }
 
 #[test]
+fn loop_end_fades_audio_without_fading_the_hybrid_instrument() {
+    let device_type = hex_lattice_contract::DeviceTypeId::from_static("test.capture.analytic");
+    let definition = ContinuityInstrumentDefinition {
+        id: device_type,
+        levels: [0.25, 0.5],
+        release_frames: 4,
+    };
+    let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let (project, media) = analytic_hybrid_fixture();
+    let mut snapshot = project.snapshot();
+    snapshot.loop_region = Some(LoopRegion::new(0, 64, true).unwrap());
+    let project = Project::from_snapshot(snapshot).unwrap();
+    let asset = project.assets().next().unwrap().id();
+    let silent_media = BTreeMap::from([(
+        asset,
+        crate::Audio::new(48_000, vec![[0.0; 2]; 32]).unwrap(),
+    )]);
+    let prepare = |media| {
+        Arc::new(
+            PreparedRevision::prepare_with_instrument_registry(
+                &project,
+                media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap(),
+        )
+    };
+    let mut hybrid = SessionPlayback::new(prepare(&media)).unwrap();
+    let mut midi_only = SessionPlayback::new(prepare(&silent_media)).unwrap();
+    hybrid.apply(SessionPlaybackCommand::Play).unwrap();
+    midi_only.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = [[0.0; 2]; 128];
+    let mut instrument = [[0.0; 2]; 128];
+    hybrid.render(&mut actual).unwrap();
+    midi_only.render(&mut instrument).unwrap();
+    for seam in [63, 127] {
+        assert_ne!(instrument[seam], [0.0; 2], "instrument remains audible");
+        assert_eq!(actual[seam], instrument[seam], "audio fades independently");
+        assert_ne!(
+            actual[seam - 1],
+            instrument[seam - 1],
+            "audio is still fading before the seam"
+        );
+    }
+}
+
+#[test]
 fn analytic_hybrid_metered_capture_is_partition_independent() {
     for metered in [false, true] {
         let device_type = hex_lattice_contract::DeviceTypeId::from_static("test.capture.analytic");
@@ -924,9 +976,15 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             .render_with_capture(&mut retarget_main, &mut retarget_capture)
             .unwrap();
         for (index, frame) in retarget_capture.output(0).unwrap().iter().enumerate() {
-            let expected = [(0.4 + 0.25) * 0.125, (-0.2 + 0.25) * 0.25];
-            assert_eq!(*frame, expected);
-            assert_eq!(retarget_main[index], expected.map(|sample| sample * 0.25));
+            let progress = (index + 1) as f32 / 240.0;
+            let expected = [
+                (0.4 + 0.25) * (0.5 - 0.375 * progress),
+                (-0.2 + 0.25) * 0.25,
+            ];
+            for channel in 0..2 {
+                assert!((frame[channel] - expected[channel]).abs() < 1e-6);
+                assert!((retarget_main[index][channel] - expected[channel] * 0.25).abs() < 1e-6);
+            }
         }
         if metered {
             let observed = observation
@@ -934,7 +992,7 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
                 .unwrap()
                 .take_track_output();
             assert!(
-                (observed - (0.4 + 0.25) * 0.125).abs() < 1e-7,
+                (observed - (0.4 + 0.25) * (0.5 - 0.375 / 240.0)).abs() < 1e-6,
                 "track meter must follow the new post-fader gain: {observed}"
             );
         }
@@ -1381,19 +1439,12 @@ fn live_project_taps_preserve_pcm_and_independent_tracks_across_loop_wraps() {
         for index in 0..1536 {
             let frame = if looping { index % 1024 } else { index };
             let sounding = (3..1027).contains(&frame);
-            // A wrapped pass crossfades its first F = 128 frames from the
-            // clip continuing past the loop end (`crate::loop_seam`).
-            let level = |at: usize| {
-                let gain = |sounds: bool| f32::from(u8::from(sounds));
-                let level = if looping && index >= 1024 && frame < 128 {
-                    let out = (127 - frame) as f32 / 128.0;
-                    let (start, past_end) = (gain(sounding), gain(frame + 1024 < 1027));
-                    start + out * (past_end - start)
-                } else {
-                    gain(sounding)
-                };
-                level * [0.1, 0.3][at]
+            let fade = if looping && frame >= 896 {
+                (1023 - frame) as f32 / 127.0
+            } else {
+                1.0
             };
+            let level = |at: usize| f32::from(u8::from(sounding)) * [0.1, 0.3][at] * fade;
             let a = [level(0), -level(0)];
             let b = [level(1), -level(1) * 0.25];
             for channel in 0..2 {
@@ -1401,7 +1452,7 @@ fn live_project_taps_preserve_pcm_and_independent_tracks_across_loop_wraps() {
                 assert!((tracks[1][index][channel] - b[channel]).abs() < 1e-6);
             }
             // Shared Return is independent of the direct track stems.
-            if sounding {
+            if sounding && fade > 0.0 {
                 assert_ne!(master[index], [a[0] + b[0], a[1] + b[1]]);
             }
         }

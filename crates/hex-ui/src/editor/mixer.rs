@@ -84,7 +84,7 @@ impl EditorView {
                 let id = track.id();
                 let (background, text) = super::track_gain::activator_colors(!track.muted());
                 let (solo_background, solo_text) =
-                    super::track_gain::activator_colors(track.soloed());
+                    super::track_gain::activator_colors(self.displayed_solo(id, track.soloed()));
                 strip = strip
                     .child(
                         toggle_button_with_style(
@@ -121,15 +121,11 @@ impl EditorView {
                         )),
                     );
             }
-            use hex_session::device_gesture::GestureTarget;
             let active_gain = self.device_gesture.snapshot().and_then(|snapshot| {
                 if snapshot.key.generation != self.project_generation {
                     return None;
                 }
-                match snapshot.target {
-                    GestureTarget::TrackGain { track } => Some(track),
-                    _ => None,
-                }
+                snapshot.target.track_gain_anchor()
             });
             let owner = active_gain
                 .or_else(|| {

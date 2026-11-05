@@ -76,7 +76,7 @@ fn resident_open_after_new_accepts_before_obsolete_observation_delivery() {
     assert_eq!(h.render(), [[0.0; 2]; 64]);
 }
 
-fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -> u64 {
+pub(super) fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -> u64 {
     assert!(event.project_replaced && event.playback.is_none());
     assert!(h.submitted.is_none_or(|(_, metadata)| {
         metadata.context.project_generation
@@ -96,6 +96,15 @@ fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -
     // both actual headless carriers and the old Client, then wait for the real exclusive Lease.
     h.release_relinquished_output();
     h.wait_fresh_output(old_output);
+    // The worker named the retired endpoint before opening the fresh one.
+    let generation = event
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context()
+        .project_generation;
+    assert_eq!(h.released.last(), Some(&(generation, old_output)));
     assert!(
         h.audio
             .as_ref()
@@ -346,13 +355,14 @@ fn resident_offline_source_replay_surfaces_refusal_and_restart_keeps_exact_exten
     // the same physical bank, rather than charging another 8192 frames during output teardown.
     let mut h = ResidentHarness::with_open_gate(8192, Arc::clone(&gate));
     let initial = h.next();
-    assert!(
-        initial
-            .error
-            .as_ref()
-            .unwrap()
-            .contains("fixture output unavailable")
-    );
+    assert!(initial.error.is_none());
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while h.unavailable.is_empty() {
+        h.pump();
+        assert!(Instant::now() < deadline, "open refusal was not delivered");
+        std::thread::yield_now();
+    }
+    assert!(h.unavailable[0].contains("fixture output unavailable"));
     let added = h.run(Request::Edit(Command::AddMidiTrack {
         name: "sampler".into(),
     }));
@@ -484,7 +494,11 @@ fn resident_pending_survives_refused_verified_transition_and_retires_on_accepted
     let files = Files::new();
     let gate = Arc::new(AtomicBool::new(false));
     let mut h = ResidentHarness::with_open_gate(8192, Arc::clone(&gate));
-    assert!(h.next().error.is_some());
+    assert!(
+        h.next().error.is_none(),
+        "the editor opens while audio is pending"
+    );
+    assert!(h.audio.is_none(), "the gate still holds the output closed");
     let added = h.run(Request::Edit(Command::AddMidiTrack {
         name: "sampler".into(),
     }));

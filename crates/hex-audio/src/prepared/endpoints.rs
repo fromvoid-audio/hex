@@ -302,6 +302,14 @@ impl Client {
         self.action_with_ticket(PlaybackAction::LaunchAndPlay(command))
             .map_err(|_| command)
     }
+    /// Apply a linear level to the preview bus only.
+    pub fn preview_set_gain(&mut self, gain: f32) -> Result<(), Invalid> {
+        self.endpoints
+            .owner_mut()
+            .ok_or(Invalid("audio client is closed"))?
+            .sample_preview
+            .set_gain(gain)
+    }
     pub fn preview_request(&mut self) -> Result<u64, Invalid> {
         self.endpoints
             .owner_mut()

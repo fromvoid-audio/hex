@@ -397,6 +397,9 @@ impl Factory {
     }
 }
 impl PreparedOwnedProcessorRuntime for Factory {
+    fn reserved_bypass_latency_frames(&self) -> Option<u32> {
+        Some(self.config.latency())
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
