@@ -274,6 +274,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
     bool input=false,output=false,thread_bound=false;
+    bool auxiliary_disabled=false;
     bool activation_restart_sent=false;
     int32 inputs=2,outputs=2,maximum=0,precision=kSample32;
     std::atomic<int32> block{0};
@@ -420,18 +421,24 @@ public:
     int32 PLUGIN_API getBusCount(MediaType media,BusDirection direction) override {
         if (!control() || !initialized || media!=kAudio) return 0;
         if (fault==5) return 2;
+        if (fault==106 && direction==kInput) return 2;
         return direction==kInput && mode==1?0:1;
     }
     tresult PLUGIN_API getBusInfo(MediaType media,BusDirection direction,int32 index,BusInfo& info) override {
-        if (!control() || index || !getBusCount(media,direction)) return kInvalidArgument;
+        const bool auxiliary=fault==106 && media==kAudio && direction==kInput && index==1;
+        if (!control() || (index && !auxiliary) || !getBusCount(media,direction)) return kInvalidArgument;
         info={};info.mediaType=kAudio;info.direction=direction;info.busType=kMain;
         info.channelCount=direction==kInput?inputs:outputs;
+        if (auxiliary) { info.busType=kAux;info.channelCount=2; }
         if (fault==12 && arranged) ++info.channelCount;
         info.flags=BusInfo::kDefaultActive;
         const char16_t name[]=u"main";std::memcpy(info.name,name,sizeof(name));
         return kResultOk;
     }
     tresult PLUGIN_API getBusArrangement(BusDirection direction,int32 index,SpeakerArrangement& value) override {
+        if (control() && fault==106 && direction==kInput && index==1) {
+            value=SpeakerArr::kStereo;return kResultOk;
+        }
         if (!control() || index || !getBusCount(kAudio,direction)) return kInvalidArgument;
         value=(direction==kInput?inputs:outputs)==1?SpeakerArr::kMono:SpeakerArr::kStereo;
         return kResultOk;
@@ -441,8 +448,9 @@ public:
         return size==kSample32 || (mode==2 && size==kSample64)?kResultOk:kResultFalse;
     }
     tresult PLUGIN_API setBusArrangements(SpeakerArrangement* in,int32 ni,SpeakerArrangement* out,int32 no) override {
-        if (!control() || !initialized || active || processing || ni!=(mode==1?0:1) || no!=1 ||
+        if (!control() || !initialized || active || processing || ni!=(fault==106?2:(mode==1?0:1)) || no!=1 ||
             !out || (ni && !in)) return kInvalidArgument;
+        if (fault==106 && in[1]!=SpeakerArr::kStereo) return kResultFalse;
         const auto count=[](SpeakerArrangement value)->int32 {
             return value==SpeakerArr::kMono?1:(value==SpeakerArr::kStereo?2:0);
         };
@@ -464,6 +472,10 @@ public:
         setup=true;return kResultOk;
     }
     tresult PLUGIN_API activateBus(MediaType media,BusDirection direction,int32 index,TBool enabled) override {
+        if (control() && setup && !active && !processing && fault==106 && media==kAudio && direction==kInput && index==1) {
+            if (enabled) return kResultFalse;
+            auxiliary_disabled=true;return kResultOk;
+        }
         if (!control() || !setup || active || processing || index || !getBusCount(media,direction)) return kResultFalse;
         ++observed.activations;
         if (enabled && fault==7) return kResultFalse;
@@ -472,6 +484,7 @@ public:
     tresult PLUGIN_API setActive(TBool enabled) override {
         if (!enabled && fault==25) trace(7); // sensitivity: teardown after unknown startup
         if (!control() || !setup || processing) return kResultFalse;
+        if (enabled && fault==106 && !auxiliary_disabled) return kResultFalse;
         if(observed.stops) {
             if(fault>=100 && fault<=103 && !module_event(enabled?'A':'D')) return kResultFalse;
             if((fault==100 && !enabled) || (fault==101 && enabled)) { trace(24);return kResultFalse; }
@@ -684,7 +697,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>105) return false;next_fault=value;
+        if (value>106) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
