@@ -297,8 +297,11 @@ pub fn save_new(path: &Path, preset: &Preset) -> Result<(), Error> {
     file.write_all(&bytes)?;
     file.sync_all()?;
     drop(file);
-    fs::hard_link(&temporary.0, path)?;
-    let cleanup_error = fs::remove_file(&temporary.0).err();
+    let published = crate::publication::publish_new(&temporary.0, path)?;
+    let cleanup_error = published
+        .staging_remains()
+        .then(|| fs::remove_file(&temporary.0).err())
+        .flatten();
     #[cfg(unix)]
     let sync_error = File::open(parent).and_then(|file| file.sync_all()).err();
     #[cfg(not(unix))]

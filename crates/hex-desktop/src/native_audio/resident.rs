@@ -10,7 +10,7 @@ use hex_engine::{
 };
 use hex_session::service::{
     ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
-    ResidentPublicationRefusal, ResidentRuntimeLoop,
+    ResidentPublicationReadiness, ResidentPublicationRefusal, ResidentRuntimeLoop,
 };
 
 pub(super) struct Pending {
@@ -30,6 +30,16 @@ pub(super) struct Resident {
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
 }
 impl Resident {
+    /// Stopped cursor and section loop of the retained offline publication.
+    pub(super) fn pending_cursor(&self) -> Option<hex_session::service::ArrangementEditPosition> {
+        self.pending
+            .as_ref()
+            .map(|pending| hex_session::service::ArrangementEditPosition {
+                frame: pending.playback.position(),
+                playing: false,
+                section_loop: pending.playback.section_loop(),
+            })
+    }
     pub(super) fn discard_obsolete_pending_after_restore(&mut self, context: AudioSourceContext) {
         if self
             .pending
@@ -69,7 +79,63 @@ impl Resident {
             })
     }
 }
+/// Classify observations only when the submission belongs to this exact output.
+pub(super) fn classify_publication(
+    output_identity: u64,
+    applied_revision: u64,
+    rejected_revision: Option<u64>,
+    publication_in_flight: bool,
+    submission: Option<ResidentRuntimeLoop>,
+) -> ResidentPublicationReadiness {
+    let Some(submission) = submission.filter(|tag| tag.output_identity == output_identity) else {
+        return ResidentPublicationReadiness::Idle {
+            output_identity,
+            applied_revision,
+            publication_in_flight,
+        };
+    };
+    if submission.audio_revision == applied_revision {
+        ResidentPublicationReadiness::Applied {
+            submission,
+            publication_in_flight,
+        }
+    } else if rejected_revision == Some(submission.audio_revision) {
+        ResidentPublicationReadiness::Refused {
+            submission,
+            applied_revision,
+            publication_in_flight,
+        }
+    } else {
+        ResidentPublicationReadiness::Pending {
+            submission,
+            applied_revision,
+            publication_in_flight,
+        }
+    }
+}
+
 impl NativeAudioSink {
+    pub(super) fn resident_publication_readiness(&mut self) -> ResidentPublicationReadiness {
+        let Some((output, applied, rejected)) = self.remember_applied_loop() else {
+            return ResidentPublicationReadiness::NoOutput;
+        };
+        let Some(control) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+        else {
+            return ResidentPublicationReadiness::NoOutput;
+        };
+        let publication_in_flight = control.status.publication_in_flight();
+        classify_publication(
+            output,
+            applied,
+            rejected,
+            publication_in_flight,
+            self.resident.current_submission,
+        )
+    }
+
     /// Two fixed scalar tags suffice: publication admission allows one pending
     /// graph. Retain the last applied tag when a successor is cancelled/refused.
     /// Only this worker publishes graphs; transport commands cannot mutate a
@@ -94,19 +160,28 @@ impl NativeAudioSink {
         &mut self,
         context: AudioSourceContext,
     ) -> Result<Option<ResidentRuntimeLoop>, String> {
-        let Some((output, revision, rejected)) = self.remember_applied_loop() else {
-            return Ok(None);
+        let (output, revision) = match self.resident_publication_readiness() {
+            ResidentPublicationReadiness::NoOutput => return Ok(None),
+            ResidentPublicationReadiness::Pending { .. } => {
+                return Err("playback publication already pending".into());
+            }
+            ResidentPublicationReadiness::Idle {
+                output_identity,
+                applied_revision,
+                ..
+            }
+            | ResidentPublicationReadiness::Refused {
+                submission:
+                    ResidentRuntimeLoop {
+                        output_identity, ..
+                    },
+                applied_revision,
+                ..
+            } => (output_identity, applied_revision),
+            ResidentPublicationReadiness::Applied { submission, .. } => {
+                (submission.output_identity, submission.audio_revision)
+            }
         };
-        // A queued successor could install between capture and final enqueue.
-        // Only an exact terminal refusal proves that the previous tag is stable.
-        // Applied revision is published before pending admission is released.
-        if let Some(submitted) = self.resident.current_submission
-            && submitted.output_identity == output
-            && submitted.audio_revision != revision
-            && rejected != Some(submitted.audio_revision)
-        {
-            return Err("playback publication already pending".into());
-        }
         if let Some(source) = self.desired.as_ref().map(|source| source.context())
             && (source.project_generation != context.project_generation
                 || source.editor_revision > context.editor_revision)
@@ -247,9 +322,18 @@ impl NativeAudioSink {
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         let native_publication = self.plugins.preparing_edit(metadata.context)
             || playback.foreign_nodes_on_control().next().is_some();
-        let edit_cancellation = native_publication
-            .then(|| self.request_cancellation.clone())
-            .flatten();
+        let edit_cancellation = self
+            .request_cancellation
+            .as_ref()
+            .filter(|cancellation| {
+                native_publication || cancellation.requires_publication_admission_check()
+            })
+            .cloned();
+        let cancellation_error = if native_publication {
+            "vst3 edit cancelled before admission"
+        } else {
+            "edit cancelled before admission"
+        };
         let publication_cancelled = || {
             edit_cancellation
                 .as_ref()
@@ -258,7 +342,7 @@ impl NativeAudioSink {
         let edit_admitted = std::cell::Cell::new(false);
         let mut guarded_admit = |resources: &[DeviceResourceAdmission<'_>]| {
             if !edit_admitted.get() && publication_cancelled() {
-                return Err("vst3 edit cancelled before admission".into());
+                return Err(cancellation_error.into());
             }
             admit(resources)?;
             edit_admitted.set(true);
@@ -287,7 +371,18 @@ impl NativeAudioSink {
                 self.desired.as_ref().map(|source| source.context()),
             );
         }
-        let section_policy = if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
+        let offline_edit = matches!(policy, ResidentPublicationPolicy::ArrangementEdit)
+            && self.offline_section_edit.is_some();
+        if offline_edit && self.output.is_some() {
+            self.cancel_section_edit();
+            return Err(ResidentPublicationRefusal {
+                playback,
+                error: "audio output opened during the arrangement edit; try again".into(),
+            });
+        }
+        let section_policy = if offline_edit {
+            None
+        } else if matches!(policy, ResidentPublicationPolicy::ArrangementEdit) {
             match self.section_publication_policy() {
                 Ok(policy) => Some(policy),
                 Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
@@ -314,12 +409,12 @@ impl NativeAudioSink {
             });
         };
         self.flush_events();
-        let replacing_document = matches!(policy, ResidentPublicationPolicy::ReplaceDocument);
+        let replacing_document =
+            matches!(policy, ResidentPublicationPolicy::ReplaceDocument { .. });
         // Current-output publication needs its previous observation delivered.
-        // Replacement instead retains an admitted candidate offline, then its
-        // canonical swap retires the old output and observations. Old UI event
-        // backpressure must not refuse that independent admission. On refusal
-        // no swap occurs, so all old observations and custody remain intact.
+        // A document replacement uses either a private output or offline
+        // retention. Observations of the previous endpoint do not gate that
+        // admission; a refusal leaves the previous document canonical.
         if !replacing_document
             && (self.pending_observation.is_some() || self.pending_status_observation.is_some())
         {
@@ -369,12 +464,21 @@ impl NativeAudioSink {
                 error: "document replacement context is stale".into(),
             });
         }
+        let on_replacement_output = self
+            .replacement_output
+            .as_ref()
+            .is_some_and(|replacement| replacement.context == metadata.context);
+        let replacement_deadline = self
+            .replacement_output
+            .as_ref()
+            .map(|replacement| replacement.deadline);
+        let request_cancellation = self.request_cancellation.as_ref();
         // Active-output refusal never enters the offline slot. The prospective view already
         // includes the active book, so it must not also be selected from resident_inventory.
         if let Some(control) = self
             .output
             .as_mut()
-            .filter(|_| !replacing_document)
+            .filter(|_| !replacing_document || on_replacement_output)
             .and_then(|output| output.publication.control())
         {
             control.reclaim();
@@ -417,11 +521,8 @@ impl NativeAudioSink {
                 ResidentPublicationPolicy::RestorePluginState => {
                     hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
                 }
-                ResidentPublicationPolicy::ReplaceDocument => {
-                    return Err(ResidentPublicationRefusal {
-                        playback,
-                        error: "document replacement must retain before output teardown".into(),
-                    });
+                ResidentPublicationPolicy::ReplaceDocument { .. } => {
+                    hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
                 }
                 ResidentPublicationPolicy::FreshIfUnchanged(expected)
                 | ResidentPublicationPolicy::SectionWhenReady {
@@ -484,10 +585,19 @@ impl NativeAudioSink {
                 });
             }
             let result = loop {
+                if let Some(deadline) = replacement_deadline
+                    && let Err(error) =
+                        super::document_output::check_deadline(deadline, request_cancellation)
+                {
+                    return Err(ResidentPublicationRefusal {
+                        playback: retained_playback,
+                        error,
+                    });
+                }
                 if !edit_admitted.get() && publication_cancelled() {
                     return Err(ResidentPublicationRefusal {
                         playback: retained_playback,
-                        error: "vst3 edit cancelled before admission".into(),
+                        error: cancellation_error.into(),
                     });
                 }
                 let published = control.publish_with_admission_and_source_on_control(
@@ -569,7 +679,7 @@ impl NativeAudioSink {
                 }
             };
         }
-        if self.output.is_some() && !replacing_document {
+        if (self.output.is_some() && !replacing_document) || on_replacement_output {
             return Err(ResidentPublicationRefusal {
                 playback,
                 error: "active audio publication endpoint is closed".into(),
@@ -615,7 +725,7 @@ impl NativeAudioSink {
             resources: captured,
             observation,
             metadata,
-            policy: if replacing_document {
+            policy: if replacing_document || (offline_edit && self.take_offline_section_edit()) {
                 ResidentPublicationPolicy::InstallFreshRuntime
             } else {
                 policy
@@ -707,6 +817,54 @@ impl NativeAudioSink {
                 metadata.context,
                 "resident-pending-refused",
                 EditorPublicationState::Refused(refused.error),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod publication_readiness_tests {
+    use super::*;
+
+    #[test]
+    fn reports_only_the_current_output_and_preserves_reservation_state() {
+        let submission = ResidentRuntimeLoop {
+            output_identity: 7,
+            audio_revision: 12,
+            source_context: None,
+            section_loop: None,
+        };
+        assert_eq!(
+            classify_publication(8, 11, None, true, Some(submission)),
+            ResidentPublicationReadiness::Idle {
+                output_identity: 8,
+                applied_revision: 11,
+                publication_in_flight: true,
+            },
+        );
+        assert_eq!(
+            classify_publication(7, 11, Some(10), true, Some(submission)),
+            ResidentPublicationReadiness::Pending {
+                submission,
+                applied_revision: 11,
+                publication_in_flight: true,
+            },
+        );
+        assert_eq!(
+            classify_publication(7, 11, Some(12), true, Some(submission)),
+            ResidentPublicationReadiness::Refused {
+                submission,
+                applied_revision: 11,
+                publication_in_flight: true,
+            },
+        );
+        for in_flight in [true, false] {
+            assert_eq!(
+                classify_publication(7, 12, Some(12), in_flight, Some(submission)),
+                ResidentPublicationReadiness::Applied {
+                    submission,
+                    publication_in_flight: in_flight,
+                },
             );
         }
     }

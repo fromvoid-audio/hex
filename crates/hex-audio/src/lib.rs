@@ -18,7 +18,10 @@
 //! remain effective under queue pressure; final graph, source and endpoint destruction belongs on
 //! control.
 pub mod audio_diagnostics;
+pub mod cpu_meter;
 mod device;
+mod open_outcome;
+mod output_route;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod plugin_effects;
 pub mod plugin_worker;
@@ -30,6 +33,8 @@ pub use lifecycle::{
     audio_lifecycle_failure, request_initial_open, request_recovery_open, request_worker_open,
     request_worker_open_with_profile, request_worker_open_with_reliable_action_outcomes,
 };
+pub use open_outcome::{OutputOpenError, RateMismatch};
+pub use output_route::{OutputRoute, OutputRouteWatch, ROUTE_SAMPLE_INTERVAL};
 pub use render_fault::RenderFaultSnapshot;
 mod candidate_catalog;
 mod candidate_custody;
@@ -239,8 +244,12 @@ pub mod prepared;
 pub mod worker_fixture;
 
 #[cfg(all(test, feature = "allocation-probe"))]
+mod auxiliary_allocation;
+#[cfg(all(test, feature = "allocation-probe"))]
 mod eq_allocation;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod owned_effect_allocation;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod resource_borrow_allocation;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod transition_admission_allocation;

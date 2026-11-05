@@ -132,8 +132,9 @@ impl MidiTempoBreaks for AnchoredSessionTempoView<'_> {
             PreparedTempoError::BeatToFrame("anchored beat exceeds the beat domain")
         })?;
         let breaks = self.base.tempo_breaks_around(BeatTime::from_raw(base))?;
-        // Unlike inverse conversion's saturation, an out-of-domain translated
-        // marker is absent. Clamping would invent a tempo change at beat zero.
+        // An out-of-domain translated marker is absent rather than an error:
+        // the queried beat is valid, and clamping would invent a tempo change
+        // at beat zero.
         let translate = |point: Option<BeatTime>| {
             point.and_then(|point| {
                 u64::try_from(i128::from(point.raw()) + offset)

@@ -451,6 +451,41 @@ class DeliveryTests(unittest.TestCase):
     def test_production_build_assembles_and_replaces_stable_app(self):
         self.assert_production_build(build_only=False)
 
+    def test_default_build_stages_discovery_in_the_installed_app(self):
+        self.assert_production_build(build_only=False, discovery=True)
+
+    def test_discovery_input_builds_by_default_and_verifies_the_exact_candidate(self):
+        candidate = "a" * 40
+        args = SimpleNamespace(candidate=candidate, vst3_discovery_receipt=None,
+                               vst3_sdk=None, without_vst3_discovery=False)
+        sdk = self.root / "sdk"
+        output = self.root / "vst3-discovery"
+        receipt = output / "controlled-macos.json"
+        builder = Mock()
+        builder.build.return_value = receipt
+        with patch.dict(os.environ, {"HEX_VST3_SDK": str(sdk)}), \
+                patch.object(delivery, "discovery_builder", return_value=builder), \
+                patch.object(delivery, "validate_discovery_input") as verify:
+            self.assertEqual(delivery.prepare_discovery_input(args, self.root), receipt)
+            builder.build.assert_called_once_with(sdk, output, discovery_only=True)
+            verify.assert_called_once_with(receipt, candidate)
+            verify.reset_mock()
+            args.vst3_discovery_receipt = receipt
+            self.assertEqual(delivery.prepare_discovery_input(args, self.root), receipt)
+            builder.build.assert_called_once()
+            verify.assert_called_once_with(receipt, candidate)
+
+    def test_default_discovery_refuses_missing_sdk_and_allows_explicit_omission(self):
+        args = SimpleNamespace(candidate="a" * 40, vst3_discovery_receipt=None,
+                               vst3_sdk=None, without_vst3_discovery=False)
+        with patch.dict(os.environ, {"HEX_VST3_SDK": ""}), \
+                patch.object(delivery, "discovery_builder") as builder:
+            with self.assertRaisesRegex(delivery.DeliveryError, "HEX_VST3_SDK"):
+                delivery.prepare_discovery_input(args, self.root)
+            args.without_vst3_discovery = True
+            self.assertIsNone(delivery.prepare_discovery_input(args, self.root))
+            builder.assert_not_called()
+
     def test_finder_metadata_after_custody_deletion_publishes_matching_receipt(self):
         self.assert_production_build(build_only=False, finder_metadata=True)
 
@@ -616,7 +651,8 @@ class DeliveryTests(unittest.TestCase):
         self.assertFalse((self.root / ".hex-pending-update").exists())
 
     def assert_production_build(self, *, build_only, drift=False, finder_metadata=False, rmdir_member=None,
-                                prepare_only=False, followup_failure=False, validate_ci_receipt=False):
+                                prepare_only=False, followup_failure=False, validate_ci_receipt=False,
+                                discovery=False):
         # Exercise real assembly/receipt/activation with native external tools
         # substituted. A missing Contents parent failed actual post-merge delivery.
         self.bundle(self.app, b"old")
@@ -686,9 +722,22 @@ class DeliveryTests(unittest.TestCase):
                 return f"123 {self.app}/Contents/MacOS/hex"
             return ""
         args = SimpleNamespace(ci_report=None if build_only else report, candidate=candidate, build_only=build_only,
-                               included=included, checklist=checklist, prepare_only=prepare_only)
+                               included=included, checklist=checklist, prepare_only=prepare_only,
+                               vst3_discovery_receipt=None, vst3_sdk=self.root / "sdk",
+                               without_vst3_discovery=not discovery)
+        scanner = {"path": str(target / "hex-vst3-scan-macos")}
+        native_input = self.root / "controlled-macos.json"
+        discovery_evidence = {"source": candidate}
+        def stage_discovery(app, native, exact_source, artifact, _signing):
+            self.assertEqual((native, exact_source, artifact), (native_input, candidate, scanner))
+            helper = app / delivery.DISCOVERY_ROOT / delivery.DISCOVERY_SCANNER
+            helper.parent.mkdir(parents=True)
+            helper.write_bytes(b"scanner fixture")
+            return discovery_evidence
+
         @contextmanager
         def artifact_guard(*args, **kwargs):
+            self.assertEqual(kwargs.get("discovery", False), discovery)
             if rmdir_member:
                 # Real durable pending/ready publication and target lock, with
                 # only compilation/native tools substituted in this fixture.
@@ -705,7 +754,8 @@ class DeliveryTests(unittest.TestCase):
                     "profile":"release", "source":runner.summary["start_tree"], "packages":[],
                     "target_directory":str(target.parent.parent), "owner_path":"fixture-owner",
                     "lock_path":"fixture-lock", "action":"reuse", "cleanup_status":"not_needed",
-                    "artifact":{"path":str(executable), "sha256":delivery.sha(executable)}}
+                    "artifact":{"path":str(executable), "sha256":delivery.sha(executable)},
+                    "discovery_scanner":scanner}
             finally:
                 runner.target_lock.release()
         def capture(key):
@@ -730,7 +780,11 @@ class DeliveryTests(unittest.TestCase):
                 patch.object(delivery.ci.ci_target_storage, "inspect", return_value={
                     "platform": "darwin", "status": "identified", "filesystem_type": "apfs"}), \
                 patch.multiple(delivery, optimized_artifact=Mock(side_effect=artifact_guard),
-                               stage_update_supervisor=Mock(return_value=None)), \
+                               stage_update_supervisor=Mock(return_value=None),
+                               discovery_builder=Mock(return_value=Mock(build=Mock(return_value=native_input))),
+                               validate_discovery_input=Mock(),
+                               stage_discovery=Mock(side_effect=stage_discovery),
+                               verify_discovery_package=Mock()), \
                 patch.object(delivery, "native_signature", return_value=SIGNED), \
                 patch.object(delivery, "run", side_effect=tool), \
                 patch.object(delivery.subprocess, "run", return_value=SimpleNamespace(stdout=json.dumps(event), returncode=0)):
@@ -948,6 +1002,10 @@ class DeliveryTests(unittest.TestCase):
             delivery.write_json(self.app / "Contents/Resources/test-build.json", verified)
         self.assertEqual(verified["source"], candidate)
         self.assertEqual(verified["profile"], "release")
+        if discovery:
+            self.assertEqual(verified["vst3_discovery"], discovery_evidence)
+            self.assertEqual((self.app / delivery.DISCOVERY_ROOT / delivery.DISCOVERY_SCANNER).read_bytes(),
+                             b"scanner fixture")
         self.assertEqual((self.app / "Contents/MacOS/hex").read_bytes(), b"optimized fixture")
         self.assertEqual((self.app / "Contents/Resources/USER-TEST.md").read_text(), checklist.read_text())
         if build_only:

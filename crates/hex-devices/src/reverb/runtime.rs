@@ -10,6 +10,39 @@ const TAPS: [f32; 8] = [
     0.0043, 0.0117, 0.0193, 0.0271, 0.0379, 0.0499, 0.0611, 0.0737,
 ];
 const COEFFICIENTS: usize = 32;
+type FeedbackGains = (f32, f32, f32, f32);
+type Rotations = [Option<(f32, f32)>; 3];
+
+#[derive(Clone, Copy)]
+struct TankDesign {
+    filters: [InputFilter; 2],
+    feedback: [FeedbackGains; 8],
+    rotations: Rotations,
+}
+
+impl TankDesign {
+    fn new(settings: Settings, coefficients: [f32; COEFFICIENTS]) -> Self {
+        Self {
+            filters: [
+                InputFilter::new(coefficients[24], coefficients[30]),
+                InputFilter::new(coefficients[25], coefficients[31]),
+            ],
+            feedback: std::array::from_fn(|index| {
+                let start = index * 3;
+                shaping_gains(
+                    coefficients[start],
+                    coefficients[start + 1],
+                    coefficients[start + 2],
+                )
+            }),
+            rotations: scatter_rotations(
+                settings.get(p::DIFFUSION) * 0.01,
+                settings.get(p::DENSITY) + 1.0,
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct PreparedReverb {
     rate: u32,
@@ -17,6 +50,7 @@ pub struct PreparedReverb {
     tank_rate: f32,
     settings: Settings,
     coefficients: [f32; COEFFICIENTS],
+    settled_tank: TankDesign,
     input_capacity: usize,
     capacities: [usize; 8],
     allpass_capacities: [usize; 2],
@@ -24,16 +58,32 @@ pub struct PreparedReverb {
 }
 // Topology-preserving state-variable section. Positive g and damping remain
 // stable throughout bounded parameter ramps; no arbitrary biquad interpolation.
-fn input_filter(state: &mut [f32; 2], x: f32, g: f32, damping: f32, high: bool) -> f32 {
-    let a1 = 1.0 / (1.0 + g * (g + damping));
-    let a2 = g * a1;
-    let a3 = g * a2;
-    let v3 = x - state[1];
-    let v1 = a1 * state[0] + a2 * v3;
-    let v2 = state[1] + a2 * state[0] + a3 * v3;
-    state[0] = clean(2.0 * v1 - state[0]);
-    state[1] = clean(2.0 * v2 - state[1]);
-    clean(if high { x - damping * v1 - v2 } else { v2 })
+#[derive(Clone, Copy)]
+struct InputFilter {
+    a1: f32,
+    a2: f32,
+    a3: f32,
+    damping: f32,
+}
+impl InputFilter {
+    fn new(g: f32, damping: f32) -> Self {
+        let a1 = 1.0 / (1.0 + g * (g + damping));
+        let a2 = g * a1;
+        Self {
+            a1,
+            a2,
+            a3: g * a2,
+            damping,
+        }
+    }
+    fn apply(self, state: &mut [f32; 2], x: f32, high: bool) -> f32 {
+        let v3 = x - state[1];
+        let v1 = self.a1 * state[0] + self.a2 * v3;
+        let v2 = state[1] + self.a2 * state[0] + self.a3 * v3;
+        state[0] = clean(2.0 * v1 - state[0]);
+        state[1] = clean(2.0 * v2 - state[1]);
+        clean(if high { x - self.damping * v1 - v2 } else { v2 })
+    }
 }
 fn alpha(hz: f32, rate: f32) -> f32 {
     (-std::f32::consts::TAU * hz.min(rate * 0.45) / rate).exp()
@@ -83,6 +133,7 @@ impl PreparedReverb {
             tank_rate,
             settings,
             coefficients,
+            settled_tank: TankDesign::new(settings, coefficients),
             input_capacity: (0.4 * tank_rate).ceil() as usize + 4,
             capacities: TIMES
                 .map(|t| ((t * std::f32::consts::SQRT_2 + 0.004) * tank_rate).ceil() as usize + 4),
@@ -93,19 +144,8 @@ impl PreparedReverb {
             .ceil() as u64,
         })
     }
-}
-impl PreparedNativeProcessor for PreparedReverb {
-    fn runtime_version(&self) -> u32 {
-        3
-    }
-    fn declared_runtime_bytes(&self) -> usize {
-        std::mem::size_of::<ReverbRuntime>()
-            + 4 * (2 * self.input_capacity
-                + self.capacities.iter().sum::<usize>()
-                + 2 * self.allpass_capacities.iter().sum::<usize>())
-    }
-    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(ReverbRuntime {
+    fn runtime(&self) -> ReverbRuntime {
+        ReverbRuntime {
             rate: self.rate,
             factor: self.factor,
             tank_rate: self.tank_rate,
@@ -116,6 +156,8 @@ impl PreparedNativeProcessor for PreparedReverb {
             }),
             parameters: self.settings.0.map(Ramp::steady),
             coefficients: self.coefficients.map(Ramp::steady),
+            settled_tank: self.settled_tank,
+            tank_ramp_remaining: 0,
             settings: self.settings,
             silence_limit: self.silence_limit,
             silent_frames: 0,
@@ -130,7 +172,27 @@ impl PreparedNativeProcessor for PreparedReverb {
             next: [0.0; 2],
             spin_phase: 0.0,
             chorus_phase: 0.0,
-        })
+        }
+    }
+}
+impl PreparedNativeProcessor for PreparedReverb {
+    fn supports_smoothed_bypass(&self) -> bool {
+        // Zero latency and history advancement under bypass permit the host's
+        // reversible 5 ms blend without a second room or retained-tail owner.
+        true
+    }
+
+    fn runtime_version(&self) -> u32 {
+        3
+    }
+    fn declared_runtime_bytes(&self) -> usize {
+        std::mem::size_of::<ReverbRuntime>()
+            + 4 * (2 * self.input_capacity
+                + self.capacities.iter().sum::<usize>()
+                + 2 * self.allpass_capacities.iter().sum::<usize>())
+    }
+    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+        Box::new(self.runtime())
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
@@ -162,7 +224,14 @@ impl Ring {
         let delay = delay.clamp(1.0, (self.samples.len() - 2) as f32);
         let whole = delay.floor() as usize;
         let fraction = delay - whole as f32;
-        let a = (self.cursor + self.samples.len() - whole) % self.samples.len();
+        let length = self.samples.len();
+        let unwrapped = self.cursor + length - whole;
+        // The delay clamp and the ring cursor bound permit a single wrap.
+        let a = if unwrapped >= length {
+            unwrapped - length
+        } else {
+            unwrapped
+        };
         let b = if a == 0 {
             self.samples.len() - 1
         } else {
@@ -187,7 +256,7 @@ impl Ring {
     }
 }
 fn clean(value: f32) -> f32 {
-    if value.abs() < 1e-20 {
+    if value.is_nan() || value.abs() < 1e-20 {
         0.0
     } else {
         value.clamp(-32.0, 32.0)
@@ -251,6 +320,8 @@ pub struct ReverbRuntime {
     allpasses: [[Ring; 2]; 2],
     parameters: [Ramp; PARAMETER_COUNT],
     coefficients: [Ramp; COEFFICIENTS],
+    settled_tank: TankDesign,
+    tank_ramp_remaining: u32,
     settings: Settings,
     silence_limit: u64,
     silent_frames: u64,
@@ -281,6 +352,8 @@ impl ReverbRuntime {
             allpasses,
             parameters,
             coefficients,
+            settled_tank,
+            tank_ramp_remaining,
             settings,
             silence_limit,
             silent_frames,
@@ -302,6 +375,8 @@ impl ReverbRuntime {
         inline(tank_rate);
         inline(parameters);
         inline(coefficients);
+        inline(settled_tank);
+        inline(tank_ramp_remaining);
         inline(settings);
         inline(silence_limit);
         inline(silent_frames);
@@ -374,25 +449,22 @@ impl ReverbRuntime {
         let size = (self.v(p::SIZE) / 100.0).sqrt();
         let predelay = self.v(p::PREDELAY) * 0.001 * self.tank_rate;
         let excitation = 1.0 - self.v(p::FREEZE) * self.v(p::CUT);
+        let settled = self.tank_ramp_remaining == 0;
+        let [high_filter, low_filter] = if settled {
+            self.settled_tank.filters
+        } else {
+            [
+                InputFilter::new(self.coefficients[24].current, self.coefficients[30].current),
+                InputFilter::new(self.coefficients[25].current, self.coefficients[31].current),
+            ]
+        };
         let mut late_input = [0.0; 2];
         let mut early = [0.0; 2];
         for c in 0..2 {
             let mut x = input[c] * excitation;
-            let high = input_filter(
-                &mut self.input_low[c],
-                x,
-                self.coefficients[24].current,
-                self.coefficients[30].current,
-                true,
-            );
+            let high = high_filter.apply(&mut self.input_low[c], x, true);
             x += (high - x) * self.v(p::LO_CUT);
-            let low = input_filter(
-                &mut self.input_high[c],
-                x,
-                self.coefficients[25].current,
-                self.coefficients[31].current,
-                false,
-            );
+            let low = low_filter.apply(&mut self.input_high[c], x, false);
             x += (low - x) * self.v(p::HI_CUT);
             self.inputs[c].push(x);
             late_input[c] = self.inputs[c].read(predelay + 1.0);
@@ -425,11 +497,12 @@ impl ReverbRuntime {
             let delay = base + self.v(p::FREEZE) * (base.round() - base);
             self.lines[i].read(delay + modulation)
         });
-        let feedback = scatter(
-            delayed,
-            self.v(p::DIFFUSION) * 0.01,
-            self.v(p::DENSITY) + 1.0,
-        );
+        let rotations = if settled {
+            self.settled_tank.rotations
+        } else {
+            scatter_rotations(self.v(p::DIFFUSION) * 0.01, self.v(p::DENSITY) + 1.0)
+        };
+        let feedback = scatter(delayed, rotations);
         for (i, sample) in feedback.into_iter().enumerate() {
             let lo_alpha = self.coefficients[26].current;
             let hi_alpha = self.coefficients[27].current;
@@ -438,11 +511,15 @@ impl ReverbRuntime {
             // Cascaded shelves have a conservative product-gain bound. Keep
             // even crossed cutoffs and in-flight mode/ratio edits passive;
             // ordinary feedback stays below unity, flat freeze reaches unity.
-            let (mid, low, high_ratio, normalizer) = shaping_gains(
-                self.coefficients[i * 3].current,
-                self.coefficients[i * 3 + 1].current,
-                self.coefficients[i * 3 + 2].current,
-            );
+            let (mid, low, high_ratio, normalizer) = if settled {
+                self.settled_tank.feedback[i]
+            } else {
+                shaping_gains(
+                    self.coefficients[i * 3].current,
+                    self.coefficients[i * 3 + 1].current,
+                    self.coefficients[i * 3 + 2].current,
+                )
+            };
             let low_shaped = sample * mid + self.feedback_low[i] * (low - mid);
             self.feedback_high[i] =
                 clean(hi_alpha * self.feedback_high[i] + (1.0 - hi_alpha) * low_shaped);
@@ -479,11 +556,14 @@ impl ReverbRuntime {
         self.chorus_phase = (self.chorus_phase + self.v(p::CHORUS_RATE) / self.tank_rate).fract();
     }
     fn frame(&mut self, frame: &mut StereoFrame) {
-        for ramp in &mut self.parameters {
-            ramp.advance();
-        }
-        for ramp in &mut self.coefficients {
-            ramp.advance();
+        if self.tank_ramp_remaining != 0 {
+            for ramp in &mut self.parameters {
+                ramp.advance();
+            }
+            for ramp in &mut self.coefficients {
+                ramp.advance();
+            }
+            self.tank_ramp_remaining -= 1;
         }
         let input = frame.map(|v| {
             if v.is_finite() {
@@ -520,7 +600,7 @@ impl ReverbRuntime {
         }
     }
 }
-fn shaping_gains(low: f32, mid: f32, high: f32) -> (f32, f32, f32, f32) {
+fn shaping_gains(low: f32, mid: f32, high: f32) -> FeedbackGains {
     let mid = mid.clamp(1e-8, 1.0);
     let envelope = mid.sqrt();
     let low = low.clamp(0.0, envelope);
@@ -530,14 +610,17 @@ fn shaping_gains(low: f32, mid: f32, high: f32) -> (f32, f32, f32, f32) {
     let normalizer = (mid.max(low).max(high) / product).min(1.0);
     (mid, low, high_ratio, normalizer)
 }
-fn scatter(input: [f32; 8], amount: f32, stages: f32) -> [f32; 8] {
-    let mut output = input;
-    for stage in 0..3 {
+fn scatter_rotations(amount: f32, stages: f32) -> Rotations {
+    std::array::from_fn(|stage| {
         let weight = (stages - stage as f32).clamp(0.0, 1.0);
-        if weight == 0.0 {
+        (weight != 0.0).then(|| (amount * weight * std::f32::consts::FRAC_PI_4).sin_cos())
+    })
+}
+fn scatter(mut output: [f32; 8], rotations: Rotations) -> [f32; 8] {
+    for (stage, rotation) in rotations.into_iter().enumerate() {
+        let Some((sin, cos)) = rotation else {
             continue;
-        }
-        let (sin, cos) = (amount * weight * std::f32::consts::FRAC_PI_4).sin_cos();
+        };
         let stride = 1 << stage;
         for base in (0..8).step_by(stride * 2) {
             for offset in 0..stride {
@@ -564,6 +647,7 @@ impl NativeProcessorRuntime for ReverbRuntime {
         for v in &mut self.coefficients {
             *v = Ramp::steady(v.target);
         }
+        self.tank_ramp_remaining = 0;
     }
     fn is_quiescent(&self) -> bool {
         !self.active
@@ -604,12 +688,16 @@ impl NativeProcessorRuntime for ReverbRuntime {
             2 => (self.rate / 10).max(1),
             _ => (self.rate / 50).max(1),
         };
+        let mut ramp_remaining = 0;
         for (v, p) in self.parameters.iter_mut().zip(old.parameters) {
             v.inherit(p, frames);
+            ramp_remaining = ramp_remaining.max(v.remaining);
         }
         for (v, p) in self.coefficients.iter_mut().zip(old.coefficients) {
             v.inherit(p, frames);
+            ramp_remaining = ramp_remaining.max(v.remaining);
         }
+        self.tank_ramp_remaining = ramp_remaining;
         self.input_low = old.input_low;
         self.input_high = old.input_high;
         self.feedback_low = old.feedback_low;
@@ -636,6 +724,81 @@ impl NativeProcessorRuntime for ReverbRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_ring_wrap_matches_modulo_at_every_cursor() {
+        let mut ring = Ring::new(9);
+        for index in 0..9 {
+            ring.push(index as f32 * 0.25);
+        }
+        for cursor in 0..9 {
+            ring.cursor = cursor;
+            for delay in [0.0_f32, 1.0, 1.25, 4.5, 7.0, 9.0] {
+                let clamped = delay.clamp(1.0, 7.0);
+                let whole = clamped.floor() as usize;
+                let a = (cursor + 9 - whole) % 9;
+                let b = (a + 8) % 9;
+                let expected = ring.samples[a]
+                    + (clamped - whole as f32) * (ring.samples[b] - ring.samples[a]);
+                assert_eq!(ring.read(delay).to_bits(), expected.to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn settled_tank_matches_per_frame_recalculation_through_retarget_and_freeze() {
+        let original = Settings::default_values();
+        let mut frozen = original;
+        for (parameter, value) in [
+            (p::FREEZE, 1.0),
+            (p::DIFFUSION, 21.0),
+            (p::DENSITY, 0.0),
+            (p::LO_Q, 2.0),
+            (p::DECAY, 1.3),
+        ] {
+            frozen.0[super::super::index(parameter).unwrap()] = value;
+        }
+        for rate in [44_100, 96_000] {
+            let prepare = |settings| PreparedReverb::new(rate, settings).unwrap();
+            let mut cached = prepare(original).runtime();
+            let mut recalculated = prepare(original).runtime();
+            let render = |cached: &mut ReverbRuntime, recalculated: &mut ReverbRuntime| {
+                recalculated.tank_ramp_remaining = u32::MAX;
+                for index in 0..(rate / 20) {
+                    let mut left = if index % 17 < 5 {
+                        [0.125, -0.25]
+                    } else {
+                        [0.0; 2]
+                    };
+                    let mut right = left;
+                    cached.frame(&mut left);
+                    recalculated.frame(&mut right);
+                    assert_eq!(left.map(f32::to_bits), right.map(f32::to_bits));
+                }
+                assert_eq!(cached.tank_ramp_remaining, 0);
+            };
+            render(&mut cached, &mut recalculated);
+            for settings in [frozen, original] {
+                let mut next_cached = prepare(settings).runtime();
+                let mut next_recalculated = prepare(settings).runtime();
+                next_cached.copy_history_from(&cached);
+                next_recalculated.copy_history_from(&recalculated);
+                assert!(next_cached.tank_ramp_remaining > 0);
+                render(&mut next_cached, &mut next_recalculated);
+                cached = next_cached;
+                recalculated = next_recalculated;
+            }
+        }
+    }
+
+    #[test]
+    fn clean_contains_nan_and_preserves_existing_limits() {
+        assert_eq!(clean(f32::NAN), 0.0);
+        assert_eq!(clean(f32::INFINITY), 32.0);
+        assert_eq!(clean(-f32::INFINITY), -32.0);
+        assert_eq!(clean(1e-25), 0.0);
+        assert_eq!(clean(0.5), 0.5);
+    }
     #[test]
     fn resonant_input_sections_match_independent_cutoff_gain_oracle() {
         // A second-order low/high-pass has magnitude Q at its cutoff. Exercise
@@ -648,7 +811,7 @@ mod tests {
                     let mut energy = 0.0_f64;
                     for i in 0..96000 {
                         let x = 0.01 * (std::f32::consts::TAU * 830.0 * i as f32 / rate).sin();
-                        let y = input_filter(&mut state, x, g, 1.0 / q, high);
+                        let y = InputFilter::new(g, 1.0 / q).apply(&mut state, x, high);
                         if i >= 48000 {
                             energy += f64::from(y).powi(2);
                         }
@@ -669,7 +832,10 @@ mod tests {
         for stages in 1..=3 {
             for amount in [0.0, 0.17, 0.6, 1.0] {
                 assert!(
-                    (energy(scatter(input, amount, stages as f32)) - energy(input)).abs() < 1e-6
+                    (energy(scatter(input, scatter_rotations(amount, stages as f32)))
+                        - energy(input))
+                    .abs()
+                        < 1e-6
                 );
             }
         }

@@ -3,6 +3,174 @@
 use super::*;
 use crate::transport::{ParameterPoint, Parameters};
 
+fn change_fixture_latency(instance: &mut Prepared, value: f64) -> Result<Block> {
+    let mut block = request(instance.configuration(), 0);
+    block
+        .parameters
+        .push(ParameterPoint {
+            frame: 0,
+            id: 7,
+            normalized: value,
+        })
+        .unwrap();
+    instance.exchange_on_worker(block)
+}
+
+fn wait_for_latency_restart(instance: &mut Prepared) -> std::num::NonZeroU64 {
+    let until = Instant::now() + Duration::from_millis(500);
+    loop {
+        if let Some(pending) = instance
+            .poll_recovery_edits_on_worker()
+            .unwrap()
+            .pending_latency_restart
+        {
+            return pending;
+        }
+        assert!(Instant::now() < until, "latency restart was not observed");
+        thread::yield_now();
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_latency_restart_survives_receipt_reads_and_newer_activation_request() {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(104),
+    )
+    .unwrap();
+    let child = instance.child_id_on_control();
+    assert!(
+        instance
+            .poll_recovery_edits_on_worker()
+            .unwrap()
+            .pending_latency_restart
+            .is_none()
+    );
+    assert_eq!(instance.ready().algorithmic_latency_frames, 0);
+    change_fixture_latency(&mut instance, 0.75).unwrap();
+    let pending = wait_for_latency_restart(&mut instance);
+    assert_eq!(
+        instance
+            .poll_recovery_edits_on_worker()
+            .unwrap()
+            .pending_latency_restart,
+        Some(pending)
+    );
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    assert_eq!(stopped.facts().algorithmic_latency_frames, 0);
+    let mut stopped = stopped.reactivate_retained_on_control().unwrap();
+    assert_eq!(stopped.facts().algorithmic_latency_frames, 7);
+    assert!(
+        stopped
+            .poll_recovery_edits_on_control()
+            .unwrap()
+            .pending_latency_restart
+            .unwrap()
+            > pending,
+        "covering the old ordinal must retain a restart raised during activation"
+    );
+    let mut stopped = stopped.reactivate_retained_on_control().unwrap();
+    assert!(
+        stopped
+            .poll_recovery_edits_on_control()
+            .unwrap()
+            .pending_latency_restart
+            .is_none()
+    );
+    let old = stopped.configuration().binding;
+    let mut instance = stopped
+        .resume_retained_on_control(
+            Binding {
+                epoch: old.epoch + 1,
+                ..old
+            },
+            Some(options().presentation),
+        )
+        .unwrap();
+    assert_eq!(instance.child_id_on_control(), child);
+    assert_eq!(instance.ready().algorithmic_latency_frames, 7);
+    let block = request(instance.configuration(), 1);
+    let reply = instance.exchange_on_worker(block).unwrap();
+    assert_eq!(&reply.pcm[..7], &[[0.0; 2]; 7]);
+    assert_ne!(reply.pcm[7], [0.0; 2]);
+    let terminal = instance
+        .stop_and_reap_on_control()
+        .unwrap()
+        .terminal
+        .unwrap();
+    assert_eq!((terminal.blocks, terminal.frames), (2, 16));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_latency_restart_requires_opt_in_and_rejects_mixed_io() {
+    for opted_in in [false, true] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup(104),
+        )
+        .unwrap();
+        if opted_in {
+            instance.poll_recovery_edits_on_worker().unwrap();
+        }
+        let mut result =
+            change_fixture_latency(&mut instance, if opted_in { 0.25 } else { 0.75 }).map(|_| ());
+        let until = Instant::now() + Duration::from_millis(500);
+        while result.is_ok() {
+            assert!(
+                Instant::now() < until,
+                "unsupported restart was not refused"
+            );
+            result = instance.poll_parameter_edits_on_worker().map(|_| ());
+        }
+        assert!(matches!(result, Err(Error::Worker(11))), "{result:?}");
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_uncovered_latency_restart_cannot_resume_stale_facts() {
+    let case = Case::new();
+    let mut instance = Prepared::prepare(
+        &build(),
+        source(),
+        options(),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(104),
+    )
+    .unwrap();
+    instance.poll_recovery_edits_on_worker().unwrap();
+    change_fixture_latency(&mut instance, 0.75).unwrap();
+    wait_for_latency_restart(&mut instance);
+    let stopped = instance.quiesce_retained_on_control().unwrap();
+    let old = stopped.configuration().binding;
+    let Err(failure) = stopped.resume_retained_on_control(
+        Binding {
+            epoch: old.epoch + 1,
+            ..old
+        },
+        Some(options().presentation),
+    ) else {
+        panic!("stale latency must never acknowledge a resumed epoch");
+    };
+    assert!(matches!(failure.cause(), Error::Worker(15)), "{failure:?}");
+    let _ = failure.finish_on_control();
+    assert_eq!(
+        case.observation().unwrap()[8],
+        1,
+        "processing started only at startup"
+    );
+}
+
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_parameter_pcm_feedback_and_capture_keep_original_source_with_no_caller_allocations() {
@@ -728,23 +896,16 @@ fn actual_sdk_edit_during_stopped_capture_refuses_incoherent_snapshot() {
     )
     .unwrap();
     let initial = instance.ready().initial_state.clone();
+    let child = instance.child_id_on_control();
     let stopped = instance.quiesce_retained_on_control().unwrap();
-    let mut failure = match stopped.capture_state_retained_on_control() {
-        Ok(_) => panic!("stopped capture changed during SDK read must refuse its snapshot"),
-        Err(failure) => failure,
-    };
-    assert!(matches!(failure.cause(), Error::Worker(6)));
-    let until = Instant::now() + Duration::from_secs(3);
-    loop {
-        if let Some(PreparationDisposal::Reaped(retired)) =
-            failure.poll_disposal_on_control().unwrap()
-        {
-            assert!(!retired.status.success());
-            break;
-        }
-        assert!(Instant::now() < until);
-        thread::yield_now();
-    }
+    let (stopped, result) = stopped
+        .capture_state_or_refusal_retained_while_on_control(|| false)
+        .unwrap();
+    assert!(matches!(
+        result,
+        Err(protocol::StateCaptureRefusal::StillChanging)
+    ));
+    assert_eq!(stopped.child_id_on_control(), child);
     assert_eq!(
         &decode(&initial).unwrap().component.unwrap()[8..12],
         &1.0_f32.to_le_bytes()
@@ -754,5 +915,26 @@ fn actual_sdk_edit_during_stopped_capture_refuses_incoherent_snapshot() {
         (observed[10], observed[11]),
         (0, 0),
         "capture must not invent PCM or flush work"
+    );
+    let previous = stopped.configuration().binding;
+    let mut instance = stopped
+        .resume_retained_on_control(
+            Binding {
+                epoch: previous.epoch + 1,
+                ..previous
+            },
+            Some(options().presentation),
+        )
+        .unwrap();
+    instance
+        .exchange_on_worker(request(instance.configuration(), 0))
+        .unwrap();
+    assert_eq!(instance.child_id_on_control(), child);
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
     );
 }

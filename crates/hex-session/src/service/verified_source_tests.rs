@@ -1,7 +1,7 @@
 //! Actual verified readers + canonical worker; no native ownership is inferred.
 use super::*;
 use crate::{AudioSourceBinding, DocumentAudioMode, SourcePlanReservation};
-use std::{fs, sync::atomic::AtomicU64, time::Duration};
+use std::{fs, sync::atomic::AtomicU64};
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Files(PathBuf);
 impl Files {
@@ -57,7 +57,10 @@ fn reservation(count: usize) -> SourcePlanReservation {
     }
 }
 fn next(service: &Service) -> Event {
-    service.events.recv_timeout(Duration::from_secs(5)).unwrap()
+    service
+        .events
+        .recv_timeout(crate::test_wait::HANG_BOUND)
+        .unwrap()
 }
 fn run(service: &Service, request: Request) -> Event {
     service.submit(request).unwrap();
@@ -450,7 +453,7 @@ fn canonical_verified_bindings_survive_save_as_and_changed_bytes_require_explici
     assert!(next(&service).playback.is_none());
     let completion = service
         .export_events
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(crate::test_wait::HANG_BOUND)
         .unwrap();
     assert!(
         completion
@@ -507,7 +510,12 @@ fn invalid_verified_batch_is_atomic_and_metadata_reservation_precedes_canonical_
     .unwrap();
     assert!(refused.verify_import(good).is_err());
     assert_eq!(refused.project().assets().count(), 0);
-    limits.reader.reader.max_source_frames = 8_000_001;
+    limits.reader.reader.max_source_frames = crate::MAX_STREAMED_SOURCE_FRAMES;
+    assert!(limits.validate().is_ok());
+    limits.reader.reader.max_source_frames = crate::MAX_STREAMED_SOURCE_FRAMES + 1;
+    assert!(limits.validate().is_err());
+    limits.reader.reader.max_source_frames = 8_000_000;
+    limits.reader.reader.max_file_bytes = crate::MAX_STREAMED_FILE_BYTES + 1;
     assert!(limits.validate().is_err());
 }
 

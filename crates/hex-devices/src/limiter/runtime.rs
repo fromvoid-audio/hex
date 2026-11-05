@@ -397,6 +397,9 @@ impl Factory {
     }
 }
 impl PreparedOwnedProcessorRuntime for Factory {
+    fn reserved_bypass_latency_frames(&self) -> Option<u32> {
+        Some(self.config.latency())
+    }
     fn runtime_version(&self) -> u32 {
         1
     }
@@ -589,6 +592,21 @@ impl OwnedProcessorRuntime for Runtime {
         for (lane, attenuation) in min_attenuation.into_iter().enumerate() {
             history.meter.reduction_db[lane] =
                 history.meter.reduction_db[lane].max(reduction(attenuation));
+        }
+    }
+    fn process_bypassed_block_with_clock(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
+    ) {
+        // Bounded stack scratch preserves dry input without allocating, even
+        // when the host supplies an arbitrarily large segment.
+        let mut scratch = [[0.0; 2]; 256];
+        for chunk in frames.chunks(256) {
+            let work = &mut scratch[..chunk.len()];
+            work.copy_from_slice(chunk);
+            self.process_block(work, resources);
         }
     }
     fn commit_block(&mut self) {

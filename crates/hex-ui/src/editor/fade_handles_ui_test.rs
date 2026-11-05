@@ -1292,3 +1292,116 @@ fn hover_revealed_handle_on_a_fade_free_clip_drags_one_fade_without_moving_clip(
     );
     assert!(changed.fade().fade_out() > 0 && changed.fade().fade_in() == 0);
 }
+
+#[gpui::test]
+fn narrow_clip_hides_hover_and_f_targets_until_zoomed_in(cx: &mut TestAppContext) {
+    let (project, track, _, clip) = super::super::clip_drag_ui_test::audio_project();
+    let mut model = hex_project::Editor::new(project, 8).unwrap();
+    model
+        .execute(Command::TrimClip {
+            clip,
+            start: 0,
+            duration: 8_000,
+            source_offset: 0,
+            source_length: 8_000,
+        })
+        .unwrap();
+    let original = model.project().clone();
+    let (window, editor) =
+        super::super::clip_drag_ui_test::editor_window(cx, original.clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(window, cx);
+    visual.run_until_parked();
+    let lane_width = editor.read_with(&visual, |v, _| v.drag_lanes.get(&track).unwrap().width);
+    let selector: &'static str =
+        Box::leak(format!("fade-in-top-{}", clip.value()).into_boxed_str());
+    for (width, shown) in [(23.0_f32, false), (25.0, true)] {
+        editor.update(&mut visual, |v, cx| {
+            v.viewport = Some(Viewport {
+                start: 0,
+                length: (8_000.0 * lane_width / width) as u64,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        hover_clip(&mut visual, clip);
+        assert_eq!(
+            visual.debug_bounds(selector).is_some(),
+            shown,
+            "hover width {width}"
+        );
+        key(&mut visual, true, "f");
+        assert_eq!(
+            visual.debug_bounds(selector).is_some(),
+            shown,
+            "f width {width}"
+        );
+        if !shown {
+            let clip_bounds = visual
+                .debug_bounds(Box::leak(
+                    format!("clip-visual-{}", clip.value()).into_boxed_str(),
+                ))
+                .unwrap();
+            let hit = point(
+                clip_bounds.left() + px(4.0),
+                clip_bounds.top() + px(super::super::clip_name::CLIP_NAME_HEIGHT + 4.0),
+            );
+            editor.read_with(&visual, |v, _| {
+                let state = v.state.as_ref().unwrap();
+                let viewport = v.visible_viewport(state.timeline_frames);
+                assert!(!v.fade_handle_hit(
+                    track,
+                    state.project.clip(clip).unwrap(),
+                    f32::from(hit.x),
+                    f32::from(hit.y),
+                    viewport
+                ));
+            });
+            visual.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(hit, MouseButton::Left, Modifiers::default());
+            editor.read_with(&visual, |v, _| assert!(v.active_fade_drag.is_none()));
+        }
+        if shown {
+            let from = visual.debug_bounds(selector).unwrap().center();
+            let free = Modifiers {
+                platform: true,
+                ..Modifiers::default()
+            };
+            visual.simulate_mouse_down(from, MouseButton::Left, free);
+            let to = point(from.x + px(4.0), from.y);
+            visual.simulate_mouse_move(to, MouseButton::Left, free);
+            visual.run_until_parked();
+            editor.read_with(&visual, |v, _| assert!(v.fade_preview(clip).is_some()));
+            editor.update(&mut visual, |v, cx| {
+                v.viewport = Some(Viewport {
+                    start: 0,
+                    length: (8_000.0 * lane_width / 23.0) as u64,
+                });
+                cx.notify();
+            });
+            visual.run_until_parked();
+            editor.read_with(&visual, |v, _| {
+                assert!(
+                    v.active_fade_drag.is_some(),
+                    "admitted gesture survives zoom"
+                )
+            });
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "active target remains visible below threshold"
+            );
+            visual.simulate_mouse_up(to, MouseButton::Left, free);
+            visual.run_until_parked();
+            editor.read_with(&visual, |v, _| {
+                assert!(v.pending_fade.is_some(), "release owns its pending preview")
+            });
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "pending preview remains visible below threshold"
+            );
+        }
+        key(&mut visual, false, "f");
+    }
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &original)
+    });
+}

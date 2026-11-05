@@ -240,7 +240,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_some_and(|s| s.revision == g.context.revision)
-            && self.piano_beat_start.raw() == g.context.view_start
+            && self.piano_beat_start == g.context.view_start
             && self.piano_beat_span.raw() == g.context.view_span
             && self.piano_pitch_low == g.context.pitch_low
             && self.piano_pitch_rows == g.context.pitch_rows

@@ -9,32 +9,17 @@ Supply optimized exact-source builds for user testing. Save and quit hex first;
 never force-quit, discard unsaved projects or claim replacing a file reloads a
 running process. Preserve projects, media, preferences and historical artifacts.
 
-## Update and open
+## Run from source
 
 ```sh
-./launch          # verify/open installed app only
-./launch --update # fetch/fast-forward clean main, optimized build/install/open
-./launch --test   # add full exact-source local CI
-./launch --open   # verify/open installed app only
-./launch --help
+./launch                    # git pull, then cargo run -r
+./launch --diagnostics=off  # forward arguments to hex
 ```
 
-Normal update refuses dirty/non-main/ahead/divergent source and running installed
-or raw desktop processes. Without `--test`, it records source-only verification
-and tests as not run. `--open` does not update or build.
-
-Unless `CARGO_TARGET_DIR` is set, `./launch` builds in its own Cargo targets:
-`artifacts/cargo-ci-target` for full local CI and `artifacts/cargo-release-target`
-for packaging and release-target recovery. The release guard refuses a target
-already populated by development checks, so the two stay separate. The checkout's
-`target/` is left for ad-hoc Cargo use. An explicit `CARGO_TARGET_DIR` is used for
-both; `--recover-release-target --test` still verifies in a fresh invocation target.
-
-`--force-restart` is a separate explicit destructive opt-in: it can terminate the
-verified development app after normal quit fails. Never infer that authorization
-from a build request. `--recover-release-target` handles supported recreated or
-pending targets without terminating hex; read its exact diagnostic and help first.
-Do not edit release ownership markers or delete uncertain installation custody.
+The launcher runs in the checkout containing it. It stops on a failed pull and
+forwards all arguments to the release binary. It does not install an app bundle,
+run local CI, or terminate an existing process. Git and Cargo use their normal
+configuration, including `CARGO_TARGET_DIR` when set.
 
 ## Qualified user-test delivery
 
@@ -94,15 +79,20 @@ starting a build or CI while recording: preparation is not evidence of audio
 deadline safety. A restart request is not proof that the new process launched;
 check its build identity and the displayed update status separately.
 
-For explicit VST3 helper packaging, build the pinned clean SDK inputs with
-`crates/hex-plugin-scan/native/macos_bootstrap.py build --help`. The
-`--discovery-only` and `--instance-only` profiles are separate minimal bundles;
-the latter requires its owned duplex protocol and has no command-line self-test.
-Pass their clean exact-candidate receipts to `scripts/bundle-macos.sh` with
-`--vst3-discovery-receipt PATH` and `--vst3-instance-receipt PATH`, respectively.
-Delivery signs the nested helpers and records their final inventories. Including
-an instance executable does not establish track integration or plug-in support;
-use the current Pulse acceptance checklist for the supported workflow.
+The development app includes VST3 discovery by default. Set `HEX_VST3_SDK` to
+the [pinned clean SDK checkout](local-ci.md#controlled-macos-vst3-fixtures) or
+pass its path with `--vst3-sdk` when running `scripts/bundle-macos.sh`.
+Delivery builds and signs the discovery helper and
+scanner inside `hex.app`. Open the packaged app and use **scan trusted standard
+folders** in the plug-in browser when you want to discover installed VST3s.
+You can supply a prebuilt exact-candidate helper with `--vst3-discovery-receipt PATH`
+or explicitly omit discovery with `--without-vst3-discovery`.
+
+For the separate instance helper, build the native `--instance-only` profile
+with `crates/hex-plugin-scan/native/macos_bootstrap.py` and pass its exact-candidate
+receipt with `--vst3-instance-receipt PATH`. Delivery signs nested helpers and
+records their final inventories. Use the current Pulse acceptance checklist for
+the supported plug-in hosting workflow.
 
 Read the actual installer result and retained `hex-test-build-receipt.json`.
 Report candidate/merge mapping, full source, included revisions, CI report,

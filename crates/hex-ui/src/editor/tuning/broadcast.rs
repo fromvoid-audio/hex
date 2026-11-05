@@ -35,10 +35,10 @@ impl Broadcast {
         }
     }
     fn disable(&mut self) {
-        if let (Some(handle), Some(owner)) = (&self.handle, self.owner.take()) {
-            if let Err(error) = handle.disable(owner) {
-                self.error = Some(error.to_string());
-            }
+        if let (Some(handle), Some(owner)) = (&self.handle, self.owner.take())
+            && let Err(error) = handle.disable(owner)
+        {
+            self.error = Some(error.to_string());
         }
         self.sent = None;
     }
@@ -123,10 +123,10 @@ impl Broadcast {
         }
     }
     fn retry(&mut self) {
-        if let (Some(handle), Some(owner)) = (&self.handle, self.owner) {
-            if let Err(error) = handle.retry(owner) {
-                self.error = Some(error.to_string());
-            }
+        if let (Some(handle), Some(owner)) = (&self.handle, self.owner)
+            && let Err(error) = handle.retry(owner)
+        {
+            self.error = Some(error.to_string());
         }
     }
     fn status(&self) -> String {

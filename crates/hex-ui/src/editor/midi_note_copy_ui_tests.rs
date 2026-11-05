@@ -60,7 +60,7 @@ fn at(
             + point(
                 px(1.0)
                     + (roll.size.width - px(2.0))
-                        * ((beat * BeatTime::ONE.raw() as f64 - v.piano_beat_start.raw() as f64)
+                        * ((beat * BeatTime::ONE.raw() as f64 - v.piano_beat_start as f64)
                             / v.piano_beat_span.raw() as f64) as f32,
                 px(1.0)
                     + (roll.size.height - px(2.0))
