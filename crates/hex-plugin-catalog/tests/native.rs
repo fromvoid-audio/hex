@@ -67,6 +67,27 @@ fn copy(source: &Path, target: &Path) {
 }
 
 #[test]
+#[ignore = "explicit source-launch tools and original native fixtures required"]
+fn source_launch_tools_scan_and_publish_catalog_metadata() {
+    let fixture = Fixture::new();
+    let tools = worker::available_app().unwrap();
+    let cancellation = Cancellation::default();
+    let update = worker::scan(
+        &fixture.catalog(),
+        &tools,
+        module("normal"),
+        cancellation.token(),
+    );
+    assert!(update.status.contains("discovered"), "{}", update.status);
+    assert!(
+        !Catalog::load(&fixture.catalog())
+            .unwrap()
+            .rows("")
+            .is_empty()
+    );
+}
+
+#[test]
 #[ignore = "explicit original signed package and native fixtures required"]
 fn selected_packaged_thin_and_universal_scan_persist_actual_uids_and_restart_without_rescan() {
     let fixture = Fixture::new();

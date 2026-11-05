@@ -3,4 +3,8 @@
 set -e
 cd "$(dirname "$0")"
 git pull
+if [ "$(uname -s):$(uname -m)" = Darwin:arm64 ]; then
+    HEX_LAUNCH_DISCOVERY_APP=$(python3 scripts/prepare-launch-discovery.py) || HEX_LAUNCH_DISCOVERY_APP=
+    export HEX_LAUNCH_DISCOVERY_APP
+fi
 exec cargo run -r -- "$@"
