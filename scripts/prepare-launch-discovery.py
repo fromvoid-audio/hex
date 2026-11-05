@@ -90,6 +90,7 @@ def prepare() -> Path:
                 if not isinstance(source, str) or re.fullmatch(r"[0-9a-f]{40}", source) is None:
                     raise delivery.DeliveryError("cannot identify source for discovery")
                 tools = staging / "tools" / "hex.app"
+                (tools / "Contents/Resources").mkdir(parents=True)
                 evidence = delivery.stage_discovery(tools, receipt, source, {
                     "path": str(scanner), "sha256": scanner_hash,
                 }, signing)
