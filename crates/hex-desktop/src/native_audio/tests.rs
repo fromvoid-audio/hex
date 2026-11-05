@@ -3,6 +3,7 @@
 use super::*;
 mod bypass_latency;
 mod delay_bypass;
+mod document_output;
 mod limiter;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod plugins;
