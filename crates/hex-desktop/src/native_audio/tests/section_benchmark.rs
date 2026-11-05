@@ -9,14 +9,19 @@
 //! sleeps, so fence waits approximate, but are not, a physical device cadence.
 //! UI install, paint and present are not measured here.
 //!
-//! ```text
-//! HEX_SECTION_BENCH_PROJECT=/path/to/project.hex [HEX_SECTION_BENCH_REPS=5] \
-//!   [HEX_SECTION_BENCH_MEDIA_REMAP=/old/media/root=/new/media/root] \
-//!   cargo test --release -p hex-desktop --features allocation-probe --bin hex-desktop \
-//!   section_edit_benchmark -- --ignored --nocapture
+//! Run the generated reference workload in a fresh directory.
+//!
+//! ```sh
+//! fixture_dir="$(mktemp -d)/section-fixture"
+//! cargo run --release --locked -p hex-session --example create_section_benchmark -- "$fixture_dir"
+//! HEX_SECTION_BENCH_PROJECT="$fixture_dir/project.hex" HEX_SECTION_BENCH_REPS=7 \
+//!   cargo test --release --locked -p hex-desktop --features allocation-probe --bin hex-desktop \
+//!   -- native_audio::tests::section_benchmark::section_edit_benchmark \
+//!   --ignored --exact --nocapture --test-threads=1
 //! ```
 //!
-//! The project needs at least two song sections; the original is only read.
+//! A supplied saved project needs at least two song sections. The benchmark
+//! reads the original and applies edits to its temporary copy.
 //! `HEX_SECTION_BENCH_MEDIA_REMAP` rewrites one absolute media-path prefix in
 //! the temporary copy when the project's library has moved.
 use super::resident_preview::ResidentHarness;
