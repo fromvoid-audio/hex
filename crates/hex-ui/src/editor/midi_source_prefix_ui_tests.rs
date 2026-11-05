@@ -4,6 +4,28 @@ use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use hex_project::{BeatTime, Command, MidiNoteInsert};
 use hex_session::service::Request;
 
+fn grid_lines(visual: &mut gpui::VisualTestContext) -> Vec<i32> {
+    let roll = visual.debug_bounds("midi-note-roll").unwrap();
+    let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
+    let colors: [gpui::Background; 2] = [
+        gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Grid)).into(),
+        gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Border)).into(),
+    ];
+    let mut lines = visual
+        .rendered_filled_quads("midi-note-roll")
+        .into_iter()
+        .filter(|(b, c)| {
+            colors.contains(c)
+                && (b.size.width / scale - 1.0).abs() < 0.01
+                && (b.size.height / scale - (f32::from(roll.size.height) - 2.0)).abs() < 0.01
+        })
+        .map(|(b, _)| ((b.origin.x / scale) * 100.0).round() as i32)
+        .collect::<Vec<_>>();
+    lines.sort_unstable();
+    assert!(!lines.is_empty());
+    lines
+}
+
 #[gpui::test]
 fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
     cx: &mut TestAppContext,
@@ -92,6 +114,7 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
             assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &before);
         });
         let held_bodies = bodies(&editor, &mut visual);
+        let held_grid = grid_lines(&mut visual);
         editor.update(&mut visual, |v, _| {
             let tuning = v.state.as_ref().unwrap().project.tuning();
             v.tuning.client.begin(v.project_generation, tuning).unwrap();
@@ -160,6 +183,11 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
             bodies(&editor, &mut visual),
             held_bodies,
             "canonical installation must not shift a pixel"
+        );
+        assert_eq!(
+            grid_lines(&mut visual),
+            held_grid,
+            "source rebasing cannot shift existing snap grid lines"
         );
         let after = editor.read_with(&visual, |v, _| {
             let project = v.state.as_ref().unwrap().project.as_ref();
