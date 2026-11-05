@@ -306,8 +306,8 @@ impl SessionAssembly {
         if self.inventory.is_some() && external.is_some() {
             return Err(AudioStorageError::SourceMismatch);
         }
-        if let Some(i) = self.inventory.as_ref().or(external) {
-            if self.scenes.capacity() != 0
+        if let Some(i) = self.inventory.as_ref().or(external)
+            && (self.scenes.capacity() != 0
                 || self.tracks.capacity() != 0
                 || self.cells.capacity() != 0
                 || self.indices.capacity() != 0
@@ -323,10 +323,9 @@ impl SessionAssembly {
                 || self.meter.is_some()
                 || i.routed_midi_clips.capacity() != 0
                 || i.midi_source_roots.capacity() != 0
-                || i.mutable_history_retarget_storage_bytes != 0
-            {
-                return Err(AudioStorageError::UnknownStorage);
-            }
+                || i.mutable_history_retarget_storage_bytes != 0)
+        {
+            return Err(AudioStorageError::UnknownStorage);
         }
         let sampler_midi_bytes = self.current_sampler_midi_bytes(external)?;
         if let Some(i) = self.inventory.as_ref().or(external) {
@@ -484,19 +483,19 @@ impl SessionAssembly {
         }
         #[cfg(test)]
         {
-            if self.wrong_handle {
-                if let Some(row) = self.pairs.first_mut() {
-                    row.plan.handle = row
-                        .plan
-                        .handle
-                        .checked_add(1)
-                        .ok_or(AudioStorageError::Overflow)?;
-                }
+            if self.wrong_handle
+                && let Some(row) = self.pairs.first_mut()
+            {
+                row.plan.handle = row
+                    .plan
+                    .handle
+                    .checked_add(1)
+                    .ok_or(AudioStorageError::Overflow)?;
             }
-            if self.occupy_name {
-                if let Some(scene) = self.scenes.first_mut() {
-                    scene.name = "occupied negative owner".into();
-                }
+            if self.occupy_name
+                && let Some(scene) = self.scenes.first_mut()
+            {
+                scene.name = "occupied negative owner".into();
             }
         }
         self.metadata_handles = handles;

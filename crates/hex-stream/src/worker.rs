@@ -309,12 +309,11 @@ pub(crate) fn run_worker(
             continue;
         }
         #[cfg(test)]
-        if let Some(job) = &scalar_job {
-            if let (Some(hooks), StreamResourceKey::Scalar(key)) = (&test_hooks, job.key.source) {
-                if !hooks.before_scalar_step(key, &stop) {
-                    break;
-                }
-            }
+        if let Some(job) = &scalar_job
+            && let (Some(hooks), StreamResourceKey::Scalar(key)) = (&test_hooks, job.key.source)
+            && !hooks.before_scalar_step(key, &stop)
+        {
+            break;
         }
         if let Some(mut job) = scalar_job.take() {
             let outcome = job.step(&mut scalar_definitions[job.source]);

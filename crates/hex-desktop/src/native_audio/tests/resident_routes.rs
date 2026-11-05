@@ -303,6 +303,11 @@ fn loaded_resident_library_import_comparison_and_direct_source_requests_are_atom
         value: ParameterValue::Float(0.5),
     }));
     (applied, _) = h.applied(applied);
+    // Let the 5 ms track-gain transition finish before comparing two
+    // subsequent blocks across the refused request.
+    for _ in 0..4 {
+        h.render();
+    }
     let before_pcm = h.render();
     h.refuse.store(true, std::sync::atomic::Ordering::Release);
     h.service.submit(request(&undo, 3)).unwrap();

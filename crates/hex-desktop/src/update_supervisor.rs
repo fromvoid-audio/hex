@@ -164,17 +164,17 @@ impl Prepared {
 
 impl Drop for Prepared {
     fn drop(&mut self) {
-        if self.input.take().is_some() {
-            if let Some(mut child) = self.child.take() {
-                // The platform can stall process termination. Never wait on
-                // the UI owner which cancels a prepared update.
-                signal_child_group(&mut child);
-                let _ = std::thread::Builder::new()
-                    .name("hex-update-reap".into())
-                    .spawn(move || {
-                        let _ = child.wait();
-                    });
-            }
+        if self.input.take().is_some()
+            && let Some(mut child) = self.child.take()
+        {
+            // The platform can stall process termination. Never wait on
+            // the UI owner which cancels a prepared update.
+            signal_child_group(&mut child);
+            let _ = std::thread::Builder::new()
+                .name("hex-update-reap".into())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
         }
     }
 }
@@ -702,6 +702,17 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn receipt_identity_matches_legacy_digest() {
+        let fixture = Fixture::new();
+        let receipt = fixture.0.join("test-build.json");
+        fs::write(&receipt, b"abc").unwrap();
+        assert_eq!(
+            receipt_digest(&receipt).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]

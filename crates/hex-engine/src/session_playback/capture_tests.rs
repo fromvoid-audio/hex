@@ -974,9 +974,15 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             .render_with_capture(&mut retarget_main, &mut retarget_capture)
             .unwrap();
         for (index, frame) in retarget_capture.output(0).unwrap().iter().enumerate() {
-            let expected = [(0.4 + 0.25) * 0.125, (-0.2 + 0.25) * 0.25];
-            assert_eq!(*frame, expected);
-            assert_eq!(retarget_main[index], expected.map(|sample| sample * 0.25));
+            let progress = (index + 1) as f32 / 240.0;
+            let expected = [
+                (0.4 + 0.25) * (0.5 - 0.375 * progress),
+                (-0.2 + 0.25) * 0.25,
+            ];
+            for channel in 0..2 {
+                assert!((frame[channel] - expected[channel]).abs() < 1e-6);
+                assert!((retarget_main[index][channel] - expected[channel] * 0.25).abs() < 1e-6);
+            }
         }
         if metered {
             let observed = observation
@@ -984,7 +990,7 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
                 .unwrap()
                 .take_track_output();
             assert!(
-                (observed - (0.4 + 0.25) * 0.125).abs() < 1e-7,
+                (observed - (0.4 + 0.25) * (0.5 - 0.375 / 240.0)).abs() < 1e-6,
                 "track meter must follow the new post-fader gain: {observed}"
             );
         }

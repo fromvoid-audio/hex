@@ -42,6 +42,7 @@ pub(crate) mod return_feeds;
 pub(crate) mod routing;
 pub(crate) mod sampler_crossfade;
 pub(crate) mod session_audio_loops;
+pub(crate) mod sidechain;
 pub(crate) mod track_groups;
 pub(crate) mod track_name_origin;
 pub(crate) mod tuning;
@@ -1299,6 +1300,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate,
                     next_id: document.next_id,
@@ -1342,6 +1344,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1385,6 +1388,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1435,6 +1439,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1485,6 +1490,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1535,6 +1541,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1585,6 +1592,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -1653,6 +1661,7 @@ impl DocumentV8 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: document.sample_rate,
                     next_id: document.next_id,
@@ -2102,6 +2111,7 @@ impl DocumentV13 {
             return_feeds: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,
@@ -2468,6 +2478,7 @@ impl DocumentV10 {
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
                     midi_routes: Vec::new(),
+                    sidechains: Vec::new(),
                     import_provenance: None,
                     sample_rate: doc.sample_rate,
                     next_id: doc.next_id,
@@ -2620,6 +2631,7 @@ impl DocumentV9 {
             return_feeds: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
+            sidechains: Vec::new(),
             import_provenance: None,
             sample_rate: doc.sample_rate,
             next_id: doc.next_id,

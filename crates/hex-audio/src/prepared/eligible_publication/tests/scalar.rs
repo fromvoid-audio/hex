@@ -888,12 +888,12 @@ fn conflicting_scalar_key_facts_across_selected_domains_refuse_before_publicatio
         measured_block(&mut data);
         control.reclaim();
         for (index, token) in domains.iter().enumerate() {
-            if !reports[index] {
-                if let Some(report) = control.recover_audio_candidate_domain(*token) {
-                    assert!(report.worker_joined && report.accounting_complete);
-                    assert_eq!(report.page_buffers, 4);
-                    reports[index] = true;
-                }
+            if !reports[index]
+                && let Some(report) = control.recover_audio_candidate_domain(*token)
+            {
+                assert!(report.worker_joined && report.accounting_complete);
+                assert_eq!(report.page_buffers, 4);
+                reports[index] = true;
             }
         }
         assert!(std::time::Instant::now() < deadline);

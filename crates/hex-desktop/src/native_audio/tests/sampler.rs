@@ -16,6 +16,7 @@ use hex_project::{BeatTime, Command, Created};
 /// The sampler's prepared ~2 ms declick release floor at this fixture's
 /// 16 kHz output (#4087): no note-off releases in fewer frames.
 const RELEASE_FLOOR_FRAMES: usize = 32;
+const SAMPLER_OUTPUT_RATE: u32 = 16_000;
 
 /// Release level `steps` frames after a note-off whose prepared release is
 /// `max(authored, RELEASE_FLOOR_FRAMES)` frames.
@@ -47,7 +48,7 @@ impl Harness {
                 return Ok(None);
             }
             match hex_audio::worker_fixture::open_with_reliable_action_outcomes(
-                rate.unwrap_or(16000),
+                rate.unwrap_or(SAMPLER_OUTPUT_RATE),
             ) {
                 Ok((output, callback)) => {
                     *slot = Some(callback);
@@ -58,31 +59,52 @@ impl Harness {
             }
         }));
         let observation = Arc::new(Mutex::new(Observation::default()));
+        let mut observed = if rendered {
+            ObservedSink::rendered(sink, Arc::clone(&observation))
+        } else {
+            ObservedSink::legacy(sink, Arc::clone(&observation))
+        };
+        // The canonical project now starts before the asynchronous open
+        // completes. Keep the rate assumed by the literal PCM and clock checks.
+        observed.initial_rate = Some(SAMPLER_OUTPUT_RATE);
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
             None,
-            Box::new(if rendered {
-                ObservedSink::rendered(sink, Arc::clone(&observation))
-            } else {
-                ObservedSink::legacy(sink, Arc::clone(&observation))
-            }),
+            Box::new(observed),
             AudioPolicy::new().unwrap().resident_native,
         )
         .unwrap();
-        Self {
-            rendered_setup: setup_sender.map(|sender| RenderedSetup {
+        let wait = Duration::from_secs(10);
+        let rendered_setup = setup_sender.map(|sender| {
+            // Pre-window authoring drives the real callback on each event.
+            // Wait for asynchronous output before its first render and keep
+            // the actual Opened event for the later handoff to the editor.
+            let opened = receiver
+                .recv_timeout(wait)
+                .expect("initial sampler output event");
+            match &opened {
+                EditorAudioEvent::Opened { audio, .. } => {
+                    assert_eq!(audio.sample_rate, SAMPLER_OUTPUT_RATE);
+                }
+                EditorAudioEvent::Unavailable { error, .. } => panic!("{error}"),
+                _ => panic!("expected the initial sampler output to open"),
+            }
+            RenderedSetup {
                 sender,
-                opened: None,
+                opened: Some(opened),
                 observation: None,
-            }),
+            }
+        });
+        Self {
+            rendered_setup,
             service: Some(service),
             events: receiver,
             backend,
             audio: None,
             context: None,
             observation,
-            wait: Duration::from_secs(10),
+            wait,
         }
     }
     fn open_sampler(&mut self, old_identity: u64) {
@@ -473,7 +495,9 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
         if slot.is_some() {
             return Ok(None);
         }
-        match hex_audio::worker_fixture::open_with_reliable_action_outcomes(rate.unwrap_or(16000)) {
+        match hex_audio::worker_fixture::open_with_reliable_action_outcomes(
+            rate.unwrap_or(SAMPLER_OUTPUT_RATE),
+        ) {
             Ok((output, callback)) => {
                 opens += 1;
                 if opens == 2 {
@@ -489,11 +513,13 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
         }
     }));
     let observation = Arc::new(Mutex::new(Observation::default()));
+    let mut observed = ObservedSink::legacy(sink, Arc::clone(&observation));
+    observed.initial_rate = Some(SAMPLER_OUTPUT_RATE);
     let service = Service::with_audio_sink_and_native_reservation(
         16,
         8,
         None,
-        Box::new(ObservedSink::legacy(sink, observation.clone())),
+        Box::new(observed),
         AudioPolicy::new().unwrap().resident_native,
     )
     .unwrap();
@@ -588,6 +614,10 @@ fn new_cancels_actual_draining_sampler_before_immediate_fresh_open_poll() {
     });
     assert!(h.observation.lock().unwrap().fresh_before_input_checked);
     h.open();
+    while !h.observation.lock().unwrap().fresh_replacement_hold_checked {
+        assert!(Instant::now() < end, "fresh-output policy was not checked");
+        std::thread::yield_now();
+    }
     assert_eq!(h.render(), [[0.0; 2]; 64]);
 }
 
@@ -1796,5 +1826,169 @@ fn sampler_bypass_keeps_held_note_continuous_in_the_actual_callback() {
     assert!(
         settled.iter().flatten().all(|sample| sample.abs() < 1e-6),
         "reenable must not retrigger the held note: {settled:?}"
+    );
+}
+
+#[test]
+fn long_sampler_release_survives_immediate_reenable() {
+    use super::resident_preview::ResidentHarness;
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(131_072);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    (applied, _) = h.applied(applied);
+    let loaded = h.run(Request::LoadFirstSampler {
+        request_id: 99,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        empty_sampler: None,
+        path: files.wav(48_000, 65_536),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    let device = loaded
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    (applied, _) = h.applied(applied);
+    let state = loaded
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .state()
+        .clone();
+    let state = hex_engine::patch_sampler_parameter_on_control(
+        hex_engine::SamplerParameter::ReleaseMs,
+        &state,
+        100.0,
+    )
+    .unwrap();
+    h.run(Request::Edit(Command::ReplaceDeviceState { device, state }));
+    (applied, _) = h.applied(applied);
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip")
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::ONE,
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::from_raw(BeatTime::ONE.raw() / 6),
+        duration: BeatTime::from_raw(BeatTime::ONE.raw() / 32),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    for _ in 0..16 {
+        h.render();
+    }
+    let before = h.render();
+    assert!(before[63][0].abs() > 0.01, "held note must be audible");
+    let toggled = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+    assert!(toggled.error.is_none());
+    let after = h.render();
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire)
+            > applied,
+        "bypass must reach the callback"
+    );
+    assert!(
+        (after[0][0] - before[63][0]).abs() < 0.01,
+        "sampler bypass: {:?} -> {:?}",
+        before[63],
+        after[0]
+    );
+    let mut halfway = after;
+    for _ in 0..35 {
+        halfway = h.render();
+    }
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    let cut = status
+        .performance_frame
+        .load(std::sync::atomic::Ordering::Acquire);
+    let bypass_revision = status
+        .applied_revision
+        .load(std::sync::atomic::Ordering::Acquire);
+    let enabled = h.run(Request::Edit(Command::ToggleDeviceBypass { device }));
+    assert!(enabled.error.is_none(), "{:?}", enabled.error);
+    let resumed = h.render();
+    assert!(
+        (resumed[0][0] - halfway[63][0]).abs() < 0.01,
+        "sampler reenable: {:?} -> {:?}",
+        halfway[63],
+        resumed[0]
+    );
+    let status = h.audio.as_ref().unwrap().status().unwrap();
+    assert_eq!(
+        status
+            .performance_frame
+            .load(std::sync::atomic::Ordering::Acquire),
+        cut + 64
+    );
+    assert!(
+        status
+            .applied_revision
+            .load(std::sync::atomic::Ordering::Acquire)
+            > bypass_revision,
+        "reenable must reach the next callback while the release is audible"
+    );
+    h.applied(bypass_revision);
+    let mut release = Vec::new();
+    for _ in 0..140 {
+        release.extend_from_slice(&h.render());
+    }
+    assert!(
+        release.iter().any(|frame| frame[0] > 0.3),
+        "a future note must sound while the original release continues"
+    );
+    assert!(
+        release[..200].iter().any(|frame| frame[0].abs() > 0.01),
+        "original release must continue"
+    );
+    assert!(
+        release[release.len() - 64..]
+            .iter()
+            .flatten()
+            .all(|sample| sample.abs() < 1e-6),
+        "release must end without a stuck note"
     );
 }

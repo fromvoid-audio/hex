@@ -27,6 +27,7 @@ pub struct Snapshot {
     pub retained_source_paths: Vec<u64>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
     pub midi_routes: Vec<crate::MidiRouteSnapshot>,
+    pub sidechains: Vec<crate::SidechainRouteSnapshot>,
     pub import_provenance: Option<crate::ImportProvenance>,
     pub sample_rate: u32,
     pub next_id: u64,
@@ -266,6 +267,14 @@ impl Project {
                     source: f.source(),
                     destination: f.destination().value(),
                     gain: f.gain(),
+                })
+                .collect(),
+            sidechains: self
+                .sidechains
+                .iter()
+                .map(|route| crate::SidechainRouteSnapshot {
+                    device: route.device.value(),
+                    source: route.source.value(),
                 })
                 .collect(),
             midi_routes: self
@@ -700,6 +709,7 @@ impl Project {
         let return_feeds = std::mem::take(&mut snapshot.return_feeds);
         let audio_feeds = std::mem::take(&mut snapshot.audio_feeds);
         let midi_routes = std::mem::take(&mut snapshot.midi_routes);
+        let sidechains = std::mem::take(&mut snapshot.sidechains);
         let automatic_track_names = std::mem::take(&mut snapshot.automatic_track_names);
         let retained_source_paths = std::mem::take(&mut snapshot.retained_source_paths);
         if retained_source_paths.len() > MAX_TRACKS
@@ -1355,6 +1365,9 @@ impl Project {
             candidate.midi_routes = midi_routes;
             project.routing = Self::validate_return_feed_snapshot(&candidate)?;
             project.adopt_playable_snapshot(&candidate)?;
+        }
+        if !sidechains.is_empty() {
+            project.adopt_sidechains(sidechains)?;
         }
         project.validate_arrangement_occupancy()?;
         project.validate_midi_volumes()?;

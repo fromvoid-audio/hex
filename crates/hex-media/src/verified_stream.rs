@@ -581,7 +581,8 @@ impl Seek for VerifiedPageReader<'_> {
 }
 
 fn page_count(file_len: u64) -> Result<usize, ImportError> {
-    let pages = file_len / PAGE_BYTES as u64 + u64::from(file_len % PAGE_BYTES as u64 != 0);
+    let pages =
+        file_len / PAGE_BYTES as u64 + u64::from(!file_len.is_multiple_of(PAGE_BYTES as u64));
     usize::try_from(pages).map_err(|_| ImportError::Invalid("verified page count overflow"))
 }
 
