@@ -682,11 +682,7 @@ fn compressor_sidechain_dropdown_and_track_drop_share_one_undoable_route(cx: &mu
     let device = state.project.track(receiver).unwrap().devices()[0].id();
     let (handle, editor) = actor_editor_window(cx, service, state, receiver);
     let mut visual = VisualTestContext::from_window(handle, cx);
-    editor.update(cx, |view, cx| {
-        view.mode = crate::editor::EditorMode::Arrangement;
-        cx.notify();
-    });
-    visual.simulate_resize(size(px(980.0), px(620.0)));
+    visual.simulate_resize(size(px(1280.0), px(800.0)));
     visual.run_until_parked();
     let id = format!("compressor-sidechain-{}", device.value());
     let field: &'static str = Box::leak(id.clone().into_boxed_str());
@@ -718,7 +714,7 @@ fn compressor_sidechain_dropdown_and_track_drop_share_one_undoable_route(cx: &mu
     visual.run_until_parked();
 
     let drag = |visual: &mut VisualTestContext, track: TrackId| {
-        let header = Box::leak(format!("track-name-{}", track.value()).into_boxed_str());
+        let header = Box::leak(format!("session-track-{}", track.value()).into_boxed_str());
         let from = visual
             .debug_bounds(header)
             .expect("visible source track")
