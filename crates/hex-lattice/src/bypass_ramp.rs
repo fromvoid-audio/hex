@@ -7,7 +7,11 @@ const MAX_ALIGNED_DRY_FRAMES: usize = 16;
 /// Short legacy delays remain inline. The separately admitted owned lookahead
 /// reserves exact configured storage before publication; callback operations
 /// copy samples in place and never clone, replace, grow or destroy a buffer.
-pub(crate) enum AlignedDry {
+pub(crate) struct AlignedDry {
+    storage: DryStorage,
+}
+// Keep lengths and cursor construction private to this history owner.
+enum DryStorage {
     Inline {
         frames: [[f32; 2]; MAX_ALIGNED_DRY_FRAMES],
         len: usize,
@@ -45,22 +49,24 @@ impl AlignedDry {
             return Err(DeviceContractError::RuntimeBudgetExceeded);
         }
         frames.resize(len, [0.0; 2]);
-        Ok(Self::Reserved { frames, next: 0 })
+        Ok(Self {
+            storage: DryStorage::Reserved { frames, next: 0 },
+        })
     }
     fn parts(&self) -> (&[[f32; 2]], usize) {
-        match self {
-            Self::Inline { frames, len, next } => (&frames[..*len], *next),
-            Self::Reserved { frames, next } => (frames, *next),
+        match &self.storage {
+            DryStorage::Inline { frames, len, next } => (&frames[..*len], *next),
+            DryStorage::Reserved { frames, next } => (frames, *next),
         }
     }
     fn parts_mut(&mut self) -> (&mut [[f32; 2]], &mut usize) {
-        match self {
-            Self::Inline { frames, len, next } => (&mut frames[..*len], next),
-            Self::Reserved { frames, next } => (frames, next),
+        match &mut self.storage {
+            DryStorage::Inline { frames, len, next } => (&mut frames[..*len], next),
+            DryStorage::Reserved { frames, next } => (frames, next),
         }
     }
     pub(crate) fn can_copy_from(&self, previous: &Self) -> bool {
-        std::mem::discriminant(self) == std::mem::discriminant(previous)
+        std::mem::discriminant(&self.storage) == std::mem::discriminant(&previous.storage)
             && self.parts().0.len() == previous.parts().0.len()
     }
     pub(crate) fn copy_from(&mut self, previous: &Self) -> bool {
