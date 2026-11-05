@@ -204,6 +204,7 @@ pub(super) fn prepare_map(
 }
 pub(super) fn apply_fade(
     frames: &mut [crate::Frame],
+    first_root_frame: u64,
     edit: &AudioClipEdit,
     tempo: &hex_project::TempoMap,
     cancel: &AtomicBool,
@@ -217,7 +218,7 @@ pub(super) fn apply_fade(
         if index % 1_024 == 0 && cancel.load(Ordering::Acquire) {
             return Err(Invalid("audio preparation cancelled"));
         }
-        let gain = projected.gain_at(index as u64)?;
+        let gain = projected.gain_at(first_root_frame + index as u64)?;
         frame[0] *= gain;
         frame[1] *= gain;
     }

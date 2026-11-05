@@ -66,8 +66,8 @@ fn plain_vertical_wheel_scrolls_pitch_over_roll_and_keys(cx: &mut TestAppContext
 }
 
 /// The canvas sits inside the roll's border, so pixels map to beats within 1%.
-fn beats(start: BeatTime, expected: f64) -> bool {
-    (start.raw() as f64 / BeatTime::ONE.raw() as f64 - expected).abs() < 0.01 * expected
+fn beats(start: i128, expected: f64) -> bool {
+    (start as f64 / BeatTime::ONE.raw() as f64 - expected).abs() < 0.01 * expected.abs().max(1.0)
 }
 
 #[gpui::test]
@@ -105,7 +105,7 @@ fn horizontal_swipe_and_shift_wheel_pan_time_without_zoom(cx: &mut TestAppContex
             before
         );
     });
-    // Panning before the start clamps at zero.
+    // Navigation can reveal blank space before the unsigned authored source.
     wheel(
         &mut visual,
         roll.center(),
@@ -113,9 +113,7 @@ fn horizontal_swipe_and_shift_wheel_pan_time_without_zoom(cx: &mut TestAppContex
         0.0,
         Modifiers::default(),
     );
-    editor.read_with(&visual, |v, _| {
-        assert_eq!(v.piano_beat_start, BeatTime::ZERO)
-    });
+    editor.read_with(&visual, |v, _| assert!(beats(v.piano_beat_start, -14.0)));
     // Over the keys only the pitch axis applies; a swipe there is ignored.
     let keys = visual.debug_bounds("midi-piano-keys").unwrap();
     wheel(
@@ -125,9 +123,7 @@ fn horizontal_swipe_and_shift_wheel_pan_time_without_zoom(cx: &mut TestAppContex
         0.0,
         Modifiers::default(),
     );
-    editor.read_with(&visual, |v, _| {
-        assert_eq!(v.piano_beat_start, BeatTime::ZERO)
-    });
+    editor.read_with(&visual, |v, _| assert!(beats(v.piano_beat_start, -14.0)));
 }
 
 #[gpui::test]

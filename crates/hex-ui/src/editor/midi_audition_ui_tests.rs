@@ -50,7 +50,7 @@ fn position(
         point(
             bounds.origin.x
                 + bounds.size.width
-                    * (((beat * BeatTime::ONE.raw() as f64) - v.piano_beat_start.raw() as f64)
+                    * (((beat * BeatTime::ONE.raw() as f64) - v.piano_beat_start as f64)
                         / v.piano_beat_span.raw() as f64) as f32,
             bounds.origin.y
                 + bounds.size.height

@@ -22,7 +22,7 @@ mod musical_sharing;
 #[path = "tests/view_placement.rs"]
 mod view_placement;
 
-fn fixture(
+pub(super) fn fixture(
     looping: bool,
 ) -> (
     Editor,
@@ -69,7 +69,7 @@ fn fixture(
     .unwrap();
     (editor, clip, BTreeMap::from([(asset, audio)]))
 }
-fn prepare(
+pub(super) fn prepare(
     editor: &Editor,
     media: &BTreeMap<hex_project::AssetId, Audio>,
     context: &AudioTransformPreparation,
@@ -83,7 +83,7 @@ fn prepare(
     )
     .unwrap()
 }
-fn render(
+pub(super) fn render(
     revision: &crate::PreparedRevision,
     start: u64,
     length: usize,
