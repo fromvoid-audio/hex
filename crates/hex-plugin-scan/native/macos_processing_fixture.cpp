@@ -119,7 +119,7 @@ class RestoreController final : public IEditController {
         if(self->fault==86) self->handler->performEdit(id,0.75);
         else {
             self->handler->beginEdit(id);self->component_gain=3.0;
-            const int repeats=self->fault==87?9:1;
+            const int repeats=self->fault==87?65:(self->fault==116?12:1);
             for(int n=0;n<repeats;++n) self->handler->performEdit(id,0.75);
             self->handler->endEdit(id);
         }
@@ -151,7 +151,7 @@ public:
         if (!control() || !context || (value && handler)) return kResultFalse;
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105) latency_handler=handler;
-        if(value && ((fault>=85 && fault<=89) || fault==105)) {
+        if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116)) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
             if(!edit_timer) return kResultFalse;
@@ -754,7 +754,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>115) return false;next_fault=value;
+        if (value>116) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
