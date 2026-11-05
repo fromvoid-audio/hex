@@ -469,6 +469,8 @@ pub(super) struct ResidentHarness {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_completed: Arc<AtomicU64>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) latency_restart: Option<hex_audio::prepared::AppliedAudioSource>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_queued: Arc<AtomicBool>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) plugin_records: Arc<std::sync::atomic::AtomicUsize>,
@@ -677,6 +679,8 @@ impl ResidentHarness {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_completed,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            latency_restart: None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_queued,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             plugin_records,
@@ -729,6 +733,10 @@ impl ResidentHarness {
         while let Ok(event) = self.events.try_recv() {
             match event {
                 EditorAudioEvent::Opened { audio, .. } => self.audio = Some(audio),
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                EditorAudioEvent::NativeLatencyRestart { source } => {
+                    self.latency_restart = Some(source)
+                }
                 EditorAudioEvent::Publication {
                     state:
                         EditorPublicationState::ResidentSubmitted {

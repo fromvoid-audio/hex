@@ -77,11 +77,15 @@ class Host final : public IHostApplication, public IComponentHandler {
     std::array<EditEvent,HOST_EDIT_COUNT> edits{};
     std::atomic<uint64> edits_read{0},edits_written{0};
     std::atomic<uint32> pending_edits{0};
+    // The serialized reader opts this instance in. Only the main SDK lane
+    // admits and covers restart intent. The ordinal outlives receipt reads.
+    std::atomic<bool> observes_latency_restarts{false};
+    std::atomic<uint64> pending_latency_restart{0};
     std::array<ParamID,HOST_EDIT_COUNT> active_ids{};
     std::array<uint64,HOST_EDIT_COUNT> active_tokens{};
     size_t first=0, count=0;
     uint64 sequence=0;
-    bool accepting=true, dispatching=false, recursive=false;
+    bool accepting=true, dispatching=false, recursive=false, applying_feedback=false;
     ParameterSnapshot metadata{};
     // Two fixed copies, one main producer and one serialized processing reader.
     // Main may coalesce an unread Ready snapshot, never a Reading one. A raced
@@ -134,6 +138,16 @@ public:
     }
     uint32 reference_count() const { return references.load(); }
     uint32 refusal_flags() const { return refusals.load(); }
+    void observe_latency_restarts() {
+        observes_latency_restarts.store(true,std::memory_order_release);
+    }
+    uint64 latency_restart() const {
+        return pending_latency_restart.load(std::memory_order_acquire);
+    }
+    void cover_latency_restart(uint64 covered) {
+        // Activation may have synchronously caused a newer restart callback.
+        pending_latency_restart.compare_exchange_strong(covered,0,std::memory_order_acq_rel);
+    }
     uint32 PLUGIN_API addRef() override { return ++references; }
     uint32 PLUGIN_API release() override {
         const auto remaining=--references;
@@ -207,20 +221,32 @@ public:
     tresult PLUGIN_API restartComponent(int32 flags) override {
         if (![NSThread isMainThread]) { refuse(WrongThread); return kResultFalse; }
         if (!accepting) { refuse(Retiring); return kResultFalse; }
-        if (dispatching) { recursive=true; refuse(RecursiveRestart); return kResultFalse; }
+        const bool latency_enabled=observes_latency_restarts.load(std::memory_order_acquire);
+        // A setter may report changed latency while applying host feedback.
+        // This records intent only. Metadata getter recursion still refuses.
+        if (dispatching && !(applying_feedback && latency_enabled && (flags & kLatencyChanged))) {
+            recursive=true; refuse(RecursiveRestart); return kResultFalse;
+        }
         const uint32 bits=static_cast<uint32>(flags);
         if (!bits || (bits & ~uint32{0xFFF})) { refuse(UnknownRestart); return kInvalidArgument; }
-        if (flags & ~supported_restarts) {
+        const auto supported=supported_restarts |
+            (latency_enabled?kLatencyChanged:0);
+        if (flags & ~supported) {
             constexpr int32 graph=kReloadComponent|kIoChanged|kLatencyChanged|kPrefetchableSupportChanged|
                                   kRoutingInfoChanged|kParamIDMappingChanged;
             refuse(flags & graph?GraphControlRequired:UnsupportedCapability);
             return kNotImplemented;
         }
-        if (count==requests.size() || sequence==std::numeric_limits<uint64>::max()) {
+        const auto refresh=flags & supported_restarts;
+        if ((refresh && count==requests.size()) || sequence==std::numeric_limits<uint64>::max()) {
             refuse(QueueFull); return kResultFalse;
         }
-        requests[(first+count)%requests.size()]={++sequence,0,0,static_cast<ParamID>(flags),Restart};
-        ++count;
+        const auto ordinal=++sequence;
+        if(refresh) {
+            requests[(first+count)%requests.size()]={ordinal,0,0,static_cast<ParamID>(refresh),Restart};
+            ++count;
+        }
+        if(flags & kLatencyChanged) pending_latency_restart.store(ordinal,std::memory_order_release);
         return kResultOk;
     }
     // At most one request and 128 info/value reads per call. A complete staged
@@ -353,12 +379,19 @@ public:
         if(!controller || metadata.revision==std::numeric_limits<uint64>::max()) return false;
         auto next=metadata;
         dispatching=true;recursive=false;
-        struct Leave { bool& flag; ~Leave(){flag=false;} } leave{dispatching};
+        struct Leave {
+            bool& dispatching;bool& feedback;
+            ~Leave(){dispatching=false;feedback=false;}
+        } leave{dispatching,applying_feedback};
         for(uint32 n=0;n<staged.count;++n) {
             const auto value=staged.at(n);
             ParameterSnapshot::Parameter* destination=nullptr;
             for(uint32 i=0;i<next.count;++i) if(next.parameters[i].info.id==value.id) destination=&next.parameters[i];
-            if(!destination || controller->setParamNormalized(value.id,value.normalized)!=kResultOk) return false;
+            if(!destination) return false;
+            applying_feedback=true;
+            const auto updated=controller->setParamNormalized(value.id,value.normalized);
+            applying_feedback=false;
+            if(updated!=kResultOk) return false;
             destination->value=controller->getParamNormalized(value.id);
             if(!std::isfinite(destination->value) || destination->value<0 || destination->value>1 || recursive) return false;
         }

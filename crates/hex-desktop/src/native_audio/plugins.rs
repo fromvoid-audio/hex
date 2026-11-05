@@ -44,6 +44,9 @@ struct Source {
     accepted: bool,
     retiring: bool,
     queued: bool,
+    observes_latency: bool,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    observed_latency_receipt: bool,
     #[cfg(all(test, feature = "allocation-probe"))]
     attempts: u64,
 }
@@ -101,6 +104,7 @@ pub(super) struct PreparationObservation {
     pub(super) native: Option<Progress>,
     pub(super) attempts: u64,
     pub(super) restore_refused: bool,
+    pub(super) observed_latency_receipt: bool,
 }
 #[cfg(all(test, feature = "allocation-probe"))]
 impl std::fmt::Debug for PreparationObservation {
@@ -132,6 +136,9 @@ pub(super) struct Plugins {
     pub(super) catalog: Option<std::path::PathBuf>,
     degraded: degraded::DegradedReport<Binding>,
     degraded_changed: Option<(u64, Vec<u64>)>,
+    latency_poll: usize,
+    latency_poll_at: Option<std::time::Instant>,
+    latency_notice: Option<(hex_audio::prepared::AppliedAudioSource, std::time::Instant)>,
     #[cfg(all(test, feature = "allocation-probe"))]
     presentation: Option<hex_audio::plugin_effects::EffectPresentation>,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -359,6 +366,9 @@ impl Plugins {
                 accepted: false,
                 retiring: false,
                 queued: false,
+                observes_latency: false,
+                #[cfg(all(test, feature = "allocation-probe"))]
+                observed_latency_receipt: false,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 attempts: 0,
             });
@@ -402,6 +412,67 @@ impl Plugins {
                     .is_some_and(|p| matches!(p.result, Some(Ok(_))));
             source.retiring |= !source.accepted;
         }
+    }
+    /// Sample one original worker per interval while the exact ordinary
+    /// resident graph is active. The helper retains intent across reads.
+    pub fn poll_latency_restart(
+        &mut self,
+        output: &mut WorkerPreparedOutput,
+        context: AudioSourceContext,
+    ) -> Option<hex_audio::prepared::AppliedAudioSource> {
+        let now = std::time::Instant::now();
+        if self.restore.is_some()
+            || self.edit.is_some()
+            || self.pending.is_some()
+            || self.reopen.is_some()
+            || self.sources.is_empty()
+            || self.latency_poll_at.is_some_and(|at| now < at)
+        {
+            return None;
+        }
+        let control = output.publication.control()?;
+        if control.status.applied_audio_source().is_some() {
+            return None;
+        }
+        let active = control
+            .status
+            .native_effect_source()
+            .filter(|source| source.context == context)?;
+        self.latency_poll_at = now.checked_add(std::time::Duration::from_millis(10));
+        let len = self.sources.len();
+        for _ in 0..len {
+            let index = self.latency_poll % len;
+            self.latency_poll = (index + 1) % len;
+            let source = &mut self.sources[index];
+            if !source.accepted
+                || source.retiring
+                || source.project_generation != context.project_generation
+            {
+                continue;
+            }
+            source.observes_latency = true;
+            let batch = control
+                .poll_native_source_recovery_edits_on_control(source.binding)
+                .ok()?;
+            #[cfg(all(test, feature = "allocation-probe"))]
+            {
+                source.observed_latency_receipt |= batch.is_some();
+            }
+            if batch
+                .and_then(|batch| batch.pending_latency_restart)
+                .is_some()
+                && self.latency_notice.is_none_or(|(last, at)| {
+                    last != active
+                        || now.saturating_duration_since(at)
+                            >= std::time::Duration::from_millis(150)
+                })
+            {
+                self.latency_notice = Some((active, now));
+                return Some(active);
+            }
+            return None;
+        }
+        None
     }
     pub fn poll(&mut self, output: &mut WorkerPreparedOutput, context: Option<AudioSourceContext>) {
         let Some(control) = output.publication.control() else {
@@ -530,6 +601,8 @@ impl Plugins {
                         control.native_source_preparation_progress(source.binding)
                     }),
                     restore_refused,
+                    observed_latency_receipt: source
+                        .is_some_and(|source| source.observed_latency_receipt),
                 };
             }
             if let Some(queued) = &self.queued {
