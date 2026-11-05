@@ -86,3 +86,76 @@ fn placed_events_stay_silent_outside_the_window_and_play_at_song_time_when_widen
         }
     }
 }
+
+#[test]
+fn negative_event_placement_retains_pcm_and_reveals_it_at_the_same_song_time_on_left_extension() {
+    let (mut editor, clip) = imported();
+    let track = editor.project().tracks()[0].id();
+    editor
+        .execute(Command::MoveClip {
+            clip,
+            track,
+            start: 200,
+        })
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split { at: 40 },
+        })
+        .unwrap();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Place {
+                event: 2,
+                start: -90,
+            },
+        })
+        .unwrap();
+    for block in [1, 7, 64, 512] {
+        for (frame, pcm) in render(&editor, 400, block).iter().enumerate() {
+            let expected = if (200..240).contains(&frame) {
+                let v = value(frame as u64 - 200);
+                [v, -v]
+            } else {
+                [0.0; 2]
+            };
+            assert_eq!(
+                *pcm, expected,
+                "hidden negative event, block{block} frame{frame}"
+            );
+        }
+    }
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: TrimEdge::Left,
+            frame: 110,
+        })
+        .unwrap();
+    assert_eq!(
+        (
+            editor.project().clip(clip).unwrap().start(),
+            editor.project().clip(clip).unwrap().duration()
+        ),
+        (110, 190)
+    );
+    for block in [1, 7, 64, 512] {
+        for (frame, pcm) in render(&editor, 400, block).iter().enumerate() {
+            let source = match frame {
+                110..170 => Some(frame as u64 - 110 + 40),
+                200..240 => Some(frame as u64 - 200),
+                _ => None,
+            };
+            let expected = source.map_or([0.0; 2], |frame| {
+                let v = value(frame);
+                [v, -v]
+            });
+            assert_eq!(
+                *pcm, expected,
+                "revealed negative event, block{block} frame{frame}"
+            );
+        }
+    }
+}

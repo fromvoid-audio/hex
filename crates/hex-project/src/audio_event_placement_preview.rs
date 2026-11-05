@@ -120,5 +120,61 @@ impl Project {
     }
 }
 
+impl Clip {
+    /// Numerical root-frame limits for this captured event. This is a preview
+    /// hint, not a processing reservation; the canonical command revalidates it.
+    pub fn audio_event_placement_bounds(&self, event: u64) -> Result<(i64, i64), Invalid> {
+        let limit = self.audio_event_placement_limit().ok_or(Invalid(
+            "free editor placement needs a fixed frame timeline",
+        ))?;
+        let root = self.audio_event_root();
+        let events = self.editable_audio_events()?;
+        let event = events
+            .events
+            .iter()
+            .find(|e| e.id == event)
+            .ok_or(Invalid("audio event no longer exists"))?;
+        let lead = limit
+            .checked_sub(root.domain.clock.length())
+            .ok_or(Invalid("audio event root exceeds placement limit"))?;
+        let last = limit
+            .checked_sub(event.length())
+            .ok_or(Invalid("audio event exceeds placement limit"))?;
+        Ok((
+            -i64::try_from(lead).map_err(|_| Invalid("audio event placement overflow"))?,
+            i64::try_from(last).map_err(|_| Invalid("audio event placement overflow"))?,
+        ))
+    }
+    /// Prove a fixed-frame authoring-origin translation across Place or its
+    /// history restoration. The Arrangement window and physical source window
+    /// stay equal; both clock length and container-fade origin translate by the
+    /// same amount. Pure crop, source replacement, processing and other clock
+    /// changes supply no such proof. This fact moves display coordinates only.
+    pub fn audio_event_coordinate_shift_from(&self, previous: &Self) -> Option<i64> {
+        if self.id() != previous.id()
+            || self.asset() != previous.asset()
+            || (self.start(), self.duration()) != (previous.start(), previous.duration())
+            || self.audio_event_placement_limit().is_none()
+            || previous.audio_event_placement_limit().is_none()
+        {
+            return None;
+        }
+        let before = previous.audio_event_root();
+        let after = self.audio_event_root();
+        let shift =
+            i128::from(after.domain.clock.length()) - i128::from(before.domain.clock.length());
+        if shift != i128::from(after.domain.fade_start) - i128::from(before.domain.fade_start)
+            || after.domain.fade != before.domain.fade
+            || after.domain.source_offset != before.domain.source_offset
+            || after.domain.source_length != before.domain.source_length
+            || i128::from(after.view_start) - i128::from(before.view_start) != shift
+            || i128::from(after.view_end) - i128::from(before.view_end) != shift
+        {
+            return None;
+        }
+        i64::try_from(shift).ok()
+    }
+}
+
 #[cfg(test)]
 mod tests;

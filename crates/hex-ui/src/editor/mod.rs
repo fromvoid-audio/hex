@@ -240,6 +240,7 @@ mod transport;
 mod trim;
 mod tuning;
 mod update_flow;
+mod signed_frame_viewport;
 mod viewport;
 mod waveform;
 mod waveform_geometry;

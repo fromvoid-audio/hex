@@ -285,3 +285,59 @@ fn legacy_source_larger_than_the_derived_domain_keeps_its_existing_editor_extent
     );
     assert_eq!(editor.project().clip(clip).unwrap(), original);
 }
+
+#[test]
+fn signed_numeric_bounds_and_origin_translation_preserve_the_unchanged_clip_window() {
+    let (mut editor, clip) = fixture();
+    let before = editor.project().clip(clip).unwrap().clone();
+    let (first, last) = before.audio_event_placement_bounds(1).unwrap();
+    assert_eq!(first, -(crate::MAX_AUDIO_DOMAIN_FRAMES as i64 - 100));
+    assert_eq!(last, crate::MAX_AUDIO_DOMAIN_FRAMES as i64 - 40);
+    assert!(before.audio_event_placement_bounds(99).is_err());
+    for value in [first, last] {
+        let preview = editor
+            .project()
+            .preview_audio_event_placement(clip, 1, value)
+            .unwrap();
+        assert_eq!(
+            preview.clip().audio_event_root().domain.clock.length(),
+            crate::MAX_AUDIO_DOMAIN_FRAMES
+        );
+    }
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Place {
+                event: 1,
+                start: -25,
+            },
+        })
+        .unwrap();
+    let after = editor.project().clip(clip).unwrap().clone();
+    assert_eq!(after.audio_event_coordinate_shift_from(&before), Some(25));
+    assert_eq!(before.audio_event_coordinate_shift_from(&after), Some(-25));
+    assert!(editor.undo());
+    assert_eq!(
+        editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_event_coordinate_shift_from(&after),
+        Some(-25)
+    );
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: crate::TrimEdge::Right,
+            frame: 90,
+        })
+        .unwrap();
+    assert_eq!(
+        editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_event_coordinate_shift_from(&before),
+        None
+    );
+}

@@ -256,13 +256,9 @@ impl EditorView {
         if !x.is_finite() || !width.is_finite() || width <= 0.0 {
             return None;
         }
-        let local = self.event_viewport(root);
+        let local = self.event_root_window(root)?;
         let tempo = self.state.as_ref()?.project.tempo_map();
-        let first = root
-            .root_frame_at(editor_bounds(root).0, tempo)
-            .ok()?
-            .checked_add(local.start)?;
-        let frame = first as f64
+        let frame = local.start as f64
             + (f64::from(x) - f64::from(f32::from(bounds.left()))) / width * local.length as f64;
         let raw = clock_coordinate(root, frame, tempo)?
             + (i128::from(event.source_start) - i128::from(event.start)) as f64;

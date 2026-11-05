@@ -1,9 +1,9 @@
 //! Frame-fixed placement uses the model's whole-clip preview; the UI owns only
-//! pointer geometry. The current unsigned camera exposes rightward free moves.
-//! A signed camera remains necessary before exposing negative-left placement.
+//! pointer geometry. Signed display space reaches either side of the clip;
+//! the captured canonical bounds still limit actual retained-root growth.
 use super::*;
 use crate::editor::{waveform, waveform_geometry::WaveformGeometryCache};
-use hex_project::{AudioEventPlacementPreview, Clip};
+use hex_project::{AudioEventPlacementPreview, AudioEvents, Clip};
 use hex_session::{CachedWaveform, service::ViewState};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -13,6 +13,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 pub(super) struct Preview {
     model: AudioEventPlacementPreview,
     source: Option<Source>,
+    origin_shift: i64,
 }
 enum Source {
     Processed(Arc<CachedWaveform>),
@@ -40,10 +41,49 @@ impl Preview {
                     first: original.audio_event_root().view_start,
                 })
             });
-        Some(Self { model, source })
+        let origin_shift = model
+            .clip()
+            .audio_event_coordinate_shift_from(original)
+            .unwrap_or(0);
+        Some(Self {
+            model,
+            source,
+            origin_shift,
+        })
+    }
+    pub(super) fn origin_shift(&self) -> i64 {
+        self.origin_shift
+    }
+    pub(super) fn position(&self, position: u64) -> Option<u64> {
+        u64::try_from(i128::from(position) + i128::from(self.origin_shift)).ok()
     }
     pub(super) fn clip(&self) -> &Clip {
         self.model.clip()
+    }
+    pub(super) fn replacement_spans(
+        &self,
+        events: &AudioEvents,
+        operation: &AudioEventEdit,
+    ) -> Vec<(u64, u64)> {
+        let AudioEventEdit::Place { event, start } = *operation else {
+            return Vec::new();
+        };
+        let Ok(lead) = u64::try_from(self.origin_shift) else {
+            return Vec::new();
+        };
+        let Ok(start) = u64::try_from(i128::from(start) + i128::from(lead)) else {
+            return Vec::new();
+        };
+        let mut events = events.clone();
+        for item in &mut events.events {
+            let (Some(a), Some(b)) = (item.start.checked_add(lead), item.end.checked_add(lead))
+            else {
+                return Vec::new();
+            };
+            item.start = a;
+            item.end = b;
+        }
+        paint::replacement_spans(&events, &AudioEventEdit::Move { event, start })
     }
     pub(super) fn waveform(
         &self,
@@ -84,6 +124,7 @@ impl EditorView {
         &self,
         gesture: &mut Gesture,
         event: AudioEvent,
+        limits: (i64, i64),
         x: f32,
         platform: bool,
     ) {
@@ -93,9 +134,6 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let Some(clip) = state.project.clip(clip_id) else {
-            return;
-        };
         let Some(bounds) = self.audio_event_editor.bounds else {
             return;
         };
@@ -103,28 +141,16 @@ impl EditorView {
         if !x.is_finite() || !width.is_finite() || width <= 0.0 {
             return;
         }
-        let Some(last) = clip
-            .audio_event_placement_limit()
-            .and_then(|limit| limit.checked_sub(event.length()))
-        else {
-            return;
-        };
-        let first = editor_bounds(&root).0;
-        if first > last {
-            return;
-        }
-        let viewport = self.event_viewport(&root);
+        let (first, last) = limits;
+        let viewport = self.event_frame_window(&root);
         let delta = ((f64::from(x) - f64::from(gesture.origin_x)) * viewport.length as f64 / width)
             .round() as i128;
         let raw =
-            (i128::from(event.start) + delta).clamp(i128::from(first), i128::from(last)) as u64;
+            (i128::from(event.start) + delta).clamp(i128::from(first), i128::from(last)) as i64;
         let start = self
             .free_event_snap(&root, raw, platform)
             .unwrap_or(raw)
             .clamp(first, last);
-        let Ok(start) = i64::try_from(start) else {
-            return;
-        };
         let Ok(preview) = state
             .project
             .preview_audio_event_placement(clip_id, event.id, start)
@@ -139,24 +165,24 @@ impl EditorView {
     }
     // The admitted frame clock continues beyond its old extent. Do not call
     // root_position_at here: its ordinary read contract clamps to that extent.
-    fn free_event_snap(&self, root: &AudioClipEdit, raw: u64, platform: bool) -> Option<u64> {
+    fn free_event_snap(&self, root: &AudioClipEdit, raw: i64, platform: bool) -> Option<i64> {
         let state = self.state.as_ref()?;
         let clip = state.project.clip(self.detail_clip_id()?)?;
         let first = root
             .root_frame_at(editor_bounds(root).0, state.project.tempo_map())
             .ok()?;
-        let frame = clip.start().checked_add(raw.checked_sub(first)?)?;
+        let frame = i128::from(clip.start()) + i128::from(raw) - i128::from(first);
         let snapped = self
             .audio_event_editor
             .grid
             .with_platform_modifier(platform)
-            .snap_frame(
+            .snap_signed_frame(
                 &state.project,
                 frame,
-                self.event_project_viewport(root)?,
+                self.event_project_window(root)?,
                 f32::from(self.audio_event_editor.bounds?.size.width),
             )?;
-        snapped.checked_sub(clip.start())?.checked_add(first)
+        i64::try_from(snapped - i128::from(clip.start()) + i128::from(first)).ok()
     }
     pub(super) fn placement_preview(&self, operation: &AudioEventEdit) -> Option<Arc<Preview>> {
         let AudioEventEdit::Place { event, start } = *operation else {

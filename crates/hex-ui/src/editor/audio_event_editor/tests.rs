@@ -1028,7 +1028,9 @@ fn closing_events_releases_focus_and_gesture(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn cropped_event_drag_range_move_and_nudge_stay_inside_visible_container(cx: &mut TestAppContext) {
+fn cropped_legacy_range_moves_stay_bounded_and_free_event_nudge_uses_canonical_placement(
+    cx: &mut TestAppContext,
+) {
     let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
     editor.update(cx, |view, cx| {
         let state = view.state.as_ref().unwrap();
@@ -1157,11 +1159,11 @@ fn cropped_event_drag_range_move_and_nudge_stay_inside_visible_container(cx: &mu
             matches!(
                 view.last_enqueued_edit,
                 Some(Command::EditAudioEvents {
-                    operation: AudioEventEdit::Move { start: 48000, .. },
+                    operation: AudioEventEdit::Place { start: 48001, .. },
                     ..
                 })
             ),
-            "nudge escaped crop: {:?}",
+            "a proved fixed-frame nudge may move beyond the cropped clip window: {:?}",
             view.last_enqueued_edit
         );
     });

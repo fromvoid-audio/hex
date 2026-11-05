@@ -2,7 +2,10 @@
 
 #[path = "adaptive_grid_density.rs"]
 mod density;
+#[path = "signed_musical_time.rs"]
+mod signed;
 pub(super) use density::AdaptiveGridDensity;
+pub(super) use signed::{negative_grid_lines, negative_ruler_ticks};
 
 use super::viewport::Viewport;
 use hex_project::{BeatTime, MeterPosition, Project};
