@@ -38,8 +38,9 @@ Install the native Rust/macOS build toolchain.
 ```
 
 The launcher runs in its own checkout and stops if `git pull` fails. It runs the
-release binary directly. On macOS arm64 it prepares VST3 discovery tools from
-the pinned SDK and reuses them on later launches. See
+release binary directly. On macOS arm64 it prepares signed VST3 discovery and
+effect hosting tools separately from the pinned SDK and reuses them on later
+launches. See
 [native builds](docs/test-builds.md) for qualified user-test delivery.
 Use [`./release beta`](docs/releases.md) for immutable signed/notarized beta,
 nightly and stable distribution packages.

@@ -11,6 +11,9 @@ use hex_session::service::{
 };
 
 fn host() -> Hosting {
+    if let Some(app) = std::env::var_os("HEX_TEST_VST3_LAUNCH_INSTANCE_APP") {
+        return Hosting::inspect_source_launch_fixture_on_control(&PathBuf::from(app)).unwrap();
+    }
     Hosting::inspect_fixture_on_control(&PathBuf::from(
         std::env::var_os("HEX_VST3_INSTANCE_RECEIPT").unwrap(),
     ))
