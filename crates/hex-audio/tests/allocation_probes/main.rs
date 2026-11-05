@@ -25,6 +25,7 @@ mod routed_midi_allocations;
 mod session_audio_loop_allocations;
 mod session_silence_effect_allocations;
 mod shared_source_allocations;
+mod short_latency_bypass;
 mod signed_envelope_allocations;
 mod spectrum_capture_allocations;
 mod stream_miss_fade;
