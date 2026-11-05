@@ -88,6 +88,20 @@ fn live_zero_tail_devices_bypass_without_a_step_in_the_actual_callback() {
 
 #[test]
 fn live_saturator_bypass_without_a_step_in_the_actual_callback() {
+    live_short_latency_bypass("hex.saturator");
+}
+
+#[test]
+fn live_rattle_bypass_without_a_step_in_the_actual_callback() {
+    live_short_latency_bypass("hex.rattle");
+}
+
+#[test]
+fn live_overdrive_bypass_without_a_step_in_the_actual_callback() {
+    live_short_latency_bypass("hex.overdrive");
+}
+
+fn live_short_latency_bypass(kind: &'static str) {
     let _native = native_fixture();
     for owner in ["track", "return", "main"] {
         let files = Files::new();
@@ -99,7 +113,7 @@ fn live_saturator_bypass_without_a_step_in_the_actual_callback() {
         let track = imported.state.project.tracks()[0].id();
         let state = hex_engine::default_native_device_state_for_class(
             hex_engine::NativeDeviceClass::Effect,
-            hex_engine::DeviceTypeId::from_static("hex.saturator"),
+            hex_engine::DeviceTypeId::from_static(kind),
         )
         .unwrap()
         .with_output_gain_db(6.0)
@@ -148,7 +162,14 @@ fn live_saturator_bypass_without_a_step_in_the_actual_callback() {
         }
         let wet = h.render()[63][0];
         let dry = if owner == "return" { 0.5 } else { 0.25 };
-        assert!(wet - dry > 0.2, "{owner}: wet={wet}, dry={dry}");
+        if kind == "hex.saturator" {
+            assert!(wet - dry > 0.2, "{kind}/{owner}: wet={wet}, dry={dry}");
+        } else {
+            assert!(
+                (wet - dry).abs() > 0.05,
+                "{kind}/{owner}: wet={wet}, dry={dry}"
+            );
+        }
         let mut previous = wet;
         for (bypassed, blocks) in [(true, 1), (false, 1), (true, 5), (false, 5)] {
             let status = h.audio.as_ref().unwrap().status().unwrap();
@@ -158,7 +179,7 @@ fn live_saturator_bypass_without_a_step_in_the_actual_callback() {
                 for frame in h.render() {
                     assert!(
                         (frame[0] - previous).abs() < 0.01,
-                        "{owner}, bypassed={bypassed}: {previous} -> {frame:?}"
+                        "{kind}/{owner}, bypassed={bypassed}: {previous} -> {frame:?}"
                     );
                     previous = frame[0];
                 }
@@ -173,7 +194,7 @@ fn live_saturator_bypass_without_a_step_in_the_actual_callback() {
                 let target = if bypassed { dry } else { wet };
                 assert!(
                     (previous - target).abs() < 1e-3,
-                    "{owner}: {previous} != {target}"
+                    "{kind}/{owner}: {previous} != {target}"
                 );
             }
         }
