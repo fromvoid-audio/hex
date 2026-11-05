@@ -1291,3 +1291,65 @@ fn historical_layout_admission_has_no_blanket_document_byte_ceiling() {
     historical.resize(LEGACY_READER_DOCUMENT_BYTES + 1, b' ');
     assert_eq!(decode(&historical).unwrap(), project);
 }
+
+#[test]
+fn compressor_sidechain_roundtrips_and_requires_schema_upgrade_consent() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(source) = editor
+        .execute(Command::AddTrack { name: "key".into() })
+        .unwrap()
+    else {
+        panic!("source")
+    };
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: NativeDeviceState::new(
+                DeviceTypeId::from_static("hex.compressor"),
+                3,
+                vec![0; 32],
+            )
+            .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("compressor")
+    };
+    let original = editor.project().clone();
+    let dir = std::env::temp_dir().join(format!("hex-sidechain-schema-{}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    let legacy = dir.join("legacy.hex");
+    save_new(&legacy, &original).unwrap();
+    let (reopened, token) = hex_storage::load_with_token(&legacy).unwrap();
+    assert_eq!(reopened, original);
+    assert!(reopened.sidechains().is_empty());
+    editor
+        .execute(Command::SetSidechain {
+            device,
+            source: Some(source),
+        })
+        .unwrap();
+    let routed = editor.project();
+    assert!(token.requires_save_confirmation(routed).unwrap());
+    assert!(hex_storage::encode_schema22(routed).is_err());
+    assert_eq!(
+        hex_storage::schema_version_for(routed),
+        hex_storage::SIDECHAIN_SCHEMA_VERSION
+    );
+    let path = dir.join("sidechain.hex");
+    save_new(&path, routed).unwrap();
+    assert_eq!(load(&path).unwrap(), *routed);
+
+    let document: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let mut invalid = document.clone();
+    invalid["sidechains"][0]["source"] = u64::MAX.into();
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    let mut invalid = document.clone();
+    invalid["sidechains"][0]["tap"] = "unknown".into();
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    let mut invalid = document;
+    let repeated = invalid["sidechains"][0].clone();
+    invalid["sidechains"].as_array_mut().unwrap().push(repeated);
+    assert!(decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
+    fs::remove_dir_all(dir).unwrap();
+}

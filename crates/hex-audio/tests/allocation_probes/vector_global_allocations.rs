@@ -1,5 +1,4 @@
 //! Actual prepared-callback coverage for Vector global/controller transitions.
-#![cfg(feature = "allocation-probe")]
 use allocation_counter::measure;
 use hex_audio::prepared::{self, PublicationPolicy};
 use hex_engine::{

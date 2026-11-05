@@ -467,6 +467,9 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
         E::OutputRouteChanged { output_identity } => {
             format!("stage=output_route_changed output={output_identity}")
         }
+        E::NativeLatencyRestart { source } => {
+            format!("stage=native_latency_restart source={source:?}")
+        }
         E::DegradedPlugins {
             output_identity,
             devices,

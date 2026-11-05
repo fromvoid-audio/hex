@@ -1,6 +1,7 @@
 //! Ordered native controller callback receipts. These are source observations,
 //! not authored automation, a canonical edit, or final host audio acceptance.
 use super::*;
+use std::num::NonZeroU64;
 pub const MAX_PARAMETER_EDITS: usize = 8;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ParameterEditKind {
@@ -41,6 +42,37 @@ pub fn edit_request(config: &Configuration, sequence: u64, operation: u64) -> Re
     let mut request = capture_request(config, sequence, operation)?;
     request[..4].copy_from_slice(b"HXVG");
     Ok(request)
+}
+/// A source-bound edit batch with the latest uncovered latency restart.
+/// Repeated reads can return the same ordinal until reactivation covers it.
+#[derive(Clone, Copy, Debug)]
+pub struct RecoveryEdits {
+    pub edits: ParameterEdits,
+    pub pending_latency_restart: Option<NonZeroU64>,
+}
+pub fn recovery_edit_request(
+    config: &Configuration,
+    sequence: u64,
+    operation: u64,
+) -> Result<[u8; 72]> {
+    let mut request = edit_request(config, sequence, operation)?;
+    request[4..6].copy_from_slice(&2_u16.to_le_bytes());
+    Ok(request)
+}
+pub fn recovery_edits(
+    body: &[u8],
+    config: &Configuration,
+    sequence: u64,
+    operation: u64,
+    previous: (u64, u64),
+) -> Result<RecoveryEdits> {
+    let (edits, ordinal) = body
+        .split_last_chunk::<8>()
+        .ok_or(Error::Protocol("missing latency restart ordinal"))?;
+    Ok(RecoveryEdits {
+        edits: parameter_edits(edits, config, sequence, operation, previous)?,
+        pending_latency_restart: NonZeroU64::new(u64::from_le_bytes(*ordinal)),
+    })
 }
 pub fn parameter_edits(
     body: &[u8],

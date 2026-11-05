@@ -989,6 +989,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id: 7,
@@ -1233,6 +1234,7 @@ fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
+        sidechains: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         next_id: 8,
@@ -13748,6 +13750,8 @@ fn analytic_clip_volume_survives_track_stop_and_removed_track_handoffs() {
 mod delay_tests;
 #[path = "utility_bypass_tests.rs"]
 mod utility_bypass_tests;
+#[path = "reverb_bypass_tests.rs"]
+mod reverb_bypass_tests;
 
 #[test]
 fn console_audio_loop_intro_repeats_across_partitions_handoff_and_stop() {

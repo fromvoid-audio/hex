@@ -351,6 +351,10 @@ pub struct PreparedSaturator {
 }
 
 impl PreparedNativeProcessor for PreparedSaturator {
+    fn supports_latency_aligned_bypass(&self) -> bool {
+        true
+    }
+
     fn parameter_automation_descriptor(
         &self,
         parameter: ParameterId,
