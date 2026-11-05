@@ -58,6 +58,38 @@ impl NativeInstrumentClock for Clock {
         Some(offset as u64)
     }
 }
+
+#[test]
+fn tail_split_control_preflight_accepts_only_unautomated_output_gain() {
+    let empty = PreparedParameterAutomation::default();
+    assert!(empty.supports_tail_split_controls());
+    let mut output = empty.clone();
+    output
+        .arm_host_gain_input(DeviceAutomationTarget::HostOutputGain)
+        .unwrap();
+    assert!(output.supports_tail_split_controls());
+    let mut external_output = empty.clone();
+    external_output
+        .prepare_external_host(DeviceAutomationTarget::HostOutputGain)
+        .unwrap();
+    assert!(external_output.supports_tail_split_controls());
+    let mut input = empty.clone();
+    input
+        .arm_host_gain_input(DeviceAutomationTarget::HostInputGain)
+        .unwrap();
+    assert!(!input.supports_tail_split_controls());
+    let mut external_input = empty.clone();
+    external_input
+        .prepare_external_host(DeviceAutomationTarget::HostInputGain)
+        .unwrap();
+    assert!(!external_input.supports_tail_split_controls());
+    let mut provider = empty;
+    provider
+        .arm_provider_input(descriptor(), semantics())
+        .unwrap();
+    assert!(!provider.supports_tail_split_controls());
+    assert!(!program(descriptor(), semantics()).supports_tail_split_controls());
+}
 #[test]
 fn content_origin_linear_increment_discrete_and_absent_laws_are_partition_independent() {
     let id = descriptor().id;

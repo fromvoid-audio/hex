@@ -30,7 +30,7 @@ pub use parameter_automation::{
     ParameterAutomationBlock, ParameterAutomationLane, ParameterAutomationPoint,
     PreparedParameterAutomation, PreparedParameterAutomationLane, PreparedParameterAutomationPoint,
 };
-pub use tail_split::TailSplit;
+pub use tail_split::{TailSplit, TailSplitObserver};
 mod resources;
 mod runtime_ownership;
 use hex_lattice_contract::{
