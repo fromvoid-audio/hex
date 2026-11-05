@@ -1483,16 +1483,23 @@ mod tests {
         else {
             panic!("group")
         };
-        for id in [track, group] {
-            assert!(
-                editor
-                    .project()
-                    .plan_arrangement_bounce(&BounceTarget::Track(id), true)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("ungrouped")
-            );
-        }
+        let grouped = editor.project().snapshot();
+        assert!(
+            editor
+                .project()
+                .plan_arrangement_bounce(&BounceTarget::Track(track), true)
+                .unwrap_err()
+                .to_string()
+                .contains("ungrouped")
+        );
+        let plan = editor
+            .project()
+            .plan_arrangement_bounce(&BounceTarget::Track(group), true)
+            .unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].source, BounceSource::Arrangement);
+        assert_eq!((plan[0].track, plan[0].start, plan[0].end), (group, 0, 100));
+        assert_eq!(editor.project().snapshot(), grouped);
     }
 
     #[test]
