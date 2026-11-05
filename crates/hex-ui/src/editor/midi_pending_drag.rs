@@ -278,16 +278,15 @@ impl EditorView {
                     old.source_start().raw().checked_add(prefix.raw())
                         == Some(new.source_start().raw())
                 })
+            && let Some(source) = source_identity(&event.state.project, clip)
         {
-            if let Some(source) = source_identity(&event.state.project, clip) {
-                self.midi_origin_history.record_prefix(
-                    self.project_generation,
-                    clip,
-                    &pending.source,
-                    &source,
-                    prefix.raw(),
-                );
-            }
+            self.midi_origin_history.record_prefix(
+                self.project_generation,
+                clip,
+                &pending.source,
+                &source,
+                prefix.raw(),
+            );
         }
         self.retire_pending_midi_drag();
     }

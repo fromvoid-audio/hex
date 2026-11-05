@@ -133,3 +133,7 @@ impl super::EditorView {
             .shift_midi_origin(self.project_generation, clip, delta);
     }
 }
+
+#[cfg(test)]
+#[path = "midi_origin_view_tests.rs"]
+mod tests;
