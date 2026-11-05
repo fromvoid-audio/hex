@@ -469,3 +469,54 @@ fn invalid_tag_blur_retires_the_draft_without_committing_or_blocking_other_heade
         assert_eq!(v.worker_requests_pending, 0);
     });
 }
+
+#[gpui::test]
+fn valid_tag_blur_commits_once_and_history_restores_the_original_assignment(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, view, ids) = live_tracks(cx, 2, false);
+    edit(
+        &mut visual,
+        &view,
+        Command::SetTrackTags {
+            track: ids[0],
+            tags: tags(&["drums"]),
+        },
+    );
+    let before = view.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+    click(
+        &mut visual,
+        selector("track-tag-more", ids[0]),
+        Modifiers::default(),
+    );
+    choose(&mut visual, &view, |action| {
+        matches!(action, Action::Edit { .. })
+    });
+    visual.simulate_input("live");
+    click(
+        &mut visual,
+        selector("track-name", ids[1]),
+        Modifiers::default(),
+    );
+    receive(&mut visual, &view);
+    view.read_with(&visual, |v, _| {
+        assert!(!v.track_name.is_editing());
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(v.pending_requests.is_empty());
+        assert_eq!(
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(ids[0])
+                .unwrap()
+                .tags(),
+            tags(&["live"])
+        );
+    });
+    view.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    receive(&mut visual, &view);
+    view.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, before)
+    });
+}

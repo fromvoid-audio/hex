@@ -211,6 +211,14 @@ impl EditorView {
                 self.focus.focus(window);
             }
         }
+        // An inline tag input can lose actual window focus before GPUI delivers
+        // its deferred blur notification. Retire only this current tag draft;
+        // no hidden edit may keep the shared header/loop guards active.
+        if self.track_name.edit.as_ref().is_some_and(|edit| {
+            edit.tags.is_some() && !edit.input.read(cx).focus_handle().is_focused(window)
+        }) {
+            self.commit_track_name(false, cx);
+        }
     }
     pub(super) fn begin_track_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(target) = self
@@ -315,8 +323,17 @@ impl EditorView {
             }
         });
         let focus = input.read(cx).focus_handle().clone();
-        let blur = cx.on_blur(&focus, window, |view, _, cx| {
-            view.commit_track_name(false, cx)
+        let input_id = input.entity_id();
+        let blur = cx.on_blur(&focus, window, move |view, _, cx| {
+            // A late notification from a retired input cannot commit its successor.
+            if view
+                .track_name
+                .edit
+                .as_ref()
+                .is_some_and(|edit| edit.input.entity_id() == input_id)
+            {
+                view.commit_track_name(false, cx);
+            }
         });
         self.track_name.edit = Some(NameEdit {
             target,
