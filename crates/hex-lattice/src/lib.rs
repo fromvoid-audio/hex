@@ -1845,14 +1845,34 @@ impl NativeRuntimeChain {
                 }
                 _ => bypass_ramp::BypassRamp::INACTIVE,
             };
-            if let Some((index, old)) = old
+            let inherited_dry = if let Some((index, old)) = old
                 && !excluded.contains(&index)
                 && entry.committed_aligned_dry.is_some()
                 && old.committed_aligned_dry.is_some()
                 && entry.algorithmic_latency_frames == old.algorithmic_latency_frames
             {
-                bypass_ramp::copy_dry(&mut entry.committed_aligned_dry, &old.committed_aligned_dry);
-                bypass_ramp::copy_dry(&mut entry.scratch_aligned_dry, &old.committed_aligned_dry);
+                let committed = bypass_ramp::copy_dry(
+                    &mut entry.committed_aligned_dry,
+                    &old.committed_aligned_dry,
+                );
+                let scratch = bypass_ramp::copy_dry(
+                    &mut entry.scratch_aligned_dry,
+                    &old.committed_aligned_dry,
+                );
+                committed && scratch
+            } else {
+                false
+            };
+            if !inherited_dry {
+                // A proved quiet layout change starts fresh, even if this
+                // prepared candidate previously rendered another signal.
+                // Reset in place; never replace or retire storage on audio.
+                if let Some(history) = &mut entry.committed_aligned_dry {
+                    history.reset();
+                }
+                if let Some(history) = &mut entry.scratch_aligned_dry {
+                    history.reset();
+                }
             }
             entry.committed_bypass_ramp = ramp;
             entry.scratch_bypass_ramp = ramp;
