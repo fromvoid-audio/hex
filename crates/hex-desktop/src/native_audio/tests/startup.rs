@@ -3,25 +3,32 @@ use super::*;
 
 #[test]
 fn delayed_initial_success_preserves_edits_and_project_rate() {
-    delayed_completion(48_000);
+    delayed_completion(None, 48_000);
 }
 
 #[test]
 fn delayed_initial_rate_mismatch_preserves_edits_and_reports_refusal() {
-    delayed_completion(44_100);
+    delayed_completion(None, 44_100);
 }
 
-fn delayed_completion(device_rate: u32) {
+#[test]
+fn delayed_initial_bridge_at_device_rate_authors_at_that_rate() {
+    delayed_completion(Some(|| Some(44_100)), 44_100);
+}
+
+fn delayed_completion(bridge_probe: Option<fn() -> Option<u32>>, device_rate: u32) {
+    let project_rate = bridge_probe.and_then(|probe| probe()).unwrap_or(48_000);
     let _native = native_fixture();
     let (events, audio_events) = mpsc::sync_channel(4);
     let mut sink = NativeAudioSink::new(events);
     sink.lifecycle_status = Some(|| None);
+    sink.startup_bridge_rate_probe = bridge_probe;
     let release = Arc::new(AtomicBool::new(false));
     let gate = Arc::clone(&release);
     let backend = Arc::new(Mutex::new(None));
     let callback = Arc::clone(&backend);
     sink.output_factory = Some(Box::new(move |requested| {
-        assert_eq!(requested, Some(48_000));
+        assert_eq!(requested, Some(project_rate));
         if !gate.load(Acquire) {
             return Ok(None);
         }
@@ -51,7 +58,7 @@ fn delayed_completion(device_rate: u32) {
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);
-                assert_eq!(event.state.project.sample_rate(), 48_000);
+                assert_eq!(event.state.project.sample_rate(), project_rate);
                 return event;
             }
             assert!(Instant::now() < deadline, "editing waited for audio open");
@@ -72,13 +79,13 @@ fn delayed_completion(device_rate: u32) {
     release.store(true, std::sync::atomic::Ordering::Release);
     let result = audio_events.recv_timeout(Duration::from_secs(1)).unwrap();
     let audio = match result {
-        EditorAudioEvent::Opened { audio, .. } if device_rate == 48_000 => {
-            assert_eq!(audio.sample_rate, 48_000);
+        EditorAudioEvent::Opened { audio, .. } if device_rate == project_rate => {
+            assert_eq!(audio.sample_rate, project_rate);
             Some(audio)
         }
-        EditorAudioEvent::Unavailable { error, .. } if device_rate != 48_000 => {
+        EditorAudioEvent::Unavailable { error, .. } if device_rate != project_rate => {
             let mismatch = error.rate_mismatch().unwrap();
-            assert_eq!(mismatch.project_hz, 48_000);
+            assert_eq!(mismatch.project_hz, project_rate);
             assert_eq!(mismatch.device_hz, device_rate);
             None
         }

@@ -140,7 +140,7 @@ pub(super) struct NativeAudioSink {
     opening: Option<hex_audio::WorkerRecoveryOpen>,
     open_pending: bool,
     requested_rate: Option<u32>,
-    open_without_bridge: bool,
+    bridge_rate_mismatch: Option<hex_audio::RateMismatch>,
     replacement_output: Option<document_output::ReplacementOutput>,
     restart_request: Option<u64>,
     /// A typed `RateMismatch` stays distinct so the UI can offer retry.
@@ -148,6 +148,8 @@ pub(super) struct NativeAudioSink {
     initial_open_started: Option<std::time::Instant>,
     #[cfg(all(test, feature = "allocation-probe"))]
     startup_open_deadline: std::time::Duration,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    startup_bridge_rate_probe: Option<fn() -> Option<u32>>,
     next_catalog: u64,
     domains: [Option<Domain>; 2],
     preparation: Option<Preparation>,
@@ -213,13 +215,15 @@ impl NativeAudioSink {
             opening: None,
             open_pending: false,
             requested_rate: None,
-            open_without_bridge: false,
+            bridge_rate_mismatch: None,
             replacement_output: None,
             restart_request: None,
             open_error: None,
             initial_open_started: None,
             #[cfg(all(test, feature = "allocation-probe"))]
             startup_open_deadline: STARTUP_OPEN_DEADLINE,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            startup_bridge_rate_probe: None,
             next_catalog: 1,
             domains: std::array::from_fn(|_| None),
             preparation: None,
@@ -290,7 +294,7 @@ impl NativeAudioSink {
         self.opening = None;
         self.open_pending = true;
         self.requested_rate = rate;
-        self.open_without_bridge = false;
+        self.bridge_rate_mismatch = None;
         self.restart_request = request;
         self.open_error = None;
     }
@@ -351,7 +355,7 @@ impl NativeAudioSink {
             return;
         }
         if self.opening.is_none() {
-            let profile = if self.plugins.wants_profile() && !self.open_without_bridge {
+            let profile = if self.plugins.wants_profile() && self.bridge_rate_mismatch.is_none() {
                 hex_audio::WorkerOutputProfile::PluginBridge
             } else {
                 hex_audio::WorkerOutputProfile::DeviceDefault
@@ -385,12 +389,12 @@ impl NativeAudioSink {
                 self.opening = None;
             }
             Ok(Some(Err(error))) => {
-                if self.plugins.wants_profile() && !self.open_without_bridge {
-                    if error.rate_mismatch().is_some() {
+                if self.plugins.wants_profile() && self.bridge_rate_mismatch.is_none() {
+                    if let Some(mismatch) = error.rate_mismatch() {
                         // A document without VST3 can use CoreAudio's ordinary
                         // converting stream. Keep the bridge eligible for later opens.
                         if !self.open_requires_plugin_profile() {
-                            self.open_without_bridge = true;
+                            self.bridge_rate_mismatch = Some(mismatch);
                             self.opening = None;
                             return;
                         }
@@ -1096,6 +1100,12 @@ impl WorkerAudioSink for NativeAudioSink {
         input: hex_session::service::PluginEffectPreparation<'_>,
     ) -> Result<hex_session::service::PluginEffectPreparationState, String> {
         let output = self.output.as_mut().ok_or("native output unavailable")?;
+        if let Some(mismatch) = self.bridge_rate_mismatch {
+            return Err(format!(
+                "vst3 requires matching sample rates · output {} hz, project {} hz · set the output to {} hz and restart audio",
+                mismatch.device_hz, mismatch.project_hz, mismatch.project_hz
+            ));
+        }
         self.plugins.prepare(output, input)
     }
     fn plugin_effect_ready(&self) -> bool {
@@ -1320,10 +1330,23 @@ impl WorkerAudioSink for NativeAudioSink {
         }
         self.plugins.initialize();
         self.route_watch = hex_audio::OutputRouteWatch::spawn().ok();
-        // New projects use the existing offline rate before any device result.
-        // The output must honor it; rate_checked refuses a mismatch rather than
-        // retiming edits made while opening. Existing poll/delivery owns completion.
-        let rate = 48_000;
+        // The bridge runs at the device's nominal rate. Choose it before the
+        // first project is authored, without waiting for a stream to open.
+        // Later opens must honor the project's rate, including after a route change.
+        let bridge_rate = self
+            .plugins
+            .wants_profile()
+            .then(|| {
+                hex_audio::OutputRoute::probe_default_on_control().map(|route| route.nominal_hz)
+            })
+            .flatten();
+        #[cfg(all(test, feature = "allocation-probe"))]
+        let bridge_rate = self
+            .startup_bridge_rate_probe
+            .map_or(bridge_rate, |probe| probe());
+        let rate = bridge_rate
+            .filter(|rate| (8_000..=192_000).contains(rate))
+            .unwrap_or(48_000);
         self.request_open(Some(rate), None);
         self.initial_open_started = Some(std::time::Instant::now());
         Ok(rate)
