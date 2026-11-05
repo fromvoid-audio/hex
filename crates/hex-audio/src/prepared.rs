@@ -4764,6 +4764,7 @@ impl Callback {
             .active
             .as_mut()
             .and_then(ActivePublication::current_mut);
+        let had_input = self.native_parameter_input.has_input();
         let live = self.native_parameter_input.prepare(|target| {
             if status.render_fault.load(Acquire)
                 || target.transport_epoch <= status.last_output_fault_epoch.load(Acquire)
@@ -4800,7 +4801,7 @@ impl Callback {
                         .abort(AbortReason::TargetUnavailable);
                     active.playback.invalidate_native_parameter_input();
                 }
-            } else {
+            } else if had_input {
                 active.playback.invalidate_native_parameter_input();
             }
         }
@@ -4844,12 +4845,19 @@ impl Callback {
         let end = active
             .as_ref()
             .map_or(0, |active| active.playback.performance_frame());
-        self.native_parameter_input
-            .finish_quantum(application, end, valid, cancelled);
-        if !self.native_parameter_input.has_input()
+        let had_input = self.native_parameter_input.has_input();
+        let cleared =
+            self.native_parameter_input
+                .finish_quantum(application, end, valid, cancelled);
+        if had_input
+            && !self.native_parameter_input.has_input()
             && let Some(active) = &mut active
         {
-            active.playback.invalidate_native_parameter_input();
+            if cleared {
+                active.playback.finish_native_parameter_input();
+            } else {
+                active.playback.invalidate_native_parameter_input();
+            }
         }
         if self.native_parameter_input.receipt_fault {
             self.status

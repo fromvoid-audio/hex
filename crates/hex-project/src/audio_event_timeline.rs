@@ -1,4 +1,4 @@
-//! Free audio event placement on a frame-fixed timeline.
+//! Signed audio event placement with a retained source read.
 //!
 //! A grouped container's events read independently retained roots by finite
 //! output frame, so its frame clock is only a placement extent. Placing an event
@@ -6,18 +6,18 @@
 //! event, the clip window and the container fade start later by the same lead,
 //! so project time, PCM and the visible window are unchanged.
 //!
-//! An ungrouped one-shot frame root (no warp, pitch, source gain, loop, musical
-//! placement or directed view) first becomes a grouped container whose single
-//! retained root is that root's complete source read. A raw frame source loop
-//! instead retains its existing source window and phase. Its read at any given
-//! source frame is independent of destination extent, so only the event
-//! destinations translate. Looping supplies event source samples and the
-//! unchanged Arrangement window gates their output. Other roots refuse
-//! explicitly. The timeline stays within [`MAX_AUDIO_DOMAIN_FRAMES`].
+//! A plain one-shot can use a grouped retained source. Raw frame source
+//! loops and unwarped processing keep their source clock: source samples at a
+//! fixed input coordinate do not depend on the destination extent. Finite and
+//! directed frame views translate their crop coordinates with the events;
+//! their duration, direction and cycle phase remain fixed. Musical one-shots
+//! retain a source span at the original processing origin, even when the
+//! destination grows. One-shot frame roots have a separate sparse timeline
+//! horizon. Other transform roots keep the dense processing cap.
 use crate::{
-    AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioEventEdit, AudioEvents, Clip, ClipFade,
-    ClipGain, ClipId, Invalid, Project,
-    audio_edit::{MAX_AUDIO_DOMAIN_FRAMES, project_clip},
+    AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioEventEdit, AudioEvents, BeatTime, Clip,
+    ClipFade, ClipGain, ClipId, Invalid, MusicalEventSource, Project,
+    audio_edit::{MAX_AUDIO_DOMAIN_FRAMES, MAX_SPARSE_AUDIO_TIMELINE_FRAMES, project_clip},
 };
 use std::sync::Arc;
 
@@ -30,6 +30,7 @@ pub(crate) fn prepare(
     let original = project.clip(clip).ok_or(Invalid("clip no longer exists"))?;
     let (mut edit, mut events) = placement_timeline(project, original)?;
     let length = edit.domain.clock.length();
+    let musical = matches!(edit.domain.clock, AudioDomainClock::Beats(_));
     let (old_start, span, start) = match *operation {
         AudioEventEdit::Place { event, start } => {
             let moved = events
@@ -55,12 +56,17 @@ pub(crate) fn prepare(
     let end = destination
         .checked_add(span)
         .ok_or(Invalid("audio event placement overflow"))?;
+    let limit = if edit.plain_frame_event_root() && project.clip_alias(clip).is_none() {
+        MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+    } else {
+        MAX_AUDIO_DOMAIN_FRAMES
+    };
     let timeline = length
         .checked_add(lead)
         .map(|shifted| shifted.max(end))
-        .filter(|timeline| *timeline <= MAX_AUDIO_DOMAIN_FRAMES)
+        .filter(|timeline| musical || *timeline <= limit)
         .ok_or(Invalid(
-            "audio event placement exceeds the 16777216 frame timeline limit",
+            "audio event placement exceeds its bounded timeline",
         ))?;
     if lead > 0 {
         for event in &mut events.events {
@@ -69,10 +75,34 @@ pub(crate) fn prepare(
         }
         edit.view_start += lead;
         edit.view_end += lead;
+        if let Some(content) = edit.content_view.as_mut() {
+            content.base_view_start += lead;
+            content.base_view_end += lead;
+        }
+    }
+    if musical
+        && lead > 0
+        && let Some(projection) = &mut edit.processing_projection
+    {
+        Arc::make_mut(projection).origin_beat_raw -= i128::from(lead);
     }
     let domain = Arc::make_mut(&mut edit.domain);
     domain.fade_start += lead;
-    domain.clock = AudioDomainClock::Frames(timeline);
+    if musical {
+        if let Some(fade) = &mut domain.fade_projection {
+            fade.local_start_raw += lead;
+        }
+        let source = domain
+            .musical_event_source
+            .get_or_insert(MusicalEventSource {
+                zero_in_destination: 0,
+                length: BeatTime::from_raw(length),
+            });
+        source.zero_in_destination += lead;
+        domain.clock = AudioDomainClock::Beats(BeatTime::from_raw(timeline));
+    } else {
+        domain.clock = AudioDomainClock::Frames(timeline);
+    }
     let next = match *operation {
         AudioEventEdit::Place { event, .. } => events.edited(
             AudioEventEdit::Move {
@@ -114,8 +144,26 @@ fn placement_timeline(
 ) -> Result<(AudioClipEdit, AudioEvents), Invalid> {
     let mut edit = clip.audio_event_root();
     let mut events = clip.editable_audio_events()?;
-    check_timeline(&edit, !events.sources.is_empty())?;
-    if !events.sources.is_empty() || edit.domain.looping {
+    if matches!(edit.domain.clock, AudioDomainClock::Beats(_)) {
+        if edit.placement.is_some()
+            || edit.content_view.is_some()
+            || !events.sources.is_empty()
+            || project.clip_alias(clip.id()).is_some()
+        {
+            return Err(Invalid(
+                "musical event placement needs an unlinked one-shot root",
+            ));
+        }
+        return Ok((edit, events));
+    }
+    check_timeline(&edit)?;
+    if !events.sources.is_empty()
+        || edit.domain.looping
+        || edit.domain.pitch_cents != 0
+        || !edit.domain.source_gain.is_empty()
+        || edit.placement.is_some()
+        || edit.content_view.is_some()
+    {
         return Ok((edit, events));
     }
     let domain = &edit.domain;
@@ -144,31 +192,15 @@ fn placement_timeline(
 }
 
 // Shared admission for canonical writes, whole-clip previews and navigation.
-fn check_timeline(edit: &AudioClipEdit, grouped: bool) -> Result<(), Invalid> {
-    if grouped {
-        if !matches!(edit.domain.clock, AudioDomainClock::Frames(_))
-            || edit.content_view.is_some()
-            || edit.placement.is_some()
-        {
-            return Err(Invalid(
-                "free audio event placement needs a frame-fixed grouped clip",
-            ));
-        }
-    } else {
-        let domain = &edit.domain;
-        if !matches!(domain.clock, AudioDomainClock::Frames(_))
-            || !matches!(edit.timing, AudioClipTiming::Frames)
-            || domain.warp_enabled
-            || domain.pitch_cents != 0
-            || !domain.source_gain.is_empty()
-            || edit.content_view.is_some()
-            || edit.placement.is_some()
-            || edit.processing_projection.is_some()
-        {
-            return Err(Invalid(
-                "free audio event placement needs an unwarped, unpitched frame clip",
-            ));
-        }
+fn check_timeline(edit: &AudioClipEdit) -> Result<(), Invalid> {
+    if !matches!(edit.domain.clock, AudioDomainClock::Frames(_))
+        || !matches!(edit.timing, AudioClipTiming::Frames)
+        || edit.processing_projection.is_some()
+        || edit.domain.warp_enabled
+    {
+        return Err(Invalid(
+            "free audio event placement needs an unwarped frame clip",
+        ));
     }
     Ok(())
 }
@@ -177,30 +209,17 @@ impl Clip {
     /// reveal this finite space without allocating or extending the source.
     pub fn audio_event_placement_limit(&self) -> Option<u64> {
         let root = self.audio_event_root();
-        let grouped = root
-            .domain
-            .events
-            .as_ref()
-            .is_some_and(|e| !e.sources.is_empty());
-        check_timeline(&root, grouped).ok()?;
-        // Legacy unprocessed clips can exceed the derived-root budget. Keep
-        // their existing camera and bounded edit path rather than truncating
-        // navigation to a smaller free-placement envelope.
-        if root.domain.clock.length() > MAX_AUDIO_DOMAIN_FRAMES {
-            return None;
-        }
-        // The editor preview proves a fixed frame clock. Other legacy grouped
-        // authoring forms retain their canonical command path, without exposing
-        // an unproved live/musical or processing projection in the editor.
-        if !matches!(root.timing, AudioClipTiming::Frames)
-            || root.processing_projection.is_some()
-            || root.domain.warp_enabled
-            || root.domain.pitch_cents != 0
-            || !root.domain.source_gain.is_empty()
+        check_timeline(&root).ok()?;
+        if root.domain.clock.length() > MAX_AUDIO_DOMAIN_FRAMES
+            && !root.accepts_projected_extent(root.domain.clock.length())
         {
             return None;
         }
-        Some(MAX_AUDIO_DOMAIN_FRAMES)
+        Some(if root.frame_event_root_shape() {
+            MAX_SPARSE_AUDIO_TIMELINE_FRAMES
+        } else {
+            MAX_AUDIO_DOMAIN_FRAMES
+        })
     }
 }
 

@@ -51,6 +51,9 @@ impl EditorView {
                 }
             }
         };
+        if placement.is_some() && self.audio_event_editor.viewport.is_none() {
+            self.store_event_camera(self.event_frame_window(&root));
+        }
         self.advance_selection_intent();
         let before = Selection {
             cursor: self.audio_event_editor.cursor,

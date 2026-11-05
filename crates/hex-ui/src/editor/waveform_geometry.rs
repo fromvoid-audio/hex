@@ -52,6 +52,7 @@ struct WaveformGeometryKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum WaveformMappingKey {
+    MusicalEvent(super::audio_event_editor::MusicalEventWaveform),
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Loop(Arc<super::waveform_loop::LoopProjection>),
     Prepared {
@@ -259,6 +260,7 @@ impl WaveformGeometryCache {
 
 #[derive(Clone)]
 pub(super) enum WaveformMapping {
+    MusicalEvent(super::audio_event_editor::MusicalEventWaveform),
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
     Loop(Arc<super::waveform_loop::LoopProjection>),
     Prepared {
@@ -451,6 +453,9 @@ fn waveform_geometry_key(
     scale: f32,
 ) -> WaveformGeometryKey {
     let mapping = match mapping {
+        WaveformMapping::MusicalEvent(projection) => {
+            WaveformMappingKey::MusicalEvent(projection.clone())
+        }
         WaveformMapping::Stretch(projection) => WaveformMappingKey::Stretch(Arc::clone(projection)),
         WaveformMapping::Loop(projection) => WaveformMappingKey::Loop(Arc::clone(projection)),
         WaveformMapping::Prepared {
@@ -552,6 +557,7 @@ pub(super) fn prepare_waveform_geometry(
         return None;
     }
     let gain = match mapping {
+        WaveformMapping::MusicalEvent(projection) => projection.gain().linear(),
         WaveformMapping::Stretch(projection) => projection.gain().linear(),
         WaveformMapping::Loop(projection) => projection.gain().linear(),
         WaveformMapping::Clip { clip, .. } => clip.gain().linear(),
@@ -573,6 +579,10 @@ pub(super) fn prepare_waveform_geometry(
             .saturating_add(fraction_u64(frames, column + 1, grid.columns))
             .max(start.saturating_add(1));
         let peaks = match mapping {
+            WaveformMapping::MusicalEvent(projection) => {
+                let ranges = projection.ranges(start..end, waveform.source_frames);
+                aggregate_ranges(waveform, ranges.as_slice())
+            }
             WaveformMapping::Loop(projection) => projection.peaks(waveform, start..end),
             WaveformMapping::Stretch(projection) => {
                 let ranges = projection.ranges(start..end, waveform.source_frames);

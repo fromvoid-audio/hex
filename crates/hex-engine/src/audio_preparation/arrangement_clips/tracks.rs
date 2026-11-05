@@ -910,7 +910,12 @@ impl TrackAssembly {
                     }
                     _ => false,
                 };
-                if !matches {
+                let packed = clip
+                    .metadata
+                    .as_deref()
+                    .and_then(|m| m.sparse.as_ref())
+                    .map(|map| map.packed_len());
+                if !matches || packed != slot.sparse_frames {
                     return Err(AudioStorageError::SourceMismatch);
                 }
             }

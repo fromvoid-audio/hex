@@ -111,7 +111,11 @@ fn events_placed_past_either_edge_are_kept_and_revealed_by_widening() {
 fn placement_refuses_unsupported_roots_and_unbounded_timelines() {
     let (mut editor, clip) = imported(100);
     let before = editor.project().clone();
-    for start in [i64::MIN, i64::MAX, 16_777_216] {
+    for start in [
+        i64::MIN,
+        i64::MAX,
+        crate::MAX_SPARSE_AUDIO_TIMELINE_FRAMES as i64,
+    ] {
         assert!(place(&mut editor, clip, 1, start).is_err());
     }
     assert!(place(&mut editor, clip, 9, 10).is_err());
@@ -122,7 +126,7 @@ fn placement_refuses_unsupported_roots_and_unbounded_timelines() {
         })
         .unwrap();
     let musical = editor.project().clone();
-    assert!(place(&mut editor, clip, 1, 120).is_err());
+    assert!(place(&mut editor, clip, 1, i64::MAX).is_err());
     assert_eq!(editor.project(), &musical);
     assert!(editor.undo());
     assert_eq!(editor.project(), &before);
@@ -182,7 +186,7 @@ fn signed_range_moves_keep_whole_ids_split_sources_and_replace_through_gaps() {
         let shape = |id| {
             let e = events.events.iter().find(|e| e.id == id).unwrap();
             assert_eq!(
-                preview.original_waveform_frame(id, e.start),
+                preview.original_waveform_position(id, e.start),
                 Some(e.source_start)
             );
             (e.start as i64 - view, e.end as i64 - view, e.source_start)
@@ -205,4 +209,25 @@ fn signed_range_moves_keep_whole_ids_split_sources_and_replace_through_gaps() {
         assert_eq!(editor.project(), &after);
         assert!(editor.undo());
     }
+}
+
+#[test]
+fn long_frame_event_roots_refuse_links_and_linked_roots_keep_the_dense_limit() {
+    let (mut editor, clip) = imported(100);
+    let destination = crate::MAX_AUDIO_DOMAIN_FRAMES as i64 + 10;
+    place(&mut editor, clip, 1, destination).unwrap();
+    let before = editor.project().clone();
+    assert!(
+        editor
+            .execute(Command::DuplicateAliasClips(vec![clip]))
+            .is_err()
+    );
+    assert_eq!(editor.project(), &before);
+    assert!(editor.undo());
+    editor
+        .execute(Command::DuplicateAliasClips(vec![clip]))
+        .unwrap();
+    let before = editor.project().clone();
+    assert!(place(&mut editor, clip, 1, destination).is_err());
+    assert_eq!(editor.project(), &before);
 }

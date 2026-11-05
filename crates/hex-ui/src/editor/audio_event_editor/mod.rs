@@ -27,6 +27,7 @@ use super::{
 use gpui::{Bounds, Pixels};
 use hex_project::{AudioClipEdit, AudioEvent, AudioEventEdit, ClipId};
 use hex_session::service::Request;
+pub(super) use placement::MusicalEventWaveform;
 pub(in crate::editor) use play_start::Camera as PlayStartCamera;
 pub(super) use view::view;
 
@@ -49,15 +50,28 @@ pub(in crate::editor) fn editor_bounds(root: &AudioClipEdit) -> (u64, u64) {
         (root.view_start, root.view_end)
     }
 }
-/// Grouped events and fixed-frame source loops expose their retained material
+/// The event grid uses the frame cycle start as its project-time anchor.
+pub(in crate::editor) fn event_grid_origin(root: &AudioClipEdit) -> u64 {
+    if matches!(root.timing, hex_project::AudioClipTiming::Frames) {
+        root.view_start
+    } else {
+        editor_bounds(root).0
+    }
+}
+
+/// Grouped events and processed frame roots expose their retained material
 /// independently of the Arrangement window.
 fn content_bounds(root: &AudioClipEdit) -> (u64, u64) {
+    if root.domain.musical_event_source.is_some() {
+        return (0, root.domain.clock.length());
+    }
     if root.domain.events.as_ref().is_some_and(|events| {
         !events.sources.is_empty()
-            || (root.domain.looping
-                && matches!(root.timing, hex_project::AudioClipTiming::Frames)
-                && root.placement.is_none()
-                && root.content_view.is_none())
+            || (matches!(root.timing, hex_project::AudioClipTiming::Frames)
+                && (root.domain.looping
+                    || root.domain.pitch_cents != 0
+                    || !root.domain.source_gain.is_empty()
+                    || root.content_view.is_some()))
     }) {
         (0, root.domain.clock.length())
     } else {
@@ -710,7 +724,7 @@ impl EditorView {
             }
         }
         if gesture.placement.is_some() && self.audio_event_editor.viewport.is_none() {
-            self.audio_event_editor.viewport = Some(self.event_viewport(&root));
+            self.store_event_camera(self.event_frame_window(&root));
         }
         self.audio_event_editor.gesture = Some(gesture);
     }
@@ -737,7 +751,7 @@ impl EditorView {
         };
         let position = if trim { event.end } else { event.start };
         let tempo = state.project.tempo_map();
-        let Ok(origin) = root.root_frame_at(editor_bounds(&root).0, tempo) else {
+        let Ok(origin) = root.root_frame_at(event_grid_origin(&root), tempo) else {
             return;
         };
         let Ok(frame) = root.root_frame_at(position, tempo) else {
@@ -759,8 +773,16 @@ impl EditorView {
         else {
             return;
         };
-        if !trim && let Ok((first, last)) = clip.audio_event_placement_bounds(event.id) {
-            let raw = next - i128::from(clip.start()) + i128::from(origin);
+        if !trim
+            && let Ok((first, last)) =
+                state
+                    .project
+                    .audio_event_drag_bounds(clip_id, event.start, event.end)
+        {
+            let frame = next - i128::from(clip.start()) + i128::from(origin);
+            let Ok(raw) = root.signed_root_position_at(frame, state.project.tempo_map()) else {
+                return;
+            };
             let start = raw.clamp(i128::from(first), i128::from(last)) as i64;
             self.event_commit(AudioEventEdit::Place {
                 event: event.id,

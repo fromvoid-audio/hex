@@ -73,9 +73,11 @@ pub(in crate::editor) fn view(
     let canonical_root = root;
     let root = placement.map_or_else(|| canonical_root.clone(), |p| p.clip().audio_event_root());
     let display_position = |position| placement.map_or(Some(position), |p| p.position(position));
-    let local = view.event_viewport(&root);
-    let root_window = view.event_root_window(&root)?;
-    let project_window = view.event_project_window(&root)?;
+    let local = view.event_frame_window(&canonical_root);
+    let root_window = view
+        .event_root_window(&canonical_root)?
+        .shifted(placement.map_or(0, |p| p.frame_shift()))?;
+    let project_window = view.event_project_window(&canonical_root)?;
     let viewport = project_window
         .visible_unsigned()
         .unwrap_or(Viewport::fit(0));
@@ -272,7 +274,15 @@ pub(in crate::editor) fn view(
             if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
                 element = element.child(
                     waveform::waveform_source_segment_gain_view_cached(
-                        std::sync::Arc::clone(&prepared.waveform),
+                        std::sync::Arc::clone(
+                            prepared
+                                .preview_root
+                                .as_ref()
+                                .filter(|_| {
+                                    matches!(root.timing, hex_project::AudioClipTiming::Frames)
+                                })
+                                .map_or(&prepared.waveform, |root| &root.waveform),
+                        ),
                         0,
                         source_root + (visible_start - start),
                         source_root + (visible_end - start),
@@ -646,7 +656,7 @@ pub(in crate::editor) fn view(
                 Kind::Select
             } else if target == RangeSelectionTarget::Move && range_hit.is_some() {
                 if let Some((start, end)) = range_hit {
-                    if let Ok(limits) = clip.audio_event_range_placement_bounds(start, end) {
+                    if let Ok(limits) = state.project.audio_event_drag_bounds(clip_id, start, end) {
                         Kind::FreeRangeMove { start, end, limits }
                     } else {
                         Kind::RangeMove { start, end }
@@ -711,7 +721,10 @@ pub(in crate::editor) fn view(
                         value: f64::from(target.gain.millidb()),
                     }
                 } else if target == RangeSelectionTarget::Move {
-                    if let Ok(limits) = clip.audio_event_placement_bounds(hit.id) {
+                    if let Ok(limits) = state
+                        .project
+                        .audio_event_drag_bounds(clip_id, hit.start, hit.end)
+                    {
                         Kind::FreeMove { event: hit, limits }
                     } else {
                         Kind::Move(hit)
