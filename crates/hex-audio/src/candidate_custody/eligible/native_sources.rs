@@ -825,6 +825,21 @@ fn native_pool_preflight(
 }
 
 impl CandidateRoot {
+    pub(crate) fn has_vacant_native_source_slots(&self, needed: usize) -> bool {
+        self.0.eligible.bank.try_lock().is_ok_and(|bank| {
+            !bank.closing
+                && bank.sources.limits.is_some()
+                && bank
+                    .sources
+                    .slots
+                    .iter()
+                    .filter(|slot| slot.phase == Phase::Vacant)
+                    .take(needed)
+                    .count()
+                    == needed
+        })
+    }
+
     fn require_native_source_control_open(&self) -> Result<(), &'static str> {
         let bank = lock(&self.0.bank);
         if bank.closing || bank.retiring {

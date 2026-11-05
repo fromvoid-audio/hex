@@ -280,12 +280,38 @@ impl Plugins {
                 .iter()
                 .any(|source| source.retiring || (source.queued && !source.accepted))
     }
-    pub(super) fn can_retain_output_for_native_document(&self, generation: u64) -> bool {
-        self.idle()
-            && self
+    pub(super) fn can_retain_output_for_document(
+        &self,
+        control: &hex_audio::prepared::PublicationControl,
+        outgoing: u64,
+        incoming: ResidentEffectPreparation<'_>,
+    ) -> bool {
+        if !self.idle()
+            || !self
                 .sources
                 .iter()
-                .all(|source| source.accepted && source.project_generation == generation)
+                .all(|source| source.accepted && source.project_generation == outgoing)
+        {
+            return false;
+        }
+        if !incoming.requires_plugin_profile() {
+            return true;
+        }
+        if !self.configured || self.host.is_none() || self.catalog.is_none() {
+            return false;
+        }
+        let capacity = self.sources.capacity() - self.sources.len();
+        let mut needed = 0;
+        incoming
+            .visit_plugin_effects(|_, _, _| {
+                if needed == capacity {
+                    return Err("retained vst3 source capacity exceeded".into());
+                }
+                needed += 1;
+                Ok(())
+            })
+            .is_ok()
+            && control.has_vacant_native_source_slots_on_control(needed)
     }
     /// The exact successor has applied. Keep the old bindings until Root
     /// returns their graph, tail and endpoint obligations on control.
