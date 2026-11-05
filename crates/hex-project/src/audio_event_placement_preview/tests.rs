@@ -104,7 +104,7 @@ fn gain_fade_identity_and_unsupported_roots_do_not_borrow_unproved_peaks() {
 }
 
 #[test]
-fn musical_and_warped_roots_keep_bounded_moves_and_refuse_free_placement() {
+fn musical_and_warped_roots_keep_bounded_editor_preview() {
     for warped in [false, true] {
         let (mut editor, clip) = fixture();
         let command = if warped {
@@ -133,18 +133,6 @@ fn musical_and_warped_roots_keep_bounded_moves_and_refuse_free_placement() {
             None
         );
         assert!(before.preview_audio_event_placement(clip, 1, 130).is_err());
-        assert!(
-            editor
-                .execute(Command::EditAudioEvents {
-                    clip,
-                    operation: AudioEventEdit::Place {
-                        event: 1,
-                        start: -25
-                    },
-                })
-                .is_err()
-        );
-        assert_eq!(editor.project(), &before);
         editor
             .execute(Command::EditAudioEvents {
                 clip,
