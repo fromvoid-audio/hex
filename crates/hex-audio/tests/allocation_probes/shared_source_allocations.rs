@@ -1,7 +1,6 @@
 //! Shared source admission, receiver moves, Pause and scoped live retirement
 //! through the real prepared callback. Construction and reclamation stay control-side.
-#![cfg(feature = "allocation-probe")]
-#[path = "../../hex-devices/tests/support/mod.rs"]
+#[path = "../../../hex-devices/tests/support/mod.rs"]
 mod support;
 use hex_audio::prepared::{self, PublicationPolicy};
 use hex_engine::{

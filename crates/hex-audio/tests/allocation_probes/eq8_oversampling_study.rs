@@ -1,5 +1,4 @@
 //! PRIVATE UNREGISTERED kernel/layout study. No real EQ or public toggle.
-#![cfg(feature = "allocation-probe")]
 #[path = "eq8_oversampling_study/kernel.rs"]
 mod kernel;
 #[path = "eq8_oversampling_study/oracles.rs"]

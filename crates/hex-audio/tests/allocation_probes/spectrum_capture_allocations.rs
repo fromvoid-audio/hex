@@ -1,5 +1,4 @@
 //! Capture-side allocation regression; worker construction and join stay outside scope.
-#![cfg(feature = "allocation-probe")]
 
 use allocation_counter::measure;
 use hex_audio::spectrum_worker::{

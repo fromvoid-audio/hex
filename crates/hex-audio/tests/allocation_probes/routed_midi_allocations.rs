@@ -1,5 +1,4 @@
 //! Actual routed Session events and handoff through the native prepared adapter.
-#![cfg(feature = "allocation-probe")]
 use hex_audio::prepared;
 use hex_engine::{
     LaunchQuantization, PlaybackCommand, PreparedRevision, SessionPlaybackCommand, SineTable,

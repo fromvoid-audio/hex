@@ -1,5 +1,4 @@
 //! Source-stop residual processing probe; construction and reclaim are control-side.
-#![cfg(feature = "allocation-probe")]
 use allocation_counter::measure;
 use hex_audio::prepared;
 use hex_engine::{

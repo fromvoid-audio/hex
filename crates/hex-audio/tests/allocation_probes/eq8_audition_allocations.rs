@@ -1,5 +1,4 @@
 //! Actual prepared-callback allocation probe for transient EQ8 audition.
-#![cfg(feature = "allocation-probe")]
 
 use allocation_counter::{AllocationInfo, measure};
 use hex_audio::prepared::{self, PublicationPolicy};
