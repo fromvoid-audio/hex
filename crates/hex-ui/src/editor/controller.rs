@@ -2773,7 +2773,9 @@ impl EditorView {
             self.main_track_lane_epoch = 0;
             self.retire_active_clip_drag();
             self.pointer_down = None;
-            self.stop();
+            // The document transaction already owns fresh playback publication.
+            // Reset transport without submitting a second graph during the handoff.
+            self.stop_transport(false);
             self.viewport = None;
             self.duplicate_intent.reject();
             self.pending_scene_duplicate = None;
@@ -4559,6 +4561,10 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        self.stop_transport(true);
+    }
+
+    fn stop_transport(&mut self, restore_current_sound: bool) {
         use super::audio_admission::LatencyRebuild;
         let native_restore = matches!(
             self.latency_rebuild.take(),
@@ -4579,7 +4585,8 @@ impl EditorView {
         // Stop explicitly discards voice histories. A previously refused edit
         // or restoration can now install the canonical sound without inheriting
         // an incompatible preview's history. Keep construction on the worker.
-        let restore = self.stopped_playback_restore.is_none()
+        let restore = restore_current_sound
+            && self.stopped_playback_restore.is_none()
             && !self.edit_pending()
             && self.device_gesture.snapshot().is_none()
             && self.tuning.client.snapshot().is_none()
