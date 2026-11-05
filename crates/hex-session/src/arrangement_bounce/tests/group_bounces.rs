@@ -177,11 +177,12 @@ fn group_range_prints_the_nested_post_device_submix_and_adopts_a_sibling() {
 
     let range = TimeRange::new(vec![selected], start as u64, end as u64).unwrap();
     let mut original = session.project().snapshot();
+    let multi = TimeRange::new(vec![selected, inner], start as u64, end as u64).unwrap();
     let before_publish = folder.0.join("unsupported");
     assert!(
         session
             .bounce_arrangement_adopting(
-                BounceTarget::Range(range.clone()),
+                BounceTarget::Range(multi),
                 false,
                 BounceAdoption::NewTracksMutingSources,
                 &before_publish,
@@ -189,7 +190,7 @@ fn group_range_prints_the_nested_post_device_submix_and_adopts_a_sibling() {
                 None
             )
             .unwrap_err()
-            .contains("group output")
+            .contains("select one group row")
     );
     assert!(!before_publish.exists());
     assert_eq!(session.project().snapshot(), original);
@@ -372,6 +373,26 @@ fn group_range_refuses_sources_and_sidechain_keys_crossing_its_boundary() {
             .0,
         "cannot mute group children used as external sidechain keys"
     );
+    session
+        .command(Command::SetSidechain {
+            device: external,
+            source: Some(selected),
+        })
+        .unwrap();
+    assert!(
+        session
+            .project()
+            .plan_arrangement_bounce(&target, false)
+            .is_ok()
+    );
+    assert_eq!(
+        session
+            .project()
+            .validate_bounce_adoption(&target, false, BounceAdoption::NewTracksMutingSources)
+            .unwrap_err()
+            .0,
+        "cannot mute a group used as a sidechain key"
+    );
 }
 
 #[test]
@@ -548,4 +569,165 @@ fn whole_group_prints_one_child_and_preserves_existing_descendants_and_console()
             .snapshot(),
         adopted
     );
+}
+
+fn aligned_group_capture(
+    session: &Session,
+    group: TrackId,
+    unrelated: TrackId,
+    frames: usize,
+    block: usize,
+) -> [Vec<hex_engine::Frame>; 3] {
+    use hex_engine::{OutputCapture, OutputCaptureId, SessionPlayback, SessionPlaybackCommand};
+    let revision = session.compile_prepared_revision(None).unwrap();
+    let latency = revision.arrangement().main_latency_frames() as usize;
+    let mut runtime = SessionPlayback::new_linear_arrangement_export(revision).unwrap();
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    let plan = runtime
+        .output_capture_plan(
+            &[
+                OutputCaptureId::Track(group),
+                OutputCaptureId::Track(unrelated),
+            ],
+            block,
+        )
+        .unwrap();
+    let [mut main, mut group, mut unrelated] =
+        std::array::from_fn(|_| vec![[0.0; 2]; frames + latency]);
+    for ((main, group), unrelated) in main
+        .chunks_mut(block)
+        .zip(group.chunks_mut(block))
+        .zip(unrelated.chunks_mut(block))
+    {
+        let mut buffers: [&mut [hex_engine::Frame]; 2] = [group, unrelated];
+        let mut capture = OutputCapture::new(&plan, &mut buffers);
+        runtime.render_with_capture(main, &mut capture).unwrap();
+    }
+    [
+        main.split_off(latency),
+        group.split_off(latency),
+        unrelated.split_off(latency),
+    ]
+}
+
+#[test]
+fn group_bounce_and_mute_replaces_only_the_half_open_output_with_exact_pcm() {
+    use hex_project::{GainInterpolation, GainPoint, GroupOutputMuteRange};
+
+    let folder = Folder::new();
+    let mut session = Session::new(8_000, 32, 2_000_000).unwrap();
+    let source = audio_track(&mut session, &folder, "source", [0.4, -0.28]);
+    let group = group(&mut session, &[source], "selected");
+    session
+        .command(Command::InsertDevice {
+            track: group,
+            before: None,
+            state: overdrive(),
+        })
+        .unwrap();
+    let points = [0, 8_000]
+        .into_iter()
+        .zip([0.7, 1.1])
+        .map(|(frame, gain)| GainPoint {
+            beat: session.project().tempo_map().frame_to_beat(frame).unwrap(),
+            gain,
+            incoming_gain: None,
+            outgoing: GainInterpolation::Linear,
+        })
+        .collect();
+    session
+        .command(Command::ReplaceTrackGainEnvelope {
+            track: group,
+            points,
+        })
+        .unwrap();
+    let Created::ReturnTrack(bus) = session
+        .command(Command::AddReturnTrackWithGain {
+            name: "return".into(),
+            gain: 0.5,
+        })
+        .unwrap()
+    else {
+        panic!("return");
+    };
+    session
+        .command(Command::SetReturnSend {
+            track: group,
+            return_track: bus,
+            gain: 0.25,
+        })
+        .unwrap();
+    let unrelated = audio_track(&mut session, &folder, "unrelated", [0.16, 0.32]);
+    let start = 4_055;
+    let end = 4_133;
+    let before = aligned_group_capture(&session, group, unrelated, 4_288, 17);
+    assert!(
+        before[1][start - 1..=end]
+            .iter()
+            .all(|frame| frame[0].abs() > 0.01)
+    );
+    let range = TimeRange::new(vec![group], start as u64, end as u64).unwrap();
+    let mut original = session.project().snapshot();
+    let target = BounceTarget::Range(range);
+    let (Created::Clips { first, last }, _) = session
+        .bounce_arrangement_adopting(
+            target,
+            false,
+            BounceAdoption::NewTracksMutingSources,
+            &folder.0,
+            &hex_export::ExportControl::default(),
+            None,
+        )
+        .unwrap()
+    else {
+        panic!("group bounce and mute");
+    };
+    assert_eq!(first, last);
+    let project = session.project();
+    let group_track = project.track(group).unwrap();
+    assert!(!group_track.muted());
+    assert_eq!(
+        group_track.group_output_mutes(),
+        &[GroupOutputMuteRange::new(start as u64, end as u64).unwrap()]
+    );
+    let bounced = project.clip(first).unwrap();
+    assert_eq!(
+        (bounced.start(), bounced.duration()),
+        (start as u64, (end - start) as u64)
+    );
+    for block in [7, 64, 256] {
+        let after = aligned_group_capture(&session, group, unrelated, 4_288, block);
+        assert_eq!(after[2], before[2], "unrelated track");
+        for (frame, sample) in after[1].iter().enumerate() {
+            let expected = if (start..end).contains(&frame) {
+                [0.0; 2]
+            } else {
+                before[1][frame]
+            };
+            assert_eq!(*sample, expected, "source output at frame {frame}");
+            let main = after[0][frame];
+            let previous = before[0][frame];
+            assert!(
+                (main[0] - previous[0]).abs() < 1e-7 && (main[1] - previous[1]).abs() < 1e-7,
+                "audible group replacement at frame {frame}: {main:?} != {previous:?}"
+            );
+        }
+    }
+    let adopted = project.snapshot();
+    let group_before = &original.tracks[0];
+    let mut restored_group = adopted.tracks[0].clone();
+    restored_group.group_output_mutes.clear();
+    assert_eq!(&restored_group, group_before);
+    assert_eq!(
+        adopted.tracks[1], original.tracks[1],
+        "source clip crosses both boundaries unchanged"
+    );
+    assert!(session.undo());
+    let undone = session.project().snapshot();
+    original.next_id = undone.next_id;
+    assert_eq!(undone, original);
+    assert!(session.redo());
+    assert_eq!(session.project().snapshot(), adopted);
+    let bytes = hex_storage::encode(session.project()).unwrap();
+    assert_eq!(hex_storage::decode(&bytes).unwrap().snapshot(), adopted);
 }

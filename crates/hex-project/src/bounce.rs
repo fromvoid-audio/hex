@@ -219,14 +219,14 @@ impl Project {
                     && matches!(target, BounceTarget::Clips(_) | BounceTarget::Range(_)) =>
             {
                 if let BounceTarget::Range(range) = target
-                    && range
-                        .tracks()
-                        .iter()
-                        .any(|&id| self.track(id).is_some_and(crate::Track::is_group))
+                    && let Some(group) = group_range_owner(self, range)
                 {
-                    return Err(Invalid(
-                        "range bounce and mute does not support group output yet",
-                    ));
+                    if range.tracks().len() != 1 {
+                        return Err(Invalid("select one group row for bounce and mute"));
+                    }
+                    if self.sidechains().iter().any(|route| route.source == group) {
+                        return Err(Invalid("cannot mute a group used as a sidechain key"));
+                    }
                 }
                 Ok(())
             }
@@ -448,6 +448,14 @@ impl Project {
     }
 }
 
+fn group_range_owner(project: &Project, range: &TimeRange) -> Option<TrackId> {
+    range
+        .tracks()
+        .iter()
+        .copied()
+        .find(|&id| project.track(id).is_some_and(crate::Track::is_group))
+}
+
 pub(crate) fn commit(
     project: &mut Project,
     target: BounceTarget,
@@ -665,10 +673,20 @@ fn commit_planned(
                 clips: clips.clone(),
                 edit: crate::ClipEdit::Active { active: false },
             })?,
-            BounceTarget::Range(range) => project.apply(Command::SetTimeRangeActive {
-                range: range.clone(),
-                active: false,
-            })?,
+            BounceTarget::Range(range) => {
+                if let Some(group) = group_range_owner(project, range) {
+                    project.add_group_output_mute(
+                        group,
+                        crate::GroupOutputMuteRange::new(range.start(), range.end())?,
+                    )?;
+                    Created::None
+                } else {
+                    project.apply(Command::SetTimeRangeActive {
+                        range: range.clone(),
+                        active: false,
+                    })?
+                }
+            }
             BounceTarget::Track(_) | BounceTarget::AudioGroup { .. } => {
                 return Err(Invalid("bounce and mute target changed"));
             }

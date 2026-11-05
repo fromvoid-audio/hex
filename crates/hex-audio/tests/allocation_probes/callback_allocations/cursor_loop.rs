@@ -335,3 +335,85 @@ fn silent_left_prefix_publication_keeps_pcm_and_allocates_or_frees_nothing()
     }
     Ok(())
 }
+
+#[test]
+fn group_output_mute_publication_preserves_clock_and_allocates_nothing_in_callback()
+-> Result<(), Box<dyn Error>> {
+    use hex_project::{GroupOutputMuteRange, TrackSelectionIds};
+    const FRAMES: usize = 640;
+    let mut editor = Editor::new(Project::new(RATE)?, 8)?;
+    let mut media = BTreeMap::new();
+    let mut tracks = Vec::new();
+    for (name, frame) in [("group", [0.25, 0.125]), ("unrelated", [0.125, 0.0625])] {
+        let Created::Imported { asset, track, .. } = editor.execute(Command::ImportAudioTrack {
+            name: name.into(),
+            path: format!("{name}.wav").into(),
+            sample_rate: RATE,
+            frames: FRAMES as u64,
+        })?
+        else {
+            return Err("expected audio import".into());
+        };
+        media.insert(asset, Audio::new(RATE, vec![frame; FRAMES])?);
+        tracks.push(track);
+    }
+    let Created::Track(group) = editor.execute(Command::GroupTracks {
+        tracks: TrackSelectionIds::new(&tracks[..1])?,
+        name: "selected".into(),
+    })?
+    else {
+        return Err("expected group".into());
+    };
+    let source = editor.project();
+    let mut gated = source.clone();
+    let interval = GroupOutputMuteRange::new(83, 117)?;
+    gated.add_group_output_mute(group, interval)?;
+    let sine = Arc::new(SineTable::new());
+    let plain = Arc::new(PreparedRevision::prepare(
+        source,
+        &media,
+        Arc::clone(&sine),
+        None,
+    )?);
+    let gated = Arc::new(PreparedRevision::prepare(&gated, &media, sine, None)?);
+    for block in [1, 7, 64, 512] {
+        let (mut control, mut callback) = prepared::channel(RATE)?;
+        control
+            .publish(Playback::try_from_prepared_with_session(Arc::clone(
+                &plain,
+            ))?)
+            .map_err(|_| "plain publication failed")?;
+        control
+            .command(PlaybackCommand::PlayFrom(0))
+            .map_err(|_| "start failed")?;
+        let mut warm = [[0.0; 2]; 16];
+        measured_block(&mut callback, &mut warm);
+        assert_eq!(warm, [[0.375, 0.1875]; 16]);
+        control
+            .publish(Playback::try_from_prepared_with_session(Arc::clone(
+                &gated,
+            ))?)
+            .map_err(|_| "mute publication failed")?;
+        let mut output = [[0.0; 2]; FRAMES - 16];
+        for chunk in output.chunks_mut(block) {
+            measured_block(&mut callback, chunk);
+        }
+        for (offset, frame) in output.into_iter().enumerate() {
+            let expected = if interval.contains((16 + offset) as u64) {
+                [0.125, 0.0625]
+            } else {
+                [0.375, 0.1875]
+            };
+            assert_eq!(frame, expected, "arrangement frame {}", 16 + offset);
+        }
+        control
+            .command(PlaybackCommand::Stop)
+            .map_err(|_| "stop failed")?;
+        measured_block(&mut callback, &mut warm);
+        assert_eq!(warm, [[0.0; 2]; 16]);
+        control.request_shutdown();
+        measured_shutdown(&mut callback, &mut warm);
+        control.reclaim();
+    }
+    Ok(())
+}
