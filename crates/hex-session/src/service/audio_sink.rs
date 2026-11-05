@@ -35,6 +35,10 @@ impl<'a> ResidentEffectPreparation<'a> {
     pub fn restoring_plugin_state(&self) -> bool {
         self.restoring_plugin_state
     }
+    /// Whether the saved document needs the fixed-quantum plugin output profile.
+    pub fn requires_plugin_profile(&self) -> bool {
+        requires_plugin_profile(self.project)
+    }
     pub fn visit_plugin_effects(
         &self,
         mut visit: impl FnMut(
@@ -44,9 +48,7 @@ impl<'a> ResidentEffectPreparation<'a> {
         ) -> Result<(), String>,
     ) -> Result<(), String> {
         let mut chain = |owner, devices: &'a [hex_project::Device]| {
-            for device in devices.iter().filter(|d| {
-                d.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
-            }) {
+            for device in devices.iter().filter(|d| is_plugin_effect(d)) {
                 visit(owner, device.id().value(), device.state())?;
             }
             Ok(())
@@ -68,6 +70,20 @@ impl<'a> ResidentEffectPreparation<'a> {
             self.project.main_devices(),
         )
     }
+}
+
+fn is_plugin_effect(device: &hex_project::Device) -> bool {
+    device.state().type_id() == hex_lattice_contract::DeviceTypeId::from_static("hex.vst3")
+}
+
+pub(super) fn requires_plugin_profile(project: &Project) -> bool {
+    project
+        .tracks()
+        .iter()
+        .flat_map(|track| track.devices())
+        .chain(project.return_tracks().iter().flat_map(|bus| bus.devices()))
+        .chain(project.main_devices())
+        .any(is_plugin_effect)
 }
 
 /// Scalar identity for one worker-private ordinary resident graph. Neither preview correlation
@@ -173,10 +189,12 @@ pub enum ResidentPublicationPolicy {
     /// Only the same-context fresh-output plugin continuation may replace its
     /// admitted unpublished graph after actual native/endpoint readiness.
     RestorePluginState,
-    /// New/Open only: admit one exact pending owner before canonical generation replacement.
-    /// Acceptance is OfflineRetained; existing teardown/open then queues it on the fresh output.
-    /// This never converts ordinary queue pressure into offline acceptance.
-    ReplaceDocument,
+    /// New/Open only: admit the exact successor before canonical replacement.
+    /// Matching rates may retain the graph for the existing deferred reopen.
+    /// A rate mismatch requires a fresh output and graph installation before adoption.
+    ReplaceDocument {
+        requires_plugin_profile: bool,
+    },
     FreshIfUnchanged(ResidentFreshRuntimeFence),
     SectionWhenReady {
         fence: ResidentFreshRuntimeFence,
@@ -431,6 +449,13 @@ pub trait WorkerAudioSink: Send {
             metadata_limit,
             admit,
         )
+    }
+    /// Finish an already submitted document replacement before the canonical swap.
+    /// A host that opened a private candidate output must observe its exact
+    /// installation or retire that candidate on refusal. Offline retention
+    /// and hosts without a private output have no additional terminal to wait for.
+    fn finish_resident_document_replacement(&mut self) -> Result<(), String> {
+        Ok(())
     }
     /// Retry an already admitted offline candidate only while the canonical worker lends the
     /// current source/export/control union. Pending custody is not released by cancellation/ACK.
