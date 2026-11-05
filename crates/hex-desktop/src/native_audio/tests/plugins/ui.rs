@@ -1143,6 +1143,22 @@ fn rendered_native_effect_browser_enters_actual_track_return_main_after_ack(
                 "original worker PCM at location{location}, frame{index}"
             );
         }
+        if location == 0 && !pointer {
+            let selector = Box::leak(format!("device-vst3-editor-{device}").into_boxed_str());
+            click(&mut visual, selector);
+            until("editor response from the original SDK controller", || {
+                repaint(cx, &mut visual);
+                let view = cx
+                    .update(|app| hex_ui::plugin_effect_test_view(window, app))
+                    .unwrap();
+                view.error.as_deref() == Some("native editor unavailable for this vst3")
+            });
+            let after = cx
+                .update(|app| hex_ui::plugin_effect_test_view(window, app))
+                .unwrap();
+            assert_eq!(after.state.unwrap().project, accepted.project);
+            assert_eq!(records.load(Acquire), 1);
+        }
         visual.update(|window, _| window.remove_window());
         visual.run_until_parked();
         drop(visual);

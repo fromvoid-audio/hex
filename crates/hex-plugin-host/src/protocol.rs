@@ -13,9 +13,10 @@ pub use edits::{
     edit_request, parameter_edits, recovery_edit_request, recovery_edits,
 };
 pub use parameter_page::{
-    ControllerParameter, MAX_CONTROLLER_PARAMETERS, PARAMETER_PAGE_SIZE, ParameterConversion,
-    ParameterConversionResult, ParameterConversionStatus, ParameterPage, ParameterPageProgress,
-    ParameterPageQuery, ParameterPlainValue, ParameterText, parameter_page, parameter_page_request,
+    ControllerParameter, ControllerRequest, MAX_CONTROLLER_PARAMETERS, PARAMETER_PAGE_SIZE,
+    ParameterConversion, ParameterConversionResult, ParameterConversionStatus, ParameterPage,
+    ParameterPageProgress, ParameterPageQuery, ParameterPlainValue, ParameterText,
+    PluginEditorState, parameter_page, parameter_page_request,
 };
 mod flush;
 pub use capture::{

@@ -2,6 +2,7 @@
 // stays here. It is crash isolation for user-selected code, not a security sandbox.
 #import <Foundation/Foundation.h>
 #include "macos_bundle.hpp"
+#include "macos_editor.hpp"
 #include "macos_instance.hpp"
 #include "macos_instance_wire.hpp"
 #include <atomic>
@@ -237,7 +238,7 @@ int main(int argc,char** argv) {
     if(supervised && !guardian.start()) return Configuration;
     const int channel=isolate_channel();if(channel<0) return Configuration;
     @autoreleasepool {
-        Module module;hex_instance::Instance instance;
+        Module module;hex_instance::Instance instance;hex_instance::EditorWindow editor;
         std::optional<wire::Config> config;
         uint32_t failure=Configuration;bool accepted=false,normal_stop=false;
         uint64_t blocks=0,frames=0;
@@ -342,6 +343,7 @@ int main(int argc,char** argv) {
             std::atomic<PageStage> page_stage{PageIdle};
             hex_instance::ControllerQuery page_query{};
             hex_instance::ControllerParameterPage parameter_page{};
+            hex_instance::EditorState editor_state=hex_instance::EditorState::Closed;
             uint32_t page_failure=0;
             std::thread worker([&] {
                 bool started=false;
@@ -416,8 +418,11 @@ int main(int argc,char** argv) {
                         const bool complete=poll && state==PageComplete;
                         wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
                         wire::number(body,page_operation,8);
-                        wire::number(body,complete?(parameter_page.changed?2:(parameter_page.conversion?3:1)):0,1);
-                        if(complete) {
+                        if(complete && hex_instance::editor_request(page_query.kind)) {
+                            wire::number(body,4,1);
+                            wire::number(body,static_cast<uint8_t>(editor_state),1);
+                        } else if(complete) {
+                            wire::number(body,parameter_page.changed?2:(parameter_page.conversion?3:1),1);
                             wire::number(body,parameter_page.revision,8);wire::number(body,parameter_page.total,2);
                             if(!parameter_page.changed && parameter_page.conversion) {
                                 const auto& value=parameter_page.converted;
@@ -451,7 +456,7 @@ int main(int argc,char** argv) {
                                     text(value.display);text(value.default_display);
                                 }
                             }
-                        }
+                        } else wire::number(body,0,1);
                         if(!wire::send(channel,"HXVIMD01",body)) return false;
                         if(complete) page_stage.store(PageIdle,std::memory_order_release);
                         return true;
@@ -751,12 +756,25 @@ int main(int argc,char** argv) {
                     instance.dispatch_host_callbacks();
                     if(instance.host_refusals()) { control_failure(HostControl);continue; }
                     if(page_stage.load(std::memory_order_acquire)==PageRequested) {
+                        page_failure=0;
                         try {
                             // Acquire the exact prior worker publication even
                             // if it arrived after this main iteration's sync.
-                            page_failure=instance.synchronize_parameter_feedback_on_control() &&
-                                instance.parameter_page_on_control(page_query,parameter_page)?0:HostControl;
-                        } catch(...) {page_failure=Unexpected;}
+                            if(!instance.synchronize_parameter_feedback_on_control()) page_failure=HostControl;
+                            else if(hex_instance::editor_request(page_query.kind)) {
+                                @autoreleasepool {
+                                    const bool was_open=editor.is_open();
+                                    if(!editor.close()) page_failure=Teardown;
+                                    else if(was_open || page_query.kind==hex_instance::CLOSE_EDITOR)
+                                        editor_state=hex_instance::EditorState::Closed;
+                                    else if(const auto result=editor.open(instance.create_editor_on_control())) editor_state=*result;
+                                    else page_failure=Teardown;
+                                }
+                            } else if(!instance.parameter_page_on_control(page_query,parameter_page)) page_failure=HostControl;
+                        } catch(...) {
+                            if(hex_instance::editor_request(page_query.kind)) editor.quarantine();
+                            page_failure=Unexpected;
+                        }
                         page_stage.store(page_failure?PageFailed:PageComplete,std::memory_order_release);
                         if(page_failure) control_failure(page_failure);
                     }
@@ -929,6 +947,12 @@ int main(int argc,char** argv) {
                         // or unload code beneath its processing thread.
                         std::_Exit(Cancelled);
                     }
+                    try {
+                        if(!editor.pump()) control_failure(Teardown);
+                    } catch(...) {
+                        editor.quarantine();
+                        control_failure(Unexpected);
+                    }
                     CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
                 } catch(...) { control_failure(Unexpected); }
             }
@@ -944,7 +968,7 @@ int main(int argc,char** argv) {
             error(channel,config?&*config:nullptr,failure);
         }
         bool closed=false,unloaded=false;
-        try { closed=instance.close();if(closed) unloaded=module.close(); } catch(...) {}
+        try { closed=editor.close() && instance.close();if(closed) unloaded=module.close(); } catch(...) {}
         if(!closed || !unloaded) failure=Teardown;
         if(config) {
             wire::Bytes terminal;config->stamp(terminal);wire::number(terminal,blocks,8);wire::number(terminal,frames,8);

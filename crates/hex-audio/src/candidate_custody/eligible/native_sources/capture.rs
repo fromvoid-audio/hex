@@ -121,16 +121,17 @@ impl Custody {
     pub(in crate::candidate_custody) fn begin_native_controller_query(
         &self,
         binding: Binding,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: impl Into<hex_plugin_host::protocol::ControllerRequest>,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         self.controller_query_admission(binding, query, || {})
     }
     fn controller_query_admission(
         &self,
         binding: Binding,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: impl Into<hex_plugin_host::protocol::ControllerRequest>,
         after_admission: impl FnOnce(),
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
+        let query = query.into();
         let mut admitted = None;
         let result = self.with_live_capture(binding, |owner| {
             admitted = Some(match owner {
@@ -372,7 +373,7 @@ impl CandidateRoot {
     pub(crate) fn begin_native_controller_query(
         &self,
         binding: Binding,
-        query: hex_plugin_host::protocol::ParameterPageQuery,
+        query: impl Into<hex_plugin_host::protocol::ControllerRequest>,
     ) -> Result<NativeWorkerControllerQuery, &'static str> {
         self.require_native_source_control_open()?;
         self.0

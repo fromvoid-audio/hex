@@ -79,7 +79,9 @@ fn held_controller_query_keeps_pcm_running_and_cancels_without_sdk_teardown() {
                     }
                     ParameterPageProgress::Pending => {}
                     ParameterPageProgress::Changed { .. } => panic!("unversioned first query"),
-                    ParameterPageProgress::Conversion(_) => panic!("expected metadata page"),
+                    ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                        panic!("expected metadata page")
+                    }
                 }
                 assert!(Instant::now() < until);
                 thread::sleep(Duration::from_millis(1));
@@ -305,7 +307,9 @@ fn page(instance: &mut Prepared, query: ParameterPageQuery) -> Box<ParameterPage
             ParameterPageProgress::Page(page) => return page,
             ParameterPageProgress::Pending => {}
             ParameterPageProgress::Changed { .. } => panic!("unchanged fixture metadata"),
-            ParameterPageProgress::Conversion(_) => panic!("expected metadata page"),
+            ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                panic!("expected metadata page")
+            }
         }
         assert!(Instant::now() < until);
         thread::yield_now();
@@ -488,7 +492,9 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                     assert_eq!((revision, total), (current.revision, 1));
                     break;
                 }
-                ParameterPageProgress::Page(_) | ParameterPageProgress::Conversion(_) => {
+                ParameterPageProgress::Page(_)
+                | ParameterPageProgress::Conversion(_)
+                | ParameterPageProgress::Editor(_) => {
                     panic!("stale metadata must invalidate enumeration")
                 }
             }
@@ -503,7 +509,9 @@ fn actual_controller_pages_use_sdk_conversions_without_processing_or_replacing_s
                 ParameterPageProgress::Page(page) => break page,
                 ParameterPageProgress::Pending => {}
                 ParameterPageProgress::Changed { .. } => panic!("same stopped metadata"),
-                ParameterPageProgress::Conversion(_) => panic!("expected stopped metadata page"),
+                ParameterPageProgress::Conversion(_) | ParameterPageProgress::Editor(_) => {
+                    panic!("expected stopped metadata page")
+                }
             }
             assert!(Instant::now() < until);
             thread::yield_now();

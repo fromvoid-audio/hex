@@ -142,6 +142,10 @@ fn native_source() -> String {
             include_bytes!("../../native/macos_instance_wire.hpp"),
         ),
         (
+            "macos_editor.hpp",
+            include_bytes!("../../native/macos_editor.hpp"),
+        ),
+        (
             "macos_instance_worker.mm",
             include_bytes!("../../native/macos_instance_worker.mm"),
         ),

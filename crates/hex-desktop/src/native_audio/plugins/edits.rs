@@ -221,6 +221,7 @@ impl Plugins {
             retiring: false,
             queued: false,
             observes_latency: false,
+            editor_open: false,
             #[cfg(all(test, feature = "allocation-probe"))]
             observed_latency_receipt: false,
             #[cfg(all(test, feature = "allocation-probe"))]

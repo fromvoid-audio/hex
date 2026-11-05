@@ -12,6 +12,7 @@ use hex_session::service::{
     PluginEffectControl, PluginEffectPreparation, PluginEffectPreparationState,
 };
 mod degraded;
+mod editor;
 mod restore;
 use restore::Restore;
 mod edits;
@@ -45,6 +46,7 @@ struct Source {
     retiring: bool,
     queued: bool,
     observes_latency: bool,
+    editor_open: bool,
     #[cfg(all(test, feature = "allocation-probe"))]
     observed_latency_receipt: bool,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -130,6 +132,8 @@ pub(super) struct Plugins {
     pub(super) pool_held: bool,
     sources: Vec<Source>,
     pending: Option<Pending>,
+    editor: Option<editor::EditorOperation>,
+    editor_checked: Option<AudioSourceContext>,
     restore: Option<Restore>,
     reopen: Option<Reopen>,
     edit: Option<AudioSourceContext>,
@@ -211,6 +215,20 @@ impl Plugins {
     }
     pub fn output_closed(&mut self) {
         self.configured = false;
+        self.editor_checked = None;
+        if let Some(editor::EditorOperation::Pending {
+            generation,
+            report: true,
+            ..
+        }) = &self.editor
+        {
+            self.editor = Some(editor::EditorOperation::Complete {
+                generation: *generation,
+                result: Err("vst3 editor closed · output changed".into()),
+            });
+        } else if matches!(self.editor, Some(editor::EditorOperation::Pending { .. })) {
+            self.editor = None;
+        }
         if let Some(restore) = self.restore.as_mut() {
             restore.output_closed();
         }
@@ -271,6 +289,7 @@ impl Plugins {
     /// degraded-endpoint observation tolerates the idle poll interval.
     pub fn idle(&self) -> bool {
         self.pending.is_none()
+            && self.editor.is_none()
             && self.restore.is_none()
             && self.reopen.is_none()
             && self.edit.is_none()
@@ -412,6 +431,7 @@ impl Plugins {
                 retiring: false,
                 queued: false,
                 observes_latency: false,
+                editor_open: false,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 observed_latency_receipt: false,
                 #[cfg(all(test, feature = "allocation-probe"))]
@@ -524,6 +544,7 @@ impl Plugins {
             self.output_closed();
             return;
         };
+        self.poll_editor(control, context);
         self.poll_restore(control, context);
         if let Some(output) = control.output_identity()
             && let Some(context) = context

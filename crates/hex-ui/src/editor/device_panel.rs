@@ -3003,6 +3003,11 @@ fn device_actions(
 ) -> Div {
     let id = device.id();
     let mut actions = div().flex().items_center().gap(px(2.0));
+    if device.state().type_id().as_str() == Ok("hex.vst3")
+        && !view.degraded_plugins.contains(id.value())
+    {
+        actions = actions.child(vst3_editor_button(id, selected, cx));
+    }
     if presets_available {
         actions = actions
             .child(super::device_preset::actions(
@@ -3036,6 +3041,23 @@ fn device_actions(
             cx.notify();
         })),
     )
+}
+
+fn vst3_editor_button(id: DeviceId, selected: bool, cx: &mut Context<EditorView>) -> Stateful<Div> {
+    action_button(
+        format!("device-vst3-editor-{}", id.value()),
+        "↗",
+        "show or hide plugin editor",
+        theme::DeviceActionRole::Normal,
+        selected,
+    )
+    .on_click(cx.listener(move |view, _, _, cx| {
+        view.enqueue(Request::TogglePluginEditor {
+            project_generation: view.project_generation,
+            device: id,
+        });
+        cx.notify();
+    }))
 }
 
 pub(super) fn action_button(
