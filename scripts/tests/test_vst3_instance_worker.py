@@ -370,6 +370,22 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(observed[6], struct.unpack("<i", struct.pack("<f", 1.))[0])
         self.terminal(session, 0, message=session.stop())
 
+    def test_unimplemented_controller_sync_preserves_both_chunks_and_restored_pcm(self):
+        fresh = self.session(variant=115)
+        self.ready(fresh, controller=True)
+        self.terminal(fresh, 0, message=fresh.stop())
+
+        state = self.startup_state(gain=.75, latency=0, scroll=91)
+        restored = self.session(variant=115, startup_state=state)
+        magic, ready = restored.message()
+        self.assertEqual((magic, ready[80:82]), (b"HXVIRD04", b"\x01\x01"))
+        self.assertEqual(struct.unpack_from("<f", ready, 192), (.75,))
+        self.assertEqual(ready[-8:], b"HXCT" + struct.pack("<I", 91))
+        _, inputs, (magic, pcm) = restored.render(7)
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack("<14f", pcm[64:]), tuple(v * .375 for v in inputs))
+        self.terminal(restored, 0, message=restored.stop())
+
     def test_startup_state_malformed_source_or_presence_never_enters_the_module(self):
         captured = self.startup_state()
         cases = []

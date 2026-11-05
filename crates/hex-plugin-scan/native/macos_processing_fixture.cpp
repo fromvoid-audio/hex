@@ -162,6 +162,7 @@ public:
     tresult PLUGIN_API setComponentState(IBStream* stream) override {
         if (!control() || !context || !handler || !stream) return kResultFalse;
         ++restoration.controller_component;trace(17);
+        if(fault==115) { restoration.phase=2;return kNotImplemented; }
         if(fault==42)return kResultFalse;
         if(fault==43)throw std::runtime_error("original controller synchronization exception");
         if(fault==44)fault_crash(17);
@@ -730,7 +731,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>114) return false;next_fault=value;
+        if (value>115) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

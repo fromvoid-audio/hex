@@ -63,6 +63,13 @@ class Instance final {
         if (b) b->release();
         return first && second;
     }
+    bool sync_controller_component_state(StateStream* stream) {
+        if (!stream->rewind_read_only_on_control()) return false;
+        const auto result=controller->setComponentState(stream);
+        // A controller can decline this synchronization method while the
+        // processor and controller still own their separate state chunks.
+        return (result==kResultOk || result==kNotImplemented) && stream->valid() && stream->exclusive();
+    }
     bool refuse_cleanup() { quarantined.store(true); return false; }
 public:
     Instance() = default;
@@ -147,9 +154,7 @@ public:
             component->setState(restore_component_stream)!=kResultOk ||
             !restore_component_stream->valid() || !restore_component_stream->exclusive()) return false;
         if (controller) {
-            if (!restore_component_stream->rewind_read_only_on_control() ||
-                controller->setComponentState(restore_component_stream)!=kResultOk ||
-                !restore_component_stream->valid() || !restore_component_stream->exclusive()) return false;
+            if (!sync_controller_component_state(restore_component_stream)) return false;
             if (state.controller) {
                 restore_controller_stream=new(std::nothrow) StateStream(
                     state.bytes.data()+state.component_bytes,state.controller_bytes);
@@ -267,9 +272,7 @@ private:
         } else if (first!=kNotImplemented && first!=kResultFalse) return CaptureResult::Refused;
         if (controller) {
             if (initial && !restored && captured.component) {
-                if (!component_stream->rewind_read_only_on_control() ||
-                    controller->setComponentState(component_stream)!=kResultOk ||
-                    !component_stream->valid() || !component_stream->exclusive()) return CaptureResult::Refused;
+                if (!sync_controller_component_state(component_stream)) return CaptureResult::Refused;
                 if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
                     host->refusal_flags()) return CaptureResult::Refused;
             }
