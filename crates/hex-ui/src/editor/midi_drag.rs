@@ -821,7 +821,7 @@ mod tests {
     }
 
     #[test]
-    fn move_preserves_gate_and_clamps_to_zero_and_pitch_limits() {
+    fn move_preserves_gate_and_rebases_negative_time_with_pitch_limits() {
         let mut drag = gesture(HitKind::Move);
         assert!(is_noop(&drag));
         assert!(!update(&mut drag, 250.0, 335.0));
@@ -829,9 +829,17 @@ mod tests {
         assert_eq!(drag.preview.duration, drag.original.duration);
         assert_eq!(drag.preview.pitch, 73);
         update(&mut drag, -10_000.0, 10_000.0);
-        assert_eq!(drag.preview.start, 0);
+        assert_eq!(drag.source_prefix, 4 * BeatTime::ONE.raw());
+        assert_eq!(
+            i128::from(drag.preview.start) - i128::from(drag.source_prefix),
+            -i128::from(BeatTime::ONE.raw() / 2)
+        );
         assert_eq!(drag.preview.pitch, 2);
         update(&mut drag, 250.0, -10_000.0);
+        assert_eq!(
+            drag.source_prefix, 0,
+            "reversal clears the held origin shift"
+        );
         assert_eq!(drag.preview.pitch, 127);
     }
 

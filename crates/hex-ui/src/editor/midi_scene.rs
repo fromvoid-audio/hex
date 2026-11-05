@@ -671,7 +671,10 @@ mod tests {
         k.beat_span = 4 * beat;
         let scene = MidiScene::build(k, project.midi_clip(clip).unwrap().notes());
         let note = scene.notes()[0];
-        assert!((note.x - 0.25).abs() < 1e-6);
+        assert!(
+            (note.x - 5.0 / 16.0).abs() < 1e-6,
+            "the fixture note is at source beat one quarter"
+        );
         k.beat_start = i128::from(u64::MAX);
         assert!(
             MidiScene::build(k, project.midi_clip(clip).unwrap().notes())
