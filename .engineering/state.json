@@ -1,23 +1,23 @@
 {
   "schema_version": 1,
   "updated_date": "2026-11-05",
-  "phase": "priority_stop_refusal_regression_verified_pending_integration",
+  "phase": "subframe_test_partitions_verified_pending_integration",
   "mission": "goal.md",
   "goal_activation": "active_runtime_goal",
   "scheduler": "none_user_requested_manual_goal",
-  "checkpoint_issue": "https://pulse.iocore.dev/#/issues/5009",
-  "checkpoint_pr": "https://github.com/PORTALSURFER/hex/pull/2085",
-  "branch": "pulse/task-5009-g1-af9ddbfadc24",
-  "baseline_source": "4b7309c4fd930ef4c51eadb0cb7408fd5c2b5ac0",
-  "upstream_base": "eddf7202823f1de3574899ac699adad942ba5481",
+  "checkpoint_issue": "https://pulse.iocore.dev/#/issues/5034",
+  "checkpoint_pr": "https://github.com/PORTALSURFER/hex/pull/2090",
+  "branch": "pulse/task-5034-g1-4dfe24b76bc7",
+  "baseline_source": "d78d2fb484e74fa062fdfdd3bfc1ca0fd8a715f4",
+  "upstream_base": "c38297e419cfa6e0139e0971870b3a5f34c4361f",
   "evidence": "measurements.jsonl",
-  "next_action": "Reconcile PR 2085 merge and final verification first. Resume the active goal from live Pulse; routed-source support is merged in 1974/2080 and remains in native review, so do not replay the superseded provisional refusal. Refresh ready engineering work and preserve user acceptance/holds.",
+  "next_action": "Reconcile PR 2090 actual merge and its final guard/integration evidence first; do not replay the nine-case split. Refresh live Pulse for material work. CPU issue4965 still needs the private project and matched optimized Mac profile. Sampler readiness experiment3851 was retired for noisy, inconclusive benefit. Preserve broader issue3850/4001 acceptance, user review and explicit holds.",
   "limits": [
     "Snapshot only; reconcile Git and live Pulse before recovery.",
     "Raw ignored artifact logs are executor-local; essential results also belong in canonical PRs/Pulse.",
     "Focused Linux checks do not qualify native macOS or full-workspace health."
   ],
-  "last_verified_source": "2decefbeb08cb15422f363addb9eece2510e643b",
+  "last_verified_source": "bafdd2ac8a0f9f90c513e7ad01ff052c00aec6b8",
   "native_goal_status": "active_observed_automatic_goal_continuation",
   "user_goal_prompt_sha256": "9e52b1a4d3d02366259163988bd9abc61f283cb543384209d4da53b682e999d6"
 }
