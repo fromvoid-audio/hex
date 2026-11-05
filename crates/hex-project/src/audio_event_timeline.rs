@@ -179,7 +179,14 @@ impl Clip {
         // The editor preview proves a fixed frame clock. Other legacy grouped
         // authoring forms retain their canonical command path, without exposing
         // an unproved live/musical or processing projection in the editor.
-        if !matches!(root.timing, AudioClipTiming::Frames) || root.processing_projection.is_some() {
+        if !matches!(root.timing, AudioClipTiming::Frames)
+            || root.processing_projection.is_some()
+            || root.domain.warp_enabled
+            || root.domain.pitch_cents != 0
+            || !root.domain.source_gain.is_empty()
+            || root.domain.looping
+            || root.domain.source_phase != 0
+        {
             return None;
         }
         Some(MAX_AUDIO_DOMAIN_FRAMES)

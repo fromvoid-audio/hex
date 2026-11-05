@@ -65,8 +65,14 @@ impl Project {
             let before = original.editable_audio_events()?;
             let after = candidate.audio_events();
             let converted = before.sources.is_empty() && !after.sources.is_empty();
+            // Place preserves IDs except a possible new right-hand victim
+            // fragment. Look up retained identities first; only that fragment
+            // needs the bounded source-window fallback. Repaints use the sorted
+            // result below, rather than repeating a sequence-wide search.
+            let mut identities = before.events.iter().collect::<Vec<_>>();
+            identities.sort_unstable_by_key(|event| event.id);
             for target in &after.events {
-                let Some(source) = before.events.iter().find(|source| {
+                let matches_source = |source: &crate::AudioEvent| {
                     let id = if converted { 1 } else { source.source };
                     id == target.source
                         && source.active == target.active
@@ -82,7 +88,14 @@ impl Project {
                                     .checked_add(source.length())
                                     .is_some_and(|last| end <= last)
                             })
-                }) else {
+                };
+                let source = identities
+                    .binary_search_by_key(&target.id, |event| event.id)
+                    .ok()
+                    .and_then(|index| identities.get(index).copied())
+                    .filter(|source| matches_source(source))
+                    .or_else(|| before.events.iter().find(|source| matches_source(source)));
+                let Some(source) = source else {
                     continue;
                 };
                 let Some(original_start) = source

@@ -26,9 +26,11 @@ use hex_session::service::Request;
 pub(in crate::editor) use play_start::Camera as PlayStartCamera;
 pub(super) use view::view;
 
-/// Source editing exposes the complete retained root for a placed cycle,
-/// preserving the viewport while loop markers move in either direction.
-/// Bounds use the root's declared AudioDomainClock units.
+/// Placed cycles expose the complete retained root while loop markers move.
+/// Frame containers also expose material after the Arrangement window ends;
+/// their left bound stays at the view origin of the unsigned camera. These
+/// display bounds never extend the Arrangement window or alter playback.
+/// Units remain the root's declared AudioDomainClock.
 pub(in crate::editor) fn editor_bounds(root: &AudioClipEdit) -> (u64, u64) {
     if root.placement.is_some() {
         (0, root.domain.clock.length())

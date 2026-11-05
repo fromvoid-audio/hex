@@ -5,7 +5,7 @@ use super::*;
 use crate::editor::{waveform, waveform_geometry::WaveformGeometryCache};
 use hex_project::{AudioEventPlacementPreview, Clip};
 use hex_session::{CachedWaveform, service::ViewState};
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 /// The accepted peak source is frozen with the model query. An unrelated actor
 /// event can install new summaries while this edit still awaits its own receipt.
@@ -78,7 +78,6 @@ impl Preview {
         Some(element.debug_selector(move || format!("audio-event-waveform-{event}")))
     }
 }
-use std::sync::Arc;
 
 impl EditorView {
     pub(super) fn update_free_event_placement(

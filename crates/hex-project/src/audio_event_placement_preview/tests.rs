@@ -219,3 +219,37 @@ fn profile_free_placement_metadata_at_bounded_event_densities() {
         }
     }
 }
+
+#[test]
+fn grouped_source_refuses_pitch_before_any_editor_source_read_changes() {
+    let (mut editor, clip) = fixture();
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Place {
+                event: 1,
+                start: 130,
+            },
+        })
+        .unwrap();
+    let before = editor.project().clone();
+    assert!(
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 100 })
+            .is_err()
+    );
+    assert_eq!(editor.project(), &before);
+    assert!(
+        editor
+            .project()
+            .clip(clip)
+            .unwrap()
+            .audio_event_placement_limit()
+            .is_some()
+    );
+    let preview = editor
+        .project()
+        .preview_audio_event_placement(clip, 1, 150)
+        .unwrap();
+    assert_eq!(preview.original_waveform_frame(1, 150), Some(130));
+}
