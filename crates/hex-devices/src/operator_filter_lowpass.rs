@@ -49,7 +49,9 @@ impl PreparedLowpass {
     }
 }
 
-/// Stereo physical sample history, all f64. No thresholding or hidden limiter.
+/// Stereo physical sample history, all f64. Subnormal history is flushed to zero;
+/// other finite values are retained without a hidden limiter. This does not assume
+/// either arm64 or x86 has flush-to-zero enabled by the host.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Lowpass {
     prepared: PreparedLowpass,
@@ -82,7 +84,7 @@ impl Lowpass {
                 return Err(Error::OutputOverflow);
             }
             result[channel] = y as f32;
-            next[channel] = [x, x1, y, y1];
+            next[channel] = [quiet(x), quiet(x1), quiet(y), quiet(y1)];
         }
         self.history = next;
         Ok(result)
@@ -100,5 +102,30 @@ impl Lowpass {
         }
         self.history = source.history;
         Ok(())
+    }
+}
+
+fn quiet(value: f64) -> f64 {
+    if value.is_subnormal() { 0.0 } else { value }
+}
+
+#[cfg(test)]
+mod denormal_tests {
+    use super::*;
+
+    #[test]
+    fn silence_clears_subnormal_history_and_impulse_decay_stays_normal() {
+        let prepared = PreparedLowpass::prepare(20.0, 48_000).unwrap();
+        let mut filter = Lowpass::new(prepared);
+        filter.history = [[f64::from_bits(1); 4]; 2];
+        filter.process_frame([0.0; 2]).unwrap();
+        assert!(filter.history.iter().flatten().all(|v| !v.is_subnormal()));
+
+        filter.reset();
+        filter.process_frame([1.0, -1.0]).unwrap();
+        for _ in 0..480_000 {
+            filter.process_frame([0.0; 2]).unwrap();
+            assert!(filter.history.iter().flatten().all(|v| !v.is_subnormal()));
+        }
     }
 }

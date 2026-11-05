@@ -403,12 +403,11 @@ impl EditorView {
                                 worker::scan_folders(&catalog, &app, &roots, token)
                             }
                         };
-                        if let Some(catalog) = &mut update.catalog {
-                            if let Err(error) = catalog.refresh_sources() {
-                                update.catalog = None;
-                                update.status =
-                                    format!("plugin source inspection failed · {error}");
-                            }
+                        if let Some(catalog) = &mut update.catalog
+                            && let Err(error) = catalog.refresh_sources()
+                        {
+                            update.catalog = None;
+                            update.status = format!("plugin source inspection failed · {error}");
                         }
                         update
                     })
@@ -435,7 +434,11 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let key = BrowserItemKey::Plugin(row.module.clone(), row.cid);
-        let tooltip = format!("{}\n{}", row.module.display(), row.status);
+        let tooltip = format!(
+            "{}\n{}",
+            hex_session::service::text::verbatim(row.module.display()),
+            row.status
+        );
         div()
             .id(("browser-vst3", index))
             .debug_selector(move || format!("browser-vst3-row-{index}"))

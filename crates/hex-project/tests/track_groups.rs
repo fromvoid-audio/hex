@@ -43,6 +43,7 @@ fn nonadjacent_siblings_group_once_with_complete_undo_redo() {
         assert_eq!(e.project().track(child).unwrap().parent_group(), Some(g));
     }
     assert_eq!(e.project().track(g).unwrap().kind(), TrackKind::Group);
+    assert_eq!(e.project().track(g).unwrap().gain(), 1.0);
     assert_eq!(
         e.project()
             .track_hierarchy()

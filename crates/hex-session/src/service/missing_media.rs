@@ -135,9 +135,17 @@ pub(super) fn report_for(project: &Project, base: &Path) -> Result<Vec<MissingMe
                     usage_count: 0,
                 })
             }
-            Err(error) => return Err(format!("{}: {error}", path.display())),
+            Err(error) => {
+                return Err(format!(
+                    "{}: {error}",
+                    hex_storage::text::verbatim(path.display())
+                ));
+            }
             Ok(metadata) if !metadata.is_file() => {
-                return Err(format!("media is not a regular file: {}", path.display()));
+                return Err(format!(
+                    "media is not a regular file: {}",
+                    hex_storage::text::verbatim(path.display())
+                ));
             }
             Ok(_) => {}
         }

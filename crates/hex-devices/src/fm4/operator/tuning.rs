@@ -35,12 +35,32 @@ impl OperatorTuning {
     }
 }
 
+/// Per-note phase steps; `None` marks an oscillator silenced for this note.
+pub(super) type NoteSteps = [Option<u64>; OPERATORS];
+
+/// Stand-in phase step stored for a silenced oscillator. It is the smallest
+/// representable step, so every harmonic cap and LFO excursion stays legal;
+/// the note's zero amplitude scale keeps the oscillator out of every output.
+pub(super) const SILENCED_STEP: u64 = 1;
+
+/// One oscillator's quantized phase step on control. A frequency at or above
+/// Nyquist silences only that oscillator for the note instead of refusing it.
+pub(super) fn oscillator_step(sample_rate: u32, frequency: f64) -> Result<Option<u64>, Invalid> {
+    if !frequency.is_finite() || frequency <= 0.0 {
+        return Err(Invalid("invalid operator oscillator frequency"));
+    }
+    if frequency >= f64::from(sample_rate) * 0.5 {
+        return Ok(None);
+    }
+    crate::quantized_phase_step(sample_rate, frequency).map(Some)
+}
+
 pub(super) fn prepared_steps(
     sample_rate: u32,
     pitch: u8,
     ratios: &[f64; OPERATORS],
     tuning: &[OperatorTuning; OPERATORS],
-) -> Result<[u64; OPERATORS], Invalid> {
+) -> Result<NoteSteps, Invalid> {
     prepared_steps_with_table(sample_rate, pitch, ratios, tuning, None)
 }
 pub(super) fn prepared_steps_with_table(
@@ -49,7 +69,7 @@ pub(super) fn prepared_steps_with_table(
     ratios: &[f64; OPERATORS],
     tuning: &[OperatorTuning; OPERATORS],
     table: Option<&hex_lattice::TuningTable>,
-) -> Result<[u64; OPERATORS], Invalid> {
+) -> Result<NoteSteps, Invalid> {
     if !(8_000..=192_000).contains(&sample_rate) || pitch > 127 {
         return Err(Invalid("invalid operator sample rate or pitch"));
     }
@@ -59,13 +79,10 @@ pub(super) fn prepared_steps_with_table(
             .map_err(|_| Invalid("invalid operator pitch"))?,
         None => 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0),
     };
-    if tuning == &[OperatorTuning::Ratio; OPERATORS] {
-        // Identical frequency/ratio arithmetic preserves neutral quantization.
-        return crate::fm4::prepared_steps_frequency(sample_rate, note_hz, ratios);
-    }
-    let mut steps = [0; OPERATORS];
+    let mut steps = [None; OPERATORS];
     for index in 0..OPERATORS {
         tuning[index].validate()?;
+        // Ratio arithmetic matches the plain FM core, preserving quantization.
         let frequency = match tuning[index] {
             OperatorTuning::Ratio => note_hz * ratios[index],
             OperatorTuning::Fixed {
@@ -73,12 +90,7 @@ pub(super) fn prepared_steps_with_table(
                 multiplier,
             } => frequency_hz * multiplier,
         };
-        if !frequency.is_finite() || frequency <= 0.0 || frequency >= f64::from(sample_rate) * 0.5 {
-            return Err(Invalid(
-                "operator oscillator frequency must be below nyquist",
-            ));
-        }
-        steps[index] = crate::quantized_phase_step(sample_rate, frequency)?;
+        steps[index] = oscillator_step(sample_rate, frequency)?;
     }
     Ok(steps)
 }

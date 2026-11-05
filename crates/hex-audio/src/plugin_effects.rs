@@ -17,6 +17,7 @@ use hex_plugin_host::{
     transport::{Callback, Fault, MAX_FRAMES},
 };
 
+mod bypass;
 mod definition;
 mod tail;
 pub use definition::{NativeEffectDefinition, UnavailableEffect};
@@ -189,6 +190,7 @@ impl NativeEffect {
                 dry,
                 dry_cursor: 0,
                 tail,
+                bypass: bypass::BypassMix::default(),
             },
         })
     }
@@ -322,6 +324,7 @@ pub struct NativeEffectCallback {
     dry: Vec<[f32; 2]>,
     dry_cursor: usize,
     tail: tail::TailDrain,
+    bypass: bypass::BypassMix,
 }
 impl NativeEffectCallback {
     pub fn binding(&self) -> Binding {
@@ -363,6 +366,71 @@ impl NativeEffectCallback {
     pub(crate) fn pending_requests_for_test(&self) -> usize {
         self.transport.pending_requests_for_test()
     }
+    /// Contained placeholder for a revoked endpoint (#3977): advance the dry
+    /// history exactly as bypass does and return the input delayed by the
+    /// endpoint's unchanged declared latency, so the graph stays aligned. No
+    /// transport work is staged. An oversized segment, which the graph never
+    /// produces, is silenced rather than written past fixed storage.
+    pub(crate) fn pass_through_revoked(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        frames: &mut [[f32; 2]],
+    ) {
+        if frames.len() > MAX_FRAMES || !node.output_gain.is_finite() || node.output_gain < 0.0 {
+            frames.fill([0.0; 2]);
+            return;
+        }
+        self.advance_dry(frames);
+        frames.copy_from_slice(&self.dry_output[..frames.len()]);
+        if !node.bypassed {
+            for frame in frames {
+                frame[0] *= node.output_gain;
+                frame[1] *= node.output_gain;
+            }
+        }
+    }
+    /// Push `frames` into the dry history and record the aligned dry output.
+    fn advance_dry(&mut self, frames: &[[f32; 2]]) {
+        for (index, frame) in frames.iter().enumerate() {
+            self.dry_output[index] = self.dry[self.dry_cursor];
+            self.dry[self.dry_cursor] = *frame;
+            self.dry_cursor += 1;
+            if self.dry_cursor == self.dry.len() {
+                self.dry_cursor = 0;
+            }
+        }
+    }
+    /// A fake endpoint on a real copied transport, for containment tests that
+    /// need no SDK instance. Latency is the transport's 2Q bridge only.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        identity: ProcessorInstanceIdentity,
+        binding: Binding,
+        state: NativeDeviceState,
+        transport: Callback,
+    ) -> Self {
+        let quantum = transport.quantum_frames() as u16;
+        let prepared = PreparedForeignProcessor::new(quantum, 0, u32::from(quantum) * 2)
+            .and_then(|prepared| prepared.with_binding(binding))
+            .expect("test latency fits");
+        let latency = prepared.total_latency_frames();
+        Self {
+            configuration: Configuration {
+                identity,
+                binding,
+                sample_rate: 48_000,
+                state,
+                prepared,
+            },
+            transport,
+            input: [[0.0; 2]; MAX_FRAMES],
+            dry_output: [[0.0; 2]; MAX_FRAMES],
+            dry: vec![[0.0; 2]; latency as usize],
+            dry_cursor: 0,
+            tail: tail::TailDrain::new(0, latency),
+            bypass: bypass::BypassMix::default(),
+        }
+    }
     fn matches(&self, node: ForeignProcessorNode<'_>) -> bool {
         let config = &self.configuration;
         node.owner == config.identity.owner()
@@ -374,6 +442,9 @@ impl NativeEffectCallback {
     }
 }
 impl ForeignProcessors for NativeEffectCallback {
+    fn returns_post_trim(&self, _node: ForeignProcessorNode<'_>) -> bool {
+        true
+    }
     fn process_segment(
         &mut self,
         node: ForeignProcessorNode<'_>,
@@ -395,6 +466,8 @@ impl ForeignProcessors for NativeEffectCallback {
             || frames.len() > MAX_FRAMES
             || !node.input_gain.is_finite()
             || node.input_gain < 0.0
+            || !node.output_gain.is_finite()
+            || node.output_gain < 0.0
         {
             self.reject_callback();
             return Err(DeviceContractError::ForeignProcessingUnavailable);
@@ -402,18 +475,9 @@ impl ForeignProcessors for NativeEffectCallback {
         self.input[..frames.len()].copy_from_slice(frames);
         // Keep the untrimmed source in dry history; wet input trim must not
         // contaminate samples heard after a later aligned bypass transition.
-        for (index, frame) in frames.iter().enumerate() {
-            self.tail.input(std::slice::from_ref(frame));
-            let dry = self.dry[self.dry_cursor];
-            self.dry[self.dry_cursor] = *frame;
-            self.dry_cursor += 1;
-            if self.dry_cursor == self.dry.len() {
-                self.dry_cursor = 0;
-            }
-            if node.bypassed {
-                self.dry_output[index] = dry;
-            }
-        }
+        // The aligned dry output also serves a staging failure (#3977).
+        self.tail.input(frames);
+        self.advance_dry(frames);
         if node.input_gain != 1.0 {
             for frame in &mut self.input[..frames.len()] {
                 frame[0] *= node.input_gain;
@@ -423,7 +487,8 @@ impl ForeignProcessors for NativeEffectCallback {
         // The original joining worker retains processor parameter observations
         // for control queries; the native helper mirrors them to its controller.
         // Receiving that feedback here must not revoke an otherwise valid epoch.
-        self.transport
+        if self
+            .transport
             .stage_segment_with_parameters(
                 offset,
                 &self.input[..frames.len()],
@@ -431,12 +496,28 @@ impl ForeignProcessors for NativeEffectCallback {
                 parameters,
                 frames,
             )
-            .map_err(|_| DeviceContractError::ForeignProcessingFailed)?;
+            .is_err()
+        {
+            // The transport revoked only this endpoint's epoch. Leave the
+            // aligned dry input so a containing carrier can keep rendering.
+            frames.copy_from_slice(&self.dry_output[..frames.len()]);
+            if !node.bypassed {
+                for frame in frames.iter_mut() {
+                    frame[0] *= node.output_gain;
+                    frame[1] *= node.output_gain;
+                }
+            }
+            return Err(DeviceContractError::ForeignProcessingFailed);
+        }
         // Both paths advance. Refusal irreversibly revokes this epoch, so dry
         // and foreign history are never rolled back or replayed.
-        if node.bypassed {
-            frames.copy_from_slice(&self.dry_output[..frames.len()]);
-        }
+        self.bypass.process(
+            frames,
+            &self.dry_output[..frames.len()],
+            node.bypassed,
+            node.sample_rate,
+            node.output_gain,
+        );
         Ok(())
     }
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {

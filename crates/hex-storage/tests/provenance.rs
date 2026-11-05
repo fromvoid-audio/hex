@@ -109,14 +109,16 @@ fn current_provenance_is_required_even_when_empty() {
     assert!(decode(&serde_json::to_vec(&missing).unwrap()).is_err());
 }
 
+/// Maximal import evidence survives beside a source. Documents above the
+/// former 8 MiB reader limit are covered by the save/replace/recover test below.
 #[test]
-fn large_document_preserves_provenance_and_source_identity() {
+fn maximal_provenance_preserves_original_bytes_and_source_identity() {
     let mut editor = Editor::new(project(vec![255; MAX_IMPORT_DOCUMENT_BYTES]), 1).unwrap();
     assert!(matches!(
         editor
             .execute(Command::ImportAudioTrack {
                 name: "original".into(),
-                path: "x".repeat(LEGACY_READER_DOCUMENT_BYTES).into(),
+                path: "original.wav".into(),
                 sample_rate: 48_000,
                 frames: 100,
             })
@@ -124,8 +126,7 @@ fn large_document_preserves_provenance_and_source_identity() {
         Created::Imported { .. }
     ));
     let candidate = editor.project();
-    let bytes = encode(candidate).expect("valid metadata above the former document cap");
-    assert!(bytes.len() > LEGACY_READER_DOCUMENT_BYTES);
+    let bytes = encode(candidate).expect("maximal provenance encodes");
     assert_eq!(decode(&bytes).unwrap(), *candidate);
     assert_eq!(
         candidate

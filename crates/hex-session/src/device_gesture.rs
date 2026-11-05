@@ -9,10 +9,12 @@ mod eq_creation_tests;
 mod preparation;
 pub use eq_creation::EqNodeCreationSnapshot;
 #[cfg(test)]
+mod group_tests;
+#[cfg(test)]
 mod manual_tests;
 #[cfg(test)]
 mod snapshot_tests;
-pub(crate) use preparation::{command_for_snapshot, manual_device_edit};
+pub(crate) use preparation::{command_for_snapshot, device_parameter_command, manual_device_edit};
 
 pub use hex_lattice_contract::{
     DeviceParameterSnapshot, DeviceTypeId, ParameterId, ParameterValue,
@@ -28,6 +30,10 @@ pub struct GestureKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GestureTarget {
     TrackGain {
+        track: TrackId,
+    },
+    /// One frozen cohort; the anchor supplies the scalar relative gesture value.
+    TrackGains {
         track: TrackId,
     },
     TrackBalance {
@@ -55,6 +61,15 @@ pub enum GestureTarget {
         track: TrackId,
         return_track: ReturnId,
     },
+}
+
+impl GestureTarget {
+    pub fn track_gain_anchor(self) -> Option<TrackId> {
+        match self {
+            Self::TrackGain { track } | Self::TrackGains { track } => Some(track),
+            _ => None,
+        }
+    }
 }
 
 /// Snapshot-edit intent indexed by the gesture's immutable ordered parameter domain.
@@ -121,8 +136,16 @@ pub struct ParameterPairValue {
     pub second: ParameterValue,
 }
 
+// The largest payload is a bounded 256-track control Begin (3,088 bytes).
+// Copy retains the existing coalescer/retry/terminal ownership without another
+// heap owner. The 32-slot worker FIFO bounds storage; callbacks never see it.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GestureRequest {
+    BeginTrackGains {
+        key: GestureKey,
+        group: hex_project::RelativeTrackGains,
+    },
     Begin {
         key: GestureKey,
         target: GestureTarget,
@@ -220,6 +243,9 @@ pub struct GestureSnapshot {
     pub secondary_value: Option<ParameterValue>,
     pub parameters: Option<DeviceParameterSnapshot>,
     pub creation: Option<EqNodeCreationSnapshot>,
+    /// Frozen starting values only; current targets derive from `value`.
+    /// Control metadata, never a callback request or saved project field.
+    pub track_gains: Option<hex_project::RelativeTrackGains>,
 }
 
 /// UI-side coalescer. It owns one in-flight request, one replaceable transient,
@@ -259,6 +285,7 @@ impl GestureClient {
             token: self.next_token,
         };
         self.active = Some(GestureSnapshot {
+            track_gains: None,
             touched_parameters: crate::device_gesture::TouchedParameters::default(),
             manual_edit: false,
             key,
@@ -271,6 +298,25 @@ impl GestureClient {
         });
         self.origin_parameters = None;
         self.pending_begin = Some(GestureRequest::Begin { key, target });
+        Ok(key)
+    }
+
+    pub fn begin_track_gains(
+        &mut self,
+        generation: u64,
+        group: hex_project::RelativeTrackGains,
+    ) -> Result<GestureKey, &'static str> {
+        let key = self.begin(
+            generation,
+            GestureTarget::TrackGains {
+                track: group.anchor(),
+            },
+            ParameterValue::Float(group.anchor_gain()),
+        )?;
+        if let Some(active) = self.active.as_mut() {
+            active.track_gains = Some(group);
+        }
+        self.pending_begin = Some(GestureRequest::BeginTrackGains { key, group });
         Ok(key)
     }
 
@@ -305,6 +351,7 @@ impl GestureClient {
             second,
         };
         self.active = Some(GestureSnapshot {
+            track_gains: None,
             touched_parameters: crate::device_gesture::TouchedParameters::default(),
             manual_edit: false,
             key,
@@ -632,6 +679,28 @@ impl GestureClient {
     /// A refused native terminal left an audible overlay which needs retry or Cancel.
     pub fn is_recovery_pending(&self) -> bool {
         self.recovery_pending
+    }
+
+    /// Borrowed cohort query: visible faders avoid copying the bounded control
+    /// snapshot or traversing project content on every repaint.
+    pub fn preview_track_gain(&self, generation: u64, track: TrackId) -> Option<f32> {
+        let active = self
+            .active
+            .as_ref()
+            .filter(|active| active.key.generation == generation)?;
+        let ParameterValue::Float(value) = active.value else {
+            return None;
+        };
+        match active.target {
+            GestureTarget::TrackGain { track: anchor } if anchor == track => Some(value),
+            GestureTarget::TrackGains { .. } => active
+                .track_gains
+                .as_ref()?
+                .gain_for(track, value)
+                .ok()
+                .flatten(),
+            _ => None,
+        }
     }
 
     pub fn snapshot(&self) -> Option<GestureSnapshot> {
@@ -1116,6 +1185,7 @@ struct Active {
 #[derive(Clone, Copy)]
 enum ActiveKind {
     TrackGain,
+    TrackGains,
     TrackBalance,
     ReturnGain,
     Device {
@@ -1145,6 +1215,7 @@ impl GestureRequest {
     pub fn key(self) -> GestureKey {
         match self {
             Self::Begin { key, .. }
+            | Self::BeginTrackGains { key, .. }
             | Self::Change { key, .. }
             | Self::ChangePair { key, .. }
             | Self::Commit { key, .. }
@@ -1160,9 +1231,10 @@ impl GestureRequest {
     }
     pub fn phase(self) -> GesturePhase {
         match self {
-            Self::Begin { .. } | Self::BeginSnapshot { .. } | Self::BeginEqCreation { .. } => {
-                GesturePhase::Begin
-            }
+            Self::Begin { .. }
+            | Self::BeginTrackGains { .. }
+            | Self::BeginSnapshot { .. }
+            | Self::BeginEqCreation { .. } => GesturePhase::Begin,
             Self::Change { .. } => GesturePhase::Change,
             Self::ChangePair { .. }
             | Self::ChangeSnapshot { .. }
@@ -1251,7 +1323,9 @@ impl GestureMachine {
         match result {
             Ok(()) => outcome.ack.accepted = true,
             Err(error) => {
-                outcome.ack.reason = Some(error.to_string().to_lowercase());
+                outcome.ack.reason = Some(hex_storage::text::lowercase_outside_verbatim(
+                    &error.to_string(),
+                ));
                 // Native terminal refusal keeps the actual accepted overlay. The legacy
                 // adapter retains its existing retirement behavior; stale keys own neither.
                 if retain_terminal
@@ -1295,6 +1369,38 @@ impl GestureMachine {
             | GestureRequest::CommitEqCreation { .. } => {
                 self.apply_eq_creation(session, request, outcome, prepare)?
             }
+            GestureRequest::BeginTrackGains { group, .. } => {
+                if self.active.is_some()
+                    || self.last_key.is_some_and(|last| {
+                        last.generation == generation && key.token <= last.token
+                    })
+                {
+                    return Err(SessionError::Invalid(
+                        "selected gain gesture is active or stale",
+                    ));
+                }
+                group.validate_current(session.project())?;
+                self.active = Some(Active {
+                    snapshot: GestureSnapshot {
+                        touched_parameters: TouchedParameters::default(),
+                        manual_edit: false,
+                        key,
+                        target: GestureTarget::TrackGains {
+                            track: group.anchor(),
+                        },
+                        sequence: 0,
+                        value: ParameterValue::Float(group.anchor_gain()),
+                        secondary_value: None,
+                        parameters: None,
+                        creation: None,
+                        track_gains: Some(group),
+                    },
+                    kind: ActiveKind::TrackGains,
+                    creation_origin: None,
+                    origin_parameters: None,
+                });
+                self.last_key = Some(key);
+            }
             GestureRequest::BeginSnapshot {
                 device, snapshot, ..
             } => {
@@ -1325,6 +1431,7 @@ impl GestureMachine {
                 hex_engine::patch_native_device_snapshot_for_class(class, state, &snapshot)?;
                 self.active = Some(Active {
                     snapshot: GestureSnapshot {
+                        track_gains: None,
                         touched_parameters: crate::device_gesture::TouchedParameters::default(),
                         manual_edit: false,
                         key,
@@ -1444,7 +1551,8 @@ impl GestureMachine {
                     return Err(SessionError::Invalid("device gesture token is stale"));
                 }
                 let (kind, value, secondary_value) = match target {
-                    GestureTarget::DeviceParameterSnapshot { .. }
+                    GestureTarget::TrackGains { .. }
+                    | GestureTarget::DeviceParameterSnapshot { .. }
                     | GestureTarget::EqNodeCreation { .. } => {
                         return Err(SessionError::Invalid(
                             "snapshot gesture requires initial parameters",
@@ -1547,6 +1655,7 @@ impl GestureMachine {
                 };
                 self.active = Some(Active {
                     snapshot: GestureSnapshot {
+                        track_gains: None,
                         touched_parameters: crate::device_gesture::TouchedParameters::default(),
                         manual_edit: false,
                         key,
@@ -1709,6 +1818,13 @@ impl GestureMachine {
             (GestureTarget::ReturnGain { return_track }, ActiveKind::ReturnGain) => {
                 static_return_gain(session, return_track)?;
             }
+            (GestureTarget::TrackGains { track }, ActiveKind::TrackGains) => {
+                let group = snapshot
+                    .track_gains
+                    .filter(|group| group.anchor() == track)
+                    .ok_or(SessionError::Invalid("selected gain cohort changed"))?;
+                group.validate_current(session.project())?;
+            }
             (GestureTarget::TrackGain { track }, ActiveKind::TrackGain) => {
                 static_track_gain(session, track)?;
             }
@@ -1818,7 +1934,8 @@ impl GestureMachine {
     ) -> Option<GestureOutcome> {
         let active = self.snapshot()?;
         let result = self.checked_active(session, active.key).and_then(|_| {
-            if active.creation.is_some()
+            if active.track_gains.is_some()
+                || active.creation.is_some()
                 || active.manual_edit
                     && matches!(
                         active.target,
@@ -1876,7 +1993,9 @@ impl GestureMachine {
                     previous,
                     generation,
                 );
-                result.ack.reason = Some(error.to_string().to_lowercase());
+                result.ack.reason = Some(hex_storage::text::lowercase_outside_verbatim(
+                    &error.to_string(),
+                ));
                 Some(result)
             }
         }
@@ -1995,7 +2114,8 @@ fn default_preparation(
 ) -> PreparedGesture {
     match operation {
         GesturePreparation::Preview(active) => {
-            let prepared = if active.creation.is_some()
+            let prepared = if active.track_gains.is_some()
+                || active.creation.is_some()
                 || active.manual_edit
                     && matches!(
                         active.target,
@@ -2033,7 +2153,8 @@ fn default_preparation(
             Ok(Some(prepared))
         }
         GesturePreparation::Commit(active) => {
-            let prepared = if active.creation.is_some()
+            let prepared = if active.track_gains.is_some()
+                || active.creation.is_some()
                 || active.manual_edit
                     && matches!(
                         active.target,
@@ -2097,7 +2218,8 @@ fn preview_target(
         GestureTarget::DeviceParameter { device, parameter } => {
             session.preview_device_parameter(device, parameter, value, previous)
         }
-        GestureTarget::DeviceParameterPair { .. }
+        GestureTarget::TrackGains { .. }
+        | GestureTarget::DeviceParameterPair { .. }
         | GestureTarget::DeviceParameterSnapshot { .. }
         | GestureTarget::EqNodeCreation { .. } => Err(SessionError::Invalid(
             "paired device gesture requires two values",
@@ -2128,7 +2250,8 @@ fn commit_target(
         GestureTarget::DeviceParameter { device, parameter } => {
             session.commit_device_parameter(device, parameter, value, previous)
         }
-        GestureTarget::DeviceParameterPair { .. }
+        GestureTarget::TrackGains { .. }
+        | GestureTarget::DeviceParameterPair { .. }
         | GestureTarget::DeviceParameterSnapshot { .. }
         | GestureTarget::EqNodeCreation { .. } => Err(SessionError::Invalid(
             "paired device gesture requires two values",

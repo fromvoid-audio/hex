@@ -306,17 +306,28 @@ pub(crate) fn decode47(bytes: &[u8]) -> Result<Project, StorageError> {
     decode_version(bytes, 47)
 }
 
-pub(crate) fn decode49(bytes: &[u8]) -> Result<Project, StorageError> {
-    decode_version(bytes, 49)
-}
-
 pub(crate) fn decode46(bytes: &[u8]) -> Result<Project, StorageError> {
     decode_version(bytes, 46)
 }
 
+/// Decode a schema47 envelope parsed once by an upper migration layer.
+pub(crate) fn decode47_value(value: serde_json::Value) -> Result<Project, StorageError> {
+    decode_version_value(value, 47)
+}
+
+/// Decode a schema49 envelope parsed once by an upper migration layer.
+pub(crate) fn decode49_value(value: serde_json::Value) -> Result<Project, StorageError> {
+    decode_version_value(value, 49)
+}
+
 fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    decode_version_value(super::audio_events::parse_unique(bytes)?, version)
+}
+
+fn decode_version_value(
+    mut value: serde_json::Value,
+    version: u64,
+) -> Result<Project, StorageError> {
     let next_id = value
         .get("next_id")
         .and_then(serde_json::Value::as_u64)
@@ -424,7 +435,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
     // check while decoding the core: bindings supply destination instruments.
     object.insert("midi_routes".into(), serde_json::Value::Array(Vec::new()));
     object.insert("version".into(), 44.into());
-    let legacy = super::track_groups::decode(&serde_json::to_vec(&value)?)?;
+    let legacy = super::track_groups::decode_value(value)?;
     let mut snapshot = legacy.snapshot();
     if bindings.len() != snapshot.tracks.len() {
         return Err(StorageError::Invalid(
@@ -485,8 +496,7 @@ fn decode_version(bytes: &[u8], version: u64) -> Result<Project, StorageError> {
 }
 
 pub(crate) fn decode45(bytes: &[u8]) -> Result<Project, StorageError> {
-    let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    let mut value = super::audio_events::parse_unique(bytes)?;
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid native source envelope"))?;
@@ -498,7 +508,7 @@ pub(crate) fn decode45(bytes: &[u8]) -> Result<Project, StorageError> {
         .ok_or(StorageError::Invalid("native source inventory missing"))?;
     let Inventory45(sources) = serde_json::from_value(wire_sources)?;
     object.insert("version".into(), 44.into());
-    let mut snapshot = super::track_groups::decode(&serde_json::to_vec(&value)?)?.snapshot();
+    let mut snapshot = super::track_groups::decode_value(value)?.snapshot();
     let mut merged = sources
         .into_iter()
         .map(|s| {
