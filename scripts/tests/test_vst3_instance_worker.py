@@ -379,7 +379,7 @@ class NativeInstanceTests(unittest.TestCase):
         restored = self.session(variant=115, startup_state=state)
         magic, ready = restored.message()
         self.assertEqual((magic, ready[80:82]), (b"HXVIRD04", b"\x01\x01"))
-        self.assertEqual(struct.unpack_from("<f", ready, 192), (.75,))
+        self.assertEqual(struct.unpack_from("<If", ready[84:], 100), (0, .75))
         self.assertEqual(ready[-8:], b"HXCT" + struct.pack("<I", 91))
         _, inputs, (magic, pcm) = restored.render(7)
         self.assertEqual(magic, b"HXVB")
