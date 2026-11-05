@@ -1,9 +1,9 @@
-//! Independent public event compiler evidence for a note crossing source zero.
+//! Public event compiler evidence for retained negative onsets and play-start admission.
 use hex_engine::{compile::midi_events, midi_compile::MidiEventKind};
 use hex_project::{BeatTime, Command, Created, Editor, MidiNoteUpdate, Project, Tempo};
 
 #[test]
-fn source_prefix_keeps_unmoved_gate_deadlines_and_clips_the_crossing_author_at_play_start() {
+fn source_prefix_keeps_unmoved_deadlines_and_existing_source_start_admission() {
     let beat = |n, d| BeatTime::from_ratio(n, d).unwrap();
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
@@ -93,12 +93,46 @@ fn source_prefix_keeps_unmoved_gate_deadlines_and_clips_the_crossing_author_at_p
             )
         })
         .collect::<Vec<_>>();
+    assert!(
+        moved.is_empty(),
+        "the existing source-start contract does not chase a pre-marker onset"
+    );
+    assert!(
+        editor.project().midi_note(ids[1]).is_some(),
+        "the out-of-window note remains authored"
+    );
+    let start = editor.project().midi_source(clip).unwrap().source_start();
+    editor
+        .execute(Command::UpdateMidiNote {
+            note: ids[1],
+            start,
+            duration: beat(1, 1),
+            pitch: 60,
+            channel: 2,
+            velocity: 71,
+        })
+        .unwrap();
+    let admitted = midi_events(editor.project()).unwrap();
+    assert_eq!(held(&admitted), held(&before));
+    let moved = admitted
+        .iter()
+        .filter(|edge| edge.note == ids[1])
+        .map(|edge| {
+            (
+                edge.kind,
+                edge.frame,
+                edge.channel,
+                edge.velocity,
+                edge.iteration,
+            )
+        })
+        .collect::<Vec<_>>();
     let frame = |beat| editor.project().tempo_map().beat_to_frame(beat).unwrap();
     assert_eq!(
         moved,
         vec![
             (MidiEventKind::NoteOn, frame(beat(4, 1)), 2, 71, 0),
-            (MidiEventKind::NoteOff, frame(beat(9, 2)), 2, 71, 0)
+            (MidiEventKind::NoteOff, frame(beat(5, 1)), 2, 71, 0)
         ]
     );
 }

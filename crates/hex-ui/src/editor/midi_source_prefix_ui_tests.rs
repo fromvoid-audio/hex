@@ -239,12 +239,24 @@ fn negative_moves_keep_released_geometry_and_translate_origin_only_on_success(
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &before)
+            assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &before);
+            assert_eq!(
+                v.piano_beat_start,
+                -i128::from(beat(1, 1).raw()),
+                "undo restores the source origin in the same receive"
+            );
+            assert_eq!(v.midi_marker, Some(beat(1, 1).raw()));
         });
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &after)
+            assert_eq!(v.state.as_ref().unwrap().project.as_ref(), &after);
+            assert_eq!(
+                v.piano_beat_start,
+                i128::from(beat(3, 1).raw()),
+                "redo restores the rebased source origin"
+            );
+            assert_eq!(v.midi_marker, Some(beat(5, 1).raw()));
         });
         let baseline = bodies(&editor, &mut visual);
         let down = position(&editor, &mut visual, 3.75, 60);
