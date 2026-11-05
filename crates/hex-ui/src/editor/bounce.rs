@@ -234,6 +234,15 @@ mod tests {
 
     #[gpui::test]
     fn rendered_b_bounces_a_group_range_without_touching_the_source_rows(cx: &mut TestAppContext) {
+        check_rendered_group_range(cx, false);
+    }
+
+    #[gpui::test]
+    fn rendered_cmd_b_commits_the_group_gate_and_bounce_in_one_undo(cx: &mut TestAppContext) {
+        check_rendered_group_range(cx, true);
+    }
+
+    fn check_rendered_group_range(cx: &mut TestAppContext, mute: bool) {
         use hex_project::{Command, TrackSelectionIds};
         use hex_session::service::Request;
 
@@ -283,7 +292,7 @@ mod tests {
         let range = editor.read_with(&visual, |v, _| v.normalized_time_selection().unwrap());
         assert_eq!(range.tracks(), &[group]);
         assert!(range.start() < 48_000 && range.end() > 48_000);
-        visual.simulate_keystrokes("b");
+        visual.simulate_keystrokes(if mute { "cmd-b" } else { "b" });
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
@@ -297,8 +306,27 @@ mod tests {
                 (range.start(), range.duration())
             );
             tracks.pop();
+            if mute {
+                assert_eq!(
+                    tracks[0].group_output_mutes,
+                    vec![
+                        hex_project::GroupOutputMuteRange::new(range.start(), range.end()).unwrap()
+                    ]
+                );
+                tracks[0].group_output_mutes.clear();
+            }
             assert_eq!(tracks, before.tracks);
         });
+        if mute {
+            visual.simulate_keystrokes("cmd-z");
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(
+                    v.state.as_ref().unwrap().project.snapshot().tracks,
+                    before.tracks
+                );
+            });
+        }
     }
     #[gpui::test]
     fn rendered_b_bounces_and_cmd_b_also_mutes_sources_with_one_undo(cx: &mut TestAppContext) {
