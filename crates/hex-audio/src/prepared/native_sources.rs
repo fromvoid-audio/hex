@@ -315,6 +315,25 @@ impl PublicationControl {
         self.candidate_root
             .quiesce_native_source_preparation(previous, graph)
     }
+    /// Reactivate this exact renewed reservation's stopped component and
+    /// replace its facts before planning presentation and completing the epoch.
+    /// May reset effect history. Some returns fresh facts, None retains a
+    /// failed native owner for disposal, and Err refuses admission or close.
+    /// The caller must rebuild compensation before publishing the successor.
+    /// This operation runs only on control after actual graph and endpoint return.
+    pub fn reactivate_native_source_on_control(
+        &mut self,
+        binding: Binding,
+    ) -> Result<Option<hex_plugin_host::protocol::Facts>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native reactivation output is closing");
+        }
+        let result = self.candidate_root.reactivate_native_source(binding)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native reactivation output is closing");
+        }
+        Ok(result)
+    }
     /// Capture the original quiescent owner after actual graph/endpoint return.
     /// `binding` names Root's renewed reservation; the helper still acknowledges
     /// its old physical binding until the normal completion/resume transaction.
