@@ -884,7 +884,10 @@ fn event_move_preview_and_release_use_snapped_inner_coordinates(cx: &mut TestApp
         )
     });
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx,|view,_|assert!(matches!(view.last_enqueued_edit,Some(Command::EditAudioEvents{clip:id,operation:AudioEventEdit::Move{event:1,start}}) if id==clip && start==36000)));
+    editor.read_with(cx, |view, _| {
+        assert!(matches!(view.last_enqueued_edit,
+            Some(Command::EditAudioEvents { clip: id, operation: AudioEventEdit::Place { event: 1, start: 36000 } }) if id == clip));
+    });
 }
 
 #[gpui::test]
@@ -1113,6 +1116,7 @@ fn cropped_event_drag_range_move_and_nudge_stay_inside_visible_container(cx: &mu
                 origin_x: origin,
                 moved: false,
                 kind,
+                placement: None,
                 operation: None,
             });
             view.event_update_pointer(x, false);

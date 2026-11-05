@@ -7,6 +7,7 @@ mod free_placement_tests;
 mod navigation;
 mod paint;
 mod pending;
+mod placement;
 mod play_start;
 mod playhead;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -31,6 +32,13 @@ pub(super) use view::view;
 pub(in crate::editor) fn editor_bounds(root: &AudioClipEdit) -> (u64, u64) {
     if root.placement.is_some() {
         (0, root.domain.clock.length())
+    } else if root
+        .domain
+        .events
+        .as_ref()
+        .is_some_and(|e| !e.sources.is_empty())
+    {
+        (root.view_start, root.domain.clock.length())
     } else {
         (root.view_start, root.view_end)
     }
@@ -101,6 +109,7 @@ pub(super) struct Gesture {
     moved: bool,
     kind: Kind,
     operation: Option<AudioEventEdit>,
+    placement: Option<std::sync::Arc<placement::Preview>>,
 }
 #[derive(Clone, Copy)]
 enum Kind {
@@ -113,6 +122,7 @@ enum Kind {
         end: u64,
     },
     Move(AudioEvent),
+    FreeMove(AudioEvent),
     Leading(AudioEvent),
     Trailing(AudioEvent),
     Fade(fades::FadeGesture),
@@ -697,6 +707,9 @@ impl EditorView {
                     destination,
                 });
             }
+            Kind::FreeMove(event) => {
+                self.update_free_event_placement(&mut gesture, event, x, platform)
+            }
             Kind::Move(event) => {
                 let candidate =
                     (i128::from(event.start) + i128::from(raw) - i128::from(gesture.anchor)).clamp(
@@ -742,6 +755,9 @@ impl EditorView {
                     end,
                 });
             }
+        }
+        if gesture.placement.is_some() && self.audio_event_editor.viewport.is_none() {
+            self.audio_event_editor.viewport = Some(self.event_viewport(&root));
         }
         self.audio_event_editor.gesture = Some(gesture);
     }

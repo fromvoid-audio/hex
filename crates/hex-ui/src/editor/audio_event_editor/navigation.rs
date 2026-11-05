@@ -139,7 +139,13 @@ impl EditorView {
             .detail_clip_id()
             .and_then(|id| state.project.clip(id))
             .map_or(0, |c| c.start());
-        navigation_limit(end.saturating_sub(first), self.audio_navigation_minimum())
+        let source = self.detail_clip_id().and_then(|id| state.project.clip(id));
+        source
+            .and_then(|clip| clip.audio_event_placement_limit())
+            .map_or_else(
+                || navigation_limit(end.saturating_sub(first), self.audio_navigation_minimum()),
+                |limit| limit.saturating_sub(first),
+            )
             .min(u64::MAX - first)
             .min(u64::MAX - placement)
     }

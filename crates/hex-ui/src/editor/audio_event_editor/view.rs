@@ -48,8 +48,16 @@ pub(in crate::editor) fn view(
             .as_ref()
             .and_then(|g| g.operation.as_ref())
     });
+    let placement = pending.and_then(|p| p.placement.as_ref()).or_else(|| {
+        view.audio_event_editor
+            .gesture
+            .as_ref()
+            .and_then(|g| g.placement.as_ref())
+    });
     let edited = pending.map(|p| p.preview.clone()).or_else(|| {
-        operation.and_then(|op| events.edited(op.clone(), root.domain.clock.length()).ok())
+        placement.map(|p| p.clip().audio_events()).or_else(|| {
+            operation.and_then(|op| events.edited(op.clone(), root.domain.clock.length()).ok())
+        })
     });
     let intersections = edited
         .as_ref()
@@ -57,6 +65,8 @@ pub(in crate::editor) fn view(
         .map(|op| paint::replacement_spans(&events, op))
         .unwrap_or_default();
     let preview = edited.unwrap_or_else(|| events.clone());
+    let canonical_root = root;
+    let root = placement.map_or_else(|| canonical_root.clone(), |p| p.clip().audio_event_root());
     let local = view.event_viewport(&root);
     let viewport = view.event_project_viewport(&root)?;
     let first = root
@@ -192,6 +202,15 @@ pub(in crate::editor) fn view(
                 )
                 .debug_selector(move || format!("audio-event-waveform-{event_id}")),
             );
+        } else if let Some(placement) = placement {
+            if let Some(waveform) = placement.waveform(
+                event.id,
+                visible_start,
+                visible_end,
+                std::rc::Rc::clone(&view.waveform_geometry_cache),
+            ) {
+                element = element.child(waveform);
+            }
         } else if let Some(original) =
             events.events.iter().find(|e| e.id == event.id).or_else(|| {
                 events.events.iter().find(|e| {
@@ -618,7 +637,11 @@ pub(in crate::editor) fn view(
                         value: f64::from(target.gain.millidb()),
                     }
                 } else if target == RangeSelectionTarget::Move {
-                    Kind::Move(hit)
+                    if clip.audio_event_placement_limit().is_some() {
+                        Kind::FreeMove(hit)
+                    } else {
+                        Kind::Move(hit)
+                    }
                 } else {
                     Kind::Select
                 }
@@ -658,6 +681,7 @@ pub(in crate::editor) fn view(
                     raw
                 },
                 kind,
+                placement: None,
                 operation: None,
             });
             cx.stop_propagation();

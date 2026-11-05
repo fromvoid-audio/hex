@@ -129,6 +129,7 @@ impl EditorView {
             origin_x: f32::from(event.position.x),
             moved: false,
             kind,
+            placement: None,
             operation: None,
         });
         cx.notify();

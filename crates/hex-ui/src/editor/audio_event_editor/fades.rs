@@ -667,6 +667,7 @@ impl EditorView {
                                         origin_x: f32::from(e.position.x),
                                         moved: false,
                                         kind: Kind::Fade(fade),
+                                        placement: None,
                                         operation: None,
                                     });
                                 }
