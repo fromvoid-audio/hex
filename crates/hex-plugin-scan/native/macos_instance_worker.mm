@@ -196,14 +196,28 @@ wire::Bytes facts_body(const wire::Config& config,uint32 latency,uint32 tail,boo
     wire::number(out,config.maximum,2);wire::number(out,config.inputs,1);wire::number(out,config.outputs,1);
     wire::number(out,latency,4);wire::number(out,tail,4);wire::number(out,presentation_available?1:0,1);startup.acknowledge(out);return out;
 }
+// The SDK defines zero as its sentinel for unknown latency. Only encode it at
+// the SDK boundary: the host receipt never reports it as measured frames.
+std::optional<uint8_t> apply_presentation(hex_instance::Instance& instance,bool available,const wire::PresentationPlan& plan) {
+    using Result=hex_instance::Instance::PresentationResult;
+    if(!plan.known && !available) return 0;
+    if(!plan.known && !plan.allow_unknown) return std::nullopt;
+    const auto values=plan.known.value_or(wire::Presentation{});
+    const auto result=instance.set_presentation_latency(values.input,values.output);
+    if(!available && result==Result::Absent) return 0;
+    if(available && result==Result::Applied) return plan.known?1:2;
+    return std::nullopt;
+}
+void presentation_receipt(wire::Bytes& out,uint8_t mode,const wire::PresentationPlan& plan) {
+    wire::number(out,mode,1);wire::number(out,plan.known?1:0,1);
+    if(plan.known) { wire::number(out,plan.known->input,4);wire::number(out,plan.known->output,4); }
+}
 wire::Bytes ready_body(const wire::Config& config,const hex_instance::CapturedState& state,
-    uint32 latency,uint32 tail,hex_instance::Instance::PresentationResult presentation,const std::optional<wire::Presentation>& supplied,bool restored) {
+    uint32 latency,uint32 tail,uint8_t presentation,const wire::PresentationPlan& plan,bool restored) {
     wire::Bytes out;config.stamp(out);out.insert(out.end(),config.cid.begin(),config.cid.end());
     uint64_t rate=0;std::memcpy(&rate,&config.rate,8);wire::number(out,rate,8);
     wire::number(out,config.maximum,2);wire::number(out,config.inputs,1);wire::number(out,config.outputs,1);
-    wire::number(out,latency,4);wire::number(out,tail,4);wire::number(out,static_cast<uint32>(presentation),1);
-    wire::number(out,supplied?1:0,1);
-    if(supplied) { wire::number(out,supplied->input,4);wire::number(out,supplied->output,4); }
+    wire::number(out,latency,4);wire::number(out,tail,4);presentation_receipt(out,presentation,plan);
     wire::number(out,restored?1:0,1);
     // State existence is not availability or an application/graph ACK.
     wire::number(out,state.component?1:0,1);auto payload=state_payload(config,state);
@@ -252,6 +266,12 @@ int main(int argc,char** argv) {
             if(configured!=hex_instance::ConfigurationResult::Prepared) {
                 failure=setup_failure(configured);throw Refusal{};
             }
+            // The SDK permits latency changes to become observable only after
+            // reactivation. Cover startup notifications before publishing facts.
+            if(instance.latency_restart()) {
+                if(!instance.reactivate_on_control()) throw Refusal{};
+                instance.cover_latency_restart(instance.latency_restart());
+            }
             failure=HostControl;instance.dispatch_host_callbacks();
             if(instance.host_refusals()) throw Refusal{};
             auto latency=instance.reported_latency_on_control();
@@ -260,27 +280,29 @@ int main(int argc,char** argv) {
             if(!latency || !tail || !available) throw Refusal{};
             failure=ProtocolFailure;
             if(!wire::send(channel,"HXVIFA03",facts_body(*config,*latency,*tail,*available,restoration))) throw Refusal{};
-            std::optional<wire::Presentation> supplied;
+            wire::PresentationPlan supplied;
             if(!wire::presentation(channel,*config,supplied)) throw Refusal{};
             failure=Presentation;
-            auto presentation=hex_instance::Instance::PresentationResult::Absent;
-            if(supplied) presentation=instance.set_presentation_latency(supplied->input,supplied->output);
-            else if(*available) throw Refusal{}; // unknown is never substituted with zero
-            if((presentation==hex_instance::Instance::PresentationResult::Applied)!=*available ||
-                (presentation!=hex_instance::Instance::PresentationResult::Applied &&
-                 presentation!=hex_instance::Instance::PresentationResult::Absent)) throw Refusal{};
+            auto presentation=apply_presentation(instance,*available,supplied);
+            if(!presentation) throw Refusal{};
             failure=Capture;hex_instance::CapturedState state{};
             if(!instance.capture_initial_state_on_control(state)) {
                 failure=controller_inventory_failure(instance,failure);throw Refusal{};
             }
             failure=HostControl;instance.dispatch_host_callbacks();
             if(instance.host_refusals()) throw Refusal{};
+            failure=Presentation;
+            if(instance.latency_restart()) {
+                if(!instance.reactivate_on_control()) throw Refusal{};
+                instance.cover_latency_restart(instance.latency_restart());
+                presentation=apply_presentation(instance,*available,supplied);
+                if(!presentation || instance.latency_restart() || instance.host_refusals()) throw Refusal{};
+            }
             const auto final_latency=instance.reported_latency_on_control();
             const auto final_tail=instance.reported_tail_on_control();
-            failure=Presentation;
             if(!final_latency || !final_tail || *final_latency!=*latency || *final_tail!=*tail) throw Refusal{}; // caller's plan became stale
             instance.finish_startup_latency_observation_on_control();
-            const auto hello=ready_body(*config,state,*latency,*tail,presentation,supplied,restoration.restored());
+            const auto hello=ready_body(*config,state,*latency,*tail,*presentation,supplied,restoration.restored());
             auto processing_parameters=instance.processing_parameters_on_control();
             hex_instance::ParameterChanges parameter_input,parameter_output;
             hex_instance::ParameterFeedback parameter_feedback;
@@ -303,7 +325,7 @@ int main(int argc,char** argv) {
             uint64_t capture_operation=0,flush_operation=0,reactivate_operation=0;
             hex_instance::ParameterFeedback flushed_values;
             bool flush_applied=false;
-            std::optional<wire::Presentation> next_presentation;
+            wire::PresentationPlan next_presentation;
             // Single live capture slot. Main exclusively writes its result
             // after Requested/acquire, then Complete/release transfers it back
             // to the original processing reader. No SDK wait, extra reader or
@@ -878,15 +900,11 @@ int main(int argc,char** argv) {
                     } else if(stage==ResumeRequested) {
                         if(instance.latency_restart()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
                         supplied=next_presentation;
-                        presentation=hex_instance::Instance::PresentationResult::Absent;
-                        if(supplied) presentation=instance.set_presentation_latency(supplied->input,supplied->output);
-                        else if(*available) { error(channel,&*config,Presentation);std::_Exit(Presentation); }
+                        presentation=apply_presentation(instance,*available,supplied);
+                        if(!presentation) { error(channel,&*config,Presentation);std::_Exit(Presentation); }
                         const auto current_latency=instance.reported_latency_on_control();
                         const auto current_tail=instance.reported_tail_on_control();
-                        if(!current_latency || !current_tail || *current_latency!=*latency || *current_tail!=*tail || instance.host_refusals() ||
-                            (presentation==hex_instance::Instance::PresentationResult::Applied)!=*available ||
-                            (presentation!=hex_instance::Instance::PresentationResult::Applied &&
-                             presentation!=hex_instance::Instance::PresentationResult::Absent)) {
+                        if(!current_latency || !current_tail || *current_latency!=*latency || *current_tail!=*tail || instance.host_refusals()) {
                             error(channel,&*config,Presentation);std::_Exit(Presentation);
                         }
                         if(instance.latency_restart()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
@@ -899,9 +917,7 @@ int main(int argc,char** argv) {
                     } else if(stage==Restarted) {
                         auto body=facts_body(*config,*latency,*tail,*available,restoration);
                         wire::number(body,blocks,8);wire::number(body,frames,8);
-                        wire::number(body,static_cast<uint32>(presentation),1);
-                        wire::number(body,supplied?1:0,1);
-                        if(supplied) { wire::number(body,supplied->input,4);wire::number(body,supplied->output,4); }
+                        presentation_receipt(body,*presentation,supplied);
                         if(!wire::send(channel,"HXVIRR02",body)) std::_Exit(Cancelled);
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=ResumeSent;startup_changed.notify_all();
