@@ -491,8 +491,10 @@ impl AudioClipEdit {
                 )
             },
         );
+        let lead = self.placement.map_or(0, |p| p.mode.leading_ticks());
         origin
             .checked_sub(delta)
+            .and_then(|origin| origin.checked_sub(i128::from(lead)))
             .and_then(|origin| origin.checked_add(i128::from(start)))
             .and_then(|origin| origin.checked_add(i128::from(phase)))
             .ok_or(Invalid("audio frozen reference overflow"))
@@ -798,8 +800,10 @@ impl AudioClipEdit {
                 self.placement.map_or(0, |p| p.cycle_phase),
             )
         };
+        let lead = self.placement.map_or(0, |p| p.mode.leading_ticks());
         start
-            .checked_sub(i128::from(view_start))
+            .checked_add(i128::from(lead))
+            .and_then(|origin| origin.checked_sub(i128::from(view_start)))
             .and_then(|origin| origin.checked_sub(i128::from(phase)))
             .ok_or(Invalid("audio projection origin overflow"))
     }
@@ -1043,7 +1047,18 @@ impl AudioClipEdit {
                 "audio source cache differs from its canonical domain",
             ));
         }
+        let leading = self
+            .placement
+            .is_some_and(|placement| placement.mode.leading_ticks() != 0);
+        if leading && (self.content_view.is_some() || self.placement_end_offset != 0) {
+            return Err(Invalid(
+                "leading musical one-shot cannot use directed reads or a terminal residual",
+            ));
+        }
         if self.processing_projection.is_some() && self.placement.is_some() {
+            // For a leading one-shot only the gate follows the live clock.
+            // Its terminal frame still comes from the translated retained map
+            // and is validated by AudioViewProjection below.
             let start = self
                 .live_musical_start()
                 .ok_or(Invalid("retained outer audio needs musical placement"))?;
@@ -1057,13 +1072,14 @@ impl AudioClipEdit {
                 .checked_add(length)
                 .ok_or(Invalid("audio outer end overflow"))?;
             if offset_frame(tempo.beat_to_frame(start)?, self.placement_start_offset)? != clip.start
-                || offset_frame(
-                    tempo.beat_to_frame(BeatTime::from_raw(end))?,
-                    self.placement_end_offset,
-                )? != clip
-                    .start
-                    .checked_add(clip.duration)
-                    .ok_or(Invalid("audio outer end overflow"))?
+                || (!leading
+                    && offset_frame(
+                        tempo.beat_to_frame(BeatTime::from_raw(end))?,
+                        self.placement_end_offset,
+                    )? != clip
+                        .start
+                        .checked_add(clip.duration)
+                        .ok_or(Invalid("audio outer end overflow"))?)
             {
                 return Err(Invalid(
                     "retained outer frame cache differs from musical endpoints",
