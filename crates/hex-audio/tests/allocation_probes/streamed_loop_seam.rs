@@ -1,5 +1,4 @@
 //! Streamed Arrangement loop-end fades and wraps without callback allocation.
-#![cfg(feature = "allocation-probe")]
 use hex_audio::{prepared::PublicationPolicy, worker_fixture};
 use hex_engine::{
     STREAM_PAGE_FRAMES, StreamSourceKey, StreamedSourceMetadata,

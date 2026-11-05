@@ -1,5 +1,4 @@
 //! Thread-local probe of the Delay timing-only fork; not a physical callback test.
-#![cfg(feature = "allocation-probe")]
 
 use allocation_counter::measure;
 use hex_lattice::{

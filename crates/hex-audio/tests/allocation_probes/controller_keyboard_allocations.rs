@@ -1,5 +1,4 @@
 //! Actual callback publication preserves a held keyboard during controller activation.
-#![cfg(feature = "allocation-probe")]
 use allocation_counter::measure;
 use hex_audio::prepared::{self, PublicationPolicy};
 use hex_engine::{

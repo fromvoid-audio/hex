@@ -1,9 +1,8 @@
 //! Private math allocation probe only; not native callback integration evidence.
-#![cfg(feature = "allocation-probe")]
 
 // Compile the single private precursor source in the existing approved probe
 // harness. No public DSP API, production dependency or allocator policy change.
-#[path = "../../hex-devices/src/signed_envelope.rs"]
+#[path = "../../../hex-devices/src/signed_envelope.rs"]
 mod signed_envelope;
 
 use allocation_counter::measure;
