@@ -154,7 +154,7 @@ impl NativeAudioSink {
                 if let Some((revision, reason)) = status.rejected_revision()
                     && revision == submission.audio_revision
                 {
-                    return Err(format!("project audio graph refused: {reason:?}"));
+                    return Err(format!("project audio graph refused: {}", reason.message()));
                 }
                 std::thread::sleep(Duration::from_millis(1));
             }
