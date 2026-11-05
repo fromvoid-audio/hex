@@ -1,0 +1,157 @@
+//! Canonical static output-trim changes across a compatible native effect
+//! handoff. The host seeds a 5 ms linear-amplitude ramp from the donor's last
+//! committed effective gain, including reversals. Unchanged revisions continue
+//! that trajectory, including the wet side of an admitted bypass ramp. New
+//! ramps do not start while bypassed; reset, retained tails, foreign processing and an
+//! authored/live output-gain program keep their existing laws.
+//!
+//! This is deliberately not a transient Set/Clear controller. Its target is the
+//! candidate's validated canonical state. A missing transient/clock origin is
+//! never interpreted as Clear; entries with a transient output target are not
+//! admitted. Recording/replay and transient-delivery receipts are unchanged.
+//! Copy state lives in the existing committed/scratch transaction and is charged
+//! by RuntimeEntry storage accounting. Settled blocks use one constant multiply.
+use hex_dsp::StereoFrame;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct OutputGainRamp {
+    from: f32,
+    elapsed: u32,
+    total: u32,
+}
+impl OutputGainRamp {
+    pub(super) const INACTIVE: Self = Self {
+        from: 1.0,
+        elapsed: 0,
+        total: 0,
+    };
+    pub(super) fn active(self) -> bool {
+        self.elapsed < self.total
+    }
+    fn at(self, target: f32, elapsed: u32) -> f32 {
+        if elapsed >= self.total {
+            return target;
+        }
+        (f64::from(self.from)
+            + (f64::from(target) - f64::from(self.from)) * f64::from(elapsed)
+                / f64::from(self.total)) as f32
+    }
+    pub(super) fn inherited(
+        old: Self,
+        old_target: f32,
+        effective: f32,
+        target: f32,
+        rate: u32,
+        eligible: bool,
+    ) -> Self {
+        if !eligible
+            || rate == 0
+            || !effective.is_finite()
+            || effective < 0.0
+            || !target.is_finite()
+            || target < 0.0
+        {
+            return Self::INACTIVE;
+        }
+        if old_target == target {
+            return old;
+        }
+        if effective == target {
+            return Self::INACTIVE;
+        }
+        Self {
+            from: effective,
+            elapsed: 0,
+            total: rate.div_ceil(200).max(1),
+        }
+    }
+    pub(super) fn apply(&mut self, target: f32, frames: &mut [StereoFrame]) -> Option<f32> {
+        let mut last = None;
+        let mut ramped = 0;
+        if self.active() {
+            for frame in frames.iter_mut() {
+                if !self.active() {
+                    break;
+                }
+                self.elapsed += 1;
+                let gain = self.at(target, self.elapsed);
+                frame[0] *= gain;
+                frame[1] *= gain;
+                last = Some(gain);
+                ramped += 1;
+            }
+        }
+        if let Some(rest) = frames.get_mut(ramped..)
+            && !rest.is_empty()
+        {
+            if target != 1.0 {
+                for frame in rest {
+                    frame[0] *= target;
+                    frame[1] *= target;
+                }
+            }
+            last = Some(target);
+        }
+        last
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn exact_endpoint_and_partition_independent_pcm_at_supported_rates() {
+        for rate in [8000_u32, 44100, 48000, 96000, 192000] {
+            let total = rate.div_ceil(200) as usize;
+            let expected = (1..=total + 17)
+                .map(|i| {
+                    let gain = if i >= total {
+                        0.25
+                    } else {
+                        (1.0 - 0.75 * i as f64 / total as f64) as f32
+                    };
+                    [gain * 0.5, -gain * 0.25]
+                })
+                .collect::<Vec<_>>();
+            for block in [1, 7, 64, 512] {
+                let mut ramp =
+                    OutputGainRamp::inherited(OutputGainRamp::INACTIVE, 1.0, 1.0, 0.25, rate, true);
+                let mut pcm = vec![[0.5, -0.25]; total + 17];
+                for chunk in pcm.chunks_mut(block) {
+                    ramp.apply(0.25, chunk);
+                }
+                assert_eq!(pcm, expected, "rate{rate} block{block}");
+                assert!(!ramp.active());
+                assert_eq!(ramp.apply(0.25, &mut []), None);
+            }
+        }
+    }
+    #[test]
+    fn unchanged_handoffs_continue_and_reversal_starts_from_committed_effective_gain() {
+        let mut ramp =
+            OutputGainRamp::inherited(OutputGainRamp::INACTIVE, 1.0, 1.0, 0.25, 48000, true);
+        let gain = ramp.apply(0.25, &mut [[1.0; 2]; 73]).unwrap();
+        assert_eq!(
+            OutputGainRamp::inherited(ramp, 0.25, gain, 0.25, 48000, true),
+            ramp
+        );
+        let mut reverse = OutputGainRamp::inherited(ramp, 0.25, gain, 1.0, 48000, true);
+        let mut pcm = [[1.0; 2]; 240];
+        reverse.apply(1.0, &mut pcm);
+        assert!((pcm[0][0] - gain).abs() < 0.005);
+        assert!(pcm.windows(2).all(|p| p[0][0] <= p[1][0]));
+        assert_eq!(pcm[239], [1.0; 2]);
+        assert_eq!(
+            OutputGainRamp::inherited(ramp, 0.25, gain, 1.0, 48000, false),
+            OutputGainRamp::INACTIVE
+        );
+        for invalid in [f32::NAN, f32::INFINITY, -1.0] {
+            assert_eq!(
+                OutputGainRamp::inherited(ramp, 0.25, invalid, 1.0, 48000, true),
+                OutputGainRamp::INACTIVE
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod chain_tests;

@@ -3,7 +3,7 @@
 use super::*;
 use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
 
-fn actual_native_harness() -> Harness {
+pub(super) fn actual_native_harness() -> Harness {
     let backend = Arc::new(Mutex::new(None));
     let factory_backend = Arc::clone(&backend);
     let (events, receiver) = mpsc::sync_channel(1);
