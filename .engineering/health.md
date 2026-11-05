@@ -46,6 +46,25 @@ Git fetch works. GitHub CLI API access returned `Forbidden`; connected GitHub an
 Pulse tools successfully read the repository and created canonical issue/PR links.
 Use those tools rather than changing credentials or network policy.
 
-The full mission is saved; native `/goal` activation is pending the user's manual
-command. Scheduling was explicitly declined. Ongoing execution requires an active
-authorized runtime; no unattended availability has been verified.
+The user supplied the complete `/goal` instruction and the agent is following it.
+Native goal readback is unavailable in this cloud executor: its app-server control
+socket is absent. This is not a verified native activation claim. No scheduler was
+created; ongoing execution requires an active authorized runtime.
+
+
+Second cycle: [document-output test ownership](https://pulse.iocore.dev/#/issues/4997)
+is verified at `1f860e4d8a1efbe14b00006e135cc5c01d6f0947`, with current-base
+integration qualification recorded in PR #2081. A `document_output.rs` change
+previously selected 200 registered native-audio tests; it now selects the two
+owning regressions. All 228 compiled test names remain exactly once after the two
+namespace substitutions. Harness, fixture and assertion bodies are byte-identical;
+the shared native lease remains in use. This reduces test-ownership coupling,
+without an application-speed claim or weaker regression oracles.
+
+The two cases passed before the move in 0.1721/0.0617 s and after in
+0.1066/0.1064 s, including launch. Two focused fixture/deadline consumers passed in
+0.0367/0.0068 s. These small timing differences are not treated as a speed gain.
+Both strict desktop Clippy configurations, six source guards and 30 shared selector
+tests passed. The cold baseline build took 13m31s, separate from test time.
+Raw commands, inventories, per-case logs and binary hashes are retained under
+`artifacts/engineering-cycle-4997/`; the canonical PR retains essential results.
