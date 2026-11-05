@@ -403,6 +403,9 @@ public:
     uint64 host_callback_revision_on_control() const { return host?host->callback_revision_on_control():0; }
     void complete_parameter_edit() { if(host) host->complete_parameter_edit(); }
     uint32 host_refusals() const { return host?host->refusal_flags():0; }
+    void observe_latency_restarts() { if(host) host->observe_latency_restarts(); }
+    uint64 latency_restart() const { return host?host->latency_restart():0; }
+    void cover_latency_restart(uint64 covered) { if(host) host->cover_latency_restart(covered); }
 
     bool close() {
         if (![NSThread isMainThread] || processing.load() || quarantined.load()) return false;

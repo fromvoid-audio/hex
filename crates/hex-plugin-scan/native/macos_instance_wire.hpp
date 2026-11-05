@@ -176,7 +176,7 @@ struct Packet {
     std::array<uint8_t,header_size+max_frames*8+hex_instance::PARAMETER_POINT_COUNT*16> bytes{};
     std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> parameters{};
     size_t parameter_count=0;
-    uint16_t frames=0;bool stop=false;
+    uint16_t frames=0;bool stop=false,observe_latency=false;
     uint64_t next_graph=0,next_epoch=0;
     uint64_t capture_operation=0;
     hex_instance::ControllerQuery parameter_query{};
@@ -198,8 +198,9 @@ struct Packet {
         const bool live_start=!std::memcmp(p,"HXVL",4),live_poll=!std::memcmp(p,"HXVP",4);
         const bool pcm=!std::memcmp(p,"HXVB",4),flush=!std::memcmp(p,"HXVF",4);
         const auto version=number(p+4,2);
+        observe_latency=edit_query && version==2;
         if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && !pcm && !flush && !edit_query && !page_start && !page_poll && !reactivate) ||
-            ((pcm || flush)?(version!=1 && version!=2):version!=1) || number(p+8,2)) return -1;
+            ((pcm || flush || edit_query)?(version!=1 && version!=2):version!=1) || number(p+8,2)) return -1;
         parameter_count=(pcm || flush) && version==2?static_cast<size_t>(number(p+10,2)):0;
         if(parameter_count>parameters.size()) return -1;
         for(size_t n=resume?11:((pcm || flush) && version==2?12:10);n<16;++n) if(p[n]) return -1;
