@@ -470,14 +470,13 @@ impl PublicationControl {
             trust,
         )
     }
-    /// Supply actual graph/device presentation contributions, or None when
-    /// unavailable. The exact Pending becomes a Root-held Prepared or retained
+    /// Supply the presentation plan. The exact Pending becomes a Root-held Prepared or retained
     /// refusal. Ok acknowledges custody only; inspect progress/error separately.
     /// Run on the existing control worker. This does not publish a graph.
     pub fn complete_native_source_preparation(
         &mut self,
         binding: Binding,
-        presentation: Option<hex_plugin_host::protocol::PresentationLatency>,
+        presentation: impl Into<hex_plugin_host::protocol::PresentationPlan>,
     ) -> Result<(), &'static str> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native preparation output is closing");

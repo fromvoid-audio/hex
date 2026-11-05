@@ -91,8 +91,9 @@ class Session:
             return self.message()
         return magic, body
 
-    def presentation(self, values, binding=BINDING):
-        body = struct.pack("<H4QB", 1, *binding, values is not None)
+    def presentation(self, values, binding=BINDING, *, allow_unknown=False):
+        mode = 2 if allow_unknown else int(values is not None)
+        body = struct.pack("<H4QB", 1, *binding, mode)
         if values is not None:
             body += struct.pack("<II", *values)
         self.socket.sendall(b"HXVIPR01" + struct.pack("<I", len(body)) + body)
@@ -483,12 +484,47 @@ class NativeInstanceTests(unittest.TestCase):
         self.terminal(session, 5)
         self.assertEqual((self.observation()[8], self.observation()[10]), (0, 0))
 
+    def test_explicit_unknown_presentation_starts_and_renews_the_same_effect(self):
+        session = self.session(auto_present=False)
+        self.assertEqual(session.message()[0], b"HXVIFA03")
+        session.presentation(None, allow_unknown=True)
+        magic, ready = session.message()
+        self.assertEqual((magic, ready[70:72]), (b"HXVIRD04", b"\x02\0"))
+        self.assertEqual(ready[-8:], bytes(8))  # SDK captured both unknown sentinels
+        _, _, (magic, _) = session.render(7)
+        self.assertEqual(magic, b"HXVB")
+        session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0,
+                                           *BINDING, session.sequence, session.frames))
+        self.assertEqual(session.message()[0], b"HXVIQF02")
+        session.socket.sendall(struct.pack("<4sHHHB5x6Q", b"HXVR", 1, 0, 0, 2,
+                                           *BINDING, 3, 5))
+        magic, resumed = session.message()
+        self.assertEqual((magic, resumed[-2:]), (b"HXVIRR02", b"\x02\0"))
+        binding = (*BINDING[:3], 5)
+        session.socket.sendall(session.packet(1, binding=binding) + struct.pack("<ff", .25, -.5))
+        magic, pcm = session.message()
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack("<ff", pcm[64:]), (.15625, -.3125))
+        session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVE", 1, 0, 0, *binding, 2, 8))
+        magic, terminal = session.message()
+        self.assertEqual((magic, struct.unpack("<H6QIBB", terminal)),
+                         (b"HXVITR01", (1, *binding, 2, 8, 0, 1, 1)))
+        self.assertEqual(session.process.wait(timeout=10), 0)
+
     def test_startup_latency_notice_with_unchanged_report_allows_processing(self):
         session = self.session(variant=110)
         self.ready(session, controller=True)
         _, _, (magic, _) = session.render(7)
         self.assertEqual(magic, b"HXVB")
         self.terminal(session, 0, message=session.stop())
+
+    def test_startup_latency_notice_is_reactivated_before_accepting_the_report(self):
+        session = self.session(variant=111, auto_present=False)
+        self.assertEqual(session.message()[0], b"HXVIFA03")
+        session.presentation(None, allow_unknown=True)
+        self.error(session, 5)
+        self.terminal(session, 5)
+        self.assertEqual((self.observation()[8], self.observation()[10]), (0, 0))
 
     def test_source_selected_persistent_pcm_positions_and_negotiated_mono_stereo(self):
         for channels in [(1, 1), (1, 2), (2, 2)]:
@@ -726,7 +762,7 @@ class NativeInstanceTests(unittest.TestCase):
             struct.pack_into("<QQ", bad, 48, graph, epoch)
             cases.append(bytes(bad))
         bad = base.copy()
-        bad[10] = 2
+        bad[10] = 3
         cases.append(bytes(bad))
         for packet in cases:
             with self.subTest(packet=packet.hex()):
