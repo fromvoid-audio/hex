@@ -477,6 +477,31 @@ native UI, listening, device deadline or release acceptance. Keep SDK paths and
 local receipts out of Git; record the exact receipt hashes and result with the
 issue or PR being verified.
 
+### Dense playback baseline
+
+The opt-in macOS arm64 profile uses the resident Session and prepared callback
+with generated audio. The native and mixed runs use the same 48 tracks and 96
+native effects. The mixed run also admits four instances of the controlled VST3
+processing fixture. Export both verified receipt paths above before the mixed
+run. The fixture uses a fixed 256-frame VST3 transport quantum. Select 64, 128,
+or 256 frames per measured callback and keep that size fixed when comparing
+revisions. Smaller callbacks feed fragments into the fixed transport quantum.
+
+```sh
+HEX_PLAYBACK_PROFILE_BLOCK=256 cargo test --release --locked -p hex-desktop \
+  --features allocation-probe --bin hex-desktop \
+  -- native_audio::tests::plugins::performance_profile \
+  --ignored --nocapture --test-threads=1
+```
+
+The native-only test can run without the VST3 receipts. Each profile prints the
+warm-up and measured block counts, elapsed-time percentiles, blocks that exceeded
+their nominal budget, first nonzero audio, observed presentation lag, and PCM
+fingerprint. Run alternating candidates on the same machine and compare
+fingerprints only within the same workload and block size. Measure aggregate
+process CPU and physical output/monitoring latency separately. The paced
+headless callback does not verify device deadlines or listening quality.
+
 ## Focused commands
 
 For partial edit feedback, optionally select the owning library or named
