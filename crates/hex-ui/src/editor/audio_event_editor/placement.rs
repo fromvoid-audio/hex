@@ -2,8 +2,11 @@
 //! pointer geometry. Signed display space reaches either side of the clip;
 //! the captured canonical bounds still limit actual retained-root growth.
 use super::*;
-use crate::editor::{waveform, waveform_geometry::WaveformGeometryCache};
-use hex_project::{AudioEventPlacementPreview, AudioEvents, Clip};
+use crate::editor::{
+    waveform,
+    waveform_geometry::{WaveformGeometryCache, WaveformMapping},
+};
+use hex_project::{AudioDomainClock, AudioEventPlacementPreview, AudioEvents, Clip, TempoMap};
 use hex_session::{CachedWaveform, service::ViewState};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -14,7 +17,73 @@ pub(super) struct Preview {
     model: AudioEventPlacementPreview,
     source: Option<Source>,
     origin_shift: i64,
+    frame_shift: i128,
+    musical: Option<Arc<MusicalWaveformClock>>,
 }
+struct MusicalWaveformClock {
+    tempo: TempoMap,
+    original: AudioClipEdit,
+    destination: AudioClipEdit,
+}
+
+/// A frozen source map for one event. Cache identity includes the exact held
+/// preview and event ID, so an unrelated accepted revision cannot retarget it.
+#[derive(Clone)]
+pub(in crate::editor) struct MusicalEventWaveform {
+    clock: Arc<MusicalWaveformClock>,
+    event: u64,
+    start: u64,
+    end: u64,
+    original_start: u64,
+    gain: hex_project::ClipGain,
+}
+
+impl std::fmt::Debug for MusicalEventWaveform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("MusicalEventWaveform")
+            .field(&self.event)
+            .finish()
+    }
+}
+impl PartialEq for MusicalEventWaveform {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.clock, &other.clock) && self.event == other.event
+    }
+}
+impl Eq for MusicalEventWaveform {}
+
+impl MusicalEventWaveform {
+    pub(in crate::editor) fn gain(&self) -> hex_project::ClipGain {
+        self.gain
+    }
+
+    pub(in crate::editor) fn ranges(
+        &self,
+        range: std::ops::Range<u64>,
+        available: usize,
+    ) -> waveform::SourceRanges {
+        let mut ranges = waveform::SourceRanges::default();
+        let tempo = &self.clock.tempo;
+        let position = |frame| {
+            let raw = self.clock.destination.root_position_at(frame, tempo).ok()?;
+            let offset = raw.clamp(self.start, self.end) - self.start;
+            self.clock
+                .original
+                .root_frame_at(self.original_start.checked_add(offset)?, tempo)
+                .ok()
+        };
+        if let (Some(first), Some(last)) = (position(range.start), position(range.end)) {
+            waveform::push_source_range(
+                &mut ranges,
+                first,
+                last.max(first.saturating_add(1)),
+                available,
+            );
+        }
+        ranges
+    }
+}
+
 enum Source {
     Processed(Arc<CachedWaveform>),
     Original {
@@ -29,7 +98,13 @@ impl Preview {
         let source = state
             .audio_clip_waveforms
             .get(&clip)
-            .map(|p| Source::Processed(Arc::clone(&p.waveform)))
+            .map(|p| {
+                let waveform = p
+                    .preview_root
+                    .as_ref()
+                    .map_or(&p.waveform, |root| &root.waveform);
+                Source::Processed(Arc::clone(waveform))
+            })
             .or_else(|| {
                 if original.audio_edit().is_some() {
                     return None;
@@ -45,14 +120,31 @@ impl Preview {
             .clip()
             .audio_event_coordinate_shift_from(original)
             .unwrap_or(0);
+        let before = original.audio_event_root();
+        let after = model.clip().audio_event_root();
+        let tempo = state.project.tempo_map();
+        let frame_shift = i128::from(after.root_frame_at(after.view_start, tempo).ok()?)
+            - i128::from(before.root_frame_at(before.view_start, tempo).ok()?);
+        let musical = matches!(before.domain.clock, AudioDomainClock::Beats(_)).then(|| {
+            Arc::new(MusicalWaveformClock {
+                tempo: tempo.clone(),
+                original: before,
+                destination: after,
+            })
+        });
         Some(Self {
             model,
             source,
             origin_shift,
+            frame_shift,
+            musical,
         })
     }
     pub(super) fn origin_shift(&self) -> i64 {
         self.origin_shift
+    }
+    pub(super) fn frame_shift(&self) -> i128 {
+        self.frame_shift
     }
     pub(super) fn position(&self, position: u64) -> Option<u64> {
         u64::try_from(i128::from(position) + i128::from(self.origin_shift)).ok()
@@ -125,8 +217,34 @@ impl Preview {
         cache: Rc<RefCell<WaveformGeometryCache>>,
     ) -> Option<gpui::Div> {
         use gpui::prelude::*;
-        let a = self.model.original_waveform_frame(event, first)?;
-        let b = self.model.original_waveform_frame(event, end)?;
+        if let Some(clock) = &self.musical {
+            let (start, end_raw) = self.model.waveform_destination(event)?;
+            let original_start = self.model.original_waveform_position(event, start)?;
+            let Source::Processed(waveform) = self.source.as_ref()? else {
+                return None;
+            };
+            let projection = MusicalEventWaveform {
+                clock: Arc::clone(clock),
+                event,
+                start,
+                end: end_raw,
+                original_start,
+                gain: self.clip().gain(),
+            };
+            return Some(
+                waveform::waveform_canvas(
+                    Arc::clone(waveform),
+                    WaveformMapping::MusicalEvent(projection),
+                    first,
+                    end,
+                    Some(cache),
+                    None,
+                )
+                .debug_selector(move || format!("audio-event-waveform-{event}")),
+            );
+        }
+        let a = self.model.original_waveform_position(event, first)?;
+        let b = self.model.original_waveform_position(event, end)?;
         let element = match self.source.as_ref()? {
             Source::Processed(waveform) => waveform::waveform_source_segment_gain_view_cached(
                 Arc::clone(waveform),
@@ -158,8 +276,17 @@ impl EditorView {
         x: f32,
         platform: bool,
     ) {
+        if matches!(gesture.kind, Kind::Duplicate { .. }) {
+            // An invalid final drop cannot admit an earlier valid preview.
+            gesture.operation = None;
+            gesture.placement = None;
+        }
         let (origin, limits) = match gesture.kind {
-            Kind::FreeMove { event, limits } => (event.start, limits),
+            Kind::FreeMove { event, limits }
+            | Kind::Duplicate {
+                event,
+                limits: Some(limits),
+            } => (event.start, limits),
             Kind::FreeRangeMove { start, limits, .. } => (start, limits),
             _ => return,
         };
@@ -177,14 +304,31 @@ impl EditorView {
         let viewport = self.event_frame_window(&root);
         let delta = ((f64::from(x) - f64::from(gesture.origin_x)) * viewport.length as f64 / width)
             .round() as i128;
-        let raw = i128::from(origin)
-            .saturating_add(delta)
-            .clamp(i128::from(first), i128::from(last)) as i64;
-        let start = self
-            .free_event_snap(&root, raw, platform)
-            .unwrap_or(raw)
-            .clamp(first, last);
+        let Some(tempo) = self.state.as_ref().map(|state| state.project.tempo_map()) else {
+            return;
+        };
+        let Ok(origin_frame) = root.signed_root_frame_at(i128::from(origin), tempo) else {
+            return;
+        };
+        let (Ok(minimum), Ok(maximum)) = (
+            root.signed_root_frame_at(i128::from(first), tempo),
+            root.signed_root_frame_at(i128::from(last), tempo),
+        ) else {
+            return;
+        };
+        let raw_frame = origin_frame.saturating_add(delta).clamp(minimum, maximum);
+        let frame = self
+            .free_event_snap(&root, raw_frame, platform)
+            .unwrap_or(raw_frame);
+        let Ok(start) = root.signed_root_position_at(frame.clamp(minimum, maximum), tempo) else {
+            return;
+        };
+        let start = start.clamp(i128::from(first), i128::from(last)) as i64;
         let operation = match gesture.kind {
+            Kind::Duplicate { event, .. } => AudioEventEdit::Duplicate {
+                event: event.id,
+                start,
+            },
             Kind::FreeMove { event, .. } => AudioEventEdit::Place {
                 event: event.id,
                 start,
@@ -205,13 +349,13 @@ impl EditorView {
     }
     // The admitted frame clock continues beyond its old extent. Do not call
     // root_position_at here: its ordinary read contract clamps to that extent.
-    fn free_event_snap(&self, root: &AudioClipEdit, raw: i64, platform: bool) -> Option<i64> {
+    fn free_event_snap(&self, root: &AudioClipEdit, raw: i128, platform: bool) -> Option<i128> {
         let state = self.state.as_ref()?;
         let clip = state.project.clip(self.detail_clip_id()?)?;
         let first = root
-            .root_frame_at(editor_bounds(root).0, state.project.tempo_map())
+            .root_frame_at(event_grid_origin(root), state.project.tempo_map())
             .ok()?;
-        let frame = i128::from(clip.start()) + i128::from(raw) - i128::from(first);
+        let frame = i128::from(clip.start()) + raw - i128::from(first);
         let snapped = self
             .audio_event_editor
             .grid
@@ -222,12 +366,14 @@ impl EditorView {
                 self.event_project_window(root)?,
                 f32::from(self.audio_event_editor.bounds?.size.width),
             )?;
-        i64::try_from(snapped - i128::from(clip.start()) + i128::from(first)).ok()
+        Some(snapped - i128::from(clip.start()) + i128::from(first))
     }
     pub(super) fn placement_preview(&self, operation: &AudioEventEdit) -> Option<Arc<Preview>> {
         if !matches!(
             operation,
-            AudioEventEdit::Place { .. } | AudioEventEdit::PlaceRange { .. }
+            AudioEventEdit::Place { .. }
+                | AudioEventEdit::PlaceRange { .. }
+                | AudioEventEdit::Duplicate { .. }
         ) {
             return None;
         };

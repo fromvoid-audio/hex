@@ -2,9 +2,11 @@
 //! The display candidate carries the validated expanded root and unchanged clip
 //! window. Cached processed peaks may be borrowed only through the mappings below:
 //! source identity/window, activation, event gain/fade remain equal, and the
-//! frame container has no position-dependent processing. This owns metadata only;
+//! container has no position-dependent processing. For a retimed musical move,
+//! only a sample-aligned accepted waveform still contains the original peaks.
+//! This owns metadata only;
 //! no media, decoder, graph, history revision or global identity is allocated here.
-use crate::{AudioClipTiming, AudioDomainClock, AudioEventEdit, Clip, ClipId, Invalid, Project};
+use crate::{AudioDomainClock, AudioEventEdit, Clip, ClipId, Invalid, Project};
 
 #[derive(Clone, Debug)]
 pub struct AudioEventPlacementPreview {
@@ -22,10 +24,10 @@ impl AudioEventPlacementPreview {
     pub fn clip(&self) -> &Clip {
         &self.clip
     }
-    /// Translate a candidate event endpoint into the previous accepted root's
-    /// processed frame clock. None means the old peaks are not evidence for this
+    /// Translate a candidate event coordinate into the previous accepted root's
+    /// coordinate, in the root clock units. None means the old peaks are not evidence for this
     /// placement; wait for the worker's newly prepared summary instead.
-    pub fn original_waveform_frame(&self, event: u64, position: u64) -> Option<u64> {
+    pub fn original_waveform_position(&self, event: u64, position: u64) -> Option<u64> {
         let index = self.waveform.binary_search_by_key(&event, |m| m.id).ok()?;
         let mapping = self.waveform.get(index)?;
         if position < mapping.start || position > mapping.end {
@@ -33,11 +35,15 @@ impl AudioEventPlacementPreview {
         }
         mapping.original_start.checked_add(position - mapping.start)
     }
+    pub fn waveform_destination(&self, event: u64) -> Option<(u64, u64)> {
+        let index = self.waveform.binary_search_by_key(&event, |m| m.id).ok()?;
+        let mapping = self.waveform.get(index)?;
+        Some((mapping.start, mapping.end))
+    }
 }
 impl Project {
     /// Validate a signed placement without changing the project, Undo/Redo,
-    /// source media or identity allocator. The fixed-frame editor admission
-    /// reuses `EditAudioEvents::Place` source restoration; unproved read laws refuse.
+    /// source media or identity allocator. Reuses the canonical Place preparation.
     pub fn preview_audio_event_placement(
         &self,
         clip: ClipId,
@@ -54,22 +60,20 @@ impl Project {
         operation: &AudioEventEdit,
     ) -> Result<AudioEventPlacementPreview, Invalid> {
         let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
-        original.audio_event_placement_limit().ok_or(Invalid(
-            "free editor placement needs a fixed frame timeline",
-        ))?;
         let candidate = crate::audio_event_timeline::prepare(self, clip, operation)?;
         let root = original.audio_event_root();
         let mut waveform = Vec::new();
-        if matches!(root.domain.clock, AudioDomainClock::Frames(_))
-            && matches!(root.timing, AudioClipTiming::Frames)
-            && root.placement.is_none()
-            && root.content_view.is_none()
-            && root.processing_projection.is_none()
-            && !root.domain.warp_enabled
-            && root.domain.pitch_cents == 0
-            && root.domain.source_gain.is_empty()
-            && root.domain.fade.is_neutral()
-        {
+        let musical = matches!(root.domain.clock, AudioDomainClock::Beats(_));
+        let source_zero = root
+            .domain
+            .musical_event_source
+            .map_or(0, |s| s.zero_in_destination);
+        let destination_zero = candidate
+            .audio_event_root()
+            .domain
+            .musical_event_source
+            .map_or(0, |s| s.zero_in_destination);
+        if root.domain.fade.is_neutral() {
             let before = original.editable_audio_events()?;
             let after = candidate.audio_events();
             let converted = before.sources.is_empty() && !after.sources.is_empty();
@@ -112,6 +116,16 @@ impl Project {
                 else {
                     continue;
                 };
+                // Peaks from a previously retimed event may have lost source
+                // samples. They can still paint the same absolute beat span,
+                // but cannot stand in for source media at another destination.
+                if musical
+                    && source.source_start.checked_add(source_zero) != Some(source.start)
+                    && i128::from(original_start) - i128::from(source_zero)
+                        != i128::from(target.start) - i128::from(destination_zero)
+                {
+                    continue;
+                }
                 waveform.push(WaveformInterval {
                     id: target.id,
                     start: target.start,
@@ -125,6 +139,47 @@ impl Project {
             clip: candidate,
             waveform,
         })
+    }
+    /// Signed raw destination limits for a captured nonempty event interval.
+    /// The frame horizon remains bounded under both source clocks.
+    pub fn audio_event_drag_bounds(
+        &self,
+        clip: ClipId,
+        start: u64,
+        end: u64,
+    ) -> Result<(i64, i64), Invalid> {
+        let clip = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
+        let root = clip.audio_event_root();
+        if matches!(root.domain.clock, AudioDomainClock::Frames(_)) {
+            if self.clip_alias(clip.id()).is_some() {
+                return clip.frame_placement_bounds(start, end, crate::MAX_AUDIO_DOMAIN_FRAMES);
+            }
+            return clip.audio_event_range_placement_bounds(start, end);
+        }
+        if root.placement.is_some()
+            || root.content_view.is_some()
+            || self.clip_alias(clip.id()).is_some()
+            || start >= end
+            || end > root.domain.clock.length()
+        {
+            return Err(Invalid(
+                "musical event placement needs an unlinked one-shot root",
+            ));
+        }
+        let (_, length, _, _) = root.projected_domain(self.tempo_map())?;
+        let limit = crate::MAX_AUDIO_DOMAIN_FRAMES;
+        let lead = limit
+            .checked_sub(length)
+            .ok_or(Invalid("audio event root exceeds placement limit"))?;
+        let first = root.signed_root_position_at(-i128::from(lead), self.tempo_map())?;
+        let last = root.signed_root_position_at(i128::from(limit), self.tempo_map())?
+            - i128::from(end - start);
+        let first = i64::try_from(first).map_err(|_| Invalid("audio event placement overflow"))?;
+        let last = i64::try_from(last).map_err(|_| Invalid("audio event placement overflow"))?;
+        if first > last {
+            return Err(Invalid("audio event placement range is empty"));
+        }
+        Ok((first, last))
     }
 }
 
@@ -150,6 +205,15 @@ impl Clip {
         let limit = self.audio_event_placement_limit().ok_or(Invalid(
             "free editor placement needs a fixed frame timeline",
         ))?;
+        self.frame_placement_bounds(start, end, limit)
+    }
+
+    fn frame_placement_bounds(
+        &self,
+        start: u64,
+        end: u64,
+        limit: u64,
+    ) -> Result<(i64, i64), Invalid> {
         let length = self.audio_event_root().domain.clock.length();
         if start >= end || end > length {
             return Err(Invalid("invalid audio event placement range"));
@@ -165,7 +229,7 @@ impl Clip {
             i64::try_from(last).map_err(|_| Invalid("audio event placement overflow"))?,
         ))
     }
-    /// Prove a fixed-frame authoring-origin translation across Place or its
+    /// Prove an authoring-origin translation in root clock units across Place or its
     /// history restoration. The Arrangement window and physical source window
     /// stay equal; both clock length and container-fade origin translate by the
     /// same amount. Pure crop, source replacement, processing and other clock
@@ -174,13 +238,25 @@ impl Clip {
         if self.id() != previous.id()
             || self.asset() != previous.asset()
             || (self.start(), self.duration()) != (previous.start(), previous.duration())
-            || self.audio_event_placement_limit().is_none()
-            || previous.audio_event_placement_limit().is_none()
         {
             return None;
         }
         let before = previous.audio_event_root();
         let after = self.audio_event_root();
+        let musical = match (before.domain.clock, after.domain.clock) {
+            (AudioDomainClock::Frames(_), AudioDomainClock::Frames(_))
+                if self.audio_event_placement_limit().is_some()
+                    && previous.audio_event_placement_limit().is_some() =>
+            {
+                false
+            }
+            (AudioDomainClock::Beats(_), AudioDomainClock::Beats(_))
+                if before.timing == after.timing =>
+            {
+                true
+            }
+            _ => return None,
+        };
         let shift =
             i128::from(after.domain.clock.length()) - i128::from(before.domain.clock.length());
         if shift != i128::from(after.domain.fade_start) - i128::from(before.domain.fade_start)
@@ -189,10 +265,45 @@ impl Clip {
             || after.domain.source_length != before.domain.source_length
             || after.domain.looping != before.domain.looping
             || after.domain.source_phase != before.domain.source_phase
+            || after.domain.pitch_cents != before.domain.pitch_cents
+            || after.domain.source_gain != before.domain.source_gain
+            || after.domain.warp_resampler != before.domain.warp_resampler
+            || after.placement != before.placement
             || i128::from(after.view_start) - i128::from(before.view_start) != shift
             || i128::from(after.view_end) - i128::from(before.view_end) != shift
         {
             return None;
+        }
+        if musical {
+            let source = |edit: &crate::AudioClipEdit| {
+                edit.domain
+                    .musical_event_source
+                    .map_or((0, edit.domain.clock.length()), |source| {
+                        (source.zero_in_destination, source.length.raw())
+                    })
+            };
+            let (before_zero, before_length) = source(&before);
+            let (after_zero, after_length) = source(&after);
+            if before_length != after_length
+                || i128::from(after_zero) - i128::from(before_zero) != shift
+                || before.domain.warp != after.domain.warp
+                || before.domain.warp_enabled != after.domain.warp_enabled
+            {
+                return None;
+            }
+        }
+        match (before.content_view, after.content_view) {
+            (Some(mut previous), Some(current)) => {
+                previous.base_view_start =
+                    u64::try_from(i128::from(previous.base_view_start) + shift).ok()?;
+                previous.base_view_end =
+                    u64::try_from(i128::from(previous.base_view_end) + shift).ok()?;
+                if previous != current {
+                    return None;
+                }
+            }
+            (None, None) => {}
+            _ => return None,
         }
         i64::try_from(shift).ok()
     }

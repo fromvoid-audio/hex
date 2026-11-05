@@ -722,6 +722,16 @@ click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
 
+during playback, track gain, eq edits and supported device bypass changes apply
+to the running audio. supported latency-bearing effects keep the dry signal
+aligned when you bypass them. reverb and delay tails may shorten or stop.
+
+if a sounding instrument has a long release, hex can keep that release through
+supported receiver paths while you switch the instrument off and back on.
+some processed, routed or compensated paths require playback to stop first.
+if hex reports that source history cannot transfer live, the previous audio
+continues. stop playback before changing bypass on that path.
+
 reverb combines resonant input filters (20 hz–20 khz, q 0.1–10), early reflections and a diffusion network.
 use predelay to separate the room from the source; size, decay, diffusion and
 scale shape its space. spin moves the early reflections, while chorus modulates

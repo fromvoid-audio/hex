@@ -325,6 +325,18 @@ impl Plan {
                     },
                 }
             }
+            Command::UpdateMidiNotesWithSourceExtent { clip, notes } => Kind::Notes {
+                volume_range: None,
+                location: location(*clip)?,
+                source_length: Some(crate::midi::extended_update_source_length(
+                    source.midi_source(*clip).ok_or(MISSING)?.source_length(),
+                    notes,
+                )?),
+                edit: Notes::OverwriteUpdate {
+                    only: None,
+                    removed: 0,
+                },
+            },
             Command::UpdateMidiNotes { clip, .. } => Kind::Notes {
                 volume_range: None,
                 location: location(*clip)?,
@@ -1121,6 +1133,8 @@ fn same_shell(
     }
     tracks.iter().zip(&b.tracks).all(|(a, b)| {
         let Track {
+            group_output_mutes,
+            tags,
             kind,
             parent_group,
             color,
@@ -1152,6 +1166,8 @@ fn same_shell(
             && parent_group == &b.parent_group
             && color == &b.color
             && id == &b.id
+            && tags == &b.tags
+            && group_output_mutes == &b.group_output_mutes
             && name == &b.name
             && automatic_name == &b.automatic_name
             && gain == &b.gain

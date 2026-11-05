@@ -72,6 +72,8 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         };
         let arrangement_duration = 16_384;
         snapshot_tracks.push(TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),

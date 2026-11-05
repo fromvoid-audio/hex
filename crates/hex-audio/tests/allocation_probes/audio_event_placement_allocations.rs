@@ -37,6 +37,7 @@ fn render(callback: &mut prepared::Callback, output: &mut [Frame]) -> Result<(),
 #[test]
 fn moved_range_is_silent_outside_clip_then_revealed_with_original_pcm_without_callback_allocations()
 -> Result<(), Box<dyn Error>> {
+    const DESTINATION: u64 = hex_project::MAX_AUDIO_DOMAIN_FRAMES + 4096;
     for block in [1, 7, 64, 512] {
         let mut editor = Editor::new(Project::new(48_000)?, 8)?;
         let Created::Imported { clip, asset, .. } = editor.execute(Command::ImportAudioTrack {
@@ -76,7 +77,7 @@ fn moved_range_is_silent_outside_clip_then_revealed_with_original_pcm_without_ca
             operation: AudioEventEdit::PlaceRange {
                 start: 0,
                 end: 2048,
-                destination: 12288,
+                destination: DESTINATION as i64,
             },
         })?;
         let revision = control
@@ -117,7 +118,7 @@ fn moved_range_is_silent_outside_clip_then_revealed_with_original_pcm_without_ca
         editor.execute(Command::TrimClipEdge {
             clip,
             edge: TrimEdge::Right,
-            frame: 14336,
+            frame: DESTINATION + 2048,
         })?;
         let revision = control
             .publish_with_policy_and_context_generation(
@@ -130,7 +131,7 @@ fn moved_range_is_silent_outside_clip_then_revealed_with_original_pcm_without_ca
         control.reclaim();
         assert_eq!(control.status.applied_revision.load(Acquire), revision);
         control
-            .command(PlaybackCommand::PlayFrom(12288))
+            .command(PlaybackCommand::PlayFrom(DESTINATION))
             .map_err(|_| "play revealed")?;
         for _ in 0..1024_usize.div_ceil(block) {
             render(&mut callback, &mut output)?;
@@ -139,7 +140,7 @@ fn moved_range_is_silent_outside_clip_then_revealed_with_original_pcm_without_ca
         for (i, frame) in output.iter().enumerate() {
             assert_eq!(
                 *frame,
-                value(end - block as u64 + i as u64 - 12288),
+                value(end - block as u64 + i as u64 - DESTINATION),
                 "revealed source, block{block}"
             );
         }

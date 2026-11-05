@@ -229,6 +229,8 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
         next_id: 2 + MAX_CLIPS as u64,
         assets: Vec::new(),
         tracks: vec![TrackSnapshot {
+            group_output_mutes: Vec::new(),
+            tags: Vec::new(),
             kind: hex_project::TrackKind::Ordinary,
             parent_group: None,
             color: hex_project::ElementColor::default(),

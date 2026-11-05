@@ -137,8 +137,8 @@ fn midi_ruler_selection_fit_back_geometry_ack_and_document_reset_are_view_only(
     visual.simulate_keystrokes("z");
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            (v.piano_beat_start.raw(), v.piano_beat_span.raw()),
-            (BeatTime::ONE.raw(), 2 * BeatTime::ONE.raw())
+            (v.piano_beat_start, v.piano_beat_span.raw()),
+            (i128::from(BeatTime::ONE.raw()), 2 * BeatTime::ONE.raw())
         );
         assert_eq!(
             v.midi_time_selection_bounds(),
@@ -165,7 +165,7 @@ fn midi_ruler_selection_fit_back_geometry_ack_and_document_reset_are_view_only(
     editor.read_with(&visual, |v, _| {
         assert_eq!(
             (
-                v.piano_beat_start.raw(),
+                v.piano_beat_start,
                 v.piano_beat_span.raw(),
                 v.piano_pitch_low,
                 v.piano_pitch_rows
@@ -188,7 +188,7 @@ fn midi_ruler_selection_fit_back_geometry_ack_and_document_reset_are_view_only(
     visual.simulate_keystrokes("v");
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            (v.piano_beat_start.raw(), v.piano_beat_span.raw()),
+            (v.piano_beat_start, v.piano_beat_span.raw()),
             (0, 4 * BeatTime::ONE.raw())
         )
     });
@@ -390,7 +390,7 @@ fn console_midi_fit_back_is_local_and_explicit_clip_changes_retire_back(cx: &mut
         20,
     );
     let before = editor.update(&mut visual, |v, cx| {
-        v.piano_beat_start = prior.0;
+        v.piano_beat_start = i128::from(prior.0.raw());
         v.piano_beat_span = prior.1;
         v.piano_pitch_low = prior.2;
         v.piano_pitch_rows = prior.3;
@@ -408,7 +408,7 @@ fn console_midi_fit_back_is_local_and_explicit_clip_changes_retire_back(cx: &mut
                 v.piano_pitch_low,
                 v.piano_pitch_rows
             ),
-            prior
+            (i128::from(prior.0.raw()), prior.1, prior.2, prior.3)
         )
     });
     click(&mut visual, "midi-zoom-fit");

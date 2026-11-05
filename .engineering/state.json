@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "updated_date": "2026-11-05",
+  "phase": "priority_stop_refusal_regression_verified_pending_integration",
+  "mission": "goal.md",
+  "goal_activation": "active_runtime_goal",
+  "scheduler": "none_user_requested_manual_goal",
+  "checkpoint_issue": "https://pulse.iocore.dev/#/issues/5009",
+  "checkpoint_pr": "https://github.com/PORTALSURFER/hex/pull/2085",
+  "branch": "pulse/task-5009-g1-af9ddbfadc24",
+  "baseline_source": "4b7309c4fd930ef4c51eadb0cb7408fd5c2b5ac0",
+  "upstream_base": "eddf7202823f1de3574899ac699adad942ba5481",
+  "evidence": "measurements.jsonl",
+  "next_action": "Reconcile PR 2085 merge and final verification first. Resume the active goal from live Pulse; routed-source support is merged in 1974/2080 and remains in native review, so do not replay the superseded provisional refusal. Refresh ready engineering work and preserve user acceptance/holds.",
+  "limits": [
+    "Snapshot only; reconcile Git and live Pulse before recovery.",
+    "Raw ignored artifact logs are executor-local; essential results also belong in canonical PRs/Pulse.",
+    "Focused Linux checks do not qualify native macOS or full-workspace health."
+  ],
+  "last_verified_source": "2decefbeb08cb15422f363addb9eece2510e643b",
+  "native_goal_status": "active_observed_automatic_goal_continuation",
+  "user_goal_prompt_sha256": "9e52b1a4d3d02366259163988bd9abc61f283cb543384209d4da53b682e999d6"
+}
