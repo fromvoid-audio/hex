@@ -98,9 +98,7 @@ fn resident_manual_host_output_gain_gesture_is_continuous_and_reaches_its_target
             }
             last = frame;
         }
-        let gain = hex_lattice_contract::HostGain::from_db(db)
-            .unwrap()
-            .linear();
+        let gain = 10.0_f32.powf(db / 20.0);
         assert!(
             (last[0] - 0.25 * gain).abs() < 1e-6 && (last[1] + 0.125 * gain).abs() < 1e-6,
             "gain{db} target {last:?}"
