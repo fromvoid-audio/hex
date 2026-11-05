@@ -524,24 +524,29 @@ fn browser_vst3_folder_scan(cx: &mut TestAppContext, custom: bool) {
         cx.notify();
     });
     visual.run_until_parked();
-    let button = visual
-        .debug_bounds(if custom {
-            "browser-vst3-scan-custom"
-        } else {
-            "browser-vst3-scan-standard"
-        })
-        .expect("rendered folder action");
-    visual.simulate_mouse_down(button.center(), MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(button.center(), MouseButton::Left, Modifiers::default());
     if custom {
+        let gear = visual.debug_bounds("browser-control-⚙").unwrap();
+        visual.simulate_click(gear.center(), Modifiers::default());
+        visual.run_until_parked();
+        for source in ["browser-vst3-source-system", "browser-vst3-source-user"] {
+            let flag = visual.debug_bounds(source).unwrap();
+            visual.simulate_click(flag.center(), Modifiers::default());
+            visual.run_until_parked();
+        }
+        editor.read_with(&visual, |view, _| {
+            let sources = &view.browser.source_preferences.vst3_scan_sources;
+            assert!(!sources.system && !sources.user);
+        });
+        let choose = visual.debug_bounds("browser-vst3-choose-folder").unwrap();
+        visual.simulate_click(choose.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(visual.did_prompt_for_paths());
-        assert!(
-            !editor.read_with(&visual, |view, _| view.browser.plugins.busy),
-            "picker alone must not execute foreign code"
-        );
         visual.simulate_paths_selection(Some(vec![roots]));
+        visual.run_until_parked();
+        assert!(!editor.read_with(&visual, |view, _| view.browser.plugins.busy));
     }
+    let scan = visual.debug_bounds("browser-vst3-scan").unwrap();
+    visual.simulate_click(scan.center(), Modifiers::default());
     if !wait_plugin_browser(&mut visual, &editor) {
         std::mem::forget(directory);
         panic!(
@@ -563,6 +568,7 @@ fn browser_vst3_folder_scan(cx: &mut TestAppContext, custom: bool) {
         assert_eq!(rows[0].cid, rows[1].cid);
     });
     assert!(visual.debug_bounds("browser-vst3-row-1").is_some());
+    assert!(visual.debug_bounds("browser-vst3-scan-activity").is_none());
     editor.update(&mut visual, |view, cx| {
         view.browser
             .search
@@ -605,9 +611,12 @@ fn browser_vst3_custom_picker_cancel_and_error_preserve_catalog_without_scanner(
         view.select_browser_source(BrowserSection::Plugins, cx);
         cx.notify();
     });
+    visual.run_until_parked();
+    let gear = visual.debug_bounds("browser-control-⚙").unwrap();
+    visual.simulate_click(gear.center(), Modifiers::default());
     for error in [false, true] {
         visual.run_until_parked();
-        let bounds = visual.debug_bounds("browser-vst3-scan-custom").unwrap();
+        let bounds = visual.debug_bounds("browser-vst3-choose-folder").unwrap();
         visual.simulate_click(bounds.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(visual.did_prompt_for_paths());

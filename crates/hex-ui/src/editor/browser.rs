@@ -620,6 +620,7 @@ impl EditorView {
             .filter(|path| **path != self.browser.home && **path != self.browser.music)
             .cloned();
         let places = BrowserPlaces::new(additional).and_then(|mut places| {
+            places.vst3_scan_sources = self.browser.source_preferences.vst3_scan_sources.clone();
             for source in [
                 BrowserBuiltin::Music,
                 BrowserBuiltin::Home,
