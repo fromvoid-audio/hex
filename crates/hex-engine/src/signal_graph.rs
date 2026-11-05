@@ -933,19 +933,17 @@ impl SignalGraph {
             && self.returns.is_empty()
             && self.tracks.iter().all(|track| track.audio_feeds.is_empty())
     }
-    pub(crate) fn dry_main_edge(&self, index: usize) -> Option<usize> {
+    pub(crate) fn resident_main_alignment(&self, index: usize) -> Option<(usize, u32)> {
         let track = self.tracks.get(index)?;
         let TrackOutput::Main { edge } = track.output else {
             return None;
         };
-        (track.devices.is_empty()
-            && track.generator.is_none()
+        (track.generator.is_none()
             && track.printed_merge.is_none()
             && track.group_output_mutes.is_empty()
-            && self.plan.edges()[track.source_input].delay_frames == 0
-            && self.plan.edges()[track.audio_merge].delay_frames == 0
-            && self.plan.nodes()[track.fader].output_arrival_frames == 0)
-            .then_some(edge)
+            && self.plan.edges()[self.pre_main_edges[track.source_input]].delay_frames == 0
+            && self.plan.edges()[self.pre_main_edges[track.audio_merge]].delay_frames == 0)
+            .then_some((edge, self.plan.nodes()[track.fader].output_arrival_frames))
     }
     /// With no pre-Main latency or typed feeds, these graphs retain transport
     /// stamps only: every pre-Main edge has zero delay and owns no pending PCM.

@@ -23,8 +23,8 @@ fn compensated_dry_arrangement_tracks_batch_without_callback_allocations()
 
 fn check_compensated_audio_batch(session: bool) -> Result<(), Box<dyn Error>> {
     const RATE: u32 = 48_000;
-    const LATENCY: usize = 288;
     const SOURCE: [f32; 2] = [0.01, -0.02];
+    let (lookahead, latency) = if session { (2, 288) } else { (0, 72) };
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
     let Created::Scene(scene) = editor.execute(Command::AddScene {
         name: "session".into(),
@@ -61,7 +61,7 @@ fn check_compensated_audio_batch(session: bool) -> Result<(), Box<dyn Error>> {
             let limiter = hex_devices::limiter::DEFINITION.patch_parameter(
                 &hex_devices::limiter::DEFINITION.default_state()?,
                 hex_devices::limiter::parameter::LOOKAHEAD,
-                ParameterValue::Choice(2),
+                ParameterValue::Choice(lookahead),
             )?;
             editor.execute(Command::InsertDevice {
                 track,
@@ -81,7 +81,7 @@ fn check_compensated_audio_batch(session: bool) -> Result<(), Box<dyn Error>> {
         &effects,
         &instruments,
     )?);
-    assert_eq!(revision.arrangement().main_latency_frames(), LATENCY as u32);
+    assert_eq!(revision.arrangement().main_latency_frames(), latency as u32);
     let (mut control, mut callback) = prepared::channel(RATE)?;
     control
         .publish(Playback::try_from_prepared_with_session(revision)?)
@@ -104,7 +104,7 @@ fn check_compensated_audio_batch(session: bool) -> Result<(), Box<dyn Error>> {
         probe::measured_block(&mut callback, &mut output[..count]);
         let expected: Vec<_> = (0..count)
             .map(|i| {
-                if offset + i < LATENCY {
+                if offset + i < latency {
                     [0.0; 2]
                 } else {
                     SOURCE.map(|sample| sample * 4.0)
